@@ -43,7 +43,7 @@ export interface ReposConfig {
   can_create: boolean;
   create_org: string;
   create_visibility: "private" | "public";
-  default_branch: string;
+  default_base_branch: string;    // e.g. "main"
 }
 
 export interface ModelsConfig {
@@ -63,15 +63,15 @@ export interface LoopConfig {
 
 export interface VercelConfig {
   enabled: boolean;
-  credential_service?: string;
-  team?: string;
-  project?: string;
+  credential_service: string;    // vault service name (only read when enabled)
+  team_id?: string;
+  project_id: string;
   preview_wait_seconds: number;
 }
 
 export interface StorageConfig {
   state_db_path: string;
-  worktrees_root: string;
+  worktree_root: string;
   audit_retention_days: number;
   prune_terminal_sessions: boolean;
   prune_terminal_sessions_days: number;
@@ -117,7 +117,7 @@ const DEFAULTS: HarnessConfig = {
     can_create: false,
     create_org: "",
     create_visibility: "private",
-    default_branch: "main",
+    default_base_branch: "main",
   },
   models: {
     lead: "claude-fable-5",
@@ -134,11 +134,13 @@ const DEFAULTS: HarnessConfig = {
   },
   vercel: {
     enabled: false,
+    credential_service: "",
+    project_id: "",
     preview_wait_seconds: 300,
   },
   storage: {
     state_db_path: "~/.openclaw/workspace/openclaw-agent-harness/state.db",
-    worktrees_root: "~/.openclaw/workspace/openclaw-agent-harness/worktrees",
+    worktree_root: "~/.openclaw/workspace/openclaw-agent-harness/worktrees",
     audit_retention_days: 90,
     prune_terminal_sessions: false,
     prune_terminal_sessions_days: 365,
@@ -200,6 +202,10 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   }
   if (merged.repos.allowed.length === 0) {
     throw new Error("harness.repos.allowed must list at least one owner or owner/repo glob");
+  }
+  if (merged.vercel.enabled) {
+    if (!merged.vercel.credential_service) throw new Error("harness.vercel.credential_service required when vercel.enabled");
+    if (!merged.vercel.project_id) throw new Error("harness.vercel.project_id required when vercel.enabled");
   }
 
   return merged;
