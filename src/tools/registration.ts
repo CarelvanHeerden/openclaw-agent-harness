@@ -192,6 +192,58 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
   disposers.push(
     toDispose(
       api.registerTool({
+        name: "harness_health",
+        description:
+          "Return a health snapshot: DB reachable, schema OK, config well-formed, credentials configured. For smoke tests + monitoring.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        execute: () => {
+          const checks: Array<{ name: string; ok: boolean; detail?: string }> = [];
+
+          // DB reachable?
+          try {
+            runtime.state.db.prepare(`SELECT 1`).get();
+            checks.push({ name: "db_reachable", ok: true });
+          } catch (err) {
+            checks.push({ name: "db_reachable", ok: false, detail: String(err) });
+          }
+
+          // Schema tables present?
+          const need = ["sessions", "sub_tasks", "reviews", "budgets_daily", "budgets_monthly", "audit_log"];
+          for (const t of need) {
+            const row = runtime.state.db
+              .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
+              .get(t) as { name?: string } | undefined;
+            checks.push({ name: `table_${t}`, ok: !!row?.name });
+          }
+
+          // Config: minimally-valid?
+          checks.push({ name: "config_slack_channel", ok: !!runtime.config.slack.channel, detail: runtime.config.slack.channel });
+          checks.push({ name: "config_authorised_users", ok: runtime.config.slack.authorised_users.length > 0 });
+          checks.push({ name: "config_repos_allowed", ok: runtime.config.repos.allowed.length > 0 });
+
+          // Credentials: are we set to talk to Slack/Vercel? (informational, not fatal)
+          checks.push({ name: "slack_credential_service_set", ok: !!runtime.config.slack.credential_service });
+          checks.push({ name: "vercel_enabled", ok: !!runtime.config.vercel?.enabled });
+
+          const overall = checks.filter((c) => c.name.startsWith("table_") || c.name === "db_reachable" || c.name.startsWith("config_")).every((c) => c.ok);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Health: ${overall ? "OK" : "DEGRADED"}\n` +
+                  checks.map((c) => `${c.ok ? ":white_check_mark:" : ":x:"} ${c.name}${c.detail ? ` (${c.detail})` : ""}`).join("\n"),
+              },
+            ],
+            details: { ok: overall, checks },
+          };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
         name: "harness_telemetry",
         description:
           "Return cost + activity telemetry: monthly ledger, session-level cost breakdown, model mix.",

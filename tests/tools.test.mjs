@@ -61,15 +61,45 @@ function collectTools() {
   return { api, tools };
 }
 
-test("registration: registers 6 tools",
+test("registration: registers 7 tools",
   { skip: registerHarnessTools === null }, () => {
     const runtime = makeRuntime();
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     assert.deepEqual(
       [...tools.keys()].sort(),
-      ["harness_cancel", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_status", "harness_telemetry"],
+      ["harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_status", "harness_telemetry"],
     );
+  });
+
+test("harness_health: reports OK when config + schema are minimally valid",
+  { skip: registerHarnessTools === null }, () => {
+    const runtime = makeRuntime();
+    // Minimally-valid config: channel, users, repos allow-list
+    runtime.config.slack = { channel: "C_TEST", authorised_users: ["U1"], reactions: {}, credential_service: "slack-x" };
+    runtime.config.repos = { allowed: ["o/r"] };
+    runtime.config.vercel = { enabled: false };
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = tools.get("harness_health").execute({});
+    assert.equal(res.details.ok, true);
+    const dbCheck = res.details.checks.find((c) => c.name === "db_reachable");
+    assert.equal(dbCheck.ok, true);
+    const chanCheck = res.details.checks.find((c) => c.name === "config_slack_channel");
+    assert.equal(chanCheck.detail, "C_TEST");
+  });
+
+test("harness_health: DEGRADED when config missing repos",
+  { skip: registerHarnessTools === null }, () => {
+    const runtime = makeRuntime();
+    runtime.config.slack = { channel: "C_TEST", authorised_users: ["U1"], reactions: {} };
+    runtime.config.repos = { allowed: [] };
+    runtime.config.vercel = { enabled: false };
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = tools.get("harness_health").execute({});
+    assert.equal(res.details.ok, false);
+    assert.match(res.content[0].text, /DEGRADED/);
   });
 
 test("harness_cancel: sets abort flag on non-terminal session",
