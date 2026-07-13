@@ -2,39 +2,50 @@
 -- SQLite, applied once on first open.
 
 CREATE TABLE IF NOT EXISTS sessions (
-  id                  TEXT PRIMARY KEY,
-  slack_thread        TEXT NOT NULL,
-  slack_channel       TEXT NOT NULL,
-  requester           TEXT NOT NULL,
-  requester_gh        TEXT NOT NULL,
-  repo                TEXT NOT NULL,
-  branch              TEXT NOT NULL,
-  worktree_path       TEXT NOT NULL,
-  status              TEXT NOT NULL,
-  created_at          INTEGER NOT NULL,
-  updated_at          INTEGER NOT NULL,
-  budget_usd          REAL NOT NULL,
-  cost_usd            REAL NOT NULL DEFAULT 0,
-  crystallised_prompt TEXT,
-  final_pr_url        TEXT
+  id                       TEXT PRIMARY KEY,
+  slack_thread             TEXT NOT NULL,
+  slack_channel            TEXT NOT NULL,
+  requester                TEXT NOT NULL,
+  requester_gh             TEXT NOT NULL,
+  repo                     TEXT NOT NULL,
+  branch                   TEXT NOT NULL,
+  worktree_path            TEXT NOT NULL,
+  status                   TEXT NOT NULL,
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL,
+  budget_usd               REAL NOT NULL,
+  cost_usd                 REAL NOT NULL DEFAULT 0,
+  crystallised_prompt      TEXT,
+  final_pr_url             TEXT,
+  -- Recovery checkpointing (added in fix/review-round-1)
+  current_cycle            INTEGER NOT NULL DEFAULT 0,
+  last_completed_sub_task  TEXT,
+  last_checkpoint_at       INTEGER,
+  claude_sdk_session_id    TEXT,   -- SDK session UUID for resume()
+  last_worker_sdk_session  TEXT    -- most recent worker SDK session, for granular resume
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions (status);
 CREATE INDEX IF NOT EXISTS idx_sessions_requester ON sessions (requester);
 
 CREATE TABLE IF NOT EXISTS sub_tasks (
-  id             TEXT PRIMARY KEY,
-  session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  cycle          INTEGER NOT NULL,
-  ordinal        INTEGER NOT NULL,
-  description    TEXT NOT NULL,
-  worker_model   TEXT NOT NULL,
-  status         TEXT NOT NULL,
-  cost_usd       REAL NOT NULL DEFAULT 0,
-  files_touched  TEXT,
-  summary        TEXT,
-  created_at     INTEGER NOT NULL,
-  updated_at     INTEGER NOT NULL
+  id                  TEXT PRIMARY KEY,
+  session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  cycle               INTEGER NOT NULL,
+  ordinal             INTEGER NOT NULL,
+  description         TEXT NOT NULL,
+  worker_model        TEXT NOT NULL,
+  status              TEXT NOT NULL,   -- pending|running|done|failed|interrupted
+  cost_usd            REAL NOT NULL DEFAULT 0,
+  files_touched       TEXT,
+  summary             TEXT,
+  sdk_session_id      TEXT,             -- worker's Claude Agent SDK session UUID
+  started_at          INTEGER,
+  completed_at        INTEGER,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sub_tasks_session ON sub_tasks (session_id, cycle);
