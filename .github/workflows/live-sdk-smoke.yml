@@ -1,0 +1,31 @@
+name: Live SDK smoke
+
+# Costs real money (a few cents per run). Only run manually or on release
+# tags, never on every push. Requires ANTHROPIC_API_KEY in repo secrets.
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  live-sdk:
+    if: ${{ github.repository == 'CarelvanHeerden/openclaw-agent-harness' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm run build
+      - name: Run live SDK smoke
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY not set; skipping"
+            exit 0
+          fi
+          node scripts/live-sdk-smoke.mjs

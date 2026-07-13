@@ -19,7 +19,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   crystallised_prompt      TEXT,
   lead_plan_json           TEXT,             -- serialised LeadPlan
   final_pr_url             TEXT,
-  reactions_json           TEXT,             -- serialised { shipIt, abort, pause, budgetBump }
+  reactions_json           TEXT,             -- serialised { shipIt, abort, pause, budgetBump } (reactions only; NOT PR lifecycle)
+  -- PR lifecycle (populated by github-watcher on close/merge)
+  pr_merged                INTEGER,          -- 0 | 1 | NULL (unknown)
+  pr_closed_at             INTEGER,          -- epoch ms; NULL until watcher observes close
+  pr_merged_at             INTEGER,          -- epoch ms; NULL if closed without merge
   -- Recovery checkpointing
   current_cycle            INTEGER NOT NULL DEFAULT 0,
   last_completed_sub_task  TEXT,

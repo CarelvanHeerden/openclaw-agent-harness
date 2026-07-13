@@ -55,6 +55,8 @@ export interface ModelsConfig {
   worker: string;
   adversary: string;
   classifier: string;
+  /** Optional per-model price overrides for cost estimation. Set when Anthropic ships new pricing before we release. Keys are model ids (e.g. 'claude-fable-5'). Values are USD per million tokens. */
+  price_overrides?: Record<string, { input: number; output: number }>;
 }
 
 export interface LoopConfig {

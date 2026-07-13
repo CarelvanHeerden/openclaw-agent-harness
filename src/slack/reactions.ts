@@ -80,18 +80,26 @@ export class SlackReactionsReader {
     url.searchParams.set("channel", channel);
     url.searchParams.set("timestamp", ts);
     url.searchParams.set("full", "true");
-    try {
-      const res = await this.fetchFn()(url.toString(), {
-        headers: { Authorization: `Bearer ${this.deps.slackToken}` },
-      });
-      if (!res.ok) return [];
-      const j = (await res.json()) as ReactionsGetResponse;
-      if (!j.ok) return [];
-      return j.message?.reactions ?? [];
-    } catch (err) {
-      this.deps.logger.warn("[reactions] fetch failed", { err: String(err), ts });
+    const res = await this.fetchFn()(url.toString(), {
+      headers: { Authorization: `Bearer ${this.deps.slackToken}` },
+    });
+    // 429 must propagate to the poller so it can back off globally.
+    // Slack Web API also encodes rate_limited in the JSON body of a 200,
+    // handle both shapes.
+    if (res.status === 429) {
+      const retryAfter = parseInt(res.headers.get("retry-after") ?? "60", 10);
+      throw Object.assign(new Error(`slack 429 rate_limited (retry after ${retryAfter}s)`), { retryAfterSeconds: retryAfter });
+    }
+    if (!res.ok) {
+      this.deps.logger.warn("[reactions] HTTP not ok", { status: res.status, ts });
       return [];
     }
+    const j = (await res.json()) as ReactionsGetResponse & { retry_after?: number };
+    if (!j.ok && j.error === "ratelimited") {
+      throw Object.assign(new Error(`slack ratelimited (retry after ${j.retry_after ?? 60}s)`), { retryAfterSeconds: j.retry_after ?? 60 });
+    }
+    if (!j.ok) return [];
+    return j.message?.reactions ?? [];
   }
 
   private async threadReplyTimestamps(channel: string, thread: string): Promise<string[]> {

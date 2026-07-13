@@ -156,8 +156,16 @@ function splitSegments(tokens: string[]): string[][] {
  * receives the tool name and its raw input, and returns an `{ allow, reason }`
  * decision. Currently intercepts:
  *   - `Bash` -> guardCommand()
- *   - `Write` / `Edit` -> path denylist
+ *   - `Write` / `Edit` / `MultiEdit` -> path denylist (write side)
+ *   - `Read` / `NotebookRead` -> path denylist (read side, to stop workers
+ *     exfiltrating .env, credential vaults, or private keys through the
+ *     SDK's built-in file readers, which bypass Bash entirely).
+ *   - `Glob` / `Grep` -> path/pattern denylist (prevents `Glob '**\/.env'`).
  * Everything else is allowed (SDK enforces its own permission model for those).
+ *
+ * The path denylist is enforced *identically* for read and write paths.
+ * If you want a read-allowed / write-denied file, put it in a location
+ * not covered by the denylist.
  */
 export function buildBashGuard(cfg: {
   bash_whitelist: string[];
@@ -185,19 +193,49 @@ export function buildBashGuard(cfg: {
     return false;
   };
 
+  const extractPath = (input: unknown, keys: readonly string[]): string => {
+    const rec = input as Record<string, unknown> | null | undefined;
+    if (!rec) return "";
+    for (const k of keys) {
+      const v = rec[k];
+      if (typeof v === "string" && v.length > 0) return v;
+    }
+    return "";
+  };
+
   return async (toolName: string, toolInput: unknown) => {
     if (toolName === "Bash") {
       const cmd = (toolInput as { command?: string })?.command ?? "";
       const r = guardCommand(cmd, guard);
       return { allow: r.allowed, reason: r.reason };
     }
-    if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit") {
-      const filePath = (toolInput as { file_path?: string; path?: string })?.file_path
-        ?? (toolInput as { file_path?: string; path?: string })?.path
-        ?? "";
+    // Write side
+    if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit" || toolName === "NotebookEdit") {
+      const filePath = extractPath(toolInput, ["file_path", "path", "notebook_path"]);
       if (pathBlocked(filePath)) {
-        return { allow: false, reason: `path '${filePath}' is denylisted` };
+        return { allow: false, reason: `write path '${filePath}' is denylisted` };
       }
+      return { allow: true };
+    }
+    // Read side. The SDK exposes Read + NotebookRead which bypass Bash. We
+    // apply the same path_denylist to keep .env / vaults / private keys out
+    // of a worker's reach even without Bash access.
+    if (toolName === "Read" || toolName === "NotebookRead") {
+      const filePath = extractPath(toolInput, ["file_path", "path", "notebook_path"]);
+      if (pathBlocked(filePath)) {
+        return { allow: false, reason: `read path '${filePath}' is denylisted` };
+      }
+      return { allow: true };
+    }
+    // Glob / Grep pattern side. A worker could do `Glob '**\/.env'` to
+    // enumerate secrets. Check the pattern against the denylist too. If the
+    // pattern is glob-y, expand a few common forms to catch obvious attempts.
+    if (toolName === "Glob" || toolName === "Grep") {
+      const pat = extractPath(toolInput, ["pattern", "glob", "path", "file_pattern"]);
+      if (pat && pathBlocked(pat)) {
+        return { allow: false, reason: `search pattern '${pat}' hits denylist` };
+      }
+      return { allow: true };
     }
     return { allow: true };
   };
