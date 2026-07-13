@@ -192,6 +192,84 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
   disposers.push(
     toDispose(
       api.registerTool({
+        name: "harness_start_session",
+        description:
+          "Start a harness session directly (bypasses classifier). Useful for slash commands, cron-triggered runs, or other plugins.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            requester: { type: "string", minLength: 1, description: "Slack user id of the requester" },
+            slackChannel: { type: "string", minLength: 1 },
+            slackThread: { type: "string", minLength: 1, description: "Thread ts to reply into (usually the origin message ts)" },
+            brief: {
+              type: "object",
+              required: ["title", "motivation", "acceptanceCriteria"],
+              properties: {
+                title: { type: "string", minLength: 3 },
+                motivation: { type: "string", minLength: 10 },
+                acceptanceCriteria: { type: "array", minItems: 1, items: { type: "string", minLength: 3 } },
+                filesLikelyTouched: { type: "array", items: { type: "string" } },
+                outOfScope: { type: "array", items: { type: "string" } },
+                repoHint: { type: "string" },
+                branchHint: { type: "string" },
+                riskLevel: { type: "string", enum: ["low", "medium", "high"] },
+              },
+            },
+            budgetUsd: { type: "number", minimum: 1 },
+          },
+          required: ["requester", "slackChannel", "slackThread", "brief"],
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const { requester, slackChannel, slackThread, brief, budgetUsd } = input as {
+            requester: string;
+            slackChannel: string;
+            slackThread: string;
+            brief: { title: string; motivation: string; acceptanceCriteria: string[]; filesLikelyTouched?: string[]; outOfScope?: string[]; repoHint?: string; branchHint?: string; riskLevel?: string };
+            budgetUsd?: number;
+          };
+          if (!runtime.config.slack.authorised_users.includes(requester)) {
+            return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          }
+          const sessionId = (globalThis.crypto?.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+          const briefFull = {
+            title: brief.title,
+            motivation: brief.motivation,
+            acceptanceCriteria: brief.acceptanceCriteria,
+            filesLikelyTouched: brief.filesLikelyTouched ?? [],
+            outOfScope: brief.outOfScope ?? [],
+            repoHint: brief.repoHint,
+            branchHint: brief.branchHint,
+            riskLevel: (brief.riskLevel ?? "low") as "low" | "medium" | "high",
+          };
+          try {
+            runtime.state.db
+              .prepare(
+                `INSERT INTO sessions (
+                   id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
+                   status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran
+                 ) VALUES (?, ?, ?, ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0)`,
+              )
+              .run(sessionId, slackThread, slackChannel, requester, requester, JSON.stringify(briefFull), Date.now(), Date.now(), budgetUsd ?? runtime.config.budgets.session_default_usd);
+          } catch (err) {
+            if (String(err).includes("UNIQUE") || String(err).includes("SQLITE_CONSTRAINT")) {
+              return { content: [{ type: "text", text: `Session already exists for thread ${slackThread}` }], details: { ok: false, duplicateThread: true } };
+            }
+            throw err;
+          }
+          runtime.state.audit("tool.start_session", { sessionId, requester }, sessionId);
+          void runtime.loop.run(sessionId, briefFull).catch((err) => {
+            api.logger.error("[tool.start_session] loop crashed", { sessionId, err: String(err) });
+          });
+          return { content: [{ type: "text", text: `Session ${sessionId} started. Watch Slack thread for progress.` }], details: { ok: true, sessionId } };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
         name: "harness_health",
         description:
           "Return a health snapshot: DB reachable, schema OK, config well-formed, credentials configured. For smoke tests + monitoring.",

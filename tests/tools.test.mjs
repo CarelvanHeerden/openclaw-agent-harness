@@ -42,9 +42,10 @@ function makeRuntime() {
     loopCalls,
     config: {
       storage: { audit_retention_days: 90, prune_terminal_sessions: false, prune_terminal_sessions_days: 365 },
-      slack: { channel: "C1" },
+      slack: { channel: "C1", authorised_users: ["U1"] },
       repos: { allowed: ["o/*"] },
       models: { lead: "l", worker: "w", adversary: "a", classifier: "c" },
+      budgets: { session_default_usd: 50 },
     },
   };
 }
@@ -61,14 +62,14 @@ function collectTools() {
   return { api, tools };
 }
 
-test("registration: registers 7 tools",
+test("registration: registers 8 tools",
   { skip: registerHarnessTools === null }, () => {
     const runtime = makeRuntime();
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     assert.deepEqual(
       [...tools.keys()].sort(),
-      ["harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_status", "harness_telemetry"],
+      ["harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry"],
     );
   });
 
@@ -150,6 +151,52 @@ test("harness_resume: refuses done session",
     const res = await tools.get("harness_resume").execute({ sessionId: "S1" });
     assert.equal(res.details.ok, false);
     assert.equal(res.details.badStatus, "done");
+  });
+
+test("harness_start_session: happy path inserts + kicks loop",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = await tools.get("harness_start_session").execute({
+      requester: "U1",
+      slackChannel: "C1",
+      slackThread: "T1",
+      brief: { title: "Add hello", motivation: "we need a smoke endpoint", acceptanceCriteria: ["GET /hello returns 200"], riskLevel: "low" },
+    });
+    assert.equal(res.details.ok, true);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(runtime.loopCalls.length, 1);
+    const row = runtime.state.db.prepare(`SELECT status FROM sessions WHERE slack_thread='T1'`).get();
+    assert.equal(row.status, "planning");
+  });
+
+test("harness_start_session: refuses unauthorised requester",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = await tools.get("harness_start_session").execute({
+      requester: "U_STRANGER",
+      slackChannel: "C1",
+      slackThread: "T99",
+      brief: { title: "x", motivation: "long enough", acceptanceCriteria: ["a"] },
+    });
+    assert.equal(res.details.ok, false);
+    assert.equal(res.details.unauthorised, true);
+  });
+
+test("harness_start_session: duplicate thread returns duplicate error",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const brief = { title: "Add hello", motivation: "we need a smoke endpoint", acceptanceCriteria: ["a"] };
+    const r1 = await tools.get("harness_start_session").execute({ requester: "U1", slackChannel: "C1", slackThread: "TDUP", brief });
+    assert.equal(r1.details.ok, true);
+    const r2 = await tools.get("harness_start_session").execute({ requester: "U1", slackChannel: "C1", slackThread: "TDUP", brief });
+    assert.equal(r2.details.ok, false);
+    assert.equal(r2.details.duplicateThread, true);
   });
 
 test("harness_resume: refuses session without brief",

@@ -62,6 +62,7 @@ await plugin.register(fakeApi);
 const expectTools = [
   "harness_status",
   "harness_health",
+  "harness_start_session",
   "harness_session_get",
   "harness_telemetry",
   "harness_cancel",

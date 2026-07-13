@@ -1,150 +1,116 @@
 # openclaw-agent-harness
 
-**Multi-agent orchestration harness for OpenClaw.** Drives Claude Code (via `@anthropic-ai/claude-agent-sdk`) with a Fable-5 orchestrator, Sonnet workers, and a Fable-5 adversarial reviewer, controlled from Slack.
+*Multi-agent code-writing harness for OpenClaw.* Post a dev request in a Slack channel, and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (plus Vercel preview logs) before a PR opens under the requester's GitHub identity.
 
-> **Status:** early development. Nothing here is stable yet.
-> **License:** MIT.
-> **Ecosystem:** designed as an [OpenClaw](https://github.com/openclaw/openclaw) plugin, generic enough to be useful outside Stitch's setup.
-
----
+> *Status: beta.* Version `0.1.0-beta.1`. All Phase 1-3 subsystems land and pass tests (87/87 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel.
 
 ## Why
 
-Cursor Agent / interactive Claude Code sessions bind you to a laptop and an IDE. This harness lets a small team (starts at two people) hand off multi-step coding tasks to a server-side agent running inside an always-on OpenClaw container. It:
+Slack is where dev asks happen, and Claude Code is where the actual writing gets done. This plugin closes the loop: crystallise the ask into a brief, plan atomic sub-tasks, execute them in parallel Sonnet subprocesses inside a git worktree, and have a Fable-5 adversary sign off before a PR is opened.
 
-- accepts a task prompt via a dedicated private Slack channel,
-- refines the prompt with the requester over 2-3 turns,
-- plans and executes the work with a **Fable-5 lead** agent that delegates bounded sub-tasks to **Sonnet workers**,
-- reviews every attempt with a **Fable-5 adversarial** agent that checks spec fidelity, codebase fit, security, and runtime behaviour (via Vercel logs),
-- loops up to 3 times with early-exit on clean adversarial sign-off or budget hit,
-- opens the PR under the requester's own GitHub identity (per-user PATs, per-org routing).
+Nothing pushes to a repo until the adversary is satisfied (or a human drops `:rocket:` to override). Nothing pushes at all without a per-repo per-user PAT the requester owns.
 
-## Architecture (high level)
+## Architecture
 
 ```
-Slack #dev-channel
-        |
-        v
-  Harness plugin  (this repo)
-        |
-        +--> Crystallisation (multi-turn prompt refinement)
-        |
-        +--> Fable-5 lead orchestrator
-        |         |
-        |         +--> Sonnet worker 1 (bounded sub-task)
-        |         +--> Sonnet worker 2
-        |         +--> ...
-        |
-        +--> Fable-5 adversarial reviewer
-        |         (spec fidelity + codebase fit + security + Vercel logs)
-        |
-        +--> Loop up to 3x with early exit
-        |
-        +--> Branch push + draft PR under requester's GitHub identity
+Slack channel
+     |
+     v
+[ SlackChannelListener ]  -- routes: new session / follow-up / ignore
+     |
+     v
+[ Dispatcher ]  -- inserts session row (UNIQUE thread), reacts :eyes:
+     |
+     v
+[ Crystalliser ]  -- classifier (haiku) + brief refiner (fable-5)
+     |
+     v
+[ Fable-5 lead ]  -- plan: repo, branch, sub-tasks, review checklist
+     |
+     v
+[ Orchestrator loop ]  -- up to N cycles:
+     |
+     v
+   [ Sonnet worker ] x concurrency  -- canUseTool bash guard, worktree isolation
+     |
+     v
+   [ Fable-5 adversary ]  -- diff + Vercel logs + runtime banner
+     |
+     +--- verdict=pass    --> [ GitHub PR opener ]  --> Slack :tada:
+     +--- verdict=revise  --> next cycle
+     +--- verdict=block   --> Slack :x:
 ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
+## Subsystems (all wired)
 
-## Key decisions
+| Piece                        | File                                             | Purpose                                                |
+| ---------------------------- | ------------------------------------------------ | ------------------------------------------------------ |
+| Plugin entry                 | `src/index.ts`                                   | OpenClaw plugin descriptor + `register(api)`           |
+| Config parser                | `src/config.ts`                                  | Hard validation, deep-merge defaults                   |
+| Config JSON schema           | `src/config.schema.json`                         | Editor / doc integration                               |
+| PAT router                   | `src/auth/pat-router.ts`                         | Per-user, per-repo PAT resolution                      |
+| Prompt crystalliser          | `src/crystallise/prompt-refiner.ts`              | Classifier -> brief pipeline                           |
+| Fable-5 lead                 | `src/orchestrator/fable5-lead.ts`                | Plan validator (allow-list, branch prefix, sub-cap 20) |
+| Sonnet worker                | `src/orchestrator/sonnet-worker.ts`              | Runs one sub-task with `canUseTool` guard              |
+| Fable-5 adversary            | `src/orchestrator/fable5-adversary.ts`           | Reviews diff, runtime banner, safety-net              |
+| Orchestrator loop            | `src/orchestrator/loop.ts`                       | 3-cycle state machine + parallel exec + topo sort      |
+| Claude SDK adapter           | `src/adapters/claude-sdk.ts`                     | `@anthropic-ai/claude-agent-sdk` wrappers              |
+| Git worktree adapter         | `src/adapters/git-worktree.ts`                   | Allocate/commit/diff/push, per-session isolation       |
+| GitHub PR opener             | `src/adapters/github-pr.ts`                      | Push branch, POST /pulls (draft if verdict != pass)   |
+| GitHub PR-merged watcher     | `src/adapters/github-watcher.ts`                 | Detects merge/close, releases worktree                 |
+| Vercel logs bridge           | `src/vercel/logs.ts`                             | Bounded wait for preview, log excerpt for adversary    |
+| Slack listener               | `src/slack/channel-listener.ts`                  | Pure `routeMessage()` + UNIQUE thread guard           |
+| Slack dispatcher             | `src/slack/dispatcher.ts`                        | Bridges listener -> orchestrator                       |
+| Slack reactions reader       | `src/slack/reactions.ts`                         | Authorised-user filter                                 |
+| Reactions poller             | `src/slack/reactions-poller.ts`                  | 15s interval, writes into `reactions_json` column      |
+| Bash guard                   | `src/safety/bash-guard.ts`                       | Tokeniser-based POSIX-ish denylist                     |
+| Budget enforcer              | `src/budgets/enforcer.ts`                        | Daily + monthly USD ledger                            |
+| State store                  | `src/state/store.ts` + `schema.sql`              | SQLite (better-sqlite3), audit log                     |
+| Retention                    | `src/state/retention.ts`                         | 90-day audit prune, terminal-session prune             |
+| Session recovery             | `src/state/recovery.ts`                          | Stale in-flight -> `interrupted`, Slack notify         |
+| Tools                        | `src/tools/registration.ts`                      | 8 tools (see below)                                    |
 
-| Decision | Choice | Why |
-|---|---|---|
-| Runtime | Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`), not CLI subprocess | Typed events, structured tool results, first-class session/resume |
-| Lead model | `claude-fable-5` | Long-running planner, worth the price |
-| Worker model | `claude-sonnet-5` | Fast, cheap, bounded scope |
-| Adversarial model | `claude-fable-5` | Must be at least as smart as the lead to catch its mistakes |
-| Invocation | Post in a dedicated Slack channel (no slash command) | Zero-friction for the two-person team |
-| PAT routing | Per-user, per-org tokens in OpenClaw's credential vault | Commits show up under the requester's own GitHub identity |
-| State | Local SQLite at `~/.openclaw/workspace/openclaw-agent-harness/state.db` | Isolated from hybrid-memory DB, easy to inspect |
-| Budgets | $1000 / user / month hard cap; per-session defaults with user override | Prevents runaway spend |
-| Repo scope | Explicit allow-list per session; can create new blank repos on request | Prevents accidental escapes |
+## Tools exposed
 
-## Non-goals
+- `harness_status` -- active sessions + monthly spend
+- `harness_health` -- DB reachable, schema OK, config valid, cred set
+- `harness_start_session` -- direct API entry (bypasses classifier)
+- `harness_session_get` -- one session with sub-tasks/reviews/audit
+- `harness_telemetry` -- monthly ledger + session cost breakdown
+- `harness_cancel` -- set abort flag; loop terminates at next checkpoint
+- `harness_resume` -- re-kick an interrupted session with its brief
+- `harness_retention_prune` -- manual audit-log prune
 
-- Not a general-purpose Claude Code SaaS.
-- Not replacing IDEs; humans still review and merge.
-- Not exposing itself to public Slack channels or unknown users.
+## Reactions
 
-## Configuration (plugin manifest)
+Only from `slack.authorised_users`:
 
-See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full plugin config reference.
+- `:rocket:` on a bot message in `reviewing` state -> ship it
+- `:x:` -> abort at next checkpoint
+- `:pause_button:` -> (planned) pause the session
+- `:moneybag:` -> allow session to blow past its per-session budget cap
 
-Minimal example:
-
-```json
-{
-  "openclaw-agent-harness": {
-    "slack": {
-      "channel": "C0XXXXXXXXX",
-      "authorised_users": ["U07UT6G8LQ4"]
-    },
-    "budgets": {
-      "monthly_per_user_usd": 1000,
-      "session_default_usd": 50,
-      "session_hard_ceiling_usd": 200,
-      "daily_warn_usd": 100
-    },
-    "repos": {
-      "allowed": ["Stitch-Vercel/ProjectThanos"],
-      "can_create": true,
-      "create_org": "Stitch-Vercel",
-      "create_visibility": "private"
-    },
-    "models": {
-      "lead": "claude-fable-5",
-      "worker": "claude-sonnet-5",
-      "adversary": "claude-fable-5"
-    },
-    "loop": {
-      "max_cycles": 3,
-      "adversarial_pass_ends_early": true
-    },
-    "vercel": {
-      "enabled": false,
-      "credential_service": "vercel-projectthanos"
-    }
-  }
-}
-```
-
-## Installation
-
-See [`docs/INSTALL.md`](docs/INSTALL.md). Short version:
+## Quick start
 
 ```bash
-# In your OpenClaw workspace or plugins directory:
-git clone https://github.com/CarelvanHeerden/openclaw-agent-harness ~/.openclaw/plugins/openclaw-agent-harness
-cd ~/.openclaw/plugins/openclaw-agent-harness
-pnpm install
-pnpm build
-# Add the plugin manifest snippet to your openclaw.json
-# Restart the gateway
+git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
+cd openclaw-agent-harness
+npm ci
+npm test        # runs 87 tests
+npm run smoke   # boots the plugin against a fake OpenClaw API
 ```
+
+Then follow `docs/REAL-TEST-RUNBOOK.md` for wiring up the real Slack channel and Vault credentials.
 
 ## Development
 
-```bash
-pnpm install
-pnpm typecheck
-pnpm test
-```
+- `npm run typecheck` -- strict TS, no `any` leaks in `src/`
+- `npm run build` -- emits `dist/` + copies `schema.sql`
+- `npm test` -- Node test runner, 87 tests as of `0.1.0-beta.1`
+- `npm run smoke` -- post-build bootstrap sanity
 
-The plugin embeds `@anthropic-ai/claude-agent-sdk` for the actual coding agent, but the harness itself is agent-agnostic in the abstract: a lead planner, bounded workers, an adversarial reviewer, a state machine, and Slack IO.
-
-## Roadmap
-
-- **Phase 0:** feasibility spike (SDK install, basic `claude -p` runs, session persistence)
-- **Phase 1:** MVP - single-user, single-repo, no adversarial, no budgets
-- **Phase 2:** Fable-5 orchestrator + Sonnet workers, still no adversarial
-- **Phase 3:** Adversarial reviewer + 3-cycle loop
-- **Phase 4:** Budgets, per-user PAT routing, Vercel logs integration
-- **Phase 5:** Multi-user, more repos, better observability
-- **Later:** Promote to full OpenClaw plugin marketplace listing
-
-## Contributing
-
-Not open for external contributions yet. When it stabilises, standard PR flow with CI.
+CI on every push and PR: `.github/workflows/ci.yml`.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT. See `LICENSE`.

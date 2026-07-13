@@ -1,87 +1,89 @@
 # Changelog
 
-## Unreleased
+## [0.1.0-beta.1] -- 2026-07-13
 
-### Phase 1: end-to-end wiring (feat/phase-1)
-
-- Real plugin entry (`src/index.ts`) that mirrors the memory-hybrid contract:
-  `{ id, name, description, kind, configSchema.parse, versionInfo, register(api) }`.
-- Config parser (`src/config.ts`) with deep-merge defaults and hard
-  validation on safety-critical fields (channel, authorised users, budgets,
-  allow-list, vercel).
-- Orchestrator loop (`src/orchestrator/loop.ts`) implementing the full
-  state machine: `crystallising -> planning -> executing (per-sub-task) ->
-  reviewing -> {done | revise | failed | aborted}`, with:
-    - checkpoints (`current_cycle`, `last_completed_sub_task`, `last_worker_sdk_session`)
-    - budget + hard-timeout gates per sub-task
-    - reactions gate (ship_it during reviewing, abort anywhere)
-    - per-cycle review persistence + audit trail
-- Sonnet worker (`src/orchestrator/sonnet-worker.ts`): builds a scoped
-  system prompt, runs the injected SDK call with `canUseTool` guard, commits
-  changed files, never pushes.
-- Adversary (`src/orchestrator/fable5-adversary.ts`): dimension-based review
-  with a runtime safety-net that upgrades a silent "pass" to "revise" when
-  no runtime data is available.
-- Claude SDK adapters (`src/adapters/claude-sdk.ts`): typed wrappers around
-  `@anthropic-ai/claude-agent-sdk`'s `query()` for classifier, crystalliser,
-  lead, adversary, and worker. Robust JSON extraction with `extractJson()`.
-- Git worktree adapter (`src/adapters/git-worktree.ts`): PAT-scoped askpass
-  helper so tokens never land in config or URL.
-- GitHub REST adapter (`src/adapters/github.ts`): pull-request creation + repo access verification.
-- Vercel bridge (`src/vercel/logs.ts`): bounded preview wait, deployment
-  state resolution, event log excerpt for adversary.
-- Slack adapter (`src/adapters/slack.ts`) + dispatcher (`src/slack/dispatcher.ts`):
-  fire-and-forget session runner with UNIQUE constraint dedup on Slack thread.
-- Bash guard (`src/safety/bash-guard.ts`) now exports `buildBashGuard()` — a
-  ready-to-plug `canUseTool` callback with path denylist support.
-- Tools: `harness_status`, `harness_retention_prune`, `harness_session_get`.
-- Session recovery on plugin start: stale non-terminal sessions are marked
-  `aborted` based on `last_checkpoint_at`.
-- Dockerfile for isolated real-test runs.
-- Runbook: `docs/REAL-TEST-RUNBOOK.md`.
-
-### Tests (45 total, all green)
-
-- `config.test.mjs` (6)
-- `pat-router.test.mjs` (5)
-- `crystallise.test.mjs` (5)
-- `adversary.test.mjs` (4)
-- `orchestrator-advance.test.mjs` (10)
-- `dispatcher.test.mjs` (4)
-- `bash-guard.test.mjs`, `budget-enforcer.test.mjs`, `slack-listener.test.mjs` (11)
-
-## Unreleased
+Beta cut. All Phase 1-3 subsystems land, wire together, and are tested.
 
 ### Added
 
-- **Session checkpointing schema.** `sessions` gains `current_cycle`,
-  `last_completed_sub_task`, `last_checkpoint_at`, `claude_sdk_session_id`,
-  and `last_worker_sdk_session`. `sub_tasks` gains `sdk_session_id`,
-  `started_at`, `completed_at`. Enables incremental resume after container
-  restart mid-session.
-- **1 thread = 1 session invariant.** UNIQUE index on
-  `sessions(slack_channel, slack_thread)` plus explicit `routeMessage()`
-  logic in `SlackChannelListener`.
-- **Bash guard rewrite.** New `src/safety/bash-guard.ts` with a POSIX-ish
-  tokeniser, per-segment allow-list, command-substitution rejection,
-  `/dev/tcp` and `/dev/udp` block, explicit `git push` refusal, and
-  network-command refusal. Replaces the naive substring regexes.
-- **Adversary runtime-data awareness.** `AdversaryInput.runtime` typed
-  status (`ok | no_deploy_yet | build_failed | unavailable`) plus a
-  `runtimeBanner()` helper the orchestrator injects verbatim into the
-  adversary system prompt. Prevents silent blind runtime review.
-- **Retention pruning.** New `src/state/retention.ts` with a documented
-  cron entry in `docs/OPERATIONS.md`. Audit log 90-day default, terminal
-  sessions kept unless explicitly opted out.
-- **Unit tests.** `tests/bash-guard.test.mjs`,
-  `tests/budget-enforcer.test.mjs`, `tests/slack-listener.test.mjs`.
-  `pnpm test` now builds first, then runs against `dist/`.
+- **Parallel sub-task execution.** `config.loop.subtask_concurrency`
+  (default 1 = old behaviour). `topoSortSubTasks()` respects
+  `plan.subTasks[].dependsOn` with cycle detection. Greedy dispatcher fills
+  up to N concurrent, blocks on `Promise.race` until dependencies clear.
+- **PR-merged watcher.** `src/adapters/github-watcher.ts` polls every
+  5 min for shipped sessions; when the PR merges or closes, posts a Slack
+  note, releases the worktree, and stamps `reactions_json.prClosedAt`.
+- **New tools.** `harness_start_session` (direct API entry, bypasses
+  classifier), `harness_health` (DB + schema + config + credentials
+  snapshot), `harness_telemetry` (monthly + daily + per-session cost
+  breakdown), `harness_cancel` (abort flag on non-terminal sessions),
+  `harness_resume` (re-kick interrupted session from stored brief).
+- **Nightly retention timer** as a registered service (24h interval)
+  with proper stop() cleanup.
+- **Reactions poller.** `src/slack/reactions-poller.ts` runs every 15s
+  and writes into `sessions.reactions_json`. Loop reads that column
+  cheaply on every checkpoint.
+- **Session recovery.** `recoverSessions()` scans non-terminal sessions
+  at bootstrap; stale ones -> `interrupted` with Slack thread notification.
+- **GitHub PR opener.** `src/adapters/github-pr.ts`. `pushBranchAndOpenPr()`
+  is the only place the harness pushes; non-pass adversary verdict opens
+  the PR as *draft*.
+- **Slack app manifest.** `deploy/slack-app-manifest.yaml` for one-shot
+  bot user creation with minimum-scope OAuth.
+- **Config JSON schema.** `src/config.schema.json` (draft 2020-12) for
+  editor/doc integration.
+- **Smoke test.** `scripts/smoke.mjs` boots the built plugin against a
+  fake OpenClaw API and asserts advertised tools + hooks + services all
+  register. Wired into CI.
+- **Real-test runbook.** `docs/REAL-TEST-RUNBOOK.md`.
 
 ### Changed
 
-- **SDK pin.** `@anthropic-ai/claude-agent-sdk` is now pinned to `0.3.207`
-  (was `^0.1.0`). Also pinned `better-sqlite3` (`11.10.0`) and added `zod`
-  (`3.24.1`) since the SDK's `tool()` uses Zod schemas.
-- **Schema loading.** `openStateStore()` locates `schema.sql` relative to
-  the running module and copies it into `dist/` at build time so the
-  compiled package doesn't need `src/`.
+- **CI switched from pnpm to npm.** `pnpm@10+` treats `better-sqlite3`'s
+  native build script as a hard error even with `pnpm.onlyBuiltDependencies`
+  set. `npm ci` builds cleanly. `zod` bumped to `^4` to satisfy the SDK
+  peer.
+- **Dockerfile now uses npm** with a native-compile toolchain layer.
+- **Version scheme.** `0.0.1` -> `0.1.0-beta.1` (package.json,
+  plugin.json, `src/version.ts`).
+- **`plugin.json` reconciled** with the actual tool + hook + service
+  surface. Old `harness_start_session` / `harness_resume` etc. names
+  moved from vapourware to real registrations.
+
+### Tests
+
+87 tests passing (up from 45 at Phase 1 cut):
+- `config.test.mjs` (6), `pat-router.test.mjs` (5),
+  `crystallise.test.mjs` (5), `adversary.test.mjs` (4),
+  `orchestrator-advance.test.mjs` (10), `dispatcher.test.mjs` (4),
+  `bash-guard.test.mjs`, `budget-enforcer.test.mjs`,
+  `slack-listener.test.mjs`
+- New in beta: `topo-sort.test.mjs` (5),
+  `parallel-execution.test.mjs` (3), `tools.test.mjs` (11),
+  `pr-watcher.test.mjs` (5), `telemetry.test.mjs` (2),
+  `reactions.test.mjs` (4), `reactions-poller.test.mjs` (3),
+  `recovery.test.mjs` (3), `loop-integration.test.mjs` (5),
+  `github-pr.test.mjs` (4)
+
+## [Phase 1] -- 2026-07-13 (merged PR #2)
+
+End-to-end wiring for a real Slack test.
+
+- Real plugin entry (`src/index.ts`) mirroring `memory-hybrid`.
+- Config parser with hard validation.
+- Full orchestrator loop state machine.
+- Sonnet worker + Fable-5 adversary + Fable-5 lead + PAT router.
+- Claude SDK adapter + git worktree adapter + Vercel bridge.
+- Slack listener + dispatcher.
+- Bash guard (POSIX-ish tokeniser).
+- Budget enforcer.
+- State store + retention prune + session recovery.
+- 3 tools: `harness_status`, `harness_retention_prune`,
+  `harness_session_get`.
+- Dockerfile, real-test runbook.
+
+45 tests passing.
+
+## [Phase 0] -- 2026-07-13 (merged PR #1)
+
+Round-1 review of the initial scaffold. 7 findings addressed.
