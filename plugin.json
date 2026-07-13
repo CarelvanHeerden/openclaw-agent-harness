@@ -1,0 +1,23 @@
+{
+  "name": "openclaw-agent-harness",
+  "version": "0.0.1",
+  "description": "Multi-agent orchestration harness. Fable-5 lead + Sonnet workers + adversarial reviewer, driven from Slack.",
+  "entry": "dist/index.js",
+  "requires": {
+    "openclaw": ">=2026.6.0",
+    "node": ">=20.0.0"
+  },
+  "config_schema": "src/config.schema.json",
+  "provides": {
+    "tools": [
+      "harness_start_session",
+      "harness_session_status",
+      "harness_resume",
+      "harness_cancel",
+      "harness_audit"
+    ],
+    "listeners": [
+      "slack:message"
+    ]
+  }
+}
