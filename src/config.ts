@@ -22,6 +22,10 @@ export interface HarnessConfig {
 export interface SlackConfig {
   channel: string;
   authorised_users: string[];
+  /** Vault service name for the Slack bot token (used by reactions poller + adapter fallback). Optional; if unset, poller stays idle. */
+  credential_service?: string;
+  /** Interval for reactions poller in ms. Default 15000. */
+  reactions_poll_ms?: number;
   reactions: {
     ship_it: string;
     abort: string;

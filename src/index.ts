@@ -23,6 +23,8 @@ import { openStateStore } from "./state/store.js";
 import { OrchestratorLoop } from "./orchestrator/loop.js";
 import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
+import { SlackReactionsReader } from "./slack/reactions.js";
+import { ReactionsPoller } from "./slack/reactions-poller.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 import { pruneRetention } from "./state/retention.js";
@@ -371,6 +373,43 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
     });
   } else {
     api.logger.warn("[harness] api.registerHook not present; Slack listener will be idle.");
+  }
+
+  // Reactions poller (only if slack.credential_service is set so we have a bot token)
+  if (config.slack.credential_service) {
+    try {
+      const slackToken = await creds.getToken(config.slack.credential_service);
+      const reader = new SlackReactionsReader({
+        config,
+        state,
+        slackToken,
+        logger: api.logger,
+      });
+      const poller = new ReactionsPoller(state, reader, {
+        intervalMs: config.slack.reactions_poll_ms ?? 15000,
+        logger: api.logger,
+      });
+      if (api.registerService) {
+        const dispose = api.registerService({
+          id: `${PLUGIN_ID}:reactions-poller`,
+          start: () => poller.start(),
+          stop: () => poller.stop(),
+        });
+        runtime.disposers.push(async () => {
+          await poller.stop();
+          if (typeof dispose === "function") dispose();
+          else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
+        });
+      } else {
+        // No service host -> start ourselves; teardown will stop.
+        await poller.start();
+        runtime.disposers.push(() => poller.stop());
+      }
+    } catch (err) {
+      api.logger.warn("[harness] reactions poller not started", { err: String(err) });
+    }
+  } else {
+    api.logger.info("[harness] slack.credential_service not set; reactions poller idle");
   }
 
   // Retention prune on service start
