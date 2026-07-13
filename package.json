@@ -13,15 +13,17 @@
     "docs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test tests/",
+    "test": "pnpm run build && node --test tests/*.mjs",
+    "test:no-build": "node --test tests/*.mjs",
     "lint": "eslint 'src/**/*.ts'",
     "prepublishOnly": "pnpm run typecheck && pnpm run build"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
-    "better-sqlite3": "^11.0.0"
+    "@anthropic-ai/claude-agent-sdk": "0.3.207",
+    "better-sqlite3": "11.10.0",
+    "zod": "3.24.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
@@ -45,5 +47,10 @@
     "url": "https://github.com/CarelvanHeerden/openclaw-agent-harness.git"
   },
   "license": "MIT",
-  "author": "Carel van Heerden"
+  "author": "Carel van Heerden",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  }
 }

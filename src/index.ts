@@ -16,7 +16,7 @@
 import type { HarnessConfig } from "./config.js";
 import { openStateStore } from "./state/store.js";
 import { OrchestratorLoop } from "./orchestrator/loop.js";
-import { SlackChannelListener } from "./slack/channel-listener.js";
+import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-listener.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 
@@ -56,11 +56,12 @@ export async function init(host: PluginHost): Promise<void> {
   const listener = new SlackChannelListener({
     config: host.config,
     loop,
+    state,
     logger: host.logger,
   });
 
   host.registerSlackMessageListener(host.config.slack.channel, (event) =>
-    listener.handle(event),
+    listener.handle(event as SlackMessageEvent),
   );
 
   // Tools registered here in later phases.
