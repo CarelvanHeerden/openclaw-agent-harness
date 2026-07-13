@@ -11,12 +11,14 @@ import assert from "node:assert/strict";
 // this with a direct import from ../src/safety/bash-guard.ts.
 
 let guardCommand;
+let buildBashGuard;
 try {
   // Prefer the built module if present.
-  ({ guardCommand } = await import("../dist/safety/bash-guard.js"));
+  ({ guardCommand, buildBashGuard } = await import("../dist/safety/bash-guard.js"));
 } catch {
   // Fallback stub - tests below will assert an explicit skip.
   guardCommand = null;
+  buildBashGuard = null;
 }
 
 test("bash-guard: contract cases (require build)", { skip: guardCommand === null }, () => {
@@ -44,5 +46,41 @@ test("bash-guard: contract cases (require build)", { skip: guardCommand === null
     if (!c.expected && c.reason) {
       assert.match(res.reason ?? "", c.reason, `command="${c.cmd}" reason=${res.reason}`);
     }
+  }
+});
+
+test("bash-guard: buildBashGuard blocks Read on denylisted paths", { skip: buildBashGuard === null }, async () => {
+  const guard = buildBashGuard({
+    bash_whitelist: ["ls"],
+    bash_denylist_tokens: [],
+    path_denylist: [".env", "credentials.db", "*.pem", ".secrets/"],
+    allow_git_push: false,
+    allow_network_commands: false,
+  });
+
+  const cases = [
+    // Read tool with denylisted paths -> deny
+    { tool: "Read", input: { file_path: ".env" }, allow: false },
+    { tool: "Read", input: { file_path: "/home/node/.openclaw/workspace/.env" }, allow: false },
+    { tool: "Read", input: { file_path: "/root/credentials.db" }, allow: false },
+    { tool: "Read", input: { file_path: "/etc/keys/prod.pem" }, allow: false },
+    { tool: "Read", input: { file_path: "/foo/.secrets/token.txt" }, allow: false },
+    // Read tool with allowed paths -> allow
+    { tool: "Read", input: { file_path: "/tmp/oah/README.md" }, allow: true },
+    { tool: "Read", input: { file_path: "src/index.ts" }, allow: true },
+    // Write still enforced
+    { tool: "Write", input: { file_path: ".env" }, allow: false },
+    // Path alias (`path` field) still works
+    { tool: "Read", input: { path: "/etc/keys/prod.pem" }, allow: false },
+    // NotebookRead too
+    { tool: "NotebookRead", input: { notebook_path: ".env" }, allow: false },
+    { tool: "NotebookRead", input: { notebook_path: "notebook.ipynb" }, allow: true },
+    // Untouched tools still allowed
+    { tool: "Grep", input: { pattern: "foo" }, allow: true },
+  ];
+
+  for (const c of cases) {
+    const res = await guard(c.tool, c.input);
+    assert.equal(res.allow, c.allow, `tool=${c.tool} input=${JSON.stringify(c.input)} got=${JSON.stringify(res)}`);
   }
 });

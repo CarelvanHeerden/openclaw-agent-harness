@@ -68,7 +68,13 @@ test("PrMergedWatcher: marks merged PR closed, calls slack + git release",
     assert.match(slackText, /PR merged/);
     assert.equal(releasedFor, "S1");
 
-    // Second poll should not repeat (prClosedAt now set)
+    // Round-3: PR state is now stored in proper columns, not just JSON.
+    const row = state.db.prepare(`SELECT pr_merged, pr_closed_at, pr_merged_at FROM sessions WHERE id = 'S1'`).get();
+    assert.equal(row.pr_merged, 1);
+    assert.ok(row.pr_closed_at > 0);
+    assert.ok(row.pr_merged_at > 0, "pr_merged_at populated from GitHub merged_at");
+
+    // Second poll should not repeat (pr_closed_at now set)
     const closed2 = await w.pollOnce();
     assert.equal(closed2, 0);
   });

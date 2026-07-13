@@ -16,6 +16,7 @@
 
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./fable5-lead.js";
+import { detectCostDrift, estimateSubTaskCost } from "../adapters/claude-sdk.js";
 
 export interface WorkerResult {
   status: "completed" | "failed" | "timeout";
@@ -135,6 +136,22 @@ export async function runWorker(
       tokensOut: 0,
       reason: `sdk_error: ${String(err)}`,
     };
+  }
+
+  // Round-3: warn when the SDK's reported cost drifts from our estimate.
+  // This surfaces silently-shifted Anthropic pricing without needing a code push.
+  try {
+    const estimated = estimateSubTaskCost(deps.config.models.worker, subTask.estimatedTokens, {
+      override: deps.config.models.pricing,
+    });
+    const warning = detectCostDrift(
+      sdkResult.costUsd,
+      estimated,
+      deps.config.models.cost_drift_warn_ratio ?? 0.2,
+    );
+    if (warning) deps.logger.warn(warning, { subTaskSeq: subTask.seq, model: deps.config.models.worker });
+  } catch {
+    // Non-fatal: pricing config could be malformed. Don't kill the worker over telemetry.
   }
 
   const changed = await deps.gitListChangedFiles(worktreePath, baseSha);

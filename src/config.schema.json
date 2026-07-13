@@ -66,7 +66,25 @@
         "lead": { "type": "string" },
         "worker": { "type": "string" },
         "adversary": { "type": "string" },
-        "classifier": { "type": "string" }
+        "classifier": { "type": "string" },
+        "pricing": {
+          "type": "object",
+          "description": "Per-model cost estimation table (USD per million tokens). Defaults come from claude-sdk.ts DEFAULT_PRICES. Override here as Anthropic pricing drifts.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["input", "output"],
+            "properties": {
+              "input": { "type": "number", "minimum": 0 },
+              "output": { "type": "number", "minimum": 0 }
+            }
+          }
+        },
+        "cost_drift_warn_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "description": "When the SDK reports total_cost_usd, warn if abs(actual-estimated)/estimated > this ratio. Default 0.2."
+        }
       }
     },
     "loop": {

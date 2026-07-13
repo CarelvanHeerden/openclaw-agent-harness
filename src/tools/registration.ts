@@ -227,7 +227,12 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             return { content: [{ type: "text", text: `Unknown session ${p.sessionId}` }], details: { ok: false, notFound: true } };
           }
           const CAP = 16 * 1024;
-          const excerpt = p.logsExcerpt.length > CAP ? p.logsExcerpt.slice(0, CAP) + "\n[...truncated at 16KB]" : p.logsExcerpt;
+          const originalBytes = p.logsExcerpt.length;
+          // Round-3 fix: banner reports both the cap and the ORIGINAL size so the
+          // adversary can flag incomplete coverage (previously only "at 16KB").
+          const excerpt = originalBytes > CAP
+            ? p.logsExcerpt.slice(0, CAP) + `\n[TRUNCATED at 16KB cap - original was ${Math.ceil(originalBytes / 1024)}KB]`
+            : p.logsExcerpt;
           runtime.state.db
             .prepare(
               `INSERT INTO runtime_uploads (session_id, uploaded_by, source, status, logs_excerpt, error_count, deployment_url, uploaded_at)

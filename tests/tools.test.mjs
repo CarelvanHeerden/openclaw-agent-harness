@@ -88,7 +88,11 @@ test("harness_upload_logs: writes row + audit; caps at 16KB; adversary loop can 
     assert.equal(row.status, "ok");
     assert.equal(row.source, "nginx");
     assert.equal(row.error_count, 3);
-    assert.ok(row.n <= 16 * 1024 + 30, `row logs len should cap near 16KB, got ${row.n}`);
+    // Round-3: banner now includes the original size, so it's slightly longer
+    // than before. Keep the tolerance in step with the banner format.
+    assert.ok(row.n <= 16 * 1024 + 80, `row logs len should cap near 16KB, got ${row.n}`);
+    const excerpt = runtime.state.db.prepare(`SELECT logs_excerpt FROM runtime_uploads WHERE session_id='S1' ORDER BY uploaded_at DESC LIMIT 1`).get().logs_excerpt;
+    assert.match(excerpt, /\[TRUNCATED at 16KB cap - original was 20KB\]/);
   });
 
 test("harness_upload_logs: unknown session rejected",

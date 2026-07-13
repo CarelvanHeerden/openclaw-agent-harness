@@ -55,6 +55,10 @@ export interface ModelsConfig {
   worker: string;
   adversary: string;
   classifier: string;
+  /** Optional override of the default pricing table (USD per M tokens). */
+  pricing?: Record<string, { input: number; output: number }>;
+  /** Warn when actual cost drifts more than this ratio from the estimate. Default 0.2 (20%). */
+  cost_drift_warn_ratio?: number;
 }
 
 export interface LoopConfig {

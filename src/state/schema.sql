@@ -25,7 +25,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_completed_sub_task  TEXT,
   last_checkpoint_at       INTEGER,
   claude_sdk_session_id    TEXT,             -- lead's Claude Agent SDK session UUID
-  last_worker_sdk_session  TEXT               -- most recent worker SDK session
+  last_worker_sdk_session  TEXT,              -- most recent worker SDK session
+  -- PR lifecycle (round-3): previously stored in reactions_json as prMerged/prClosedAt.
+  -- New columns are additive; the watcher writes both here and in reactions_json for
+  -- one release cycle to keep any external consumers unbroken.
+  pr_merged                INTEGER NOT NULL DEFAULT 0,
+  pr_closed_at             INTEGER,
+  pr_merged_at             INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

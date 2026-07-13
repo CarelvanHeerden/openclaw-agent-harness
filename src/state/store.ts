@@ -30,6 +30,27 @@ function locateSchema(): string {
   throw new Error(`schema.sql not found near ${here}`);
 }
 
+/**
+ * Idempotent column-adds. SQLite has no `ALTER TABLE ADD COLUMN IF NOT EXISTS`,
+ * so we probe `PRAGMA table_info` and only add missing columns. Every entry
+ * here must be additive (never drop/rename) — the SQL file remains the source
+ * of truth for a fresh install.
+ */
+function applyAdditiveMigrations(db: Database.Database): void {
+  const migrations: Array<{ table: string; column: string; ddl: string }> = [
+    // 2026-07-13 round-3: promote PR-merged tracking out of reactions_json blob.
+    { table: "sessions", column: "pr_merged", ddl: "ALTER TABLE sessions ADD COLUMN pr_merged INTEGER NOT NULL DEFAULT 0" },
+    { table: "sessions", column: "pr_closed_at", ddl: "ALTER TABLE sessions ADD COLUMN pr_closed_at INTEGER" },
+    { table: "sessions", column: "pr_merged_at", ddl: "ALTER TABLE sessions ADD COLUMN pr_merged_at INTEGER" },
+  ];
+  for (const m of migrations) {
+    const cols = db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === m.column)) {
+      db.exec(m.ddl);
+    }
+  }
+}
+
 export async function openStateStore(pathHint: string): Promise<StateStore> {
   const path = resolve(pathHint.replace(/^~/, process.env.HOME ?? ""));
   mkdirSync(dirname(path), { recursive: true });
@@ -40,6 +61,11 @@ export async function openStateStore(pathHint: string): Promise<StateStore> {
 
   const schema = readFileSync(locateSchema(), "utf8");
   db.exec(schema);
+
+  // Additive migrations for pre-existing databases. Each ALTER is guarded by
+  // a column-existence check so this is safe to run on every open.
+  // Keep these in chronological order and NEVER rename or drop.
+  applyAdditiveMigrations(db);
 
   const insertAudit = db.prepare(
     `INSERT INTO audit_log (session_id, event, payload, created_at) VALUES (?, ?, ?, ?)`,

@@ -35,6 +35,7 @@ import { GitAdapter } from "./adapters/git-worktree.js";
 import { createPullRequest } from "./adapters/github.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import {
+  detectCostDrift,
   estimateSubTaskCost,
   extractJson,
   runAdversarySdk,
@@ -176,7 +177,12 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
             commitIdentity: resolution.commitIdentity,
           });
         },
-        estimateCost: (p) => p.subTasks.reduce((acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens), 0),
+        estimateCost: (p) => p.subTasks.reduce(
+          (acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens, {
+            override: config.models.pricing,
+          }),
+          0,
+        ),
       });
     },
 

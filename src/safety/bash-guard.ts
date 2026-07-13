@@ -191,10 +191,24 @@ export function buildBashGuard(cfg: {
       const r = guardCommand(cmd, guard);
       return { allow: r.allowed, reason: r.reason };
     }
-    if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit") {
-      const filePath = (toolInput as { file_path?: string; path?: string })?.file_path
-        ?? (toolInput as { file_path?: string; path?: string })?.path
-        ?? "";
+    // Path-based tools. Both write- and read-shaped tools go through the
+    // path denylist so workers cannot read `.env`, `credentials.db`, or
+    // similar via the SDK's Read/NotebookRead tools while bash is guarded.
+    // Round-3 note (2026-07-13): before this, only Write/Edit/MultiEdit
+    // were intercepted here, leaving Read as a trivial exfiltration path.
+    if (
+      toolName === "Write" ||
+      toolName === "Edit" ||
+      toolName === "MultiEdit" ||
+      toolName === "Read" ||
+      toolName === "NotebookRead" ||
+      toolName === "NotebookEdit"
+    ) {
+      const filePath =
+        (toolInput as { file_path?: string; path?: string; notebook_path?: string })?.file_path ??
+        (toolInput as { file_path?: string; path?: string; notebook_path?: string })?.path ??
+        (toolInput as { file_path?: string; path?: string; notebook_path?: string })?.notebook_path ??
+        "";
       if (pathBlocked(filePath)) {
         return { allow: false, reason: `path '${filePath}' is denylisted` };
       }

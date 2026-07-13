@@ -5,9 +5,10 @@
  * still 'done' (not yet marked shipped-and-closed), asks GitHub if the
  * PR has been merged / closed. When it has:
  *   - drops a Slack note in the session's thread
- *   - marks the session with a `pr_merged_at` timestamp (soft column;
- *     schema-forward-compatible, stored as JSON in reactions_json for
- *     now to avoid a migration on beta)
+ *   - marks the session with `pr_merged`/`pr_closed_at`/`pr_merged_at`
+ *     columns (round-3, 2026-07-13). Also mirrored into reactions_json
+ *     for one release cycle so external consumers that were reading the
+ *     JSON blob (there are none known, but we're in beta) don't break.
  *   - releases the worktree
  *
  * Cheap: `GET /repos/:owner/:repo/pulls/:number` is a single request per
@@ -55,7 +56,7 @@ export class PrMergedWatcher {
         `SELECT id, requester, repo, final_pr_url, slack_channel, slack_thread, worktree_path
          FROM sessions
          WHERE status = 'done' AND final_pr_url IS NOT NULL AND final_pr_url != ''
-           AND (reactions_json IS NULL OR json_extract(reactions_json, '$.prClosedAt') IS NULL)`,
+           AND pr_closed_at IS NULL`,
       )
       .all() as Array<{
         id: string;
@@ -105,12 +106,32 @@ export class PrMergedWatcher {
   }
 
   private async finalise(row: { id: string; slack_channel: string; slack_thread: string; final_pr_url: string; repo: string; worktree_path: string }, state: { state: string; merged: boolean; mergedAt: string | null }): Promise<void> {
-    // Mark closed in the reactions_json blob (no schema migration needed)
+    // Round-3: write PR state to proper columns AND mirror into reactions_json
+    // for one release cycle to avoid breaking any external readers.
+    const now = Date.now();
+    const mergedAtMs = state.mergedAt ? Date.parse(state.mergedAt) : null;
     const existing = this.state.db.prepare(`SELECT reactions_json FROM sessions WHERE id = ?`).get(row.id) as { reactions_json?: string } | undefined;
     const parsed = existing?.reactions_json ? JSON.parse(existing.reactions_json) : {};
-    parsed.prClosedAt = Date.now();
+    parsed.prClosedAt = now;
     parsed.prMerged = state.merged;
-    this.state.db.prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(parsed), Date.now(), row.id);
+    this.state.db
+      .prepare(
+        `UPDATE sessions
+            SET reactions_json = ?,
+                pr_merged      = ?,
+                pr_closed_at   = ?,
+                pr_merged_at   = ?,
+                updated_at     = ?
+          WHERE id = ?`,
+      )
+      .run(
+        JSON.stringify(parsed),
+        state.merged ? 1 : 0,
+        now,
+        mergedAtMs,
+        now,
+        row.id,
+      );
     this.state.audit("pr-watcher.closed", { sessionId: row.id, merged: state.merged, mergedAt: state.mergedAt }, row.id);
 
     const text = state.merged

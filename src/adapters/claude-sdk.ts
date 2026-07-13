@@ -22,6 +22,14 @@ import type {
   CrystallisedBrief,
 } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask } from "../orchestrator/fable5-lead.js";
+import {
+  AdversaryResultSchema,
+  ClassifierResultSchema,
+  CrystallisedBriefSchema,
+  LeadPlanSchema,
+  parseAndValidate,
+} from "./sdk-schemas.js";
+import type { z } from "zod";
 
 let sdkCache: unknown;
 async function loadSdk(): Promise<any> {
@@ -126,6 +134,12 @@ async function structuredCall<T>(params: {
   systemPrompt: string;
   userMessage: string;
   timeoutSeconds: number;
+  /** Zod schema used to validate the parsed JSON. Optional (kept optional
+   *  so existing tests that don't stub a schema still compile), but every
+   *  first-party caller in this file passes one. */
+  schema?: z.ZodType<T>;
+  /** Human-readable caller label included in schema-error messages. */
+  callerLabel?: string;
 }): Promise<{ parsed: T; sdkSessionId: string; costUsd: number; tokensIn: number; tokensOut: number; raw: string }> {
   const sdk = await loadSdk();
   const abort = new AbortController();
@@ -169,7 +183,12 @@ async function structuredCall<T>(params: {
 
   const raw = textChunks.join("");
   const json = extractJson(raw);
-  const parsed = JSON.parse(json) as T;
+  // Round-3: never hand back the first JSON blob blindly. If the caller
+  // provided a Zod schema, validate; otherwise fall back to raw JSON.parse
+  // (only reached from tests that pre-date the schema wiring).
+  const parsed = params.schema
+    ? parseAndValidate<T>(json, params.schema, raw, params.callerLabel ?? "structuredCall")
+    : (JSON.parse(json) as T);
   return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw };
 }
 
@@ -223,6 +242,8 @@ export async function runClassifierSdk(params: {
     systemPrompt,
     userMessage: params.userText,
     timeoutSeconds: params.timeoutSeconds,
+    schema: ClassifierResultSchema as unknown as z.ZodType<ClassifierResult>,
+    callerLabel: "classifier",
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
 }
@@ -251,6 +272,8 @@ export async function runCrystalliserSdk(params: {
     systemPrompt,
     userMessage: params.userText,
     timeoutSeconds: params.timeoutSeconds,
+    schema: CrystallisedBriefSchema as unknown as z.ZodType<CrystallisedBrief>,
+    callerLabel: "crystalliser",
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
 }
@@ -283,8 +306,28 @@ export async function runLeadSdk(params: {
     systemPrompt,
     userMessage: JSON.stringify(params.brief),
     timeoutSeconds: params.timeoutSeconds,
+    schema: LeadPlanSchema as unknown as z.ZodType<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>,
+    callerLabel: "lead-planner",
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+}
+
+/** Max characters of diff passed to the adversary. Anything above is truncated
+ *  with an explicit banner so the reviewer can flag incomplete coverage. */
+export const ADVERSARY_DIFF_CAP = 200_000;
+
+/**
+ * Truncate a diff to {@link ADVERSARY_DIFF_CAP} characters and prepend a
+ * human-readable banner if truncation happened. Adversary prompts are
+ * instructed to treat that banner as a signal that runtime/coverage claims
+ * cannot be complete.
+ */
+export function prepareAdversaryDiff(diffText: string, cap: number = ADVERSARY_DIFF_CAP): string {
+  if (diffText.length <= cap) return diffText;
+  const totalKb = Math.ceil(diffText.length / 1024);
+  const capKb = Math.ceil(cap / 1024);
+  const banner = `[TRUNCATED: showing first ${capKb}KB of ${totalKb}KB diff - reviewer must flag incomplete coverage]\n\n`;
+  return banner + diffText.slice(0, cap - banner.length);
 }
 
 export async function runAdversarySdk(params: {
@@ -298,25 +341,79 @@ export async function runAdversarySdk(params: {
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
+  diffTruncated: boolean;
+  diffTotalBytes: number;
 }> {
+  const diffTotalBytes = params.diffText.length;
+  const diffTruncated = diffTotalBytes > ADVERSARY_DIFF_CAP;
+  const bounded = prepareAdversaryDiff(params.diffText);
   const r = await structuredCall<{ verdict: "pass" | "revise" | "block"; findings: unknown[]; summary: string }>({
     model: params.model,
     systemPrompt: params.systemPrompt,
-    userMessage: `Here is the diff to review:\n\n${params.diffText.slice(0, 200000)}`,
+    userMessage: `Here is the diff to review:\n\n${bounded}`,
     timeoutSeconds: params.timeoutSeconds,
+    schema: AdversaryResultSchema as unknown as z.ZodType<{ verdict: "pass" | "revise" | "block"; findings: unknown[]; summary: string }>,
+    callerLabel: "adversary",
   });
-  return { parsed: r.parsed, sdkSessionId: r.sdkSessionId, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+  return {
+    parsed: r.parsed,
+    sdkSessionId: r.sdkSessionId,
+    costUsd: r.costUsd,
+    tokensIn: r.tokensIn,
+    tokensOut: r.tokensOut,
+    diffTruncated,
+    diffTotalBytes,
+  };
 }
 
-/** Cost estimation table (USD per M tokens) as of 2026-07-13. */
-const PRICES: Record<string, { input: number; output: number }> = {
+/**
+ * Default cost estimation table (USD per M tokens) as of 2026-07-13.
+ *
+ * Round-3 (2026-07-13): pricing drifts as Anthropic updates their catalogue.
+ * These are DEFAULTS only — they can be overridden via `models.pricing` in
+ * the plugin config. Prefer editing config over touching this table.
+ */
+export const DEFAULT_PRICES: Record<string, { input: number; output: number }> = {
   "claude-fable-5": { input: 10, output: 50 },
   "claude-sonnet-5": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
 };
 
-export function estimateSubTaskCost(model: string, tokens: number): number {
-  const p = PRICES[model] ?? PRICES["claude-sonnet-5"]!;
+export interface PricingOptions {
+  /** Model → { input, output } USD per M tokens. Merged over DEFAULT_PRICES. */
+  override?: Record<string, { input: number; output: number }>;
+  /** Fallback model used when the requested model isn't priced. */
+  fallbackModel?: string;
+}
+
+/** Resolve the price row for a model, applying overrides then falling back. */
+export function resolvePrice(
+  model: string,
+  opts: PricingOptions = {},
+): { input: number; output: number } {
+  const merged = { ...DEFAULT_PRICES, ...(opts.override ?? {}) };
+  return merged[model] ?? merged[opts.fallbackModel ?? "claude-sonnet-5"] ?? { input: 3, output: 15 };
+}
+
+export function estimateSubTaskCost(model: string, tokens: number, opts: PricingOptions = {}): number {
+  const p = resolvePrice(model, opts);
   // Rough 20/80 in/out split for planning purposes
   return (tokens * 0.2 * p.input + tokens * 0.8 * p.output) / 1_000_000;
+}
+
+/**
+ * Compare the SDK's reported total_cost_usd against our estimate and return
+ * a warning string if the drift exceeds `ratio` (default 0.2 = 20%). Returns
+ * `null` when within tolerance, when estimated is 0, or when actual is missing.
+ */
+export function detectCostDrift(
+  actualCostUsd: number | undefined,
+  estimatedCostUsd: number,
+  ratio = 0.2,
+): string | null {
+  if (actualCostUsd == null || actualCostUsd <= 0 || estimatedCostUsd <= 0) return null;
+  const drift = Math.abs(actualCostUsd - estimatedCostUsd) / estimatedCostUsd;
+  if (drift <= ratio) return null;
+  const direction = actualCostUsd > estimatedCostUsd ? "UNDER" : "OVER";
+  return `[cost-drift] estimate was ${direction}: est=$${estimatedCostUsd.toFixed(4)} actual=$${actualCostUsd.toFixed(4)} drift=${(drift * 100).toFixed(1)}% (threshold ${(ratio * 100).toFixed(0)}%). Consider updating models.pricing in plugin config.`;
 }
