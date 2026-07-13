@@ -192,6 +192,49 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
   disposers.push(
     toDispose(
       api.registerTool({
+        name: "harness_telemetry",
+        description:
+          "Return cost + activity telemetry: monthly ledger, session-level cost breakdown, model mix.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            month: { type: "string", pattern: "^\\d{4}-\\d{2}$", description: "YYYY-MM. Defaults to current month." },
+            user: { type: "string", description: "Optional user id filter" },
+          },
+          additionalProperties: false,
+        },
+        execute: (input) => {
+          const { month, user } = (input ?? {}) as { month?: string; user?: string };
+          const targetMonth = month ?? new Date().toISOString().slice(0, 7);
+          const monthlyRows = user
+            ? runtime.state.db.prepare(`SELECT month, user, spent_usd, session_count FROM budgets_monthly WHERE month = ? AND user = ?`).all(targetMonth, user)
+            : runtime.state.db.prepare(`SELECT month, user, spent_usd, session_count FROM budgets_monthly WHERE month = ? ORDER BY spent_usd DESC`).all(targetMonth);
+          const dailyRows = user
+            ? runtime.state.db.prepare(`SELECT day, user, spent_usd FROM budgets_daily WHERE day LIKE ? AND user = ? ORDER BY day DESC`).all(`${targetMonth}%`, user)
+            : runtime.state.db.prepare(`SELECT day, user, spent_usd FROM budgets_daily WHERE day LIKE ? ORDER BY day DESC`).all(`${targetMonth}%`);
+          const sessionRows = user
+            ? runtime.state.db.prepare(`SELECT id, status, requester, repo, cost_usd, cycles_ran, datetime(created_at/1000,'unixepoch') AS created FROM sessions WHERE requester = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 100`).all(user, monthStart(targetMonth))
+            : runtime.state.db.prepare(`SELECT id, status, requester, repo, cost_usd, cycles_ran, datetime(created_at/1000,'unixepoch') AS created FROM sessions WHERE created_at >= ? ORDER BY created_at DESC LIMIT 100`).all(monthStart(targetMonth));
+          const totals = {
+            monthUsd: (monthlyRows as any[]).reduce((a, r: any) => a + (r.spent_usd || 0), 0),
+            sessions: sessionRows.length,
+            shipped: (sessionRows as any[]).filter((s: any) => s.status === "done").length,
+            failed: (sessionRows as any[]).filter((s: any) => s.status === "failed").length,
+            aborted: (sessionRows as any[]).filter((s: any) => s.status === "aborted").length,
+            active: (sessionRows as any[]).filter((s: any) => !["done","failed","aborted","interrupted"].includes(s.status)).length,
+          };
+          return {
+            content: [{ type: "text", text: JSON.stringify({ month: targetMonth, totals, monthly: monthlyRows, daily: dailyRows, sessions: sessionRows }, null, 2) }],
+            details: { ok: true, month: targetMonth, totals },
+          };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
         name: "harness_resume",
         description:
           "Resume an interrupted harness session. Requires the session to be in 'interrupted' or 'resumable' state.",
@@ -231,4 +274,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       try { d(); } catch { /* ignore */ }
     }
   };
+}
+
+function monthStart(yyyymm: string): number {
+  const [y, m] = yyyymm.split("-").map(Number);
+  return Date.UTC(y!, (m ?? 1) - 1, 1);
 }

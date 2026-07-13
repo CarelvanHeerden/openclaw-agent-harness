@@ -61,14 +61,14 @@ function collectTools() {
   return { api, tools };
 }
 
-test("registration: registers 5 tools",
+test("registration: registers 6 tools",
   { skip: registerHarnessTools === null }, () => {
     const runtime = makeRuntime();
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     assert.deepEqual(
       [...tools.keys()].sort(),
-      ["harness_cancel", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_status"],
+      ["harness_cancel", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_status", "harness_telemetry"],
     );
   });
 

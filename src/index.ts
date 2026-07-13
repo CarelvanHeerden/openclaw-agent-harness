@@ -25,6 +25,7 @@ import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-li
 import { Dispatcher } from "./slack/dispatcher.js";
 import { SlackReactionsReader } from "./slack/reactions.js";
 import { ReactionsPoller } from "./slack/reactions-poller.js";
+import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 import { pruneRetention } from "./state/retention.js";
@@ -422,6 +423,40 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
     api.logger.info("[harness] retention prune on start", r);
   } catch (err) {
     api.logger.warn("[harness] retention prune on start failed", { err: String(err) });
+  }
+
+  // PR-merged watcher. Only starts if we have a way to resolve GH tokens.
+  {
+    const watcher = new PrMergedWatcher(state, {
+      logger: api.logger,
+      intervalMs: 300_000,
+      git,
+      slackNotify: (ch, ts, text) => slack.replyInThread(ch, ts, text),
+      resolveGhToken: async (repo, slackUserId) => {
+        const [owner] = repo.split("/");
+        const resolution = pat.resolve({
+          slackUserId,
+          gitHubUser: owner!,
+          repoFullName: repo,
+        });
+        return creds.getToken(resolution.credentialService);
+      },
+    });
+    if (api.registerService) {
+      const dispose = api.registerService({
+        id: `${PLUGIN_ID}:pr-watcher`,
+        start: () => watcher.start(),
+        stop: () => watcher.stop(),
+      });
+      runtime.disposers.push(async () => {
+        await watcher.stop();
+        if (typeof dispose === "function") dispose();
+        else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
+      });
+    } else {
+      await watcher.start();
+      runtime.disposers.push(() => watcher.stop());
+    }
   }
 
   // Nightly retention timer (24h). Uses api.registerService if available so

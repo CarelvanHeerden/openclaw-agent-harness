@@ -12,6 +12,7 @@
     "tools": [
       "harness_status",
       "harness_session_get",
+      "harness_telemetry",
       "harness_cancel",
       "harness_resume",
       "harness_retention_prune"
@@ -20,7 +21,9 @@
       "message.received"
     ],
     "services": [
-      "openclaw-agent-harness:reactions-poller"
+      "openclaw-agent-harness:reactions-poller",
+      "openclaw-agent-harness:pr-watcher",
+      "openclaw-agent-harness:retention-nightly"
     ]
   },
   "license": "MIT",
