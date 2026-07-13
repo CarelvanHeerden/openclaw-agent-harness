@@ -1,32 +1,20 @@
 /**
  * Fable-5 adversarial reviewer.
  *
- * Reads (spec, diff, repo view, optional Vercel logs). Emits a ReviewReport
- * with severity-tagged findings. Fresh session per cycle. Never edits code.
+ * Reviews the diff produced by the workers, plus (optionally) live runtime
+ * data from Vercel preview logs, and produces a `ReviewReport`.
  *
- * PHASE 0 SCAFFOLD.
+ * Dimensions reviewed (documented so the adversary prompt can quote them):
+ *   1. Spec fidelity: does the diff satisfy every acceptance criterion?
+ *   2. Codebase fit: does it match existing patterns/conventions?
+ *   3. Quality: types, tests, lint, no `any`, no dead code, no TODO leaks.
+ *   4. Security: no secrets, no obvious injection/XSS, no dangerous deps.
+ *   5. Runtime: preview deploy status, log errors, unhandled promise rejections.
+ *
+ * Runtime rule (unchanged from round 1): if the Vercel bridge is enabled
+ * but the preview hasn't landed (`status: no_deploy_yet`), the adversary
+ * gets an explicit banner and MUST refuse to sign off on runtime dimension.
  */
-
-export type ReviewVerdict = "pass" | "fixes_required" | "reject_and_replan";
-
-export interface ReviewFinding {
-  severity: "critical" | "high" | "medium" | "low" | "info";
-  category:
-    | "spec_fidelity"
-    | "codebase_fit"
-    | "security"
-    | "quality"
-    | "runtime";
-  path?: string;
-  message: string;
-  suggestion?: string;
-}
-
-export interface ReviewReport {
-  verdict: ReviewVerdict;
-  findings: ReviewFinding[];
-  costUsd: number;
-}
 
 export interface AdversaryInput {
   crystallisedPrompt: string;
@@ -39,31 +27,134 @@ export interface AdversaryInput {
     logsExcerpt?: string;
     errorCount?: number;
   };
+  reviewChecklist: string[];      // from the lead plan
   model: string;
   timeoutSeconds: number;
 }
 
+export interface ReviewFinding {
+  dimension: "spec" | "fit" | "quality" | "security" | "runtime";
+  severity: "info" | "low" | "medium" | "high" | "critical";
+  title: string;
+  detail: string;
+  file?: string;
+  line?: number;
+}
+
+export interface ReviewReport {
+  verdict: "pass" | "revise" | "block";
+  findings: ReviewFinding[];
+  summary: string;
+  sdkSessionId?: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+}
+
 /**
- * Adversary prompt-preamble helper. The orchestrator injects this string
- * verbatim into the adversary's system prompt so the reviewer never silently
- * skips the runtime dimension.
+ * Adversary prompt-preamble helper. Injected verbatim into the adversary's
+ * system prompt so runtime dimension is never silently skipped.
  */
 export function runtimeBanner(input: AdversaryInput): string {
-  if (!input.runtime) return "NO RUNTIME DATA AVAILABLE (runtime bridge disabled).";
+  if (!input.runtime) {
+    return "NO RUNTIME DATA AVAILABLE (runtime bridge disabled).";
+  }
   switch (input.runtime.status) {
     case "ok":
       return `RUNTIME DATA: Vercel preview ${input.runtime.deploymentUrl ?? "(unknown url)"} - ${input.runtime.errorCount ?? 0} error(s) in logs.`;
     case "no_deploy_yet":
-      return "NO RUNTIME DATA AVAILABLE: preview deploy has not completed within the wait window. Do NOT sign off on runtime concerns.";
+      return "NO RUNTIME DATA AVAILABLE: preview deploy has not completed within the wait window. Do NOT sign off on runtime concerns; flag as MEDIUM.";
     case "build_failed":
-      return `RUNTIME DATA: build FAILED for preview ${input.runtime.deploymentUrl ?? "(unknown url)"}. Treat as a critical finding unless the diff intentionally breaks the build.`;
+      return `RUNTIME DATA: build FAILED for preview ${input.runtime.deploymentUrl ?? "(unknown url)"}. Treat as CRITICAL unless the diff intentionally breaks the build.`;
     case "unavailable":
-      return "NO RUNTIME DATA AVAILABLE: Vercel bridge returned an error. Do NOT sign off on runtime concerns.";
+      return "NO RUNTIME DATA AVAILABLE: Vercel bridge returned an error. Do NOT sign off on runtime concerns; flag as MEDIUM.";
   }
 }
 
-export async function runAdversary(_input: AdversaryInput): Promise<ReviewReport> {
-  // TODO(phase-3): @anthropic-ai/claude-agent-sdk with model=claude-fable-5,
-  // system prompt = paranoid reviewer, tools = read_repo + read_diff only.
-  throw new Error("runAdversary: not implemented (phase-0 scaffold)");
+export function buildAdversarySystemPrompt(input: AdversaryInput): string {
+  return [
+    "You are an adversarial code reviewer. Your job is to find EVERY reason this diff should not ship.",
+    "Do not be diplomatic. Be exhaustive but honest.",
+    "",
+    "## Dimensions",
+    "1. Spec fidelity: does the diff satisfy each acceptance criterion?",
+    "2. Codebase fit: does it match existing patterns/conventions?",
+    "3. Quality: types, tests, lint, `any` leaks, TODOs, dead code.",
+    "4. Security: secrets in code, injection, XSS, dangerous deps.",
+    "5. Runtime: see runtime banner. If banner says NO RUNTIME DATA, you MUST NOT sign off on runtime.",
+    "",
+    "## Runtime banner",
+    runtimeBanner(input),
+    "",
+    "## Review checklist (from the lead planner)",
+    ...input.reviewChecklist.map((c) => `- ${c}`),
+    "",
+    "## Verdict rules",
+    "- `pass`: no findings above `medium`, AND every checklist item is verifiably met.",
+    "- `revise`: findings the worker can fix in another cycle.",
+    "- `block`: findings that require a redesign, a scope change, or human intervention.",
+    "",
+    "Return a strict JSON object matching the ReviewReport schema. No prose outside the JSON.",
+  ].join("\n");
+}
+
+export interface AdversaryDeps {
+  logger: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void };
+  callAdversaryModel: (input: {
+    systemPrompt: string;
+    diffText: string;
+    model: string;
+    timeoutSeconds: number;
+  }) => Promise<{
+    parsed: { verdict: ReviewReport["verdict"]; findings: ReviewFinding[]; summary: string };
+    sdkSessionId: string;
+    costUsd: number;
+    tokensIn: number;
+    tokensOut: number;
+  }>;
+  readDiff: (diffPath: string) => Promise<string>;
+}
+
+export async function runAdversary(
+  input: AdversaryInput,
+  deps: AdversaryDeps,
+): Promise<ReviewReport> {
+  const systemPrompt = buildAdversarySystemPrompt(input);
+  const diffText = await deps.readDiff(input.diffPath);
+  const result = await deps.callAdversaryModel({
+    systemPrompt,
+    diffText,
+    model: input.model,
+    timeoutSeconds: input.timeoutSeconds,
+  });
+
+  // Force runtime-dimension safety net: if no runtime data, upgrade any
+  // silent "pass" to at least "revise" and inject a MEDIUM finding.
+  const wantsRuntimeGuard =
+    input.runtime && ["no_deploy_yet", "unavailable"].includes(input.runtime.status);
+  let verdict = result.parsed.verdict;
+  const findings = [...result.parsed.findings];
+  if (wantsRuntimeGuard) {
+    const hasRuntimeFinding = findings.some((f) => f.dimension === "runtime");
+    if (!hasRuntimeFinding) {
+      findings.push({
+        dimension: "runtime",
+        severity: "medium",
+        title: "No runtime data",
+        detail:
+          "Adversary did not have preview-deploy logs at review time. Runtime dimension is unproven.",
+      });
+    }
+    if (verdict === "pass") verdict = "revise";
+  }
+
+  return {
+    verdict,
+    findings,
+    summary: result.parsed.summary,
+    sdkSessionId: result.sdkSessionId,
+    costUsd: result.costUsd,
+    tokensIn: result.tokensIn,
+    tokensOut: result.tokensOut,
+  };
 }
