@@ -157,9 +157,256 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     ),
   );
 
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_cancel",
+        description:
+          "Cancel an in-flight harness session by setting an abort flag the loop reads on its next checkpoint.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionId: { type: "string", minLength: 1 },
+            reason: { type: "string", maxLength: 500 },
+          },
+          required: ["sessionId"],
+          additionalProperties: false,
+        },
+        execute: (input) => {
+          const { sessionId, reason } = input as { sessionId: string; reason?: string };
+          const row = runtime.state.db.prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId) as { status: string; reactions_json?: string } | undefined;
+          if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+          if (["done", "failed", "aborted"].includes(row.status)) {
+            return { content: [{ type: "text", text: `Session ${sessionId} is already terminal (${row.status})` }], details: { ok: false, alreadyTerminal: true, status: row.status } };
+          }
+          const parsed = row.reactions_json ? JSON.parse(row.reactions_json) : {};
+          parsed.abort = true;
+          runtime.state.db.prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(parsed), Date.now(), sessionId);
+          runtime.state.audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked" }, sessionId);
+          return { content: [{ type: "text", text: `Abort flag set on ${sessionId}. The loop will terminate at its next checkpoint.` }], details: { ok: true, sessionId } };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_start_session",
+        description:
+          "Start a harness session directly (bypasses classifier). Useful for slash commands, cron-triggered runs, or other plugins.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            requester: { type: "string", minLength: 1, description: "Slack user id of the requester" },
+            slackChannel: { type: "string", minLength: 1 },
+            slackThread: { type: "string", minLength: 1, description: "Thread ts to reply into (usually the origin message ts)" },
+            brief: {
+              type: "object",
+              required: ["title", "motivation", "acceptanceCriteria"],
+              properties: {
+                title: { type: "string", minLength: 3 },
+                motivation: { type: "string", minLength: 10 },
+                acceptanceCriteria: { type: "array", minItems: 1, items: { type: "string", minLength: 3 } },
+                filesLikelyTouched: { type: "array", items: { type: "string" } },
+                outOfScope: { type: "array", items: { type: "string" } },
+                repoHint: { type: "string" },
+                branchHint: { type: "string" },
+                riskLevel: { type: "string", enum: ["low", "medium", "high"] },
+              },
+            },
+            budgetUsd: { type: "number", minimum: 1 },
+          },
+          required: ["requester", "slackChannel", "slackThread", "brief"],
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const { requester, slackChannel, slackThread, brief, budgetUsd } = input as {
+            requester: string;
+            slackChannel: string;
+            slackThread: string;
+            brief: { title: string; motivation: string; acceptanceCriteria: string[]; filesLikelyTouched?: string[]; outOfScope?: string[]; repoHint?: string; branchHint?: string; riskLevel?: string };
+            budgetUsd?: number;
+          };
+          if (!runtime.config.slack.authorised_users.includes(requester)) {
+            return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          }
+          const sessionId = (globalThis.crypto?.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+          const briefFull = {
+            title: brief.title,
+            motivation: brief.motivation,
+            acceptanceCriteria: brief.acceptanceCriteria,
+            filesLikelyTouched: brief.filesLikelyTouched ?? [],
+            outOfScope: brief.outOfScope ?? [],
+            repoHint: brief.repoHint,
+            branchHint: brief.branchHint,
+            riskLevel: (brief.riskLevel ?? "low") as "low" | "medium" | "high",
+          };
+          try {
+            runtime.state.db
+              .prepare(
+                `INSERT INTO sessions (
+                   id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
+                   status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran
+                 ) VALUES (?, ?, ?, ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0)`,
+              )
+              .run(sessionId, slackThread, slackChannel, requester, requester, JSON.stringify(briefFull), Date.now(), Date.now(), budgetUsd ?? runtime.config.budgets.session_default_usd);
+          } catch (err) {
+            if (String(err).includes("UNIQUE") || String(err).includes("SQLITE_CONSTRAINT")) {
+              return { content: [{ type: "text", text: `Session already exists for thread ${slackThread}` }], details: { ok: false, duplicateThread: true } };
+            }
+            throw err;
+          }
+          runtime.state.audit("tool.start_session", { sessionId, requester }, sessionId);
+          void runtime.loop.run(sessionId, briefFull).catch((err) => {
+            api.logger.error("[tool.start_session] loop crashed", { sessionId, err: String(err) });
+          });
+          return { content: [{ type: "text", text: `Session ${sessionId} started. Watch Slack thread for progress.` }], details: { ok: true, sessionId } };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_health",
+        description:
+          "Return a health snapshot: DB reachable, schema OK, config well-formed, credentials configured. For smoke tests + monitoring.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        execute: () => {
+          const checks: Array<{ name: string; ok: boolean; detail?: string }> = [];
+
+          // DB reachable?
+          try {
+            runtime.state.db.prepare(`SELECT 1`).get();
+            checks.push({ name: "db_reachable", ok: true });
+          } catch (err) {
+            checks.push({ name: "db_reachable", ok: false, detail: String(err) });
+          }
+
+          // Schema tables present?
+          const need = ["sessions", "sub_tasks", "reviews", "budgets_daily", "budgets_monthly", "audit_log"];
+          for (const t of need) {
+            const row = runtime.state.db
+              .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
+              .get(t) as { name?: string } | undefined;
+            checks.push({ name: `table_${t}`, ok: !!row?.name });
+          }
+
+          // Config: minimally-valid?
+          checks.push({ name: "config_slack_channel", ok: !!runtime.config.slack.channel, detail: runtime.config.slack.channel });
+          checks.push({ name: "config_authorised_users", ok: runtime.config.slack.authorised_users.length > 0 });
+          checks.push({ name: "config_repos_allowed", ok: runtime.config.repos.allowed.length > 0 });
+
+          // Credentials: are we set to talk to Slack/Vercel? (informational, not fatal)
+          checks.push({ name: "slack_credential_service_set", ok: !!runtime.config.slack.credential_service });
+          checks.push({ name: "vercel_enabled", ok: !!runtime.config.vercel?.enabled });
+
+          const overall = checks.filter((c) => c.name.startsWith("table_") || c.name === "db_reachable" || c.name.startsWith("config_")).every((c) => c.ok);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Health: ${overall ? "OK" : "DEGRADED"}\n` +
+                  checks.map((c) => `${c.ok ? ":white_check_mark:" : ":x:"} ${c.name}${c.detail ? ` (${c.detail})` : ""}`).join("\n"),
+              },
+            ],
+            details: { ok: overall, checks },
+          };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_telemetry",
+        description:
+          "Return cost + activity telemetry: monthly ledger, session-level cost breakdown, model mix.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            month: { type: "string", pattern: "^\\d{4}-\\d{2}$", description: "YYYY-MM. Defaults to current month." },
+            user: { type: "string", description: "Optional user id filter" },
+          },
+          additionalProperties: false,
+        },
+        execute: (input) => {
+          const { month, user } = (input ?? {}) as { month?: string; user?: string };
+          const targetMonth = month ?? new Date().toISOString().slice(0, 7);
+          const monthlyRows = user
+            ? runtime.state.db.prepare(`SELECT month, user, spent_usd, session_count FROM budgets_monthly WHERE month = ? AND user = ?`).all(targetMonth, user)
+            : runtime.state.db.prepare(`SELECT month, user, spent_usd, session_count FROM budgets_monthly WHERE month = ? ORDER BY spent_usd DESC`).all(targetMonth);
+          const dailyRows = user
+            ? runtime.state.db.prepare(`SELECT day, user, spent_usd FROM budgets_daily WHERE day LIKE ? AND user = ? ORDER BY day DESC`).all(`${targetMonth}%`, user)
+            : runtime.state.db.prepare(`SELECT day, user, spent_usd FROM budgets_daily WHERE day LIKE ? ORDER BY day DESC`).all(`${targetMonth}%`);
+          const sessionRows = user
+            ? runtime.state.db.prepare(`SELECT id, status, requester, repo, cost_usd, cycles_ran, datetime(created_at/1000,'unixepoch') AS created FROM sessions WHERE requester = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 100`).all(user, monthStart(targetMonth))
+            : runtime.state.db.prepare(`SELECT id, status, requester, repo, cost_usd, cycles_ran, datetime(created_at/1000,'unixepoch') AS created FROM sessions WHERE created_at >= ? ORDER BY created_at DESC LIMIT 100`).all(monthStart(targetMonth));
+          const totals = {
+            monthUsd: (monthlyRows as any[]).reduce((a, r: any) => a + (r.spent_usd || 0), 0),
+            sessions: sessionRows.length,
+            shipped: (sessionRows as any[]).filter((s: any) => s.status === "done").length,
+            failed: (sessionRows as any[]).filter((s: any) => s.status === "failed").length,
+            aborted: (sessionRows as any[]).filter((s: any) => s.status === "aborted").length,
+            active: (sessionRows as any[]).filter((s: any) => !["done","failed","aborted","interrupted"].includes(s.status)).length,
+          };
+          return {
+            content: [{ type: "text", text: JSON.stringify({ month: targetMonth, totals, monthly: monthlyRows, daily: dailyRows, sessions: sessionRows }, null, 2) }],
+            details: { ok: true, month: targetMonth, totals },
+          };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_resume",
+        description:
+          "Resume an interrupted harness session. Requires the session to be in 'interrupted' or 'resumable' state.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionId: { type: "string", minLength: 1 },
+          },
+          required: ["sessionId"],
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const { sessionId } = input as { sessionId: string };
+          const row = runtime.state.db.prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId) as { status: string; crystallised_prompt?: string } | undefined;
+          if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+          if (!["interrupted", "resumable"].includes(row.status)) {
+            return { content: [{ type: "text", text: `Cannot resume ${sessionId} in status ${row.status}` }], details: { ok: false, badStatus: row.status } };
+          }
+          if (!row.crystallised_prompt) {
+            return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
+          }
+          const brief = JSON.parse(row.crystallised_prompt);
+          runtime.state.db.prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
+          runtime.state.audit("tool.resume", { sessionId, wasStatus: row.status }, sessionId);
+          // Fire-and-forget: loop takes over from planning
+          void runtime.loop.run(sessionId, brief).catch((err) => {
+            api.logger.error("[tool.resume] loop.run failed", { sessionId, err: String(err) });
+          });
+          return { content: [{ type: "text", text: `Session ${sessionId} resumed. Watch the Slack thread for progress.` }], details: { ok: true, sessionId } };
+        },
+      }),
+    ),
+  );
+
   return () => {
     for (const d of disposers) {
       try { d(); } catch { /* ignore */ }
     }
   };
+}
+
+function monthStart(yyyymm: string): number {
+  const [y, m] = yyyymm.split("-").map(Number);
+  return Date.UTC(y!, (m ?? 1) - 1, 1);
 }

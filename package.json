@@ -1,6 +1,6 @@
 {
   "name": "openclaw-agent-harness",
-  "version": "0.0.1",
+  "version": "0.1.0-beta.1",
   "description": "Multi-agent orchestration harness for OpenClaw. Fable-5 lead + Sonnet workers + adversarial reviewer, driven from Slack.",
   "type": "module",
   "main": "dist/index.js",
@@ -17,6 +17,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test tests/*.mjs",
     "test:no-build": "node --test tests/*.mjs",
+    "smoke": "npm run build && node scripts/smoke.mjs",
     "lint": "eslint 'src/**/*.ts'",
     "prepublishOnly": "npm run typecheck && npm run build"
   },
