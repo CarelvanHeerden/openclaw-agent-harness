@@ -93,3 +93,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log (created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log (session_id);
+
+-- Manual runtime log uploads. Populated by `harness_upload_logs` tool when
+-- vercel.enabled=false, or when the requester wants to hand-supply logs
+-- from a non-Vercel deploy target (Cloudflare, AWS, on-prem, etc).
+-- The adversary reads the most recent row for a session and treats it as
+-- `AdversaryInput.runtime` with provider="manual".
+CREATE TABLE IF NOT EXISTS runtime_uploads (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id   TEXT NOT NULL,
+  uploaded_by  TEXT NOT NULL,       -- slack user id
+  source       TEXT,                -- free-form label
+  status       TEXT NOT NULL,       -- ok | build_failed | no_deploy_yet | unavailable
+  logs_excerpt TEXT NOT NULL,       -- capped at ~16KB by the tool
+  error_count  INTEGER,             -- optional, uploader-supplied
+  deployment_url TEXT,
+  uploaded_at  INTEGER NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_uploads_session ON runtime_uploads (session_id, uploaded_at DESC);

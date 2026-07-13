@@ -35,7 +35,7 @@ harness:
   repos:
     allowed:
       - "CarelvanHeerden/openclaw-agent-harness"
-      - "Stitch-Vercel/ProjectThanos"
+      - "example-org/example-repo"
     default_base_branch: "main"
   models:
     lead: "claude-fable-5"
@@ -52,11 +52,11 @@ harness:
     overrides:
       U07UT6G8LQ4:
         "CarelvanHeerden/openclaw-agent-harness": "github-carel-personal"
-        "Stitch-Vercel": "github-carel-stitch"
+        "example-org": "github-carel-example"
     commit_identity:
       U07UT6G8LQ4:
         name: "Carel van Heerden"
-        email: "carel@stitch.money"
+        email: "dev@example.com"
   storage:
     state_db_path: "~/.openclaw/workspace/openclaw-agent-harness/state.db"
     worktree_root: "~/.openclaw/workspace/openclaw-agent-harness/worktrees"

@@ -11,9 +11,14 @@
  *   4. Security: no secrets, no obvious injection/XSS, no dangerous deps.
  *   5. Runtime: preview deploy status, log errors, unhandled promise rejections.
  *
- * Runtime rule (unchanged from round 1): if the Vercel bridge is enabled
- * but the preview hasn't landed (`status: no_deploy_yet`), the adversary
- * gets an explicit banner and MUST refuse to sign off on runtime dimension.
+ * Runtime sources are pluggable behind `harness.vercel.enabled`:
+ *   - vercel: automatic bridge (preview build + event logs)
+ *   - manual: uploaded via `harness_upload_logs` tool (any deploy target)
+ *   - none:   nothing available; adversary must not sign off on runtime
+ *
+ * Runtime rule (unchanged): if the runtime data is missing or shows
+ * `no_deploy_yet`/`build_failed`/`unavailable`, the adversary gets an
+ * explicit banner and MUST refuse to sign off on the runtime dimension.
  */
 
 export interface AdversaryInput {
@@ -21,11 +26,14 @@ export interface AdversaryInput {
   diffPath: string;
   repoPath: string;
   runtime?: {
-    provider: "vercel";
+    provider: "vercel" | "manual";
     status: "ok" | "no_deploy_yet" | "build_failed" | "unavailable";
     deploymentUrl?: string;
     logsExcerpt?: string;
     errorCount?: number;
+    uploadedAt?: number;         // epoch ms, present when provider=manual
+    uploadedBy?: string;         // slack user id, present when provider=manual
+    source?: string;             // free-form label the uploader gave, e.g. "prod nginx access log"
   };
   reviewChecklist: string[];      // from the lead plan
   model: string;
@@ -59,15 +67,19 @@ export function runtimeBanner(input: AdversaryInput): string {
   if (!input.runtime) {
     return "NO RUNTIME DATA AVAILABLE (runtime bridge disabled).";
   }
+  const p = input.runtime.provider === "manual" ? "MANUAL UPLOAD" : "Vercel preview";
   switch (input.runtime.status) {
     case "ok":
-      return `RUNTIME DATA: Vercel preview ${input.runtime.deploymentUrl ?? "(unknown url)"} - ${input.runtime.errorCount ?? 0} error(s) in logs.`;
+      if (input.runtime.provider === "manual") {
+        return `RUNTIME DATA (${p}${input.runtime.source ? `, ${input.runtime.source}` : ""}${input.runtime.uploadedBy ? `, uploaded by ${input.runtime.uploadedBy}` : ""}) - ${input.runtime.errorCount ?? "unknown"} error(s) in the excerpt.`;
+      }
+      return `RUNTIME DATA: ${p} ${input.runtime.deploymentUrl ?? "(unknown url)"} - ${input.runtime.errorCount ?? 0} error(s) in logs.`;
     case "no_deploy_yet":
       return "NO RUNTIME DATA AVAILABLE: preview deploy has not completed within the wait window. Do NOT sign off on runtime concerns; flag as MEDIUM.";
     case "build_failed":
-      return `RUNTIME DATA: build FAILED for preview ${input.runtime.deploymentUrl ?? "(unknown url)"}. Treat as CRITICAL unless the diff intentionally breaks the build.`;
+      return `RUNTIME DATA: build FAILED for ${p} ${input.runtime.deploymentUrl ?? "(unknown url)"}. Treat as CRITICAL unless the diff intentionally breaks the build.`;
     case "unavailable":
-      return "NO RUNTIME DATA AVAILABLE: Vercel bridge returned an error. Do NOT sign off on runtime concerns; flag as MEDIUM.";
+      return `NO RUNTIME DATA AVAILABLE: ${p} bridge returned an error. Do NOT sign off on runtime concerns; flag as MEDIUM.`;
   }
 }
 

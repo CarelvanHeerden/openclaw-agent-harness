@@ -61,7 +61,7 @@ export interface OrchestratorDeps {
     plan: LeadPlan;
     runtime?: RuntimeSnapshot;
   }) => Promise<ReviewReport>;
-  fetchRuntime?: (params: { plan: LeadPlan }) => Promise<RuntimeSnapshot | undefined>;
+  fetchRuntime?: (params: { plan: LeadPlan; sessionId: string }) => Promise<RuntimeSnapshot | undefined>;
   pushBranchAndOpenPr: (params: {
     plan: LeadPlan;
     brief: CrystallisedBrief;
@@ -294,7 +294,7 @@ export class OrchestratorLoop {
       await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
       let runtime: RuntimeSnapshot | undefined;
       try {
-        runtime = await this.deps.fetchRuntime?.({ plan });
+        runtime = await this.deps.fetchRuntime?.({ plan, sessionId });
       } catch (err) {
         this.deps.logger.warn("[loop] fetchRuntime failed", { err: String(err) });
       }

@@ -10,7 +10,7 @@ try {
 
 const minimalOk = {
   slack: { channel: "C1", authorised_users: ["U1"] },
-  repos: { allowed: ["Stitch-Vercel/*"], default_base_branch: "main" },
+  repos: { allowed: ["example-org/*"], default_base_branch: "main" },
 };
 
 test("config: minimal input applies defaults",
