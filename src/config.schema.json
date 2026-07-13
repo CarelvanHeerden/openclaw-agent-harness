@@ -1,57 +1,67 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "openclaw-agent-harness plugin config",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.ai/schemas/harness/config.json",
+  "title": "openclaw-agent-harness config",
   "type": "object",
-  "required": ["slack", "budgets", "repos", "models", "loop", "storage", "safety", "pat_routing"],
+  "additionalProperties": false,
   "properties": {
     "slack": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["channel", "authorised_users"],
       "properties": {
-        "channel": { "type": "string", "pattern": "^C[A-Z0-9]+$" },
+        "channel": { "type": "string", "description": "Slack channel ID (e.g. C0DEVCHAN) where the harness listens" },
         "authorised_users": {
           "type": "array",
+          "minItems": 1,
           "items": { "type": "string", "pattern": "^U[A-Z0-9]+$" },
-          "minItems": 1
+          "description": "Slack user IDs allowed to open sessions or drop control reactions"
         },
+        "credential_service": { "type": "string", "description": "Vault service name for the Slack bot token. Enables reactions poller." },
+        "reactions_poll_ms": { "type": "integer", "minimum": 3000, "maximum": 300000, "default": 15000 },
         "reactions": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "ship_it": { "type": "string" },
-            "abort": { "type": "string" },
-            "pause": { "type": "string" },
-            "budget_bump": { "type": "string" }
+            "ship_it": { "type": "string", "default": "rocket" },
+            "abort": { "type": "string", "default": "x" },
+            "pause": { "type": "string", "default": "pause_button" },
+            "budget_bump": { "type": "string", "default": "moneybag" }
           }
         }
       }
     },
     "budgets": {
       "type": "object",
-      "required": ["monthly_per_user_usd", "session_default_usd", "session_hard_ceiling_usd"],
+      "additionalProperties": false,
       "properties": {
         "monthly_per_user_usd": { "type": "number", "minimum": 1 },
         "session_default_usd": { "type": "number", "minimum": 1 },
         "session_hard_ceiling_usd": { "type": "number", "minimum": 1 },
-        "daily_warn_usd": { "type": "number", "minimum": 1 },
+        "daily_warn_usd": { "type": "number", "minimum": 0 },
         "monthly_warn_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
       }
     },
     "repos": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["allowed"],
       "properties": {
         "allowed": {
           "type": "array",
-          "items": { "type": "string", "pattern": "^[^/]+/[^/]+$" }
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$|^[^/\\s]+/\\*$" },
+          "description": "Repos the harness can touch. Supports owner/repo or owner/* glob."
         },
-        "can_create": { "type": "boolean" },
+        "can_create": { "type": "boolean", "default": false },
         "create_org": { "type": "string" },
         "create_visibility": { "type": "string", "enum": ["private", "public"] },
-        "default_branch": { "type": "string" }
+        "default_base_branch": { "type": "string", "default": "main" }
       }
     },
     "models": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "lead": { "type": "string" },
         "worker": { "type": "string" },
@@ -61,45 +71,57 @@
     },
     "loop": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "max_cycles": { "type": "integer", "minimum": 1, "maximum": 10 },
-        "adversarial_pass_ends_early": { "type": "boolean" },
-        "worker_timeout_seconds": { "type": "integer", "minimum": 60 },
-        "adversary_timeout_seconds": { "type": "integer", "minimum": 60 }
+        "max_cycles": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
+        "adversarial_pass_ends_early": { "type": "boolean", "default": true },
+        "worker_timeout_seconds": { "type": "integer", "minimum": 30, "maximum": 21600, "default": 1800 },
+        "adversary_timeout_seconds": { "type": "integer", "minimum": 30, "maximum": 7200, "default": 900 },
+        "session_hard_timeout_seconds": { "type": "integer", "minimum": 300, "maximum": 86400, "default": 7200 },
+        "subtask_concurrency": { "type": "integer", "minimum": 1, "maximum": 8, "default": 1 }
       }
     },
     "vercel": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
+        "enabled": { "type": "boolean", "default": false },
         "credential_service": { "type": "string" },
-        "team": { "type": "string" },
-        "project": { "type": "string" }
+        "team_id": { "type": "string" },
+        "project_id": { "type": "string" },
+        "preview_wait_seconds": { "type": "integer", "minimum": 30, "maximum": 3600, "default": 300 }
       }
     },
     "storage": {
       "type": "object",
-      "required": ["state_db_path"],
+      "additionalProperties": false,
       "properties": {
         "state_db_path": { "type": "string" },
-        "worktrees_root": { "type": "string" },
-        "audit_retention_days": { "type": "integer", "minimum": 1 }
+        "worktree_root": { "type": "string" },
+        "audit_retention_days": { "type": "integer", "minimum": 7, "maximum": 3650, "default": 90 },
+        "prune_terminal_sessions": { "type": "boolean", "default": false },
+        "prune_terminal_sessions_days": { "type": "integer", "minimum": 30, "maximum": 3650, "default": 365 }
       }
     },
     "safety": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "worker_permission_mode": { "type": "string", "enum": ["acceptEdits", "bypassPermissions", "plan"] },
         "bash_whitelist": { "type": "array", "items": { "type": "string" } },
-        "bash_denylist_patterns": { "type": "array", "items": { "type": "string" } },
-        "path_denylist": { "type": "array", "items": { "type": "string" } }
+        "bash_denylist_tokens": { "type": "array", "items": { "type": "string" } },
+        "path_denylist": { "type": "array", "items": { "type": "string" } },
+        "allow_git_push": { "type": "boolean", "default": false },
+        "allow_network_commands": { "type": "boolean", "default": false }
       }
     },
     "pat_routing": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "overrides": {
           "type": "object",
+          "description": "{ slackUserId: { repoFullNameOrOwner: credentialServiceName } }",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": { "type": "string" }
@@ -115,7 +137,8 @@
               "email": { "type": "string", "format": "email" }
             }
           }
-        }
+        },
+        "default_service_pattern": { "type": "string", "default": "github-{user}-{org}" }
       }
     }
   }

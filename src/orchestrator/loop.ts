@@ -196,15 +196,21 @@ export class OrchestratorLoop {
       this.deps.state.db.prepare(`UPDATE sessions SET cycles_ran = ? WHERE id = ?`).run(cycle, sessionId);
       this.checkpoint(sessionId, cycle);
 
-      // 2a. Executing sub-tasks (sequential; parallel is a future perf tweak)
+      // 2a. Executing sub-tasks in dependency order, with bounded concurrency.
       this.setStatus(sessionId, "executing");
       await this.deps.reportProgress?.(sessionId, "executing", { cycle });
-      for (const st of plan.subTasks) {
+      const ordered = topoSortSubTasks(plan.subTasks);
+      const concurrency = Math.max(1, this.deps.config.loop.subtask_concurrency ?? 1);
+      const inFlight: Array<Promise<void>> = [];
+      const done = new Set<number>();
+      const failed = { seq: -1, err: null as unknown };
+
+      const runOne = async (st: LeadPlanSubTask): Promise<void> => {
         const reactions = await this.deps.readReactions(sessionId);
-        if (reactions.abort) return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
-        if (Date.now() > hardDeadlineMs) return this.finaliseAbort(sessionId, "hard_timeout", cycle, totalCost);
-        if (totalCost > row.budget_usd) {
-          if (!reactions.budgetBump) return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
+        if (reactions.abort) { failed.err = "user_abort_reaction"; failed.seq = st.seq; return; }
+        if (Date.now() > hardDeadlineMs) { failed.err = "hard_timeout"; failed.seq = st.seq; return; }
+        if (totalCost > row.budget_usd && !reactions.budgetBump) {
+          failed.err = "budget_exhausted"; failed.seq = st.seq; return;
         }
 
         const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
@@ -220,8 +226,8 @@ export class OrchestratorLoop {
           this.deps.state.db.prepare(
             `UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`,
           ).run(`worker threw: ${String(err)}`, Date.now(), subTaskId);
-          this.setStatus(sessionId, "failed");
-          return { status: "failed", sessionId, reason: `worker_error: ${String(err)}`, cycles: cycle, totalCostUsd: totalCost };
+          failed.err = `worker_error: ${String(err)}`; failed.seq = st.seq;
+          return;
         }
 
         totalCost += result.costUsd;
@@ -243,6 +249,44 @@ export class OrchestratorLoop {
           subTaskId,
         );
         this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+        done.add(st.seq);
+      };
+
+      // Dispatcher: greedily fill up to `concurrency` in-flight, respecting dependsOn.
+      let idx = 0;
+      while (idx < ordered.length || inFlight.length > 0) {
+        if (failed.err) break;
+        // Fill
+        while (
+          idx < ordered.length &&
+          inFlight.length < concurrency &&
+          (ordered[idx]!.dependsOn ?? []).every((d) => done.has(d))
+        ) {
+          const p = runOne(ordered[idx]!).finally(() => {
+            const i = inFlight.indexOf(p);
+            if (i >= 0) inFlight.splice(i, 1);
+          });
+          inFlight.push(p);
+          idx++;
+        }
+        if (inFlight.length === 0 && idx < ordered.length) {
+          // Blocked -- dependency not met yet and no in-flight to unblock. Data bug.
+          failed.err = `subtask ${ordered[idx]!.seq} has unresolved dependencies`;
+          failed.seq = ordered[idx]!.seq;
+          break;
+        }
+        if (inFlight.length > 0) {
+          await Promise.race(inFlight);
+        }
+      }
+      await Promise.allSettled(inFlight);
+
+      if (failed.err) {
+        if (failed.err === "user_abort_reaction") return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
+        if (failed.err === "hard_timeout") return this.finaliseAbort(sessionId, "hard_timeout", cycle, totalCost);
+        if (failed.err === "budget_exhausted") return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
+        this.setStatus(sessionId, "failed");
+        return { status: "failed", sessionId, reason: String(failed.err), cycles: cycle, totalCostUsd: totalCost };
       }
 
       // 2b. Reviewing
@@ -313,4 +357,46 @@ export class OrchestratorLoop {
     this.deps.state.audit("loop.aborted", { sessionId, reason }, sessionId);
     return { status: "aborted", sessionId, reason, cycles, totalCostUsd };
   }
+}
+
+/**
+ * Kahn's-algorithm topological sort of sub-tasks by `dependsOn`.
+ * Stable: preserves original seq order among independent tasks.
+ * Throws on cycles.
+ */
+export function topoSortSubTasks(subTasks: LeadPlanSubTask[]): LeadPlanSubTask[] {
+  const bySeq = new Map(subTasks.map((s) => [s.seq, s] as const));
+  const remainingDeps = new Map<number, number>();
+  const dependents = new Map<number, number[]>();
+  for (const s of subTasks) {
+    const deps = (s.dependsOn ?? []).filter((d) => bySeq.has(d));
+    remainingDeps.set(s.seq, deps.length);
+    for (const d of deps) {
+      if (!dependents.has(d)) dependents.set(d, []);
+      dependents.get(d)!.push(s.seq);
+    }
+  }
+  const ready: number[] = subTasks
+    .filter((s) => (remainingDeps.get(s.seq) ?? 0) === 0)
+    .map((s) => s.seq)
+    .sort((a, b) => a - b);
+  const out: LeadPlanSubTask[] = [];
+  while (ready.length > 0) {
+    const next = ready.shift()!;
+    out.push(bySeq.get(next)!);
+    for (const dep of dependents.get(next) ?? []) {
+      const left = (remainingDeps.get(dep) ?? 0) - 1;
+      remainingDeps.set(dep, left);
+      if (left === 0) {
+        // Insert-in-order to keep stable ordering
+        const pos = ready.findIndex((r) => r > dep);
+        if (pos === -1) ready.push(dep);
+        else ready.splice(pos, 0, dep);
+      }
+    }
+  }
+  if (out.length !== subTasks.length) {
+    throw new Error(`sub-task dependency cycle detected (only sorted ${out.length}/${subTasks.length})`);
+  }
+  return out;
 }
