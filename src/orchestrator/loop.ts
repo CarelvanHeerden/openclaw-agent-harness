@@ -1,51 +1,316 @@
 /**
- * OrchestratorLoop
+ * Orchestrator loop.
  *
- * The 3-cycle controller: plan -> execute (workers) -> assemble -> review.
- * Early exit on adversarial pass, budget hit, or user override.
+ * The core state machine. Given a session id (already row-inserted with a
+ * crystallised prompt + brief), it walks:
  *
- * PHASE 0 SCAFFOLD. Real implementation lands in later phases.
+ *   crystallising -> planning -> executing -> reviewing -> {done|revise}
+ *
+ * Up to `config.loop.max_cycles` cycles of executing+reviewing. Early exits:
+ *   - Adversary verdict "pass"
+ *   - User ship-it reaction
+ *   - User abort reaction
+ *   - Session budget breached
+ *   - Session hard timeout
+ *
+ * The loop is deliberately structured as pure decision helpers + an outer
+ * driver, so `advance()` can be unit-tested standalone.
  */
 
 import type { HarnessConfig } from "../config.js";
-import type { StateStore } from "../state/store.js";
 import type { BudgetEnforcer } from "../budgets/enforcer.js";
 import type { PatRouter } from "../auth/pat-router.js";
+import type { StateStore } from "../state/store.js";
+import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
+import type { LeadPlan, LeadPlanSubTask } from "./fable5-lead.js";
+import type { ReviewReport } from "./fable5-adversary.js";
+import type { WorkerResult } from "./sonnet-worker.js";
+import type { RuntimeSnapshot } from "../vercel/logs.js";
 
-export interface LoopDeps {
+export type LoopStatus =
+  | "crystallising"
+  | "planning"
+  | "executing"
+  | "reviewing"
+  | "done"
+  | "failed"
+  | "aborted";
+
+export type LoopOutcome =
+  | { status: "shipped"; sessionId: string; prUrl: string; cycles: number; totalCostUsd: number }
+  | { status: "failed"; sessionId: string; reason: string; cycles: number; totalCostUsd: number }
+  | { status: "aborted"; sessionId: string; reason: string; cycles: number; totalCostUsd: number };
+
+export interface OrchestratorDeps {
   config: HarnessConfig;
   state: StateStore;
-  budgets: BudgetEnforcer;
+  budget: BudgetEnforcer;
   pat: PatRouter;
   logger: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void; error: (m: string, meta?: unknown) => void };
-}
 
-export interface LoopInput {
-  sessionId: string;
-  crystallisedPrompt: string;
-  requester: string;
-  repo: string;
-}
+  /** Injected work-doers. Real impls in src/adapters + src/vercel. */
+  runLead: (brief: CrystallisedBrief) => Promise<LeadPlan>;
+  runWorker: (params: {
+    brief: CrystallisedBrief;
+    subTask: LeadPlanSubTask;
+    plan: LeadPlan;
+    resumeSessionId?: string;
+  }) => Promise<WorkerResult>;
+  runAdversary: (params: {
+    brief: CrystallisedBrief;
+    plan: LeadPlan;
+    runtime?: RuntimeSnapshot;
+  }) => Promise<ReviewReport>;
+  fetchRuntime?: (params: { plan: LeadPlan }) => Promise<RuntimeSnapshot | undefined>;
+  pushBranchAndOpenPr: (params: {
+    plan: LeadPlan;
+    brief: CrystallisedBrief;
+    reviewReport: ReviewReport;
+  }) => Promise<string>;
 
-export interface LoopOutcome {
-  status: "shipped" | "aborted" | "failed" | "budget_hit";
-  prUrl?: string;
-  totalCostUsd: number;
-  cycles: number;
+  /** Signal source: user Slack reactions on our messages. */
+  readReactions: (sessionId: string) => Promise<{ shipIt: boolean; abort: boolean; pause: boolean; budgetBump: boolean }>;
+  reportProgress?: (sessionId: string, status: LoopStatus, meta?: unknown) => Promise<void>;
 }
 
 export class OrchestratorLoop {
-  constructor(private readonly deps: LoopDeps) {}
+  constructor(private readonly deps: OrchestratorDeps) {}
 
-  async run(_input: LoopInput): Promise<LoopOutcome> {
-    // TODO(phase-2): implement plan/execute/assemble/review loop.
-    // TODO(phase-3): wire adversarial reviewer.
-    // TODO(phase-4): budget enforcement + Vercel logs.
-    this.deps.logger.warn("[loop] run() called but not implemented (phase-0 scaffold)");
-    return {
-      status: "failed",
-      totalCostUsd: 0,
-      cycles: 0,
-    };
+  /**
+   * Pure state-transition rule (unit-tested).
+   */
+  static advance(input: {
+    currentStatus: LoopStatus;
+    verdict?: "pass" | "revise" | "block";
+    cyclesRan: number;
+    maxCycles: number;
+    reactions: { shipIt: boolean; abort: boolean; pause: boolean };
+    budgetExhausted: boolean;
+    hardTimeout: boolean;
+  }): { nextStatus: LoopStatus; reason: string } {
+    if (input.reactions.abort) return { nextStatus: "aborted", reason: "user_abort_reaction" };
+    if (input.budgetExhausted) return { nextStatus: "aborted", reason: "budget_exhausted" };
+    if (input.hardTimeout) return { nextStatus: "aborted", reason: "hard_timeout" };
+    if (input.reactions.shipIt && input.currentStatus === "reviewing") {
+      return { nextStatus: "done", reason: "user_ship_it_reaction" };
+    }
+    switch (input.currentStatus) {
+      case "crystallising": return { nextStatus: "planning", reason: "crystallise_ok" };
+      case "planning":      return { nextStatus: "executing", reason: "plan_ready" };
+      case "executing":     return { nextStatus: "reviewing", reason: "subtasks_complete" };
+      case "reviewing":
+        if (input.verdict === "pass") return { nextStatus: "done", reason: "adversary_pass" };
+        if (input.verdict === "block") return { nextStatus: "failed", reason: "adversary_block" };
+        if (input.cyclesRan >= input.maxCycles - 1) return { nextStatus: "failed", reason: "max_cycles_reached" };
+        return { nextStatus: "executing", reason: "adversary_revise" };
+      case "done":
+      case "failed":
+      case "aborted":
+        return { nextStatus: input.currentStatus, reason: "terminal" };
+    }
+  }
+
+  private setStatus(sessionId: string, status: LoopStatus): void {
+    this.deps.state.db
+      .prepare(`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(status, Date.now(), sessionId);
+  }
+
+  private checkpoint(sessionId: string, cycle: number, lastSubTask?: string, sdkSessionId?: string): void {
+    this.deps.state.db
+      .prepare(
+        `UPDATE sessions
+         SET current_cycle = ?,
+             last_completed_sub_task = COALESCE(?, last_completed_sub_task),
+             last_worker_sdk_session = COALESCE(?, last_worker_sdk_session),
+             last_checkpoint_at = ?,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(cycle, lastSubTask ?? null, sdkSessionId ?? null, Date.now(), Date.now(), sessionId);
+  }
+
+  private addCost(sessionId: string, amount: number): void {
+    this.deps.state.db
+      .prepare(`UPDATE sessions SET cost_usd = cost_usd + ?, updated_at = ? WHERE id = ?`)
+      .run(amount, Date.now(), sessionId);
+  }
+
+  private saveReview(sessionId: string, cycle: number, report: ReviewReport): void {
+    this.deps.state.db
+      .prepare(
+        `INSERT INTO reviews (id, session_id, cycle, verdict, findings, summary, cost_usd, sdk_session_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        `${sessionId}-r${cycle}`,
+        sessionId,
+        cycle,
+        report.verdict,
+        JSON.stringify(report.findings),
+        report.summary,
+        report.costUsd,
+        report.sdkSessionId ?? null,
+        Date.now(),
+      );
+  }
+
+  async run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
+    const row = this.deps.state.db
+      .prepare(`SELECT id, requester, cost_usd, budget_usd, cycles_ran, status FROM sessions WHERE id = ?`)
+      .get(sessionId) as
+      | { id: string; requester: string; cost_usd: number; budget_usd: number; cycles_ran: number; status: LoopStatus }
+      | undefined;
+    if (!row) throw new Error(`session ${sessionId} not found`);
+    if (["done", "failed", "aborted"].includes(row.status)) {
+      throw new Error(`session ${sessionId} is already terminal (${row.status})`);
+    }
+
+    const startedAt = Date.now();
+    const hardDeadlineMs = startedAt + this.deps.config.loop.session_hard_timeout_seconds * 1000;
+    this.deps.state.audit("loop.start", { sessionId, brief }, sessionId);
+
+    // 1. Planning
+    this.setStatus(sessionId, "planning");
+    await this.deps.reportProgress?.(sessionId, "planning");
+    let plan: LeadPlan;
+    try {
+      plan = await this.deps.runLead(brief);
+      this.deps.state.db
+        .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
+        .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
+      this.deps.state.audit("loop.plan_ready", { sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel }, sessionId);
+    } catch (err) {
+      this.setStatus(sessionId, "failed");
+      this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
+      return { status: "failed", sessionId, reason: `plan_failed: ${String(err)}`, cycles: 0, totalCostUsd: row.cost_usd };
+    }
+
+    let cycle = 0;
+    let totalCost = row.cost_usd;
+    let lastReview: ReviewReport | undefined;
+
+    // 2. Execute/review cycles
+    while (cycle < this.deps.config.loop.max_cycles) {
+      cycle += 1;
+      this.deps.state.db.prepare(`UPDATE sessions SET cycles_ran = ? WHERE id = ?`).run(cycle, sessionId);
+      this.checkpoint(sessionId, cycle);
+
+      // 2a. Executing sub-tasks (sequential; parallel is a future perf tweak)
+      this.setStatus(sessionId, "executing");
+      await this.deps.reportProgress?.(sessionId, "executing", { cycle });
+      for (const st of plan.subTasks) {
+        const reactions = await this.deps.readReactions(sessionId);
+        if (reactions.abort) return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
+        if (Date.now() > hardDeadlineMs) return this.finaliseAbort(sessionId, "hard_timeout", cycle, totalCost);
+        if (totalCost > row.budget_usd) {
+          if (!reactions.budgetBump) return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
+        }
+
+        const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
+        this.deps.state.db.prepare(
+          `INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?)`,
+        ).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, Date.now(), Date.now());
+
+        let result: WorkerResult;
+        try {
+          result = await this.deps.runWorker({ brief, subTask: st, plan });
+        } catch (err) {
+          this.deps.state.db.prepare(
+            `UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`,
+          ).run(`worker threw: ${String(err)}`, Date.now(), subTaskId);
+          this.setStatus(sessionId, "failed");
+          return { status: "failed", sessionId, reason: `worker_error: ${String(err)}`, cycles: cycle, totalCostUsd: totalCost };
+        }
+
+        totalCost += result.costUsd;
+        this.addCost(sessionId, result.costUsd);
+        await this.deps.budget.recordSpend(row.requester, result.costUsd, sessionId);
+        this.deps.state.db.prepare(
+          `UPDATE sub_tasks
+           SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(
+          result.status,
+          result.costUsd,
+          JSON.stringify(result.filesChanged),
+          result.commitSha ?? null,
+          result.sdkSessionId ?? null,
+          result.reason ?? null,
+          Date.now(),
+          Date.now(),
+          subTaskId,
+        );
+        this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+      }
+
+      // 2b. Reviewing
+      this.setStatus(sessionId, "reviewing");
+      await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
+      let runtime: RuntimeSnapshot | undefined;
+      try {
+        runtime = await this.deps.fetchRuntime?.({ plan });
+      } catch (err) {
+        this.deps.logger.warn("[loop] fetchRuntime failed", { err: String(err) });
+      }
+      let report: ReviewReport;
+      try {
+        report = await this.deps.runAdversary({ brief, plan, runtime });
+      } catch (err) {
+        this.setStatus(sessionId, "failed");
+        return { status: "failed", sessionId, reason: `adversary_error: ${String(err)}`, cycles: cycle, totalCostUsd: totalCost };
+      }
+      totalCost += report.costUsd;
+      this.addCost(sessionId, report.costUsd);
+      await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
+      this.saveReview(sessionId, cycle, report);
+      lastReview = report;
+      this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length }, sessionId);
+
+      const reactions = await this.deps.readReactions(sessionId);
+      const decision = OrchestratorLoop.advance({
+        currentStatus: "reviewing",
+        verdict: report.verdict,
+        cyclesRan: cycle,
+        maxCycles: this.deps.config.loop.max_cycles,
+        reactions,
+        budgetExhausted: totalCost > row.budget_usd && !reactions.budgetBump,
+        hardTimeout: Date.now() > hardDeadlineMs,
+      });
+      this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
+
+      if (decision.nextStatus === "done") break;
+      if (decision.nextStatus === "failed") {
+        this.setStatus(sessionId, "failed");
+        return { status: "failed", sessionId, reason: decision.reason, cycles: cycle, totalCostUsd: totalCost };
+      }
+      if (decision.nextStatus === "aborted") {
+        return this.finaliseAbort(sessionId, decision.reason, cycle, totalCost);
+      }
+      // else "executing": continue the outer while
+    }
+
+    // 3. Push + PR
+    if (!lastReview) {
+      this.setStatus(sessionId, "failed");
+      return { status: "failed", sessionId, reason: "no_review_produced", cycles: cycle, totalCostUsd: totalCost };
+    }
+    let prUrl: string;
+    try {
+      prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview });
+    } catch (err) {
+      this.setStatus(sessionId, "failed");
+      return { status: "failed", sessionId, reason: `pr_error: ${String(err)}`, cycles: cycle, totalCostUsd: totalCost };
+    }
+    this.deps.state.db.prepare(`UPDATE sessions SET final_pr_url = ?, status = 'done', updated_at = ? WHERE id = ?`).run(prUrl, Date.now(), sessionId);
+    this.deps.state.audit("loop.shipped", { sessionId, prUrl }, sessionId);
+    return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
+  }
+
+  private finaliseAbort(sessionId: string, reason: string, cycles: number, totalCostUsd: number): LoopOutcome {
+    this.setStatus(sessionId, "aborted");
+    this.deps.state.audit("loop.aborted", { sessionId, reason }, sessionId);
+    return { status: "aborted", sessionId, reason, cycles, totalCostUsd };
   }
 }

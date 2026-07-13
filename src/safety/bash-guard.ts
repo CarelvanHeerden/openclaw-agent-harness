@@ -151,6 +151,58 @@ function splitSegments(tokens: string[]): string[][] {
   return segments;
 }
 
+/**
+ * Builds a `canUseTool` callback for the Claude Agent SDK. The callback
+ * receives the tool name and its raw input, and returns an `{ allow, reason }`
+ * decision. Currently intercepts:
+ *   - `Bash` -> guardCommand()
+ *   - `Write` / `Edit` -> path denylist
+ * Everything else is allowed (SDK enforces its own permission model for those).
+ */
+export function buildBashGuard(cfg: {
+  bash_whitelist: string[];
+  bash_denylist_tokens: string[];
+  path_denylist: string[];
+  allow_git_push: boolean;
+  allow_network_commands: boolean;
+}): (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }> {
+  const guard: GuardConfig = {
+    whitelist: cfg.bash_whitelist,
+    denylistTokens: cfg.bash_denylist_tokens,
+    allowGitPush: cfg.allow_git_push,
+    allowNetworkCommands: cfg.allow_network_commands,
+  };
+  const pathBlocked = (p: string): boolean => {
+    for (const pat of cfg.path_denylist) {
+      if (pat.endsWith("/") && p.includes(pat)) return true;
+      if (pat.includes("*")) {
+        const re = new RegExp("^" + pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
+        if (re.test(p)) return true;
+      } else if (p === pat || p.endsWith("/" + pat)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  return async (toolName: string, toolInput: unknown) => {
+    if (toolName === "Bash") {
+      const cmd = (toolInput as { command?: string })?.command ?? "";
+      const r = guardCommand(cmd, guard);
+      return { allow: r.allowed, reason: r.reason };
+    }
+    if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit") {
+      const filePath = (toolInput as { file_path?: string; path?: string })?.file_path
+        ?? (toolInput as { file_path?: string; path?: string })?.path
+        ?? "";
+      if (pathBlocked(filePath)) {
+        return { allow: false, reason: `path '${filePath}' is denylisted` };
+      }
+    }
+    return { allow: true };
+  };
+}
+
 export function guardCommand(cmd: string, cfg: GuardConfig = defaultGuardConfig()): GuardResult {
   const t = tokenise(cmd);
   if (t.error) return { allowed: false, reason: t.error };
