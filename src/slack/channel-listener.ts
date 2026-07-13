@@ -17,13 +17,13 @@
  * PHASE 0 SCAFFOLD. handle() body wired in phase 1.
  */
 import type { HarnessConfig } from "../config.js";
-import type { OrchestratorLoop } from "../orchestrator/loop.js";
 import type { StateStore } from "../state/store.js";
+import type { Dispatcher } from "./dispatcher.js";
 
 export interface ListenerDeps {
   config: HarnessConfig;
-  loop: OrchestratorLoop;
   state: StateStore;
+  dispatcher: Dispatcher;
   logger: {
     info: (m: string, meta?: unknown) => void;
     warn: (m: string, meta?: unknown) => void;
@@ -108,14 +108,13 @@ export class SlackChannelListener {
       case "ignore":
         return;
       case "start_new_session":
-        // TODO(phase-1): create session row (UNIQUE constraint on (channel, thread)
-        // guarantees no duplicate); post welcome reply; hand off to crystallisePrompt().
+        await this.deps.dispatcher.startNewSession(evt);
         return;
       case "continue_session":
-        // TODO(phase-1): deliver the message to the crystalliser or the loop.
+        await this.deps.dispatcher.continueSession(decision.sessionId, evt);
         return;
       case "reject_top_level_reply":
-        // TODO(phase-1): DM the user with the rule explanation.
+        this.deps.logger.info("[slack-listener] reject_top_level_reply currently unused");
         return;
     }
   }

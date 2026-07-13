@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Phase 1: end-to-end wiring (feat/phase-1)
+
+- Real plugin entry (`src/index.ts`) that mirrors the memory-hybrid contract:
+  `{ id, name, description, kind, configSchema.parse, versionInfo, register(api) }`.
+- Config parser (`src/config.ts`) with deep-merge defaults and hard
+  validation on safety-critical fields (channel, authorised users, budgets,
+  allow-list, vercel).
+- Orchestrator loop (`src/orchestrator/loop.ts`) implementing the full
+  state machine: `crystallising -> planning -> executing (per-sub-task) ->
+  reviewing -> {done | revise | failed | aborted}`, with:
+    - checkpoints (`current_cycle`, `last_completed_sub_task`, `last_worker_sdk_session`)
+    - budget + hard-timeout gates per sub-task
+    - reactions gate (ship_it during reviewing, abort anywhere)
+    - per-cycle review persistence + audit trail
+- Sonnet worker (`src/orchestrator/sonnet-worker.ts`): builds a scoped
+  system prompt, runs the injected SDK call with `canUseTool` guard, commits
+  changed files, never pushes.
+- Adversary (`src/orchestrator/fable5-adversary.ts`): dimension-based review
+  with a runtime safety-net that upgrades a silent "pass" to "revise" when
+  no runtime data is available.
+- Claude SDK adapters (`src/adapters/claude-sdk.ts`): typed wrappers around
+  `@anthropic-ai/claude-agent-sdk`'s `query()` for classifier, crystalliser,
+  lead, adversary, and worker. Robust JSON extraction with `extractJson()`.
+- Git worktree adapter (`src/adapters/git-worktree.ts`): PAT-scoped askpass
+  helper so tokens never land in config or URL.
+- GitHub REST adapter (`src/adapters/github.ts`): pull-request creation + repo access verification.
+- Vercel bridge (`src/vercel/logs.ts`): bounded preview wait, deployment
+  state resolution, event log excerpt for adversary.
+- Slack adapter (`src/adapters/slack.ts`) + dispatcher (`src/slack/dispatcher.ts`):
+  fire-and-forget session runner with UNIQUE constraint dedup on Slack thread.
+- Bash guard (`src/safety/bash-guard.ts`) now exports `buildBashGuard()` — a
+  ready-to-plug `canUseTool` callback with path denylist support.
+- Tools: `harness_status`, `harness_retention_prune`, `harness_session_get`.
+- Session recovery on plugin start: stale non-terminal sessions are marked
+  `aborted` based on `last_checkpoint_at`.
+- Dockerfile for isolated real-test runs.
+- Runbook: `docs/REAL-TEST-RUNBOOK.md`.
+
+### Tests (45 total, all green)
+
+- `config.test.mjs` (6)
+- `pat-router.test.mjs` (5)
+- `crystallise.test.mjs` (5)
+- `adversary.test.mjs` (4)
+- `orchestrator-advance.test.mjs` (10)
+- `dispatcher.test.mjs` (4)
+- `bash-guard.test.mjs`, `budget-enforcer.test.mjs`, `slack-listener.test.mjs` (11)
+
+## Unreleased
+
 ### Added
 
 - **Session checkpointing schema.** `sessions` gains `current_cycle`,
