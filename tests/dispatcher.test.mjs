@@ -26,7 +26,7 @@ async function makeState() {
 const configStub = {
   slack: { channel: "C1", authorised_users: ["U1"], reactions: { ship_it: "rocket", abort: "x", pause: "pause", budget_bump: "money" } },
   budgets: { monthly_per_user_usd: 1000, session_default_usd: 50, session_hard_ceiling_usd: 200, daily_warn_usd: 100, monthly_warn_ratio: 0.8 },
-  repos: { allowed: ["Stitch-Vercel/*"], can_create: false, create_org: "", create_visibility: "private", default_base_branch: "main" },
+  repos: { allowed: ["example-org/*"], can_create: false, create_org: "", create_visibility: "private", default_base_branch: "main" },
   models: { lead: "L", worker: "W", adversary: "A", classifier: "C" },
   loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600 },
   vercel: { enabled: false, credential_service: "", project_id: "", preview_wait_seconds: 30 },

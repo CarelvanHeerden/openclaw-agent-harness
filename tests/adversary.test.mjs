@@ -23,6 +23,15 @@ test("runtimeBanner: covers all statuses", { skip: runtimeBanner === null }, () 
   assert.match(runtimeBanner({ ...inputBase, runtime: { provider: "vercel", status: "no_deploy_yet" } }), /NO RUNTIME DATA/);
   assert.match(runtimeBanner({ ...inputBase, runtime: { provider: "vercel", status: "build_failed" } }), /build FAILED/);
   assert.match(runtimeBanner({ ...inputBase, runtime: { provider: "vercel", status: "unavailable" } }), /NO RUNTIME DATA/);
+  // Manual upload path (non-Vercel deploys)
+  const manualOk = runtimeBanner({ ...inputBase, runtime: { provider: "manual", status: "ok", source: "nginx access", uploadedBy: "U1", errorCount: 2 } });
+  assert.match(manualOk, /MANUAL UPLOAD/);
+  assert.match(manualOk, /nginx access/);
+  assert.match(manualOk, /uploaded by U1/);
+  assert.match(manualOk, /2 error/);
+  const manualBuildFail = runtimeBanner({ ...inputBase, runtime: { provider: "manual", status: "build_failed", deploymentUrl: "https://ci/log/42" } });
+  assert.match(manualBuildFail, /build FAILED/);
+  assert.match(manualBuildFail, /MANUAL UPLOAD/);
 });
 
 test("system prompt: includes runtime banner + checklist",

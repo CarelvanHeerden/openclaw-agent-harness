@@ -12,7 +12,7 @@ harness: add a comment to README.md saying hello from the agent harness
 
 1. **Thread starts.**
    Harness replies in-thread:
-   > Got it. Target repo: `Stitch-Vercel/ProjectThanos`? Acceptance criteria: README.md contains a new comment line "hello from the agent harness"? Reply "go" or 🚀 to proceed.
+   > Got it. Target repo: `example-org/example-repo`? Acceptance criteria: README.md contains a new comment line "hello from the agent harness"? Reply "go" or 🚀 to proceed.
 
 2. **User confirms.** Reacts with 🚀 or replies "go".
 

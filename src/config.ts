@@ -43,7 +43,7 @@ export interface BudgetsConfig {
 }
 
 export interface ReposConfig {
-  allowed: string[];              // e.g. ["Stitch-Vercel/*", "CarelvanHeerden/*"]
+  allowed: string[];              // e.g. ["example-org/*", "CarelvanHeerden/*"]
   can_create: boolean;
   create_org: string;
   create_visibility: "private" | "public";

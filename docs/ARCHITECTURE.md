@@ -159,7 +159,7 @@ CREATE TABLE sessions (
   slack_channel   TEXT NOT NULL,
   requester       TEXT NOT NULL,      -- Slack user id
   requester_gh    TEXT NOT NULL,      -- GitHub login
-  repo            TEXT NOT NULL,      -- e.g. Stitch-Vercel/ProjectThanos
+  repo            TEXT NOT NULL,      -- e.g. example-org/example-repo
   branch          TEXT NOT NULL,
   worktree_path   TEXT NOT NULL,
   status          TEXT NOT NULL,      -- crystallising|planning|executing|reviewing|done|failed|aborted

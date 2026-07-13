@@ -11,24 +11,24 @@ try {
 test("PatRouter: repo-scoped override wins",
   { skip: PatRouter === null }, () => {
     const r = new PatRouter({
-      overrides: { U1: { "Stitch-Vercel/ProjectThanos": "github-carel-stitch" } },
+      overrides: { U1: { "example-org/example-repo": "github-carel-example" } },
       commit_identity: {},
       default_service_pattern: "github-{user}-{org}",
     });
-    const res = r.resolve({ slackUserId: "U1", gitHubUser: "carel", repoFullName: "Stitch-Vercel/ProjectThanos" });
-    assert.equal(res.credentialService, "github-carel-stitch");
+    const res = r.resolve({ slackUserId: "U1", gitHubUser: "carel", repoFullName: "example-org/example-repo" });
+    assert.equal(res.credentialService, "github-carel-example");
     assert.equal(res.provenance, "override_repo");
   });
 
 test("PatRouter: owner-scoped override picked when repo not listed",
   { skip: PatRouter === null }, () => {
     const r = new PatRouter({
-      overrides: { U1: { "Stitch-Vercel": "github-carel-stitch" } },
+      overrides: { U1: { "example-org": "github-carel-example" } },
       commit_identity: {},
       default_service_pattern: "github-{user}-{org}",
     });
-    const res = r.resolve({ slackUserId: "U1", gitHubUser: "carel", repoFullName: "Stitch-Vercel/OtherRepo" });
-    assert.equal(res.credentialService, "github-carel-stitch");
+    const res = r.resolve({ slackUserId: "U1", gitHubUser: "carel", repoFullName: "example-org/OtherRepo" });
+    assert.equal(res.credentialService, "github-carel-example");
     assert.equal(res.provenance, "override_owner");
   });
 
@@ -39,8 +39,8 @@ test("PatRouter: default pattern lowercase-substitutes user + org",
       commit_identity: {},
       default_service_pattern: "github-{user}-{org}",
     });
-    const res = r.resolve({ slackUserId: "U1", gitHubUser: "CarelvanHeerden", repoFullName: "Stitch-Vercel/ProjectThanos" });
-    assert.equal(res.credentialService, "github-carelvanheerden-stitch-vercel");
+    const res = r.resolve({ slackUserId: "U1", gitHubUser: "CarelvanHeerden", repoFullName: "example-org/example-repo" });
+    assert.equal(res.credentialService, "github-carelvanheerden-example-org");
     assert.equal(res.provenance, "default_pattern");
   });
 
@@ -48,11 +48,11 @@ test("PatRouter: commit_identity override wins over noreply default",
   { skip: PatRouter === null }, () => {
     const r = new PatRouter({
       overrides: {},
-      commit_identity: { U1: { name: "Carel", email: "carel@stitch.money" } },
+      commit_identity: { U1: { name: "Carel", email: "dev@example.com" } },
       default_service_pattern: "github-{user}-{org}",
     });
-    const res = r.resolve({ slackUserId: "U1", gitHubUser: "CarelvanHeerden", repoFullName: "Stitch-Vercel/ProjectThanos" });
-    assert.deepEqual(res.commitIdentity, { name: "Carel", email: "carel@stitch.money" });
+    const res = r.resolve({ slackUserId: "U1", gitHubUser: "CarelvanHeerden", repoFullName: "example-org/example-repo" });
+    assert.deepEqual(res.commitIdentity, { name: "Carel", email: "dev@example.com" });
   });
 
 test("PatRouter: invalid repo throws",

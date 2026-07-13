@@ -62,15 +62,54 @@ function collectTools() {
   return { api, tools };
 }
 
-test("registration: registers 8 tools",
+test("registration: registers 9 tools",
   { skip: registerHarnessTools === null }, () => {
     const runtime = makeRuntime();
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     assert.deepEqual(
       [...tools.keys()].sort(),
-      ["harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry"],
+      ["harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
     );
+  });
+
+test("harness_upload_logs: writes row + audit; caps at 16KB; adversary loop can read latest",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    // Seed a session so the FK is satisfied
+    runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, crystallised_prompt, created_at, updated_at, budget_usd) VALUES ('S1','T1','C1','U1','U1','o/r','feat','/tmp','planning','{}',0,0,50)`).run();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const bigLog = "x".repeat(20 * 1024);
+    const r1 = await tools.get("harness_upload_logs").execute({ sessionId: "S1", uploadedBy: "U1", status: "ok", logsExcerpt: bigLog, source: "nginx", errorCount: 3 });
+    assert.equal(r1.details.ok, true);
+    assert.ok(r1.details.bytes < 20 * 1024, "should truncate above 16KB");
+    const row = runtime.state.db.prepare(`SELECT status, source, error_count, LENGTH(logs_excerpt) AS n FROM runtime_uploads WHERE session_id='S1' ORDER BY uploaded_at DESC LIMIT 1`).get();
+    assert.equal(row.status, "ok");
+    assert.equal(row.source, "nginx");
+    assert.equal(row.error_count, 3);
+    assert.ok(row.n <= 16 * 1024 + 30, `row logs len should cap near 16KB, got ${row.n}`);
+  });
+
+test("harness_upload_logs: unknown session rejected",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const r = await tools.get("harness_upload_logs").execute({ sessionId: "S_NONE", uploadedBy: "U1", status: "ok", logsExcerpt: "foo" });
+    assert.equal(r.details.ok, false);
+    assert.equal(r.details.notFound, true);
+  });
+
+test("harness_upload_logs: unauthorised uploader rejected",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, crystallised_prompt, created_at, updated_at, budget_usd) VALUES ('S2','T2','C1','U1','U1','o/r','feat','/tmp','planning','{}',0,0,50)`).run();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const r = await tools.get("harness_upload_logs").execute({ sessionId: "S2", uploadedBy: "U_STRANGER", status: "ok", logsExcerpt: "foo" });
+    assert.equal(r.details.ok, false);
+    assert.equal(r.details.unauthorised, true);
   });
 
 test("harness_health: reports OK when config + schema are minimally valid",

@@ -1,6 +1,6 @@
 # openclaw-agent-harness
 
-*Multi-agent code-writing harness for OpenClaw.* Post a dev request in a Slack channel, and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (plus Vercel preview logs) before a PR opens under the requester's GitHub identity.
+*Multi-agent code-writing harness for OpenClaw.* Post a dev request in a Slack channel, and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
 > *Status: beta.* Version `0.1.0-beta.1`. All Phase 1-3 subsystems land and pass tests (87/87 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel.
 
@@ -58,7 +58,7 @@ Slack channel
 | Git worktree adapter         | `src/adapters/git-worktree.ts`                   | Allocate/commit/diff/push, per-session isolation       |
 | GitHub PR opener             | `src/adapters/github-pr.ts`                      | Push branch, POST /pulls (draft if verdict != pass)   |
 | GitHub PR-merged watcher     | `src/adapters/github-watcher.ts`                 | Detects merge/close, releases worktree                 |
-| Vercel logs bridge           | `src/vercel/logs.ts`                             | Bounded wait for preview, log excerpt for adversary    |
+| Runtime logs bridge          | `src/vercel/logs.ts`                             | Optional. Vercel bridge (feature-flagged) OR manual upload via `harness_upload_logs`. Adversary refuses to sign off on runtime dimension when no data is present. |
 | Slack listener               | `src/slack/channel-listener.ts`                  | Pure `routeMessage()` + UNIQUE thread guard           |
 | Slack dispatcher             | `src/slack/dispatcher.ts`                        | Bridges listener -> orchestrator                       |
 | Slack reactions reader       | `src/slack/reactions.ts`                         | Authorised-user filter                                 |
@@ -77,9 +77,19 @@ Slack channel
 - `harness_start_session` -- direct API entry (bypasses classifier)
 - `harness_session_get` -- one session with sub-tasks/reviews/audit
 - `harness_telemetry` -- monthly ledger + session cost breakdown
+- `harness_upload_logs` -- attach runtime logs from any deploy target (nginx, CloudWatch, on-prem) when Vercel is off
 - `harness_cancel` -- set abort flag; loop terminates at next checkpoint
 - `harness_resume` -- re-kick an interrupted session with its brief
 - `harness_retention_prune` -- manual audit-log prune
+
+## Runtime data (optional, not tied to Vercel)
+
+The adversary reviews *runtime* dimension only when runtime data is available. Two sources are supported:
+
+1. *Vercel bridge* -- `harness.vercel.enabled: true`. The harness polls Vercel deployments for the branch, waits up to `preview_wait_seconds` for a preview to land, and pulls a bounded event-log excerpt.
+2. *Manual upload* -- for repos that don't deploy to Vercel. Any authorised user calls `harness_upload_logs` with a session id and a log excerpt (nginx, CloudWatch, on-prem, whatever). The adversary consumes the most-recent upload with `provider: "manual"`.
+
+If neither is available, the adversary is given a `NO RUNTIME DATA` banner and MUST NOT sign off on runtime concerns. It won't silently pass a diff just because it can't see the running system.
 
 ## Reactions
 

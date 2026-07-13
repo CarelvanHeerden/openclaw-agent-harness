@@ -17,11 +17,15 @@
 export type RuntimeStatus = "ok" | "no_deploy_yet" | "build_failed" | "unavailable";
 
 export interface RuntimeSnapshot {
-  provider: "vercel";
+  provider: "vercel" | "manual";
   status: RuntimeStatus;
   deploymentUrl?: string;
   logsExcerpt?: string;
   errorCount?: number;
+  /** Present when provider="manual" (see harness_upload_logs tool). */
+  uploadedAt?: number;
+  uploadedBy?: string;
+  source?: string;
 }
 
 export interface FetchLogsInput {

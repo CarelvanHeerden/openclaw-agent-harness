@@ -32,10 +32,10 @@ All options live under `plugins["openclaw-agent-harness"]` in `openclaw.json`.
       // Repos the harness may operate on
       "repos": {
         "allowed": [
-          "Stitch-Vercel/ProjectThanos"
+          "example-org/example-repo"
         ],
         "can_create":         true,          // may create new repos on request
-        "create_org":         "Stitch-Vercel",
+        "create_org":         "example-org",
         "create_visibility":  "private",     // "private" | "public"
         "default_branch":     "main"
       },
@@ -60,7 +60,7 @@ All options live under `plugins["openclaw-agent-harness"]` in `openclaw.json`.
       "vercel": {
         "enabled":            false,
         "credential_service": "vercel-projectthanos",
-        "team":               "stitch",
+        "team":               "example-team",
         "project":            "project-thanos"
       },
 
@@ -92,15 +92,15 @@ All options live under `plugins["openclaw-agent-harness"]` in `openclaw.json`.
         // Explicit overrides here take precedence.
         "overrides": {
           "U07UT6G8LQ4": {
-            "Stitch-Vercel":     "github-carel-stitch-vercel",
-            "Stitch-Money":      "github-carel-stitch-money",
+            "example-org":     "github-carel-example-org",
+            "example-org-alt":      "github-carel-example-org-alt",
             "CarelvanHeerden":   "github-carel-personal"
           }
         },
         "commit_identity": {
           "U07UT6G8LQ4": {
             "name":  "Carel van Heerden",
-            "email": "carel@stitch.money"
+            "email": "dev@example.com"
           }
         }
       }
