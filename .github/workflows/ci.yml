@@ -33,3 +33,6 @@ jobs:
 
       - name: Test
         run: node --test tests/*.mjs
+
+      - name: Smoke
+        run: node scripts/smoke.mjs

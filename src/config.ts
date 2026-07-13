@@ -63,6 +63,8 @@ export interface LoopConfig {
   worker_timeout_seconds: number;
   adversary_timeout_seconds: number;
   session_hard_timeout_seconds: number;
+  /** Max sub-tasks a cycle will run concurrently. Default 1 (sequential). */
+  subtask_concurrency: number;
 }
 
 export interface VercelConfig {
@@ -135,6 +137,7 @@ const DEFAULTS: HarnessConfig = {
     worker_timeout_seconds: 1800,
     adversary_timeout_seconds: 900,
     session_hard_timeout_seconds: 7200,
+    subtask_concurrency: 1,
   },
   vercel: {
     enabled: false,

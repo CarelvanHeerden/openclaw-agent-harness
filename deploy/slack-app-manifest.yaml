@@ -1,0 +1,72 @@
+# Slack app manifest for openclaw-agent-harness.
+#
+# Create the app at https://api.slack.com/apps -> "Create New App" -> "From a manifest".
+# After install, grab the Bot User OAuth Token (xoxb-...) and put it in the vault
+# as `slack-openclaw-agent-harness`.
+#
+# Scopes are the minimum needed for Phase-1 features:
+#   - chat:write, chat:write.public : post messages in the dev channel
+#   - reactions:read                 : reactions poller
+#   - reactions:write                : dispatcher's :eyes: ack
+#   - conversations:history          : channel-listener + thread walk
+#   - groups:history                 : same, for private channels
+#   - im:history                     : DM support (future)
+#   - users:read                     : resolve real names for logs
+#
+# Slash commands: `/harness_start` is optional; the primary entry point
+# is a normal channel message.
+
+display_information:
+  name: OpenClaw Agent Harness
+  description: Multi-agent code writing driven from Slack.
+  background_color: "#0f172a"
+  long_description: |
+    Post a dev request in the #infosecbot_dev channel. A Fable-5 lead
+    plans, Sonnet workers write code in isolated git worktrees, and a
+    Fable-5 adversary reviews the diff (plus optional Vercel preview
+    runtime data) before a PR is opened under your GitHub identity.
+
+    Ship it with :rocket:, kill it with :x:, extend the budget with
+    :moneybag:. Every session has an audit trail in the local SQLite
+    state store.
+
+features:
+  bot_user:
+    display_name: OpenClaw Agent Harness
+    always_online: true
+  slash_commands:
+    - command: /harness_start
+      url: https://REPLACE_ME.example.com/slack/commands
+      description: "Start a harness session from a pre-cooked brief. Optional -- normal messages also work."
+      usage_hint: "<repo> <one-sentence request>"
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - chat:write.public
+      - reactions:read
+      - reactions:write
+      - conversations.connect:read
+      - channels:history
+      - groups:history
+      - im:history
+      - users:read
+      - files:read
+    user: []
+
+settings:
+  event_subscriptions:
+    request_url: https://REPLACE_ME.example.com/slack/events
+    bot_events:
+      - message.channels
+      - message.groups
+      - reaction_added
+      - reaction_removed
+  interactivity:
+    is_enabled: true
+    request_url: https://REPLACE_ME.example.com/slack/interactivity
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
