@@ -126,6 +126,10 @@ async function structuredCall<T>(params: {
   systemPrompt: string;
   userMessage: string;
   timeoutSeconds: number;
+  /** Optional validation. If supplied, replaces the raw JSON.parse. Callers should pass their required top-level keys here so we fail loudly when the model returns a truncated or duplicate-object response. */
+  validation?: JsonValidationOptions<T>;
+  /** Optional logger for the trailing-JSON warning. */
+  logger?: { warn: (m: string, meta?: unknown) => void };
 }): Promise<{ parsed: T; sdkSessionId: string; costUsd: number; tokensIn: number; tokensOut: number; raw: string }> {
   const sdk = await loadSdk();
   const abort = new AbortController();
@@ -168,8 +172,13 @@ async function structuredCall<T>(params: {
   }
 
   const raw = textChunks.join("");
-  const json = extractJson(raw);
-  const parsed = JSON.parse(json) as T;
+  let parsed: T;
+  if (params.validation) {
+    parsed = extractAndValidateJson<T>(raw, { ...params.validation, logger: params.logger ?? params.validation.logger });
+  } else {
+    const json = extractJson(raw);
+    parsed = JSON.parse(json) as T;
+  }
   return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw };
 }
 
@@ -177,6 +186,10 @@ async function structuredCall<T>(params: {
  * Extracts the first well-formed top-level JSON object or array from a
  * string. Handles the common case where the model wraps output in prose
  * or a fenced code block despite instructions.
+ *
+ * WARNING: prefer `extractAndValidateJson()` over calling this directly.
+ * If the model outputs `{"foo":1}\n{"bar":2}` we return only the first object;
+ * without validation you can silently miss the second half of the response.
  */
 export function extractJson(text: string): string {
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -203,6 +216,77 @@ export function extractJson(text: string): string {
   throw new Error("unbalanced JSON in output");
 }
 
+export interface JsonValidationOptions<T> {
+  /** Required top-level keys on the parsed object. Missing keys throw. */
+  requiredKeys: readonly (keyof T)[];
+  /** Optional per-key type checker. Values that fail throw. */
+  typeCheck?: (parsed: unknown) => parsed is T;
+  /** Warn if the raw text after the JSON object contains more JSON. Default true. */
+  warnOnTrailingJson?: boolean;
+  /** Logger for the trailing-JSON warning. */
+  logger?: { warn: (m: string, meta?: unknown) => void };
+  /** Context label for error messages (e.g. "lead planner"). */
+  label?: string;
+}
+
+/**
+ * Robust wrapper around `extractJson()`.
+ *  - Extracts the first JSON object/array.
+ *  - Parses it.
+ *  - Verifies required top-level keys are present.
+ *  - Optionally warns (not throws) when the raw response contains a
+ *    second JSON object we're silently discarding.
+ *  - Rethrows with the ORIGINAL raw text on any failure, so an operator
+ *    can see exactly what the model returned.
+ */
+export function extractAndValidateJson<T>(rawText: string, opts: JsonValidationOptions<T>): T {
+  const label = opts.label ?? "model output";
+  let extracted: string;
+  try {
+    extracted = extractJson(rawText);
+  } catch (err) {
+    throw new Error(`[${label}] extractJson failed: ${String(err)}\n--- raw ---\n${rawText.slice(0, 4000)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(extracted);
+  } catch (err) {
+    throw new Error(`[${label}] JSON.parse failed: ${String(err)}\n--- extracted ---\n${extracted.slice(0, 2000)}\n--- raw ---\n${rawText.slice(0, 4000)}`);
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`[${label}] JSON parsed to non-object: ${typeof parsed}\n--- extracted ---\n${extracted.slice(0, 2000)}`);
+  }
+  const rec = parsed as Record<string, unknown>;
+  const missing: string[] = [];
+  for (const key of opts.requiredKeys) {
+    if (!(String(key) in rec)) missing.push(String(key));
+  }
+  if (missing.length > 0) {
+    throw new Error(`[${label}] JSON missing required keys: ${missing.join(", ")}\n--- extracted ---\n${extracted.slice(0, 2000)}\n--- raw ---\n${rawText.slice(0, 4000)}`);
+  }
+  if (opts.typeCheck && !opts.typeCheck(parsed)) {
+    throw new Error(`[${label}] JSON failed typeCheck\n--- extracted ---\n${extracted.slice(0, 2000)}`);
+  }
+  // Trailing-JSON detection: if there's another `{`/`[` after the first object
+  // ends, we would have silently ignored it. Warn so operators can see it.
+  const warnOnTrailing = opts.warnOnTrailingJson !== false;
+  if (warnOnTrailing && opts.logger) {
+    const idx = rawText.indexOf(extracted);
+    if (idx >= 0) {
+      const tail = rawText.slice(idx + extracted.length);
+      const nextBracket = tail.search(/[{[]/);
+      if (nextBracket !== -1 && tail.slice(nextBracket, nextBracket + 200).match(/^[{[][\s\S]{4,}/)) {
+        opts.logger.warn(`[${label}] model output contained a second JSON object we ignored`, {
+          tailPreview: tail.slice(nextBracket, nextBracket + 200),
+          extractedLen: extracted.length,
+          rawLen: rawText.length,
+        });
+      }
+    }
+  }
+  return parsed as T;
+}
+
 export async function runClassifierSdk(params: {
   model: string;
   userText: string;
@@ -223,6 +307,7 @@ export async function runClassifierSdk(params: {
     systemPrompt,
     userMessage: params.userText,
     timeoutSeconds: params.timeoutSeconds,
+    validation: { requiredKeys: ["intent", "reason"], label: "classifier" },
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
 }
@@ -251,6 +336,7 @@ export async function runCrystalliserSdk(params: {
     systemPrompt,
     userMessage: params.userText,
     timeoutSeconds: params.timeoutSeconds,
+    validation: { requiredKeys: ["title", "motivation", "acceptanceCriteria", "riskLevel"], label: "crystalliser" },
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
 }
@@ -283,8 +369,59 @@ export async function runLeadSdk(params: {
     systemPrompt,
     userMessage: JSON.stringify(params.brief),
     timeoutSeconds: params.timeoutSeconds,
+    validation: { requiredKeys: ["repo", "branch", "subTasks", "reviewChecklist", "riskLevel"], label: "lead" },
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+}
+
+/**
+ * Adversary SDK call.
+ *
+ * Large diffs are chunked instead of silently truncated (prior behaviour was
+ * a hard `.slice(0, 200_000)` which caused the tail of any big refactor to be
+ * reviewed by no one). Strategy:
+ *   1. If diff fits in DIFF_SINGLE_CHUNK_BYTES, one call, done.
+ *   2. Otherwise, split on file boundaries (`diff --git a/... b/...`) and
+ *      review chunks in sequence, feeding the running findings back into the
+ *      next chunk's system prompt so the adversary has context.
+ *   3. Merge all findings; verdict is the strictest across chunks
+ *      (block > revise > pass).
+ *   4. If a single file boundary exceeds one chunk (huge single file),
+ *      truncate that file to CHUNK_MAX_BYTES and annotate the summary
+ *      that the file was partially reviewed (this is rare in practice).
+ *
+ * Adversary is told explicitly when chunking is in effect so its findings
+ * can note incomplete coverage rather than silently missing it.
+ */
+const DIFF_SINGLE_CHUNK_BYTES = 180_000;
+const CHUNK_MAX_BYTES = 180_000;
+
+export function splitDiffOnFileBoundaries(diff: string, maxBytes: number = CHUNK_MAX_BYTES): string[] {
+  if (diff.length <= maxBytes) return [diff];
+  const parts = diff.split(/(?=^diff --git )/m);
+  const chunks: string[] = [];
+  let cur = "";
+  for (const part of parts) {
+    if (part.length > maxBytes) {
+      // single file too big; emit any accumulated chunk, then truncate this file
+      if (cur) { chunks.push(cur); cur = ""; }
+      chunks.push(part.slice(0, maxBytes) + `\n[TRUNCATED: file diff was ${part.length} bytes, capped at ${maxBytes}]\n`);
+      continue;
+    }
+    if (cur.length + part.length > maxBytes) {
+      chunks.push(cur);
+      cur = part;
+    } else {
+      cur += part;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+function mergeVerdict(a: "pass" | "revise" | "block", b: "pass" | "revise" | "block"): "pass" | "revise" | "block" {
+  const order = { pass: 0, revise: 1, block: 2 } as const;
+  return order[a] >= order[b] ? a : b;
 }
 
 export async function runAdversarySdk(params: {
@@ -298,25 +435,107 @@ export async function runAdversarySdk(params: {
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
+  chunkedReview?: { chunkCount: number; totalBytes: number };
 }> {
-  const r = await structuredCall<{ verdict: "pass" | "revise" | "block"; findings: unknown[]; summary: string }>({
-    model: params.model,
-    systemPrompt: params.systemPrompt,
-    userMessage: `Here is the diff to review:\n\n${params.diffText.slice(0, 200000)}`,
-    timeoutSeconds: params.timeoutSeconds,
-  });
-  return { parsed: r.parsed, sdkSessionId: r.sdkSessionId, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+  const diffBytes = params.diffText.length;
+
+  // Fast path: single call.
+  if (diffBytes <= DIFF_SINGLE_CHUNK_BYTES) {
+    const r = await structuredCall<{ verdict: "pass" | "revise" | "block"; findings: unknown[]; summary: string }>({
+      model: params.model,
+      systemPrompt: params.systemPrompt,
+      userMessage: `Here is the diff to review:\n\n${params.diffText}`,
+      timeoutSeconds: params.timeoutSeconds,
+      validation: { requiredKeys: ["verdict", "findings", "summary"], label: "adversary" },
+    });
+    return { parsed: r.parsed, sdkSessionId: r.sdkSessionId, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+  }
+
+  // Slow path: chunked.
+  const chunks = splitDiffOnFileBoundaries(params.diffText);
+  let verdict: "pass" | "revise" | "block" = "pass";
+  const findings: unknown[] = [];
+  const summaries: string[] = [];
+  let sdkSessionId = "";
+  let costUsd = 0;
+  let tokensIn = 0;
+  let tokensOut = 0;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkPrompt = params.systemPrompt +
+      `\n\nNOTE: this diff was too large to review in one pass. This is CHUNK ${i + 1} OF ${chunks.length} (${diffBytes} bytes total). Findings from prior chunks are attached below; include chunk-level context in your response. Verdict is aggregated across all chunks.`;
+    const chunkUserMsg = i === 0
+      ? `Here is CHUNK ${i + 1}/${chunks.length} of the diff:\n\n${chunks[i]}`
+      : `Prior chunks produced these findings so far:\n\n${JSON.stringify(findings, null, 2).slice(0, 8000)}\n\nHere is CHUNK ${i + 1}/${chunks.length}:\n\n${chunks[i]}`;
+    const r = await structuredCall<{ verdict: "pass" | "revise" | "block"; findings: unknown[]; summary: string }>({
+      model: params.model,
+      systemPrompt: chunkPrompt,
+      userMessage: chunkUserMsg,
+      timeoutSeconds: params.timeoutSeconds,
+      validation: { requiredKeys: ["verdict", "findings", "summary"], label: `adversary-chunk-${i + 1}/${chunks.length}` },
+    });
+    verdict = mergeVerdict(verdict, r.parsed.verdict);
+    findings.push(...(Array.isArray(r.parsed.findings) ? r.parsed.findings : []));
+    summaries.push(`Chunk ${i + 1}/${chunks.length}: ${r.parsed.summary}`);
+    if (!sdkSessionId) sdkSessionId = r.sdkSessionId;
+    costUsd += r.costUsd;
+    tokensIn += r.tokensIn;
+    tokensOut += r.tokensOut;
+  }
+
+  return {
+    parsed: {
+      verdict,
+      findings,
+      summary: `Reviewed in ${chunks.length} chunks (${diffBytes} bytes total). Aggregated verdict: ${verdict}.\n\n${summaries.join("\n\n")}`,
+    },
+    sdkSessionId,
+    costUsd,
+    tokensIn,
+    tokensOut,
+    chunkedReview: { chunkCount: chunks.length, totalBytes: diffBytes },
+  };
 }
 
-/** Cost estimation table (USD per M tokens) as of 2026-07-13. */
-const PRICES: Record<string, { input: number; output: number }> = {
+/**
+ * Cost estimation table (USD per M tokens).
+ *
+ * Update policy: these prices WILL drift. `estimateSubTaskCost()` is used
+ * only for BUDGET PROJECTIONS in the loop; the authoritative source of
+ * truth is the `total_cost_usd` returned by the SDK on each call, which we
+ * accumulate in the state store.
+ *
+ * `checkPriceDrift()` runs whenever we get a real SDK cost back and compares
+ * it against our estimate. Drift > 20% logs a warning so we can update the
+ * table. Pricing is also configurable at plugin config time via
+ * `harness.models.price_overrides` (see config.ts), so operators can patch
+ * without waiting for a release.
+ */
+export const PRICES: Record<string, { input: number; output: number }> = {
   "claude-fable-5": { input: 10, output: 50 },
   "claude-sonnet-5": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
 };
 
-export function estimateSubTaskCost(model: string, tokens: number): number {
-  const p = PRICES[model] ?? PRICES["claude-sonnet-5"]!;
+export function estimateSubTaskCost(model: string, tokens: number, overrides?: Record<string, { input: number; output: number }>): number {
+  const table = { ...PRICES, ...(overrides ?? {}) };
+  const p = table[model] ?? table["claude-sonnet-5"]!;
   // Rough 20/80 in/out split for planning purposes
   return (tokens * 0.2 * p.input + tokens * 0.8 * p.output) / 1_000_000;
+}
+
+/**
+ * Called after a real SDK call. Returns { drift, warn } where warn=true when
+ * the actual cost deviates > 20% from our estimate for that model+tokens.
+ * Callers should log the warning (with model + actual + estimate) so we
+ * catch stale price tables in one run instead of over billing cycles.
+ */
+export function checkPriceDrift(model: string, actualCostUsd: number, tokensIn: number, tokensOut: number, overrides?: Record<string, { input: number; output: number }>): { drift: number; warn: boolean; estimated: number } {
+  const table = { ...PRICES, ...(overrides ?? {}) };
+  const p = table[model];
+  if (!p) return { drift: 0, warn: false, estimated: 0 };
+  const estimated = (tokensIn * p.input + tokensOut * p.output) / 1_000_000;
+  if (estimated <= 0 || actualCostUsd <= 0) return { drift: 0, warn: false, estimated };
+  const drift = Math.abs(actualCostUsd - estimated) / estimated;
+  return { drift, warn: drift > 0.2, estimated };
 }
