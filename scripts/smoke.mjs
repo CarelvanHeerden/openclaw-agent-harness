@@ -65,6 +65,7 @@ const expectTools = [
   "harness_start_session",
   "harness_session_get",
   "harness_telemetry",
+  "harness_upload_logs",
   "harness_cancel",
   "harness_resume",
   "harness_retention_prune",

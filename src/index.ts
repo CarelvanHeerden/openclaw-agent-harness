@@ -249,7 +249,33 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
       );
     },
 
-    fetchRuntime: async ({ plan }) => {
+    fetchRuntime: async ({ plan, sessionId }) => {
+      // Prefer a manual upload if one exists (most recent wins). This lets
+      // non-Vercel deploys hand-supply logs via the harness_upload_logs tool.
+      const upload = state.db
+        .prepare(
+          `SELECT status, source, logs_excerpt, error_count, deployment_url, uploaded_at, uploaded_by
+             FROM runtime_uploads
+            WHERE session_id = ?
+         ORDER BY uploaded_at DESC
+            LIMIT 1`,
+        )
+        .get(sessionId) as
+          | { status: string; source: string | null; logs_excerpt: string; error_count: number | null; deployment_url: string | null; uploaded_at: number; uploaded_by: string }
+          | undefined;
+      if (upload) {
+        return {
+          provider: "manual" as const,
+          status: upload.status as "ok" | "build_failed" | "no_deploy_yet" | "unavailable",
+          deploymentUrl: upload.deployment_url ?? undefined,
+          logsExcerpt: upload.logs_excerpt,
+          errorCount: upload.error_count ?? undefined,
+          uploadedAt: upload.uploaded_at,
+          uploadedBy: upload.uploaded_by,
+          source: upload.source ?? undefined,
+        };
+      }
+      // Otherwise fall back to Vercel bridge, only if explicitly enabled.
       if (!config.vercel?.enabled) return undefined;
       const token = await creds.getToken(config.vercel.credential_service);
       return fetchBranchLogs({

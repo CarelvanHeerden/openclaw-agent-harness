@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed / Changed
+
+- *Runtime data source is now provider-agnostic.* Vercel is still supported
+  behind `harness.vercel.enabled` (feature flag), but any repo that deploys
+  elsewhere can now hand-supply logs through the new `harness_upload_logs`
+  tool. The adversary receives them as `runtime.provider = "manual"`
+  with the same `NO RUNTIME DATA` safety net when nothing is available.
+- *New table:* `runtime_uploads` (append-only, session-scoped, 16 KB cap).
+- *Loop change:* `fetchRuntime` now reads the latest manual upload for the
+  session first and falls back to Vercel only when the flag is on and no
+  upload is present.
+- *Docs / examples:* removed org-specific placeholders in favour of
+  generic `example-org/example-repo` and `dev@example.com`. This is a
+  public repo; concrete org names don't belong in it.
+- *Git history rewritten* to strip a work email from every author line
+  (was causing another user with the same domain email verified on their
+  GitHub to be credited as a contributor). All commits are now under the
+  personal GitHub noreply address.
+
 ## [0.1.0-beta.1] -- 2026-07-13
 
 Beta cut. All Phase 1-3 subsystems land, wire together, and are tested.

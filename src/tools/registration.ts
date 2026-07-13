@@ -192,6 +192,58 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
   disposers.push(
     toDispose(
       api.registerTool({
+        name: "harness_upload_logs",
+        description:
+          "Attach runtime logs to a session manually. Use when the target repo does NOT deploy to Vercel (Cloudflare, AWS, on-prem) or when the Vercel bridge is disabled. The adversary reads the most recent upload for a session and treats it as runtime evidence with provider=\"manual\".",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionId: { type: "string", minLength: 1 },
+            uploadedBy: { type: "string", minLength: 1, description: "Slack user id of the uploader (must be in authorised_users)" },
+            status: { type: "string", enum: ["ok", "build_failed", "no_deploy_yet", "unavailable"] },
+            logsExcerpt: { type: "string", minLength: 1, description: "Raw log text. Capped at 16KB; extra characters truncated." },
+            source: { type: "string", description: "Free-form label, e.g. 'prod nginx access log' or 'AWS CloudWatch /aws/lambda/foo'" },
+            errorCount: { type: "number", minimum: 0 },
+            deploymentUrl: { type: "string" },
+          },
+          required: ["sessionId", "uploadedBy", "status", "logsExcerpt"],
+          additionalProperties: false,
+        },
+        execute: (input) => {
+          const p = input as {
+            sessionId: string;
+            uploadedBy: string;
+            status: "ok" | "build_failed" | "no_deploy_yet" | "unavailable";
+            logsExcerpt: string;
+            source?: string;
+            errorCount?: number;
+            deploymentUrl?: string;
+          };
+          if (!runtime.config.slack.authorised_users.includes(p.uploadedBy)) {
+            return { content: [{ type: "text", text: `Uploader ${p.uploadedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          }
+          const sess = runtime.state.db.prepare(`SELECT id, status FROM sessions WHERE id=?`).get(p.sessionId) as { id?: string; status?: string } | undefined;
+          if (!sess?.id) {
+            return { content: [{ type: "text", text: `Unknown session ${p.sessionId}` }], details: { ok: false, notFound: true } };
+          }
+          const CAP = 16 * 1024;
+          const excerpt = p.logsExcerpt.length > CAP ? p.logsExcerpt.slice(0, CAP) + "\n[...truncated at 16KB]" : p.logsExcerpt;
+          runtime.state.db
+            .prepare(
+              `INSERT INTO runtime_uploads (session_id, uploaded_by, source, status, logs_excerpt, error_count, deployment_url, uploaded_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(p.sessionId, p.uploadedBy, p.source ?? null, p.status, excerpt, p.errorCount ?? null, p.deploymentUrl ?? null, Date.now());
+          runtime.state.audit("runtime.upload", { uploadedBy: p.uploadedBy, status: p.status, bytes: excerpt.length, source: p.source }, p.sessionId);
+          return { content: [{ type: "text", text: `Uploaded ${excerpt.length} bytes of runtime logs for ${p.sessionId} (status=${p.status}). Adversary will pick this up on the next cycle.` }], details: { ok: true, bytes: excerpt.length } };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
         name: "harness_start_session",
         description:
           "Start a harness session directly (bypasses classifier). Useful for slash commands, cron-triggered runs, or other plugins.",

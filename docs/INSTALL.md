@@ -63,7 +63,7 @@ Edit `~/.openclaw/openclaw.json` (or use `openclaw config patch`) and add the pl
         "session_hard_ceiling_usd": 200
       },
       "repos": {
-        "allowed": ["Stitch-Vercel/ProjectThanos"]
+        "allowed": ["example-org/example-repo"]
       },
       "models": {
         "lead": "claude-fable-5",
@@ -83,9 +83,9 @@ Using OpenClaw's credential vault, add one entry per (user, org):
 
 ```bash
 # example naming convention
-openclaw memory credential-store --service github-carel-stitch-vercel   --type token --value 'ghp_...'
+openclaw memory credential-store --service github-carel-example-org   --type token --value 'ghp_...'
 openclaw memory credential-store --service github-carel-personal        --type token --value 'ghp_...'
-openclaw memory credential-store --service github-francois-stitch-vercel --type token --value 'ghp_...'
+openclaw memory credential-store --service github-francois-example-org --type token --value 'ghp_...'
 ```
 
 Do NOT run these commands with the gateway live; add them via a maintenance window, or use the plugin `credential_store` tool from a session.
