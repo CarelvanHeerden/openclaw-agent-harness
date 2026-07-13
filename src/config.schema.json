@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "openclaw-agent-harness plugin config",
+  "type": "object",
+  "required": ["slack", "budgets", "repos", "models", "loop", "storage", "safety", "pat_routing"],
+  "properties": {
+    "slack": {
+      "type": "object",
+      "required": ["channel", "authorised_users"],
+      "properties": {
+        "channel": { "type": "string", "pattern": "^C[A-Z0-9]+$" },
+        "authorised_users": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^U[A-Z0-9]+$" },
+          "minItems": 1
+        },
+        "reactions": {
+          "type": "object",
+          "properties": {
+            "ship_it": { "type": "string" },
+            "abort": { "type": "string" },
+            "pause": { "type": "string" },
+            "budget_bump": { "type": "string" }
+          }
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "required": ["monthly_per_user_usd", "session_default_usd", "session_hard_ceiling_usd"],
+      "properties": {
+        "monthly_per_user_usd": { "type": "number", "minimum": 1 },
+        "session_default_usd": { "type": "number", "minimum": 1 },
+        "session_hard_ceiling_usd": { "type": "number", "minimum": 1 },
+        "daily_warn_usd": { "type": "number", "minimum": 1 },
+        "monthly_warn_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "repos": {
+      "type": "object",
+      "required": ["allowed"],
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^/]+/[^/]+$" }
+        },
+        "can_create": { "type": "boolean" },
+        "create_org": { "type": "string" },
+        "create_visibility": { "type": "string", "enum": ["private", "public"] },
+        "default_branch": { "type": "string" }
+      }
+    },
+    "models": {
+      "type": "object",
+      "properties": {
+        "lead": { "type": "string" },
+        "worker": { "type": "string" },
+        "adversary": { "type": "string" },
+        "classifier": { "type": "string" }
+      }
+    },
+    "loop": {
+      "type": "object",
+      "properties": {
+        "max_cycles": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "adversarial_pass_ends_early": { "type": "boolean" },
+        "worker_timeout_seconds": { "type": "integer", "minimum": 60 },
+        "adversary_timeout_seconds": { "type": "integer", "minimum": 60 }
+      }
+    },
+    "vercel": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "credential_service": { "type": "string" },
+        "team": { "type": "string" },
+        "project": { "type": "string" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "required": ["state_db_path"],
+      "properties": {
+        "state_db_path": { "type": "string" },
+        "worktrees_root": { "type": "string" },
+        "audit_retention_days": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "properties": {
+        "worker_permission_mode": { "type": "string", "enum": ["acceptEdits", "bypassPermissions", "plan"] },
+        "bash_whitelist": { "type": "array", "items": { "type": "string" } },
+        "bash_denylist_patterns": { "type": "array", "items": { "type": "string" } },
+        "path_denylist": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "pat_routing": {
+      "type": "object",
+      "properties": {
+        "overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        },
+        "commit_identity": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["name", "email"],
+            "properties": {
+              "name": { "type": "string" },
+              "email": { "type": "string", "format": "email" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
