@@ -12,14 +12,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
-
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: pnpm
+          node-version: "24"
+
+      # Pin pnpm to a version compatible with Node 24 that we control locally.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+          run_install: false
+
+      - name: Get pnpm store dir
+        id: pnpm-cache
+        shell: bash
+        run: echo "path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.path }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -31,6 +44,9 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+      - name: Copy schema.sql into dist
+        run: mkdir -p dist/state && cp src/state/schema.sql dist/state/
 
       - name: Test
         run: node --test tests/*.mjs
