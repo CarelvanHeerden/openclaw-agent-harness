@@ -32,9 +32,34 @@ export interface AdversaryInput {
   crystallisedPrompt: string;
   diffPath: string;
   repoPath: string;
-  vercelLogs?: string;
+  runtime?: {
+    provider: "vercel";
+    status: "ok" | "no_deploy_yet" | "build_failed" | "unavailable";
+    deploymentUrl?: string;
+    logsExcerpt?: string;
+    errorCount?: number;
+  };
   model: string;
   timeoutSeconds: number;
+}
+
+/**
+ * Adversary prompt-preamble helper. The orchestrator injects this string
+ * verbatim into the adversary's system prompt so the reviewer never silently
+ * skips the runtime dimension.
+ */
+export function runtimeBanner(input: AdversaryInput): string {
+  if (!input.runtime) return "NO RUNTIME DATA AVAILABLE (runtime bridge disabled).";
+  switch (input.runtime.status) {
+    case "ok":
+      return `RUNTIME DATA: Vercel preview ${input.runtime.deploymentUrl ?? "(unknown url)"} - ${input.runtime.errorCount ?? 0} error(s) in logs.`;
+    case "no_deploy_yet":
+      return "NO RUNTIME DATA AVAILABLE: preview deploy has not completed within the wait window. Do NOT sign off on runtime concerns.";
+    case "build_failed":
+      return `RUNTIME DATA: build FAILED for preview ${input.runtime.deploymentUrl ?? "(unknown url)"}. Treat as a critical finding unless the diff intentionally breaks the build.`;
+    case "unavailable":
+      return "NO RUNTIME DATA AVAILABLE: Vercel bridge returned an error. Do NOT sign off on runtime concerns.";
+  }
 }
 
 export async function runAdversary(_input: AdversaryInput): Promise<ReviewReport> {
