@@ -1,139 +1,169 @@
 # Real-test runbook
 
-The harness is scaffolded, wired, and unit-tested end-to-end with mocked
-adapters. Before Carel drives a real Slack request through it, the
-following prerequisites must be met.
+Getting `openclaw-agent-harness` to a first live run against a real repo,
+a real Slack channel, and (optionally) a real Vercel project.
 
-## 1. Config (openclaw.json)
+## 0. Prerequisites
 
-Add a `harness` block to your OpenClaw config:
+- OpenClaw runtime that supports the plugin SDK shape used by
+  `memory-hybrid` (mirrored here). Node 24+.
+- A private Slack channel for dev requests. Recommended: `#infosecbot_dev`.
+- A GitHub PAT scoped to the target repos with `repo, workflow` (and
+  `contents:write` for org-owned repos). Store in the hybrid-memory
+  credential vault as e.g. `github-<user>-<org>`.
+- A Slack bot token with `chat:write, reactions:read, reactions:write,
+  channels:history, groups:history`. Store in the vault as e.g.
+  `slack-openclaw-agent-harness`.
+- (Optional) A Vercel token if you want the adversary to see real
+  preview-deploy logs. Vault service e.g. `vercel-openclaw-agent-harness`.
 
-```json
-{
-  "plugins": {
-    "openclaw-agent-harness": {
-      "enabled": true,
-      "config": {
-        "slack": {
-          "channel": "C0DEVCHAN",
-          "authorised_users": ["U07UT6G8LQ4"]
-        },
-        "repos": {
-          "allowed": ["CarelvanHeerden/*"],
-          "default_base_branch": "main"
-        },
-        "budgets": {
-          "session_default_usd": 25,
-          "session_hard_ceiling_usd": 100
-        },
-        "pat_routing": {
-          "overrides": {
-            "U07UT6G8LQ4": {
-              "CarelvanHeerden": "github-carel-personal"
-            }
-          },
-          "commit_identity": {
-            "U07UT6G8LQ4": {
-              "name": "Carel van Heerden (via harness)",
-              "email": "carel@stitch.money"
-            }
-          }
-        },
-        "vercel": {
-          "enabled": false
-        }
-      }
-    }
-  }
-}
+## 1. Config
+
+Add a `harness` block to your OpenClaw config, e.g.:
+
+```yaml
+harness:
+  slack:
+    channel: "C0INFOSECBOTDEV"
+    authorised_users: ["U07UT6G8LQ4"]  # add teammates here
+    credential_service: "slack-openclaw-agent-harness"
+    reactions_poll_ms: 15000
+  budgets:
+    monthly_per_user_usd: 1000
+    session_default_usd: 50
+    session_hard_ceiling_usd: 200
+  repos:
+    allowed:
+      - "CarelvanHeerden/openclaw-agent-harness"
+      - "Stitch-Vercel/ProjectThanos"
+    default_base_branch: "main"
+  models:
+    lead: "claude-fable-5"
+    worker: "claude-sonnet-5"
+    adversary: "claude-fable-5"
+    classifier: "claude-haiku-4-5"
+  loop:
+    max_cycles: 3
+    worker_timeout_seconds: 1800
+    adversary_timeout_seconds: 900
+    session_hard_timeout_seconds: 7200
+  pat_routing:
+    default_service_pattern: "github-{user}-{org}"
+    overrides:
+      U07UT6G8LQ4:
+        "CarelvanHeerden/openclaw-agent-harness": "github-carel-personal"
+        "Stitch-Vercel": "github-carel-stitch"
+    commit_identity:
+      U07UT6G8LQ4:
+        name: "Carel van Heerden"
+        email: "carel@stitch.money"
+  storage:
+    state_db_path: "~/.openclaw/workspace/openclaw-agent-harness/state.db"
+    worktree_root: "~/.openclaw/workspace/openclaw-agent-harness/worktrees"
+    audit_retention_days: 90
+    prune_terminal_sessions: 365
+  safety:
+    worker_permission_mode: "acceptEdits"
+  vercel:
+    enabled: false                       # flip to true when you have a token
+    credential_service: "vercel-openclaw-agent-harness"
+    project_id: "prj_..."
+    preview_wait_seconds: 300
 ```
 
-## 2. Credentials vault
+## 2. Start-of-day checks
 
-The PAT currently lives at
-`~/.openclaw/workspace/.secrets/github-carel-personal.txt` (mode 0600).
-Move it into the encrypted credential vault before enabling the plugin
-in production:
+Before opening the channel to teammates:
 
-```
-credential_store service=github-carel-personal type=token value=<PAT>
-```
+1. `openclaw config validate` -- confirms `harness.*` parses without
+   throwing. If it screams "harness.slack.channel is required", the
+   block isn't loaded.
+2. `openclaw plugins list | grep openclaw-agent-harness` -- confirm
+   the runtime picked up the plugin.
+3. Post `:eyes:` on any test message you send. The harness reacts
+   with `:eyes:` to acknowledge every `start_new_session`. No reaction
+   = the Slack listener isn't wired.
 
-Until then, dev-mode file lookup can be enabled by setting
-`OAH_DEV_CRED_DIR=/home/node/.openclaw/workspace/.secrets` in the OpenClaw
-gateway environment. Do **not** do this in production.
+## 3. First live request
 
-## 3. Slack channel
-
-Create private channel `#infosecbot_dev` and add the OpenClaw Slack bot.
-Copy the channel id (`C…`) into `harness.slack.channel` above.
-
-## 4. Enable and reload
-
-Restart the OpenClaw gateway to pick up the plugin:
+Post in the channel (top-level, not in a thread):
 
 ```
-docker restart infosecbot-gateway
+Add a /hello endpoint to openclaw-agent-harness that returns "hi".
 ```
 
-Watch the logs for:
+Expected trail of Slack messages:
 
-```
-[harness] openclaw-agent-harness@0.1.0 ready
-```
+1. `:eyes:` reaction on your message (instant)
+2. `:brain: Understood: *Add /hello endpoint*` with acceptance criteria
+3. `:memo: Planning...`
+4. `:hammer: Executing cycle 1...`
+5. `:mag: Adversarial review of cycle 1...`
+6. Either:
+   - `:tada: PR opened: <url>` (happy path), or
+   - `:x: Session failed: <reason>` (with details), or
+   - `:octagonal_sign: Session aborted: <reason>`
 
-## 5. First real request
+## 4. Reactions cheat sheet
 
-Post in `#infosecbot_dev` (top-level, not in a thread):
+Drop the emoji on any bot-authored message in the thread:
 
-> Add a `/hello` route to `openclaw-agent-harness` that returns `{"ok": true}`.
+- `:rocket:` (`ship_it`): ship the current cycle's diff even if the
+  adversary said "revise". Only counts during `reviewing`.
+- `:x:` (`abort`): kill the session at the next checkpoint.
+- `:pause_button:` (`pause`): (planned) pause the session; not wired
+  in Phase 1.
+- `:moneybag:` (`budget_bump`): allow the session to blow through
+  its session budget cap. Still capped by the monthly per-user cap.
 
-Expected sequence in-thread:
+Only reactions from `slack.authorised_users` count.
 
-1. :eyes: reaction on your message
-2. `:brain: Understood: *…*` with acceptance criteria
-3. `:memo: Planning…`
-4. `:hammer: Executing cycle 1…`
-5. `:mag: Adversarial review of cycle 1…`
-6. `:tada: PR opened: https://github.com/CarelvanHeerden/openclaw-agent-harness/pull/N`
+## 5. Troubleshooting
 
-## 6. Kill switches (during a run)
+**Session stuck in `crystallising`.** The classifier or crystalliser call
+failed. Check `harness_session_get { sessionId }` for the last audit
+event. Common cause: SDK API key not set in the OpenClaw runtime env.
 
-React on the bot's first thread message with:
+**Session stuck in `planning`.** The lead model returned a plan that
+failed validation. Look at `audit_log` for `loop.plan_failed`. Common
+causes: repo not in `repos.allowed`; branch didn't start with
+`harness/`; sub-task count > 20.
 
-- `:x:` — hard abort
-- `:pause_button:` — pause (currently soft; the loop still finishes the current sub-task)
-- `:rocket:` — force ship (only takes effect during the `reviewing` state)
-- `:moneybag:` — one-shot budget bump
+**No reactions ever picked up.** `slack.credential_service` not set, or
+the vault credential missing. Poller logs "reactions poller not started"
+on bootstrap when this happens.
 
-Reactions are polled by the reaction service (Phase D) — until it lands,
-this rig relies on the Claude SDK's own permission-mode fallbacks.
+**Adversary always flags "no runtime data".** This is intentional if
+`vercel.enabled: false`. When enabled, look for `[vercel]` warnings in
+the log; usually a bad `project_id` or missing team scope on the token.
 
-## 7. Post-mortem
+## 6. Kill switch
+
+`harness_retention_prune { forceAbortInFlight: true }` will abort every
+non-terminal session. Not a normal operation -- use only when a runaway
+session is burning budget and you can't drop a `:x:` reaction fast enough.
+
+## 7. Post-run housekeeping
 
 After a run:
 
-```
-sqlite3 ~/.openclaw/workspace/openclaw-agent-harness/state.db \
-  "SELECT id, status, cycles_ran, cost_usd, final_pr_url FROM sessions ORDER BY created_at DESC LIMIT 5;"
-```
+1. Confirm the PR looks sane before merging. Non-pass adversary
+   verdicts open as *draft* so nothing merges on autopilot.
+2. If the PR gets merged, the harness does NOT delete the worktree
+   automatically. Run `harness_retention_prune {}` to clean up terminal
+   sessions older than `storage.prune_terminal_sessions` days.
+3. Check `budgets_monthly` for the current month:
+   `SELECT * FROM budgets_monthly WHERE user = 'U...';`
 
-## 8. Known limitations at Phase 1
+## 8. Known Phase-1 limitations
 
-- Reactions are read from `sessions.reactions_json`, which is written by
-  a poller not yet wired (Phase D). Effective override reactions currently
-  need a manual DB write to test.
-- Cost totals per-model are aggregated coarsely; per-sub-task attribution
-  lives on Phase D.
-- No multi-repo cross-cutting yet: `plan.repo` is a single string.
-- Session recovery marks stale sessions as `aborted` on plugin start
-  rather than resuming. Resume is scaffolded (`last_worker_sdk_session`)
-  and will be wired next iteration.
-- `pause` reaction is not yet honoured by the loop.
-
-## 9. If something breaks
-
-1. Check the gateway logs for `[harness]` prefixed lines.
-2. Query `audit_log` for the session id: every state transition is logged.
-3. If a session is stuck: `UPDATE sessions SET status = 'aborted' WHERE id = '…'`, then restart.
-4. If a worktree is stuck: `rm -rf ~/.openclaw/workspace/openclaw-agent-harness/worktrees/<sessionId>`.
+- Sub-task recovery on container restart is coarse: any stale in-flight
+  session is marked `interrupted`, not resumed automatically. Manual
+  resume path lands in Phase 2.
+- No parallel sub-task execution yet; sub-tasks run sequentially. Fine
+  for < 8 sub-tasks per cycle.
+- Slack messages are sent through `api.sendMessage`; if the OpenClaw
+  runtime doesn't wire it, they no-op. Use `harness_session_get` to
+  inspect state instead.
+- Cost tracking uses estimator-derived numbers from the SDK's `result`
+  message. Real Anthropic invoicing may differ by a few percent.
