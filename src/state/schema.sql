@@ -1,5 +1,5 @@
 -- openclaw-agent-harness state schema
--- SQLite, applied once on first open.
+-- SQLite, applied once on first open. Additive migrations only.
 
 CREATE TABLE IF NOT EXISTS sessions (
   id                       TEXT PRIMARY KEY,
@@ -15,18 +15,20 @@ CREATE TABLE IF NOT EXISTS sessions (
   updated_at               INTEGER NOT NULL,
   budget_usd               REAL NOT NULL,
   cost_usd                 REAL NOT NULL DEFAULT 0,
+  cycles_ran               INTEGER NOT NULL DEFAULT 0,
   crystallised_prompt      TEXT,
+  lead_plan_json           TEXT,             -- serialised LeadPlan
   final_pr_url             TEXT,
-  -- Recovery checkpointing (added in fix/review-round-1)
+  reactions_json           TEXT,             -- serialised { shipIt, abort, pause, budgetBump }
+  -- Recovery checkpointing
   current_cycle            INTEGER NOT NULL DEFAULT 0,
   last_completed_sub_task  TEXT,
   last_checkpoint_at       INTEGER,
-  claude_sdk_session_id    TEXT,   -- SDK session UUID for resume()
-  last_worker_sdk_session  TEXT    -- most recent worker SDK session, for granular resume
+  claude_sdk_session_id    TEXT,             -- lead's Claude Agent SDK session UUID
+  last_worker_sdk_session  TEXT               -- most recent worker SDK session
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);
-
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions (status);
 CREATE INDEX IF NOT EXISTS idx_sessions_requester ON sessions (requester);
 
@@ -34,21 +36,22 @@ CREATE TABLE IF NOT EXISTS sub_tasks (
   id                  TEXT PRIMARY KEY,
   session_id          TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   cycle               INTEGER NOT NULL,
-  ordinal             INTEGER NOT NULL,
+  seq                 INTEGER NOT NULL,   -- ordinal within the cycle's plan
   description         TEXT NOT NULL,
   worker_model        TEXT NOT NULL,
-  status              TEXT NOT NULL,   -- pending|running|done|failed|interrupted
+  status              TEXT NOT NULL,      -- pending|running|done|failed|interrupted
   cost_usd            REAL NOT NULL DEFAULT 0,
   files_touched       TEXT,
   summary             TEXT,
-  sdk_session_id      TEXT,             -- worker's Claude Agent SDK session UUID
+  commit_sha          TEXT,
+  sdk_session_id      TEXT,
   started_at          INTEGER,
   completed_at        INTEGER,
   created_at          INTEGER NOT NULL,
   updated_at          INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_sub_tasks_session ON sub_tasks (session_id, cycle);
+CREATE INDEX IF NOT EXISTS idx_sub_tasks_session ON sub_tasks (session_id, cycle, seq);
 
 CREATE TABLE IF NOT EXISTS reviews (
   id           TEXT PRIMARY KEY,
@@ -56,23 +59,27 @@ CREATE TABLE IF NOT EXISTS reviews (
   cycle        INTEGER NOT NULL,
   verdict      TEXT NOT NULL,
   findings     TEXT NOT NULL,
+  summary      TEXT,
   cost_usd     REAL NOT NULL DEFAULT 0,
+  sdk_session_id TEXT,
   created_at   INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_reviews_session ON reviews (session_id, cycle);
 
 CREATE TABLE IF NOT EXISTS budgets_daily (
-  day       TEXT NOT NULL,
-  user      TEXT NOT NULL,
-  spent_usd REAL NOT NULL DEFAULT 0,
+  day           TEXT NOT NULL,
+  user          TEXT NOT NULL,
+  spent_usd     REAL NOT NULL DEFAULT 0,
+  session_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (day, user)
 );
 
 CREATE TABLE IF NOT EXISTS budgets_monthly (
-  month     TEXT NOT NULL,
-  user      TEXT NOT NULL,
-  spent_usd REAL NOT NULL DEFAULT 0,
+  month         TEXT NOT NULL,
+  user          TEXT NOT NULL,
+  spent_usd     REAL NOT NULL DEFAULT 0,
+  session_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (month, user)
 );
 
