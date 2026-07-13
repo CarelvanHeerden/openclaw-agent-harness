@@ -55,7 +55,7 @@ export class PrMergedWatcher {
         `SELECT id, requester, repo, final_pr_url, slack_channel, slack_thread, worktree_path
          FROM sessions
          WHERE status = 'done' AND final_pr_url IS NOT NULL AND final_pr_url != ''
-           AND (reactions_json IS NULL OR json_extract(reactions_json, '$.prClosedAt') IS NULL)`,
+           AND pr_closed_at IS NULL`,
       )
       .all() as Array<{
         id: string;
@@ -105,12 +105,18 @@ export class PrMergedWatcher {
   }
 
   private async finalise(row: { id: string; slack_channel: string; slack_thread: string; final_pr_url: string; repo: string; worktree_path: string }, state: { state: string; merged: boolean; mergedAt: string | null }): Promise<void> {
-    // Mark closed in the reactions_json blob (no schema migration needed)
-    const existing = this.state.db.prepare(`SELECT reactions_json FROM sessions WHERE id = ?`).get(row.id) as { reactions_json?: string } | undefined;
-    const parsed = existing?.reactions_json ? JSON.parse(existing.reactions_json) : {};
-    parsed.prClosedAt = Date.now();
-    parsed.prMerged = state.merged;
-    this.state.db.prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(parsed), Date.now(), row.id);
+    // Proper columns as of 2026-07-13. `reactions_json` no longer stores
+    // PR lifecycle (that was a beta-era shortcut). See src/state/store.ts.
+    const now = Date.now();
+    const mergedAtMs = state.mergedAt ? (Date.parse(state.mergedAt) || null) : null;
+    this.state.db.prepare(
+      `UPDATE sessions
+          SET pr_closed_at = ?,
+              pr_merged    = ?,
+              pr_merged_at = ?,
+              updated_at   = ?
+        WHERE id = ?`,
+    ).run(now, state.merged ? 1 : 0, mergedAtMs, now, row.id);
     this.state.audit("pr-watcher.closed", { sessionId: row.id, merged: state.merged, mergedAt: state.mergedAt }, row.id);
 
     const text = state.merged

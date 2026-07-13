@@ -1,5 +1,73 @@
 # Changelog
 
+## [Unreleased] -- maintainer review round 2
+
+### Security
+
+- *Read-side guard on `canUseTool`.* The SDK's built-in `Read` / `NotebookRead`
+  bypasses Bash, so a worker could exfil `.env`, `credentials.db`, or
+  private keys through the file reader without ever hitting the bash guard.
+  `buildBashGuard()` now applies the same `path_denylist` to Read,
+  NotebookRead, and to Glob/Grep patterns.
+
+### Correctness
+
+- *Structured-output validation.* `extractAndValidateJson()` replaces the
+  bare `JSON.parse(extractJson(raw))` in every LLM call site. Missing
+  required top-level keys now throw with the raw model output in the
+  error message. When the model emits a second JSON object we would
+  silently discard, we log a warning instead of dropping it in silence.
+  Wired into classifier / crystalliser / lead / adversary calls.
+- *Adversary diff chunking.* Prior behaviour was a hard
+  `.slice(0, 200000)` on large diffs, so refactors bigger than 200 KB
+  had their tails reviewed by no one. Now the diff is split on file
+  boundaries into 180 KB chunks, reviewed sequentially with prior
+  findings threaded through the system prompt, and the strictest
+  verdict across chunks wins. If a single file exceeds one chunk it
+  is truncated with an inline annotation so the adversary can note
+  incomplete coverage.
+
+### State model
+
+- *PR lifecycle promoted out of `reactions_json`.* New columns on
+  `sessions`: `pr_merged`, `pr_closed_at`, `pr_merged_at`. The github
+  watcher writes them directly instead of stuffing JSON into the
+  reactions blob. The state store also runs an idempotent backfill
+  from the legacy `reactions_json.prClosedAt` / `.prMerged` shape.
+
+### Observability
+
+- *Price-drift detection.* `checkPriceDrift()` compares the SDK's real
+  `total_cost_usd` against our estimate for the same model+tokens and
+  warns when drift exceeds 20 %. Pricing is now configurable at the
+  plugin level via `harness.models.price_overrides` so operators can
+  patch stale rates without waiting for a release.
+
+### Scalability
+
+- *Slack reactions poller is rate-aware.* Adaptive backoff (15 s -> 120 s
+  when no reactions arrive; resets on any new reaction), round-robin
+  per-tick cap of 20 sessions, idle skip when no non-terminal sessions
+  exist, and native 429 handling that honours `Retry-After`. Slack's
+  Tier 3 budget is no longer a concern at 10+ concurrent sessions.
+- *Reader surfaces 429s.* `SlackReactionsReader` no longer swallows
+  rate-limit responses; throws `{ retryAfterSeconds }` so the poller
+  can back off globally.
+
+### CI / release hygiene
+
+- *Live-SDK smoke workflow.* `scripts/live-sdk-smoke.mjs` calls the real
+  Claude Agent SDK against a trivial classifier task. Costs cents.
+  Gated CI workflow `live-sdk-smoke.yml` runs only on `workflow_dispatch`
+  or on release tags. Catches SDK API drift before a live Slack test.
+
+### Tests
+
+115 tests passing (+22 new): `json-extraction.test.mjs` (6),
+`diff-chunker.test.mjs` (6), `read-guard.test.mjs` (7),
+`reactions-poller.test.mjs` (+3 adaptive/idle/429), `pr-watcher.test.mjs`
+(row-level assertions on the new columns).
+
 ## [Unreleased]
 
 ### Fixed / Changed
