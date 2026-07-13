@@ -157,6 +157,75 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     ),
   );
 
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_cancel",
+        description:
+          "Cancel an in-flight harness session by setting an abort flag the loop reads on its next checkpoint.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionId: { type: "string", minLength: 1 },
+            reason: { type: "string", maxLength: 500 },
+          },
+          required: ["sessionId"],
+          additionalProperties: false,
+        },
+        execute: (input) => {
+          const { sessionId, reason } = input as { sessionId: string; reason?: string };
+          const row = runtime.state.db.prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId) as { status: string; reactions_json?: string } | undefined;
+          if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+          if (["done", "failed", "aborted"].includes(row.status)) {
+            return { content: [{ type: "text", text: `Session ${sessionId} is already terminal (${row.status})` }], details: { ok: false, alreadyTerminal: true, status: row.status } };
+          }
+          const parsed = row.reactions_json ? JSON.parse(row.reactions_json) : {};
+          parsed.abort = true;
+          runtime.state.db.prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(parsed), Date.now(), sessionId);
+          runtime.state.audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked" }, sessionId);
+          return { content: [{ type: "text", text: `Abort flag set on ${sessionId}. The loop will terminate at its next checkpoint.` }], details: { ok: true, sessionId } };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_resume",
+        description:
+          "Resume an interrupted harness session. Requires the session to be in 'interrupted' or 'resumable' state.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionId: { type: "string", minLength: 1 },
+          },
+          required: ["sessionId"],
+          additionalProperties: false,
+        },
+        execute: async (input) => {
+          const { sessionId } = input as { sessionId: string };
+          const row = runtime.state.db.prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId) as { status: string; crystallised_prompt?: string } | undefined;
+          if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+          if (!["interrupted", "resumable"].includes(row.status)) {
+            return { content: [{ type: "text", text: `Cannot resume ${sessionId} in status ${row.status}` }], details: { ok: false, badStatus: row.status } };
+          }
+          if (!row.crystallised_prompt) {
+            return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
+          }
+          const brief = JSON.parse(row.crystallised_prompt);
+          runtime.state.db.prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
+          runtime.state.audit("tool.resume", { sessionId, wasStatus: row.status }, sessionId);
+          // Fire-and-forget: loop takes over from planning
+          void runtime.loop.run(sessionId, brief).catch((err) => {
+            api.logger.error("[tool.resume] loop.run failed", { sessionId, err: String(err) });
+          });
+          return { content: [{ type: "text", text: `Session ${sessionId} resumed. Watch the Slack thread for progress.` }], details: { ok: true, sessionId } };
+        },
+      }),
+    ),
+  );
+
   return () => {
     for (const d of disposers) {
       try { d(); } catch { /* ignore */ }

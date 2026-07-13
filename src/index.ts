@@ -417,26 +417,67 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
     const r = pruneRetention(state, {
       auditRetentionDays: config.storage.audit_retention_days,
       pruneTerminalSessions: config.storage.prune_terminal_sessions,
+      pruneTerminalSessionsDays: config.storage.prune_terminal_sessions_days,
     });
     api.logger.info("[harness] retention prune on start", r);
   } catch (err) {
     api.logger.warn("[harness] retention prune on start failed", { err: String(err) });
   }
 
-  // Session recovery: mark any non-terminal session as "interrupted" if it
-  // hasn't been checkpointed within `session_hard_timeout_seconds`.
+  // Nightly retention timer (24h). Uses api.registerService if available so
+  // the runtime owns the lifecycle; else falls back to an in-process timer.
+  {
+    const dayMs = 24 * 60 * 60 * 1000;
+    let timer: NodeJS.Timeout | undefined;
+    const tick = () => {
+      try {
+        const r = pruneRetention(state, {
+          auditRetentionDays: config.storage.audit_retention_days,
+          pruneTerminalSessions: config.storage.prune_terminal_sessions,
+          pruneTerminalSessionsDays: config.storage.prune_terminal_sessions_days,
+        });
+        api.logger.info("[harness] retention nightly prune", r);
+      } catch (err) {
+        api.logger.warn("[harness] retention nightly prune failed", { err: String(err) });
+      }
+    };
+    if (api.registerService) {
+      const dispose = api.registerService({
+        id: `${PLUGIN_ID}:retention-nightly`,
+        start: () => { timer = setInterval(tick, dayMs); },
+        stop: () => { if (timer) clearInterval(timer); timer = undefined; },
+      });
+      runtime.disposers.push(async () => {
+        if (timer) clearInterval(timer);
+        timer = undefined;
+        if (typeof dispose === "function") dispose();
+        else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
+      });
+    } else {
+      timer = setInterval(tick, dayMs);
+      runtime.disposers.push(() => { if (timer) clearInterval(timer); timer = undefined; });
+    }
+  }
+
+  // Session recovery: mark stale non-terminal sessions as 'interrupted' and
+  // notify their Slack threads. Fresh in-flight sessions stay 'resumable'
+  // (deliberately conservative -- see src/state/recovery.ts).
   try {
-    const staleBefore = Date.now() - config.loop.session_hard_timeout_seconds * 1000;
-    const marked = state.db
-      .prepare(
-        `UPDATE sessions
-         SET status = 'aborted', updated_at = ?
-         WHERE status IN ('crystallising','planning','executing','reviewing')
-           AND (last_checkpoint_at IS NULL OR last_checkpoint_at < ?)`,
-      )
-      .run(Date.now(), staleBefore);
-    if (marked.changes > 0) {
-      api.logger.warn(`[harness] marked ${marked.changes} stale session(s) as aborted on startup`);
+    const { recoverSessions } = await import("./state/recovery.js");
+    const result = await recoverSessions(state, {
+      staleAfterSeconds: config.loop.session_hard_timeout_seconds,
+      logger: api.logger,
+      notify: async (s) => {
+        const msg = s.stale
+          ? `:arrows_counterclockwise: This harness session was interrupted at cycle ${s.cycles_ran} (state \`${s.status}\`). React :arrows_counterclockwise: to resume, :x: to abort.`
+          : `:arrows_counterclockwise: Harness restarted while this session was mid-flight (cycle ${s.cycles_ran}). Watching for signals.`;
+        await slack.replyInThread(s.slack_channel, s.slack_thread, msg).catch((err) => {
+          api.logger.warn("[harness] recovery notify failed", { err: String(err), sessionId: s.id });
+        });
+      },
+    });
+    if (result.interrupted + result.resumable > 0) {
+      api.logger.warn(`[harness] recovery: ${result.interrupted} interrupted, ${result.resumable} resumable`);
     }
   } catch (err) {
     api.logger.warn("[harness] session recovery on start failed", { err: String(err) });
