@@ -67,7 +67,22 @@ if (typeof plugin.register !== "function") {
   process.exit(1);
 }
 
-await plugin.register(fakeApi);
+// CRITICAL: OpenClaw plugin loader requires register() to be SYNCHRONOUS.
+// If register() returns a Promise, the gateway rejects the plugin with:
+//   "Error: plugin register must be synchronous"
+// Assert here so a regression fails smoke instead of silently shipping.
+const registerResult = plugin.register(fakeApi);
+if (registerResult && typeof registerResult.then === "function") {
+  console.error("FAIL: register() returned a Promise; must be synchronous.");
+  console.error("  See src/index.ts and the definePluginEntry({ register(api) { ... } }) block.");
+  process.exit(1);
+}
+
+// Give the async bootstrap phase a chance to finish (poller start, recovery).
+// Not strictly required for tool/hook/service registration checks below --
+// those all happen in the sync phase -- but useful so smoke exercises the
+// full lifecycle. 500ms is generous for the local fake API.
+await new Promise((r) => setTimeout(r, 500));
 
 const expectTools = [
   "harness_status",
