@@ -1,0 +1,164 @@
+/**
+ * Git worktree adapter.
+ *
+ * The harness runs each session inside a per-session `git worktree` rooted
+ * at `<worktrees_root>/<sessionId>`. That gives us:
+ *   - complete isolation between concurrent sessions,
+ *   - cheap allocation (no full clone per session),
+ *   - a fixed cleanup path (worktree remove).
+ *
+ * The base clone (bare) lives at `<worktrees_root>/.repos/<owner>/<repo>.git`.
+ * We fetch it once per session start, then create a worktree pointing at
+ * the desired base branch.
+ *
+ * The PAT is never written to any config file, .gitconfig, or URL. It is
+ * passed only via GH_TOKEN + GIT_ASKPASS to a helper subprocess, which is
+ * why we spawn git via a small askpass wrapper written at runtime.
+ */
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+export class GitAdapter {
+    opts;
+    constructor(opts) {
+        this.opts = opts;
+    }
+    expand(p) {
+        return p.startsWith("~") ? p.replace(/^~/, process.env.HOME ?? "") : p;
+    }
+    repoBarePath(repoFullName) {
+        const [owner, repo] = repoFullName.split("/");
+        return resolve(this.expand(this.opts.worktreesRoot), ".repos", owner, `${repo}.git`);
+    }
+    sessionWorktreePath(sessionId) {
+        return resolve(this.expand(this.opts.worktreesRoot), sessionId);
+    }
+    /**
+     * Writes a per-invocation askpass helper that prints the PAT on stdout.
+     * The helper is chmod 0700 and lives in a fresh mkdtemp dir; caller
+     * must clean it up.
+     */
+    async makeAskpass(ghToken) {
+        const { mkdtemp } = await import("node:fs/promises");
+        const dir = await mkdtemp(join(tmpdir(), "oah-askpass-"));
+        const p = join(dir, "askpass.sh");
+        // GH will call this twice: once for username, once for password. We answer
+        // username=`x-access-token`, password=<PAT>. Distinguish via $1.
+        const script = `#!/bin/sh
+case "$1" in
+  Username*) printf 'x-access-token' ;;
+  *) printf '%s' "${ghToken.replace(/'/g, "'\\''")}" ;;
+esac
+`;
+        await writeFile(p, script, "utf8");
+        await chmod(p, 0o700);
+        return {
+            path: p,
+            cleanup: async () => {
+                await rm(dir, { recursive: true, force: true });
+            },
+        };
+    }
+    async allocate(ctx) {
+        const bare = this.repoBarePath(ctx.repoFullName);
+        const wt = this.sessionWorktreePath(ctx.sessionId);
+        if (existsSync(wt)) {
+            throw new Error(`worktree already exists at ${wt}; refusing to reuse without explicit release`);
+        }
+        const ask = await this.makeAskpass(ctx.ghToken);
+        try {
+            const url = `https://github.com/${ctx.repoFullName}.git`;
+            if (!existsSync(bare)) {
+                await mkdir(dirname(bare), { recursive: true });
+                await this.run(["clone", "--bare", "--filter=blob:none", url, bare], undefined, ask.path);
+            }
+            else {
+                await this.run(["-C", bare, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"], undefined, ask.path);
+            }
+            await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch]);
+            await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
+            await this.run(["-C", wt, "config", "user.email", ctx.commitIdentity.email]);
+            // Ensure the worktree remote points at github over https so push works.
+            await this.run(["-C", wt, "remote", "set-url", "origin", url]);
+        }
+        finally {
+            await ask.cleanup();
+        }
+        return wt;
+    }
+    async release(sessionId, repoFullName) {
+        const wt = this.sessionWorktreePath(sessionId);
+        if (!existsSync(wt))
+            return;
+        const bare = this.repoBarePath(repoFullName);
+        try {
+            await this.run(["-C", bare, "worktree", "remove", "--force", wt]);
+        }
+        catch (err) {
+            this.opts.logger.warn("[git] worktree remove failed; falling back to rm -rf", { err: String(err) });
+            await rm(wt, { recursive: true, force: true });
+        }
+    }
+    async baseSha(worktreePath) {
+        return (await this.run(["-C", worktreePath, "rev-parse", "HEAD"])).trim();
+    }
+    async listChangedFiles(worktreePath, base) {
+        const out = await this.run(["-C", worktreePath, "diff", "--name-only", base, "HEAD"]);
+        return out.split("\n").map((l) => l.trim()).filter(Boolean);
+    }
+    async commit(worktreePath, message, identity) {
+        await this.run(["-C", worktreePath, "add", "-A"]);
+        const status = await this.run(["-C", worktreePath, "status", "--porcelain"]);
+        if (!status.trim())
+            return null;
+        await this.run([
+            "-C", worktreePath,
+            "-c", `user.name=${identity.name}`,
+            "-c", `user.email=${identity.email}`,
+            "commit", "-m", message,
+        ]);
+        return (await this.run(["-C", worktreePath, "rev-parse", "HEAD"])).trim();
+    }
+    async pushBranch(worktreePath, remote, branch, ghToken) {
+        const ask = await this.makeAskpass(ghToken);
+        try {
+            await this.run(["-C", worktreePath, "push", remote, `${branch}:${branch}`], undefined, ask.path);
+        }
+        finally {
+            await ask.cleanup();
+        }
+    }
+    async formatPatch(worktreePath, base, outFile) {
+        const patch = await this.run(["-C", worktreePath, "format-patch", `${base}..HEAD`, "--stdout"]);
+        await mkdir(dirname(outFile), { recursive: true });
+        await writeFile(outFile, patch, "utf8");
+    }
+    async diff(worktreePath, base) {
+        return this.run(["-C", worktreePath, "diff", base, "HEAD"]);
+    }
+    run(args, _cwd, askpassPath) {
+        return new Promise((resolveP, rejectP) => {
+            const env = { ...process.env };
+            if (askpassPath) {
+                env.GIT_ASKPASS = askpassPath;
+                env.GIT_TERMINAL_PROMPT = "0";
+                env.GCM_INTERACTIVE = "never";
+            }
+            const proc = spawn("git", args, { env });
+            let out = "";
+            let err = "";
+            proc.stdout.on("data", (c) => (out += c.toString()));
+            proc.stderr.on("data", (c) => (err += c.toString()));
+            proc.on("error", rejectP);
+            proc.on("close", (code) => {
+                if (code === 0)
+                    resolveP(out);
+                else
+                    rejectP(new Error(`git ${args.join(" ")} failed (${code}): ${err.trim()}`));
+            });
+        });
+    }
+}
+//# sourceMappingURL=git-worktree.js.map
