@@ -6,7 +6,26 @@ Prerequisites:
 - An Anthropic API key exposed to the OpenClaw container as `ANTHROPIC_API_KEY`.
 - `pnpm` available inside the container (or wherever you run the plugin).
 - GitHub personal access tokens stored in the OpenClaw credential vault, one per (user, org). See [`CONFIGURATION.md`](CONFIGURATION.md#pat-routing) for naming.
-- A working C/C++ toolchain for building `better-sqlite3` if you install outside the OpenClaw container image. On Debian/Ubuntu: `apt-get install -y build-essential python3`. On Alpine: `apk add --no-cache build-base python3`. The OpenClaw Docker image already ships these. If `pnpm install` fails on `better-sqlite3`, set `npm_config_build_from_source=true` and retry, or use a Node version that has a prebuilt binary published upstream.
+- **`better-sqlite3` prebuilt binary must be available for your Node ABI.** The plugin depends on `better-sqlite3@12.11.1+`, which ships prebuilds for Node ABI 127 (Node 22), 137 (Node 24), 141 (Node 25), and 147 (Node 26) on linux-x64. If OpenClaw is running on a Node version outside that set (e.g. Node 23, which is EOL, or something exotic like linux-arm64 without a matching prebuild), `prebuild-install` will fall back to `node-gyp rebuild`, which requires a C/C++ toolchain: Debian/Ubuntu `apt-get install -y build-essential python3`, Alpine `apk add --no-cache build-base python3`. The stock OpenClaw Docker image on `node:24` already has a matching prebuild available; no toolchain needed.
+
+### Troubleshooting: `Error: Could not locate the bindings file`
+
+Symptom on `openclaw plugins list` or gateway startup:
+
+```
+plugin failed during register: Error: Could not locate the bindings file. Tried:
+  → .../node_modules/better-sqlite3/build/Release/better_sqlite3.node
+  ...
+  → .../node_modules/better-sqlite3/lib/binding/node-v137-linux-x64/better_sqlite3.node
+```
+
+This means `npm install --omit=dev` (the mode OpenClaw runs on git installs) neither found a prebuilt native module for your Node version + platform, nor could it compile one (no `make`/`g++` in the container). Options:
+
+1. **Confirm the plugin is on `better-sqlite3@12.11.1` or newer.** v11.10.0 does NOT publish a prebuild for Node 24 (ABI 137). If you see the plugin pinned to an older version, upgrade the plugin.
+2. **Run OpenClaw on a Node LTS with prebuilds available.** As of `better-sqlite3@12.11.1`, that's Node 22 (ABI 127), 24 (ABI 137), 25 (ABI 141), or 26 (ABI 147) on linux-x64.
+3. **Install a C/C++ toolchain** in the container so `node-gyp` can compile from source: Debian/Ubuntu `apt-get install -y build-essential python3`, Alpine `apk add --no-cache build-base python3`, then reinstall the plugin.
+
+You can check your Node ABI with `docker exec -it openclaw-gateway node -p 'process.versions.modules'` (returns e.g. `137` for Node 24).
 
 ## 1. Install the Claude Agent SDK
 
