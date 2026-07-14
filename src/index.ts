@@ -64,8 +64,13 @@ export interface HarnessPluginApi {
     definition: {
       name: string;
       description: string;
-      inputSchema: unknown;
-      execute: (input: unknown, ctx?: unknown) => Promise<unknown> | unknown;
+      // OpenClaw plugin SDK uses `parameters` (JSON Schema). We also accept
+      // the legacy `inputSchema` alias to keep older mock harnesses working.
+      parameters?: unknown;
+      inputSchema?: unknown;
+      // OpenClaw SDK signature: (callId, params, context?). Older mocks used
+      // (input, ctx?); we type broadly so both call shapes typecheck.
+      execute: (callIdOrInput: unknown, paramsOrCtx?: unknown, context?: unknown) => Promise<unknown> | unknown;
     },
     options?: unknown,
   ) => (() => void) | { dispose?: () => void; unregister?: () => void };
@@ -75,7 +80,10 @@ export interface HarnessPluginApi {
     start?: () => Promise<void> | void;
     stop?: () => Promise<void> | void;
   }) => (() => void) | { dispose?: () => void };
+  /** Deprecated: retained for backwards-compat with older mock APIs. Prefer `pluginConfig`. */
   getConfig?: () => unknown;
+  /** OpenClaw plugin-SDK config surface (JSON parsed from `plugins.entries[<id>].config`). */
+  pluginConfig?: unknown;
   workspaceDir?: string;
 
   /** Optional -- for sending Slack messages. Different runtimes wire this differently. */
@@ -103,7 +111,9 @@ export interface HarnessRuntime {
 let currentRuntime: HarnessRuntime | null = null;
 
 export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRuntime> {
-  const rawConfig = (api.getConfig?.() ?? {}) as unknown;
+  // OpenClaw plugin SDK provides config via `api.pluginConfig`.
+  // We fall back to `api.getConfig()` for backwards-compat with older mock harnesses.
+  const rawConfig = (api.pluginConfig ?? api.getConfig?.() ?? {}) as unknown;
   const config = parseHarnessConfig(rawConfig);
 
   const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
@@ -590,31 +600,42 @@ async function teardown(runtime: HarnessRuntime, api: HarnessPluginApi): Promise
   runtime.creds.purge();
 }
 
-const harnessPlugin = {
+// OpenClaw plugin entry.
+//
+// The runtime loader calls `definePluginEntry()`-wrapped exports; the raw
+// object form is not recognised. We import from the SDK subpath.
+// See docs/plugins/sdk-entrypoints.md.
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore - types are provided by the host OpenClaw runtime at install time
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+
+export default definePluginEntry({
   id: PLUGIN_ID,
   name: PLUGIN_NAME,
   description: PLUGIN_DESCRIPTION,
-  kind: "tool" as const,
-  configSchema: { parse: parseHarnessConfig },
   versionInfo: PLUGIN_VERSION,
-  async register(api: HarnessPluginApi): Promise<void> {
-    if (api.registrationMode === "cli-metadata") {
-      api.logger.info("[harness] cli-metadata registration");
+  async register(api: unknown): Promise<void> {
+    // Bridge the OpenClaw SDK API to our internal HarnessPluginApi shape.
+    // The SDK exposes a superset of what we consume; the fields we use
+    // (`logger`, `registerTool`, `registerHook`, `registerService`,
+    // `pluginConfig`, `workspaceDir`, `sendMessage`, `addReaction`,
+    // `callTool`) are all present on the runtime `api` object.
+    const pluginApi = api as HarnessPluginApi;
+    if (pluginApi.registrationMode === "cli-metadata") {
+      pluginApi.logger.info("[harness] cli-metadata registration");
       return;
     }
     if (currentRuntime) {
-      api.logger.info("[harness] re-registering; tearing down previous runtime");
-      await teardown(currentRuntime, api);
+      pluginApi.logger.info("[harness] re-registering; tearing down previous runtime");
+      await teardown(currentRuntime, pluginApi);
       currentRuntime = null;
     }
     try {
-      await bootstrapHarness(api);
-      api.logger.info(`[harness] ${PLUGIN_ID}@${PLUGIN_VERSION.pluginVersion} ready`);
+      await bootstrapHarness(pluginApi);
+      pluginApi.logger.info(`[harness] ${PLUGIN_ID}@${PLUGIN_VERSION.pluginVersion} ready`);
     } catch (err) {
-      api.logger.error("[harness] bootstrap failed", { err: String(err) });
+      pluginApi.logger.error("[harness] bootstrap failed", { err: String(err) });
       throw err;
     }
   },
-};
-
-export default harnessPlugin;
+});
