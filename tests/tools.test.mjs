@@ -55,7 +55,14 @@ function collectTools() {
   const api = {
     logger: { info() {}, warn() {}, error() {}, debug() {} },
     registerTool: (def) => {
-      tools.set(def.name, def);
+      // OpenClaw SDK signature is `execute(callId, params, context?)`. Our tests
+      // pre-date this and call `.execute(input)` with a single arg. Wrap the
+      // real execute so tests keep working without touching every call site.
+      const wrapped = {
+        ...def,
+        execute: (input) => def.execute("test-call-id", input),
+      };
+      tools.set(def.name, wrapped);
       return () => tools.delete(def.name);
     },
   };
