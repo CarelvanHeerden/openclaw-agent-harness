@@ -19,65 +19,87 @@ a real Slack channel, and (optionally) a real Vercel project.
 
 ## 1. Config
 
-Add a `harness` block to your OpenClaw config, e.g.:
+Add the plugin block to `~/.openclaw/openclaw.json` under `plugins.entries["openclaw-agent-harness"].config`. This is the standard OpenClaw plugin config path (same shape as `openclaw-hybrid-memory`, `okf`, etc.); the plugin reads it at runtime via `api.pluginConfig`.
 
-```yaml
-harness:
-  slack:
-    channel: "C0INFOSECBOTDEV"
-    authorised_users: ["U07UT6G8LQ4"]  # add teammates here
-    credential_service: "slack-openclaw-agent-harness"
-    reactions_poll_ms: 15000
-  budgets:
-    monthly_per_user_usd: 1000
-    session_default_usd: 50
-    session_hard_ceiling_usd: 200
-  repos:
-    allowed:
-      - "CarelvanHeerden/openclaw-agent-harness"
-      - "example-org/example-repo"
-    default_base_branch: "main"
-  models:
-    lead: "claude-fable-5"
-    worker: "claude-sonnet-5"
-    adversary: "claude-fable-5"
-    classifier: "claude-haiku-4-5"
-  loop:
-    max_cycles: 3
-    worker_timeout_seconds: 1800
-    adversary_timeout_seconds: 900
-    session_hard_timeout_seconds: 7200
-  pat_routing:
-    default_service_pattern: "github-{user}-{org}"
-    overrides:
-      U07UT6G8LQ4:
-        "CarelvanHeerden/openclaw-agent-harness": "github-carel-personal"
-        "example-org": "github-carel-example"
-    commit_identity:
-      U07UT6G8LQ4:
-        name: "Carel van Heerden"
-        email: "dev@example.com"
-  storage:
-    state_db_path: "~/.openclaw/workspace/openclaw-agent-harness/state.db"
-    worktree_root: "~/.openclaw/workspace/openclaw-agent-harness/worktrees"
-    audit_retention_days: 90
-    prune_terminal_sessions: 365
-  safety:
-    worker_permission_mode: "acceptEdits"
-  vercel:
-    enabled: false                       # flip to true when you have a token
-    credential_service: "vercel-openclaw-agent-harness"
-    project_id: "prj_..."
-    preview_wait_seconds: 300
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "openclaw-agent-harness": {
+        "enabled": true,
+        "config": {
+          "slack": {
+            "channel": "C0INFOSECBOTDEV",
+            "authorised_users": ["U07UT6G8LQ4"],
+            "credential_service": "slack-openclaw-agent-harness",
+            "reactions_poll_ms": 15000
+          },
+          "budgets": {
+            "monthly_per_user_usd": 1000,
+            "session_default_usd": 50,
+            "session_hard_ceiling_usd": 200
+          },
+          "repos": {
+            "allowed": [
+              "CarelvanHeerden/openclaw-agent-harness",
+              "example-org/example-repo"
+            ],
+            "default_base_branch": "main"
+          },
+          "models": {
+            "lead": "claude-fable-5",
+            "worker": "claude-sonnet-5",
+            "adversary": "claude-fable-5",
+            "classifier": "claude-haiku-4-5"
+          },
+          "loop": {
+            "max_cycles": 3,
+            "worker_timeout_seconds": 1800,
+            "adversary_timeout_seconds": 900,
+            "session_hard_timeout_seconds": 7200
+          },
+          "pat_routing": {
+            "default_service_pattern": "github-{user}-{org}",
+            "overrides": {
+              "U07UT6G8LQ4": {
+                "CarelvanHeerden/openclaw-agent-harness": "github-carel-personal",
+                "example-org": "github-carel-example"
+              }
+            },
+            "commit_identity": {
+              "U07UT6G8LQ4": { "name": "Carel van Heerden", "email": "dev@example.com" }
+            }
+          },
+          "storage": {
+            "state_db_path": "~/.openclaw/workspace/openclaw-agent-harness/state.db",
+            "worktree_root": "~/.openclaw/workspace/openclaw-agent-harness/worktrees",
+            "audit_retention_days": 90,
+            "prune_terminal_sessions": 365
+          },
+          "safety": {
+            "worker_permission_mode": "acceptEdits"
+          },
+          "vercel": {
+            "enabled": false,
+            "credential_service": "vercel-openclaw-agent-harness",
+            "project_id": "prj_...",
+            "preview_wait_seconds": 300
+          }
+        }
+      }
+    }
+  }
+}
 ```
 
 ## 2. Start-of-day checks
 
 Before opening the channel to teammates:
 
-1. `openclaw config validate` -- confirms `harness.*` parses without
-   throwing. If it screams "harness.slack.channel is required", the
-   block isn't loaded.
+1. `openclaw config validate` -- confirms
+   `plugins.entries["openclaw-agent-harness"].config` parses without
+   throwing. If it screams `slack.channel is required`, the block
+   isn't loaded (check for typos in `plugins.entries` vs `plugins`).
 2. `openclaw plugins list | grep openclaw-agent-harness` -- confirm
    the runtime picked up the plugin.
 3. Post `:eyes:` on any test message you send. The harness reacts
@@ -119,6 +141,15 @@ Drop the emoji on any bot-authored message in the thread:
 Only reactions from `slack.authorised_users` count.
 
 ## 5. Troubleshooting
+
+**`plugins.entries["openclaw-agent-harness"]` not loading at all.**
+Check `openclaw config get plugins.entries` -- if the harness key is
+missing, verify (a) `plugins.entries["openclaw-agent-harness"].enabled`
+is `true`, and (b) you edited `~/.openclaw/openclaw.json` (not a
+workspace-local file that OpenClaw doesn't read). A common mistake is
+putting the block at the top level (`harness: { ... }`) or one level up
+(`plugins."openclaw-agent-harness"`) instead of under
+`plugins.entries."openclaw-agent-harness".config`.
 
 **Session stuck in `crystallising`.** The classifier or crystalliser call
 failed. Check `harness_session_get { sessionId }` for the last audit

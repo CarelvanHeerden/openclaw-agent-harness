@@ -1,106 +1,113 @@
 # Configuration
 
-All options live under `plugins["openclaw-agent-harness"]` in `openclaw.json`.
+All options live under `plugins.entries["openclaw-agent-harness"].config` in `~/.openclaw/openclaw.json`. This is the standard OpenClaw plugin config path (same shape as `openclaw-hybrid-memory`, `okf`, etc.), and it is what the plugin reads at runtime via `api.pluginConfig`.
+
+The surrounding `plugins.entries[<id>]` object also supports an `enabled` boolean and a `hooks` object; those are managed by OpenClaw itself, not the plugin.
 
 ## Full reference
 
 ```jsonc
 {
   "plugins": {
-    "openclaw-agent-harness": {
-      // Slack surface
-      "slack": {
-        "channel": "C0XXXXXXXXX",              // required
-        "authorised_users": ["U07UT6G8LQ4"],   // required, allow-list
-        "reactions": {
-          "ship_it":      "rocket",
-          "abort":        "x",
-          "pause":        "pause_button",
-          "budget_bump":  "moneybag"
-        }
-      },
+    "entries": {
+      "openclaw-agent-harness": {
+        "enabled": true,
+        "config": {
+          // Slack surface
+          "slack": {
+            "channel": "C0XXXXXXXXX",              // required
+            "authorised_users": ["U07UT6G8LQ4"],   // required, allow-list
+            "reactions": {
+              "ship_it":      "rocket",
+              "abort":        "x",
+              "pause":        "pause_button",
+              "budget_bump":  "moneybag"
+            }
+          },
 
-      // Money guardrails (USD)
-      "budgets": {
-        "monthly_per_user_usd":      1000,
-        "session_default_usd":       50,
-        "session_hard_ceiling_usd":  200,
-        "daily_warn_usd":            100,
-        "monthly_warn_ratio":        0.8    // ping user at 80% of monthly
-      },
+          // Money guardrails (USD)
+          "budgets": {
+            "monthly_per_user_usd":      1000,
+            "session_default_usd":       50,
+            "session_hard_ceiling_usd":  200,
+            "daily_warn_usd":            100,
+            "monthly_warn_ratio":        0.8    // ping user at 80% of monthly
+          },
 
-      // Repos the harness may operate on
-      "repos": {
-        "allowed": [
-          "example-org/example-repo"
-        ],
-        "can_create":         true,          // may create new repos on request
-        "create_org":         "example-org",
-        "create_visibility":  "private",     // "private" | "public"
-        "default_base_branch": "main"
-      },
+          // Repos the harness may operate on
+          "repos": {
+            "allowed": [
+              "example-org/example-repo"
+            ],
+            "can_create":         true,          // may create new repos on request
+            "create_org":         "example-org",
+            "create_visibility":  "private",     // "private" | "public"
+            "default_base_branch": "main"
+          },
 
-      // Model selection
-      "models": {
-        "lead":       "claude-fable-5",
-        "worker":     "claude-sonnet-5",
-        "adversary":  "claude-fable-5",
-        "classifier": "claude-haiku-4-5"     // intent classification
-      },
+          // Model selection
+          "models": {
+            "lead":       "claude-fable-5",
+            "worker":     "claude-sonnet-5",
+            "adversary":  "claude-fable-5",
+            "classifier": "claude-haiku-4-5"     // intent classification
+          },
 
-      // Loop controller
-      "loop": {
-        "max_cycles":                    3,
-        "adversarial_pass_ends_early":   true,
-        "worker_timeout_seconds":        600,
-        "adversary_timeout_seconds":     600
-      },
+          // Loop controller
+          "loop": {
+            "max_cycles":                    3,
+            "adversarial_pass_ends_early":   true,
+            "worker_timeout_seconds":        600,
+            "adversary_timeout_seconds":     600
+          },
 
-      // Vercel logs bridge (optional)
-      "vercel": {
-        "enabled":            false,
-        "credential_service": "vercel-projectthanos",
-        "team_id":            "example-team",
-        "project_id":         "project-thanos"
-      },
+          // Vercel logs bridge (optional)
+          "vercel": {
+            "enabled":            false,
+            "credential_service": "vercel-projectthanos",
+            "team_id":            "example-team",
+            "project_id":         "project-thanos"
+          },
 
-      // Storage
-      "storage": {
-        "state_db_path":     "~/.openclaw/workspace/openclaw-agent-harness/state.db",
-        "worktree_root":     "~/.openclaw/workspace/openclaw-agent-harness/worktrees",
-        "audit_retention_days": 90
-      },
+          // Storage
+          "storage": {
+            "state_db_path":     "~/.openclaw/workspace/openclaw-agent-harness/state.db",
+            "worktree_root":     "~/.openclaw/workspace/openclaw-agent-harness/worktrees",
+            "audit_retention_days": 90
+          },
 
-      // Safety
-      "safety": {
-        "worker_permission_mode": "acceptEdits",  // "acceptEdits" | "bypassPermissions" | "plan"
-        "bash_whitelist": [
-          "git", "pnpm", "npm", "ls", "grep", "cat", "node", "jq", "sed", "awk", "head", "tail", "wc"
-        ],
-        "bash_denylist_tokens": [
-          "sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill"
-        ],
-        "path_denylist": [
-          ".secrets/", "credentials.db", ".env", "~/.claude/", "memory/credentials"
-        ]
-      },
+          // Safety
+          "safety": {
+            "worker_permission_mode": "acceptEdits",  // "acceptEdits" | "bypassPermissions" | "plan"
+            "bash_whitelist": [
+              "git", "pnpm", "npm", "ls", "grep", "cat", "node", "jq", "sed", "awk", "head", "tail", "wc"
+            ],
+            "bash_denylist_tokens": [
+              "sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill"
+            ],
+            "path_denylist": [
+              ".secrets/", "credentials.db", ".env", "~/.claude/", "memory/credentials"
+            ]
+          },
 
-      // PAT routing
-      "pat_routing": {
-        // For each (Slack user, target org) the plugin looks up a vault entry
-        // with service name = "github-<slack_user_short>-<target_org_short>".
-        // Explicit overrides here take precedence.
-        "overrides": {
-          "U07UT6G8LQ4": {
-            "example-org":     "github-carel-example-org",
-            "example-org-alt":      "github-carel-example-org-alt",
-            "CarelvanHeerden":   "github-carel-personal"
-          }
-        },
-        "commit_identity": {
-          "U07UT6G8LQ4": {
-            "name":  "Carel van Heerden",
-            "email": "dev@example.com"
+          // PAT routing
+          "pat_routing": {
+            // For each (Slack user, target org) the plugin looks up a vault entry
+            // with service name = "github-<slack_user_short>-<target_org_short>".
+            // Explicit overrides here take precedence.
+            "overrides": {
+              "U07UT6G8LQ4": {
+                "example-org":     "github-carel-example-org",
+                "example-org-alt":      "github-carel-example-org-alt",
+                "CarelvanHeerden":   "github-carel-personal"
+              }
+            },
+            "commit_identity": {
+              "U07UT6G8LQ4": {
+                "name":  "Carel van Heerden",
+                "email": "dev@example.com"
+              }
+            }
           }
         }
       }
@@ -108,6 +115,29 @@ All options live under `plugins["openclaw-agent-harness"]` in `openclaw.json`.
   }
 }
 ```
+
+## Minimal working config
+
+The absolute minimum to boot the plugin cleanly is four fields:
+
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "openclaw-agent-harness": {
+        "enabled": true,
+        "config": {
+          "slack":  { "channel": "C0XXXXXXXXX", "authorised_users": ["U07UT6G8LQ4"] },
+          "repos":  { "allowed": ["example-org/example-repo"] },
+          "models": { "lead": "claude-fable-5", "worker": "claude-sonnet-5", "adversary": "claude-fable-5", "classifier": "claude-haiku-4-5" }
+        }
+      }
+    }
+  }
+}
+```
+
+Everything else takes sensible defaults from `src/config.schema.json`.
 
 ## Key sections
 
