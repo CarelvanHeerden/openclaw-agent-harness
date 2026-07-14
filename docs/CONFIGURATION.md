@@ -37,7 +37,7 @@ All options live under `plugins["openclaw-agent-harness"]` in `openclaw.json`.
         "can_create":         true,          // may create new repos on request
         "create_org":         "example-org",
         "create_visibility":  "private",     // "private" | "public"
-        "default_branch":     "main"
+        "default_base_branch": "main"
       },
 
       // Model selection
@@ -60,14 +60,14 @@ All options live under `plugins["openclaw-agent-harness"]` in `openclaw.json`.
       "vercel": {
         "enabled":            false,
         "credential_service": "vercel-projectthanos",
-        "team":               "example-team",
-        "project":            "project-thanos"
+        "team_id":            "example-team",
+        "project_id":         "project-thanos"
       },
 
       // Storage
       "storage": {
         "state_db_path":     "~/.openclaw/workspace/openclaw-agent-harness/state.db",
-        "worktrees_root":    "~/.openclaw/workspace/openclaw-agent-harness/worktrees",
+        "worktree_root":     "~/.openclaw/workspace/openclaw-agent-harness/worktrees",
         "audit_retention_days": 90
       },
 
@@ -77,8 +77,8 @@ All options live under `plugins["openclaw-agent-harness"]` in `openclaw.json`.
         "bash_whitelist": [
           "git", "pnpm", "npm", "ls", "grep", "cat", "node", "jq", "sed", "awk", "head", "tail", "wc"
         ],
-        "bash_denylist_patterns": [
-          "rm ", "rm\\s+-rf", "sudo ", "curl .* \\| ", "wget .* \\| ", "git push"
+        "bash_denylist_tokens": [
+          "sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill"
         ],
         "path_denylist": [
           ".secrets/", "credentials.db", ".env", "~/.claude/", "memory/credentials"
@@ -138,7 +138,7 @@ Sessions may only operate on repos listed in `repos.allowed` unless the user exp
 ### Safety
 
 - **`worker_permission_mode`.** The Claude Agent SDK permission mode used for workers. `acceptEdits` is a sensible default: file edits happen without a prompt, bash commands go through the whitelist / denylist.
-- **`bash_whitelist` / `bash_denylist_patterns`.** Enforced by an SDK permission callback, not just prompt discipline. Denylist patterns are regex, matched against the full command string.
+- **`bash_whitelist` / `bash_denylist_tokens`.** Enforced by an SDK permission callback, not just prompt discipline. `bash_denylist_tokens` is a list of exact command tokens (e.g. `rm`, `sudo`); a command is rejected if any pipe segment's base command (after env-var prefix stripping) matches a listed token.
 - **`path_denylist`.** Directories and files that workers may not read or write. Enforced by hooking into the SDK's tool interface. The lead orchestrator itself is NOT constrained by this list.
 
 ### Vercel bridge

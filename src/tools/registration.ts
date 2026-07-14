@@ -168,12 +168,16 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           properties: {
             sessionId: { type: "string", minLength: 1 },
             reason: { type: "string", maxLength: 500 },
+            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. If provided, must be in slack.authorised_users." },
           },
           required: ["sessionId"],
           additionalProperties: false,
         },
         execute: (_callId: unknown, input: unknown) => {
-          const { sessionId, reason } = input as { sessionId: string; reason?: string };
+          const { sessionId, reason, invokedBy } = input as { sessionId: string; reason?: string; invokedBy?: string };
+          if (invokedBy && !runtime.config.slack.authorised_users.includes(invokedBy)) {
+            return { content: [{ type: "text", text: `Invoker ${invokedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          }
           const row = runtime.state.db.prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId) as { status: string; reactions_json?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
           if (["done", "failed", "aborted"].includes(row.status)) {
@@ -182,7 +186,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           const parsed = row.reactions_json ? JSON.parse(row.reactions_json) : {};
           parsed.abort = true;
           runtime.state.db.prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(parsed), Date.now(), sessionId);
-          runtime.state.audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked" }, sessionId);
+          runtime.state.audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked", invokedBy: invokedBy ?? null }, sessionId);
           return { content: [{ type: "text", text: `Abort flag set on ${sessionId}. The loop will terminate at its next checkpoint.` }], details: { ok: true, sessionId } };
         },
       }),
@@ -424,12 +428,16 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           type: "object",
           properties: {
             sessionId: { type: "string", minLength: 1 },
+            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. If provided, must be in slack.authorised_users." },
           },
           required: ["sessionId"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
-          const { sessionId } = input as { sessionId: string };
+          const { sessionId, invokedBy } = input as { sessionId: string; invokedBy?: string };
+          if (invokedBy && !runtime.config.slack.authorised_users.includes(invokedBy)) {
+            return { content: [{ type: "text", text: `Invoker ${invokedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          }
           const row = runtime.state.db.prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId) as { status: string; crystallised_prompt?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
           if (!["interrupted", "resumable"].includes(row.status)) {
@@ -440,7 +448,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           }
           const brief = JSON.parse(row.crystallised_prompt);
           runtime.state.db.prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
-          runtime.state.audit("tool.resume", { sessionId, wasStatus: row.status }, sessionId);
+          runtime.state.audit("tool.resume", { sessionId, wasStatus: row.status, invokedBy: invokedBy ?? null }, sessionId);
           // Fire-and-forget: loop takes over from planning
           void runtime.loop.run(sessionId, brief).catch((err) => {
             api.logger.error("[tool.resume] loop.run failed", { sessionId, err: String(err) });
