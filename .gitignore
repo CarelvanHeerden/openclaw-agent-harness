@@ -1,5 +1,8 @@
 node_modules/
-dist/
+# dist/ is committed so OpenClaw's `plugins install git:...` works.
+# The gateway runs `npm install --omit=dev`, which strips typescript so
+# a build step post-install is not possible. See docs/INSTALL.md.
+# dist/ intentionally NOT ignored.
 *.log
 .DS_Store
 .env
