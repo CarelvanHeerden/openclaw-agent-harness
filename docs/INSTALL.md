@@ -49,6 +49,32 @@ This is expected. The harness runs `git` as a subprocess (add worktree, commit, 
 
 Before installing, please read [`SECURITY.md`](../SECURITY.md) for the full call-site review (single file, `spawn("git", args, {env})`, no `shell: true`, no user-controlled executable path).
 
+## Install-time flags you may need
+
+### `TMPDIR=<same-fs-as-plugins>` -- avoid `EXDEV` cross-device rename
+
+OpenClaw stages the git clone in the OS temp dir (`/tmp` on most Linux hosts), then renames it into the persistent plugins directory. If those two paths sit on different filesystems (common on Docker + Unraid: `/tmp` is `tmpfs`, plugin dir is a bind-mounted overlay), the atomic `rename(2)` fails with `EXDEV: cross-device link not permitted` and install aborts.
+
+Workaround: point `TMPDIR` at a directory on the same filesystem as `~/.openclaw`:
+
+```bash
+docker exec -it openclaw-gateway sh -c \
+  "TMPDIR=/home/node/.openclaw/tmp openclaw plugins install git:github.com/CarelvanHeerden/openclaw-agent-harness"
+```
+
+(You may need `mkdir -p /home/node/.openclaw/tmp` inside the container first if it does not exist.)
+
+### `--dangerously-force-unsafe-install` -- may be needed while `security.installPolicy` is not configured
+
+On OpenClaw releases that still enforce install-time policy blocking, the `plugins.code_safety` finding for `child_process` (see the SECURITY WARNING section above) may refuse install unless you either configure `security.installPolicy` in your OpenClaw config or pass `--dangerously-force-unsafe-install`:
+
+```bash
+docker exec -it openclaw-gateway sh -c \
+  "TMPDIR=/home/node/.openclaw/tmp openclaw plugins install git:github.com/CarelvanHeerden/openclaw-agent-harness --dangerously-force-unsafe-install"
+```
+
+On newer releases this flag is a no-op (install-time scanning has been removed per OpenClaw's own deprecation notice) and can be omitted. Passing it always is harmless.
+
 ## 2. Install the plugin
 
 ### Recommended: OpenClaw plugin installer (from git)

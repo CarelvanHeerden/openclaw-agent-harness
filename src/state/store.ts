@@ -30,7 +30,18 @@ function locateSchema(): string {
   throw new Error(`schema.sql not found near ${here}`);
 }
 
-export async function openStateStore(pathHint: string): Promise<StateStore> {
+/**
+ * Open (or create) the state store.
+ *
+ * NOTE: This is intentionally synchronous. OpenClaw's plugin loader
+ * requires `register()` to be synchronous, and this is called from that
+ * critical path. All the underlying primitives (`mkdirSync`, `readFileSync`,
+ * `better-sqlite3` constructor, `db.exec`, `db.prepare`) are sync anyway.
+ *
+ * The async wrapper is retained as a thin re-export below so callers that
+ * were previously awaiting can continue to do so without a code change.
+ */
+export function openStateStoreSync(pathHint: string): StateStore {
   const path = resolve(pathHint.replace(/^~/, process.env.HOME ?? ""));
   mkdirSync(dirname(path), { recursive: true });
 
@@ -100,4 +111,13 @@ export async function openStateStore(pathHint: string): Promise<StateStore> {
       insertAudit.run(sessionId ?? null, event, JSON.stringify(payload ?? {}), Date.now());
     },
   };
+}
+
+/**
+ * Async facade over {@link openStateStoreSync} for callers that previously
+ * awaited this function. Prefer the sync variant in new code, especially
+ * on the plugin `register()` critical path.
+ */
+export async function openStateStore(pathHint: string): Promise<StateStore> {
+  return openStateStoreSync(pathHint);
 }
