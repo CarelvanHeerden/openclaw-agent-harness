@@ -11,5 +11,22 @@ export interface StateStore {
     close: () => void;
     audit: (event: string, payload: unknown, sessionId?: string) => void;
 }
+/**
+ * Open (or create) the state store.
+ *
+ * NOTE: This is intentionally synchronous. OpenClaw's plugin loader
+ * requires `register()` to be synchronous, and this is called from that
+ * critical path. All the underlying primitives (`mkdirSync`, `readFileSync`,
+ * `better-sqlite3` constructor, `db.exec`, `db.prepare`) are sync anyway.
+ *
+ * The async wrapper is retained as a thin re-export below so callers that
+ * were previously awaiting can continue to do so without a code change.
+ */
+export declare function openStateStoreSync(pathHint: string): StateStore;
+/**
+ * Async facade over {@link openStateStoreSync} for callers that previously
+ * awaited this function. Prefer the sync variant in new code, especially
+ * on the plugin `register()` critical path.
+ */
 export declare function openStateStore(pathHint: string): Promise<StateStore>;
 //# sourceMappingURL=store.d.ts.map

@@ -93,3 +93,23 @@ test("sdk: dist entry point wraps definePluginEntry (when built)", { skip: !exis
     "dist/index.js must read config from api.pluginConfig",
   );
 });
+
+test("sdk: dist register() is synchronous (does not return Promise)", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, async () => {
+  // OpenClaw plugin loader rejects with 'plugin register must be synchronous'
+  // if register() returns a Promise. Guard against a future regression that
+  // makes register() `async` or awaits inside it.
+  const src = readFileSync(resolve(repoRoot, "dist/index.js"), "utf8");
+  // A compiled `register(api) { ... }` method that is NOT async has no
+  // `async register` or `register: async` in its shape. tsc emits either
+  // `async register(` or `register(api) {` depending on source style.
+  assert.equal(
+    /\basync\s+register\s*\(/.test(src),
+    false,
+    "dist/index.js contains `async register(` -- register() must be synchronous per OpenClaw plugin SDK contract.",
+  );
+  assert.equal(
+    /register\s*:\s*async\s*\(/.test(src),
+    false,
+    "dist/index.js contains `register: async (` -- register() must be synchronous per OpenClaw plugin SDK contract.",
+  );
+});

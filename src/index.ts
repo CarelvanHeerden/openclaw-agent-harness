@@ -14,12 +14,12 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import type { HarnessConfig } from "./config.js";
 import { parseHarnessConfig } from "./config.js";
-import { openStateStore } from "./state/store.js";
+import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { OrchestratorLoop } from "./orchestrator/loop.js";
 import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
@@ -106,19 +106,37 @@ export interface HarnessRuntime {
   git: GitAdapter;
   creds: CredentialAdapter;
   disposers: Array<() => void | Promise<void>>;
+  /**
+   * Promise for the async bootstrap phase (reactions poller start,
+   * session recovery). Populated by `register()` once it has kicked off
+   * `bootstrapHarnessAsync`. Teardown awaits this to ensure recovery
+   * notifications have flushed before closing the state DB.
+   */
+  asyncBootstrap?: Promise<void>;
 }
 
 let currentRuntime: HarnessRuntime | null = null;
 
-export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRuntime> {
+/**
+ * Synchronous phase of plugin bootstrap.
+ *
+ * OpenClaw's plugin loader requires `register()` to be synchronous, so all
+ * tool/hook/service registration must complete before we hand control back.
+ * Anything that requires I/O that CAN be sync (SQLite via better-sqlite3,
+ * mkdirSync) runs here; anything that must be async (credential vault
+ * fetches, Slack API calls, session recovery notifies) is deferred to
+ * {@link bootstrapHarnessAsync}, which runs as a background promise the
+ * runtime holds a reference to for teardown ordering.
+ */
+export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   // OpenClaw plugin SDK provides config via `api.pluginConfig`.
   // We fall back to `api.getConfig()` for backwards-compat with older mock harnesses.
   const rawConfig = (api.pluginConfig ?? api.getConfig?.() ?? {}) as unknown;
   const config = parseHarnessConfig(rawConfig);
 
   const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
-  await mkdir(dirname(dbPath), { recursive: true });
-  const state = await openStateStore(dbPath);
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const state = openStateStoreSync(dbPath);
 
   const budget = new BudgetEnforcer(config.budgets, state);
   const pat = new PatRouter(config.pat_routing);
@@ -392,11 +410,13 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
     disposers: [],
   };
 
-  // Tools
+  // Tools (sync)
   const disposeTools = registerHarnessTools(api, runtime);
   runtime.disposers.push(disposeTools);
 
-  // Slack hook
+  // Slack hook (sync registration; the handler itself is async and runs
+  // on each inbound message, which is fine -- OpenClaw only requires the
+  // register() call itself to be sync).
   if (api.registerHook) {
     const dispose = api.registerHook("message.received", async (event) => {
       const slackEvt = event as { channel?: { provider?: string }; payload?: SlackMessageEvent } | undefined;
@@ -412,44 +432,8 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
     api.logger.warn("[harness] api.registerHook not present; Slack listener will be idle.");
   }
 
-  // Reactions poller (only if slack.credential_service is set so we have a bot token)
-  if (config.slack.credential_service) {
-    try {
-      const slackToken = await creds.getToken(config.slack.credential_service);
-      const reader = new SlackReactionsReader({
-        config,
-        state,
-        slackToken,
-        logger: api.logger,
-      });
-      const poller = new ReactionsPoller(state, reader, {
-        intervalMs: config.slack.reactions_poll_ms ?? 15000,
-        logger: api.logger,
-      });
-      if (api.registerService) {
-        const dispose = api.registerService({
-          id: `${PLUGIN_ID}:reactions-poller`,
-          start: () => poller.start(),
-          stop: () => poller.stop(),
-        });
-        runtime.disposers.push(async () => {
-          await poller.stop();
-          if (typeof dispose === "function") dispose();
-          else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
-        });
-      } else {
-        // No service host -> start ourselves; teardown will stop.
-        await poller.start();
-        runtime.disposers.push(() => poller.stop());
-      }
-    } catch (err) {
-      api.logger.warn("[harness] reactions poller not started", { err: String(err) });
-    }
-  } else {
-    api.logger.info("[harness] slack.credential_service not set; reactions poller idle");
-  }
-
-  // Retention prune on service start
+  // Retention prune on service start (sync -- pruneRetention is a plain
+  // SQL delete, no I/O beyond the DB).
   try {
     const r = pruneRetention(state, {
       auditRetentionDays: config.storage.audit_retention_days,
@@ -461,7 +445,7 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
     api.logger.warn("[harness] retention prune on start failed", { err: String(err) });
   }
 
-  // PR-merged watcher. Only starts if we have a way to resolve GH tokens.
+  // PR-merged watcher (sync registration; start() runs async internally).
   {
     const watcher = new PrMergedWatcher(state, {
       logger: api.logger,
@@ -490,7 +474,9 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
         else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
       });
     } else {
-      await watcher.start();
+      // Fire-and-forget start; register() must return sync.
+      // watcher.start() is idempotent, and stop() awaits any in-flight tick.
+      void watcher.start().catch((err) => api.logger.warn("[harness] pr-watcher.start failed", { err: String(err) }));
       runtime.disposers.push(() => watcher.stop());
     }
   }
@@ -530,6 +516,62 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
     }
   }
 
+  currentRuntime = runtime;
+  return runtime;
+}
+
+/**
+ * Asynchronous phase of plugin bootstrap. Runs as a fire-and-forget promise
+ * after {@link bootstrapHarnessSync} has returned control to the OpenClaw
+ * loader. Handles anything that requires network / vault I/O:
+ *
+ *   - fetching the Slack bot token from the credential vault and starting
+ *     the reactions poller
+ *   - session recovery (mark stale sessions as interrupted, notify Slack)
+ *
+ * The returned promise is stored on `runtime.asyncBootstrap` so teardown
+ * can await it if it needs to (e.g. to ensure recovery notifies have
+ * flushed before closing the state DB).
+ */
+export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: HarnessPluginApi): Promise<void> {
+  const { config, state, creds, slack } = runtime;
+
+  // Reactions poller (only if slack.credential_service is set so we have a bot token).
+  if (config.slack.credential_service) {
+    try {
+      const slackToken = await creds.getToken(config.slack.credential_service);
+      const reader = new SlackReactionsReader({
+        config,
+        state,
+        slackToken,
+        logger: api.logger,
+      });
+      const poller = new ReactionsPoller(state, reader, {
+        intervalMs: config.slack.reactions_poll_ms ?? 15000,
+        logger: api.logger,
+      });
+      if (api.registerService) {
+        const dispose = api.registerService({
+          id: `${PLUGIN_ID}:reactions-poller`,
+          start: () => poller.start(),
+          stop: () => poller.stop(),
+        });
+        runtime.disposers.push(async () => {
+          await poller.stop();
+          if (typeof dispose === "function") dispose();
+          else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
+        });
+      } else {
+        await poller.start();
+        runtime.disposers.push(() => poller.stop());
+      }
+    } catch (err) {
+      api.logger.warn("[harness] reactions poller not started", { err: String(err) });
+    }
+  } else {
+    api.logger.info("[harness] slack.credential_service not set; reactions poller idle");
+  }
+
   // Session recovery: mark stale non-terminal sessions as 'interrupted' and
   // notify their Slack threads. Fresh in-flight sessions stay 'resumable'
   // (deliberately conservative -- see src/state/recovery.ts).
@@ -553,8 +595,15 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
   } catch (err) {
     api.logger.warn("[harness] session recovery on start failed", { err: String(err) });
   }
+}
 
-  currentRuntime = runtime;
+/**
+ * Backwards-compat facade. New code should prefer
+ * `bootstrapHarnessSync` + `bootstrapHarnessAsync`. Tests still call this.
+ */
+export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRuntime> {
+  const runtime = bootstrapHarnessSync(api);
+  await bootstrapHarnessAsync(runtime, api);
   return runtime;
 }
 
@@ -585,6 +634,16 @@ function renderPrBody(
 }
 
 async function teardown(runtime: HarnessRuntime, api: HarnessPluginApi): Promise<void> {
+  // Wait for the async bootstrap phase to complete before tearing things
+  // down. Otherwise the reactions poller could try to start after we've
+  // closed the DB, or recovery could try to notify after `slack` is gone.
+  if (runtime.asyncBootstrap) {
+    try {
+      await runtime.asyncBootstrap;
+    } catch (err) {
+      api.logger.warn("[harness] async bootstrap rejected during teardown", { err: String(err) });
+    }
+  }
   for (const d of runtime.disposers.reverse()) {
     try {
       await d();
@@ -614,7 +673,24 @@ export default definePluginEntry({
   name: PLUGIN_NAME,
   description: PLUGIN_DESCRIPTION,
   versionInfo: PLUGIN_VERSION,
-  async register(api: unknown): Promise<void> {
+  /**
+   * OpenClaw plugin loader requires `register()` to be SYNCHRONOUS.
+   *
+   * Returning a Promise (i.e. declaring this as `async`) causes the
+   * gateway to reject the plugin with:
+   *
+   *   Error: plugin register must be synchronous
+   *
+   * We therefore do all sync setup (config parse, DB open, tool/hook/
+   * service registration) inline in this call, and kick off the async
+   * phase (Slack token fetch, reactions poller, session recovery) as
+   * a fire-and-forget promise stored on `runtime.asyncBootstrap`.
+   * Teardown awaits that promise so nothing runs on a closed DB.
+   *
+   * This mirrors the pattern used by openclaw-hybrid-memory and other
+   * reference plugins.
+   */
+  register(api: unknown): void {
     // Bridge the OpenClaw SDK API to our internal HarnessPluginApi shape.
     // The SDK exposes a superset of what we consume; the fields we use
     // (`logger`, `registerTool`, `registerHook`, `registerService`,
@@ -626,16 +702,31 @@ export default definePluginEntry({
       return;
     }
     if (currentRuntime) {
-      pluginApi.logger.info("[harness] re-registering; tearing down previous runtime");
-      await teardown(currentRuntime, pluginApi);
+      pluginApi.logger.info("[harness] re-registering; scheduling teardown of previous runtime");
+      const doomed = currentRuntime;
       currentRuntime = null;
+      // Fire-and-forget: we can't await teardown here without violating the
+      // sync-register contract. teardown() awaits doomed.asyncBootstrap so
+      // it doesn't tear down mid-bootstrap.
+      void teardown(doomed, pluginApi).catch((err) => {
+        pluginApi.logger.warn("[harness] previous-runtime teardown failed", { err: String(err) });
+      });
     }
+    let runtime: HarnessRuntime;
     try {
-      await bootstrapHarness(pluginApi);
-      pluginApi.logger.info(`[harness] ${PLUGIN_ID}@${PLUGIN_VERSION.pluginVersion} ready`);
+      runtime = bootstrapHarnessSync(pluginApi);
     } catch (err) {
-      pluginApi.logger.error("[harness] bootstrap failed", { err: String(err) });
+      pluginApi.logger.error("[harness] sync bootstrap failed", { err: String(err) });
       throw err;
     }
+    // Kick off async bootstrap; do NOT await. Store the promise so teardown
+    // can await it before closing the DB.
+    runtime.asyncBootstrap = bootstrapHarnessAsync(runtime, pluginApi).then(
+      () => pluginApi.logger.info(`[harness] ${PLUGIN_ID}@${PLUGIN_VERSION.pluginVersion} async bootstrap complete`),
+      (err) => {
+        pluginApi.logger.error("[harness] async bootstrap failed", { err: String(err) });
+      },
+    );
+    pluginApi.logger.info(`[harness] ${PLUGIN_ID}@${PLUGIN_VERSION.pluginVersion} registered (async bootstrap in flight)`);
   },
 });

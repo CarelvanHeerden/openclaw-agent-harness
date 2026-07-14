@@ -85,7 +85,44 @@ export interface HarnessRuntime {
     git: GitAdapter;
     creds: CredentialAdapter;
     disposers: Array<() => void | Promise<void>>;
+    /**
+     * Promise for the async bootstrap phase (reactions poller start,
+     * session recovery). Populated by `register()` once it has kicked off
+     * `bootstrapHarnessAsync`. Teardown awaits this to ensure recovery
+     * notifications have flushed before closing the state DB.
+     */
+    asyncBootstrap?: Promise<void>;
 }
+/**
+ * Synchronous phase of plugin bootstrap.
+ *
+ * OpenClaw's plugin loader requires `register()` to be synchronous, so all
+ * tool/hook/service registration must complete before we hand control back.
+ * Anything that requires I/O that CAN be sync (SQLite via better-sqlite3,
+ * mkdirSync) runs here; anything that must be async (credential vault
+ * fetches, Slack API calls, session recovery notifies) is deferred to
+ * {@link bootstrapHarnessAsync}, which runs as a background promise the
+ * runtime holds a reference to for teardown ordering.
+ */
+export declare function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime;
+/**
+ * Asynchronous phase of plugin bootstrap. Runs as a fire-and-forget promise
+ * after {@link bootstrapHarnessSync} has returned control to the OpenClaw
+ * loader. Handles anything that requires network / vault I/O:
+ *
+ *   - fetching the Slack bot token from the credential vault and starting
+ *     the reactions poller
+ *   - session recovery (mark stale sessions as interrupted, notify Slack)
+ *
+ * The returned promise is stored on `runtime.asyncBootstrap` so teardown
+ * can await it if it needs to (e.g. to ensure recovery notifies have
+ * flushed before closing the state DB).
+ */
+export declare function bootstrapHarnessAsync(runtime: HarnessRuntime, api: HarnessPluginApi): Promise<void>;
+/**
+ * Backwards-compat facade. New code should prefer
+ * `bootstrapHarnessSync` + `bootstrapHarnessAsync`. Tests still call this.
+ */
 export declare function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRuntime>;
 declare const _default: any;
 export default _default;
