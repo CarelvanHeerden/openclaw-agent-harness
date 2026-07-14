@@ -309,17 +309,45 @@ export function bootstrapHarnessSync(api) {
     // Tools (sync)
     const disposeTools = registerHarnessTools(api, runtime);
     runtime.disposers.push(disposeTools);
-    // Slack hook (sync registration; the handler itself is async and runs
-    // on each inbound message, which is fine -- OpenClaw only requires the
-    // register() call itself to be sync).
-    if (api.registerHook) {
-        const dispose = api.registerHook("message.received", async (event) => {
-            const slackEvt = event;
-            if (!slackEvt?.payload)
-                return;
-            if (slackEvt.channel?.provider !== "slack")
-                return;
-            await listener.handle(slackEvt.payload);
+    // Subscribe to inbound Slack messages.
+    //
+    // The SDK exposes TWO distinct concepts here:
+    //   * `api.on(event, handler)` -- lightweight event-bus subscribe, the
+    //     path hybrid-memory uses for `message_received`. Returns an
+    //     unsubscribe fn. This is what we want for reacting to inbound
+    //     Slack messages.
+    //   * `api.registerHook(events, handler, opts)` -- registers a NAMED,
+    //     enumerable, first-class plugin hook (shows up in
+    //     `openclaw plugins list ... hooks`). Requires `opts.name`.
+    //
+    // We prefer `api.on` (matches hybrid-memory's pattern for this exact
+    // event) and fall back to `api.registerHook` with a proper `opts.name`
+    // if only the latter is present. Older mock APIs may expose neither.
+    //
+    // Handler itself is async; only `register()` needs to be sync, which
+    // this code is (we do NOT await api.on / api.registerHook here).
+    const messageHandler = async (event) => {
+        const slackEvt = event;
+        if (!slackEvt?.payload)
+            return;
+        if (slackEvt.channel?.provider !== "slack")
+            return;
+        await listener.handle(slackEvt.payload);
+    };
+    if (typeof api.on === "function") {
+        // Try the underscore form first (matches hybrid-memory / the openclaw
+        // event bus), then the dotted form as a fallback for older builds.
+        const disposeOn = api.on("message_received", messageHandler) ?? api.on("message.received", messageHandler);
+        if (typeof disposeOn === "function") {
+            runtime.disposers.push(disposeOn);
+        }
+    }
+    else if (typeof api.registerHook === "function") {
+        // Named hook path. `opts.name` is REQUIRED by the SDK registry --
+        // omitting it triggers 'Error: hook registration missing name'.
+        const dispose = api.registerHook(["message_received", "message.received"], messageHandler, {
+            name: `${PLUGIN_ID}:slack-message-listener`,
+            description: "Forward inbound Slack messages to the harness channel listener",
         });
         runtime.disposers.push(() => {
             if (typeof dispose === "function")
@@ -329,7 +357,7 @@ export function bootstrapHarnessSync(api) {
         });
     }
     else {
-        api.logger.warn("[harness] api.registerHook not present; Slack listener will be idle.");
+        api.logger.warn("[harness] neither api.on nor api.registerHook present; Slack listener will be idle.");
     }
     // Retention prune on service start (sync -- pruneRetention is a plain
     // SQL delete, no I/O beyond the DB).
