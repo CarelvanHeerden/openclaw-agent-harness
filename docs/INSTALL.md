@@ -34,17 +34,29 @@ volumes:
   - /mnt/user/appdata/openclaw/claude:/home/node/.claude
 ```
 
-## 2. Clone the plugin
+## 2. Install the plugin
 
-Into your OpenClaw plugins directory:
+### Recommended: OpenClaw plugin installer (from git)
+
+```bash
+docker exec -it openclaw-gateway openclaw plugins install git:github.com/CarelvanHeerden/openclaw-agent-harness
+```
+
+This clones the repo, runs `npm install --omit=dev`, and registers the plugin. `dist/` is committed to the repo (see `.gitignore`), so no build step is required at install time. This is deliberate: OpenClaw's git installer strips devDependencies, which means `typescript` and other build tooling would be unavailable if we tried to build post-clone.
+
+### Alternative: manual clone (for development)
+
+Only needed if you plan to modify the plugin source:
 
 ```bash
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness \
   ~/.openclaw/plugins/openclaw-agent-harness
 cd ~/.openclaw/plugins/openclaw-agent-harness
-pnpm install
-pnpm build
+pnpm install     # includes devDependencies
+pnpm build       # rebuild dist/ after src/ changes
 ```
+
+After local edits, run `pnpm build` and commit `dist/` alongside your `src/` changes. CI will fail if the committed `dist/` is stale.
 
 ## 3. Configure
 

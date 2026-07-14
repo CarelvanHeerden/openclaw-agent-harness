@@ -31,6 +31,19 @@ jobs:
       - name: Copy schema.sql into dist
         run: mkdir -p dist/state && cp src/state/schema.sql dist/state/
 
+      - name: Verify committed dist/ matches source
+        # OpenClaw's `plugins install git:` runs `npm install --omit=dev`,
+        # which strips typescript. dist/ must be committed for git installs
+        # to work. This step fails CI if a PR modifies src/ without
+        # committing the corresponding dist/ rebuild.
+        run: |
+          if [ -n "$(git status --porcelain dist/)" ]; then
+            echo '::error::dist/ is out of sync with src/. Run `npm run build` and commit dist/.'
+            git status --porcelain dist/
+            git --no-pager diff --stat dist/
+            exit 1
+          fi
+
       - name: Test
         run: node --test tests/*.mjs
 
