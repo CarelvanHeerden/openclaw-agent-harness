@@ -35,4 +35,8 @@ jobs:
         run: node --test tests/*.mjs
 
       - name: Smoke
-        run: node scripts/smoke.mjs
+        # Use a Node ESM loader hook to stub `openclaw/plugin-sdk/plugin-entry`
+        # since the real package only exists inside the OpenClaw runtime, not
+        # on npm. The stub returns the descriptor object unchanged, letting
+        # smoke.mjs exercise register().
+        run: node --import ./scripts/register-smoke-loader.mjs scripts/smoke.mjs

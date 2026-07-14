@@ -37,6 +37,12 @@ const fakeApi = {
     error: (m, meta) => logs.push({ level: "error", m, meta }),
   },
   registerTool: (def) => { registeredTools.add(def.name); return () => {}; },
+  // New-style config surface (definePluginEntry expects api.pluginConfig).
+  pluginConfig: {
+    slack: { channel: "C_SMOKE", authorised_users: ["U_SMOKE"] },
+    repos: { allowed: ["smoke/*"] },
+    storage: { state_db_path: `${stateDir}/state.db`, worktree_root: `${stateDir}/wt` },
+  },
   registerHook: (name) => { registeredHooks.add(name); return () => {}; },
   registerService: (svc) => { registeredServices.add(svc.id); return () => {}; },
   getConfig: () => ({
@@ -52,8 +58,12 @@ const fakeApi = {
 const mod = await import(resolve(here, "..", "dist", "index.js"));
 const plugin = mod.default;
 
-if (plugin.versionInfo?.pluginVersion !== pkg.version) {
-  console.error(`FAIL: versionInfo.pluginVersion (${plugin.versionInfo?.pluginVersion}) !== package.version (${pkg.version})`);
+// Smoke supports both plain-object and definePluginEntry-wrapped exports.
+// definePluginEntry returns whatever the SDK wraps it in; our loader stub
+// (see scripts/smoke-stub.mjs) short-circuits and returns the descriptor
+// object unchanged so `plugin.register` is directly callable.
+if (typeof plugin.register !== "function") {
+  console.error(`FAIL: plugin default export has no register(). Got: ${JSON.stringify(Object.keys(plugin ?? {}))}`);
   process.exit(1);
 }
 

@@ -31,8 +31,8 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_status",
         description:
           "Return harness runtime status: active sessions, monthly spend per user, model config.",
-        inputSchema: { type: "object", properties: {}, additionalProperties: false },
-        execute: () => {
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute: (_callId: unknown, _params: unknown) => {
           const sessions = runtime.state.db
             .prepare(
               `SELECT id, status, requester, repo, branch, cycles_ran, cost_usd,
@@ -83,14 +83,14 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_retention_prune",
         description:
           "Prune the harness audit log per retention policy. Safe to invoke daily from cron.",
-        inputSchema: {
+        parameters: {
           type: "object",
           properties: {
             auditRetentionDays: { type: "number", minimum: 7, maximum: 3650 },
           },
           additionalProperties: false,
         },
-        execute: (input) => {
+        execute: (_callId: unknown, input: unknown) => {
           const opts = (input ?? {}) as { auditRetentionDays?: number };
           const result = pruneRetention(runtime.state, {
             auditRetentionDays:
@@ -114,13 +114,13 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       api.registerTool({
         name: "harness_session_get",
         description: "Get full details of a harness session by id.",
-        inputSchema: {
+        parameters: {
           type: "object",
           properties: { sessionId: { type: "string", minLength: 1 } },
           required: ["sessionId"],
           additionalProperties: false,
         },
-        execute: (input) => {
+        execute: (_callId: unknown, input: unknown) => {
           const { sessionId } = input as { sessionId: string };
           const session = runtime.state.db
             .prepare(`SELECT * FROM sessions WHERE id = ?`)
@@ -163,7 +163,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_cancel",
         description:
           "Cancel an in-flight harness session by setting an abort flag the loop reads on its next checkpoint.",
-        inputSchema: {
+        parameters: {
           type: "object",
           properties: {
             sessionId: { type: "string", minLength: 1 },
@@ -172,7 +172,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           required: ["sessionId"],
           additionalProperties: false,
         },
-        execute: (input) => {
+        execute: (_callId: unknown, input: unknown) => {
           const { sessionId, reason } = input as { sessionId: string; reason?: string };
           const row = runtime.state.db.prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId) as { status: string; reactions_json?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
@@ -195,7 +195,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_upload_logs",
         description:
           "Attach runtime logs to a session manually. Use when the target repo does NOT deploy to Vercel (Cloudflare, AWS, on-prem) or when the Vercel bridge is disabled. The adversary reads the most recent upload for a session and treats it as runtime evidence with provider=\"manual\".",
-        inputSchema: {
+        parameters: {
           type: "object",
           properties: {
             sessionId: { type: "string", minLength: 1 },
@@ -209,7 +209,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           required: ["sessionId", "uploadedBy", "status", "logsExcerpt"],
           additionalProperties: false,
         },
-        execute: (input) => {
+        execute: (_callId: unknown, input: unknown) => {
           const p = input as {
             sessionId: string;
             uploadedBy: string;
@@ -247,7 +247,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_start_session",
         description:
           "Start a harness session directly (bypasses classifier). Useful for slash commands, cron-triggered runs, or other plugins.",
-        inputSchema: {
+        parameters: {
           type: "object",
           properties: {
             requester: { type: "string", minLength: 1, description: "Slack user id of the requester" },
@@ -272,7 +272,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           required: ["requester", "slackChannel", "slackThread", "brief"],
           additionalProperties: false,
         },
-        execute: async (input) => {
+        execute: async (_callId: unknown, input: unknown) => {
           const { requester, slackChannel, slackThread, brief, budgetUsd } = input as {
             requester: string;
             slackChannel: string;
@@ -325,8 +325,8 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_health",
         description:
           "Return a health snapshot: DB reachable, schema OK, config well-formed, credentials configured. For smoke tests + monitoring.",
-        inputSchema: { type: "object", properties: {}, additionalProperties: false },
-        execute: () => {
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute: (_callId: unknown, _params: unknown) => {
           const checks: Array<{ name: string; ok: boolean; detail?: string }> = [];
 
           // DB reachable?
@@ -377,7 +377,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_telemetry",
         description:
           "Return cost + activity telemetry: monthly ledger, session-level cost breakdown, model mix.",
-        inputSchema: {
+        parameters: {
           type: "object",
           properties: {
             month: { type: "string", pattern: "^\\d{4}-\\d{2}$", description: "YYYY-MM. Defaults to current month." },
@@ -385,7 +385,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           },
           additionalProperties: false,
         },
-        execute: (input) => {
+        execute: (_callId: unknown, input: unknown) => {
           const { month, user } = (input ?? {}) as { month?: string; user?: string };
           const targetMonth = month ?? new Date().toISOString().slice(0, 7);
           const monthlyRows = user
@@ -420,7 +420,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_resume",
         description:
           "Resume an interrupted harness session. Requires the session to be in 'interrupted' or 'resumable' state.",
-        inputSchema: {
+        parameters: {
           type: "object",
           properties: {
             sessionId: { type: "string", minLength: 1 },
@@ -428,7 +428,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           required: ["sessionId"],
           additionalProperties: false,
         },
-        execute: async (input) => {
+        execute: async (_callId: unknown, input: unknown) => {
           const { sessionId } = input as { sessionId: string };
           const row = runtime.state.db.prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId) as { status: string; crystallised_prompt?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };

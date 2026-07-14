@@ -36,7 +36,17 @@ function makeRuntime() {
 function collectTools() {
   const tools = new Map();
   return {
-    api: { logger: { info() {}, warn() {}, error() {}, debug() {} }, registerTool: (def) => { tools.set(def.name, def); return () => tools.delete(def.name); } },
+    api: {
+      logger: { info() {}, warn() {}, error() {}, debug() {} },
+      registerTool: (def) => {
+        // Wrap execute to match old single-arg calling convention.
+        // OpenClaw SDK execute is (callId, params, ctx?) but tests still call
+        // `.execute(input)` — we prepend a fake callId here.
+        const wrapped = { ...def, execute: (input) => def.execute("test-call-id", input) };
+        tools.set(def.name, wrapped);
+        return () => tools.delete(def.name);
+      },
+    },
     tools,
   };
 }
