@@ -72,6 +72,17 @@ SELECT event, payload, datetime(created_at/1000, 'unixepoch') AS ts
 FROM audit_log WHERE session_id = ? ORDER BY id ASC;
 ```
 
+## PAT cache lifecycle
+
+At session start the harness fetches each required PAT from the OpenClaw credential vault and caches it in-process (a plain `Map`, per-runtime, not persisted). Cached tokens live for the lifetime of the session and are dropped by `teardown()` when the session terminates.
+
+Implication for long-running sessions: **there is no TTL**. If a PAT is rotated in the vault mid-session, the cached value continues to be used until the session ends. For rotations that must take effect on an active session, either:
+
+- End the session (`harness_cancel`) so `teardown()` purges the cache, then start a new one; or
+- Call `creds.drop(<service>)` programmatically from the runtime to force a re-fetch on next use.
+
+Tokens are never persisted to disk by the credentials adapter, never written to `.git/config`, and never appear in the process argv (git operations use short-lived `x-access-token` URLs).
+
 ## Troubleshooting
 
 - **PAT push rejected with 403 (SAML)**: the org enforces SAML SSO. Authorise the PAT in the org's PAT settings, then retry. Alternative: emit `git format-patch` to a workspace directory and apply locally (see MEMORY.md).

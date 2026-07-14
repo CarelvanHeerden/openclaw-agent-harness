@@ -2,10 +2,11 @@
 
 Prerequisites:
 
-- OpenClaw >= 2026.6.x running in a Node 20+ environment.
+- OpenClaw >= 2026.5.0 running in a Node 22+ environment (the plugin's `engines.node` is `>=22.0.0`, matching the OpenClaw plugin SDK).
 - An Anthropic API key exposed to the OpenClaw container as `ANTHROPIC_API_KEY`.
 - `pnpm` available inside the container (or wherever you run the plugin).
 - GitHub personal access tokens stored in the OpenClaw credential vault, one per (user, org). See [`CONFIGURATION.md`](CONFIGURATION.md#pat-routing) for naming.
+- A working C/C++ toolchain for building `better-sqlite3` if you install outside the OpenClaw container image. On Debian/Ubuntu: `apt-get install -y build-essential python3`. On Alpine: `apk add --no-cache build-base python3`. The OpenClaw Docker image already ships these. If `pnpm install` fails on `better-sqlite3`, set `npm_config_build_from_source=true` and retry, or use a Node version that has a prebuilt binary published upstream.
 
 ## 1. Install the Claude Agent SDK
 
