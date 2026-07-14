@@ -34,6 +34,21 @@ volumes:
   - /mnt/user/appdata/openclaw/claude:/home/node/.claude
 ```
 
+## Expected `security audit` warning (read before installing)
+
+After install, `openclaw security audit` will report a **critical** `plugins.code_safety` finding:
+
+```
+Plugin "openclaw-agent-harness" contains dangerous code patterns:
+  Shell command execution detected (child_process)
+  (src/adapters/git-worktree.ts:172)
+  (dist/adapters/git-worktree.js:149)
+```
+
+This is expected. The harness runs `git` as a subprocess (add worktree, commit, push, etc.); OpenClaw's scanner flags any `child_process` use as critical and offers no per-plugin allowlist. **Install itself is NOT blocked** -- the built-in install-time dangerous-code scanner has been removed in current OpenClaw releases.
+
+Before installing, please read [`SECURITY.md`](../SECURITY.md) for the full call-site review (single file, `spawn("git", args, {env})`, no `shell: true`, no user-controlled executable path).
+
 ## 2. Install the plugin
 
 ### Recommended: OpenClaw plugin installer (from git)
