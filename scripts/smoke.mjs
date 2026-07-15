@@ -6,7 +6,8 @@
  * a fake API surface, and asserts that:
  *   - the plugin returns a version identical to package.json
  *   - registerTool was called for the expected tool names
- *   - registerHook was called for message.received
+ *   - the message hook was registered for message_received (underscore)
+ *     and NOT for the invalid dotted name message.received
  *   - the state store initialised without throwing
  *
  * Usage:
@@ -120,11 +121,18 @@ for (const t of expectTools) {
   }
 }
 
-// The plugin tries api.on("message_received") first, then falls back to
-// registerHook(["message_received", "message.received"], ...). Either
-// path counts.
-if (!registeredHooks.has("message_received") && !registeredHooks.has("message.received")) {
-  console.error(`FAIL: no message hook was registered (expected message_received or message.received)`);
+// The plugin must register the inbound-message listener under the ONLY
+// valid event name: `message_received` (underscore). The dotted form
+// `message.received` is NOT a real runtime hook name -- registering it
+// produces `unknown typed hook "message.received" ignored` and the listener
+// never fires. Assert both: (a) the correct name IS registered, and
+// (b) the invalid dotted name is NEVER registered.
+if (!registeredHooks.has("message_received")) {
+  console.error(`FAIL: message hook not registered under "message_received" (got: ${JSON.stringify([...registeredHooks])})`);
+  failed++;
+}
+if (registeredHooks.has("message.received")) {
+  console.error(`FAIL: plugin registered the INVALID dotted event "message.received". Only "message_received" is a real runtime hook name.`);
   failed++;
 }
 

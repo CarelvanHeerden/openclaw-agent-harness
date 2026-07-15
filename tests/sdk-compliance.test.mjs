@@ -193,6 +193,35 @@ test("sdk: dist and src do not import better-sqlite3", { skip: !existsSync(resol
   }
 });
 
+test("sdk: dist does not register the invalid dotted event 'message.received'", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, () => {
+  // The OpenClaw runtime's PLUGIN_HOOK_NAMES uses `message_received`
+  // (underscore). The dotted form `message.received` is NOT a valid hook
+  // name -- registering it yields a runtime warning:
+  //     unknown typed hook "message.received" ignored
+  // ...and the Slack listener silently never fires. This regressed on
+  // 2026-07-15 via a bogus `?? api.on("message.received", ...)` fallback
+  // and a `registerHook(["message_received", "message.received"], ...)`
+  // call. Guard against it coming back.
+  const raw = readFileSync(resolve(repoRoot, "dist/index.js"), "utf8");
+  // Strip comments so explanatory prose that mentions the dotted name (e.g.
+  // "the dotted form message.received is invalid") does not trip the check.
+  // We only care about the dotted string appearing in actual CODE.
+  const codeOnly = raw
+    .replace(/\/\*[\s\S]*?\*\//g, "")   // block comments
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1"); // line comments (avoid matching "://" in URLs)
+  assert.equal(
+    /["']message\.received["']/.test(codeOnly),
+    false,
+    'dist/index.js has CODE referencing the invalid dotted event "message.received". Use only "message_received" (underscore) -- the dotted name is not in the runtime PLUGIN_HOOK_NAMES and is silently ignored.',
+  );
+  // Sanity: the valid name must still be present in code.
+  assert.equal(
+    /["']message_received["']/.test(codeOnly),
+    true,
+    'dist/index.js must register the inbound-message listener under "message_received".',
+  );
+});
+
 test("sdk: dist register() is synchronous (does not return Promise)", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, async () => {
   // OpenClaw plugin loader rejects with 'plugin register must be synchronous'
   // if register() returns a Promise. Guard against a future regression that

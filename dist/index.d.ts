@@ -7,7 +7,7 @@
  *   2. Open the state store (SQLite)
  *   3. Wire real subsystems (SDK, git, github, vercel, slack)
  *   4. Register runtime tools (harness_* namespace)
- *   5. Register Slack message hook (message.received)
+ *   5. Register Slack message hook (message_received)
  *   6. Register cron / service (retention prune, recovery, reaction poller)
  *
  * Shape mirrors memory-hybrid.

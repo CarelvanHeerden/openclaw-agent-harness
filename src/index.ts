@@ -7,7 +7,7 @@
  *   2. Open the state store (SQLite)
  *   3. Wire real subsystems (SDK, git, github, vercel, slack)
  *   4. Register runtime tools (harness_* namespace)
- *   5. Register Slack message hook (message.received)
+ *   5. Register Slack message hook (message_received)
  *   6. Register cron / service (retention prune, recovery, reaction poller)
  *
  * Shape mirrors memory-hybrid.
@@ -463,18 +463,33 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     await listener.handle(slackEvt.payload);
   };
 
+  // The ONLY valid event name is `message_received` (underscore). It is in
+  // the runtime's PLUGIN_HOOK_NAMES list and is dispatched on every inbound
+  // message. The dotted form `message.received` is NOT a real hook name --
+  // registering it produces a runtime warning:
+  //     unknown typed hook "message.received" ignored
+  // ...so we must never register it. (Earlier versions tried it as a
+  // "fallback for older builds"; there is no such build -- it was always
+  // invalid and only ever generated noise.)
+  //
+  // Also note: `api.on(...)` on this runtime ALWAYS returns `undefined` --
+  // it does NOT hand back an unsubscribe function (see registerTypedHook in
+  // the registry: it pushes to registry.typedHooks and returns void). So we
+  // must NOT gate registration on a truthy return value, and there is no
+  // per-hook disposer to push. Typed hooks are torn down with the plugin.
   if (typeof api.on === "function") {
-    // Try the underscore form first (matches hybrid-memory / the openclaw
-    // event bus), then the dotted form as a fallback for older builds.
-    const disposeOn = api.on("message_received", messageHandler) ?? api.on("message.received", messageHandler);
-    if (typeof disposeOn === "function") {
-      runtime.disposers.push(disposeOn);
+    const maybeDispose = api.on("message_received", messageHandler);
+    // Defensive: if a future/mock runtime DOES return a disposer, honour it.
+    if (typeof maybeDispose === "function") {
+      runtime.disposers.push(maybeDispose);
     }
   } else if (typeof api.registerHook === "function") {
-    // Named hook path. `opts.name` is REQUIRED by the SDK registry --
-    // omitting it triggers 'Error: hook registration missing name'.
+    // Named hook path (older/alternate SDK shape). `opts.name` is REQUIRED
+    // by the SDK registry -- omitting it triggers
+    // 'Error: hook registration missing name'. Register ONLY the valid
+    // underscore event name.
     const dispose = api.registerHook(
-      ["message_received", "message.received"],
+      ["message_received"],
       messageHandler,
       {
         name: `${PLUGIN_ID}:slack-message-listener`,
