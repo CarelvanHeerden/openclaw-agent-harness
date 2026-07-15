@@ -9,6 +9,7 @@
 // ---- Defaults ----
 const DEFAULTS = {
     slack: {
+        listener_enabled: false,
         channel: "",
         authorised_users: [],
         reactions: {
@@ -100,10 +101,17 @@ function mergeDeep(base, override) {
 }
 export function parseHarnessConfig(input) {
     const merged = mergeDeep(DEFAULTS, input);
-    // Hard validation on safety-critical fields
-    if (!merged.slack.channel) {
-        throw new Error("harness.slack.channel is required");
+    // Hard validation on safety-critical fields.
+    //
+    // `slack.channel` is only required in autonomous listener mode. In the
+    // default agent-orchestrated mode the OpenClaw agent drives the harness
+    // via tools, so no channel to listen on is needed.
+    if (merged.slack.listener_enabled && !merged.slack.channel) {
+        throw new Error("harness.slack.channel is required when slack.listener_enabled is true");
     }
+    // `authorised_users` is always required: it gates who may invoke the
+    // harness (whether via the listener OR via agent tool calls) and who may
+    // drop control reactions.
     if (merged.slack.authorised_users.length === 0) {
         throw new Error("harness.slack.authorised_users must contain at least one Slack user id");
     }

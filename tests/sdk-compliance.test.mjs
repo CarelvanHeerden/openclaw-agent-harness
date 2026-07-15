@@ -12,6 +12,7 @@ const pkgPath = resolve(repoRoot, "package.json");
 
 // Expected tool contract - must be kept in sync with src/tools/registration.ts
 const EXPECTED_TOOLS = [
+  "harness_run",
   "harness_status",
   "harness_health",
   "harness_start_session",

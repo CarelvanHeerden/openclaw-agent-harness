@@ -1,12 +1,19 @@
 # openclaw-agent-harness
 
-*Multi-agent code-writing harness for OpenClaw.* Post a dev request in a Slack channel, and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
+*Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.2`. All Phase 1-3 subsystems land and pass tests (130/130 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel.
+> *Status: beta.* Version `0.1.0-beta.2`. All Phase 1-3 subsystems land and pass tests (136/136 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel.
+
+### Two ways to drive it
+
+- **Agent-orchestrated (DEFAULT, recommended).** The OpenClaw agent owns the conversation and calls the harness as a set of tools. You talk to your OpenClaw agent; it calls `harness_run` (raw request -> crystallise -> plan -> workers -> adversary -> PR), watches with `harness_status` / `harness_session_get`, and reports back. The plugin does **not** listen to Slack itself. This is the default (`slack.listener_enabled: false`).
+- **Autonomous listener (opt-in).** Set `slack.listener_enabled: true` and the plugin subscribes to `message_received` and treats allow-listed messages in `slack.channel` as dev requests directly, bypassing the agent. Useful for a dedicated dev channel, but it competes with your OpenClaw agent for messages, so it's off by default.
+
+Either way the pipeline is identical; only the *entry point* differs.
 
 ## Why
 
-Slack is where dev asks happen, and Claude Code is where the actual writing gets done. This plugin closes the loop: crystallise the ask into a brief, plan atomic sub-tasks, execute them in parallel Sonnet subprocesses inside a git worktree, and have a Fable-5 adversary sign off before a PR is opened.
+Your OpenClaw agent is where dev asks land, and Claude Code is where the actual writing gets done. This plugin closes the loop: crystallise the ask into a brief, plan atomic sub-tasks, execute them in parallel Sonnet subprocesses inside a git worktree, and have a Fable-5 adversary sign off before a PR is opened. The agent orchestrates all of it via tools.
 
 Nothing pushes to a repo until the adversary is satisfied (or a human drops `:rocket:` to override). Nothing pushes at all without a per-repo per-user PAT the requester owns.
 
@@ -82,9 +89,10 @@ Nothing pushes until the adversary passes (or a human drops `:rocket:`). Reactio
 
 ## Tools exposed
 
+- `harness_run` -- **primary agent entry point**: raw request -> crystallise -> start session (returns sessionId, a clarifying question, or a rejection)
+- `harness_start_session` -- start from a pre-built structured brief (skips crystallisation); Slack channel/thread optional
 - `harness_status` -- active sessions + monthly spend
 - `harness_health` -- DB reachable, schema OK, config valid, cred set
-- `harness_start_session` -- direct API entry (bypasses classifier)
 - `harness_session_get` -- one session with sub-tasks/reviews/audit
 - `harness_telemetry` -- monthly ledger + session cost breakdown
 - `harness_upload_logs` -- attach runtime logs from any deploy target (nginx, CloudWatch, on-prem) when Vercel is off
@@ -116,8 +124,8 @@ Only from `slack.authorised_users`:
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 130 tests
-npm run smoke   # boots the plugin against a fake OpenClaw API
+npm test        # runs 136 tests
+npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 ```
 
 Then follow `docs/REAL-TEST-RUNBOOK.md` for wiring up the real Slack channel and Vault credentials.
@@ -126,7 +134,7 @@ Then follow `docs/REAL-TEST-RUNBOOK.md` for wiring up the real Slack channel and
 
 - `npm run typecheck` -- strict TS, no `any` leaks in `src/`
 - `npm run build` -- emits `dist/` + copies `schema.sql`
-- `npm test` -- Node test runner, 130 tests as of `0.1.0-beta.2`
+- `npm test` -- Node test runner, 136 tests as of `0.1.0-beta.2`
 - `npm run smoke` -- post-build bootstrap sanity
 
 CI on every push and PR: `.github/workflows/ci.yml`.

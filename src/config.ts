@@ -20,6 +20,16 @@ export interface HarnessConfig {
 }
 
 export interface SlackConfig {
+  /**
+   * When true, the plugin subscribes to `message_received` and treats
+   * allow-listed messages in `channel` as dev requests (autonomous mode).
+   *
+   * When false (DEFAULT), the plugin does NOT listen to Slack at all. The
+   * OpenClaw agent orchestrates everything by calling the harness tools
+   * (`harness_run`, `harness_status`, ...). This is the recommended mode:
+   * you talk to the OpenClaw agent, and the agent drives the harness.
+   */
+  listener_enabled: boolean;
   channel: string;
   authorised_users: string[];
   /** Vault service name for the Slack bot token (used by reactions poller + adapter fallback). Optional; if unset, poller stays idle. */
@@ -104,6 +114,7 @@ export interface PatRoutingConfig {
 
 const DEFAULTS: HarnessConfig = {
   slack: {
+    listener_enabled: false,
     channel: "",
     authorised_users: [],
     reactions: {
@@ -196,10 +207,17 @@ function mergeDeep<T>(base: T, override: unknown): T {
 export function parseHarnessConfig(input: unknown): HarnessConfig {
   const merged = mergeDeep(DEFAULTS, input);
 
-  // Hard validation on safety-critical fields
-  if (!merged.slack.channel) {
-    throw new Error("harness.slack.channel is required");
+  // Hard validation on safety-critical fields.
+  //
+  // `slack.channel` is only required in autonomous listener mode. In the
+  // default agent-orchestrated mode the OpenClaw agent drives the harness
+  // via tools, so no channel to listen on is needed.
+  if (merged.slack.listener_enabled && !merged.slack.channel) {
+    throw new Error("harness.slack.channel is required when slack.listener_enabled is true");
   }
+  // `authorised_users` is always required: it gates who may invoke the
+  // harness (whether via the listener OR via agent tool calls) and who may
+  // drop control reactions.
   if (merged.slack.authorised_users.length === 0) {
     throw new Error("harness.slack.authorised_users must contain at least one Slack user id");
   }

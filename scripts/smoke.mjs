@@ -40,7 +40,10 @@ const fakeApi = {
   registerTool: (def) => { registeredTools.add(def.name); return () => {}; },
   // New-style config surface (definePluginEntry expects api.pluginConfig).
   pluginConfig: {
-    slack: { channel: "C_SMOKE", authorised_users: ["U_SMOKE"] },
+    // listener_enabled: true so smoke exercises the autonomous Slack-listener
+    // path (message_received hook). Agent-orchestrated mode (the default) is
+    // asserted separately below via a second registration.
+    slack: { listener_enabled: true, channel: "C_SMOKE", authorised_users: ["U_SMOKE"] },
     repos: { allowed: ["smoke/*"] },
     storage: { state_db_path: `${stateDir}/state.db`, worktree_root: `${stateDir}/wt` },
   },
@@ -63,7 +66,7 @@ const fakeApi = {
   },
   registerService: (svc) => { registeredServices.add(svc.id); return () => {}; },
   getConfig: () => ({
-    slack: { channel: "C_SMOKE", authorised_users: ["U_SMOKE"] },
+    slack: { listener_enabled: true, channel: "C_SMOKE", authorised_users: ["U_SMOKE"] },
     repos: { allowed: ["smoke/*"] },
     storage: { state_db_path: `${stateDir}/state.db`, worktree_root: `${stateDir}/wt` },
   }),
@@ -102,6 +105,7 @@ if (registerResult && typeof registerResult.then === "function") {
 await new Promise((r) => setTimeout(r, 500));
 
 const expectTools = [
+  "harness_run",
   "harness_status",
   "harness_health",
   "harness_start_session",
@@ -144,6 +148,45 @@ for (const s of ["retention-nightly"]) {
   }
 }
 
+// ---- Agent-orchestrated mode (DEFAULT): listener_enabled=false ----
+// A fresh registration with listener_enabled off must register the SAME
+// tools but must NOT subscribe to message_received. This is the default
+// mode: the OpenClaw agent drives the harness via tools.
+const agentHooks = new Set();
+const agentTools = new Set();
+const agentStateDir = `${stateDir}-agent`;
+const agentApi = {
+  ...fakeApi,
+  pluginConfig: {
+    slack: { listener_enabled: false, authorised_users: ["U_SMOKE"] }, // NB: no channel
+    repos: { allowed: ["smoke/*"] },
+    storage: { state_db_path: `${agentStateDir}/state.db`, worktree_root: `${agentStateDir}/wt` },
+  },
+  getConfig: () => ({
+    slack: { listener_enabled: false, authorised_users: ["U_SMOKE"] },
+    repos: { allowed: ["smoke/*"] },
+    storage: { state_db_path: `${agentStateDir}/state.db`, worktree_root: `${agentStateDir}/wt` },
+  }),
+  registerTool: (def) => { agentTools.add(def.name); return () => {}; },
+  registerHook: (events) => { const l = Array.isArray(events) ? events : [events]; for (const e of l) agentHooks.add(e); return () => {}; },
+  on: (event) => { agentHooks.add(event); return () => {}; },
+  registerService: () => () => {},
+};
+const agentRes = plugin.register(agentApi);
+if (agentRes && typeof agentRes.then === "function") {
+  console.error("FAIL (agent-mode): register() returned a Promise; must be synchronous.");
+  failed++;
+}
+await new Promise((r) => setTimeout(r, 200));
+if (agentHooks.has("message_received")) {
+  console.error("FAIL (agent-mode): listener_enabled=false but message_received was still registered. The agent-orchestrated default must NOT listen to Slack.");
+  failed++;
+}
+if (!agentTools.has("harness_run")) {
+  console.error("FAIL (agent-mode): harness_run tool missing in agent-orchestrated mode.");
+  failed++;
+}
+
 if (failed > 0) {
   console.error(`\nSmoke failed: ${failed} check(s). Logs:`);
   for (const l of logs) console.error(`  [${l.level}] ${l.m}`);
@@ -151,6 +194,7 @@ if (failed > 0) {
 }
 
 console.log(`Smoke OK: ${expectTools.length} tools, ${registeredHooks.size} hooks, ${registeredServices.size} services.`);
-console.log(`  Tools:    ${[...registeredTools].sort().join(", ")}`);
-console.log(`  Hooks:    ${[...registeredHooks].sort().join(", ")}`);
-console.log(`  Services: ${[...registeredServices].sort().join(", ")}`);
+console.log(`  Tools:            ${[...registeredTools].sort().join(", ")}`);
+console.log(`  Hooks (listener): ${[...registeredHooks].sort().join(", ")}`);
+console.log(`  Hooks (agent):    ${[...agentHooks].sort().join(", ") || "(none -- correct, agent-orchestrated)"}`);
+console.log(`  Services:         ${[...registeredServices].sort().join(", ")}`);
