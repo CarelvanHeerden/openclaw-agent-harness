@@ -147,7 +147,7 @@ let currentRuntime: HarnessRuntime | null = null;
  *
  * OpenClaw's plugin loader requires `register()` to be synchronous, so all
  * tool/hook/service registration must complete before we hand control back.
- * Anything that requires I/O that CAN be sync (SQLite via better-sqlite3,
+ * Anything that requires I/O that CAN be sync (SQLite via node:sqlite,
  * mkdirSync) runs here; anything that must be async (credential vault
  * fetches, Slack API calls, session recovery notifies) is deferred to
  * {@link bootstrapHarnessAsync}, which runs as a background promise the

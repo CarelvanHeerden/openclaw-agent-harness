@@ -9,7 +9,7 @@ try {
   ({ OrchestratorLoop } = await import("../dist/orchestrator/loop.js"));
   ({ BudgetEnforcer } = await import("../dist/budgets/enforcer.js"));
   ({ PatRouter } = await import("../dist/auth/pat-router.js"));
-  ({ default: Database } = await import("better-sqlite3"));
+  ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   OrchestratorLoop = null;
 }
