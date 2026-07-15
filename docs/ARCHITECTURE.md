@@ -2,6 +2,179 @@
 
 This document describes the design of `openclaw-agent-harness`.
 
+> The diagrams in [§0. UML diagrams](#0-uml-diagrams) are the canonical, always-current
+> view of how the agents interact. The ASCII sketches further down are kept as a
+> quick-reference and may lag the code; when in doubt, trust the Mermaid diagrams.
+
+---
+
+## 0. UML diagrams
+
+These render natively on GitHub. Source lives inline so they stay in the repo and
+version with the code.
+
+### 0.1 Component diagram (who owns what)
+
+```mermaid
+flowchart TB
+  subgraph SLACK["Slack (private dev channel)"]
+    U["Allow-listed user"]
+  end
+
+  subgraph GW["OpenClaw gateway"]
+    subgraph PLUGIN["openclaw-agent-harness plugin"]
+      LIS["SlackChannelListener\nrouteMessage()"]
+      DIS["Dispatcher\nsession row + handoff"]
+      CRY["Crystalliser\nhaiku classify + fable-5 refine"]
+      LOOP["OrchestratorLoop\nstate machine"]
+      LEAD["Fable-5 lead\nplan validator"]
+      ADV["Fable-5 adversary\ndiff + runtime review"]
+      BUD["Budget enforcer"]
+      PAT["PAT router"]
+      GUARD["Bash guard"]
+      STORE[("State store\nnode:sqlite")]
+      RPOLL["Reactions poller\n15s"]
+      PRW["PR-merged watcher\n300s"]
+    end
+  end
+
+  subgraph WORKERS["Claude Agent SDK subprocesses"]
+    W1["Sonnet worker #1"]
+    W2["Sonnet worker #N"]
+  end
+
+  subgraph EXT["External"]
+    GH["GitHub REST\n(per-user PAT)"]
+    WT[["Per-session git worktree"]]
+    VER["Vercel logs (optional)"]
+    VAULT["OpenClaw credential vault"]
+  end
+
+  U -->|message / reaction| LIS
+  LIS --> DIS
+  DIS --> CRY
+  CRY --> LOOP
+  LOOP --> LEAD
+  LOOP -->|spawn, bounded concurrency| W1 & W2
+  W1 & W2 -->|edit + commit, no push| WT
+  LOOP --> ADV
+  ADV -.reads.-> WT
+  ADV -.reads.-> VER
+  LOOP --> BUD
+  LOOP --> PAT
+  W1 & W2 -.tool calls filtered by.-> GUARD
+  PAT -->|resolve token| VAULT
+  LOOP -->|push branch + open PR| GH
+  GH --> WT
+  RPOLL -->|shipIt / abort / budgetBump| STORE
+  PRW -->|merge/close detected| STORE
+  LOOP <--> STORE
+  DIS <--> STORE
+```
+
+### 0.2 Sequence diagram (one dev request, end to end)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor User as Allow-listed user
+  participant Slack
+  participant Listener as SlackChannelListener
+  participant Disp as Dispatcher
+  participant Cry as Crystalliser
+  participant Orch as OrchestratorLoop
+  participant Lead as Fable-5 lead
+  participant Worker as Sonnet worker(s)
+  participant Adv as Fable-5 adversary
+  participant Git as Git worktree
+  participant GH as GitHub
+
+  User->>Slack: Post dev request in thread
+  Slack->>Listener: message_received
+  Listener->>Listener: routeMessage() -> start_new_session
+  Listener->>Disp: startNewSession(evt)
+  Disp->>Disp: INSERT session (UNIQUE thread)
+  Disp-->>Slack: react :eyes:
+
+  Disp->>Cry: crystallise(userText)
+  Cry->>Cry: haiku classify intent
+  alt intent = not_dev / unsafe
+    Cry-->>Disp: reject
+    Disp-->>Slack: post decline + react :x:
+  else needs detail
+    Cry-->>Disp: clarify(question)
+    Disp-->>Slack: ask clarifying question
+  else intent = dev_task
+    Cry->>Cry: fable-5 refine -> brief
+    Cry-->>Disp: brief
+    Disp->>Orch: run(sessionId, brief)
+
+    Orch->>Lead: plan(brief)
+    Lead-->>Orch: LeadPlan (repo, branch, sub-task DAG, checklist)
+    Orch->>Git: allocate worktree
+
+    loop up to max_cycles
+      Orch->>Orch: topoSort sub-tasks
+      par bounded concurrency
+        Orch->>Worker: run(subTask) [bash-guarded]
+        Worker->>Git: edit + commit (no push)
+        Worker-->>Orch: WorkerResult (files, cost, sha)
+      end
+      opt runtime enabled
+        Orch->>Orch: fetchRuntime (Vercel / manual upload)
+      end
+      Orch->>Adv: review(brief, diff, runtime?)
+      Adv-->>Orch: verdict = pass | revise | block
+      alt pass OR user :rocket:
+        Orch->>GH: push branch + open PR (draft if not pass)
+        GH-->>Orch: PR URL
+        Orch-->>Slack: post PR link + cost + react :tada:
+      else block OR max cycles
+        Orch-->>Slack: react :x: + reason
+      else revise
+        Note over Orch: next cycle
+      end
+    end
+  end
+
+  Note over User,GH: User reactions (:rocket: :x: :moneybag:) are polled every 15s<br/>and injected as control signals at each loop checkpoint.
+```
+
+### 0.3 State machine (the orchestrator loop)
+
+Mirrors `OrchestratorLoop.advance()` in `src/orchestrator/loop.ts`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> crystallising
+  crystallising --> planning: crystallise_ok
+  planning --> executing: plan_ready
+  executing --> reviewing: subtasks_complete
+  reviewing --> done: adversary_pass
+  reviewing --> done: user_ship_it_reaction
+  reviewing --> executing: adversary_revise
+  reviewing --> failed: adversary_block
+  reviewing --> failed: max_cycles_reached
+
+  crystallising --> aborted: user_abort / budget / timeout
+  planning --> aborted: user_abort / budget / timeout
+  executing --> aborted: user_abort / budget / timeout
+  reviewing --> aborted: user_abort / budget / timeout
+
+  done --> [*]
+  failed --> [*]
+  aborted --> [*]
+
+  note right of reviewing
+    Early exits (checked before
+    normal transitions):
+    - user_abort_reaction
+    - budget_exhausted
+    - hard_timeout
+    - user_ship_it_reaction (only in reviewing)
+  end note
+```
+
 ---
 
 ## 1. Big picture
@@ -150,7 +323,13 @@ This document describes the design of `openclaw-agent-harness`.
 
 ---
 
-## 4. State schema (SQLite)
+## 4. State schema (SQLite via `node:sqlite`)
+
+> The store uses Node's built-in `node:sqlite` (`DatabaseSync`), not
+> `better-sqlite3`. OpenClaw installs plugins with `npm install --ignore-scripts`,
+> which skips native build scripts; a built-in module avoids the missing-bindings
+> failure entirely. See `src/state/store.ts`.
+
 
 ```sql
 CREATE TABLE sessions (

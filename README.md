@@ -2,7 +2,7 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Post a dev request in a Slack channel, and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.1`. All Phase 1-3 subsystems land and pass tests (87/87 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel.
+> *Status: beta.* Version `0.1.0-beta.2`. All Phase 1-3 subsystems land and pass tests (130/130 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel.
 
 ## Why
 
@@ -12,34 +12,44 @@ Nothing pushes to a repo until the adversary is satisfied (or a human drops `:ro
 
 ## Architecture
 
+Full UML (component, sequence, state) lives in [`docs/ARCHITECTURE.md` §0](docs/ARCHITECTURE.md#0-uml-diagrams). The interaction between the agents, at a glance:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor User
+  participant Slack
+  participant Harness as Harness (listener + dispatcher + crystalliser)
+  participant Lead as Fable-5 lead
+  participant Worker as Sonnet worker(s)
+  participant Adv as Fable-5 adversary
+  participant GH as GitHub
+
+  User->>Slack: Post dev request
+  Slack->>Harness: message_received (react :eyes:)
+  Harness->>Harness: classify (haiku) + refine brief (fable-5)
+  Harness->>Lead: plan(brief)
+  Lead-->>Harness: repo + branch + sub-task DAG + checklist
+
+  loop up to max_cycles
+    par bounded concurrency
+      Harness->>Worker: run sub-task (bash-guarded, in worktree)
+      Worker-->>Harness: diff + cost (commit, no push)
+    end
+    Harness->>Adv: review(brief, diff, runtime?)
+    Adv-->>Harness: pass | revise | block
+    alt pass (or user :rocket:)
+      Harness->>GH: push branch + open PR
+      GH-->>Slack: PR link + cost + :tada:
+    else block / max cycles
+      Harness-->>Slack: :x: + reason
+    else revise
+      Note over Harness: next cycle
+    end
+  end
 ```
-Slack channel
-     |
-     v
-[ SlackChannelListener ]  -- routes: new session / follow-up / ignore
-     |
-     v
-[ Dispatcher ]  -- inserts session row (UNIQUE thread), reacts :eyes:
-     |
-     v
-[ Crystalliser ]  -- classifier (haiku) + brief refiner (fable-5)
-     |
-     v
-[ Fable-5 lead ]  -- plan: repo, branch, sub-tasks, review checklist
-     |
-     v
-[ Orchestrator loop ]  -- up to N cycles:
-     |
-     v
-   [ Sonnet worker ] x concurrency  -- canUseTool bash guard, worktree isolation
-     |
-     v
-   [ Fable-5 adversary ]  -- diff + Vercel logs + runtime banner
-     |
-     +--- verdict=pass    --> [ GitHub PR opener ]  --> Slack :tada:
-     +--- verdict=revise  --> next cycle
-     +--- verdict=block   --> Slack :x:
-```
+
+Nothing pushes until the adversary passes (or a human drops `:rocket:`). Reactions (`:rocket:` ship, `:x:` abort, `:moneybag:` budget-bump) are polled every 15s and applied at each loop checkpoint.
 
 ## Subsystems (all wired)
 
@@ -65,10 +75,10 @@ Slack channel
 | Reactions poller             | `src/slack/reactions-poller.ts`                  | 15s interval, writes into `reactions_json` column      |
 | Bash guard                   | `src/safety/bash-guard.ts`                       | Tokeniser-based POSIX-ish denylist                     |
 | Budget enforcer              | `src/budgets/enforcer.ts`                        | Daily + monthly USD ledger                            |
-| State store                  | `src/state/store.ts` + `schema.sql`              | SQLite (better-sqlite3), audit log                     |
+| State store                  | `src/state/store.ts` + `schema.sql`              | SQLite (built-in `node:sqlite`), audit log             |
 | Retention                    | `src/state/retention.ts`                         | 90-day audit prune, terminal-session prune             |
 | Session recovery             | `src/state/recovery.ts`                          | Stale in-flight -> `interrupted`, Slack notify         |
-| Tools                        | `src/tools/registration.ts`                      | 8 tools (see below)                                    |
+| Tools                        | `src/tools/registration.ts`                      | 9 tools (see below)                                    |
 
 ## Tools exposed
 
@@ -106,7 +116,7 @@ Only from `slack.authorised_users`:
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 87 tests
+npm test        # runs 130 tests
 npm run smoke   # boots the plugin against a fake OpenClaw API
 ```
 
@@ -116,7 +126,7 @@ Then follow `docs/REAL-TEST-RUNBOOK.md` for wiring up the real Slack channel and
 
 - `npm run typecheck` -- strict TS, no `any` leaks in `src/`
 - `npm run build` -- emits `dist/` + copies `schema.sql`
-- `npm test` -- Node test runner, 87 tests as of `0.1.0-beta.1`
+- `npm test` -- Node test runner, 130 tests as of `0.1.0-beta.2`
 - `npm run smoke` -- post-build bootstrap sanity
 
 CI on every push and PR: `.github/workflows/ci.yml`.
