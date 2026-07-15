@@ -2,6 +2,18 @@
 
 ## [Unreleased] -- maintainer review round 2
 
+### Docs
+
+- *UML diagrams added.* `docs/ARCHITECTURE.md` gains a new `§0. UML diagrams`
+  section with GitHub-native Mermaid: a component diagram (who owns what),
+  a full end-to-end sequence diagram (one dev request through crystallise,
+  plan, parallel workers, adversary, PR), and a state-machine diagram that
+  mirrors `OrchestratorLoop.advance()`. The README embeds a condensed
+  sequence diagram. All four blocks validated with the Mermaid parser.
+- *README refreshed* to `0.1.0-beta.2`: test count 130 (was 87), 9 tools
+  in the subsystem table (was 8), and state store described as built-in
+  `node:sqlite` (was better-sqlite3).
+
 ### Security
 
 - *Read-side guard on `canUseTool`.* The SDK's built-in `Read` / `NotebookRead`
