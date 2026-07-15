@@ -44,23 +44,28 @@ export function pruneRetention(store: StateStore, opts: PruneOptions): PruneResu
     .prepare(`DELETE FROM budgets_daily WHERE day < ?`)
     .run(new Date(dailyCutoff).toISOString().slice(0, 10));
 
-  let terminalRes = { changes: 0 };
+  // `node:sqlite` returns `changes` as `number | bigint`. Row counts here
+  // are well within Number.MAX_SAFE_INTEGER; coerce for downstream consumers.
+  const asNumber = (v: number | bigint): number => (typeof v === "bigint" ? Number(v) : v);
+
+  let terminalChanges: number = 0;
   if (opts.pruneTerminalSessions) {
     const days = opts.pruneTerminalSessionsDays ?? 365;
     const cutoff = now - days * 86_400_000;
-    terminalRes = store.db
+    const terminalRes = store.db
       .prepare(
         `DELETE FROM sessions
          WHERE status IN ('done', 'failed', 'aborted')
            AND updated_at < ?`,
       )
       .run(cutoff);
+    terminalChanges = asNumber(terminalRes.changes);
   }
 
   const result: PruneResult = {
-    auditRowsDeleted: auditRes.changes,
-    budgetsDailyRowsDeleted: dailyRes.changes,
-    terminalSessionsDeleted: terminalRes.changes,
+    auditRowsDeleted: asNumber(auditRes.changes),
+    budgetsDailyRowsDeleted: asNumber(dailyRes.changes),
+    terminalSessionsDeleted: terminalChanges,
     cutoffDay: new Date(auditCutoff).toISOString().slice(0, 10),
   };
 

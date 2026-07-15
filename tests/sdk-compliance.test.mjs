@@ -135,6 +135,64 @@ test("sdk: dist does not call registerHook without opts.name", { skip: !existsSy
   );
 });
 
+test("sdk: no native-binary dependencies (npm install --ignore-scripts must be enough)", () => {
+  // OpenClaw's plugin loader invokes `npm install --ignore-scripts` for
+  // security (see openclaw runtime `install-CLxRzDc9.js`). That means any
+  // dep with a native binary fetched by a postinstall/install script
+  // (better-sqlite3, sqlite3, node-sass, etc.) will land on Carel's machine
+  // WITHOUT a compiled `.node` binary and the plugin will fail with:
+  //     'Could not locate the bindings file'
+  //
+  // Rule: never add a dep whose install requires running scripts. Use
+  // pure-JS packages, prebuild-loaded @napi-rs/* natives that ship the
+  // binary inside the npm tarball itself, or Node built-ins (node:sqlite).
+  //
+  // Also assert we don't reintroduce pnpm.onlyBuiltDependencies -- if we
+  // ever add that back, it's a signal a native dep sneaked in.
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  const NATIVE_DEP_DENYLIST = new Set([
+    "better-sqlite3",
+    "sqlite3",
+    "node-sass",
+    "canvas",
+    "sharp", // sharp bundles its own but historically caused issues on --ignore-scripts
+    "node-gyp",
+  ]);
+  const allDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+  const offenders = Object.keys(allDeps).filter((d) => NATIVE_DEP_DENYLIST.has(d));
+  assert.equal(
+    offenders.length,
+    0,
+    `package.json declares native-binary dep(s): ${offenders.join(", ")}. OpenClaw installs plugins with --ignore-scripts, so post-install compile/fetch scripts DO NOT run. Use node:sqlite or a pure-JS alternative.`,
+  );
+  assert.equal(
+    pkg.pnpm?.onlyBuiltDependencies,
+    undefined,
+    "package.json declares pnpm.onlyBuiltDependencies -- indicates a native dep was reintroduced. Drop it and switch to a pure-JS / node:* alternative.",
+  );
+});
+
+test("sdk: dist and src do not import better-sqlite3", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, () => {
+  // Belt-and-braces guard alongside the package.json check above.
+  // Catches the case where the dep is removed but a leftover import lingers.
+  const filesToCheck = [
+    resolve(repoRoot, "dist/state/store.js"),
+    resolve(repoRoot, "src/state/store.ts"),
+  ];
+  for (const f of filesToCheck) {
+    if (!existsSync(f)) continue;
+    const src = readFileSync(f, "utf8");
+    // Match `from "better-sqlite3"` or `require("better-sqlite3")` but not
+    // documentation comments that happen to include the string.
+    const importRe = /(?:from|require\s*\()\s*["']better-sqlite3["']/;
+    assert.equal(
+      importRe.test(src),
+      false,
+      `${f} imports better-sqlite3. Use "node:sqlite" (DatabaseSync) instead — npm install --ignore-scripts (which OpenClaw uses) does not fetch native binaries.`,
+    );
+  }
+});
+
 test("sdk: dist register() is synchronous (does not return Promise)", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, async () => {
   // OpenClaw plugin loader rejects with 'plugin register must be synchronous'
   // if register() returns a Promise. Guard against a future regression that

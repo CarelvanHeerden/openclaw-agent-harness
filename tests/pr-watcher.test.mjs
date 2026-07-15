@@ -7,7 +7,7 @@ import { dirname, resolve } from "node:path";
 let PrMergedWatcher, parsePrUrl, Database;
 try {
   ({ PrMergedWatcher, parsePrUrl } = await import("../dist/adapters/github-watcher.js"));
-  ({ default: Database } = await import("better-sqlite3"));
+  ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   PrMergedWatcher = null;
 }
