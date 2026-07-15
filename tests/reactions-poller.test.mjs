@@ -7,7 +7,7 @@ import { dirname, resolve } from "node:path";
 let ReactionsPoller, Database;
 try {
   ({ ReactionsPoller } = await import("../dist/slack/reactions-poller.js"));
-  ({ default: Database } = await import("better-sqlite3"));
+  ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   ReactionsPoller = null;
 }

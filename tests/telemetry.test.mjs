@@ -7,7 +7,7 @@ import { dirname, resolve } from "node:path";
 let registerHarnessTools, Database;
 try {
   ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
-  ({ default: Database } = await import("better-sqlite3"));
+  ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   registerHarnessTools = null;
 }

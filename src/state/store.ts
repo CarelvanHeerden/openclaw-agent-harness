@@ -1,18 +1,25 @@
 /**
- * State store: SQLite via better-sqlite3, sync API.
+ * State store: SQLite via the built-in `node:sqlite` module, sync API.
  * Applies schema on first open. Idempotent.
  *
  * The schema is loaded from schema.sql at package root. It is intentionally
  * copied into dist/state/schema.sql by the build (see package.json "files").
+ *
+ * We deliberately use `node:sqlite` (built into Node >= 22.5) rather than
+ * `better-sqlite3` so the plugin has ZERO native dependencies. OpenClaw's
+ * plugin loader installs deps with `npm install --ignore-scripts`, which
+ * silently skips `better-sqlite3`'s `install` script and leaves the plugin
+ * with no native binary. `node:sqlite` avoids the whole problem — it ships
+ * with Node itself.
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
 
 export interface StateStore {
-  db: Database.Database;
+  db: DatabaseSync;
   close: () => void;
   audit: (event: string, payload: unknown, sessionId?: string) => void;
 }
@@ -36,7 +43,7 @@ function locateSchema(): string {
  * NOTE: This is intentionally synchronous. OpenClaw's plugin loader
  * requires `register()` to be synchronous, and this is called from that
  * critical path. All the underlying primitives (`mkdirSync`, `readFileSync`,
- * `better-sqlite3` constructor, `db.exec`, `db.prepare`) are sync anyway.
+ * `DatabaseSync` constructor, `db.exec`, `db.prepare`) are sync anyway.
  *
  * The async wrapper is retained as a thin re-export below so callers that
  * were previously awaiting can continue to do so without a code change.
@@ -45,9 +52,10 @@ export function openStateStoreSync(pathHint: string): StateStore {
   const path = resolve(pathHint.replace(/^~/, process.env.HOME ?? ""));
   mkdirSync(dirname(path), { recursive: true });
 
-  const db = new Database(path);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+  const db = new DatabaseSync(path);
+  // `node:sqlite` has no `.pragma()` helper; use `.exec` with PRAGMA text.
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA foreign_keys = ON");
 
   const schema = readFileSync(locateSchema(), "utf8");
   db.exec(schema);
