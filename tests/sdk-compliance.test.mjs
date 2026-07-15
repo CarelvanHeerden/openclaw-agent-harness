@@ -94,6 +94,47 @@ test("sdk: dist entry point wraps definePluginEntry (when built)", { skip: !exis
   );
 });
 
+test("sdk: dist does not call registerHook without opts.name", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, async () => {
+  // OpenClaw plugin registry throws 'hook registration missing name' when
+  // registerHook is called without an `opts.name` string. Signature is
+  // `registerHook(events, handler, opts)` -- opts.name required.
+  //
+  // This test greps the built dist for any registerHook call that only
+  // passes two args, which would be the exact regression that broke us
+  // on 2026-07-14. Not a perfect AST check, but it catches the shape
+  // change in `src/index.ts` reliably enough (tsc emits calls with the
+  // same arity as the source).
+  const src = readFileSync(resolve(repoRoot, "dist/index.js"), "utf8");
+  // Find all registerHook( ... ) call sites and count top-level commas.
+  // A safe call is `registerHook(events, handler, opts)` -- 2 commas.
+  const re = /\bregisterHook\s*\(/g;
+  let match;
+  const badSites = [];
+  while ((match = re.exec(src)) !== null) {
+    const start = match.index + match[0].length;
+    let depth = 1;
+    let commas = 0;
+    let i = start;
+    while (i < src.length && depth > 0) {
+      const c = src[i];
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "," && depth === 1) commas++;
+      i++;
+    }
+    if (commas < 2) {
+      // Slice a small window for the error message.
+      const window = src.slice(Math.max(0, match.index - 30), Math.min(src.length, i + 30));
+      badSites.push({ index: match.index, commas, window });
+    }
+  }
+  assert.equal(
+    badSites.length,
+    0,
+    `dist/index.js has ${badSites.length} registerHook() call(s) with fewer than 3 args. SDK requires (events, handler, opts) with opts.name.\nFirst offender: ${badSites[0] ? badSites[0].window : "n/a"}`,
+  );
+});
+
 test("sdk: dist register() is synchronous (does not return Promise)", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, async () => {
   // OpenClaw plugin loader rejects with 'plugin register must be synchronous'
   // if register() returns a Promise. Guard against a future regression that

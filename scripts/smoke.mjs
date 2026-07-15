@@ -24,7 +24,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(resolve(here, "..", "package.json"), "utf8"));
 
 const registeredTools = new Set();
-const registeredHooks = new Set();
+const registeredHooks = new Set(); // populated by BOTH api.on and api.registerHook
 const registeredServices = new Set();
 const logs = [];
 
@@ -43,7 +43,23 @@ const fakeApi = {
     repos: { allowed: ["smoke/*"] },
     storage: { state_db_path: `${stateDir}/state.db`, worktree_root: `${stateDir}/wt` },
   },
-  registerHook: (name) => { registeredHooks.add(name); return () => {}; },
+  // SDK signature: registerHook(events, handler, opts).
+  // opts.name is REQUIRED by the real registry (throws 'hook registration
+  // missing name' otherwise); smoke asserts we always pass it.
+  registerHook: (events, _handler, opts) => {
+    if (!opts || typeof opts.name !== "string" || opts.name.trim() === "") {
+      throw new Error(`registerHook called without opts.name (events=${JSON.stringify(events)})`);
+    }
+    const list = Array.isArray(events) ? events : [events];
+    for (const e of list) registeredHooks.add(e);
+    return () => {};
+  },
+  // api.on: lightweight event-bus subscribe. hybrid-memory uses this for
+  // `message_received`. Returns an unsubscribe fn.
+  on: (event, _handler) => {
+    registeredHooks.add(event);
+    return () => {};
+  },
   registerService: (svc) => { registeredServices.add(svc.id); return () => {}; },
   getConfig: () => ({
     slack: { channel: "C_SMOKE", authorised_users: ["U_SMOKE"] },
@@ -104,8 +120,11 @@ for (const t of expectTools) {
   }
 }
 
-if (!registeredHooks.has("message.received")) {
-  console.error(`FAIL: hook "message.received" was not registered`);
+// The plugin tries api.on("message_received") first, then falls back to
+// registerHook(["message_received", "message.received"], ...). Either
+// path counts.
+if (!registeredHooks.has("message_received") && !registeredHooks.has("message.received")) {
+  console.error(`FAIL: no message hook was registered (expected message_received or message.received)`);
   failed++;
 }
 

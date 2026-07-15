@@ -41,7 +41,31 @@ export interface HarnessPluginApi {
         dispose?: () => void;
         unregister?: () => void;
     };
-    registerHook?: (name: string, handler: (event: unknown) => unknown) => (() => void) | {
+    /**
+     * Subscribe to a lifecycle event on the OpenClaw event bus. Same shape as
+     * a Node EventEmitter; hybrid-memory uses this for `message_received`,
+     * `agent_end`, etc. Returns an unsubscribe function.
+     */
+    on?: (event: string, handler: (payload: unknown) => unknown) => (() => void) | undefined;
+    /**
+     * Register a named hook on the OpenClaw plugin registry.
+     *
+     * SDK signature (verified against openclaw-hybrid-memory's copy of the
+     * openclaw runtime, `registry-*.js`):
+     *
+     *     registerHook(events: string | string[], handler, opts: { name, description? })
+     *
+     * `opts.name` is required -- the registry throws
+     * `hook registration missing name` otherwise. This is a different beast
+     * from `api.on(event, handler)`, which is a simple event-bus subscribe.
+     *
+     * We type both positional shapes because older mocks still use the
+     * 2-arg form; the runtime call site always passes opts.
+     */
+    registerHook?: (events: string | string[], handler: (event: unknown) => unknown, opts?: {
+        name: string;
+        description?: string;
+    }) => (() => void) | {
         dispose?: () => void;
     };
     registerService?: (svc: {
