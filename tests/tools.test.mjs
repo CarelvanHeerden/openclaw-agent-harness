@@ -35,14 +35,34 @@ function makeRuntime() {
       return { status: "shipped", sessionId, prUrl: "https://x/pr/1", cycles: 1, totalCostUsd: 0.1 };
     },
   };
+  // Configurable crystallise stub for harness_run tests. Default: returns a
+  // brief. Override runtime.crystallise in a test to exercise clarify/reject.
+  const crystalliseCalls = [];
+  const crystallise = async (userText) => {
+    crystalliseCalls.push(userText);
+    return {
+      kind: "brief",
+      costUsd: 0,
+      brief: {
+        title: "Stub brief",
+        motivation: "stub motivation for the request",
+        acceptanceCriteria: ["it works"],
+        filesLikelyTouched: [],
+        outOfScope: [],
+        riskLevel: "low",
+      },
+    };
+  };
   return {
     state,
     loop,
     audits,
     loopCalls,
+    crystalliseCalls,
+    crystallise,
     config: {
       storage: { audit_retention_days: 90, prune_terminal_sessions: false, prune_terminal_sessions_days: 365 },
-      slack: { channel: "C1", authorised_users: ["U1"] },
+      slack: { listener_enabled: false, channel: "C1", authorised_users: ["U1"] },
       repos: { allowed: ["o/*"] },
       models: { lead: "l", worker: "w", adversary: "a", classifier: "c" },
       budgets: { session_default_usd: 50 },
@@ -69,15 +89,85 @@ function collectTools() {
   return { api, tools };
 }
 
-test("registration: registers 9 tools",
+test("registration: registers 10 tools",
   { skip: registerHarnessTools === null }, () => {
     const runtime = makeRuntime();
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     assert.deepEqual(
       [...tools.keys()].sort(),
-      ["harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
+      ["harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_run", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
     );
+  });
+
+test("harness_run: crystallises then starts a session (no Slack thread needed)",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const r = await tools.get("harness_run").execute({ requester: "U1", request: "add a health endpoint to the api" });
+    assert.equal(r.details.ok, true);
+    assert.match(r.details.sessionId, /.+/);
+    assert.equal(runtime.crystalliseCalls.length, 1);
+    assert.equal(runtime.loopCalls.length, 1);
+    assert.equal(runtime.loopCalls[0].brief.title, "Stub brief");
+    // A synthetic agent:<id> thread key was used; row exists.
+    const row = runtime.state.db.prepare("SELECT slack_thread, slack_channel FROM sessions WHERE id = ?").get(r.details.sessionId);
+    assert.match(row.slack_thread, /^agent:/);
+    assert.equal(row.slack_channel, "");
+  });
+
+test("harness_run: relays a clarify question and does NOT start a session",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    runtime.crystallise = async () => ({ kind: "clarify", costUsd: 0, question: "Which repo?" });
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const r = await tools.get("harness_run").execute({ requester: "U1", request: "do the thing" });
+    assert.equal(r.details.ok, false);
+    assert.equal(r.details.needsClarification, true);
+    assert.equal(r.details.question, "Which repo?");
+    assert.equal(runtime.loopCalls.length, 0);
+  });
+
+test("harness_run: rejects non-dev / unsafe requests",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    runtime.crystallise = async () => ({ kind: "reject", costUsd: 0, intent: "not_dev", reason: "just a question" });
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const r = await tools.get("harness_run").execute({ requester: "U1", request: "what is the capital of france" });
+    assert.equal(r.details.ok, false);
+    assert.equal(r.details.rejected, true);
+    assert.equal(r.details.intent, "not_dev");
+    assert.equal(runtime.loopCalls.length, 0);
+  });
+
+test("harness_run: unauthorised requester is refused before crystallise",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const r = await tools.get("harness_run").execute({ requester: "U_HACKER", request: "add a feature please" });
+    assert.equal(r.details.ok, false);
+    assert.equal(r.details.unauthorised, true);
+    assert.equal(runtime.crystalliseCalls.length, 0);
+    assert.equal(runtime.loopCalls.length, 0);
+  });
+
+test("harness_start_session: works without Slack channel/thread (agent-orchestrated)",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const r = await tools.get("harness_start_session").execute({
+      requester: "U1",
+      brief: { title: "Do X", motivation: "because we need X done", acceptanceCriteria: ["X exists"] },
+    });
+    assert.equal(r.details.ok, true);
+    assert.equal(runtime.loopCalls.length, 1);
+    const row = runtime.state.db.prepare("SELECT slack_thread FROM sessions WHERE id = ?").get(r.details.sessionId);
+    assert.match(row.slack_thread, /^agent:/);
   });
 
 test("harness_upload_logs: writes row + audit; caps at 16KB; adversary loop can read latest",

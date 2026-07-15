@@ -57,6 +57,33 @@ export function bootstrapHarnessSync(api) {
     // We fall back to `api.getConfig()` for backwards-compat with older mock harnesses.
     const rawConfig = (api.pluginConfig ?? api.getConfig?.() ?? {});
     const config = parseHarnessConfig(rawConfig);
+    // Crystalliser closure. Shared by the (optional) Slack dispatcher AND the
+    // agent-callable `harness_run` tool, so the agent-orchestrated path uses
+    // exactly the same classify -> refine pipeline as the autonomous listener.
+    const crystallise = async (userText) => {
+        const result = await crystallisePrompt(userText, {
+            config,
+            logger: api.logger,
+            callClassifier: async () => runClassifierSdk({
+                model: config.models.classifier,
+                userText,
+                timeoutSeconds: 60,
+            }),
+            callCrystalliser: async () => runCrystalliserSdk({
+                model: config.models.lead,
+                userText,
+                timeoutSeconds: 120,
+            }),
+        });
+        // crystallisePrompt returns a discriminated union; add cost=0 for now
+        // (real cost is aggregated per-model call). Full cost tracking lives
+        // in Phase D telemetry work.
+        return result.kind === "brief"
+            ? { kind: "brief", brief: result.brief, costUsd: 0 }
+            : result.kind === "clarify"
+                ? { kind: "clarify", question: result.question, costUsd: 0 }
+                : { kind: "reject", intent: result.intent, reason: result.reason ?? "", costUsd: 0 };
+    };
     const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
     mkdirSync(dirname(dbPath), { recursive: true });
     const state = openStateStoreSync(dbPath);
@@ -269,30 +296,7 @@ export function bootstrapHarnessSync(api) {
         state,
         loop,
         logger: api.logger,
-        crystallise: async (userText) => {
-            const result = await crystallisePrompt(userText, {
-                config,
-                logger: api.logger,
-                callClassifier: async () => runClassifierSdk({
-                    model: config.models.classifier,
-                    userText,
-                    timeoutSeconds: 60,
-                }),
-                callCrystalliser: async () => runCrystalliserSdk({
-                    model: config.models.lead,
-                    userText,
-                    timeoutSeconds: 120,
-                }),
-            });
-            // crystallisePrompt returns a discriminated union; add cost=0 for now
-            // (real cost is aggregated per-model call). Full cost tracking lives
-            // in Phase D telemetry work.
-            return result.kind === "brief"
-                ? { kind: "brief", brief: result.brief, costUsd: 0 }
-                : result.kind === "clarify"
-                    ? { kind: "clarify", question: result.question, costUsd: 0 }
-                    : { kind: "reject", intent: result.intent, reason: result.reason ?? "", costUsd: 0 };
-        },
+        crystallise,
         slackReply: (channel, threadTs, text) => slack.replyInThread(channel, threadTs, text),
         slackReact: (channel, ts, name) => slack.addReaction(channel, ts, name),
     });
@@ -304,6 +308,7 @@ export function bootstrapHarnessSync(api) {
     });
     const runtime = {
         config, state, budget, pat, loop, listener, dispatcher, slack, git, creds,
+        crystallise,
         disposers: [],
     };
     // Tools (sync)
@@ -334,32 +339,39 @@ export function bootstrapHarnessSync(api) {
             return;
         await listener.handle(slackEvt.payload);
     };
-    // The ONLY valid event name is `message_received` (underscore). It is in
-    // the runtime's PLUGIN_HOOK_NAMES list and is dispatched on every inbound
-    // message. The dotted form `message.received` is NOT a real hook name --
-    // registering it produces a runtime warning:
-    //     unknown typed hook "message.received" ignored
-    // ...so we must never register it. (Earlier versions tried it as a
-    // "fallback for older builds"; there is no such build -- it was always
-    // invalid and only ever generated noise.)
+    // AGENT-ORCHESTRATED BY DEFAULT.
     //
-    // Also note: `api.on(...)` on this runtime ALWAYS returns `undefined` --
-    // it does NOT hand back an unsubscribe function (see registerTypedHook in
-    // the registry: it pushes to registry.typedHooks and returns void). So we
-    // must NOT gate registration on a truthy return value, and there is no
-    // per-hook disposer to push. Typed hooks are torn down with the plugin.
-    if (typeof api.on === "function") {
+    // By default (`slack.listener_enabled: false`) the harness does NOT
+    // subscribe to inbound Slack messages. The OpenClaw agent owns the
+    // conversation and drives the harness by calling its tools
+    // (`harness_run`, `harness_start_session`, `harness_status`, ...). This
+    // avoids the plugin competing with the OpenClaw agent for the same
+    // messages, and keeps the agent as the single orchestrator.
+    //
+    // Autonomous mode (`slack.listener_enabled: true`) is opt-in: the plugin
+    // then treats allow-listed messages in `slack.channel` as dev requests.
+    if (!config.slack.listener_enabled) {
+        api.logger.info("[harness] slack.listener_enabled=false -- agent-orchestrated mode. " +
+            "The plugin will NOT listen to Slack; drive it via harness_run / harness_start_session tools.");
+    }
+    else if (typeof api.on === "function") {
+        // The ONLY valid event name is `message_received` (underscore). It is in
+        // the runtime's PLUGIN_HOOK_NAMES list and is dispatched on every inbound
+        // message. The dotted form `message.received` is NOT a real hook name --
+        // registering it produces `unknown typed hook "message.received" ignored`.
+        //
+        // `api.on(...)` on this runtime ALWAYS returns `undefined` (registerTypedHook
+        // pushes to registry.typedHooks and returns void), so we must NOT gate
+        // registration on a truthy return; typed hooks are torn down with the plugin.
         const maybeDispose = api.on("message_received", messageHandler);
-        // Defensive: if a future/mock runtime DOES return a disposer, honour it.
         if (typeof maybeDispose === "function") {
             runtime.disposers.push(maybeDispose);
         }
+        api.logger.info("[harness] slack.listener_enabled=true -- autonomous mode, listening on message_received.");
     }
     else if (typeof api.registerHook === "function") {
         // Named hook path (older/alternate SDK shape). `opts.name` is REQUIRED
-        // by the SDK registry -- omitting it triggers
-        // 'Error: hook registration missing name'. Register ONLY the valid
-        // underscore event name.
+        // by the SDK registry. Register ONLY the valid underscore event name.
         const dispose = api.registerHook(["message_received"], messageHandler, {
             name: `${PLUGIN_ID}:slack-message-listener`,
             description: "Forward inbound Slack messages to the harness channel listener",
@@ -372,7 +384,7 @@ export function bootstrapHarnessSync(api) {
         });
     }
     else {
-        api.logger.warn("[harness] neither api.on nor api.registerHook present; Slack listener will be idle.");
+        api.logger.warn("[harness] slack.listener_enabled=true but neither api.on nor api.registerHook present; Slack listener will be idle.");
     }
     // Retention prune on service start (sync -- pruneRetention is a plain
     // SQL delete, no I/O beyond the DB).

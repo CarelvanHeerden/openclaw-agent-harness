@@ -18,6 +18,16 @@ export interface HarnessConfig {
     pat_routing: PatRoutingConfig;
 }
 export interface SlackConfig {
+    /**
+     * When true, the plugin subscribes to `message_received` and treats
+     * allow-listed messages in `channel` as dev requests (autonomous mode).
+     *
+     * When false (DEFAULT), the plugin does NOT listen to Slack at all. The
+     * OpenClaw agent orchestrates everything by calling the harness tools
+     * (`harness_run`, `harness_status`, ...). This is the recommended mode:
+     * you talk to the OpenClaw agent, and the agent drives the harness.
+     */
+    listener_enabled: boolean;
     channel: string;
     authorised_users: string[];
     /** Vault service name for the Slack bot token (used by reactions poller + adapter fallback). Optional; if unset, poller stays idle. */

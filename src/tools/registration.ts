@@ -22,8 +22,75 @@ function toDispose(x: ToolDisposer): () => void {
   };
 }
 
+/** Normalised brief shape used by both harness_run and harness_start_session. */
+interface RunnableBrief {
+  title: string;
+  motivation: string;
+  acceptanceCriteria: string[];
+  filesLikelyTouched: string[];
+  outOfScope: string[];
+  repoHint?: string;
+  branchHint?: string;
+  riskLevel: "low" | "medium" | "high";
+}
+
 export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRuntime): () => void {
   const disposers: Array<() => void> = [];
+
+  /**
+   * Shared session-start path for BOTH agent-orchestrated tools
+   * (`harness_run`, `harness_start_session`). Inserts the session row and
+   * fires the orchestrator loop.
+   *
+   * Slack channel/thread are OPTIONAL. When omitted (the agent-orchestrated
+   * case, where there may be no Slack thread to post into) we synthesise a
+   * unique `agent:<sessionId>` thread key so the UNIQUE(slack_thread)
+   * constraint is still satisfied and progress is simply not pushed to
+   * Slack -- the agent gets the sessionId back and polls `harness_status` /
+   * `harness_session_get` instead.
+   */
+  function startSessionFromBrief(params: {
+    requester: string;
+    brief: RunnableBrief;
+    slackChannel?: string;
+    slackThread?: string;
+    budgetUsd?: number;
+    auditEvent: string;
+  }):
+    | { ok: true; sessionId: string }
+    | { ok: false; reason: string; unauthorised?: boolean; duplicateThread?: boolean } {
+    if (!runtime.config.slack.authorised_users.includes(params.requester)) {
+      return { ok: false, unauthorised: true, reason: `Requester ${params.requester} is not in slack.authorised_users` };
+    }
+    const sessionId = globalThis.crypto?.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const slackChannel = params.slackChannel ?? "";
+    // Synthesise a unique thread key when the agent supplies none.
+    const slackThread = params.slackThread ?? `agent:${sessionId}`;
+    try {
+      runtime.state.db
+        .prepare(
+          `INSERT INTO sessions (
+             id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
+             status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran
+           ) VALUES (?, ?, ?, ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0)`,
+        )
+        .run(
+          sessionId, slackThread, slackChannel, params.requester, params.requester,
+          JSON.stringify(params.brief), Date.now(), Date.now(),
+          params.budgetUsd ?? runtime.config.budgets.session_default_usd,
+        );
+    } catch (err) {
+      if (String(err).includes("UNIQUE") || String(err).includes("SQLITE_CONSTRAINT")) {
+        return { ok: false, duplicateThread: true, reason: `Session already exists for thread ${slackThread}` };
+      }
+      throw err;
+    }
+    runtime.state.audit(params.auditEvent, { sessionId, requester: params.requester }, sessionId);
+    void runtime.loop.run(sessionId, params.brief).catch((err) => {
+      api.logger.error(`[${params.auditEvent}] loop crashed`, { sessionId, err: String(err) });
+    });
+    return { ok: true, sessionId };
+  }
 
   disposers.push(
     toDispose(
@@ -250,13 +317,13 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       api.registerTool({
         name: "harness_start_session",
         description:
-          "Start a harness session directly (bypasses classifier). Useful for slash commands, cron-triggered runs, or other plugins.",
+          "Start a harness session from a STRUCTURED brief (skips the classifier/crystalliser). Use this when you have already refined the request into title + motivation + acceptance criteria. For a raw natural-language request, use harness_run instead. Slack channel/thread are optional; when omitted, progress is not posted to Slack and you poll harness_status / harness_session_get for the outcome.",
         parameters: {
           type: "object",
           properties: {
-            requester: { type: "string", minLength: 1, description: "Slack user id of the requester" },
-            slackChannel: { type: "string", minLength: 1 },
-            slackThread: { type: "string", minLength: 1, description: "Thread ts to reply into (usually the origin message ts)" },
+            requester: { type: "string", minLength: 1, description: "Slack user id of the requester (must be in slack.authorised_users)" },
+            slackChannel: { type: "string", minLength: 1, description: "Optional. Slack channel to post progress into." },
+            slackThread: { type: "string", minLength: 1, description: "Optional. Thread ts to reply into. Omit for agent-orchestrated runs with no Slack thread." },
             brief: {
               type: "object",
               required: ["title", "motivation", "acceptanceCriteria"],
@@ -273,22 +340,18 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             },
             budgetUsd: { type: "number", minimum: 1 },
           },
-          required: ["requester", "slackChannel", "slackThread", "brief"],
+          required: ["requester", "brief"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
           const { requester, slackChannel, slackThread, brief, budgetUsd } = input as {
             requester: string;
-            slackChannel: string;
-            slackThread: string;
+            slackChannel?: string;
+            slackThread?: string;
             brief: { title: string; motivation: string; acceptanceCriteria: string[]; filesLikelyTouched?: string[]; outOfScope?: string[]; repoHint?: string; branchHint?: string; riskLevel?: string };
             budgetUsd?: number;
           };
-          if (!runtime.config.slack.authorised_users.includes(requester)) {
-            return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
-          }
-          const sessionId = (globalThis.crypto?.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-          const briefFull = {
+          const briefFull: RunnableBrief = {
             title: brief.title,
             motivation: brief.motivation,
             acceptanceCriteria: brief.acceptanceCriteria,
@@ -298,26 +361,78 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             branchHint: brief.branchHint,
             riskLevel: (brief.riskLevel ?? "low") as "low" | "medium" | "high",
           };
-          try {
-            runtime.state.db
-              .prepare(
-                `INSERT INTO sessions (
-                   id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
-                   status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran
-                 ) VALUES (?, ?, ?, ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0)`,
-              )
-              .run(sessionId, slackThread, slackChannel, requester, requester, JSON.stringify(briefFull), Date.now(), Date.now(), budgetUsd ?? runtime.config.budgets.session_default_usd);
-          } catch (err) {
-            if (String(err).includes("UNIQUE") || String(err).includes("SQLITE_CONSTRAINT")) {
-              return { content: [{ type: "text", text: `Session already exists for thread ${slackThread}` }], details: { ok: false, duplicateThread: true } };
-            }
-            throw err;
-          }
-          runtime.state.audit("tool.start_session", { sessionId, requester }, sessionId);
-          void runtime.loop.run(sessionId, briefFull).catch((err) => {
-            api.logger.error("[tool.start_session] loop crashed", { sessionId, err: String(err) });
+          const res = startSessionFromBrief({
+            requester, brief: briefFull, slackChannel, slackThread, budgetUsd,
+            auditEvent: "tool.start_session",
           });
-          return { content: [{ type: "text", text: `Session ${sessionId} started. Watch Slack thread for progress.` }], details: { ok: true, sessionId } };
+          if (!res.ok) {
+            return { content: [{ type: "text", text: res.reason }], details: { ok: false, unauthorised: res.unauthorised, duplicateThread: res.duplicateThread } };
+          }
+          const where = slackThread ? "Watch the Slack thread for progress." : "Poll harness_status / harness_session_get for progress.";
+          return { content: [{ type: "text", text: `Session ${res.sessionId} started. ${where}` }], details: { ok: true, sessionId: res.sessionId } };
+        },
+      }),
+    ),
+  );
+
+  // ---- harness_run: the PRIMARY agent entry point ----
+  //
+  // Takes a raw natural-language request, runs the SAME classify -> refine
+  // pipeline the Slack listener uses, and either (a) starts a session and
+  // returns its id, (b) returns a clarifying question for the agent to put
+  // back to the user, or (c) rejects (not a dev task / unsafe). This is how
+  // the OpenClaw agent orchestrates the harness end to end.
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_run",
+        description:
+          "PRIMARY entry point. Hand the harness a raw natural-language coding request; it classifies + crystallises it into a brief and starts a session (plan -> parallel workers -> adversarial review -> PR). Returns either a started sessionId, a clarifying question to relay to the user, or a rejection. Use this instead of harness_start_session unless you have already built a structured brief. Slack channel/thread are optional; omit them for pure agent-orchestrated runs and poll harness_status for the outcome.",
+        parameters: {
+          type: "object",
+          properties: {
+            requester: { type: "string", minLength: 1, description: "Slack user id of the requester (must be in slack.authorised_users)" },
+            request: { type: "string", minLength: 10, description: "The raw natural-language coding request to crystallise and run." },
+            slackChannel: { type: "string", minLength: 1, description: "Optional. Slack channel to post progress into." },
+            slackThread: { type: "string", minLength: 1, description: "Optional. Thread ts to reply into." },
+            budgetUsd: { type: "number", minimum: 1, description: "Optional per-session budget override (USD)." },
+          },
+          required: ["requester", "request"],
+          additionalProperties: false,
+        },
+        execute: async (_callId: unknown, input: unknown) => {
+          const { requester, request, slackChannel, slackThread, budgetUsd } = input as {
+            requester: string; request: string; slackChannel?: string; slackThread?: string; budgetUsd?: number;
+          };
+          if (!runtime.config.slack.authorised_users.includes(requester)) {
+            return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          }
+          let cResult: Awaited<ReturnType<HarnessRuntime["crystallise"]>>;
+          try {
+            cResult = await runtime.crystallise(request);
+          } catch (err) {
+            api.logger.error("[tool.run] crystallise failed", { requester, err: String(err) });
+            return { content: [{ type: "text", text: `Crystallisation failed: ${String(err)}` }], details: { ok: false, crystalliseError: true } };
+          }
+          if (cResult.kind === "reject") {
+            runtime.state.audit("tool.run.rejected", { requester, intent: cResult.intent, reason: cResult.reason });
+            return { content: [{ type: "text", text: `Request rejected (${cResult.intent}): ${cResult.reason}` }], details: { ok: false, rejected: true, intent: cResult.intent, reason: cResult.reason } };
+          }
+          if (cResult.kind === "clarify") {
+            return { content: [{ type: "text", text: `Needs clarification: ${cResult.question}` }], details: { ok: false, needsClarification: true, question: cResult.question } };
+          }
+          const res = startSessionFromBrief({
+            requester, brief: cResult.brief, slackChannel, slackThread, budgetUsd,
+            auditEvent: "tool.run",
+          });
+          if (!res.ok) {
+            return { content: [{ type: "text", text: res.reason }], details: { ok: false, unauthorised: res.unauthorised, duplicateThread: res.duplicateThread } };
+          }
+          const where = slackThread ? "Progress will post to the Slack thread." : "Poll harness_status / harness_session_get for progress.";
+          return {
+            content: [{ type: "text", text: `Session ${res.sessionId} started for "${cResult.brief.title}". ${where}` }],
+            details: { ok: true, sessionId: res.sessionId, brief: cResult.brief },
+          };
         },
       }),
     ),

@@ -7,6 +7,7 @@
   },
   "contracts": {
     "tools": [
+      "harness_run",
       "harness_status",
       "harness_health",
       "harness_start_session",
@@ -26,13 +27,17 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "channel",
           "authorised_users"
         ],
         "properties": {
+          "listener_enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, the plugin listens to `channel` and treats allow-listed messages as dev requests (autonomous mode). When false (default), the OpenClaw agent orchestrates the harness via tools (harness_run, harness_status, ...) and the plugin does not listen to Slack."
+          },
           "channel": {
             "type": "string",
-            "description": "Slack channel ID (e.g. C0DEVCHAN) where the harness listens"
+            "description": "Slack channel ID (e.g. C0DEVCHAN). Only required when listener_enabled is true."
           },
           "authorised_users": {
             "type": "array",
