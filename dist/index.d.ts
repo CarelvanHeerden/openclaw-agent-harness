@@ -22,6 +22,7 @@ import { PatRouter } from "./auth/pat-router.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { SlackAdapter } from "./adapters/slack.js";
+import { type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
 /** Minimal shape of the OpenClaw plugin API surface that we use. */
 export interface HarnessPluginApi {
     registrationMode?: "cli-metadata" | "runtime";
@@ -108,6 +109,26 @@ export interface HarnessRuntime {
     slack: SlackAdapter;
     git: GitAdapter;
     creds: CredentialAdapter;
+    /**
+     * Classify + crystallise a raw request into a structured brief. Shared by
+     * the optional Slack dispatcher and the agent-callable `harness_run` tool.
+     * Returns a discriminated union: a `brief` ready to run, a `clarify`
+     * question to put back to the requester, or a `reject` with reason.
+     */
+    crystallise: (userText: string) => Promise<{
+        kind: "brief";
+        brief: CrystallisedBrief;
+        costUsd: number;
+    } | {
+        kind: "clarify";
+        question: string;
+        costUsd: number;
+    } | {
+        kind: "reject";
+        intent: "not_dev" | "unsafe";
+        reason: string;
+        costUsd: number;
+    }>;
     disposers: Array<() => void | Promise<void>>;
     /**
      * Promise for the async bootstrap phase (reactions poller start,

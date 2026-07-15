@@ -22,9 +22,24 @@ test("config: minimal input applies defaults",
     assert.deepEqual(cfg.slack.reactions, { ship_it: "rocket", abort: "x", pause: "pause_button", budget_bump: "moneybag" });
   });
 
-test("config: missing channel is rejected",
+test("config: missing channel is rejected ONLY when listener_enabled",
   { skip: parseHarnessConfig === null }, () => {
-    assert.throws(() => parseHarnessConfig({ ...minimalOk, slack: { channel: "", authorised_users: ["U1"] } }));
+    // Autonomous mode: channel required.
+    assert.throws(() => parseHarnessConfig({
+      ...minimalOk,
+      slack: { listener_enabled: true, channel: "", authorised_users: ["U1"] },
+    }));
+    // Agent-orchestrated mode (default): no channel needed.
+    assert.doesNotThrow(() => parseHarnessConfig({
+      ...minimalOk,
+      slack: { channel: "", authorised_users: ["U1"] },
+    }));
+  });
+
+test("config: listener_enabled defaults to false (agent-orchestrated)",
+  { skip: parseHarnessConfig === null }, () => {
+    const cfg = parseHarnessConfig(minimalOk);
+    assert.equal(cfg.slack.listener_enabled, false);
   });
 
 test("config: empty allow-list is rejected",

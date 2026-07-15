@@ -2,6 +2,31 @@
 
 ## [Unreleased] -- maintainer review round 2
 
+### Changed -- agent-orchestrated by default (BREAKING for autonomous setups)
+
+- *The harness is now agent-orchestrated by default.* The OpenClaw agent
+  drives the harness via tools instead of the plugin listening to Slack on
+  its own. New config flag `slack.listener_enabled` (default `false`):
+    - `false` (default): the plugin does NOT subscribe to `message_received`.
+      The OpenClaw agent calls `harness_run` / `harness_start_session` and
+      polls `harness_status`. `slack.channel` is no longer required in this
+      mode.
+    - `true`: previous behaviour -- the plugin listens on `slack.channel`
+      and treats allow-listed messages as dev requests.
+  Existing autonomous deployments must set `slack.listener_enabled: true`
+  to keep the listener.
+- *New tool `harness_run`* -- the primary agent entry point. Takes a raw
+  natural-language request, runs the same classify -> crystallise pipeline
+  the listener uses, and either starts a session (returns `sessionId`),
+  returns a clarifying question, or rejects (not-dev / unsafe).
+- *`harness_start_session` Slack args are now optional.* `slackChannel` /
+  `slackThread` are no longer required; when omitted a synthetic
+  `agent:<sessionId>` thread key satisfies the UNIQUE(slack_thread)
+  constraint and progress is not pushed to Slack (poll the tools instead).
+- The crystalliser closure is now shared between the Slack dispatcher and
+  the agent tools via `HarnessRuntime.crystallise`, so both paths use an
+  identical pipeline.
+
 ### Docs
 
 - *UML diagrams added.* `docs/ARCHITECTURE.md` gains a new `§0. UML diagrams`
