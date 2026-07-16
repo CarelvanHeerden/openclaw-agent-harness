@@ -352,10 +352,15 @@ export class OrchestratorLoop {
               const payload = { sessionId, seq: st.seq, detail: r.detail };
               switch (r.kind) {
                 case "branch_pushed":
-                  // backward compat name
+                  // beta.10: fire ONLY the backward-compat name here. The
+                  // beta.9+ contract inference already emits
+                  // `remote_branch_exists` alongside `branch_pushed` for push
+                  // sub-tasks, and that kind fires `remote_branch_verify_failed`
+                  // on its own case. Firing both here caused duplicate
+                  // `remote_branch_verify_failed` events on the beta.10
+                  // smoke test (one from `branch_pushed` -> HTTP 404, one
+                  // from `remote_branch_exists` -> ls-remote empty).
                   this.deps.state.audit("loop.push_verify_failed", payload, sessionId);
-                  // new specific name (parallel)
-                  this.deps.state.audit("loop.remote_branch_verify_failed", payload, sessionId);
                   break;
                 case "remote_branch_exists":
                   this.deps.state.audit("loop.remote_branch_verify_failed", payload, sessionId);
