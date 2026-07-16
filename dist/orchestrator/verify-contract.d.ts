@@ -40,9 +40,16 @@ import type { LeadPlanSubTask, SubTaskVerify } from "./fable5-lead.js";
 /**
  * Infer the observable-side-effect contract for a sub-task.
  *
- * Precedence:
+ * Precedence (beta.14):
  *   1. An explicit `verify` on the sub-task (lead-declared) is authoritative.
- *   2. Otherwise infer from title + intent + successCriteria language.
+ *      Bypasses all inference. `contractScope` is IGNORED in this path
+ *      because the lead has told us EXACTLY which checks to run.
+ *   2. Regex inference produces a candidate contract from title + intent +
+ *      successCriteria language (beta.13 negation-aware + absence-gate).
+ *   3. If `contractScope: "local"`, remote-scope kinds are FILTERED OUT of
+ *      the candidate contract before it's returned.
+ *   4. `contractScope: "remote"` or `"mixed"` (or absent) = no filtering
+ *      beyond the beta.13 inference already applied.
  *
  * Returns [] when the sub-task has no inferable observable output (pure
  * reasoning / analysis), in which case the SDK signal is trusted.
