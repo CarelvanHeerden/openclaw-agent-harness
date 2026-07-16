@@ -23,6 +23,18 @@
  * This is deliberately conservative: we only INFER a contract when the
  * language strongly implies an observable side effect. A sub-task with an
  * explicit `verify` from the lead always wins (future-proofing).
+ *
+ * beta.9: extended with 8 precise contract kinds. Inference rules added for:
+ *   "write/create/add X"          -> file_written (fs.stat, not git diff)
+ *   "commit" (no push)            -> file_committed (if path mentioned) + commit_made
+ *   "push branch"                 -> branch_pushed + remote_branch_exists + commit_sha_matches
+ *   "verify remote SHA" / pushed  -> remote_branch_exists + commit_sha_matches
+ *   "open PR"                     -> pr_opened + pr_state
+ *   "end-to-end verification"     -> file_pushed + pr_opened + file_in_pr + pr_state
+ *
+ * Backward compat: existing `branch_pushed`, `pr_opened`, `commit_made` kinds
+ * are KEPT in inference output for sub-tasks that matched them in beta.8.
+ * Consumers watching old audit event names will still see them fire.
  */
 import type { LeadPlanSubTask, SubTaskVerify } from "./fable5-lead.js";
 /**
