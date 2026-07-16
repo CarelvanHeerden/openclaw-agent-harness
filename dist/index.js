@@ -142,28 +142,30 @@ export function bootstrapHarnessSync(api) {
         api.logger.warn("[harness] no Anthropic API key resolved (vault + env both empty); SDK may fall back to interactive /login and fail in headless containers", { credentialService: auth.credential_service || "(unset)", envVar: envName });
         return undefined;
     };
-    // GitHub token resolver: vault-first (by the pat-router-resolved service),
-    // then env fallback (pat_routing.auth.api_key_env, default GH_TOKEN). Mirrors
-    // the Anthropic resolver above so vault-less deployments can just set
-    // GH_TOKEN. NOT memoised across services (different repos -> different
-    // services), but the CredentialAdapter caches per service internally.
-    const resolveGithubToken = async (service) => {
+    // Git token resolver: vault-first (by the pat-router-resolved service),
+    // then per-provider env fallback (resolution.apiKeyEnv, e.g. GH_TOKEN /
+    // GITLAB_TOKEN). Provider-aware and per-user: the caller passes the full
+    // PAT resolution, whose credentialService already reflects the requesting
+    // user + provider. NOT memoised across services (different users/repos ->
+    // different services), but the CredentialAdapter caches per service.
+    const resolveGitToken = async (r) => {
         try {
-            const v = await creds.getToken(service, "token");
+            const v = await creds.getToken(r.credentialService, "token");
             if (v)
                 return v;
         }
         catch (err) {
-            api.logger.warn("[harness] github vault lookup failed; trying env fallback", { service, err: String(err) });
+            api.logger.warn("[harness] git vault lookup failed; trying env fallback", { service: r.credentialService, provider: r.provider, err: String(err) });
         }
-        const envName = config.pat_routing.auth?.api_key_env || "GH_TOKEN";
-        const envVal = process.env[envName];
+        const envVal = process.env[r.apiKeyEnv];
         if (envVal) {
-            api.logger.info("[harness] github token resolved from env", { envVar: envName, service });
+            api.logger.info("[harness] git token resolved from env", { envVar: r.apiKeyEnv, service: r.credentialService, provider: r.provider });
             return envVal;
         }
-        throw new Error(`no GitHub token resolved for service '${service}' (vault empty/failed and env '${envName}' unset)`);
+        throw new Error(`no ${r.provider} token resolved for service '${r.credentialService}' (vault empty/failed and env '${r.apiKeyEnv}' unset)`);
     };
+    // Back-compat shim: resolve by bare service name using github defaults.
+    const resolveGithubToken = async (service) => resolveGitToken({ credentialService: service, apiKeyEnv: config.pat_routing.auth?.api_key_env || "GH_TOKEN", provider: "github" });
     const git = new GitAdapter({
         worktreesRoot: config.storage.worktree_root,
         logger: api.logger,
@@ -180,7 +182,8 @@ export function bootstrapHarnessSync(api) {
         budget,
         pat,
         logger: api.logger,
-        runLead: async (brief) => {
+        runLead: async (brief, ctx) => {
+            const requester = ctx?.requester ?? config.slack.authorised_users[0];
             const raw = await runLeadSdk({
                 model: config.models.lead,
                 brief,
@@ -194,13 +197,13 @@ export function bootstrapHarnessSync(api) {
                 callLeadModel: async () => raw,
                 allocateWorktree: async (repo, branch) => {
                     const [owner] = repo.split("/");
-                    // Determine PAT + identity
+                    // Determine PAT + identity for the ACTUAL requester (multi-user).
                     const resolution = pat.resolve({
-                        slackUserId: config.slack.authorised_users[0], // TODO: pass the actual requester
+                        slackUserId: requester,
                         gitHubUser: owner,
                         repoFullName: repo,
                     });
-                    const ghToken = await resolveGithubToken(resolution.credentialService);
+                    const ghToken = await resolveGitToken(resolution);
                     return git.allocate({
                         repoFullName: repo,
                         baseBranch: config.repos.default_base_branch,
@@ -213,11 +216,11 @@ export function bootstrapHarnessSync(api) {
                 estimateCost: (p) => p.subTasks.reduce((acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens), 0),
             });
         },
-        runWorker: async ({ brief, subTask, plan, resumeSessionId }) => {
+        runWorker: async ({ brief, subTask, plan, resumeSessionId, requester }) => {
             const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
             const canUseTool = buildBashGuard(config.safety);
             const resolution = pat.resolve({
-                slackUserId: config.slack.authorised_users[0],
+                slackUserId: requester ?? config.slack.authorised_users[0],
                 gitHubUser: plan.repo.split("/")[0],
                 repoFullName: plan.repo,
             });
@@ -305,14 +308,20 @@ export function bootstrapHarnessSync(api) {
                 logger: api.logger,
             });
         },
-        pushBranchAndOpenPr: async ({ plan, brief, reviewReport }) => {
+        pushBranchAndOpenPr: async ({ plan, brief, reviewReport, requester }) => {
             const resolution = pat.resolve({
-                slackUserId: config.slack.authorised_users[0],
+                slackUserId: requester ?? config.slack.authorised_users[0],
                 gitHubUser: plan.repo.split("/")[0],
                 repoFullName: plan.repo,
             });
-            const ghToken = await resolveGithubToken(resolution.credentialService);
+            const ghToken = await resolveGitToken(resolution);
             await git.pushBranch(plan.worktreePath, "origin", plan.branch, ghToken);
+            if (resolution.provider !== "github") {
+                // GitLab merge-request creation is a separate adapter (tracked in
+                // issue #25). Token resolution + push work for GitLab; MR open does
+                // not yet. Fail loud rather than silently mis-calling the GitHub API.
+                throw new Error(`provider '${resolution.provider}' push succeeded but automated MR/PR creation is not yet implemented (see issue #25); open the merge request manually for branch '${plan.branch}'`);
+            }
             const pr = await createPullRequest({
                 repoFullName: plan.repo,
                 head: plan.branch,
@@ -372,6 +381,7 @@ export function bootstrapHarnessSync(api) {
         crystallise,
         anthropicApiKey,
         githubToken: resolveGithubToken,
+        gitToken: resolveGitToken,
         githubServiceFor: (repoFullName) => {
             const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
             if (!repo)
@@ -388,6 +398,24 @@ export function bootstrapHarnessSync(api) {
                     gitHubUser: concrete.split("/")[0],
                     repoFullName: concrete,
                 }).credentialService;
+            }
+            catch {
+                return undefined;
+            }
+        },
+        gitResolutionFor: (repoFullName) => {
+            const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
+            if (!repo)
+                return undefined;
+            const glob = "/" + "*";
+            const concrete = repo.endsWith(glob) ? repo.slice(0, -1) + "_probe" : repo;
+            try {
+                const r = pat.resolve({
+                    slackUserId: config.slack.authorised_users[0] ?? "unknown",
+                    gitHubUser: concrete.split("/")[0],
+                    repoFullName: concrete,
+                });
+                return { credentialService: r.credentialService, provider: r.provider, apiBase: r.apiBase, apiKeyEnv: r.apiKeyEnv };
             }
             catch {
                 return undefined;

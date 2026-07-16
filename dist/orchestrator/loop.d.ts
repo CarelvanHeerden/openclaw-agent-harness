@@ -55,18 +55,29 @@ export interface OrchestratorDeps {
         warn: (m: string, meta?: unknown) => void;
         error: (m: string, meta?: unknown) => void;
     };
-    /** Injected work-doers. Real impls in src/adapters + src/vercel. */
-    runLead: (brief: CrystallisedBrief) => Promise<LeadPlan>;
+    /**
+     * Injected work-doers. Real impls in src/adapters + src/vercel.
+     *
+     * `requester` is the session's Slack user id, threaded through so PAT
+     * resolution can select THAT user's token (multi-user auth), rather than
+     * defaulting to the first authorised user. Optional for back-compat with
+     * test doubles that ignore it.
+     */
+    runLead: (brief: CrystallisedBrief, ctx?: {
+        requester?: string;
+    }) => Promise<LeadPlan>;
     runWorker: (params: {
         brief: CrystallisedBrief;
         subTask: LeadPlanSubTask;
         plan: LeadPlan;
         resumeSessionId?: string;
+        requester?: string;
     }) => Promise<WorkerResult>;
     runAdversary: (params: {
         brief: CrystallisedBrief;
         plan: LeadPlan;
         runtime?: RuntimeSnapshot;
+        requester?: string;
     }) => Promise<ReviewReport>;
     fetchRuntime?: (params: {
         plan: LeadPlan;
@@ -76,6 +87,7 @@ export interface OrchestratorDeps {
         plan: LeadPlan;
         brief: CrystallisedBrief;
         reviewReport: ReviewReport;
+        requester?: string;
     }) => Promise<string>;
     /** Signal source: user Slack reactions on our messages. */
     readReactions: (sessionId: string) => Promise<{

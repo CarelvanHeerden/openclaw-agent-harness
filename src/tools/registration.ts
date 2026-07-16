@@ -569,45 +569,49 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // GitHub auth: can we resolve a token for the target repo? A missing
           // token means the FIRST session dies at plan phase with a vault
           // "not found" error -- so this is FATAL, same rationale as model auth.
-          const ghEnvName = liveConfig().pat_routing.auth?.api_key_env || "GH_TOKEN";
-          let ghService: string | undefined;
+          let gitRes: { credentialService: string; provider: string; apiBase: string; apiKeyEnv: string } | undefined;
           let ghToken: string | undefined;
           try {
-            const svcFn = liveRuntime().githubServiceFor;
-            ghService = typeof svcFn === "function" ? svcFn() : undefined;
-            const tokFn = liveRuntime().githubToken;
-            if (typeof tokFn === "function" && ghService) {
-              ghToken = await tokFn(ghService);
+            const resFn = liveRuntime().gitResolutionFor;
+            gitRes = typeof resFn === "function" ? resFn() : undefined;
+            const tokFn = liveRuntime().gitToken;
+            if (typeof tokFn === "function" && gitRes) {
+              ghToken = await tokFn(gitRes);
             }
           } catch { /* resolution failed -> ghToken stays undefined */ }
           {
-            const src = ghService ? `vault:${ghService}` : "(no service resolvable)";
+            const src = gitRes ? `vault:${gitRes.credentialService}` : "(no service resolvable)";
+            const envName = gitRes?.apiKeyEnv ?? "GH_TOKEN";
             checks.push({
               name: "git_credential_resolvable",
               ok: !!ghToken,
               detail: ghToken
-                ? `resolved via ${src} or env:${ghEnvName}`
-                : `no token from ${src} or env:${ghEnvName} (plan phase will fail)`,
+                ? `[${gitRes?.provider}] resolved via ${src} or env:${envName}`
+                : `no token from ${src} or env:${envName} (plan phase will fail)`,
             });
           }
 
-          // Optional deep check: verify the GitHub token actually authenticates.
+          // Optional deep check: verify the token actually authenticates,
+          // provider-aware (GitHub GET /user, GitLab GET /user).
           if (deep) {
-            if (!ghToken) {
+            if (!ghToken || !gitRes) {
               checks.push({ name: "git_credential_live_ping", ok: false, detail: "skipped: no token to test" });
             } else {
               try {
-                const resp = await fetch("https://api.github.com/user", {
-                  headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json", "User-Agent": "openclaw-agent-harness" },
-                });
+                const isGitlab = gitRes.provider === "gitlab";
+                const url = isGitlab ? `${gitRes.apiBase}/user` : `${gitRes.apiBase}/user`;
+                const headers: Record<string, string> = isGitlab
+                  ? { "PRIVATE-TOKEN": ghToken, "User-Agent": "openclaw-agent-harness" }
+                  : { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json", "User-Agent": "openclaw-agent-harness" };
+                const resp = await fetch(url, { headers });
                 if (resp.ok) {
-                  const who = (await resp.json().catch(() => ({}))) as { login?: string };
-                  checks.push({ name: "git_credential_live_ping", ok: true, detail: `authenticated as ${who.login ?? "(unknown)"}` });
+                  const who = (await resp.json().catch(() => ({}))) as { login?: string; username?: string };
+                  checks.push({ name: "git_credential_live_ping", ok: true, detail: `[${gitRes.provider}] authenticated as ${who.login ?? who.username ?? "(unknown)"}` });
                 } else {
-                  checks.push({ name: "git_credential_live_ping", ok: false, detail: `GitHub API ${resp.status} ${resp.statusText}` });
+                  checks.push({ name: "git_credential_live_ping", ok: false, detail: `[${gitRes.provider}] API ${resp.status} ${resp.statusText}` });
                 }
               } catch (err) {
-                checks.push({ name: "git_credential_live_ping", ok: false, detail: `ping failed (network): ${String(err).slice(0, 160)}` });
+                checks.push({ name: "git_credential_live_ping", ok: false, detail: `[${gitRes.provider}] ping failed (network): ${String(err).slice(0, 160)}` });
               }
             }
           }
@@ -769,7 +773,10 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               gitHubUser: p.owner,
               repoFullName,
             });
-            token = await liveRuntime().githubToken(resolution.credentialService);
+            if (resolution.provider !== "github") {
+              return { content: [{ type: "text", text: `harness_bootstrap_test_repo currently supports GitHub only; '${p.owner}' resolves to provider '${resolution.provider}'` }], details: { ok: false, reason: "provider_unsupported" } };
+            }
+            token = await liveRuntime().gitToken(resolution);
           } catch (err) {
             return { content: [{ type: "text", text: `Could not resolve a GitHub token for ${p.owner}: ${String(err)}` }], details: { ok: false, reason: "no_token" } };
           }

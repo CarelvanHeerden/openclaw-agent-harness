@@ -2,7 +2,7 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.5`. All Phase 1-3 subsystems land and pass tests (150/150 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key, and **`docs/GITHUB_AUTH.md`** for the GitHub token (both required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: beta.* Version `0.1.0-beta.6`. All Phase 1-3 subsystems land and pass tests (157/157 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 
 ### Two ways to drive it
 
@@ -124,7 +124,7 @@ Only from `slack.authorised_users`:
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 150 tests
+npm test        # runs 157 tests
 npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 ```
 

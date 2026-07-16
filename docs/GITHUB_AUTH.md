@@ -1,8 +1,13 @@
-# GitHub authentication
+# Git provider authentication (GitHub + GitLab)
 
-How the harness resolves a GitHub token, how to seed it for both vault and
-env-only deployments, and which `harness_health` fields flag a missing or
-invalid credential.
+How the harness resolves a git token **per user** and **per provider**
+(GitHub or GitLab), how to seed it for both vault and env-only deployments,
+and which `harness_health` fields flag a missing or invalid credential.
+
+> Multi-user, multi-provider design: see issue #25. GitHub is fully supported
+> end to end (token + push + PR). GitLab supports token resolution + push;
+> automated merge-request creation is a tracked follow-up (the loop fails
+> loud and asks you to open the MR manually).
 
 ## Where GitHub auth is used
 
@@ -41,14 +46,63 @@ creation scope if you use `harness_bootstrap_test_repo`).
 `pat_routing.default_service_pattern` builds the vault service name.
 Placeholders (all lower-cased):
 
-| Placeholder | Value                          | Example                     |
-|-------------|--------------------------------|-----------------------------|
-| `{owner}`   | repo owner (user or org)       | `carelvanheerden`           |
-| `{repo}`    | repo name                      | `openclaw-agent-harness`    |
-| `{user}`    | requester's GitHub login *(deprecated alias)* | `carelvanheerden` |
-| `{org}`     | repo owner *(deprecated alias of `{owner}`)*  | `carelvanheerden` |
+| Placeholder   | Value                                   | Example                  |
+|---------------|-----------------------------------------|--------------------------|
+| `{owner}`     | repo owner (user or org)                | `carelvanheerden`        |
+| `{repo}`      | repo name                               | `openclaw-agent-harness` |
+| `{provider}`  | `github` or `gitlab`                    | `github`                 |
+| `{requester}` | requesting user's login for the provider (from `user_identities`; falls back to repo owner) | `alice-gh` |
+| `{user}`      | requester login *(deprecated alias, repo owner if unknown)* | `carelvanheerden` |
+| `{org}`       | repo owner *(deprecated alias of `{owner}`)*                | `carelvanheerden` |
 
 **Default: `github-{owner}`** (per-owner tokens).
+
+## Multi-user (per-requester) tokens
+
+To give each requester their **own** token, map their Slack id to their
+provider login and use `{requester}` (or `{provider}-{requester}`) in the
+template:
+
+```jsonc
+{
+  "pat_routing": {
+    "default_service_pattern": "{provider}-{requester}",
+    "user_identities": {
+      "U07UT6G8LQ4": { "github": "carelvanheerden", "gitlab": "cvh" },
+      "U0A5TEXC1LZ": { "github": "francois-l" }
+    }
+  }
+}
+```
+
+The requester's Slack id is threaded from the session into resolution, so a
+session started by Alice resolves `github-alice-gh` and one started by Bob
+resolves `github-bob-gh`. A user with no configured identity falls back to the
+repo owner, so the template never leaves an unresolved placeholder.
+
+Per-user / per-repo `overrides` still win over the template.
+
+## Multi-provider (GitHub + GitLab)
+
+Provider is chosen by: explicit override > `provider_by_owner[owner]` >
+`default_provider` (default `github`).
+
+```jsonc
+{
+  "pat_routing": {
+    "default_provider": "github",
+    "provider_by_owner": { "my-gitlab-group": "gitlab" },
+    "providers": {
+      "github": { "api_base": "https://api.github.com",        "api_key_env": "GH_TOKEN" },
+      "gitlab": { "api_base": "https://gitlab.com/api/v4",     "api_key_env": "GITLAB_TOKEN" }
+    }
+  }
+}
+```
+
+Each provider has its own REST API base (for health pings) and its own env
+fallback var. For a self-managed GitLab, point `providers.gitlab.api_base` at
+`https://gitlab.example.com/api/v4`.
 
 > **Why the default changed.** The old default `github-{user}-{org}` collapsed
 > to a duplicated segment for a personal repo, because `{user}` (requester
@@ -80,8 +134,11 @@ value:   github_pat_...
 
 ### Env only (no vault plugin)
 
-Set `GH_TOKEN` in the container environment (or a custom name via
-`pat_routing.auth.api_key_env`). See `.env.example`.
+Set the provider's env var in the container environment: `GH_TOKEN` for
+GitHub, `GITLAB_TOKEN` for GitLab (names configurable via
+`providers.<p>.api_key_env`; the legacy `pat_routing.auth.api_key_env` still
+wins for GitHub for back-compat). See `.env.example`. Note: env fallback is a
+single shared token per provider — true per-user auth is vault-backed.
 
 ```jsonc
 {
