@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.1.0-beta.10] -- 2026-07-16
+
+### Fixed
+
+- **Beta.9 wiring gap: the 5 new optional verification probes are now
+  provided by the production `buildVerifyProbes` factories.** Beta.9 shipped
+  the richer contract kinds + `verifySubTaskOutput` handling + graceful
+  fallback (`passed: true` when a probe is absent, trusting SDK), but the
+  factories in `src/index.ts` (both the loop-path and the worker-path) only
+  provided the four beta.8 probes. In production this meant that
+  `file_committed`, `remote_branch_exists`, `file_pushed`, `pr_state`,
+  `file_in_pr`, and `commit_sha_matches` all returned `passed: true` on
+  empty air — the graceful-skip path was the *only* path taken. Beta.10
+  wires all 5 optional probes to real primitives: `fs.stat`,
+  `git log <base>..HEAD --name-only`, `git ls-remote`, and the provider
+  contents / pulls / files REST endpoints.
+
+### Added
+
+- **`GitAdapter.listCommittedFiles(worktreePath, base)`** — files touched by
+  commits in `base..HEAD` (used by `file_committed`).
+- **`GitAdapter.remoteBranchSha(worktreePath, remote, branch, ghToken?)`** —
+  tip SHA on the remote via `git ls-remote` (used by `remote_branch_exists`
+  and `commit_sha_matches`).
+- **`tests/beta10-wiring.test.mjs`** — 14 new tests that hit a real temp
+  git repo and stub `fetch` per URL. Includes a confabulation scenario
+  where a worker "does" 5 remote operations that never actually happened;
+  all 5 checks must FAIL against the wired probes. If any test asserts a
+  skipped-as-true pass, the wiring has regressed.
+
+### Provider parity
+
+All new probes are provider-aware (GitHub + GitLab). Endpoints used:
+
+- GitHub: `GET /repos/{owner}/{repo}/git/refs/heads/{branch}`,
+  `GET /repos/.../contents/{path}?ref={branch}`,
+  `GET /repos/.../pulls?head={owner}:{branch}&state=all`,
+  `GET /repos/.../pulls/{n}/files?per_page=100`.
+- GitLab: `GET /projects/{id}/repository/branches/{branch}`,
+  `GET /projects/{id}/repository/files/{path}?ref={branch}`,
+  `GET /projects/{id}/merge_requests?source_branch={branch}&state=all`,
+  `GET /projects/{id}/merge_requests/{iid}/changes`.
+
+### Impact
+
+On Staging the beta.9 smoke test halted at s1 with a genuine
+`file not in diff vs base` (because s1 writes without committing). With the
+beta.9 code path, the plan would proceed but s3–s4 could still be worker-
+confabulated: the loop path's factory was not providing `remoteFileExists`
+or `prForBranch`, so the corresponding contract kinds returned pass-as-
+skipped. Beta.10 makes all inferred checks *actually check*. Predicted
+next smoke test outcome: sub-tasks with observable side effects now
+succeed only when they *really* succeeded (branch pushed, PR opened,
+file in PR files), and fail with specific `loop.*_verify_failed` events
+when they did not.
+
+---
+
 ## [0.1.0-beta.9] -- 2026-07-16
 
 ### Fixed
