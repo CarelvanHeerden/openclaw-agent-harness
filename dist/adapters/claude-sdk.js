@@ -16,6 +16,30 @@
  * without the real SDK installed. Production code will error clearly if
  * the SDK is missing.
  */
+/**
+ * Build the `env` passed to the SDK subprocess.
+ *
+ * The embedded Claude Code binary reads ANTHROPIC_API_KEY from its process
+ * environment. We inherit the parent env and, when the harness has resolved
+ * an explicit key (vault or config env-var), set ANTHROPIC_API_KEY so the
+ * subprocess never falls back to the interactive `/login` session store
+ * (which does not exist in a headless container).
+ *
+ * Returns `undefined` when no explicit key is supplied, so the SDK keeps its
+ * default behaviour (inherit parent env) for local dev where the developer
+ * may already be logged in.
+ */
+export function buildSdkEnv(apiKey) {
+    if (!apiKey)
+        return undefined;
+    const base = {};
+    for (const [k, v] of Object.entries(process.env)) {
+        if (typeof v === "string")
+            base[k] = v;
+    }
+    base.ANTHROPIC_API_KEY = apiKey;
+    return base;
+}
 let sdkCache;
 async function loadSdk() {
     if (sdkCache)
@@ -47,6 +71,7 @@ export async function runWorkerSdk(params) {
                 cwd: params.worktreePath,
                 permissionMode: params.permissionMode,
                 resume: params.resumeSessionId,
+                env: buildSdkEnv(params.apiKey),
                 canUseTool: async (toolName, toolInput) => {
                     const decision = await params.canUseTool(toolName, toolInput);
                     if (decision.allow)
@@ -108,6 +133,7 @@ async function structuredCall(params) {
                 model: params.model,
                 systemPrompt: params.systemPrompt,
                 permissionMode: "plan", // no tool use
+                env: buildSdkEnv(params.apiKey),
                 abortSignal: abort.signal,
             },
         });
@@ -264,6 +290,7 @@ export async function runClassifierSdk(params) {
         systemPrompt,
         userMessage: params.userText,
         timeoutSeconds: params.timeoutSeconds,
+        apiKey: params.apiKey,
         validation: { requiredKeys: ["intent", "reason"], label: "classifier" },
     });
     return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
@@ -287,6 +314,7 @@ export async function runCrystalliserSdk(params) {
         systemPrompt,
         userMessage: params.userText,
         timeoutSeconds: params.timeoutSeconds,
+        apiKey: params.apiKey,
         validation: { requiredKeys: ["title", "motivation", "acceptanceCriteria", "riskLevel"], label: "crystalliser" },
     });
     return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
@@ -313,6 +341,7 @@ export async function runLeadSdk(params) {
         systemPrompt,
         userMessage: JSON.stringify(params.brief),
         timeoutSeconds: params.timeoutSeconds,
+        apiKey: params.apiKey,
         validation: { requiredKeys: ["repo", "branch", "subTasks", "reviewChecklist", "riskLevel"], label: "lead" },
     });
     return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
@@ -379,6 +408,7 @@ export async function runAdversarySdk(params) {
             systemPrompt: params.systemPrompt,
             userMessage: `Here is the diff to review:\n\n${params.diffText}`,
             timeoutSeconds: params.timeoutSeconds,
+            apiKey: params.apiKey,
             validation: { requiredKeys: ["verdict", "findings", "summary"], label: "adversary" },
         });
         return { parsed: r.parsed, sdkSessionId: r.sdkSessionId, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
@@ -403,6 +433,7 @@ export async function runAdversarySdk(params) {
             systemPrompt: chunkPrompt,
             userMessage: chunkUserMsg,
             timeoutSeconds: params.timeoutSeconds,
+            apiKey: params.apiKey,
             validation: { requiredKeys: ["verdict", "findings", "summary"], label: `adversary-chunk-${i + 1}/${chunks.length}` },
         });
         verdict = mergeVerdict(verdict, r.parsed.verdict);

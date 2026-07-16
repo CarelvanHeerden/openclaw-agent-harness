@@ -129,6 +129,14 @@ export interface HarnessRuntime {
         reason: string;
         costUsd: number;
     }>;
+    /**
+     * Resolve the Anthropic API key for the embedded Claude Agent SDK.
+     * Vault-first (`models.auth.credential_service`), then env fallback
+     * (`models.auth.api_key_env`, default ANTHROPIC_API_KEY). Memoised.
+     * Returns `undefined` if neither is configured/resolvable, in which case
+     * the SDK keeps its default behaviour (may fall back to `/login`).
+     */
+    anthropicApiKey: () => Promise<string | undefined>;
     disposers: Array<() => void | Promise<void>>;
     /**
      * Promise for the async bootstrap phase (reactions poller start,

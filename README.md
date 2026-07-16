@@ -2,7 +2,7 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.2`. All Phase 1-3 subsystems land and pass tests (136/136 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel.
+> *Status: beta.* Version `0.1.0-beta.4`. All Phase 1-3 subsystems land and pass tests (143/143 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, and **`docs/AUTH.md`** for how to configure the Anthropic API key in a headless/Docker deployment (required, else the first plan fails with `Not logged in`).
 
 ### Two ways to drive it
 
@@ -124,11 +124,11 @@ Only from `slack.authorised_users`:
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 136 tests
+npm test        # runs 143 tests
 npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 ```
 
-Then follow `docs/REAL-TEST-RUNBOOK.md` for wiring up the real Slack channel and Vault credentials.
+Then follow `docs/REAL-TEST-RUNBOOK.md` for wiring up the real Slack channel and Vault credentials. See `docs/AUTH.md` for the Anthropic API-key setup (vault-first, env fallback) that the lead/worker/adversary/classifier models need.
 
 ## Development
 

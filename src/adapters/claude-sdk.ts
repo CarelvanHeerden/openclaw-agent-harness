@@ -23,6 +23,29 @@ import type {
 } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask } from "../orchestrator/fable5-lead.js";
 
+/**
+ * Build the `env` passed to the SDK subprocess.
+ *
+ * The embedded Claude Code binary reads ANTHROPIC_API_KEY from its process
+ * environment. We inherit the parent env and, when the harness has resolved
+ * an explicit key (vault or config env-var), set ANTHROPIC_API_KEY so the
+ * subprocess never falls back to the interactive `/login` session store
+ * (which does not exist in a headless container).
+ *
+ * Returns `undefined` when no explicit key is supplied, so the SDK keeps its
+ * default behaviour (inherit parent env) for local dev where the developer
+ * may already be logged in.
+ */
+export function buildSdkEnv(apiKey?: string): Record<string, string> | undefined {
+  if (!apiKey) return undefined;
+  const base: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v === "string") base[k] = v;
+  }
+  base.ANTHROPIC_API_KEY = apiKey;
+  return base;
+}
+
 let sdkCache: unknown;
 async function loadSdk(): Promise<any> {
   if (sdkCache) return sdkCache;
@@ -45,6 +68,8 @@ export interface RunWorkerParams {
   resumeSessionId?: string;
   timeoutSeconds: number;
   canUseTool: (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }>;
+  /** Anthropic API key. Injected into the SDK subprocess env as ANTHROPIC_API_KEY so it never falls back to `/login`. */
+  apiKey?: string;
 }
 
 export interface RunWorkerResult {
@@ -77,6 +102,7 @@ export async function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerRe
         cwd: params.worktreePath,
         permissionMode: params.permissionMode,
         resume: params.resumeSessionId,
+        env: buildSdkEnv(params.apiKey),
         canUseTool: async (toolName: string, toolInput: unknown) => {
           const decision = await params.canUseTool(toolName, toolInput);
           if (decision.allow) return { behavior: "allow", updatedInput: toolInput };
@@ -130,6 +156,8 @@ async function structuredCall<T>(params: {
   validation?: JsonValidationOptions<T>;
   /** Optional logger for the trailing-JSON warning. */
   logger?: { warn: (m: string, meta?: unknown) => void };
+  /** Anthropic API key. Injected into the SDK subprocess env as ANTHROPIC_API_KEY so it never falls back to `/login`. */
+  apiKey?: string;
 }): Promise<{ parsed: T; sdkSessionId: string; costUsd: number; tokensIn: number; tokensOut: number; raw: string }> {
   const sdk = await loadSdk();
   const abort = new AbortController();
@@ -148,6 +176,7 @@ async function structuredCall<T>(params: {
         model: params.model,
         systemPrompt: params.systemPrompt,
         permissionMode: "plan" as const, // no tool use
+        env: buildSdkEnv(params.apiKey),
         abortSignal: abort.signal,
       },
     });
@@ -291,6 +320,7 @@ export async function runClassifierSdk(params: {
   model: string;
   userText: string;
   timeoutSeconds: number;
+  apiKey?: string;
 }): Promise<ClassifierResult & { costUsd: number; tokensIn: number; tokensOut: number }> {
   const systemPrompt = [
     "You classify a single Slack message from a developer channel.",
@@ -307,6 +337,7 @@ export async function runClassifierSdk(params: {
     systemPrompt,
     userMessage: params.userText,
     timeoutSeconds: params.timeoutSeconds,
+    apiKey: params.apiKey,
     validation: { requiredKeys: ["intent", "reason"], label: "classifier" },
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
@@ -316,6 +347,7 @@ export async function runCrystalliserSdk(params: {
   model: string;
   userText: string;
   timeoutSeconds: number;
+  apiKey?: string;
 }): Promise<CrystallisedBrief & { costUsd: number; tokensIn: number; tokensOut: number }> {
   const systemPrompt = [
     "You are a senior engineer refining a rough dev request into a well-scoped brief.",
@@ -336,6 +368,7 @@ export async function runCrystalliserSdk(params: {
     systemPrompt,
     userMessage: params.userText,
     timeoutSeconds: params.timeoutSeconds,
+    apiKey: params.apiKey,
     validation: { requiredKeys: ["title", "motivation", "acceptanceCriteria", "riskLevel"], label: "crystalliser" },
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
@@ -346,6 +379,7 @@ export async function runLeadSdk(params: {
   brief: CrystallisedBrief;
   reposAllowed: string[];
   timeoutSeconds: number;
+  apiKey?: string;
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & { costUsd: number; tokensIn: number; tokensOut: number }> {
   const systemPrompt = [
     "You are the lead planner. Decompose a brief into ATOMIC sub-tasks a Sonnet worker can complete in one turn.",
@@ -369,6 +403,7 @@ export async function runLeadSdk(params: {
     systemPrompt,
     userMessage: JSON.stringify(params.brief),
     timeoutSeconds: params.timeoutSeconds,
+    apiKey: params.apiKey,
     validation: { requiredKeys: ["repo", "branch", "subTasks", "reviewChecklist", "riskLevel"], label: "lead" },
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
@@ -429,6 +464,7 @@ export async function runAdversarySdk(params: {
   systemPrompt: string;
   diffText: string;
   timeoutSeconds: number;
+  apiKey?: string;
 }): Promise<{
   parsed: { verdict: "pass" | "revise" | "block"; findings: unknown[]; summary: string };
   sdkSessionId: string;
@@ -446,6 +482,7 @@ export async function runAdversarySdk(params: {
       systemPrompt: params.systemPrompt,
       userMessage: `Here is the diff to review:\n\n${params.diffText}`,
       timeoutSeconds: params.timeoutSeconds,
+      apiKey: params.apiKey,
       validation: { requiredKeys: ["verdict", "findings", "summary"], label: "adversary" },
     });
     return { parsed: r.parsed, sdkSessionId: r.sdkSessionId, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
@@ -472,6 +509,7 @@ export async function runAdversarySdk(params: {
       systemPrompt: chunkPrompt,
       userMessage: chunkUserMsg,
       timeoutSeconds: params.timeoutSeconds,
+      apiKey: params.apiKey,
       validation: { requiredKeys: ["verdict", "findings", "summary"], label: `adversary-chunk-${i + 1}/${chunks.length}` },
     });
     verdict = mergeVerdict(verdict, r.parsed.verdict);
