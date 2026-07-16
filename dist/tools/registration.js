@@ -6,6 +6,7 @@
  * include the "run a task" surface -- that entry point is the Slack
  * listener. These tools are for inspection, admin, and cron jobs.
  */
+import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 function toDispose(x) {
     return () => {
@@ -22,6 +23,36 @@ function toDispose(x) {
 export function registerHarnessTools(api, runtime) {
     const disposers = [];
     /**
+     * Resolve the LIVE runtime for tool execution.
+     *
+     * Prefer the current module-level runtime (updated on every (re-)register)
+     * over the `runtime` captured when this tool was registered. After a
+     * re-register the captured generation is torn down and its state DB is
+     * closed; touching `liveDb()` from a stale closure throws the
+     * `node:sqlite` "database is not open" error. Reading the live runtime
+     * means we always hit an OPEN handle.
+     */
+    const liveRuntime = () => getCurrentRuntime() ?? runtime;
+    /**
+     * Live, guaranteed-open DB handle for tool queries. Throws a clear,
+     * actionable error (rather than the opaque sqlite one) if we somehow land
+     * on a closed generation — e.g. mid-teardown before the live runtime is
+     * published.
+     */
+    const liveDb = () => {
+        const rt = liveRuntime();
+        // `isOpen` is part of the StateStore contract, but guard defensively:
+        // a state provider (or test stub) that predates the open-guard should
+        // be treated as open rather than crashing.
+        const isOpen = typeof rt.state.isOpen === "function" ? rt.state.isOpen() : true;
+        if (!isOpen) {
+            throw new Error("harness state DB is not open (plugin is re-registering); retry in a moment");
+        }
+        return rt.state.db;
+    };
+    const liveState = () => liveRuntime().state;
+    const liveConfig = () => liveRuntime().config;
+    /**
      * Shared session-start path for BOTH agent-orchestrated tools
      * (`harness_run`, `harness_start_session`). Inserts the session row and
      * fires the orchestrator loop.
@@ -34,7 +65,7 @@ export function registerHarnessTools(api, runtime) {
      * `harness_session_get` instead.
      */
     function startSessionFromBrief(params) {
-        if (!runtime.config.slack.authorised_users.includes(params.requester)) {
+        if (!liveConfig().slack.authorised_users.includes(params.requester)) {
             return { ok: false, unauthorised: true, reason: `Requester ${params.requester} is not in slack.authorised_users` };
         }
         const sessionId = globalThis.crypto?.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -42,12 +73,12 @@ export function registerHarnessTools(api, runtime) {
         // Synthesise a unique thread key when the agent supplies none.
         const slackThread = params.slackThread ?? `agent:${sessionId}`;
         try {
-            runtime.state.db
+            liveDb()
                 .prepare(`INSERT INTO sessions (
              id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
              status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran
            ) VALUES (?, ?, ?, ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0)`)
-                .run(sessionId, slackThread, slackChannel, params.requester, params.requester, JSON.stringify(params.brief), Date.now(), Date.now(), params.budgetUsd ?? runtime.config.budgets.session_default_usd);
+                .run(sessionId, slackThread, slackChannel, params.requester, params.requester, JSON.stringify(params.brief), Date.now(), Date.now(), params.budgetUsd ?? liveConfig().budgets.session_default_usd);
         }
         catch (err) {
             if (String(err).includes("UNIQUE") || String(err).includes("SQLITE_CONSTRAINT")) {
@@ -55,8 +86,8 @@ export function registerHarnessTools(api, runtime) {
             }
             throw err;
         }
-        runtime.state.audit(params.auditEvent, { sessionId, requester: params.requester }, sessionId);
-        void runtime.loop.run(sessionId, params.brief).catch((err) => {
+        liveState().audit(params.auditEvent, { sessionId, requester: params.requester }, sessionId);
+        void liveRuntime().loop.run(sessionId, params.brief).catch((err) => {
             api.logger.error(`[${params.auditEvent}] loop crashed`, { sessionId, err: String(err) });
         });
         return { ok: true, sessionId };
@@ -66,7 +97,7 @@ export function registerHarnessTools(api, runtime) {
         description: "Return harness runtime status: active sessions, monthly spend per user, model config.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
         execute: (_callId, _params) => {
-            const sessions = runtime.state.db
+            const sessions = liveDb()
                 .prepare(`SELECT id, status, requester, repo, branch, cycles_ran, cost_usd,
                       datetime(created_at/1000,'unixepoch') AS created
                FROM sessions
@@ -74,7 +105,7 @@ export function registerHarnessTools(api, runtime) {
                ORDER BY created_at DESC`)
                 .all();
             const month = new Date().toISOString().slice(0, 7);
-            const spend = runtime.state.db
+            const spend = liveDb()
                 .prepare(`SELECT user, spent_usd, session_count
                FROM budgets_monthly WHERE month = ?
                ORDER BY spent_usd DESC`)
@@ -86,9 +117,9 @@ export function registerHarnessTools(api, runtime) {
                         text: JSON.stringify({
                             activeSessions: sessions,
                             monthlySpend: spend,
-                            models: runtime.config.models,
-                            channel: runtime.config.slack.channel,
-                            reposAllowed: runtime.config.repos.allowed,
+                            models: liveConfig().models,
+                            channel: liveConfig().slack.channel,
+                            reposAllowed: liveConfig().repos.allowed,
                         }, null, 2),
                     },
                 ],
@@ -111,10 +142,10 @@ export function registerHarnessTools(api, runtime) {
         },
         execute: (_callId, input) => {
             const opts = (input ?? {});
-            const result = pruneRetention(runtime.state, {
-                auditRetentionDays: opts.auditRetentionDays ?? runtime.config.storage.audit_retention_days,
-                pruneTerminalSessions: runtime.config.storage.prune_terminal_sessions,
-                pruneTerminalSessionsDays: runtime.config.storage.prune_terminal_sessions_days,
+            const result = pruneRetention(liveState(), {
+                auditRetentionDays: opts.auditRetentionDays ?? liveConfig().storage.audit_retention_days,
+                pruneTerminalSessions: liveConfig().storage.prune_terminal_sessions,
+                pruneTerminalSessionsDays: liveConfig().storage.prune_terminal_sessions_days,
             });
             return {
                 content: [
@@ -135,7 +166,7 @@ export function registerHarnessTools(api, runtime) {
         },
         execute: (_callId, input) => {
             const { sessionId } = input;
-            const session = runtime.state.db
+            const session = liveDb()
                 .prepare(`SELECT * FROM sessions WHERE id = ?`)
                 .get(sessionId);
             if (!session) {
@@ -144,13 +175,13 @@ export function registerHarnessTools(api, runtime) {
                     details: { ok: false, notFound: true },
                 };
             }
-            const subTasks = runtime.state.db
+            const subTasks = liveDb()
                 .prepare(`SELECT * FROM sub_tasks WHERE session_id = ? ORDER BY seq ASC`)
                 .all(sessionId);
-            const reviews = runtime.state.db
+            const reviews = liveDb()
                 .prepare(`SELECT * FROM reviews WHERE session_id = ? ORDER BY cycle ASC`)
                 .all(sessionId);
-            const audit = runtime.state.db
+            const audit = liveDb()
                 .prepare(`SELECT event, payload, datetime(created_at/1000,'unixepoch') AS ts
                FROM audit_log WHERE session_id = ? ORDER BY id ASC LIMIT 200`)
                 .all(sessionId);
@@ -180,10 +211,10 @@ export function registerHarnessTools(api, runtime) {
         },
         execute: (_callId, input) => {
             const { sessionId, reason, invokedBy } = input;
-            if (invokedBy && !runtime.config.slack.authorised_users.includes(invokedBy)) {
+            if (invokedBy && !liveConfig().slack.authorised_users.includes(invokedBy)) {
                 return { content: [{ type: "text", text: `Invoker ${invokedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
-            const row = runtime.state.db.prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId);
+            const row = liveDb().prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId);
             if (!row)
                 return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
             if (["done", "failed", "aborted"].includes(row.status)) {
@@ -191,8 +222,8 @@ export function registerHarnessTools(api, runtime) {
             }
             const parsed = row.reactions_json ? JSON.parse(row.reactions_json) : {};
             parsed.abort = true;
-            runtime.state.db.prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(parsed), Date.now(), sessionId);
-            runtime.state.audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked", invokedBy: invokedBy ?? null }, sessionId);
+            liveDb().prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(parsed), Date.now(), sessionId);
+            liveState().audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked", invokedBy: invokedBy ?? null }, sessionId);
             return { content: [{ type: "text", text: `Abort flag set on ${sessionId}. The loop will terminate at its next checkpoint.` }], details: { ok: true, sessionId } };
         },
     })));
@@ -215,20 +246,20 @@ export function registerHarnessTools(api, runtime) {
         },
         execute: (_callId, input) => {
             const p = input;
-            if (!runtime.config.slack.authorised_users.includes(p.uploadedBy)) {
+            if (!liveConfig().slack.authorised_users.includes(p.uploadedBy)) {
                 return { content: [{ type: "text", text: `Uploader ${p.uploadedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
-            const sess = runtime.state.db.prepare(`SELECT id, status FROM sessions WHERE id=?`).get(p.sessionId);
+            const sess = liveDb().prepare(`SELECT id, status FROM sessions WHERE id=?`).get(p.sessionId);
             if (!sess?.id) {
                 return { content: [{ type: "text", text: `Unknown session ${p.sessionId}` }], details: { ok: false, notFound: true } };
             }
             const CAP = 16 * 1024;
             const excerpt = p.logsExcerpt.length > CAP ? p.logsExcerpt.slice(0, CAP) + "\n[...truncated at 16KB]" : p.logsExcerpt;
-            runtime.state.db
+            liveDb()
                 .prepare(`INSERT INTO runtime_uploads (session_id, uploaded_by, source, status, logs_excerpt, error_count, deployment_url, uploaded_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
                 .run(p.sessionId, p.uploadedBy, p.source ?? null, p.status, excerpt, p.errorCount ?? null, p.deploymentUrl ?? null, Date.now());
-            runtime.state.audit("runtime.upload", { uploadedBy: p.uploadedBy, status: p.status, bytes: excerpt.length, source: p.source }, p.sessionId);
+            liveState().audit("runtime.upload", { uploadedBy: p.uploadedBy, status: p.status, bytes: excerpt.length, source: p.source }, p.sessionId);
             return { content: [{ type: "text", text: `Uploaded ${excerpt.length} bytes of runtime logs for ${p.sessionId} (status=${p.status}). Adversary will pick this up on the next cycle.` }], details: { ok: true, bytes: excerpt.length } };
         },
     })));
@@ -307,19 +338,19 @@ export function registerHarnessTools(api, runtime) {
         },
         execute: async (_callId, input) => {
             const { requester, request, slackChannel, slackThread, budgetUsd } = input;
-            if (!runtime.config.slack.authorised_users.includes(requester)) {
+            if (!liveConfig().slack.authorised_users.includes(requester)) {
                 return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
             let cResult;
             try {
-                cResult = await runtime.crystallise(request);
+                cResult = await liveRuntime().crystallise(request);
             }
             catch (err) {
                 api.logger.error("[tool.run] crystallise failed", { requester, err: String(err) });
                 return { content: [{ type: "text", text: `Crystallisation failed: ${String(err)}` }], details: { ok: false, crystalliseError: true } };
             }
             if (cResult.kind === "reject") {
-                runtime.state.audit("tool.run.rejected", { requester, intent: cResult.intent, reason: cResult.reason });
+                liveState().audit("tool.run.rejected", { requester, intent: cResult.intent, reason: cResult.reason });
                 return { content: [{ type: "text", text: `Request rejected (${cResult.intent}): ${cResult.reason}` }], details: { ok: false, rejected: true, intent: cResult.intent, reason: cResult.reason } };
             }
             if (cResult.kind === "clarify") {
@@ -347,7 +378,7 @@ export function registerHarnessTools(api, runtime) {
             const checks = [];
             // DB reachable?
             try {
-                runtime.state.db.prepare(`SELECT 1`).get();
+                liveDb().prepare(`SELECT 1`).get();
                 checks.push({ name: "db_reachable", ok: true });
             }
             catch (err) {
@@ -356,18 +387,18 @@ export function registerHarnessTools(api, runtime) {
             // Schema tables present?
             const need = ["sessions", "sub_tasks", "reviews", "budgets_daily", "budgets_monthly", "audit_log"];
             for (const t of need) {
-                const row = runtime.state.db
+                const row = liveDb()
                     .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
                     .get(t);
                 checks.push({ name: `table_${t}`, ok: !!row?.name });
             }
             // Config: minimally-valid?
-            checks.push({ name: "config_slack_channel", ok: !!runtime.config.slack.channel, detail: runtime.config.slack.channel });
-            checks.push({ name: "config_authorised_users", ok: runtime.config.slack.authorised_users.length > 0 });
-            checks.push({ name: "config_repos_allowed", ok: runtime.config.repos.allowed.length > 0 });
+            checks.push({ name: "config_slack_channel", ok: !!liveConfig().slack.channel, detail: liveConfig().slack.channel });
+            checks.push({ name: "config_authorised_users", ok: liveConfig().slack.authorised_users.length > 0 });
+            checks.push({ name: "config_repos_allowed", ok: liveConfig().repos.allowed.length > 0 });
             // Credentials: are we set to talk to Slack/Vercel? (informational, not fatal)
-            checks.push({ name: "slack_credential_service_set", ok: !!runtime.config.slack.credential_service });
-            checks.push({ name: "vercel_enabled", ok: !!runtime.config.vercel?.enabled });
+            checks.push({ name: "slack_credential_service_set", ok: !!liveConfig().slack.credential_service });
+            checks.push({ name: "vercel_enabled", ok: !!liveConfig().vercel?.enabled });
             const overall = checks.filter((c) => c.name.startsWith("table_") || c.name === "db_reachable" || c.name.startsWith("config_")).every((c) => c.ok);
             return {
                 content: [
@@ -396,14 +427,14 @@ export function registerHarnessTools(api, runtime) {
             const { month, user } = (input ?? {});
             const targetMonth = month ?? new Date().toISOString().slice(0, 7);
             const monthlyRows = user
-                ? runtime.state.db.prepare(`SELECT month, user, spent_usd, session_count FROM budgets_monthly WHERE month = ? AND user = ?`).all(targetMonth, user)
-                : runtime.state.db.prepare(`SELECT month, user, spent_usd, session_count FROM budgets_monthly WHERE month = ? ORDER BY spent_usd DESC`).all(targetMonth);
+                ? liveDb().prepare(`SELECT month, user, spent_usd, session_count FROM budgets_monthly WHERE month = ? AND user = ?`).all(targetMonth, user)
+                : liveDb().prepare(`SELECT month, user, spent_usd, session_count FROM budgets_monthly WHERE month = ? ORDER BY spent_usd DESC`).all(targetMonth);
             const dailyRows = user
-                ? runtime.state.db.prepare(`SELECT day, user, spent_usd FROM budgets_daily WHERE day LIKE ? AND user = ? ORDER BY day DESC`).all(`${targetMonth}%`, user)
-                : runtime.state.db.prepare(`SELECT day, user, spent_usd FROM budgets_daily WHERE day LIKE ? ORDER BY day DESC`).all(`${targetMonth}%`);
+                ? liveDb().prepare(`SELECT day, user, spent_usd FROM budgets_daily WHERE day LIKE ? AND user = ? ORDER BY day DESC`).all(`${targetMonth}%`, user)
+                : liveDb().prepare(`SELECT day, user, spent_usd FROM budgets_daily WHERE day LIKE ? ORDER BY day DESC`).all(`${targetMonth}%`);
             const sessionRows = user
-                ? runtime.state.db.prepare(`SELECT id, status, requester, repo, cost_usd, cycles_ran, datetime(created_at/1000,'unixepoch') AS created FROM sessions WHERE requester = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 100`).all(user, monthStart(targetMonth))
-                : runtime.state.db.prepare(`SELECT id, status, requester, repo, cost_usd, cycles_ran, datetime(created_at/1000,'unixepoch') AS created FROM sessions WHERE created_at >= ? ORDER BY created_at DESC LIMIT 100`).all(monthStart(targetMonth));
+                ? liveDb().prepare(`SELECT id, status, requester, repo, cost_usd, cycles_ran, datetime(created_at/1000,'unixepoch') AS created FROM sessions WHERE requester = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 100`).all(user, monthStart(targetMonth))
+                : liveDb().prepare(`SELECT id, status, requester, repo, cost_usd, cycles_ran, datetime(created_at/1000,'unixepoch') AS created FROM sessions WHERE created_at >= ? ORDER BY created_at DESC LIMIT 100`).all(monthStart(targetMonth));
             const totals = {
                 monthUsd: monthlyRows.reduce((a, r) => a + (r.spent_usd || 0), 0),
                 sessions: sessionRows.length,
@@ -432,10 +463,10 @@ export function registerHarnessTools(api, runtime) {
         },
         execute: async (_callId, input) => {
             const { sessionId, invokedBy } = input;
-            if (invokedBy && !runtime.config.slack.authorised_users.includes(invokedBy)) {
+            if (invokedBy && !liveConfig().slack.authorised_users.includes(invokedBy)) {
                 return { content: [{ type: "text", text: `Invoker ${invokedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
-            const row = runtime.state.db.prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId);
+            const row = liveDb().prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId);
             if (!row)
                 return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
             if (!["interrupted", "resumable"].includes(row.status)) {
@@ -445,10 +476,10 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
             }
             const brief = JSON.parse(row.crystallised_prompt);
-            runtime.state.db.prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
-            runtime.state.audit("tool.resume", { sessionId, wasStatus: row.status, invokedBy: invokedBy ?? null }, sessionId);
+            liveDb().prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
+            liveState().audit("tool.resume", { sessionId, wasStatus: row.status, invokedBy: invokedBy ?? null }, sessionId);
             // Fire-and-forget: loop takes over from planning
-            void runtime.loop.run(sessionId, brief).catch((err) => {
+            void liveRuntime().loop.run(sessionId, brief).catch((err) => {
                 api.logger.error("[tool.resume] loop.run failed", { sessionId, err: String(err) });
             });
             return { content: [{ type: "text", text: `Session ${sessionId} resumed. Watch the Slack thread for progress.` }], details: { ok: true, sessionId } };
