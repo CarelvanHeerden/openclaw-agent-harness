@@ -75,6 +75,34 @@ const SHA_MATCH_RE = /\b(verify remote sha|sha match(es)?|confirm sha|push.*sha|
  */
 const NEGATION_CUE_RE = /\b(do(es)? not|don't|doesn't|didn't|didn't|shouldn't|shall not|must not|no need to|without|never|avoid|skip|stop after|not to|instead of|rather than|no)\b/i;
 
+/**
+ * beta.13 fix: absence-assertion detection for verify/state language.
+ *
+ * The negation-cue helper (`hasPositiveMatch`) works well for action verbs
+ * (push, commit, open a PR) but not for state-assertion language like
+ * "verify remote SHA" or "confirm SHA match." On a happy-path smoke where
+ * the sub-task is *observation-only asserting absence* ("no remote tracking
+ * branch was created," "branch is only local," "no push occurred"), the
+ * VERIFY_REMOTE_RE and SHA_MATCH_RE regexes still positively match, and
+ * the verifier infers `remote_branch_exists` + `commit_sha_matches` — the
+ * exact wrong kinds because the sub-task is asserting the OPPOSITE.
+ *
+ * Fix: treat these regex groups as gated on an explicit positive-existence
+ * signal. If the text asserts absence ("no push occurred," "no remote
+ * tracking," "branch only local," "did not push"), skip inference.
+ *
+ * Kept narrow: only applies to the state-check block (VERIFY_REMOTE_RE /
+ * SHA_MATCH_RE / PUSH_RE-when-past-tense-only), not to explicit action
+ * verbs. If a sub-task says "push branch AND verify remote SHA", the push
+ * clause is authoritative and both kinds are inferred as before.
+ */
+const ABSENCE_ASSERTION_RE = /\b(no (push|pr|pull request|merge request|mr|remote|remote tracking|remote-tracking|network mutation)|(did|does|was|is) not (push|exist|created|on origin|created|pushed)|(no remote branch|branch (is )?only local|not on origin|absent from origin|read.?only)|(git branch -r|refs\/remotes\/) [^.\n]*(empty|no output|clean|no remote))\b/i;
+
+/** True when text asserts the *absence* of a remote artifact (branch, PR, push). */
+function assertsAbsence(text: string): boolean {
+  return ABSENCE_ASSERTION_RE.test(text);
+}
+
 function hasPositiveMatch(text: string, re: RegExp): boolean {
   // Anchor a global variant of the pattern so we can iterate matches.
   const globalRe = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
@@ -148,21 +176,27 @@ export function inferVerifyContract(subTask: LeadPlanSubTask): SubTaskVerify[] {
   const hasStage = hasPositiveMatch(haystack, STAGE_RE);
   const hasFileWrite = hasPositiveMatch(haystack, FILE_WRITE_RE);
 
+  // beta.13: an absence-assertion overrides positive inference for remote-
+  // scope kinds. If the sub-task is asserting "no push occurred," "no PR,"
+  // "branch only local," etc., we must NOT infer the remote-existence kinds
+  // even if VERIFY_REMOTE_RE / SHA_MATCH_RE / PUSH_RE match ambient text.
+  const absenceAssertion = assertsAbsence(haystack);
+
   // ---------- PUSH / REMOTE-BRANCH ----------
-  if (hasPush || hasE2E) {
+  if ((hasPush || hasE2E) && !absenceAssertion) {
     // Keep backward-compat `branch_pushed` kind for consumers watching old events.
     contract.push({ kind: "branch_pushed" });
     // beta.9: also add richer remote_branch_exists + commit_sha_matches.
     contract.push({ kind: "remote_branch_exists" });
     contract.push({ kind: "commit_sha_matches" });
-  } else if (hasVerifyRemote || hasShaMatch) {
+  } else if ((hasVerifyRemote || hasShaMatch) && !absenceAssertion) {
     // "verify remote SHA" without an explicit push mention: remote_branch_exists + commit_sha_matches.
     contract.push({ kind: "remote_branch_exists" });
     contract.push({ kind: "commit_sha_matches" });
   }
 
   // ---------- PR ----------
-  if (hasPr) {
+  if (hasPr && !absenceAssertion) {
     // Explicit PR-opening language: infer state as well.
     // (PR_DRAFT_RE is a modifier; only relevant if we're already inferring a PR check.)
     const draft = PR_DRAFT_RE.test(haystack);
