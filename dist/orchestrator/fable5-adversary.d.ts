@@ -25,7 +25,7 @@ export interface AdversaryInput {
     diffPath: string;
     repoPath: string;
     runtime?: {
-        provider: "vercel" | "manual";
+        provider: "vercel" | "manual" | "local";
         status: "ok" | "no_deploy_yet" | "build_failed" | "unavailable";
         deploymentUrl?: string;
         logsExcerpt?: string;
@@ -33,6 +33,11 @@ export interface AdversaryInput {
         uploadedAt?: number;
         uploadedBy?: string;
         source?: string;
+        localVerification?: Array<{
+            seq: number;
+            ok: boolean;
+            summary: string;
+        }>;
     };
     reviewChecklist: string[];
     model: string;

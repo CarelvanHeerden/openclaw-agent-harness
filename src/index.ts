@@ -13,7 +13,7 @@
  * Shape mirrors memory-hybrid.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, stat } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -338,6 +338,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         reposAllowed: config.repos.allowed,
         timeoutSeconds: config.loop.worker_timeout_seconds,
         apiKey: await anthropicApiKey(),
+        logger: api.logger,
       });
       return runLeadPlanner(brief, {
         config,
@@ -386,6 +387,68 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           gitBaseSha: (wt) => git.baseSha(wt),
           gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),
           gitCommit: (wt, msg, id) => git.commit(wt, msg, id),
+          // beta.7 fix #1: real observable-side-effect probes. These hit the
+          // provider REST API / disk / git so a worker cannot self-report a
+          // push, PR, or file write that never happened.
+          buildVerifyProbes: (worktreePath, baseSha) => ({
+            remoteBranchExists: async (branch) => {
+              const b = branch || plan.branch;
+              try {
+                const ghToken = await resolveGitToken(resolution);
+                // Provider-specific ref lookup. GitHub: GET refs/heads/{b}.
+                // GitLab: GET /projects/{id}/repository/branches/{b}.
+                const [owner, repoName] = plan.repo.split("/");
+                let url: string;
+                if (resolution.provider === "gitlab") {
+                  const projectId = encodeURIComponent(`${owner}/${repoName}`);
+                  url = `${resolution.apiBase}/projects/${projectId}/repository/branches/${encodeURIComponent(b)}`;
+                } else {
+                  url = `${resolution.apiBase}/repos/${owner}/${repoName}/git/refs/heads/${b}`;
+                }
+                const res = await fetch(url, {
+                  headers: {
+                    Authorization: `Bearer ${ghToken}`,
+                    Accept: "application/vnd.github+json",
+                  },
+                });
+                return { exists: res.status === 200, detail: `${resolution.provider} ref lookup HTTP ${res.status}` };
+              } catch (err) {
+                return { exists: false, detail: `ref lookup error: ${String(err)}` };
+              }
+            },
+            prUrlPresent: async () => {
+              // The worker never opens PRs (the loop does, post-review). So a
+              // sub-task claiming pr_opened is inherently suspect: only a
+              // persisted final_pr_url for this worktree/branch counts.
+              const row = state.db
+                .prepare(`SELECT final_pr_url FROM sessions WHERE worktree_path = ? AND final_pr_url IS NOT NULL AND final_pr_url != '' LIMIT 1`)
+                .get(worktreePath) as { final_pr_url?: string } | undefined;
+              const url = row?.final_pr_url;
+              return { present: !!url, url: url ?? undefined, detail: url ? "final_pr_url set" : "no PR URL persisted for this worktree" };
+            },
+            fileWrittenSince: async (path, sinceMs) => {
+              try {
+                const abs = resolve(worktreePath, path);
+                const st = await stat(abs);
+                const freshEnough = st.mtimeMs >= sinceMs - 1000; // 1s clock slack
+                if (!freshEnough) return { written: false, detail: `mtime ${new Date(st.mtimeMs).toISOString()} predates sub-task start` };
+                const changed = await git.listChangedFiles(worktreePath, baseSha);
+                const inDiff = changed.some((f) => resolve(worktreePath, f) === abs);
+                return { written: inDiff, detail: inDiff ? "file changed vs base + mtime fresh" : "file mtime fresh but not in diff vs base" };
+              } catch (err) {
+                return { written: false, detail: `stat error: ${String(err)}` };
+              }
+            },
+            commitMadeSince: async (base) => {
+              try {
+                const head = await git.baseSha(worktreePath);
+                const made = head !== base;
+                return { made, detail: made ? `HEAD ${head.slice(0, 7)} != base ${base.slice(0, 7)}` : "no new commit vs base" };
+              } catch (err) {
+                return { made: false, detail: `rev-parse error: ${String(err)}` };
+              }
+            },
+          }),
         },
         resumeSessionId,
       );

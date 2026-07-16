@@ -16,6 +16,7 @@
 
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./fable5-lead.js";
+import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
 
 export interface WorkerResult {
   status: "completed" | "failed" | "timeout";
@@ -27,6 +28,15 @@ export interface WorkerResult {
   tokensOut: number;
   reason?: string;
   logsExcerpt?: string;
+  /**
+   * Result of post-execution observable-side-effect verification (beta.7
+   * fix #1). Undefined when the sub-task declared no `verify` contracts.
+   * When present and `!ok`, `status` is forced to `failed` and `costUsd` is
+   * wasted spend.
+   */
+  verification?: VerifyOutcome;
+  /** True when the SDK reported success but verification proved otherwise. */
+  wastedSpend?: boolean;
 }
 
 export interface WorkerDeps {
@@ -68,6 +78,13 @@ export interface WorkerDeps {
    * with the bash guard + path denylist wired in.
    */
   buildCanUseTool: () => (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }>;
+
+  /**
+   * Observable-side-effect probes for post-execution verification (beta.7
+   * fix #1). Optional: when absent, verification is skipped and the SDK
+   * signal is trusted (back-compat with existing test doubles).
+   */
+  buildVerifyProbes?: (worktreePath: string, baseSha: string) => VerifyProbes;
 }
 
 export function buildWorkerSystemPrompt(
@@ -110,6 +127,7 @@ export async function runWorker(
   const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
   const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.`;
 
+  const subTaskStartMs = Date.now();
   const baseSha = await deps.gitBaseSha(worktreePath);
   const canUseTool = deps.buildCanUseTool();
 
@@ -148,12 +166,44 @@ export async function runWorker(
     commitSha = sha ?? undefined;
   }
 
-  const status: WorkerResult["status"] =
+  // SDK stop reason gives a provisional status.
+  let status: WorkerResult["status"] =
     sdkResult.stopReason === "timeout"
       ? "timeout"
       : sdkResult.stopReason === "end_turn"
         ? "completed"
         : "failed";
+
+  // beta.7 fix #1: for sub-tasks with observable side effects, do NOT trust
+  // the SDK signal. Verify against reality; a provisional `completed` that
+  // fails verification becomes `failed` and its spend is flagged wasted.
+  let verification: VerifyOutcome | undefined;
+  let wastedSpend = false;
+  if (deps.buildVerifyProbes && (subTask.verify?.length ?? 0) > 0) {
+    const probes = deps.buildVerifyProbes(worktreePath, baseSha);
+    verification = await verifySubTaskOutput(
+      subTask.verify,
+      {
+        defaultBranch:
+          subTask.verify?.reduce<string>(
+            (acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc),
+            "",
+          ) ?? "",
+        subTaskStartMs,
+        baseSha,
+      },
+      probes,
+    );
+    if (status === "completed" && !verification.ok) {
+      status = "failed";
+      wastedSpend = true;
+      deps.logger.warn("[worker] SDK reported success but verification failed", {
+        seq: subTask.seq,
+        summary: verification.summary,
+        costUsd: sdkResult.costUsd,
+      });
+    }
+  }
 
   return {
     status,
@@ -163,7 +213,9 @@ export async function runWorker(
     costUsd: sdkResult.costUsd,
     tokensIn: sdkResult.tokensIn,
     tokensOut: sdkResult.tokensOut,
-    reason: sdkResult.stopReason,
+    reason: verification && !verification.ok ? `verification_failed: ${verification.summary}` : sdkResult.stopReason,
     logsExcerpt: sdkResult.logsExcerpt,
+    verification,
+    wastedSpend,
   };
 }

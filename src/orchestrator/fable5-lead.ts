@@ -13,6 +13,21 @@
 import type { HarnessConfig } from "../config.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 
+/**
+ * Observable side-effect a sub-task is expected to produce. The harness
+ * verifies these AFTER the SDK reports `end_turn`, so a worker that
+ * confabulates "done" without actually pushing / opening a PR / editing a
+ * file is caught and the sub-task is marked `failed` instead of `completed`.
+ *
+ * beta.7 fix #1: the SDK's stop reason is no longer accepted as ground truth
+ * for tasks with observable outputs.
+ */
+export type SubTaskVerify =
+  | { kind: "branch_pushed"; branch?: string }              // ref exists on origin
+  | { kind: "pr_opened" }                                    // a PR URL was captured
+  | { kind: "file_written"; path: string }                   // file mtime post-start + non-empty diff
+  | { kind: "commit_made" };                                 // a new commit exists vs base
+
 export interface LeadPlanSubTask {
   seq: number;
   title: string;
@@ -21,6 +36,13 @@ export interface LeadPlanSubTask {
   successCriteria: string[];         // observable / testable outcomes
   estimatedTokens: number;           // rough cost forecast
   dependsOn?: number[];              // seq numbers this depends on
+  /**
+   * Observable side-effects to verify after the worker's SDK turn ends.
+   * When present and any check fails, the sub-task is FAILED regardless of
+   * the SDK stop reason. Absent/empty = trust the SDK signal (pure-reasoning
+   * or advisory sub-tasks with no observable output).
+   */
+  verify?: SubTaskVerify[];
 }
 
 export interface LeadPlan {

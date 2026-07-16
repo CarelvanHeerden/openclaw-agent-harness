@@ -125,6 +125,25 @@ export declare class OrchestratorLoop {
     private addCost;
     private saveReview;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
+    /**
+     * Pull the latest verification outcome per sub-task from the audit log,
+     * to feed the adversary as local runtime data (beta.7 fix #1).
+     */
+    private readLocalVerification;
+    /**
+     * beta.7 fix #2: project the cost of an upcoming sub-task. Prefer the
+     * running median of ACTUAL costs (empirical, per-session), because token
+     * estimates from the lead are notoriously optimistic. Fall back to the
+     * plan's token estimate via the price table, then to a conservative
+     * per-task reserve so we never project zero.
+     */
+    private estimateSubTaskCost;
+    /**
+     * beta.7 fix #2: estimate adversary review cost. Reviews scan the whole
+     * diff, so cost scales with the work done: use the max observed sub-task
+     * cost as a proxy, with a conservative floor.
+     */
+    private estimateReviewCost;
     private finaliseAbort;
 }
 /**

@@ -126,6 +126,21 @@ async function structuredCall(params) {
     let tokensIn = 0;
     let tokensOut = 0;
     const textChunks = [];
+    // Informational: emit a periodic tick so operators can tell a long SDK
+    // phase (e.g. a 9-minute plan) is progressing vs stuck. Uses the running
+    // token counts as a liveness proxy. No-op when no logger is supplied.
+    const startedAt = Date.now();
+    let ticks = 0;
+    const tickLabel = params.validation?.label ?? "sdk";
+    const tickTimer = params.logger
+        ? setInterval(() => {
+            ticks += 1;
+            params.logger?.warn?.(`[${tickLabel}] tick +${ticks * 30}s`, { elapsedMs: Date.now() - startedAt, tokensIn, tokensOut, textChunks: textChunks.length });
+        }, 30_000)
+        : undefined;
+    if (tickTimer && typeof tickTimer.unref === "function") {
+        tickTimer.unref();
+    }
     try {
         const stream = sdk.query({
             prompt: params.userMessage,
@@ -156,6 +171,8 @@ async function structuredCall(params) {
     }
     finally {
         clearTimeout(timer);
+        if (tickTimer)
+            clearInterval(tickTimer);
     }
     const raw = textChunks.join("");
     let parsed;
@@ -324,7 +341,7 @@ export async function runLeadSdk(params) {
         "You are the lead planner. Decompose a brief into ATOMIC sub-tasks a Sonnet worker can complete in one turn.",
         "Return STRICT JSON:",
         "  { repo: string (owner/repo, must be in reposAllowed),",
-        "    branch: string (must start with 'harness/'),",
+        "    branch: string (must start with 'harness/'; NOTE: the harness namespaces all branches under 'harness/' and may rewrite/slugify your hint, so the final branch name is authoritative from the plan, not this field),",
         "    subTasks: SubTask[],",
         "    reviewChecklist: string[],",
         "    riskLevel: 'low'|'medium'|'high' }",
@@ -342,6 +359,7 @@ export async function runLeadSdk(params) {
         userMessage: JSON.stringify(params.brief),
         timeoutSeconds: params.timeoutSeconds,
         apiKey: params.apiKey,
+        logger: params.logger,
         validation: { requiredKeys: ["repo", "branch", "subTasks", "reviewChecklist", "riskLevel"], label: "lead" },
     });
     return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
