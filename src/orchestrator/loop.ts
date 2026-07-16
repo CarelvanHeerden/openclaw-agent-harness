@@ -48,24 +48,34 @@ export interface OrchestratorDeps {
   pat: PatRouter;
   logger: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void; error: (m: string, meta?: unknown) => void };
 
-  /** Injected work-doers. Real impls in src/adapters + src/vercel. */
-  runLead: (brief: CrystallisedBrief) => Promise<LeadPlan>;
+  /**
+   * Injected work-doers. Real impls in src/adapters + src/vercel.
+   *
+   * `requester` is the session's Slack user id, threaded through so PAT
+   * resolution can select THAT user's token (multi-user auth), rather than
+   * defaulting to the first authorised user. Optional for back-compat with
+   * test doubles that ignore it.
+   */
+  runLead: (brief: CrystallisedBrief, ctx?: { requester?: string }) => Promise<LeadPlan>;
   runWorker: (params: {
     brief: CrystallisedBrief;
     subTask: LeadPlanSubTask;
     plan: LeadPlan;
     resumeSessionId?: string;
+    requester?: string;
   }) => Promise<WorkerResult>;
   runAdversary: (params: {
     brief: CrystallisedBrief;
     plan: LeadPlan;
     runtime?: RuntimeSnapshot;
+    requester?: string;
   }) => Promise<ReviewReport>;
   fetchRuntime?: (params: { plan: LeadPlan; sessionId: string }) => Promise<RuntimeSnapshot | undefined>;
   pushBranchAndOpenPr: (params: {
     plan: LeadPlan;
     brief: CrystallisedBrief;
     reviewReport: ReviewReport;
+    requester?: string;
   }) => Promise<string>;
 
   /** Signal source: user Slack reactions on our messages. */
@@ -175,7 +185,7 @@ export class OrchestratorLoop {
     await this.deps.reportProgress?.(sessionId, "planning");
     let plan: LeadPlan;
     try {
-      plan = await this.deps.runLead(brief);
+      plan = await this.deps.runLead(brief, { requester: row.requester });
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
         .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
@@ -221,7 +231,7 @@ export class OrchestratorLoop {
 
         let result: WorkerResult;
         try {
-          result = await this.deps.runWorker({ brief, subTask: st, plan });
+          result = await this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester });
         } catch (err) {
           this.deps.state.db.prepare(
             `UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`,
@@ -300,7 +310,7 @@ export class OrchestratorLoop {
       }
       let report: ReviewReport;
       try {
-        report = await this.deps.runAdversary({ brief, plan, runtime });
+        report = await this.deps.runAdversary({ brief, plan, runtime, requester: row.requester });
       } catch (err) {
         this.setStatus(sessionId, "failed");
         return { status: "failed", sessionId, reason: `adversary_error: ${String(err)}`, cycles: cycle, totalCostUsd: totalCost };
@@ -342,7 +352,7 @@ export class OrchestratorLoop {
     }
     let prUrl: string;
     try {
-      prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview });
+      prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
     } catch (err) {
       this.setStatus(sessionId, "failed");
       return { status: "failed", sessionId, reason: `pr_error: ${String(err)}`, cycles: cycle, totalCostUsd: totalCost };

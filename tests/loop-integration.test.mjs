@@ -208,3 +208,33 @@ test("loop: adversary block ends immediately as failed",
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.reason, "adversary_block");
   });
+
+test("loop: threads the session requester into runLead/runWorker/pushBranchAndOpenPr (multi-user)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "S_MU"); // requester = 'U1'
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = {
+      repo: "o/r", branch: "harness/x", worktreePath: "/tmp/wt/mu",
+      subTasks: [{ seq: 1, title: "impl", intent: "x", filesLikelyTouched: ["a"], successCriteria: ["ok"], estimatedTokens: 100 }],
+      reviewChecklist: ["ok"], riskLevel: "low", approxCostUsd: 0.1,
+    };
+    const seen = { lead: null, worker: null, push: null };
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async (_brief, ctx) => { seen.lead = ctx?.requester; return plan; },
+      runWorker: async (p) => { seen.worker = p.requester; return { status: "completed", filesChanged: ["a"], commitSha: "s", sdkSessionId: "w", costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }; },
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", sdkSessionId: "a", costUsd: 0.01, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async (p) => { seen.push = p.requester; return "https://github.com/o/r/pull/9"; },
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+    });
+    const outcome = await loop.run("S_MU", brief);
+    assert.equal(outcome.status, "shipped");
+    assert.equal(seen.lead, "U1", "runLead should receive the session requester");
+    assert.equal(seen.worker, "U1", "runWorker should receive the session requester");
+    assert.equal(seen.push, "U1", "pushBranchAndOpenPr should receive the session requester");
+  });

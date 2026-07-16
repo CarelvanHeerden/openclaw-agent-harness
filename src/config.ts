@@ -131,9 +131,27 @@ export interface SafetyConfig {
   allow_network_commands: boolean;
 }
 
+export type GitProvider = "github" | "gitlab";
+
 export interface PatRoutingConfig {
   overrides: Record<string, Record<string, string>>;    // { userId: { orgOrRepo: credentialService } }
   commit_identity: Record<string, { name: string; email: string }>;
+  /**
+   * Per-user provider logins, keyed by Slack user id. Enables true
+   * per-requester tokens: the `{requester}` placeholder resolves to the
+   * requesting user's login for the active provider.
+   *   { "U07...": { github: "carelvanheerden", gitlab: "cvh" } }
+   */
+  user_identities?: Record<string, Partial<Record<GitProvider, string>>>;
+  /**
+   * Provider selection. `default_provider` is used when a repo's provider
+   * can't be inferred. `provider_by_owner` pins specific owners to a
+   * provider (e.g. a GitLab group). Default provider: github.
+   */
+  default_provider?: GitProvider;
+  provider_by_owner?: Record<string, GitProvider>;
+  /** Per-provider settings (API base + env fallback var). Sensible defaults applied. */
+  providers?: Partial<Record<GitProvider, ProviderConfig>>;
   /**
    * Template for the vault credential service name. Placeholders:
    *   {owner} - repo owner (org or user), e.g. "CarelvanHeerden"
@@ -147,10 +165,18 @@ export interface PatRoutingConfig {
    */
   default_service_pattern: string;
   /**
-   * GitHub auth fallback, mirroring `models.auth`. Vault-first (the service
-   * resolved from `default_service_pattern`/overrides), then env fallback.
+   * Legacy single-provider GitHub auth fallback. Superseded by
+   * `providers.github.api_key_env` but kept for back-compat; if set it wins
+   * for GitHub.
    */
   auth?: PatAuthConfig;
+}
+
+export interface ProviderConfig {
+  /** REST API base, e.g. "https://api.github.com" or "https://gitlab.com/api/v4". */
+  api_base: string;
+  /** Env var holding a token for this provider, used as vault fallback. */
+  api_key_env: string;
 }
 
 export interface PatAuthConfig {
@@ -235,6 +261,13 @@ const DEFAULTS: HarnessConfig = {
     default_service_pattern: "github-{owner}",
     auth: {
       api_key_env: "GH_TOKEN",
+    },
+    user_identities: {},
+    default_provider: "github",
+    provider_by_owner: {},
+    providers: {
+      github: { api_base: "https://api.github.com", api_key_env: "GH_TOKEN" },
+      gitlab: { api_base: "https://gitlab.com/api/v4", api_key_env: "GITLAB_TOKEN" },
     },
   },
 };

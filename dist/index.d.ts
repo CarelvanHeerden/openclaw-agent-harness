@@ -143,11 +143,24 @@ export interface HarnessRuntime {
      * Used by session start/push and by the health check.
      */
     githubToken: (service: string) => Promise<string>;
+    /** Provider-aware token resolver: vault-first, then per-provider env fallback. */
+    gitToken: (r: {
+        credentialService: string;
+        apiKeyEnv: string;
+        provider: string;
+    }) => Promise<string>;
     /**
      * Resolve the credential service name the pat-router would use for a repo
      * (or the first allowed repo when omitted). For health/introspection.
      */
     githubServiceFor: (repoFullName?: string) => string | undefined;
+    /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
+    gitResolutionFor: (repoFullName?: string) => {
+        credentialService: string;
+        provider: string;
+        apiBase: string;
+        apiKeyEnv: string;
+    } | undefined;
     disposers: Array<() => void | Promise<void>>;
     /**
      * Promise for the async bootstrap phase (reactions poller start,

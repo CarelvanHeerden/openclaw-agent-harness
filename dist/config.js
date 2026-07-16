@@ -79,6 +79,13 @@ const DEFAULTS = {
         auth: {
             api_key_env: "GH_TOKEN",
         },
+        user_identities: {},
+        default_provider: "github",
+        provider_by_owner: {},
+        providers: {
+            github: { api_base: "https://api.github.com", api_key_env: "GH_TOKEN" },
+            gitlab: { api_base: "https://gitlab.com/api/v4", api_key_env: "GITLAB_TOKEN" },
+        },
     },
 };
 function mergeDeep(base, override) {

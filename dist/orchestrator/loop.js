@@ -96,7 +96,7 @@ export class OrchestratorLoop {
         await this.deps.reportProgress?.(sessionId, "planning");
         let plan;
         try {
-            plan = await this.deps.runLead(brief);
+            plan = await this.deps.runLead(brief, { requester: row.requester });
             this.deps.state.db
                 .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
                 .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
@@ -145,7 +145,7 @@ export class OrchestratorLoop {
            VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, Date.now(), Date.now());
                 let result;
                 try {
-                    result = await this.deps.runWorker({ brief, subTask: st, plan });
+                    result = await this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester });
                 }
                 catch (err) {
                     this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`).run(`worker threw: ${String(err)}`, Date.now(), subTaskId);
@@ -212,7 +212,7 @@ export class OrchestratorLoop {
             }
             let report;
             try {
-                report = await this.deps.runAdversary({ brief, plan, runtime });
+                report = await this.deps.runAdversary({ brief, plan, runtime, requester: row.requester });
             }
             catch (err) {
                 this.setStatus(sessionId, "failed");
@@ -253,7 +253,7 @@ export class OrchestratorLoop {
         }
         let prUrl;
         try {
-            prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview });
+            prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
         }
         catch (err) {
             this.setStatus(sessionId, "failed");

@@ -69,6 +69,8 @@ function makeRuntime() {
     // Default: a GitHub token resolves (git_credential_resolvable passes).
     githubServiceFor: () => "github-o",
     githubToken: async () => "gh-test-token",
+    gitResolutionFor: () => ({ credentialService: "github-o", provider: "github", apiBase: "https://api.github.com", apiKeyEnv: "GH_TOKEN" }),
+    gitToken: async () => "gh-test-token",
     config: {
       storage: { audit_retention_days: 90, prune_terminal_sessions: false, prune_terminal_sessions_days: 365 },
       slack: { listener_enabled: false, channel: "C1", authorised_users: ["U1"] },
@@ -276,7 +278,7 @@ test("harness_health: DEGRADED when no GitHub token resolves (git_credential fat
     runtime.config.repos = { allowed: ["o/r"] };
     runtime.config.vercel = { enabled: false };
     // GitHub token resolution fails (vault empty + env unset).
-    runtime.githubToken = async () => { throw new Error("no GitHub token resolved (vault empty and env GH_TOKEN unset)"); };
+    runtime.gitToken = async () => { throw new Error("no GitHub token resolved (vault empty and env GH_TOKEN unset)"); };
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     const res = await tools.get("harness_health").execute({});
@@ -465,8 +467,8 @@ test("harness_bootstrap_test_repo: surfaces a clear error when no token resolves
   { skip: registerHarnessTools === null }, async () => {
     const runtime = makeRuntime();
     // pat.resolve present, but token resolution fails.
-    runtime.pat = { resolve: () => ({ credentialService: "github-o", commitIdentity: { name: "x", email: "x@e" }, apiBase: "https://api.github.com", provenance: "default_pattern" }) };
-    runtime.githubToken = async () => { throw new Error("no GitHub token resolved (vault empty and env GH_TOKEN unset)"); };
+    runtime.pat = { resolve: () => ({ provider: "github", credentialService: "github-o", commitIdentity: { name: "x", email: "x@e" }, apiBase: "https://api.github.com", apiKeyEnv: "GH_TOKEN", provenance: "default_pattern" }) };
+    runtime.gitToken = async () => { throw new Error("no GitHub token resolved (vault empty and env GH_TOKEN unset)"); };
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     const res = await tools.get("harness_bootstrap_test_repo").execute({ owner: "someone", requester: "U1" });

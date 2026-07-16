@@ -107,3 +107,26 @@ test("config: pat_routing default is github-{owner} with GH_TOKEN env fallback",
     assert.equal(cfg2.pat_routing.default_service_pattern, "github-{owner}-{repo}");
     assert.equal(cfg2.pat_routing.auth.api_key_env, "GH_TOKEN");
   });
+
+test("config: pat_routing multi-provider defaults",
+  { skip: parseHarnessConfig === null }, () => {
+    const cfg = parseHarnessConfig(minimalOk);
+    assert.equal(cfg.pat_routing.default_provider, "github");
+    assert.equal(cfg.pat_routing.providers.github.api_base, "https://api.github.com");
+    assert.equal(cfg.pat_routing.providers.github.api_key_env, "GH_TOKEN");
+    assert.equal(cfg.pat_routing.providers.gitlab.api_base, "https://gitlab.com/api/v4");
+    assert.equal(cfg.pat_routing.providers.gitlab.api_key_env, "GITLAB_TOKEN");
+    assert.deepEqual(cfg.pat_routing.user_identities, {});
+    // Override merges: add a user identity + gitlab base.
+    const cfg2 = parseHarnessConfig({
+      ...minimalOk,
+      pat_routing: {
+        user_identities: { U_A: { github: "a-gh", gitlab: "a-gl" } },
+        default_provider: "gitlab",
+      },
+    });
+    assert.equal(cfg2.pat_routing.user_identities.U_A.github, "a-gh");
+    assert.equal(cfg2.pat_routing.default_provider, "gitlab");
+    // Provider defaults still present after partial override.
+    assert.equal(cfg2.pat_routing.providers.gitlab.api_key_env, "GITLAB_TOKEN");
+  });

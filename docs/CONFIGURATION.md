@@ -172,10 +172,16 @@ deprecated aliases `{user}` (requester login) / `{org}` (repo owner).
 to a duplicated segment for personal repos (`{user}` == `{org}` == owner), so
 prefer `{owner}` or `{owner}-{repo}`.
 
-`pat_routing.auth.api_key_env` (default `GH_TOKEN`) is the env-var fallback
-used when the vault lookup fails, mirroring `models.auth`. `harness_health`
-reports `git_credential_resolvable` (fatal) and, with `{ deep: true }`,
-`git_credential_live_ping`. Full guide: `docs/GITHUB_AUTH.md`.
+**Multi-user:** map Slack ids to provider logins in `pat_routing.user_identities`
+and use `{requester}` (or `{provider}-{requester}`) in the template so each
+requester resolves their own token. **Multi-provider:** `default_provider`
+(github|gitlab), `provider_by_owner`, and per-provider `providers.<p>.api_base`
++ `providers.<p>.api_key_env` (`GH_TOKEN` / `GITLAB_TOKEN`). The requesting
+user's Slack id is threaded from the session into resolution.
+
+`harness_health` reports `git_credential_resolvable` (fatal) and, with
+`{ deep: true }`, a provider-aware `git_credential_live_ping`. Full guide:
+`docs/GITHUB_AUTH.md`.
 
 
 Every commit and PR is attributed to the requesting user, using their own PAT for the target org. The harness resolves the token in this order:
