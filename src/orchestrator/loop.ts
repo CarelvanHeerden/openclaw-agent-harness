@@ -26,6 +26,7 @@ import type { LeadPlan, LeadPlanSubTask } from "./fable5-lead.js";
 import type { ReviewReport } from "./fable5-adversary.js";
 import type { WorkerResult } from "./sonnet-worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
+import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
 
 export type LoopStatus =
   | "crystallising"
@@ -199,6 +200,9 @@ export class OrchestratorLoop {
     let cycle = 0;
     let totalCost = row.cost_usd;
     let lastReview: ReviewReport | undefined;
+    // beta.7 fix #2: running record of actual sub-task costs, used to project
+    // the cost of upcoming sub-tasks for pre-execution budget gating.
+    const subTaskCosts: number[] = [];
 
     // 2. Execute/review cycles
     while (cycle < this.deps.config.loop.max_cycles) {
@@ -222,6 +226,22 @@ export class OrchestratorLoop {
         if (totalCost > row.budget_usd && !reactions.budgetBump) {
           failed.err = "budget_exhausted"; failed.seq = st.seq; return;
         }
+        // beta.7 fix #2: PROJECTED-cost gating. Don't start a sub-task we
+        // can't afford. Project = running total + estimated cost of THIS
+        // sub-task (from the plan's token estimate, or the running median of
+        // actual sub-task costs so far). Abort before burning spend instead
+        // of the old post-hoc check that let a $1 budget balloon to $2.10.
+        if (!reactions.budgetBump) {
+          const projected = totalCost + this.estimateSubTaskCost(st, subTaskCosts);
+          if (projected > row.budget_usd) {
+            this.deps.state.audit(
+              "loop.budget_projection_abort",
+              { sessionId, seq: st.seq, totalCost, projected, budget: row.budget_usd },
+              sessionId,
+            );
+            failed.err = "budget_exhausted"; failed.seq = st.seq; return;
+          }
+        }
 
         const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
         this.deps.state.db.prepare(
@@ -241,6 +261,7 @@ export class OrchestratorLoop {
         }
 
         totalCost += result.costUsd;
+        if (result.costUsd > 0) subTaskCosts.push(result.costUsd);
         this.addCost(sessionId, result.costUsd);
         await this.deps.budget.recordSpend(row.requester, result.costUsd, sessionId);
         this.deps.state.db.prepare(
@@ -330,6 +351,23 @@ export class OrchestratorLoop {
       }
 
       // 2b. Reviewing
+      // beta.7 fix #2 (hard cap inside review): don't start the adversary if
+      // we can't afford it. Estimate review cost from the priciest observed
+      // sub-task (reviews scan the whole diff, so they scale with work done),
+      // falling back to a conservative reserve. Abort at the cycle boundary
+      // rather than blowing the budget by ~$0.83 on a review we can't pay for.
+      {
+        const reactions = await this.deps.readReactions(sessionId);
+        const reviewEstimate = this.estimateReviewCost(subTaskCosts);
+        if (!reactions.budgetBump && totalCost + reviewEstimate > row.budget_usd) {
+          this.deps.state.audit(
+            "loop.review_budget_abort",
+            { sessionId, cycle, totalCost, reviewEstimate, budget: row.budget_usd },
+            sessionId,
+          );
+          return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
+        }
+      }
       this.setStatus(sessionId, "reviewing");
       await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
       let runtime: RuntimeSnapshot | undefined;
@@ -434,11 +472,48 @@ export class OrchestratorLoop {
     return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
   }
 
+  /**
+   * beta.7 fix #2: project the cost of an upcoming sub-task. Prefer the
+   * running median of ACTUAL costs (empirical, per-session), because token
+   * estimates from the lead are notoriously optimistic. Fall back to the
+   * plan's token estimate via the price table, then to a conservative
+   * per-task reserve so we never project zero.
+   */
+  private estimateSubTaskCost(st: LeadPlanSubTask, observed: number[]): number {
+    if (observed.length > 0) return median(observed);
+    if (st.estimatedTokens > 0) {
+      return estimateSubTaskCost(
+        this.deps.config.models.worker,
+        st.estimatedTokens,
+        this.deps.config.models.price_overrides,
+      );
+    }
+    return 0.25; // conservative reserve when we have nothing to go on
+  }
+
+  /**
+   * beta.7 fix #2: estimate adversary review cost. Reviews scan the whole
+   * diff, so cost scales with the work done: use the max observed sub-task
+   * cost as a proxy, with a conservative floor.
+   */
+  private estimateReviewCost(observed: number[]): number {
+    const floor = 0.5;
+    if (observed.length === 0) return floor;
+    return Math.max(floor, Math.max(...observed));
+  }
+
   private finaliseAbort(sessionId: string, reason: string, cycles: number, totalCostUsd: number): LoopOutcome {
     this.setStatus(sessionId, "aborted");
     this.deps.state.audit("loop.aborted", { sessionId, reason }, sessionId);
     return { status: "aborted", sessionId, reason, cycles, totalCostUsd };
   }
+}
+
+/** Median of a non-empty numeric array. */
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 0 ? (s[mid - 1]! + s[mid]!) / 2 : s[mid]!;
 }
 
 /**
