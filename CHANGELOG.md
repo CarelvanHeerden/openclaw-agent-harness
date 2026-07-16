@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.1.0-beta.13] -- 2026-07-16
+
+### Fixed
+
+- **Absence-assertion detection for remote-scope inference.** Beta.12's
+  negation-cue helper caught `branch_pushed` and `pr_opened` inferences
+  (their regexes match "push"/"PR" which fail the negation check), but the
+  `VERIFY_REMOTE_RE` / `SHA_MATCH_RE` inference branch is triggered by
+  "verify" / "confirm SHA" language, not by "push" — so the negation cue
+  didn't apply. Result: a happy-path smoke sub-task whose intent said
+  "observation only, no push, no PR" still inferred `remote_branch_exists`
+  + `commit_sha_matches` from ambient "verify" wording.
+
+  Fix: new `assertsAbsence(text)` gate. Any sub-task text asserting the
+  ABSENCE of a remote artifact ("no push occurred", "no PR opened", "no
+  remote tracking", "branch is only local", "did not push", "read-only",
+  "git branch -r ... empty") is treated as an absence-assertion. When
+  present, all positive remote-scope kinds are suppressed regardless of
+  which regex triggered them. Doesn't affect explicit positive assertions
+  ("Verify remote SHA matches local HEAD" — still infers as before).
+
+### Tests
+
+- New file `tests/beta13-absence-assertion.test.mjs` — 9 tests locking in:
+  - Exact Staging beta.12 s3 case yields empty contract.
+  - Common absence phrases ("no push occurred", "no PR opened", "no remote
+    tracking branch", "read-only", "branch is only local") suppress
+    remote-scope kinds.
+  - Positive baselines ("Push branch and open draft PR", "Verify remote SHA
+    matches local HEAD") still infer correctly.
+  - Mixed clauses: absence-assertion is global, not per-clause —
+    documented trade-off.
+
+- Full suite: **248 -> 257 tests passing**, 0 fail, 0 skip. Typecheck clean.
+
+### Known limitations
+
+- **Absence-assertion is global, not per-clause.** A sub-task saying "Push
+  branch. No PR needed." will suppress BOTH push and PR inferences because
+  the absence assertion is detected anywhere in the sub-task text. Per-clause
+  resolution is deferred (would need more complex scope tracking; not worth
+  it for the current bug class).
+
+- **`openPr` / `draftPr` tool-call flags still not threaded to the verifier.** Same as beta.12.
+
+- **Adversary review's `runtime` dimension still not observed on a passing
+  cycle.** Beta.13 should finally unblock this. Re-run the same happy-path
+  smoke on beta.13 to confirm.
+
+### Discovery
+
+OpenClaw Staging bot on the beta.12 happy-path smoke correctly identified
+s3's contract had two leaked remote-scope kinds and pinpointed the exact
+regexes (`VERIFY_REMOTE_RE`, `SHA_MATCH_RE`) that hadn't been guarded by
+the beta.12 fix. Third smoke-test-driven bug fix in three releases.
+
+---
+
 ## [0.1.0-beta.12] -- 2026-07-16
 
 ### Fixed
