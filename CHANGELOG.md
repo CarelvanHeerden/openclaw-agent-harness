@@ -1,5 +1,122 @@
 # Changelog
 
+## [0.1.0-beta.15] -- 2026-07-16
+
+### Added
+
+- **`taskMode` field on `LeadPlanSubTask` as the second scope axis.**
+  Beta.14 closed the LOCAL/REMOTE scope class with `contractScope`. The
+  beta.14 happy-path smoke on Staging exposed a second scope class:
+  OBSERVATION vs MUTATION. A pure observation sub-task (final "verify
+  everything is correct" step) had `commit_made` + `file_committed`
+  inferred from language, then failed verification because the observation
+  worker (correctly) produced no new commit vs sub-task-start SHA.
+
+  Same architectural pattern as beta.14: promote scope to a first-class
+  field. New enum:
+
+  ```typescript
+  export type TaskMode = "observe" | "mutate" | "mixed";
+  ```
+
+  New optional field on `LeadPlanSubTask`:
+
+  ```typescript
+  taskMode?: TaskMode;
+  ```
+
+  Semantics:
+  - `observe` → sub-task is read-only. All mutation-scope kinds are
+    filtered from the inferred contract:
+    `file_written`, `commit_made`, `file_committed`, `branch_pushed`,
+    `file_pushed`, `pr_opened`. State/existence kinds
+    (`remote_branch_exists`, `commit_sha_matches`, `pr_state`,
+    `file_in_pr`) remain — they check the state of the world at verify
+    time, not whether this sub-task caused it.
+  - `mutate` → sub-task produces new artifacts. Full inference. Matches
+    beta.14 behaviour.
+  - `mixed`  → both. Full inference. Rare; prefer decomposition.
+  - absent   → fallback to beta.14 inference (100% backward compat).
+
+### Two orthogonal scope axes
+
+`contractScope` (beta.14) and `taskMode` (beta.15) compose:
+
+|                          | `taskMode: mutate`         | `taskMode: observe`        |
+|--------------------------|----------------------------|----------------------------|
+| `contractScope: local`   | local writes/commits       | local read-only checks     |
+| `contractScope: remote`  | push + PR + create commit  | check state of remote      |
+
+A sub-task tagged `contractScope: 'local', taskMode: 'observe'` is the
+purest read-only local check: nothing to verify beyond "the SDK finished"
+— typically yields an empty contract, meaning "trust the SDK signal."
+
+### Lead system prompt updated
+
+- Describes `taskMode` with explicit rules.
+- Encourages explicit `verify: []` on pure-observation sub-tasks (meaningful:
+  "no observable side-effects, trust the SDK signal"). Cleaner than
+  inference-then-filter.
+- Documents the common plan shape: mutation steps with `taskMode='mutate'`,
+  final observation step with `taskMode='observe'` + `verify: []`.
+
+### Audit event enrichment
+
+- `loop.commit_verify_failed` and `loop.file_committed_verify_failed`
+  audit events now include `baseRef` (short SHA of worker-session-start
+  HEAD) and `baseSemantics: "worker-session-start"`. This addresses
+  Staging's beta.14 point 5: without this context, operators can't tell
+  the difference between "worker didn't commit" and "no new commits
+  since sub-task started, which is correct for observation-only
+  sub-tasks."
+
+### Tests
+
+New file `tests/beta15-task-mode.test.mjs` — **10 tests** locking in:
+
+1. `taskMode: 'observe'` filters out `file_written` / `commit_made` /
+   `file_committed` / `branch_pushed` / `file_pushed` / `pr_opened` even
+   when language would infer them.
+2. `taskMode: 'observe'` preserves state-check kinds
+   (`remote_branch_exists`, `commit_sha_matches`).
+3. `taskMode: 'mutate'` applies full inference (baseline).
+4. Absent `taskMode` falls back to beta.14 inference (backward compat).
+5. `contractScope: 'local' + taskMode: 'observe'` → empty contract.
+6. `contractScope: 'remote' + taskMode: 'observe'` → state-check kinds only.
+7. Explicit `verify: []` wins over `taskMode` filter.
+8. Explicit `verify: [{kind: ...}]` wins even with `taskMode: 'observe'`.
+9. Exact beta.14 s4 case with `taskMode: 'observe'` yields empty contract.
+
+Full suite: **267 -> 277 tests passing**, 0 fail, 0 skip. Typecheck clean.
+
+### Precedence (updated)
+
+1. Explicit `verify` array on sub-task → authoritative (unchanged from beta.9).
+2. Regex inference produces candidates (beta.13 negation-aware + absence-gate).
+3. `contractScope: "local"` → filter out remote-scope kinds.
+4. `taskMode: "observe"` → filter out mutation-scope kinds.
+5. Filters compose. `local + observe` = purest read-only check.
+
+### Known limitations
+
+- **`openPr` / `draftPr` tool-call flags still not threaded.** Would
+  compose nicely with `contractScope` (e.g. `openPr: false` at tool level
+  DEFAULTS all sub-tasks to `local`) but needs plan-level policy
+  propagation. Deferred.
+- **Depends on the lead model actually filling in `taskMode`.** Some
+  smoke variance possible in the first beta.15 runs. Backward-compat
+  fallback catches missed cases.
+
+### Discovery
+
+OpenClaw Staging bot's beta.14 audit report explicitly recommended this
+fix, calling out both the s4 mutation-scope leak AND the audit-event
+clarity gap (base_ref). Fifth smoke-test-driven improvement in as many
+releases. Staging's diagnostic pattern is now the primary quality signal
+for this repo.
+
+---
+
 ## [0.1.0-beta.14] -- 2026-07-16
 
 ### Added

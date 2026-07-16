@@ -165,6 +165,31 @@ function isRemoteScopeKind(kind: SubTaskVerify["kind"]): boolean {
 }
 
 /**
+ * beta.15: mutation-scope contract kinds require the sub-task to have
+ * PRODUCED the artifact. On a pure-observation sub-task (`taskMode:
+ * "observe"`), these kinds are trivially false-negative because the
+ * sub-task correctly did nothing observable.
+ *
+ * The state/existence kinds (`remote_branch_exists`, `commit_sha_matches`,
+ * `pr_state`, `file_in_pr`) are NOT mutation kinds — they check the state
+ * of the world at verification time, not whether this sub-task caused it.
+ * An observation sub-task may legitimately want to check "the branch is
+ * on remote" without having pushed it itself (some other sub-task did).
+ */
+const MUTATION_SCOPE_KINDS: ReadonlySet<SubTaskVerify["kind"]> = new Set([
+  "file_written",
+  "commit_made",
+  "file_committed",
+  "branch_pushed",
+  "file_pushed",
+  "pr_opened",
+]);
+
+function isMutationScopeKind(kind: SubTaskVerify["kind"]): boolean {
+  return MUTATION_SCOPE_KINDS.has(kind);
+}
+
+/**
  * Infer the observable-side-effect contract for a sub-task.
  *
  * Precedence (beta.14):
@@ -272,16 +297,23 @@ export function inferVerifyContract(subTask: LeadPlanSubTask): SubTaskVerify[] {
   // Deduplicate by kind+path (in case of redundant overlaps from regex hits).
   const inferred = dedupe(contract);
 
-  // beta.14 scope filter. If the sub-task declared itself `local`, drop all
-  // remote-scope kinds from the candidate contract even when ambient
-  // wording matched their regexes. This is the authoritative override that
-  // makes beta.11/12/13's whack-a-mole regex heuristics unnecessary for
-  // sub-tasks whose lead marked them correctly.
+  // beta.14 + beta.15: authoritative scope filters. Compose both if set.
+  //
+  // - contractScope='local'  -> filter out remote-scope kinds
+  // - taskMode='observe'     -> filter out mutation-scope kinds
+  //
+  // A sub-task tagged both local+observe (purest read-only local check)
+  // gets both filters applied, leaving only state/existence kinds that
+  // are neither remote nor mutation — which is often an empty contract,
+  // meaning "no observable side-effects, trust the SDK signal."
+  let filtered = inferred;
   if (subTask.contractScope === "local") {
-    return inferred.filter((c) => !isRemoteScopeKind(c.kind));
+    filtered = filtered.filter((c) => !isRemoteScopeKind(c.kind));
   }
-  // "remote" / "mixed" / undefined: use inference as-is.
-  return inferred;
+  if (subTask.taskMode === "observe") {
+    filtered = filtered.filter((c) => !isMutationScopeKind(c.kind));
+  }
+  return filtered;
 }
 
 /** Remove exact-duplicate contracts (same kind + same path, if applicable). */

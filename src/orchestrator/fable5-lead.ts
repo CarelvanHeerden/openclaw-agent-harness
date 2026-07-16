@@ -68,6 +68,38 @@ export type SubTaskVerify =
  */
 export type ContractScope = "local" | "remote" | "mixed";
 
+/**
+ * beta.15: authoritative task-mode declaration.
+ *
+ * The beta.14 `contractScope` field closed the local/remote scope class.
+ * The beta.14 happy-path smoke exposed a second scope class: observation
+ * vs mutation. A pure observation sub-task ("verify local state, do not
+ * mutate") had `commit_made` and `file_committed` inferred, then failed
+ * verification because the observation-only worker (correctly) produced
+ * no new commit. Same architectural pattern as beta.14: instead of
+ * inferring the scope from NLP heuristics, ask the lead directly.
+ *
+ * Semantics:
+ * - `observe` → sub-task is read-only. It does NOT produce new commits,
+ *              files, pushes, or PRs. All mutation-scope contract kinds
+ *              (file_written, commit_made, file_committed, branch_pushed,
+ *              file_pushed, pr_opened) are suppressed. Only pure-state
+ *              kinds may fire (remote_branch_exists, commit_sha_matches,
+ *              pr_state, file_in_pr) — and even those only if the sub-task
+ *              is asserting they DO exist, not that they do NOT.
+ * - `mutate` → sub-task produces new artifacts. Full inference; matches
+ *              beta.14 behaviour.
+ * - `mixed`  → both observation and mutation. Rare; full inference.
+ * - absent   → fallback to beta.14 inference (backward compat).
+ *
+ * Composition with `contractScope`: the two axes are orthogonal.
+ *   contractScope=local,  taskMode=observe  → zero remote, zero mutation. Purest read-only local check.
+ *   contractScope=local,  taskMode=mutate   → local writes/commits, no remote.
+ *   contractScope=remote, taskMode=observe  → remote read-only (check state of remote things).
+ *   contractScope=remote, taskMode=mutate   → push + PR + create commit.
+ */
+export type TaskMode = "observe" | "mutate" | "mixed";
+
 export interface LeadPlanSubTask {
   seq: number;
   title: string;
@@ -92,6 +124,17 @@ export interface LeadPlanSubTask {
    * filters. Absent = beta.13 inference behaviour.
    */
   contractScope?: ContractScope;
+  /**
+   * beta.15: authoritative task-mode declaration. When `observe`, filters
+   * out mutation-scope kinds (file_written, commit_made, file_committed,
+   * branch_pushed, file_pushed, pr_opened) from the inferred contract.
+   * Orthogonal to `contractScope`.
+   *
+   * Precedence: explicit `verify` overrides everything. `taskMode` and
+   * `contractScope` filters compose (both apply). Absent = beta.14
+   * behaviour (no mutation-scope filtering).
+   */
+  taskMode?: TaskMode;
 }
 
 export interface LeadPlan {
