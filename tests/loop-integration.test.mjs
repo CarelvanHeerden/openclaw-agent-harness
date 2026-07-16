@@ -397,3 +397,295 @@ test("loop: review is skipped + cycle aborts when remaining budget < review esti
     const gate = state.audits.find((a) => a.event === "loop.review_budget_abort");
     assert.ok(gate, "review budget abort should be audited");
   });
+
+// ============================================================
+// beta.9: REGRESSION TEST for the untracked-file bug
+// ============================================================
+
+// THE BETA.8 BUG: sub-task s1 writes a file (untracked, not committed).
+// beta.8 `file_written` used git diff -> excluded untracked -> falsely FAILED.
+// beta.9 `file_written` uses fs.stat -> includes untracked -> must PASS.
+test("loop: write-only sub-task passes file_written with fileExistsOnDisk probe (beta.9 regression fix)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "S_REG1", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    // s1: "write docs/SMOKE.md" — file is UNTRACKED (not committed). Beta.8 fails here.
+    const plan = {
+      repo: "o/r", branch: "harness/smoke", worktreePath: "/wt",
+      subTasks: [
+        { seq: 1, title: "Create branch + write docs/SMOKE.md", intent: "write the file", filesLikelyTouched: ["docs/SMOKE.md"], successCriteria: ["file exists"], estimatedTokens: 100 },
+      ],
+      reviewChecklist: [], riskLevel: "low", approxCostUsd: 0,
+    };
+    let adversaryCalled = false, prCalled = false, fileCheckedOnDisk = false;
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      // Worker writes the file but does NOT commit (untracked = the failing scenario).
+      runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0.05, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => { adversaryCalled = true; return { verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }; },
+      pushBranchAndOpenPr: async () => { prCalled = true; return "https://x/pr/1"; },
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => "basesha",
+      buildVerifyProbes: () => ({
+        // beta.8 probes (required)
+        remoteBranchExists: async () => ({ exists: false, detail: "not pushed yet" }),
+        prUrlPresent: async () => ({ present: false, detail: "no PR yet" }),
+        fileWrittenSince: async () => ({ written: false, detail: "not in git diff (file is untracked)" }), // Would fail on beta.8!
+        commitMadeSince: async () => ({ made: false, detail: "no commit yet" }),
+        // beta.9 new probe: fs.stat says file is there
+        fileExistsOnDisk: async (path) => { fileCheckedOnDisk = true; return { exists: true, nonEmpty: true, detail: `${path} stat OK 1234 bytes` }; },
+      }),
+    });
+    const outcome = await loop.run("S_REG1", brief);
+    // On beta.9 this must SHIP (file_written passes via fs.stat).
+    assert.equal(outcome.status, "shipped", `expected shipped, got: ${outcome.status} reason: ${outcome.reason ?? ""}`);
+    assert.equal(fileCheckedOnDisk, true, "harness must check file on disk (not git diff)");
+    assert.equal(adversaryCalled, true, "adversary must run after verification passes");
+    assert.equal(prCalled, true, "PR must open after successful session");
+    // Audit: verification passed.
+    const verif = state.audits.find((a) => a.event === "loop.subtask_verification");
+    assert.ok(verif, "verification must be audited");
+    assert.equal(verif.payload.ok, true, "verification must pass on beta.9");
+  });
+
+// ============================================================
+// beta.9: 5-sub-task integration test (write, commit, push, open PR, verify)
+// ============================================================
+
+test("loop: 5-sub-task plan (write, commit, push, open PR, verify) all pass with beta.9 probes",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "S_5ST", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const sha = "cafebabe12345678901234";
+    const plan = {
+      repo: "o/r", branch: "harness/smoke", worktreePath: "/wt",
+      subTasks: [
+        { seq: 1, title: "Create branch + write docs/SMOKE.md", intent: "write the file", filesLikelyTouched: ["docs/SMOKE.md"], successCriteria: ["file exists"], estimatedTokens: 100 },
+        { seq: 2, title: "Commit the single-file change", intent: "git add + commit", filesLikelyTouched: ["docs/SMOKE.md"], successCriteria: ["commit exists"], estimatedTokens: 100, dependsOn: [1] },
+        { seq: 3, title: "Push branch to origin + verify remote SHA", intent: "git push origin", filesLikelyTouched: [], successCriteria: ["branch on remote"], estimatedTokens: 100, dependsOn: [2] },
+        { seq: 4, title: "Open draft PR + capture URL", intent: "POST /pulls draft:true", filesLikelyTouched: [], successCriteria: ["PR created"], estimatedTokens: 100, dependsOn: [3] },
+        { seq: 5, title: "End-to-end verification of remote side effects", intent: "verify remote side effects for docs/SMOKE.md", filesLikelyTouched: ["docs/SMOKE.md"], successCriteria: ["all verified"], estimatedTokens: 100, dependsOn: [4] },
+      ],
+      reviewChecklist: [], riskLevel: "low", approxCostUsd: 0,
+    };
+    const workerSeqs = [];
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      runWorker: async ({ subTask }) => { workerSeqs.push(subTask.seq); return { status: "completed", filesChanged: [], costUsd: 0.05, tokensIn: 1, tokensOut: 1, reason: "end_turn" }; },
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => sha,
+      buildVerifyProbes: () => ({
+        remoteBranchExists: async () => ({ exists: true, detail: "HTTP 200" }),
+        prUrlPresent: async () => ({ present: true, url: "https://github.com/o/r/pull/1", detail: "ok" }),
+        fileWrittenSince: async () => ({ written: true, detail: "in diff" }),
+        commitMadeSince: async () => ({ made: true, detail: "HEAD changed" }),
+        fileExistsOnDisk: async (path) => ({ exists: true, nonEmpty: true, detail: `${path} stat OK` }),
+        fileCommittedSince: async (path) => ({ committed: true, detail: `${path} in git log` }),
+        remoteBranchSha: async () => ({ sha, detail: `tip: ${sha}` }),
+        remoteFileExists: async (path) => ({ exists: true, detail: `${path} HTTP 200` }),
+        prForBranch: async () => ({ count: 1, prs: [{ number: 1, state: "open", draft: true, url: "https://github.com/o/r/pull/1" }], detail: "1 draft PR" }),
+        localHeadSha: async () => ({ sha, detail: `local: ${sha}` }),
+        prFiles: async () => ({ files: [{ filename: "docs/SMOKE.md" }], detail: "1 file" }),
+      }),
+    });
+    const outcome = await loop.run("S_5ST", brief);
+    assert.equal(outcome.status, "shipped", `expected shipped, got: ${outcome.status} ${outcome.reason ?? ""}`);
+    assert.deepEqual(workerSeqs, [1, 2, 3, 4, 5], "all 5 sub-tasks must run in order");
+    // All 5 verification events should have passed.
+    const verifEvents = state.audits.filter((a) => a.event === "loop.subtask_verification");
+    assert.equal(verifEvents.length, 5, "one verification per sub-task");
+    for (const ev of verifEvents) {
+      assert.equal(ev.payload.ok, true, `sub-task ${ev.payload.seq} verification should pass`);
+    }
+  });
+
+// ============================================================
+// beta.9: malicious-worker tests
+// ============================================================
+
+// Worker writes garbage content (empty file) and claims file_written success.
+// Harness must catch it via fileExistsOnDisk returning nonEmpty=false.
+test("loop: malicious worker writes empty file — harness catches via fileExistsOnDisk (beta.9)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "S_MAL1", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = {
+      repo: "o/r", branch: "harness/smoke", worktreePath: "/wt",
+      subTasks: [
+        { seq: 1, title: "Write docs/SMOKE.md with required content", intent: "write the spec file", filesLikelyTouched: ["docs/SMOKE.md"], successCriteria: ["file exists and is non-empty"], estimatedTokens: 100 },
+      ],
+      reviewChecklist: [], riskLevel: "low", approxCostUsd: 0,
+    };
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      // Worker claims success but created an empty file (garbage content).
+      runWorker: async () => ({ status: "completed", filesChanged: ["docs/SMOKE.md"], costUsd: 0.05, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => "basesha",
+      buildVerifyProbes: () => ({
+        remoteBranchExists: async () => ({ exists: false, detail: "not pushed" }),
+        prUrlPresent: async () => ({ present: false, detail: "no PR" }),
+        fileWrittenSince: async () => ({ written: false, detail: "no diff" }),
+        commitMadeSince: async () => ({ made: false, detail: "no commit" }),
+        // Empty file detected!
+        fileExistsOnDisk: async () => ({ exists: true, nonEmpty: false, detail: "file exists but is empty (0 bytes)" }),
+      }),
+    });
+    const outcome = await loop.run("S_MAL1", brief);
+    assert.equal(outcome.status, "failed", "empty file must fail verification");
+    // file_written_verify_failed must be emitted.
+    const fwFail = state.audits.find((a) => a.event === "loop.file_written_verify_failed");
+    assert.ok(fwFail, "loop.file_written_verify_failed must be emitted for empty file");
+    // Old backward-compat event also fires.
+    const oldFail = state.audits.find((a) => a.event === "loop.file_verify_failed");
+    assert.ok(oldFail, "loop.file_verify_failed (old name) must also fire for backward compat");
+    // Sub-task must be marked failed_verification.
+    const row = state.db.prepare(`SELECT status FROM sub_tasks WHERE session_id = 'S_MAL1' AND seq = 1`).get();
+    assert.equal(row.status, "failed_verification");
+  });
+
+// Worker claims file_written when the file was never written at all.
+// Harness must catch this via fileExistsOnDisk returning exists=false.
+test("loop: malicious worker claims file written but file absent — harness catches (beta.9)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "S_MAL2", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = {
+      repo: "o/r", branch: "harness/smoke", worktreePath: "/wt",
+      subTasks: [
+        { seq: 1, title: "Create docs/SMOKE.md", intent: "write the documentation file", filesLikelyTouched: ["docs/SMOKE.md"], successCriteria: ["file created"], estimatedTokens: 100 },
+      ],
+      reviewChecklist: [], riskLevel: "low", approxCostUsd: 0,
+    };
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0.05, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => "basesha",
+      buildVerifyProbes: () => ({
+        remoteBranchExists: async () => ({ exists: false, detail: "not pushed" }),
+        prUrlPresent: async () => ({ present: false, detail: "no PR" }),
+        fileWrittenSince: async () => ({ written: false, detail: "not in diff" }),
+        commitMadeSince: async () => ({ made: false, detail: "no commit" }),
+        // File never written!
+        fileExistsOnDisk: async () => ({ exists: false, nonEmpty: false, detail: "file not found on disk" }),
+      }),
+    });
+    const outcome = await loop.run("S_MAL2", brief);
+    assert.equal(outcome.status, "failed", "missing file must fail verification");
+    const fwFail = state.audits.find((a) => a.event === "loop.file_written_verify_failed");
+    assert.ok(fwFail, "loop.file_written_verify_failed must be emitted");
+    const row = state.db.prepare(`SELECT status FROM sub_tasks WHERE session_id = 'S_MAL2' AND seq = 1`).get();
+    assert.equal(row.status, "failed_verification");
+  });
+
+// ============================================================
+// beta.9: new audit event names fire alongside old ones
+// ============================================================
+
+test("loop: remote_branch_verify_failed fires alongside push_verify_failed for branch_pushed failures",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "S_EVT1", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = {
+      repo: "o/r", branch: "harness/smoke", worktreePath: "/wt",
+      subTasks: [
+        { seq: 1, title: "Push branch to origin", intent: "git push", filesLikelyTouched: [], successCriteria: ["branch on remote"], estimatedTokens: 100 },
+      ],
+      reviewChecklist: [], riskLevel: "low", approxCostUsd: 0,
+    };
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0.05, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => "basesha",
+      buildVerifyProbes: () => ({
+        remoteBranchExists: async () => ({ exists: false, detail: "HTTP 404" }),
+        prUrlPresent: async () => ({ present: false, detail: "no PR" }),
+        fileWrittenSince: async () => ({ written: false, detail: "n/a" }),
+        commitMadeSince: async () => ({ made: false, detail: "n/a" }),
+      }),
+    });
+    const outcome = await loop.run("S_EVT1", brief);
+    assert.equal(outcome.status, "failed");
+    // Both old and new audit events must fire.
+    assert.ok(state.audits.find((a) => a.event === "loop.push_verify_failed"), "old loop.push_verify_failed must fire");
+    assert.ok(state.audits.find((a) => a.event === "loop.remote_branch_verify_failed"), "new loop.remote_branch_verify_failed must fire");
+  });
+
+test("loop: file_written_verify_failed fires alongside file_verify_failed (backward compat + new name)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "S_EVT2", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = {
+      repo: "o/r", branch: "harness/smoke", worktreePath: "/wt",
+      subTasks: [
+        { seq: 1, title: "Write docs/SMOKE.md", intent: "create the file", filesLikelyTouched: ["docs/SMOKE.md"], successCriteria: ["file exists"], estimatedTokens: 100 },
+      ],
+      reviewChecklist: [], riskLevel: "low", approxCostUsd: 0,
+    };
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0.05, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => "basesha",
+      buildVerifyProbes: () => ({
+        remoteBranchExists: async () => ({ exists: false, detail: "n/a" }),
+        prUrlPresent: async () => ({ present: false, detail: "n/a" }),
+        fileWrittenSince: async () => ({ written: false, detail: "not in diff" }),
+        commitMadeSince: async () => ({ made: false, detail: "n/a" }),
+        fileExistsOnDisk: async () => ({ exists: false, nonEmpty: false, detail: "file not found" }),
+      }),
+    });
+    const outcome = await loop.run("S_EVT2", brief);
+    assert.equal(outcome.status, "failed");
+    assert.ok(state.audits.find((a) => a.event === "loop.file_verify_failed"), "old loop.file_verify_failed must fire (backward compat)");
+    assert.ok(state.audits.find((a) => a.event === "loop.file_written_verify_failed"), "new loop.file_written_verify_failed must fire");
+  });
+
