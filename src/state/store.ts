@@ -20,6 +20,9 @@ import { fileURLToPath } from "node:url";
 
 export interface StateStore {
   db: DatabaseSync;
+  /** True while the underlying `DatabaseSync` handle is open. */
+  isOpen: () => boolean;
+  /** Idempotent. Safe to call more than once (e.g. double teardown). */
   close: () => void;
   audit: (event: string, payload: unknown, sessionId?: string) => void;
 }
@@ -112,9 +115,18 @@ export function openStateStoreSync(pathHint: string): StateStore {
     `INSERT INTO audit_log (session_id, event, payload, created_at) VALUES (?, ?, ?, ?)`,
   );
 
+  let open = true;
   return {
     db,
-    close: () => db.close(),
+    isOpen: () => open,
+    close: () => {
+      // Idempotent: on a re-register race two teardown paths can both reach
+      // here. `node:sqlite` throws "database is not open" on a double close,
+      // which is exactly the error we are trying to eliminate downstream.
+      if (!open) return;
+      open = false;
+      db.close();
+    },
     audit: (event, payload, sessionId) => {
       insertAudit.run(sessionId ?? null, event, JSON.stringify(payload ?? {}), Date.now());
     },

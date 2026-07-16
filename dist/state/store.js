@@ -91,9 +91,19 @@ export function openStateStoreSync(pathHint) {
     }
     catch { /* first open before column exists is fine */ }
     const insertAudit = db.prepare(`INSERT INTO audit_log (session_id, event, payload, created_at) VALUES (?, ?, ?, ?)`);
+    let open = true;
     return {
         db,
-        close: () => db.close(),
+        isOpen: () => open,
+        close: () => {
+            // Idempotent: on a re-register race two teardown paths can both reach
+            // here. `node:sqlite` throws "database is not open" on a double close,
+            // which is exactly the error we are trying to eliminate downstream.
+            if (!open)
+                return;
+            open = false;
+            db.close();
+        },
         audit: (event, payload, sessionId) => {
             insertAudit.run(sessionId ?? null, event, JSON.stringify(payload ?? {}), Date.now());
         },

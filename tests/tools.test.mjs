@@ -4,9 +4,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-let registerHarnessTools, Database;
+let registerHarnessTools, Database, setCurrentRuntime, getCurrentRuntime;
 try {
   ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ setCurrentRuntime, getCurrentRuntime } = await import("../dist/runtime-registry.js"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   registerHarnessTools = null;
@@ -19,14 +20,16 @@ function makeRuntime() {
   const db = new Database(":memory:");
   db.exec(readFileSync(schemaPath, "utf8"));
   const audits = [];
+  let dbOpen = true;
   const state = {
     db,
+    isOpen() { return dbOpen; },
     audit(event, payload, sessionId) {
       audits.push({ event, payload, sessionId });
       db.prepare(`INSERT INTO audit_log (session_id, event, payload, created_at) VALUES (?, ?, ?, ?)`)
         .run(sessionId ?? null, event, JSON.stringify(payload), Date.now());
     },
-    close() { db.close(); },
+    close() { if (!dbOpen) return; dbOpen = false; db.close(); },
   };
   const loopCalls = [];
   const loop = {
@@ -344,4 +347,62 @@ test("harness_resume: refuses session without brief",
     const res = await tools.get("harness_resume").execute({ sessionId: "S1" });
     assert.equal(res.details.ok, false);
     assert.equal(res.details.missingBrief, true);
+  });
+
+// --- Regression: harness_status must not hit a closed DB after re-register ---
+//
+// Repro for the beta.2 bug: on a plugin re-register, the previous runtime's
+// state DB is closed. Tool closures captured the old runtime, so invoking
+// harness_status touched the closed `node:sqlite` handle and threw
+// "database is not open". harness_health happened to bind to the still-open
+// handle, which is why it passed while status failed on the same gateway.
+//
+// The fix routes tool DB access through the LIVE runtime (runtime-registry).
+test("harness_status: routes to live runtime after re-register (closed gen not touched)",
+  { skip: registerHarnessTools === null }, async () => {
+    // Generation A: register tools against it, then publish it as live.
+    const runtimeA = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtimeA);
+    setCurrentRuntime(runtimeA);
+
+    // Sanity: status works against the open generation A.
+    const before = tools.get("harness_status").execute({});
+    assert.equal(before.details.ok, true);
+
+    // Simulate a re-register: a fresh generation B becomes live, and the old
+    // generation A is torn down (its DB closed) as teardown() does.
+    const runtimeB = makeRuntime();
+    setCurrentRuntime(runtimeB);
+    runtimeA.state.close();
+
+    // The A-captured closure must NOT throw "database is not open"; it should
+    // resolve the live generation B (open) instead.
+    const after = tools.get("harness_status").execute({});
+    assert.equal(after.details.ok, true, "status should work against the live runtime after re-register");
+
+    // And a query that would previously hit A's closed handle succeeds.
+    runtimeB.state.db.prepare(
+      `INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, created_at, updated_at, budget_usd, cost_usd, cycles_ran)
+       VALUES ('SB','TB','CB','U1','u','o/r','b','/wt','planning',?,?,50,0,0)`,
+    ).run(Date.now(), Date.now());
+    const again = tools.get("harness_status").execute({});
+    assert.equal(again.details.activeSessionCount, 1);
+
+    setCurrentRuntime(null);
+  });
+
+// If a closed generation is somehow the ONLY thing we can resolve, the guard
+// must surface a clear, retryable error rather than the opaque sqlite string.
+test("harness_status: clear error when only a closed generation is reachable",
+  { skip: registerHarnessTools === null }, () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    setCurrentRuntime(null);      // nothing live -> fall back to captured runtime
+    runtime.state.close();        // ...which is now closed
+    assert.throws(
+      () => tools.get("harness_status").execute({}),
+      /re-registering|not open/i,
+    );
   });

@@ -1,0 +1,1 @@
+{"version":3,"file":"runtime-registry.js","sourceRoot":"","sources":["../src/runtime-registry.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;GAgBG;AAWH,IAAI,cAAc,GAAuB,IAAI,CAAC;AAE9C,0EAA0E;AAC1E,MAAM,UAAU,iBAAiB,CAAC,EAAsB;IACtD,cAAc,GAAG,EAAE,CAAC;AACtB,CAAC;AAED,0EAA0E;AAC1E,MAAM,UAAU,iBAAiB;IAC/B,OAAO,cAAc,CAAC;AACxB,CAAC"}
