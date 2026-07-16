@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.1.0-beta.9] -- 2026-07-16
+
+### Fixed
+
+- **Untracked-file verification bug (beta.8 regression).** Sub-task s1
+  ("write file X") could never pass `file_written` verification on beta.8
+  because the verifier used `git diff vs base`, which excludes untracked
+  files. A file written but not yet committed is exactly what s1 produces.
+  beta.9 changes `file_written` to use `fs.stat` (filesystem check), so
+  untracked files are visible and the happy path proceeds. The old
+  `fileWrittenSince` probe (git diff) is kept as a backward-compat fallback
+  for test doubles that predate beta.9.
+
+### Added
+
+- **7 new precise verification contract kinds** alongside the existing 4:
+  - `file_committed` — path in `git log <base>..HEAD` (committed to local branch)
+  - `remote_branch_exists` — remote branch ref exists with SHA detail
+  - `file_pushed` — file exists in remote branch contents (GitHub API)
+  - `pr_state` — PR exists AND is in `open` / `draft` / `merged` state
+  - `file_in_pr` — file appears in PR files list
+  - `commit_sha_matches` — local HEAD SHA equals remote branch tip SHA
+  (The existing `branch_pushed`, `pr_opened`, `commit_made` are kept for
+  backward compat and continue to fire their original audit events.)
+
+- **Extended contract inference** in `verify-contract.ts`:
+  - `"write/create X"` → `file_written` (now fs.stat, includes untracked)
+  - `"commit"` (no push) → `commit_made` + `file_committed`
+  - `"push branch"` → `branch_pushed` + `remote_branch_exists` + `commit_sha_matches`
+  - `"verify remote SHA"` → `remote_branch_exists` + `commit_sha_matches`
+  - `"open PR"` / `"open draft PR"` → `pr_opened` + `pr_state`
+  - `"end-to-end verification"` → `branch_pushed` + `pr_opened` + `file_pushed` + `file_in_pr`
+
+- **8 new specific audit events** (old names still fire alongside for compat):
+  `loop.file_written_verify_failed`, `loop.file_committed_verify_failed`,
+  `loop.remote_branch_verify_failed`, `loop.file_pushed_verify_failed`,
+  `loop.pr_state_verify_failed`, `loop.file_in_pr_verify_failed`,
+  `loop.commit_sha_verify_failed`
+
+- **`harness_bootstrap_test_repo` added to `contracts.tools`** in
+  `openclaw.plugin.json`. This tool was registered since beta.6 but
+  missing from the manifest, causing a gateway warning on every startup.
+
+- **Verification contract docs** added to `docs/AUTH.md` and
+  `docs/GITHUB_AUTH.md`: table of all 10 contract kinds, inference rules,
+  and audit event reference.
+
+### Tests
+
+- 224 tests (was 176), all passing. New coverage:
+  - Regression test for beta.8 untracked-file bug (must pass on beta.9)
+  - Per-kind unit tests (success + failure) for all 8 new contract kinds
+  - Graceful-skip tests for all new optional probes
+  - Backward-compat probe fallback tests
+  - 5-sub-task integration test (write → commit → push → PR → e2e verify)
+  - Malicious-worker tests (empty file, absent file)
+  - Audit event backward-compat tests (old names still fire alongside new)
+  - Existing beta.8 confabulation regression test preserved
+
+### Breaking changes
+
+- None. All beta.8 contract kinds, probe names, and audit event names continue
+  to work unchanged. New probes are optional in `VerifyProbes`. The `file_written`
+  kind now prefers `fileExistsOnDisk` when provided; it falls back to
+  `fileWrittenSince` (beta.8 behaviour) when absent.
+
 ## [Unreleased] -- maintainer review round 2
 
 ### Changed -- agent-orchestrated by default (BREAKING for autonomous setups)
