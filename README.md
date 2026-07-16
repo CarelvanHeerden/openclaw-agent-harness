@@ -2,7 +2,9 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.6`. All Phase 1-3 subsystems land and pass tests (157/157 green, smoke script clean). See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: beta.* Version `0.1.0-beta.9`. 224 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+>
+> **beta.9 fix:** `file_written` verification now uses `fs.stat` (includes untracked files), fixing the beta.8 false-negative that blocked the write→commit→push plan shape. 7 new precise contract kinds added. See [CHANGELOG](CHANGELOG.md).
 
 ### Two ways to drive it
 

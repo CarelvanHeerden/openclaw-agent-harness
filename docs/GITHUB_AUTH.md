@@ -183,3 +183,24 @@ allow-list, so smoke tests never touch the harness's own source repo.
 - The allow-list addition is **in-memory only** — it survives until the next
   plugin (re-)register. To keep it, add the repo to `config.repos.allowed`.
 - The repo is disposable; delete it from GitHub when you're done.
+
+## Verification contracts and GitHub API calls (beta.9)
+
+Several beta.9 contract kinds make direct GitHub API calls to verify remote
+state. These calls use the **same PAT** resolved for the session's `requester`
+via the vault / env chain above.
+
+| Contract kind | GitHub API call |
+|---------------|----------------|
+| `remote_branch_exists` | `GET /repos/{owner}/{repo}/git/refs/heads/{branch}` |
+| `file_pushed` | `GET /repos/{owner}/{repo}/contents/{path}?ref={branch}` |
+| `pr_opened` | `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=all` |
+| `pr_state` | Same call as `pr_opened` |
+| `file_in_pr` | `GET /repos/{owner}/{repo}/pulls/{number}/files` |
+| `commit_sha_matches` | `GET /repos/{owner}/{repo}/git/refs/heads/{branch}` (SHA field) |
+
+All of these are **read-only** calls; they do not create or modify any GitHub resource.
+
+The `buildVerifyProbes` factory in the real adapter must be updated to supply
+these probes before beta.9 is used in a live production session. See
+`src/orchestrator/verify.ts` for the full `VerifyProbes` interface.

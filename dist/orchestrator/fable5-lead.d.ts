@@ -19,17 +19,44 @@ import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
  *
  * beta.7 fix #1: the SDK's stop reason is no longer accepted as ground truth
  * for tasks with observable outputs.
+ *
+ * beta.9: split `file_written` into precise workspace-level vs git-level vs
+ * remote-level contract kinds. `file_written` now uses `fs.stat` (includes
+ * untracked files); old `branch_pushed` / `commit_made` / `pr_opened` kept
+ * for backward compat alongside new precise kinds.
  */
 export type SubTaskVerify = {
     kind: "branch_pushed";
     branch?: string;
 } | {
     kind: "pr_opened";
+    draft?: boolean;
 } | {
     kind: "file_written";
     path: string;
+    expectedContent?: string;
 } | {
     kind: "commit_made";
+} | {
+    kind: "file_committed";
+    path: string;
+} | {
+    kind: "remote_branch_exists";
+    branch?: string;
+} | {
+    kind: "file_pushed";
+    path: string;
+    branch?: string;
+} | {
+    kind: "pr_state";
+    state: "open" | "draft" | "merged";
+} | {
+    kind: "file_in_pr";
+    path: string;
+    prNumber?: number;
+} | {
+    kind: "commit_sha_matches";
+    branch?: string;
 };
 export interface LeadPlanSubTask {
     seq: number;

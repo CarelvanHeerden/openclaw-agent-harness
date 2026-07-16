@@ -344,15 +344,56 @@ export class OrchestratorLoop {
           );
 
           if (!verification.ok) {
-            // Emit a per-kind failure event so the failure is greppable and
-            // the operator sees exactly which observable output was faked.
+            // Emit per-kind failure events so failures are greppable and
+            // operators can debug from audit alone.
+            // beta.9: new specific events + backward-compat old event names
+            // both fire so consumers watching old names keep working.
             for (const r of verification.results.filter((x) => !x.passed)) {
-              const evt =
-                r.kind === "branch_pushed" ? "loop.push_verify_failed"
-                : r.kind === "pr_opened" ? "loop.pr_verify_failed"
-                : r.kind === "file_written" ? "loop.file_verify_failed"
-                : "loop.commit_verify_failed";
-              this.deps.state.audit(evt, { sessionId, seq: st.seq, detail: r.detail }, sessionId);
+              const payload = { sessionId, seq: st.seq, detail: r.detail };
+              switch (r.kind) {
+                case "branch_pushed":
+                  // backward compat name
+                  this.deps.state.audit("loop.push_verify_failed", payload, sessionId);
+                  // new specific name (parallel)
+                  this.deps.state.audit("loop.remote_branch_verify_failed", payload, sessionId);
+                  break;
+                case "remote_branch_exists":
+                  this.deps.state.audit("loop.remote_branch_verify_failed", payload, sessionId);
+                  break;
+                case "commit_sha_matches":
+                  this.deps.state.audit("loop.commit_sha_verify_failed", payload, sessionId);
+                  break;
+                case "pr_opened":
+                  this.deps.state.audit("loop.pr_verify_failed", payload, sessionId);
+                  break;
+                case "pr_state":
+                  // backward compat: also fire old pr_verify_failed
+                  this.deps.state.audit("loop.pr_verify_failed", payload, sessionId);
+                  this.deps.state.audit("loop.pr_state_verify_failed", payload, sessionId);
+                  break;
+                case "file_written":
+                  // backward compat name
+                  this.deps.state.audit("loop.file_verify_failed", payload, sessionId);
+                  // new specific name
+                  this.deps.state.audit("loop.file_written_verify_failed", payload, sessionId);
+                  break;
+                case "file_committed":
+                  this.deps.state.audit("loop.file_committed_verify_failed", payload, sessionId);
+                  break;
+                case "file_pushed":
+                  this.deps.state.audit("loop.file_pushed_verify_failed", payload, sessionId);
+                  break;
+                case "file_in_pr":
+                  this.deps.state.audit("loop.file_in_pr_verify_failed", payload, sessionId);
+                  break;
+                case "commit_made":
+                  // backward compat name
+                  this.deps.state.audit("loop.commit_verify_failed", payload, sessionId);
+                  break;
+                default:
+                  // fallback for any future kinds
+                  this.deps.state.audit("loop.verify_failed", { ...payload, kind: r.kind }, sessionId);
+              }
             }
             this.deps.state.db.prepare(
               `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,

@@ -11,6 +11,7 @@ const manifestPath = resolve(repoRoot, "openclaw.plugin.json");
 const pkgPath = resolve(repoRoot, "package.json");
 
 // Expected tool contract - must be kept in sync with src/tools/registration.ts
+// beta.9: added harness_bootstrap_test_repo (was registered since beta.6 but missing from manifest)
 const EXPECTED_TOOLS = [
   "harness_run",
   "harness_status",
@@ -22,6 +23,7 @@ const EXPECTED_TOOLS = [
   "harness_cancel",
   "harness_resume",
   "harness_retention_prune",
+  "harness_bootstrap_test_repo",
 ];
 
 test("sdk: openclaw.plugin.json exists", () => {

@@ -21,12 +21,25 @@ import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
  *
  * beta.7 fix #1: the SDK's stop reason is no longer accepted as ground truth
  * for tasks with observable outputs.
+ *
+ * beta.9: split `file_written` into precise workspace-level vs git-level vs
+ * remote-level contract kinds. `file_written` now uses `fs.stat` (includes
+ * untracked files); old `branch_pushed` / `commit_made` / `pr_opened` kept
+ * for backward compat alongside new precise kinds.
  */
 export type SubTaskVerify =
+  // --- beta.8 kinds (kept for backward compat) ---
   | { kind: "branch_pushed"; branch?: string }              // ref exists on origin
-  | { kind: "pr_opened" }                                    // a PR URL was captured
-  | { kind: "file_written"; path: string }                   // file mtime post-start + non-empty diff
-  | { kind: "commit_made" };                                 // a new commit exists vs base
+  | { kind: "pr_opened"; draft?: boolean }                  // a PR URL was captured
+  | { kind: "file_written"; path: string; expectedContent?: string }  // file on disk, non-empty (beta.9: fs.stat, not git diff)
+  | { kind: "commit_made" }                                 // a new commit exists vs base
+  // --- beta.9 additions ---
+  | { kind: "file_committed"; path: string }                // path appears in git log <base>..HEAD
+  | { kind: "remote_branch_exists"; branch?: string }      // GET /git/refs/heads/{branch} == 200
+  | { kind: "file_pushed"; path: string; branch?: string } // GET /contents/{path}?ref={branch} == 200
+  | { kind: "pr_state"; state: "open" | "draft" | "merged" }  // PR exists AND is in given state
+  | { kind: "file_in_pr"; path: string; prNumber?: number } // path appears in PR files list
+  | { kind: "commit_sha_matches"; branch?: string };       // local HEAD sha == remote branch tip sha
 
 export interface LeadPlanSubTask {
   seq: number;
