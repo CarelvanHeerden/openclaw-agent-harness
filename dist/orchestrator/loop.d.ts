@@ -125,6 +125,11 @@ export declare class OrchestratorLoop {
     private addCost;
     private saveReview;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
+    /**
+     * Pull the latest verification outcome per sub-task from the audit log,
+     * to feed the adversary as local runtime data (beta.7 fix #1).
+     */
+    private readLocalVerification;
     private finaliseAbort;
 }
 /**

@@ -17,7 +17,7 @@
 export type RuntimeStatus = "ok" | "no_deploy_yet" | "build_failed" | "unavailable";
 
 export interface RuntimeSnapshot {
-  provider: "vercel" | "manual";
+  provider: "vercel" | "manual" | "local";
   status: RuntimeStatus;
   deploymentUrl?: string;
   logsExcerpt?: string;
@@ -26,6 +26,14 @@ export interface RuntimeSnapshot {
   uploadedAt?: number;
   uploadedBy?: string;
   source?: string;
+  /**
+   * beta.7 fix #1: local observable-side-effect verification results. When
+   * the Vercel/manual runtime is unavailable, sub-task verification (branch
+   * pushed, PR opened, file written, commit made) is surfaced here so the
+   * adversary has hard "did the observable output actually happen?" data
+   * instead of `runtime: no runtime data`.
+   */
+  localVerification?: Array<{ seq: number; ok: boolean; summary: string }>;
 }
 
 export interface FetchLogsInput {

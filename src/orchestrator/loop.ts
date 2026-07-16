@@ -259,6 +259,36 @@ export class OrchestratorLoop {
           subTaskId,
         );
         this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+
+        // beta.7 fix #1: audit verification outcome + wasted spend, and
+        // surface it as local runtime data for the adversary (closing the
+        // "runtime: no runtime data" gap for observable-output sub-tasks).
+        if (result.verification) {
+          this.deps.state.audit(
+            "loop.subtask_verification",
+            {
+              sessionId, seq: st.seq, ok: result.verification.ok,
+              summary: result.verification.summary,
+              results: result.verification.results,
+              wastedSpendUsd: result.wastedSpend ? result.costUsd : 0,
+            },
+            sessionId,
+          );
+          if (result.wastedSpend) {
+            this.deps.logger.warn("[loop] wasted spend: SDK success but verification failed", {
+              sessionId, seq: st.seq, costUsd: result.costUsd, summary: result.verification.summary,
+            });
+          }
+        }
+
+        // A sub-task that FAILED verification (or otherwise) must not be
+        // treated as satisfied: do not mark it done, and stop the cycle so
+        // the failure is not silently swallowed.
+        if (result.status !== "completed") {
+          failed.err = `subtask_${st.seq}_${result.status}: ${result.reason ?? "no reason"}`;
+          failed.seq = st.seq;
+          return;
+        }
         done.add(st.seq);
       };
 
@@ -307,6 +337,24 @@ export class OrchestratorLoop {
         runtime = await this.deps.fetchRuntime?.({ plan, sessionId });
       } catch (err) {
         this.deps.logger.warn("[loop] fetchRuntime failed", { err: String(err) });
+      }
+      // beta.7 fix #1: if no external runtime is available, synthesise a
+      // "local" runtime snapshot from this cycle's verification audits so
+      // the adversary still gets observable-output ground truth.
+      if (!runtime) {
+        const localVerification = this.readLocalVerification(sessionId);
+        if (localVerification.length > 0) {
+          const anyFailed = localVerification.some((v) => !v.ok);
+          runtime = {
+            provider: "local",
+            status: anyFailed ? "unavailable" : "ok",
+            logsExcerpt: localVerification
+              .map((v) => `sub-task ${v.seq}: ${v.ok ? "VERIFIED" : "FAILED"} — ${v.summary}`)
+              .join("\n"),
+            errorCount: localVerification.filter((v) => !v.ok).length,
+            localVerification,
+          };
+        }
       }
       let report: ReviewReport;
       try {
@@ -360,6 +408,30 @@ export class OrchestratorLoop {
     this.deps.state.db.prepare(`UPDATE sessions SET final_pr_url = ?, status = 'done', updated_at = ? WHERE id = ?`).run(prUrl, Date.now(), sessionId);
     this.deps.state.audit("loop.shipped", { sessionId, prUrl }, sessionId);
     return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
+  }
+
+  /**
+   * Pull the latest verification outcome per sub-task from the audit log,
+   * to feed the adversary as local runtime data (beta.7 fix #1).
+   */
+  private readLocalVerification(sessionId: string): Array<{ seq: number; ok: boolean; summary: string }> {
+    const rows = this.deps.state.db
+      .prepare(
+        `SELECT payload FROM audit_log
+         WHERE session_id = ? AND event = 'loop.subtask_verification'
+         ORDER BY created_at ASC`,
+      )
+      .all(sessionId) as Array<{ payload: string }>;
+    const bySeq = new Map<number, { seq: number; ok: boolean; summary: string }>();
+    for (const r of rows) {
+      try {
+        const p = JSON.parse(r.payload) as { seq: number; ok: boolean; summary: string };
+        if (typeof p.seq === "number") bySeq.set(p.seq, { seq: p.seq, ok: !!p.ok, summary: String(p.summary ?? "") });
+      } catch {
+        // ignore malformed audit rows
+      }
+    }
+    return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
   }
 
   private finaliseAbort(sessionId: string, reason: string, cycles: number, totalCostUsd: number): LoopOutcome {
