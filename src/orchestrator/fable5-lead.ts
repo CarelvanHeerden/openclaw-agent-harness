@@ -41,6 +41,33 @@ export type SubTaskVerify =
   | { kind: "file_in_pr"; path: string; prNumber?: number } // path appears in PR files list
   | { kind: "commit_sha_matches"; branch?: string };       // local HEAD sha == remote branch tip sha
 
+/**
+ * beta.14: authoritative scope declaration on each sub-task.
+ *
+ * The regex-based inference in `verify-contract.ts` has proved fragile
+ * (beta.11 dedupe, beta.12 negation, beta.13 absence-assertion — all
+ * whack-a-mole on the same class of "NLP-derived contract" bugs). The
+ * lead planner ALREADY understands scope conceptually: it writes phrases
+ * like "local-scope contract kinds" in its plan. Promote scope to a
+ * first-class field so the model tells us directly.
+ *
+ * Semantics:
+ * - `local`  → sub-task only touches the local worktree (write files,
+ *              commit, verify local state). All remote-scope contract
+ *              kinds (branch_pushed, remote_branch_exists,
+ *              commit_sha_matches, pr_opened, pr_state, file_pushed,
+ *              file_in_pr) are suppressed regardless of ambient wording.
+ * - `remote` → sub-task pushes / opens PRs / interacts with the remote.
+ *              Regex inference applies as before.
+ * - `mixed`  → both local and remote operations in the same sub-task.
+ *              Full inference applies (rare; lead should decompose
+ *              instead if possible).
+ *
+ * Absent = fallback to beta.13 inference (negation-aware + absence-
+ * assertion gating). Backward compatible with plans from beta.10–beta.13.
+ */
+export type ContractScope = "local" | "remote" | "mixed";
+
 export interface LeadPlanSubTask {
   seq: number;
   title: string;
@@ -56,6 +83,15 @@ export interface LeadPlanSubTask {
    * or advisory sub-tasks with no observable output).
    */
   verify?: SubTaskVerify[];
+  /**
+   * beta.14: authoritative scope declaration. When present, filters the
+   * inferred contract kinds to matching scope. `local` blocks all remote
+   * kinds even when ambient wording matches PUSH_RE / PR_RE / etc.
+   *
+   * Precedence: explicit `verify` overrides everything. `contractScope`
+   * filters. Absent = beta.13 inference behaviour.
+   */
+  contractScope?: ContractScope;
 }
 
 export interface LeadPlan {

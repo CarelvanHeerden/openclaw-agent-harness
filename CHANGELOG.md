@@ -1,5 +1,82 @@
 # Changelog
 
+## [0.1.0-beta.14] -- 2026-07-16
+
+### Added
+
+- **Authoritative `contractScope` field on `LeadPlanSubTask`.** Beta.11 /
+  12 / 13 fixed three separate NLP-derived contract inference bugs
+  (duplicate audit event, negation-blindness, absence-blindness), all
+  with the same root cause: the harness was trying to REVERSE-ENGINEER
+  scope from natural-language patterns when the lead planner already
+  understands scope conceptually. Beta.14 promotes scope to a
+  first-class field.
+
+  New enum: `type ContractScope = "local" | "remote" | "mixed"`.
+
+  New optional field on `LeadPlanSubTask`:
+  ```typescript
+  contractScope?: ContractScope
+  ```
+
+  Semantics:
+  - `local`  → sub-task only touches worktree fs + git. ALL remote-scope
+    contract kinds (`branch_pushed`, `remote_branch_exists`,
+    `commit_sha_matches`, `pr_opened`, `pr_state`, `file_pushed`,
+    `file_in_pr`) are filtered from the inferred contract regardless of
+    ambient wording. The beta.11/12/13 NLP heuristics remain but become
+    optional insurance rather than the primary line of defense.
+  - `remote` → sub-task pushes / opens PRs / verifies remote state.
+    Regex inference applies as before (including beta.13 gates).
+  - `mixed`  → both local and remote. Full inference. Rare; lead should
+    decompose when possible.
+  - Absent  → fallback to beta.13 inference (100% backward compat with
+    plans from beta.10–beta.13).
+
+- **Lead system prompt updated** to describe `contractScope` and
+  explicitly instruct the model when to use each value:
+  - Sub-task says "Do not push" / "observation only" / "read-only" → MUST be `local`.
+  - Sub-task says "push branch" / "open PR" → MUST be `remote`.
+  - When in doubt: prefer `local` (missing field falls back to regex inference).
+
+### Precedence (updated)
+
+1. Explicit `verify` array on sub-task → authoritative (unchanged from beta.9). Bypasses everything including scope filter.
+2. Regex inference produces candidates from title + intent + successCriteria (beta.13 negation-aware + absence-gate).
+3. `contractScope: "local"` → FILTERS OUT remote-scope kinds from candidates.
+4. `contractScope: "remote"` / `"mixed"` / absent → no filtering.
+
+### Tests
+
+New file `tests/beta14-authoritative-scope.test.mjs` — 10 tests locking in:
+
+- `contractScope: "local"` filters out remote-scope kinds even when regex would infer them.
+- `contractScope: "local"` preserves local-scope kinds (`file_written`, `commit_made`, `file_committed`).
+- `contractScope: "remote"` applies full inference (baseline).
+- `contractScope: "remote"` still honours beta.12 negation cues (defensive).
+- Absent `contractScope` falls back to beta.13 inference (backward compat).
+- Explicit `verify` array overrides both inference AND scope filter (precedence).
+- Exact Staging beta.10–beta.13 happy-path s3 case with `contractScope: "local"` yields empty contract.
+- `contractScope: "mixed"` applies full inference.
+
+Full suite: **257 -> 267 tests passing**, 0 fail, 0 skip. Typecheck clean.
+
+### Known limitations
+
+- **Absence-assertion in the beta.13 layer is still global, not per-clause.** This becomes moot when the lead tags scope correctly; the scope filter is a cleaner primary path. Absence-assertion remains as backward-compat safety net.
+- **`openPr` / `draftPr` tool-call flags still not threaded to the verifier.** Would compose nicely with `contractScope` in a future release: `openPr: false` at the tool level could DEFAULT all sub-tasks to `local`, but requires plan-level policy propagation. Deferred.
+- **Depends on the lead model actually filling in `contractScope`.** If the model emits sub-tasks without the field, the beta.13 fallback kicks in. Some smoke variance is expected in the first few beta.14 runs while we see how consistently the model follows the new instruction.
+
+### Discovery
+
+OpenClaw Staging bot proposed this exact fix in its beta.12 audit report:
+
+> "Best: Promote to a formal plan field: `subTasks[].contractScope: 'local' | 'remote'` or `subTasks[].verifyKinds: [...]`. The lead already understands scope conceptually."
+
+Beta.14 implements Staging's suggestion. Third smoke-test-driven improvement in three consecutive releases (beta.11, 12, 13 were bug fixes; beta.14 is the architectural improvement Staging recommended to end the whack-a-mole cycle).
+
+---
+
 ## [0.1.0-beta.13] -- 2026-07-16
 
 ### Fixed

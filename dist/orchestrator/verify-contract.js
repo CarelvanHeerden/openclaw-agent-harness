@@ -131,16 +131,45 @@ function firstFilePath(subTask) {
     return m?.[1];
 }
 /**
+ * beta.14: scope-classification of verify contract kinds.
+ *
+ * `remote` kinds require network / provider API interaction (push, PR,
+ * remote-branch existence, file-on-remote lookup, SHA match). These are
+ * suppressed for `contractScope: "local"` sub-tasks.
+ *
+ * `local` kinds only require worktree fs / git operations. Always allowed.
+ */
+const REMOTE_SCOPE_KINDS = new Set([
+    "branch_pushed",
+    "remote_branch_exists",
+    "commit_sha_matches",
+    "pr_opened",
+    "pr_state",
+    "file_pushed",
+    "file_in_pr",
+]);
+function isRemoteScopeKind(kind) {
+    return REMOTE_SCOPE_KINDS.has(kind);
+}
+/**
  * Infer the observable-side-effect contract for a sub-task.
  *
- * Precedence:
+ * Precedence (beta.14):
  *   1. An explicit `verify` on the sub-task (lead-declared) is authoritative.
- *   2. Otherwise infer from title + intent + successCriteria language.
+ *      Bypasses all inference. `contractScope` is IGNORED in this path
+ *      because the lead has told us EXACTLY which checks to run.
+ *   2. Regex inference produces a candidate contract from title + intent +
+ *      successCriteria language (beta.13 negation-aware + absence-gate).
+ *   3. If `contractScope: "local"`, remote-scope kinds are FILTERED OUT of
+ *      the candidate contract before it's returned.
+ *   4. `contractScope: "remote"` or `"mixed"` (or absent) = no filtering
+ *      beyond the beta.13 inference already applied.
  *
  * Returns [] when the sub-task has no inferable observable output (pure
  * reasoning / analysis), in which case the SDK signal is trusted.
  */
 export function inferVerifyContract(subTask) {
+    // Precedence 1: explicit verify wins.
     if (subTask.verify && subTask.verify.length > 0)
         return subTask.verify;
     const haystack = [
@@ -221,7 +250,17 @@ export function inferVerifyContract(subTask) {
         }
     }
     // Deduplicate by kind+path (in case of redundant overlaps from regex hits).
-    return dedupe(contract);
+    const inferred = dedupe(contract);
+    // beta.14 scope filter. If the sub-task declared itself `local`, drop all
+    // remote-scope kinds from the candidate contract even when ambient
+    // wording matched their regexes. This is the authoritative override that
+    // makes beta.11/12/13's whack-a-mole regex heuristics unnecessary for
+    // sub-tasks whose lead marked them correctly.
+    if (subTask.contractScope === "local") {
+        return inferred.filter((c) => !isRemoteScopeKind(c.kind));
+    }
+    // "remote" / "mixed" / undefined: use inference as-is.
+    return inferred;
 }
 /** Remove exact-duplicate contracts (same kind + same path, if applicable). */
 function dedupe(contracts) {
