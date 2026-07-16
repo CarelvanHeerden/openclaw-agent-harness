@@ -282,7 +282,10 @@ export function registerHarnessTools(api, runtime) {
                         filesLikelyTouched: { type: "array", items: { type: "string" } },
                         outOfScope: { type: "array", items: { type: "string" } },
                         repoHint: { type: "string" },
-                        branchHint: { type: "string" },
+                        branchHint: {
+                            type: "string",
+                            description: "Optional branch name hint. NOT authoritative: the harness namespaces all branches under 'harness/' and slugifies the hint, so the actual branch may differ (e.g. 'smoke/x' -> 'harness/smoke-x'). Read the resolved branch from harness_status or harness_session_get after planning.",
+                        },
                         riskLevel: { type: "string", enum: ["low", "medium", "high"] },
                     },
                 },

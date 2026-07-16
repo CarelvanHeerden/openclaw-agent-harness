@@ -190,6 +190,7 @@ export function bootstrapHarnessSync(api) {
                 reposAllowed: config.repos.allowed,
                 timeoutSeconds: config.loop.worker_timeout_seconds,
                 apiKey: await anthropicApiKey(),
+                logger: api.logger,
             });
             return runLeadPlanner(brief, {
                 config,
