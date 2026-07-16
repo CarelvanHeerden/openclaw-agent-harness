@@ -4,7 +4,7 @@ export const PLUGIN_DESCRIPTION =
   "Multi-agent development harness: crystallise -> plan -> execute (Sonnet) -> adversarial review (Fable-5) -> PR.";
 
 export const PLUGIN_VERSION = {
-  pluginVersion: "0.1.0-beta.7",
+  pluginVersion: "0.1.0-beta.8",
   schemaVersion: 1,
   claudeSdkVersion: "0.3.207",
 } as const;

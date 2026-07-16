@@ -564,6 +564,84 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       return pr.htmlUrl;
     },
 
+    // beta.8 fix #1: HARNESS-SIDE observable-side-effect probes. The loop
+    // runs these after every sub-task, independent of the worker. They hit
+    // git / the provider REST API / disk directly so a confabulated
+    // "I pushed" / "I opened a PR" is caught deterministically.
+    worktreeHeadSha: async (worktreePath: string) => git.baseSha(worktreePath).catch(() => ""),
+
+    buildVerifyProbes: ({ plan, requester, worktreePath, baseSha }) => {
+      const resolution = pat.resolve({
+        slackUserId: requester ?? config.slack.authorised_users[0]!,
+        gitHubUser: plan.repo.split("/")[0]!,
+        repoFullName: plan.repo,
+      });
+      return {
+        remoteBranchExists: async (branch: string) => {
+          const b = branch || plan.branch;
+          try {
+            const ghToken = await resolveGitToken(resolution);
+            const [owner, repoName] = plan.repo.split("/");
+            let url: string;
+            if (resolution.provider === "gitlab") {
+              const projectId = encodeURIComponent(`${owner}/${repoName}`);
+              url = `${resolution.apiBase}/projects/${projectId}/repository/branches/${encodeURIComponent(b)}`;
+            } else {
+              url = `${resolution.apiBase}/repos/${owner}/${repoName}/git/refs/heads/${b}`;
+            }
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
+            return { exists: res.status === 200, detail: `${resolution.provider} ref lookup HTTP ${res.status} for ${b}` };
+          } catch (err) {
+            return { exists: false, detail: `ref lookup error: ${String(err)}` };
+          }
+        },
+        prUrlPresent: async () => {
+          // Independently query the provider for an OPEN/ANY PR whose head is
+          // this branch. Do NOT trust a persisted URL alone.
+          try {
+            const ghToken = await resolveGitToken(resolution);
+            const [owner, repoName] = plan.repo.split("/");
+            if (resolution.provider === "gitlab") {
+              const projectId = encodeURIComponent(`${owner}/${repoName}`);
+              const url = `${resolution.apiBase}/projects/${projectId}/merge_requests?source_branch=${encodeURIComponent(plan.branch)}&state=all`;
+              const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}` } });
+              const arr = (await res.json().catch(() => [])) as unknown[];
+              const present = Array.isArray(arr) && arr.length > 0;
+              return { present, url: present ? (arr[0] as { web_url?: string }).web_url : undefined, detail: `gitlab MR count ${Array.isArray(arr) ? arr.length : 0}` };
+            }
+            const url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls?head=${owner}:${encodeURIComponent(plan.branch)}&state=all`;
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
+            const arr = (await res.json().catch(() => [])) as unknown[];
+            const present = Array.isArray(arr) && arr.length > 0;
+            return { present, url: present ? (arr[0] as { html_url?: string }).html_url : undefined, detail: `github PR count ${Array.isArray(arr) ? arr.length : 0}` };
+          } catch (err) {
+            return { present: false, detail: `PR lookup error: ${String(err)}` };
+          }
+        },
+        fileWrittenSince: async (path: string, sinceMs: number) => {
+          try {
+            const abs = resolve(worktreePath, path);
+            const st = await stat(abs);
+            const freshEnough = st.mtimeMs >= sinceMs - 1000;
+            const changed = await git.listChangedFiles(worktreePath, baseSha || (await git.baseSha(worktreePath)));
+            const inDiff = changed.some((f) => resolve(worktreePath, f) === abs);
+            return { written: (sinceMs === 0 ? true : freshEnough) && inDiff, detail: inDiff ? "file changed vs base" : "file not in diff vs base" };
+          } catch (err) {
+            return { written: false, detail: `stat error: ${String(err)}` };
+          }
+        },
+        commitMadeSince: async (base: string) => {
+          try {
+            const head = await git.baseSha(worktreePath);
+            const made = !!base && head !== base;
+            return { made, detail: made ? `HEAD ${head.slice(0, 7)} != base ${base.slice(0, 7)}` : `no new commit (HEAD ${head.slice(0, 7)} == base ${(base || "").slice(0, 7)})` };
+          } catch (err) {
+            return { made: false, detail: `rev-parse error: ${String(err)}` };
+          }
+        },
+      };
+    },
+
     readReactions: async (sessionId) => {
       // Reactions are surfaced via a separate poller (see below) that writes
       // into sessions.reactions_json. Read from there.
