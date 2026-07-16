@@ -2,7 +2,7 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.11`. 239 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: beta.* Version `0.1.0-beta.12`. 248 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 >
 > **beta.10 fix:** the 5 new beta.9 optional verify probes (`fileExistsOnDisk`, `fileCommittedSince`, `remoteBranchSha`, `remoteFileExists`, `prForBranch`, `prFiles`, `localHeadSha`) are now provided by the production `buildVerifyProbes` factories in both the loop-path and worker-path. Beta.9 shipped the graceful-skip fallback but no factory was providing the probes, so 5 of 8 contract kinds were pass-as-skipped in real runs. Beta.10 wires them all to real `fs.stat` / `git log` / `git ls-remote` / provider REST calls. See [CHANGELOG](CHANGELOG.md).
 >
