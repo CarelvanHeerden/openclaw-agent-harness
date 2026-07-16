@@ -112,3 +112,52 @@ All four roles use the **same** Anthropic key; they differ only by model id
 (`models.lead`, `models.worker`, `models.adversary`, `models.classifier`).
 There is currently no per-role key support — one Anthropic account drives the
 whole loop.
+
+## Verification contract kinds (beta.9)
+
+The harness infers **observable-side-effect contracts** for each sub-task and
+verifies them independently after the worker's SDK turn, regardless of the
+worker's `end_turn` signal. The following contract kinds are supported:
+
+| Kind | What it checks | Probe used |
+|------|---------------|-----------|
+| `file_written` | File exists on worktree disk and is non-empty (`fs.stat`). Includes **untracked** files. | `fileExistsOnDisk` (falls back to `fileWrittenSince` for beta.8 compat) |
+| `file_committed` | File appears in `git log <base>..HEAD --name-only`. | `fileCommittedSince` |
+| `branch_pushed` | Remote branch ref exists (`GET /git/refs/heads/{branch}`). | `remoteBranchExists` |
+| `remote_branch_exists` | Same as `branch_pushed` but with explicit SHA detail. | `remoteBranchSha` (falls back to `remoteBranchExists`) |
+| `file_pushed` | File exists in remote branch contents (`GET /contents/{path}?ref={branch}`). | `remoteFileExists` |
+| `pr_opened` | A PR exists for the branch (`GET /pulls?head={owner}:{branch}&state=all`). | `prForBranch` (falls back to `prUrlPresent`) |
+| `pr_state` | PR exists AND is in the expected state (`open` / `draft` / `merged`). | `prForBranch` |
+| `file_in_pr` | File appears in the PR files list. | `prFiles` |
+| `commit_made` | A new commit exists vs the sub-task's base SHA. | `commitMadeSince` |
+| `commit_sha_matches` | Local `git rev-parse HEAD` equals remote branch tip SHA. | `localHeadSha` + `remoteBranchSha` |
+
+### Contract inference
+
+The harness infers contracts from sub-task language automatically:
+
+- `"write/create/add <file>"` → `file_written`
+- `"commit"` (no push) → `commit_made` + `file_committed` (if path known)
+- `"push branch"` → `branch_pushed` + `remote_branch_exists` + `commit_sha_matches`
+- `"verify remote SHA"` / `"verify pushed"` → `remote_branch_exists` + `commit_sha_matches`
+- `"open PR"` / `"open draft PR"` → `pr_opened` + `pr_state`
+- `"end-to-end verification"` → `branch_pushed` + `pr_opened` + `file_pushed` + `file_in_pr`
+
+### Audit events
+
+Each failed verification emits a specific audit event for grep-ability:
+
+| Event | Fired when |
+|-------|-----------|
+| `loop.subtask_verification` | Any verification runs (pass or fail) |
+| `loop.file_written_verify_failed` | `file_written` fails (beta.9) |
+| `loop.file_verify_failed` | Same — also fires for backward compat with beta.8 |
+| `loop.file_committed_verify_failed` | `file_committed` fails |
+| `loop.remote_branch_verify_failed` | `remote_branch_exists` or `branch_pushed` fails |
+| `loop.push_verify_failed` | `branch_pushed` fails — also fires for backward compat |
+| `loop.file_pushed_verify_failed` | `file_pushed` fails |
+| `loop.pr_verify_failed` | `pr_opened` or `pr_state` fails |
+| `loop.pr_state_verify_failed` | `pr_state` fails (specific event) |
+| `loop.file_in_pr_verify_failed` | `file_in_pr` fails |
+| `loop.commit_sha_verify_failed` | `commit_sha_matches` fails |
+| `loop.commit_verify_failed` | `commit_made` fails (backward compat) |
