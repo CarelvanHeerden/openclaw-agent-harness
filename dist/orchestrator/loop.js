@@ -17,6 +17,8 @@
  * driver, so `advance()` can be unit-tested standalone.
  */
 import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
+import { inferVerifyContract } from "./verify-contract.js";
+import { verifySubTaskOutput } from "./verify.js";
 export class OrchestratorLoop {
     deps;
     constructor(deps) {
@@ -161,6 +163,9 @@ export class OrchestratorLoop {
                 const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
                 this.deps.state.db.prepare(`INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, Date.now(), Date.now());
+                // Capture the worktree HEAD BEFORE the worker runs, so commit_made
+                // verification (HEAD != base) is meaningful.
+                const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
                 let result;
                 try {
                     result = await this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester });
@@ -180,29 +185,52 @@ export class OrchestratorLoop {
            SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
            WHERE id = ?`).run(result.status, result.costUsd, JSON.stringify(result.filesChanged), result.commitSha ?? null, result.sdkSessionId ?? null, result.reason ?? null, Date.now(), Date.now(), subTaskId);
                 this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
-                // beta.7 fix #1: audit verification outcome + wasted spend, and
-                // surface it as local runtime data for the adversary (closing the
-                // "runtime: no runtime data" gap for observable-output sub-tasks).
-                if (result.verification) {
-                    this.deps.state.audit("loop.subtask_verification", {
-                        sessionId, seq: st.seq, ok: result.verification.ok,
-                        summary: result.verification.summary,
-                        results: result.verification.results,
-                        wastedSpendUsd: result.wastedSpend ? result.costUsd : 0,
-                    }, sessionId);
-                    if (result.wastedSpend) {
-                        this.deps.logger.warn("[loop] wasted spend: SDK success but verification failed", {
-                            sessionId, seq: st.seq, costUsd: result.costUsd, summary: result.verification.summary,
-                        });
-                    }
-                }
-                // A sub-task that FAILED verification (or otherwise) must not be
-                // treated as satisfied: do not mark it done, and stop the cycle so
-                // the failure is not silently swallowed.
+                // If the worker itself failed/timed out, halt now.
                 if (result.status !== "completed") {
                     failed.err = `subtask_${st.seq}_${result.status}: ${result.reason ?? "no reason"}`;
                     failed.seq = st.seq;
                     return;
+                }
+                // ---- beta.8 fix #1: HARNESS-SIDE verification ----
+                // Regardless of the worker's `end_turn: completed`, the harness
+                // independently verifies any observable side-effect the sub-task
+                // CLAIMS (inferred from its own language, not from the model). This
+                // is what catches a confabulated "I pushed / I opened a PR": we hit
+                // git / the provider API ourselves. Runs even for `completed`.
+                const contract = inferVerifyContract(st);
+                if (contract.length > 0 && this.deps.buildVerifyProbes) {
+                    const probes = this.deps.buildVerifyProbes({
+                        plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
+                    });
+                    const branchHint = contract.reduce((acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc), plan.branch);
+                    let verification;
+                    try {
+                        verification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: 0, baseSha: subTaskBaseSha }, probes);
+                    }
+                    catch (err) {
+                        // A probe error is a verification FAILURE, not a pass. Never let
+                        // an exception silently green-light a confabulated success.
+                        verification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+                    }
+                    this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: verification.ok, contract, summary: verification.summary, results: verification.results }, sessionId);
+                    if (!verification.ok) {
+                        // Emit a per-kind failure event so the failure is greppable and
+                        // the operator sees exactly which observable output was faked.
+                        for (const r of verification.results.filter((x) => !x.passed)) {
+                            const evt = r.kind === "branch_pushed" ? "loop.push_verify_failed"
+                                : r.kind === "pr_opened" ? "loop.pr_verify_failed"
+                                    : r.kind === "file_written" ? "loop.file_verify_failed"
+                                        : "loop.commit_verify_failed";
+                            this.deps.state.audit(evt, { sessionId, seq: st.seq, detail: r.detail }, sessionId);
+                        }
+                        this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`).run(`verification failed: ${verification.summary}`, Date.now(), subTaskId);
+                        this.deps.logger.warn("[loop] harness-side verification FAILED (worker confabulated success)", {
+                            sessionId, seq: st.seq, costUsd: result.costUsd, summary: verification.summary,
+                        });
+                        failed.err = `subtask_${st.seq}_failed_verification: ${verification.summary}`;
+                        failed.seq = st.seq;
+                        return;
+                    }
                 }
                 done.add(st.seq);
             };
