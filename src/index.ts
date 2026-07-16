@@ -142,6 +142,14 @@ export interface HarnessRuntime {
     | { kind: "clarify"; question: string; costUsd: number }
     | { kind: "reject"; intent: "not_dev" | "unsafe"; reason: string; costUsd: number }
   >;
+  /**
+   * Resolve the Anthropic API key for the embedded Claude Agent SDK.
+   * Vault-first (`models.auth.credential_service`), then env fallback
+   * (`models.auth.api_key_env`, default ANTHROPIC_API_KEY). Memoised.
+   * Returns `undefined` if neither is configured/resolvable, in which case
+   * the SDK keeps its default behaviour (may fall back to `/login`).
+   */
+  anthropicApiKey: () => Promise<string | undefined>;
   disposers: Array<() => void | Promise<void>>;
   /**
    * Promise for the async bootstrap phase (reactions poller start,
@@ -182,11 +190,13 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         model: config.models.classifier,
         userText,
         timeoutSeconds: 60,
+        apiKey: await anthropicApiKey(),
       }),
       callCrystalliser: async () => runCrystalliserSdk({
         model: config.models.lead,
         userText,
         timeoutSeconds: 120,
+        apiKey: await anthropicApiKey(),
       }),
     });
     // crystallisePrompt returns a discriminated union; add cost=0 for now
@@ -221,6 +231,43 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     },
   });
 
+  // Anthropic API key resolver for the embedded Claude Agent SDK.
+  // Vault-first, then env fallback. Memoised (including the "not found"
+  // result) so we only hit the vault once per runtime generation.
+  let anthropicKeyResolved = false;
+  let anthropicKeyValue: string | undefined;
+  const anthropicApiKey = async (): Promise<string | undefined> => {
+    if (anthropicKeyResolved) return anthropicKeyValue;
+    anthropicKeyResolved = true;
+    const auth = config.models.auth ?? {};
+    // 1) Vault (preferred).
+    if (auth.credential_service) {
+      try {
+        const v = await creds.getToken(auth.credential_service, "api_key");
+        if (v) {
+          anthropicKeyValue = v;
+          api.logger.info("[harness] anthropic key resolved from vault", { service: auth.credential_service });
+          return anthropicKeyValue;
+        }
+      } catch (err) {
+        api.logger.warn("[harness] anthropic vault lookup failed; trying env fallback", { service: auth.credential_service, err: String(err) });
+      }
+    }
+    // 2) Env fallback.
+    const envName = auth.api_key_env || "ANTHROPIC_API_KEY";
+    const envVal = process.env[envName];
+    if (envVal) {
+      anthropicKeyValue = envVal;
+      api.logger.info("[harness] anthropic key resolved from env", { envVar: envName });
+      return anthropicKeyValue;
+    }
+    api.logger.warn(
+      "[harness] no Anthropic API key resolved (vault + env both empty); SDK may fall back to interactive /login and fail in headless containers",
+      { credentialService: auth.credential_service || "(unset)", envVar: envName },
+    );
+    return undefined;
+  };
+
   const git = new GitAdapter({
     worktreesRoot: config.storage.worktree_root,
     logger: api.logger,
@@ -246,6 +293,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         brief,
         reposAllowed: config.repos.allowed,
         timeoutSeconds: config.loop.worker_timeout_seconds,
+        apiKey: await anthropicApiKey(),
       });
       return runLeadPlanner(brief, {
         config,
@@ -290,7 +338,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           config,
           logger: api.logger,
           buildCanUseTool: () => canUseTool,
-          runWorkerModel: (params) => runWorkerSdk(params),
+          runWorkerModel: async (params) => runWorkerSdk({ ...params, apiKey: await anthropicApiKey() }),
           gitBaseSha: (wt) => git.baseSha(wt),
           gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),
           gitCommit: (wt, msg, id) => git.commit(wt, msg, id),
@@ -318,7 +366,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           logger: api.logger,
           readDiff: async (p) => (await readFile(p, "utf8")),
           callAdversaryModel: async (params) => {
-            const r = await runAdversarySdk(params);
+            const r = await runAdversarySdk({ ...params, apiKey: await anthropicApiKey() });
             return {
               parsed: {
                 verdict: r.parsed.verdict,
@@ -450,6 +498,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   const runtime: HarnessRuntime = {
     config, state, budget, pat, loop, listener, dispatcher, slack, git, creds,
     crystallise,
+    anthropicApiKey,
     disposers: [],
   };
 
