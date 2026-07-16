@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.0-beta.11] -- 2026-07-16
+
+### Fixed
+
+- **Duplicate `loop.remote_branch_verify_failed` audit event on push failures.** Discovered by the beta.10 Staging smoke test: a single `push branch` sub-task fired `loop.remote_branch_verify_failed` twice (once from the `branch_pushed` contract kind's case in `loop.ts`, once from the `remote_branch_exists` case), because contract inference stacks both kinds for push language and both cases in the audit-emission switch emitted the same new event name. Fix: `branch_pushed` case now fires **only** its backward-compat `loop.push_verify_failed`; `remote_branch_exists` owns `loop.remote_branch_verify_failed` alone. Each event now fires exactly once per contract kind. Old audit consumers still see `loop.push_verify_failed`; new consumers still see `loop.remote_branch_verify_failed`. No API changes.
+
+### Tests
+
+- New assertion in `tests/loop-integration.test.mjs`: a push sub-task with both `branch_pushed` and `remote_branch_exists` in its inferred contract fires each of `loop.push_verify_failed`, `loop.remote_branch_verify_failed`, `loop.commit_sha_verify_failed` **exactly once**. Would fail against the pre-beta.11 duplicate-emission code.
+
+- Full suite: **238 -> 239 tests passing**, 0 fail, 0 skip. Typecheck clean.
+
+---
+
 ## [0.1.0-beta.10] -- 2026-07-16
 
 ### Fixed
