@@ -50,7 +50,14 @@ The surrounding `plugins.entries[<id>]` object also supports an `enabled` boolea
             "lead":       "claude-fable-5",
             "worker":     "claude-sonnet-5",
             "adversary":  "claude-fable-5",
-            "classifier": "claude-haiku-4-5"     // intent classification
+            "classifier": "claude-haiku-4-5",    // intent classification
+            // Anthropic API key for the embedded Claude Agent SDK.
+            // Vault-first, then env fallback. REQUIRED for headless/Docker
+            // (else the SDK falls back to interactive /login). See docs/AUTH.md.
+            "auth": {
+              "credential_service": "anthropic-harness",  // vault service (type api_key), preferred
+              "api_key_env":        "ANTHROPIC_API_KEY"   // env fallback (default shown)
+            }
           },
 
           // Loop controller
@@ -140,6 +147,20 @@ The absolute minimum to boot the plugin cleanly is four fields:
 Everything else takes sensible defaults from `src/config.schema.json`.
 
 ## Key sections
+
+### Model auth (Anthropic API key)
+
+`models.auth` controls how the embedded `@anthropic-ai/claude-agent-sdk`
+authenticates. Resolution is **vault-first, then env**:
+
+- `credential_service` — vault credential name (type `api_key`). Preferred.
+- `api_key_env` — env-var name used as fallback (default `ANTHROPIC_API_KEY`).
+
+Without a resolvable key the SDK falls back to interactive `/login`, which
+fails in a headless container (`Not logged in · Please run /login`).
+`harness_health` surfaces this as a fatal `model_auth_resolvable` check;
+`harness_health { deep: true }` additionally verifies the key authenticates.
+Full guide: `docs/AUTH.md`.
 
 ### PAT routing
 

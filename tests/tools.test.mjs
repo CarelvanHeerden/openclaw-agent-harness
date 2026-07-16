@@ -63,11 +63,14 @@ function makeRuntime() {
     loopCalls,
     crystalliseCalls,
     crystallise,
+    // Default: a key resolves (so model_auth_resolvable passes). Tests that
+    // want to exercise the missing-key path override runtime.anthropicApiKey.
+    anthropicApiKey: async () => "sk-test-key",
     config: {
       storage: { audit_retention_days: 90, prune_terminal_sessions: false, prune_terminal_sessions_days: 365 },
       slack: { listener_enabled: false, channel: "C1", authorised_users: ["U1"] },
       repos: { allowed: ["o/*"] },
-      models: { lead: "l", worker: "w", adversary: "a", classifier: "c" },
+      models: { lead: "l", worker: "w", adversary: "a", classifier: "c", auth: { credential_service: "anthropic-x" } },
       budgets: { session_default_usd: 50 },
     },
   };
@@ -213,7 +216,7 @@ test("harness_upload_logs: unauthorised uploader rejected",
   });
 
 test("harness_health: reports OK when config + schema are minimally valid",
-  { skip: registerHarnessTools === null }, () => {
+  { skip: registerHarnessTools === null }, async () => {
     const runtime = makeRuntime();
     // Minimally-valid config: channel, users, repos allow-list
     runtime.config.slack = { channel: "C_TEST", authorised_users: ["U1"], reactions: {}, credential_service: "slack-x" };
@@ -221,25 +224,45 @@ test("harness_health: reports OK when config + schema are minimally valid",
     runtime.config.vercel = { enabled: false };
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
-    const res = tools.get("harness_health").execute({});
+    const res = await tools.get("harness_health").execute({});
     assert.equal(res.details.ok, true);
     const dbCheck = res.details.checks.find((c) => c.name === "db_reachable");
     assert.equal(dbCheck.ok, true);
     const chanCheck = res.details.checks.find((c) => c.name === "config_slack_channel");
     assert.equal(chanCheck.detail, "C_TEST");
+    // model_auth check present and green (stub resolves a key).
+    const authCheck = res.details.checks.find((c) => c.name === "model_auth_resolvable");
+    assert.equal(authCheck.ok, true);
   });
 
 test("harness_health: DEGRADED when config missing repos",
-  { skip: registerHarnessTools === null }, () => {
+  { skip: registerHarnessTools === null }, async () => {
     const runtime = makeRuntime();
     runtime.config.slack = { channel: "C_TEST", authorised_users: ["U1"], reactions: {} };
     runtime.config.repos = { allowed: [] };
     runtime.config.vercel = { enabled: false };
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
-    const res = tools.get("harness_health").execute({});
+    const res = await tools.get("harness_health").execute({});
     assert.equal(res.details.ok, false);
     assert.match(res.content[0].text, /DEGRADED/);
+  });
+
+test("harness_health: DEGRADED when no Anthropic key resolves (model_auth fatal)",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    runtime.config.slack = { channel: "C_TEST", authorised_users: ["U1"], reactions: {} };
+    runtime.config.repos = { allowed: ["o/r"] };
+    runtime.config.vercel = { enabled: false };
+    runtime.config.models.auth = { credential_service: "", api_key_env: "ANTHROPIC_API_KEY" };
+    runtime.anthropicApiKey = async () => undefined;   // no key anywhere
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = await tools.get("harness_health").execute({});
+    assert.equal(res.details.ok, false, "missing model auth must degrade health");
+    const authCheck = res.details.checks.find((c) => c.name === "model_auth_resolvable");
+    assert.equal(authCheck.ok, false);
+    assert.match(authCheck.detail, /login|no key/i);
   });
 
 test("harness_cancel: sets abort flag on non-terminal session",

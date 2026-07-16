@@ -372,9 +372,19 @@ export function registerHarnessTools(api, runtime) {
     })));
     disposers.push(toDispose(api.registerTool({
         name: "harness_health",
-        description: "Return a health snapshot: DB reachable, schema OK, config well-formed, credentials configured. For smoke tests + monitoring.",
-        parameters: { type: "object", properties: {}, additionalProperties: false },
-        execute: (_callId, _params) => {
+        description: "Return a health snapshot: DB reachable, schema OK, config well-formed, model auth resolvable, credentials configured. For smoke tests + monitoring. Pass { deep: true } to also do a tiny live SDK ping that verifies the Anthropic key actually authenticates (costs a few tokens).",
+        parameters: {
+            type: "object",
+            properties: {
+                deep: {
+                    type: "boolean",
+                    description: "If true, perform a minimal live SDK call to verify the Anthropic key authenticates (catches expired/invalid keys, not just missing ones). Costs a few tokens.",
+                },
+            },
+            additionalProperties: false,
+        },
+        execute: async (_callId, input) => {
+            const { deep } = (input ?? {});
             const checks = [];
             // DB reachable?
             try {
@@ -396,10 +406,67 @@ export function registerHarnessTools(api, runtime) {
             checks.push({ name: "config_slack_channel", ok: !!liveConfig().slack.channel, detail: liveConfig().slack.channel });
             checks.push({ name: "config_authorised_users", ok: liveConfig().slack.authorised_users.length > 0 });
             checks.push({ name: "config_repos_allowed", ok: liveConfig().repos.allowed.length > 0 });
+            // Model auth: can we resolve an Anthropic API key for the embedded
+            // Claude Agent SDK? A missing key means the FIRST session plan dies
+            // immediately with "Not logged in" -- so this is FATAL to overall
+            // health, closing the gap between "healthy" and "able to plan".
+            const auth = liveConfig().models.auth ?? {};
+            let apiKey;
+            try {
+                const resolver = liveRuntime().anthropicApiKey;
+                apiKey = typeof resolver === "function" ? await resolver() : undefined;
+            }
+            catch (err) {
+                checks.push({ name: "model_auth_resolvable", ok: false, detail: String(err) });
+            }
+            if (apiKey !== undefined || !checks.some((c) => c.name === "model_auth_resolvable")) {
+                const src = auth.credential_service
+                    ? `vault:${auth.credential_service}`
+                    : `env:${auth.api_key_env || "ANTHROPIC_API_KEY"}`;
+                checks.push({
+                    name: "model_auth_resolvable",
+                    ok: !!apiKey,
+                    detail: apiKey ? `resolved via ${src}` : `no key from ${src} (SDK will fall back to /login and fail headless)`,
+                });
+            }
+            // Optional deep check: a tiny live SDK call proves the key actually
+            // authenticates (catches expired/invalid keys, not just missing).
+            if (deep) {
+                if (!apiKey) {
+                    checks.push({ name: "model_auth_live_ping", ok: false, detail: "skipped: no key to test" });
+                }
+                else {
+                    try {
+                        const { runClassifierSdk } = await import("../adapters/claude-sdk.js");
+                        await runClassifierSdk({
+                            model: liveConfig().models.classifier,
+                            userText: "ping",
+                            timeoutSeconds: 30,
+                            apiKey,
+                        });
+                        checks.push({ name: "model_auth_live_ping", ok: true, detail: "SDK authenticated" });
+                    }
+                    catch (err) {
+                        const msg = String(err);
+                        const isAuth = /not logged in|\/login|401|unauthor|authentication/i.test(msg);
+                        checks.push({
+                            name: "model_auth_live_ping",
+                            ok: false,
+                            detail: isAuth ? `auth rejected: ${msg.slice(0, 160)}` : `ping failed (non-auth): ${msg.slice(0, 160)}`,
+                        });
+                    }
+                }
+            }
             // Credentials: are we set to talk to Slack/Vercel? (informational, not fatal)
             checks.push({ name: "slack_credential_service_set", ok: !!liveConfig().slack.credential_service });
             checks.push({ name: "vercel_enabled", ok: !!liveConfig().vercel?.enabled });
-            const overall = checks.filter((c) => c.name.startsWith("table_") || c.name === "db_reachable" || c.name.startsWith("config_")).every((c) => c.ok);
+            const overall = checks
+                .filter((c) => c.name.startsWith("table_") ||
+                c.name === "db_reachable" ||
+                c.name.startsWith("config_") ||
+                c.name === "model_auth_resolvable" ||
+                c.name === "model_auth_live_ping")
+                .every((c) => c.ok);
             return {
                 content: [
                     {

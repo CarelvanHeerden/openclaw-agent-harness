@@ -18,6 +18,20 @@
  */
 import type { ClassifierResult, CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan } from "../orchestrator/fable5-lead.js";
+/**
+ * Build the `env` passed to the SDK subprocess.
+ *
+ * The embedded Claude Code binary reads ANTHROPIC_API_KEY from its process
+ * environment. We inherit the parent env and, when the harness has resolved
+ * an explicit key (vault or config env-var), set ANTHROPIC_API_KEY so the
+ * subprocess never falls back to the interactive `/login` session store
+ * (which does not exist in a headless container).
+ *
+ * Returns `undefined` when no explicit key is supplied, so the SDK keeps its
+ * default behaviour (inherit parent env) for local dev where the developer
+ * may already be logged in.
+ */
+export declare function buildSdkEnv(apiKey?: string): Record<string, string> | undefined;
 export interface RunWorkerParams {
     worktreePath: string;
     systemPrompt: string;
@@ -30,6 +44,8 @@ export interface RunWorkerParams {
         allow: boolean;
         reason?: string;
     }>;
+    /** Anthropic API key. Injected into the SDK subprocess env as ANTHROPIC_API_KEY so it never falls back to `/login`. */
+    apiKey?: string;
 }
 export interface RunWorkerResult {
     sdkSessionId: string;
@@ -79,6 +95,7 @@ export declare function runClassifierSdk(params: {
     model: string;
     userText: string;
     timeoutSeconds: number;
+    apiKey?: string;
 }): Promise<ClassifierResult & {
     costUsd: number;
     tokensIn: number;
@@ -88,6 +105,7 @@ export declare function runCrystalliserSdk(params: {
     model: string;
     userText: string;
     timeoutSeconds: number;
+    apiKey?: string;
 }): Promise<CrystallisedBrief & {
     costUsd: number;
     tokensIn: number;
@@ -98,6 +116,7 @@ export declare function runLeadSdk(params: {
     brief: CrystallisedBrief;
     reposAllowed: string[];
     timeoutSeconds: number;
+    apiKey?: string;
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
     costUsd: number;
     tokensIn: number;
@@ -109,6 +128,7 @@ export declare function runAdversarySdk(params: {
     systemPrompt: string;
     diffText: string;
     timeoutSeconds: number;
+    apiKey?: string;
 }): Promise<{
     parsed: {
         verdict: "pass" | "revise" | "block";

@@ -67,6 +67,33 @@ export interface ModelsConfig {
   classifier: string;
   /** Optional per-model price overrides for cost estimation. Set when Anthropic ships new pricing before we release. Keys are model ids (e.g. 'claude-fable-5'). Values are USD per million tokens. */
   price_overrides?: Record<string, { input: number; output: number }>;
+  /**
+   * Anthropic auth for the embedded `@anthropic-ai/claude-agent-sdk`.
+   *
+   * The SDK spawns the bundled Claude Code binary as a subprocess. With no
+   * explicit key it falls back to Claude Code's interactive `/login` session
+   * store, which does not exist in a headless container -> the lead planner
+   * dies immediately with "Not logged in. Please run /login".
+   *
+   * We resolve a key (vault-first, then env) and inject it into the SDK
+   * subprocess env as ANTHROPIC_API_KEY so no `/login` is ever needed.
+   */
+  auth?: ModelsAuthConfig;
+}
+
+export interface ModelsAuthConfig {
+  /**
+   * Vault credential service name holding the Anthropic API key (type
+   * `api_key`). Resolved via the same credential path used for GitHub PATs.
+   * Preferred over `api_key_env` when both are set.
+   */
+  credential_service?: string;
+  /**
+   * Name of the environment variable holding the Anthropic API key. Used
+   * only if `credential_service` is unset or the vault lookup fails.
+   * Default: "ANTHROPIC_API_KEY".
+   */
+  api_key_env?: string;
 }
 
 export interface LoopConfig {
@@ -143,6 +170,10 @@ const DEFAULTS: HarnessConfig = {
     worker: "claude-sonnet-5",
     adversary: "claude-fable-5",
     classifier: "claude-haiku-4-5",
+    auth: {
+      credential_service: "",
+      api_key_env: "ANTHROPIC_API_KEY",
+    },
   },
   loop: {
     max_cycles: 3,

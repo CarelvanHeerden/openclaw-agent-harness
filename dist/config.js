@@ -38,6 +38,10 @@ const DEFAULTS = {
         worker: "claude-sonnet-5",
         adversary: "claude-fable-5",
         classifier: "claude-haiku-4-5",
+        auth: {
+            credential_service: "",
+            api_key_env: "ANTHROPIC_API_KEY",
+        },
     },
     loop: {
         max_cycles: 3,

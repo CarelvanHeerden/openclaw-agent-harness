@@ -75,3 +75,21 @@ test("config: override merges deeply",
     // Untouched sibling
     assert.equal(cfg.budgets.session_hard_ceiling_usd, 200);
   });
+
+test("config: models.auth defaults present, overridable",
+  { skip: parseHarnessConfig === null }, () => {
+    const cfg = parseHarnessConfig(minimalOk);
+    // Defaults: env-var name set, vault service empty.
+    assert.equal(cfg.models.auth.api_key_env, "ANTHROPIC_API_KEY");
+    assert.equal(cfg.models.auth.credential_service, "");
+    // Override merges.
+    const cfg2 = parseHarnessConfig({
+      ...minimalOk,
+      models: { auth: { credential_service: "anthropic-harness" } },
+    });
+    assert.equal(cfg2.models.auth.credential_service, "anthropic-harness");
+    // env default survives partial override.
+    assert.equal(cfg2.models.auth.api_key_env, "ANTHROPIC_API_KEY");
+    // Model ids still default.
+    assert.equal(cfg2.models.lead, "claude-fable-5");
+  });
