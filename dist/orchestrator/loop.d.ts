@@ -148,6 +148,15 @@ export declare class OrchestratorLoop {
      * Pull the latest verification outcome per sub-task from the audit log,
      * to feed the adversary as local runtime data (beta.7 fix #1).
      */
+    /**
+     * beta.8: cheap, unconditional final observable check. Independently asks
+     * the provider whether the branch exists on origin (the single most
+     * important fact: did anything actually reach the remote?). Runs even when
+     * the review budget is exhausted, because it costs ~$0 in tokens and is
+     * the harness's last line of defence against a confabulated "it shipped".
+     * Records loop.cheap_observable_check with the result.
+     */
+    private runCheapObservableCheck;
     private readLocalVerification;
     /**
      * beta.7 fix #2: project the cost of an upcoming sub-task. Prefer the

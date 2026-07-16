@@ -241,13 +241,26 @@ test("loop: threads the session requester into runLead/runWorker/pushBranchAndOp
 
 // --- beta.7 fix #1: verification failure marks sub-task failed ---
 
-test("loop: SDK 'completed' but verification-failed sub-task does NOT ship (beta.7 fix #1)",
+// beta.8 fix #1 (THE beta.6/beta.7 confabulation repro, done as Carel specced).
+//
+// This is the test that Phase 2 of the beta.7 smoke should have failed on.
+// The worker returns `end_turn: completed` with a confabulated success (as
+// the real SDK did). The push NEVER happened (mock remote returns 404). The
+// HARNESS must independently catch this via its own probes, mark the
+// sub-task failed_verification, emit loop.push_verify_failed, and halt the
+// cycle -- WITHOUT the worker or lead ever declaring a `verify` contract.
+test("loop: worker confabulates 'completed' push but branch is NOT on remote -> failed_verification (beta.8 fix #1)",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "SV1", 50);
     const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
-    const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/wt", subTasks: [{ seq:1, title:"push", intent:"push", filesLikelyTouched:[], successCriteria:["pushed"], estimatedTokens:100, verify:[{kind:"branch_pushed"}] }], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
-    let adversaryCalled = false, prCalled = false;
+    // NOTE: no `verify` field on the sub-task. The harness INFERS the
+    // contract from the language ("Push branch to origin"), exactly like a
+    // real lead-produced plan.
+    const plan = { repo: "o/r", branch: "harness/smoke", worktreePath: "/wt", subTasks: [
+      { seq:1, title:"Push branch to origin + verify remote SHA", intent:"git push the branch to origin", filesLikelyTouched:[], successCriteria:["branch exists on origin"], estimatedTokens:100 },
+    ], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
+    let adversaryCalled = false, prCalled = false, probedBranch = false;
     const loop = new OrchestratorLoop({
       config: config(),
       state,
@@ -255,21 +268,69 @@ test("loop: SDK 'completed' but verification-failed sub-task does NOT ship (beta
       pat: new PatRouter(config().pat_routing),
       logger: { info() {}, warn() {}, error() {} },
       runLead: async () => plan,
-      // Worker reports success from SDK but verification proved the push
-      // never happened -> status forced to failed, wastedSpend flagged.
-      runWorker: async () => ({ status: "failed", filesChanged: [], costUsd: 0.90, tokensIn: 1, tokensOut: 1, reason: "verification_failed: branch_pushed (HTTP 404)", verification: { ok: false, results: [{kind:"branch_pushed",passed:false,detail:"HTTP 404"}], summary: "branch_pushed (HTTP 404)" }, wastedSpend: true }),
+      // Worker LIES: reports SDK success, no error.
+      runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0.12, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
       runAdversary: async () => { adversaryCalled = true; return { verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }; },
       pushBranchAndOpenPr: async () => { prCalled = true; return "https://x/pr/1"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => "basesha",
+      // Mock remote: branch does NOT exist (the beta.6/7 ground truth: 404).
+      buildVerifyProbes: () => ({
+        remoteBranchExists: async () => { probedBranch = true; return { exists: false, detail: "github ref lookup HTTP 404" }; },
+        prUrlPresent: async () => ({ present: false, detail: "github PR count 0" }),
+        fileWrittenSince: async () => ({ written: false, detail: "n/a" }),
+        commitMadeSince: async () => ({ made: false, detail: "n/a" }),
+      }),
     });
     const outcome = await loop.run("SV1", brief);
     assert.equal(outcome.status, "failed", "must not ship a confabulated success");
+    assert.equal(probedBranch, true, "harness must independently probe the remote");
     assert.equal(prCalled, false, "must not open a PR when a sub-task failed verification");
-    assert.equal(adversaryCalled, false, "cycle halts before review on sub-task failure");
-    // Wasted spend was audited.
-    const wasted = state.audits.find((a) => a.event === "loop.subtask_verification");
-    assert.ok(wasted, "verification outcome should be audited");
-    assert.equal(wasted.payload.ok, false);
+    assert.equal(adversaryCalled, false, "cycle halts before review on verification failure");
+    // Audit trail: generic verification event + specific push failure event.
+    const verif = state.audits.find((a) => a.event === "loop.subtask_verification");
+    assert.ok(verif, "verification outcome should be audited");
+    assert.equal(verif.payload.ok, false);
+    assert.ok(state.audits.find((a) => a.event === "loop.push_verify_failed"), "loop.push_verify_failed must be emitted");
+    // Sub-task row reflects failed_verification.
+    const row = state.db.prepare(`SELECT status FROM sub_tasks WHERE session_id = 'SV1' AND seq = 1`).get();
+    assert.equal(row.status, "failed_verification");
+  });
+
+// beta.8 fix #1: the mirror case -- when the push REALLY happened, the same
+// inferred-contract path must PASS and proceed to ship. Guards against a
+// verifier that just always fails.
+test("loop: real push (branch on remote) passes harness verification and ships (beta.8 fix #1)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "SV2", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = { repo: "o/r", branch: "harness/smoke", worktreePath: "/wt", subTasks: [
+      { seq:1, title:"Push branch to origin", intent:"git push the branch", filesLikelyTouched:[], successCriteria:["branch exists on origin"], estimatedTokens:100 },
+    ], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0.10, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => "basesha",
+      buildVerifyProbes: () => ({
+        remoteBranchExists: async () => ({ exists: true, detail: "github ref lookup HTTP 200" }),
+        prUrlPresent: async () => ({ present: true, url: "https://x/pr/1", detail: "github PR count 1" }),
+        fileWrittenSince: async () => ({ written: true, detail: "ok" }),
+        commitMadeSince: async () => ({ made: true, detail: "ok" }),
+      }),
+    });
+    const outcome = await loop.run("SV2", brief);
+    assert.equal(outcome.status, "shipped");
+    const verif = state.audits.find((a) => a.event === "loop.subtask_verification");
+    assert.ok(verif && verif.payload.ok === true, "verification should pass for a real push");
   });
 
 // --- beta.7 fix #2: projected-cost gating before a sub-task ---

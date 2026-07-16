@@ -282,6 +282,13 @@ export class OrchestratorLoop {
                 const reactions = await this.deps.readReactions(sessionId);
                 const reviewEstimate = this.estimateReviewCost(subTaskCosts);
                 if (!reactions.budgetBump && totalCost + reviewEstimate > row.budget_usd) {
+                    // beta.8 (adversary point): the adversary was the only actor that
+                    // caught the beta.6 confabulation, and beta.7's review-budget abort
+                    // HID that failure by skipping review on cost. The observable-side-
+                    // effect check is ~$0 in tokens, so run it UNCONDITIONALLY before
+                    // aborting. This is the harness's own trust-but-verify guardrail;
+                    // it must never be bypassed purely on token budget.
+                    await this.runCheapObservableCheck(sessionId, plan, row.requester);
                     this.deps.state.audit("loop.review_budget_abort", { sessionId, cycle, totalCost, reviewEstimate, budget: row.budget_usd }, sessionId);
                     return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
                 }
@@ -370,6 +377,31 @@ export class OrchestratorLoop {
      * Pull the latest verification outcome per sub-task from the audit log,
      * to feed the adversary as local runtime data (beta.7 fix #1).
      */
+    /**
+     * beta.8: cheap, unconditional final observable check. Independently asks
+     * the provider whether the branch exists on origin (the single most
+     * important fact: did anything actually reach the remote?). Runs even when
+     * the review budget is exhausted, because it costs ~$0 in tokens and is
+     * the harness's last line of defence against a confabulated "it shipped".
+     * Records loop.cheap_observable_check with the result.
+     */
+    async runCheapObservableCheck(sessionId, plan, requester) {
+        if (!this.deps.buildVerifyProbes)
+            return;
+        try {
+            const probes = this.deps.buildVerifyProbes({ plan, requester, worktreePath: plan.worktreePath, baseSha: "" });
+            const branch = await probes.remoteBranchExists(plan.branch);
+            this.deps.state.audit("loop.cheap_observable_check", { sessionId, branch: plan.branch, remoteBranchExists: branch.exists, detail: branch.detail }, sessionId);
+            if (!branch.exists) {
+                this.deps.logger.warn("[loop] cheap observable check: branch NOT on remote at abort time", {
+                    sessionId, branch: plan.branch, detail: branch.detail,
+                });
+            }
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] cheap observable check errored", { sessionId, err: String(err) });
+        }
+    }
     readLocalVerification(sessionId) {
         const rows = this.deps.state.db
             .prepare(`SELECT payload FROM audit_log
