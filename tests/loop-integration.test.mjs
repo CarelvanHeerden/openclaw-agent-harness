@@ -689,3 +689,63 @@ test("loop: file_written_verify_failed fires alongside file_verify_failed (backw
     assert.ok(state.audits.find((a) => a.event === "loop.file_written_verify_failed"), "new loop.file_written_verify_failed must fire");
   });
 
+
+// ============================================================
+// beta.10: audit events are not duplicated when contract inference
+// stacks both `branch_pushed` (backward compat) and `remote_branch_exists`
+// (beta.9 richer kind) for the same push sub-task.
+//
+// Before this fix (beta.10 first-cut), a push sub-task produced two
+// `loop.remote_branch_verify_failed` events: one from the `branch_pushed`
+// case (which fired both `push_verify_failed` and `remote_branch_verify_failed`)
+// and one from the `remote_branch_exists` case (which owns the new event).
+// The Staging smoke test flagged this. Fix: `branch_pushed` fires only its
+// backward-compat name; `remote_branch_exists` owns the new name.
+// ============================================================
+
+test("loop: push sub-task fires push_verify_failed AND remote_branch_verify_failed exactly ONCE each (no duplicates)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "S_NODUP1", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = {
+      repo: "o/r", branch: "harness/smoke", worktreePath: "/wt",
+      subTasks: [
+        // "Push branch to origin" language causes inference to produce
+        // branch_pushed + remote_branch_exists + commit_sha_matches.
+        { seq: 1, title: "Push branch to origin", intent: "git push origin harness/smoke", filesLikelyTouched: [], successCriteria: ["branch on remote"], estimatedTokens: 100 },
+      ],
+      reviewChecklist: [], riskLevel: "low", approxCostUsd: 0,
+    };
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0.05, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+      worktreeHeadSha: async () => "basesha",
+      buildVerifyProbes: () => ({
+        // Beta.8 probes all "fail":
+        remoteBranchExists: async () => ({ exists: false, detail: "HTTP 404 (branch_pushed path)" }),
+        prUrlPresent: async () => ({ present: false, detail: "n/a" }),
+        fileWrittenSince: async () => ({ written: false, detail: "n/a" }),
+        commitMadeSince: async () => ({ made: false, detail: "n/a" }),
+        // Beta.9 richer probes also "fail":
+        remoteBranchSha: async () => ({ sha: undefined, detail: "ls-remote empty (remote_branch_exists path)" }),
+        localHeadSha: async () => ({ sha: "localhead", detail: "" }),
+      }),
+    });
+    const outcome = await loop.run("S_NODUP1", brief);
+    assert.equal(outcome.status, "failed");
+    const push_events = state.audits.filter((a) => a.event === "loop.push_verify_failed");
+    const remote_events = state.audits.filter((a) => a.event === "loop.remote_branch_verify_failed");
+    const sha_events = state.audits.filter((a) => a.event === "loop.commit_sha_verify_failed");
+    assert.equal(push_events.length, 1, `expected exactly one loop.push_verify_failed; got ${push_events.length}: ${JSON.stringify(push_events.map((e) => e.payload?.detail))}`);
+    assert.equal(remote_events.length, 1, `expected exactly one loop.remote_branch_verify_failed; got ${remote_events.length}: ${JSON.stringify(remote_events.map((e) => e.payload?.detail))}`);
+    assert.equal(sha_events.length, 1, `expected exactly one loop.commit_sha_verify_failed; got ${sha_events.length}`);
+  });
