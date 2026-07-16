@@ -15,6 +15,9 @@
 import { DatabaseSync } from "node:sqlite";
 export interface StateStore {
     db: DatabaseSync;
+    /** True while the underlying `DatabaseSync` handle is open. */
+    isOpen: () => boolean;
+    /** Idempotent. Safe to call more than once (e.g. double teardown). */
     close: () => void;
     audit: (event: string, payload: unknown, sessionId?: string) => void;
 }

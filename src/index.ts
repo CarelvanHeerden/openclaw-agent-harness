@@ -30,6 +30,7 @@ import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
+import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { createPullRequest } from "./adapters/github.js";
@@ -614,6 +615,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   }
 
   currentRuntime = runtime;
+  setCurrentRuntime(runtime as unknown as import("./runtime-registry.js").RuntimeLike);
   return runtime;
 }
 
@@ -802,6 +804,7 @@ export default definePluginEntry({
       pluginApi.logger.info("[harness] re-registering; scheduling teardown of previous runtime");
       const doomed = currentRuntime;
       currentRuntime = null;
+      setCurrentRuntime(null);
       // Fire-and-forget: we can't await teardown here without violating the
       // sync-register contract. teardown() awaits doomed.asyncBootstrap so
       // it doesn't tear down mid-bootstrap.
