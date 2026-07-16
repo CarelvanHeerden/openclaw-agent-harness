@@ -448,6 +448,159 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                 return { made: false, detail: `rev-parse error: ${String(err)}` };
               }
             },
+
+            // ---- beta.10 optional probes (worker path). Mirrors the loop-path
+            // factory so sub-task verification hits the same real endpoints
+            // regardless of who's driving verification. ----
+
+            fileExistsOnDisk: async (path: string) => {
+              try {
+                const abs = resolve(worktreePath, path);
+                const st = await stat(abs);
+                const exists = st.isFile();
+                const nonEmpty = st.size > 0;
+                return {
+                  exists,
+                  nonEmpty,
+                  detail: exists
+                    ? nonEmpty
+                      ? `file present (${st.size} bytes)`
+                      : "file present but empty"
+                    : "path exists but is not a regular file",
+                };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                return { exists: false, nonEmpty: false, detail: `stat error: ${msg}` };
+              }
+            },
+
+            fileCommittedSince: async (path: string, base: string) => {
+              try {
+                const files = await git.listCommittedFiles(worktreePath, base);
+                const absTarget = resolve(worktreePath, path);
+                const committed = files.some((f) => resolve(worktreePath, f) === absTarget || f === path);
+                return {
+                  committed,
+                  detail: committed
+                    ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD (${files.length} file(s) total)`
+                    : `file not in commits since base (${files.length} file(s) checked)`,
+                };
+              } catch (err) {
+                return { committed: false, detail: `git log error: ${String(err)}` };
+              }
+            },
+
+            remoteBranchSha: async (branch: string) => {
+              try {
+                const ghToken = await resolveGitToken(resolution).catch(() => undefined);
+                const sha = await git.remoteBranchSha(worktreePath, "origin", branch, ghToken);
+                return {
+                  sha,
+                  detail: sha ? `origin/${branch} tip ${sha.slice(0, 12)}` : `origin has no ref for ${branch}`,
+                };
+              } catch (err) {
+                return { sha: undefined, detail: `ls-remote error: ${String(err)}` };
+              }
+            },
+
+            remoteFileExists: async (path: string, branch: string) => {
+              try {
+                const ghToken = await resolveGitToken(resolution);
+                const [owner, repoName] = plan.repo.split("/");
+                let url: string;
+                if (resolution.provider === "gitlab") {
+                  const projectId = encodeURIComponent(`${owner}/${repoName}`);
+                  url = `${resolution.apiBase}/projects/${projectId}/repository/files/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`;
+                } else {
+                  url = `${resolution.apiBase}/repos/${owner}/${repoName}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=${encodeURIComponent(branch)}`;
+                }
+                const res = await fetch(url, {
+                  headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
+                });
+                return {
+                  exists: res.status === 200,
+                  detail: `${resolution.provider} contents lookup HTTP ${res.status} for ${path}@${branch}`,
+                };
+              } catch (err) {
+                return { exists: false, detail: `contents lookup error: ${String(err)}` };
+              }
+            },
+
+            prForBranch: async (branch: string) => {
+              try {
+                const ghToken = await resolveGitToken(resolution);
+                const [owner, repoName] = plan.repo.split("/");
+                if (resolution.provider === "gitlab") {
+                  const projectId = encodeURIComponent(`${owner}/${repoName}`);
+                  const url = `${resolution.apiBase}/projects/${projectId}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all`;
+                  const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}` } });
+                  const arr = (await res.json().catch(() => [])) as Array<{ iid?: number; state?: string; draft?: boolean; work_in_progress?: boolean; web_url?: string }>;
+                  const prs = Array.isArray(arr)
+                    ? arr
+                        .filter((m) => typeof m.iid === "number")
+                        .map((m) => ({
+                          number: m.iid as number,
+                          state: m.state ?? "unknown",
+                          draft: !!(m.draft || m.work_in_progress),
+                          url: m.web_url ?? "",
+                        }))
+                    : [];
+                  return { count: prs.length, prs, detail: `gitlab MR count ${prs.length} for source_branch=${branch}` };
+                }
+                const url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all`;
+                const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
+                const arr = (await res.json().catch(() => [])) as Array<{ number?: number; state?: string; draft?: boolean; html_url?: string }>;
+                const prs = Array.isArray(arr)
+                  ? arr
+                      .filter((p) => typeof p.number === "number")
+                      .map((p) => ({
+                        number: p.number as number,
+                        state: p.state ?? "unknown",
+                        draft: !!p.draft,
+                        url: p.html_url ?? "",
+                      }))
+                  : [];
+                return { count: prs.length, prs, detail: `github PR count ${prs.length} for head=${owner}:${branch}` };
+              } catch (err) {
+                return { count: 0, prs: [], detail: `PR lookup error: ${String(err)}` };
+              }
+            },
+
+            prFiles: async (prNumber: number) => {
+              try {
+                const ghToken = await resolveGitToken(resolution);
+                const [owner, repoName] = plan.repo.split("/");
+                let url: string;
+                if (resolution.provider === "gitlab") {
+                  const projectId = encodeURIComponent(`${owner}/${repoName}`);
+                  url = `${resolution.apiBase}/projects/${projectId}/merge_requests/${prNumber}/changes`;
+                  const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}` } });
+                  const j = (await res.json().catch(() => ({}))) as { changes?: Array<{ new_path?: string; old_path?: string }> };
+                  const files = (j.changes ?? [])
+                    .map((c) => ({ filename: c.new_path ?? c.old_path ?? "" }))
+                    .filter((f) => f.filename);
+                  return { files, detail: `gitlab MR !${prNumber} changes ${files.length}` };
+                }
+                url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls/${prNumber}/files?per_page=100`;
+                const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
+                const arr = (await res.json().catch(() => [])) as Array<{ filename?: string }>;
+                const files = Array.isArray(arr)
+                  ? arr.filter((f) => typeof f.filename === "string").map((f) => ({ filename: f.filename as string }))
+                  : [];
+                return { files, detail: `github PR #${prNumber} files ${files.length}` };
+              } catch (err) {
+                return { files: [], detail: `PR files lookup error: ${String(err)}` };
+              }
+            },
+
+            localHeadSha: async () => {
+              try {
+                const sha = await git.baseSha(worktreePath);
+                return { sha, detail: `worktree HEAD ${sha.slice(0, 12)}` };
+              } catch (err) {
+                return { sha: "", detail: `rev-parse error: ${String(err)}` };
+              }
+            },
           }),
         },
         resumeSessionId,
@@ -637,6 +790,164 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             return { made, detail: made ? `HEAD ${head.slice(0, 7)} != base ${base.slice(0, 7)}` : `no new commit (HEAD ${head.slice(0, 7)} == base ${(base || "").slice(0, 7)})` };
           } catch (err) {
             return { made: false, detail: `rev-parse error: ${String(err)}` };
+          }
+        },
+
+        // ---- beta.10 optional probes (fully wired) ----
+
+        /** file_written kind: fs.stat on the worktree. Includes untracked files (fixes beta.8 bug). */
+        fileExistsOnDisk: async (path: string) => {
+          try {
+            const abs = resolve(worktreePath, path);
+            const st = await stat(abs);
+            const exists = st.isFile();
+            const nonEmpty = st.size > 0;
+            return {
+              exists,
+              nonEmpty,
+              detail: exists
+                ? nonEmpty
+                  ? `file present (${st.size} bytes)`
+                  : "file present but empty"
+                : "path exists but is not a regular file",
+            };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return { exists: false, nonEmpty: false, detail: `stat error: ${msg}` };
+          }
+        },
+
+        /** file_committed kind: file appears in `git log base..HEAD --name-only`. */
+        fileCommittedSince: async (path: string, base: string) => {
+          try {
+            const files = await git.listCommittedFiles(worktreePath, base);
+            const absTarget = resolve(worktreePath, path);
+            const committed = files.some((f) => resolve(worktreePath, f) === absTarget || f === path);
+            return {
+              committed,
+              detail: committed
+                ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD (${files.length} file(s) total)`
+                : `file not in commits since base (${files.length} file(s) checked)`,
+            };
+          } catch (err) {
+            return { committed: false, detail: `git log error: ${String(err)}` };
+          }
+        },
+
+        /** remote_branch_exists / commit_sha_matches: tip SHA of `branch` on origin via git ls-remote. */
+        remoteBranchSha: async (branch: string) => {
+          try {
+            const ghToken = await resolveGitToken(resolution).catch(() => undefined);
+            const sha = await git.remoteBranchSha(worktreePath, "origin", branch, ghToken);
+            return {
+              sha,
+              detail: sha ? `origin/${branch} tip ${sha.slice(0, 12)}` : `origin has no ref for ${branch}`,
+            };
+          } catch (err) {
+            return { sha: undefined, detail: `ls-remote error: ${String(err)}` };
+          }
+        },
+
+        /** file_pushed: GET /repos/{owner}/{repo}/contents/{path}?ref={branch}. Provider-aware. */
+        remoteFileExists: async (path: string, branch: string) => {
+          try {
+            const ghToken = await resolveGitToken(resolution);
+            const [owner, repoName] = plan.repo.split("/");
+            let url: string;
+            if (resolution.provider === "gitlab") {
+              const projectId = encodeURIComponent(`${owner}/${repoName}`);
+              url = `${resolution.apiBase}/projects/${projectId}/repository/files/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`;
+            } else {
+              url = `${resolution.apiBase}/repos/${owner}/${repoName}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=${encodeURIComponent(branch)}`;
+            }
+            const res = await fetch(url, {
+              headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
+            });
+            return {
+              exists: res.status === 200,
+              detail: `${resolution.provider} contents lookup HTTP ${res.status} for ${path}@${branch}`,
+            };
+          } catch (err) {
+            return { exists: false, detail: `contents lookup error: ${String(err)}` };
+          }
+        },
+
+        /** pr_opened / pr_state / file_in_pr helper: PRs whose head is `branch`. Provider-aware. */
+        prForBranch: async (branch: string) => {
+          try {
+            const ghToken = await resolveGitToken(resolution);
+            const [owner, repoName] = plan.repo.split("/");
+            if (resolution.provider === "gitlab") {
+              const projectId = encodeURIComponent(`${owner}/${repoName}`);
+              const url = `${resolution.apiBase}/projects/${projectId}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all`;
+              const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}` } });
+              const arr = (await res.json().catch(() => [])) as Array<{ iid?: number; state?: string; draft?: boolean; work_in_progress?: boolean; web_url?: string }>;
+              const prs = Array.isArray(arr)
+                ? arr
+                    .filter((m) => typeof m.iid === "number")
+                    .map((m) => ({
+                      number: m.iid as number,
+                      state: m.state ?? "unknown",
+                      draft: !!(m.draft || m.work_in_progress),
+                      url: m.web_url ?? "",
+                    }))
+                : [];
+              return { count: prs.length, prs, detail: `gitlab MR count ${prs.length} for source_branch=${branch}` };
+            }
+            const url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all`;
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
+            const arr = (await res.json().catch(() => [])) as Array<{ number?: number; state?: string; draft?: boolean; html_url?: string }>;
+            const prs = Array.isArray(arr)
+              ? arr
+                  .filter((p) => typeof p.number === "number")
+                  .map((p) => ({
+                    number: p.number as number,
+                    state: p.state ?? "unknown",
+                    draft: !!p.draft,
+                    url: p.html_url ?? "",
+                  }))
+              : [];
+            return { count: prs.length, prs, detail: `github PR count ${prs.length} for head=${owner}:${branch}` };
+          } catch (err) {
+            return { count: 0, prs: [], detail: `PR lookup error: ${String(err)}` };
+          }
+        },
+
+        /** file_in_pr: GET /repos/.../pulls/{n}/files. Provider-aware. */
+        prFiles: async (prNumber: number) => {
+          try {
+            const ghToken = await resolveGitToken(resolution);
+            const [owner, repoName] = plan.repo.split("/");
+            let url: string;
+            if (resolution.provider === "gitlab") {
+              const projectId = encodeURIComponent(`${owner}/${repoName}`);
+              url = `${resolution.apiBase}/projects/${projectId}/merge_requests/${prNumber}/changes`;
+              const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}` } });
+              const j = (await res.json().catch(() => ({}))) as { changes?: Array<{ new_path?: string; old_path?: string }> };
+              const files = (j.changes ?? [])
+                .map((c) => ({ filename: c.new_path ?? c.old_path ?? "" }))
+                .filter((f) => f.filename);
+              return { files, detail: `gitlab MR !${prNumber} changes ${files.length}` };
+            }
+            url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls/${prNumber}/files?per_page=100`;
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
+            const arr = (await res.json().catch(() => [])) as Array<{ filename?: string }>;
+            const files = Array.isArray(arr)
+              ? arr.filter((f) => typeof f.filename === "string").map((f) => ({ filename: f.filename as string }))
+              : [];
+            return { files, detail: `github PR #${prNumber} files ${files.length}` };
+          } catch (err) {
+            return { files: [], detail: `PR files lookup error: ${String(err)}` };
+          }
+        },
+
+        /** commit_sha_matches helper: local worktree HEAD SHA. */
+        localHeadSha: async () => {
+          try {
+            const sha = await git.baseSha(worktreePath);
+            return { sha, detail: `worktree HEAD ${sha.slice(0, 12)}` };
+          } catch (err) {
+            return { sha: "", detail: `rev-parse error: ${String(err)}` };
           }
         },
       };

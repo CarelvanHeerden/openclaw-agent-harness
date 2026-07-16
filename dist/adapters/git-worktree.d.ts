@@ -50,6 +50,21 @@ export declare class GitAdapter {
     release(sessionId: string, repoFullName: string): Promise<void>;
     baseSha(worktreePath: string): Promise<string>;
     listChangedFiles(worktreePath: string, base: string): Promise<string[]>;
+    /**
+     * beta.10: files touched by commits in `base..HEAD`.
+     * Unlike `listChangedFiles` (`git diff`) this includes files reachable via
+     * multi-commit history even if the net diff is empty; unlike `git diff` it
+     * still ignores untracked files.
+     * Used by the `file_committed` verify probe.
+     */
+    listCommittedFiles(worktreePath: string, base: string): Promise<string[]>;
+    /**
+     * beta.10: query the remote for a branch's tip SHA via `git ls-remote`.
+     * Returns `undefined` when the branch does not exist on the remote (or the
+     * lookup errors out; the caller treats those the same).
+     * Used by the `remote_branch_exists` / `commit_sha_matches` verify probes.
+     */
+    remoteBranchSha(worktreePath: string, remote: string, branch: string, ghToken?: string): Promise<string | undefined>;
     commit(worktreePath: string, message: string, identity: {
         name: string;
         email: string;

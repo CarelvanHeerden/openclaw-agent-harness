@@ -129,6 +129,52 @@ esac
     return out.split("\n").map((l) => l.trim()).filter(Boolean);
   }
 
+  /**
+   * beta.10: files touched by commits in `base..HEAD`.
+   * Unlike `listChangedFiles` (`git diff`) this includes files reachable via
+   * multi-commit history even if the net diff is empty; unlike `git diff` it
+   * still ignores untracked files.
+   * Used by the `file_committed` verify probe.
+   */
+  async listCommittedFiles(worktreePath: string, base: string): Promise<string[]> {
+    // If HEAD == base (no new commits) return empty; git log would return empty anyway.
+    if (!base) return [];
+    const out = await this.run([
+      "-C", worktreePath, "log", `${base}..HEAD`, "--name-only", "--pretty=format:",
+    ]).catch(() => "");
+    return Array.from(new Set(out.split("\n").map((l) => l.trim()).filter(Boolean)));
+  }
+
+  /**
+   * beta.10: query the remote for a branch's tip SHA via `git ls-remote`.
+   * Returns `undefined` when the branch does not exist on the remote (or the
+   * lookup errors out; the caller treats those the same).
+   * Used by the `remote_branch_exists` / `commit_sha_matches` verify probes.
+   */
+  async remoteBranchSha(
+    worktreePath: string,
+    remote: string,
+    branch: string,
+    ghToken?: string,
+  ): Promise<string | undefined> {
+    const ref = `refs/heads/${branch}`;
+    const ask = ghToken ? await this.makeAskpass(ghToken) : undefined;
+    try {
+      const out = await this.run(
+        ["-C", worktreePath, "ls-remote", remote, ref],
+        undefined,
+        ask?.path,
+      ).catch(() => "");
+      // `<sha>\t<ref>` on match; empty on no such branch.
+      const line = out.split("\n").map((l) => l.trim()).find(Boolean);
+      if (!line) return undefined;
+      const [sha] = line.split(/\s+/);
+      return sha && /^[0-9a-f]{7,40}$/i.test(sha) ? sha : undefined;
+    } finally {
+      await ask?.cleanup();
+    }
+  }
+
   async commit(worktreePath: string, message: string, identity: { name: string; email: string }): Promise<string | null> {
     await this.run(["-C", worktreePath, "add", "-A"]);
     const status = await this.run(["-C", worktreePath, "status", "--porcelain"]);
