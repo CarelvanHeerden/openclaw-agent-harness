@@ -345,19 +345,31 @@ export async function runLeadSdk(params) {
         "    subTasks: SubTask[],",
         "    reviewChecklist: string[],",
         "    riskLevel: 'low'|'medium'|'high' }",
-        "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope?: 'local'|'remote'|'mixed' }",
+        "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope?: 'local'|'remote'|'mixed', taskMode?: 'observe'|'mutate'|'mixed' }",
         "Rules:",
         "- Prefer 3-8 sub-tasks. Hard cap 20.",
         "- Each sub-task must be independently reviewable.",
         "- reviewChecklist has one item per acceptance criterion + one for tests + one for docs.",
-        // beta.14: authoritative scope tagging.
+        // beta.14: authoritative scope axis (local vs remote).
         "- contractScope tells the harness verifier which side-effects to check:",
         "    'local'  = sub-task only touches worktree fs + git (write file, commit, verify local state). NO push. NO PR. NO remote lookup. Use this for ALL observation-only / read-only / write-only / commit-only sub-tasks.",
         "    'remote' = sub-task pushes to origin, opens a PR, verifies remote SHA, or otherwise interacts with the provider (GitHub/GitLab).",
         "    'mixed'  = both local AND remote in the same sub-task. Rare; prefer decomposition when possible.",
         "- If a sub-task says 'Do not push' / 'Do not open a PR' / 'observation only' / 'read-only', it MUST have contractScope: 'local'.",
         "- If a sub-task says 'push branch' / 'open PR' / 'verify remote SHA', it MUST have contractScope: 'remote'.",
-        "- When in doubt, prefer 'local'. Missing the field = harness falls back to regex inference which is less reliable.",
+        // beta.15: authoritative mode axis (observe vs mutate).
+        "- taskMode tells the harness verifier whether the sub-task PRODUCES artifacts or just checks them:",
+        "    'observe' = sub-task is read-only. It does NOT write files, make commits, push, or open PRs. Use for pure verification / assertion / inspection sub-tasks.",
+        "    'mutate'  = sub-task produces new artifacts (writes a file, commits, pushes, opens a PR).",
+        "    'mixed'   = both. Rare; prefer decomposition.",
+        "- If a sub-task is a final 'verify everything is correct' or 'confirm no side effects' step, it MUST have taskMode: 'observe'. Its verify contract should be pure state-check kinds (or empty).",
+        "- If a sub-task writes a file, makes a commit, pushes, or opens a PR, it MUST have taskMode: 'mutate'.",
+        "- The two axes compose: `contractScope=local, taskMode=observe` = purest local read-only check. `contractScope=remote, taskMode=mutate` = push+PR. Etc.",
+        // beta.15: encourage explicit verify:[] on observation sub-tasks.
+        "- Pure-observation sub-tasks that do NOT need any observable-side-effect check may emit `verify: []` explicitly. This is meaningful: it says 'trust the SDK signal, nothing observable to verify'. It's cleaner than relying on inference-then-filter.",
+        "- When in doubt on scope: prefer 'local' + 'observe'. Missing fields = harness falls back to regex inference which is less reliable.",
+        // beta.15: reinforce final-verification pattern.
+        "- A common plan shape: (1) mutation steps with taskMode='mutate', (2) final observation step with taskMode='observe' and verify:[] to confirm the mutation steps completed correctly. The observation step is optional but useful for reviewer clarity.",
         `- reposAllowed: ${JSON.stringify(params.reposAllowed)}`,
         "Output the JSON and nothing else.",
     ].join("\n");

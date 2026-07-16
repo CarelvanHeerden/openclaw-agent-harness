@@ -219,7 +219,17 @@ export class OrchestratorLoop {
                         // beta.9: new specific events + backward-compat old event names
                         // both fire so consumers watching old names keep working.
                         for (const r of verification.results.filter((x) => !x.passed)) {
-                            const payload = { sessionId, seq: st.seq, detail: r.detail };
+                            // beta.15: include base_ref on commit/file_committed audit events
+                            // for debugging clarity. The commit_made check compares HEAD vs
+                            // the worker-session-start SHA (`subTaskBaseSha`), not the
+                            // branch base. Making this explicit in the audit payload lets
+                            // operators tell the difference between "worker didn't commit"
+                            // and "no new commits since sub-task started, which is correct
+                            // for observation-only sub-tasks".
+                            const baseRef = (r.kind === "commit_made" || r.kind === "file_committed")
+                                ? { baseRef: subTaskBaseSha ? subTaskBaseSha.slice(0, 12) : "(unknown)", baseSemantics: "worker-session-start" }
+                                : {};
+                            const payload = { sessionId, seq: st.seq, detail: r.detail, ...baseRef };
                             switch (r.kind) {
                                 case "branch_pushed":
                                     // beta.10: fire ONLY the backward-compat name here. The
