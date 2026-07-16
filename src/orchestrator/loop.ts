@@ -27,6 +27,8 @@ import type { ReviewReport } from "./fable5-adversary.js";
 import type { WorkerResult } from "./sonnet-worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
+import { inferVerifyContract } from "./verify-contract.js";
+import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
 
 export type LoopStatus =
   | "crystallising"
@@ -82,6 +84,21 @@ export interface OrchestratorDeps {
   /** Signal source: user Slack reactions on our messages. */
   readReactions: (sessionId: string) => Promise<{ shipIt: boolean; abort: boolean; pause: boolean; budgetBump: boolean }>;
   reportProgress?: (sessionId: string, status: LoopStatus, meta?: unknown) => Promise<void>;
+
+  /**
+   * beta.8 fix #1 (done right): HARNESS-SIDE observable-side-effect probes.
+   * The loop builds a VerifyProbes for a given plan/branch/worktree and runs
+   * the inferred contract AFTER each sub-task, independent of the worker's
+   * SDK stop reason. This is what actually catches a confabulated "I pushed"
+   * / "I opened a PR" -- the harness hits git / the provider API itself.
+   *
+   * Optional so existing test doubles that don't exercise verification keep
+   * working; when absent, verification is skipped (SDK signal trusted).
+   */
+  buildVerifyProbes?: (params: { plan: LeadPlan; requester: string; worktreePath: string; baseSha: string }) => VerifyProbes;
+
+  /** Read the current HEAD sha of a worktree (for commit_made verification). */
+  worktreeHeadSha?: (worktreePath: string) => Promise<string>;
 }
 
 export class OrchestratorLoop {
@@ -249,6 +266,10 @@ export class OrchestratorLoop {
            VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?)`,
         ).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, Date.now(), Date.now());
 
+        // Capture the worktree HEAD BEFORE the worker runs, so commit_made
+        // verification (HEAD != base) is meaningful.
+        const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+
         let result: WorkerResult;
         try {
           result = await this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester });
@@ -281,35 +302,70 @@ export class OrchestratorLoop {
         );
         this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
 
-        // beta.7 fix #1: audit verification outcome + wasted spend, and
-        // surface it as local runtime data for the adversary (closing the
-        // "runtime: no runtime data" gap for observable-output sub-tasks).
-        if (result.verification) {
-          this.deps.state.audit(
-            "loop.subtask_verification",
-            {
-              sessionId, seq: st.seq, ok: result.verification.ok,
-              summary: result.verification.summary,
-              results: result.verification.results,
-              wastedSpendUsd: result.wastedSpend ? result.costUsd : 0,
-            },
-            sessionId,
-          );
-          if (result.wastedSpend) {
-            this.deps.logger.warn("[loop] wasted spend: SDK success but verification failed", {
-              sessionId, seq: st.seq, costUsd: result.costUsd, summary: result.verification.summary,
-            });
-          }
-        }
-
-        // A sub-task that FAILED verification (or otherwise) must not be
-        // treated as satisfied: do not mark it done, and stop the cycle so
-        // the failure is not silently swallowed.
+        // If the worker itself failed/timed out, halt now.
         if (result.status !== "completed") {
           failed.err = `subtask_${st.seq}_${result.status}: ${result.reason ?? "no reason"}`;
           failed.seq = st.seq;
           return;
         }
+
+        // ---- beta.8 fix #1: HARNESS-SIDE verification ----
+        // Regardless of the worker's `end_turn: completed`, the harness
+        // independently verifies any observable side-effect the sub-task
+        // CLAIMS (inferred from its own language, not from the model). This
+        // is what catches a confabulated "I pushed / I opened a PR": we hit
+        // git / the provider API ourselves. Runs even for `completed`.
+        const contract = inferVerifyContract(st);
+        if (contract.length > 0 && this.deps.buildVerifyProbes) {
+          const probes = this.deps.buildVerifyProbes({
+            plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
+          });
+          const branchHint = contract.reduce<string>(
+            (acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc),
+            plan.branch,
+          );
+          let verification: VerifyOutcome;
+          try {
+            verification = await verifySubTaskOutput(
+              contract,
+              { defaultBranch: branchHint, subTaskStartMs: 0, baseSha: subTaskBaseSha },
+              probes,
+            );
+          } catch (err) {
+            // A probe error is a verification FAILURE, not a pass. Never let
+            // an exception silently green-light a confabulated success.
+            verification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+          }
+
+          this.deps.state.audit(
+            "loop.subtask_verification",
+            { sessionId, seq: st.seq, ok: verification.ok, contract, summary: verification.summary, results: verification.results },
+            sessionId,
+          );
+
+          if (!verification.ok) {
+            // Emit a per-kind failure event so the failure is greppable and
+            // the operator sees exactly which observable output was faked.
+            for (const r of verification.results.filter((x) => !x.passed)) {
+              const evt =
+                r.kind === "branch_pushed" ? "loop.push_verify_failed"
+                : r.kind === "pr_opened" ? "loop.pr_verify_failed"
+                : r.kind === "file_written" ? "loop.file_verify_failed"
+                : "loop.commit_verify_failed";
+              this.deps.state.audit(evt, { sessionId, seq: st.seq, detail: r.detail }, sessionId);
+            }
+            this.deps.state.db.prepare(
+              `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,
+            ).run(`verification failed: ${verification.summary}`, Date.now(), subTaskId);
+            this.deps.logger.warn("[loop] harness-side verification FAILED (worker confabulated success)", {
+              sessionId, seq: st.seq, costUsd: result.costUsd, summary: verification.summary,
+            });
+            failed.err = `subtask_${st.seq}_failed_verification: ${verification.summary}`;
+            failed.seq = st.seq;
+            return;
+          }
+        }
+
         done.add(st.seq);
       };
 
@@ -360,6 +416,13 @@ export class OrchestratorLoop {
         const reactions = await this.deps.readReactions(sessionId);
         const reviewEstimate = this.estimateReviewCost(subTaskCosts);
         if (!reactions.budgetBump && totalCost + reviewEstimate > row.budget_usd) {
+          // beta.8 (adversary point): the adversary was the only actor that
+          // caught the beta.6 confabulation, and beta.7's review-budget abort
+          // HID that failure by skipping review on cost. The observable-side-
+          // effect check is ~$0 in tokens, so run it UNCONDITIONALLY before
+          // aborting. This is the harness's own trust-but-verify guardrail;
+          // it must never be bypassed purely on token budget.
+          await this.runCheapObservableCheck(sessionId, plan, row.requester);
           this.deps.state.audit(
             "loop.review_budget_abort",
             { sessionId, cycle, totalCost, reviewEstimate, budget: row.budget_usd },
@@ -452,6 +515,34 @@ export class OrchestratorLoop {
    * Pull the latest verification outcome per sub-task from the audit log,
    * to feed the adversary as local runtime data (beta.7 fix #1).
    */
+  /**
+   * beta.8: cheap, unconditional final observable check. Independently asks
+   * the provider whether the branch exists on origin (the single most
+   * important fact: did anything actually reach the remote?). Runs even when
+   * the review budget is exhausted, because it costs ~$0 in tokens and is
+   * the harness's last line of defence against a confabulated "it shipped".
+   * Records loop.cheap_observable_check with the result.
+   */
+  private async runCheapObservableCheck(sessionId: string, plan: LeadPlan, requester: string): Promise<void> {
+    if (!this.deps.buildVerifyProbes) return;
+    try {
+      const probes = this.deps.buildVerifyProbes({ plan, requester, worktreePath: plan.worktreePath, baseSha: "" });
+      const branch = await probes.remoteBranchExists(plan.branch);
+      this.deps.state.audit(
+        "loop.cheap_observable_check",
+        { sessionId, branch: plan.branch, remoteBranchExists: branch.exists, detail: branch.detail },
+        sessionId,
+      );
+      if (!branch.exists) {
+        this.deps.logger.warn("[loop] cheap observable check: branch NOT on remote at abort time", {
+          sessionId, branch: plan.branch, detail: branch.detail,
+        });
+      }
+    } catch (err) {
+      this.deps.logger.warn("[loop] cheap observable check errored", { sessionId, err: String(err) });
+    }
+  }
+
   private readLocalVerification(sessionId: string): Array<{ seq: number; ok: boolean; summary: string }> {
     const rows = this.deps.state.db
       .prepare(

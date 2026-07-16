@@ -25,6 +25,7 @@ import type { LeadPlan, LeadPlanSubTask } from "./fable5-lead.js";
 import type { ReviewReport } from "./fable5-adversary.js";
 import type { WorkerResult } from "./sonnet-worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
+import { type VerifyProbes } from "./verify.js";
 export type LoopStatus = "crystallising" | "planning" | "executing" | "reviewing" | "done" | "failed" | "aborted";
 export type LoopOutcome = {
     status: "shipped";
@@ -97,6 +98,24 @@ export interface OrchestratorDeps {
         budgetBump: boolean;
     }>;
     reportProgress?: (sessionId: string, status: LoopStatus, meta?: unknown) => Promise<void>;
+    /**
+     * beta.8 fix #1 (done right): HARNESS-SIDE observable-side-effect probes.
+     * The loop builds a VerifyProbes for a given plan/branch/worktree and runs
+     * the inferred contract AFTER each sub-task, independent of the worker's
+     * SDK stop reason. This is what actually catches a confabulated "I pushed"
+     * / "I opened a PR" -- the harness hits git / the provider API itself.
+     *
+     * Optional so existing test doubles that don't exercise verification keep
+     * working; when absent, verification is skipped (SDK signal trusted).
+     */
+    buildVerifyProbes?: (params: {
+        plan: LeadPlan;
+        requester: string;
+        worktreePath: string;
+        baseSha: string;
+    }) => VerifyProbes;
+    /** Read the current HEAD sha of a worktree (for commit_made verification). */
+    worktreeHeadSha?: (worktreePath: string) => Promise<string>;
 }
 export declare class OrchestratorLoop {
     private readonly deps;
@@ -129,6 +148,15 @@ export declare class OrchestratorLoop {
      * Pull the latest verification outcome per sub-task from the audit log,
      * to feed the adversary as local runtime data (beta.7 fix #1).
      */
+    /**
+     * beta.8: cheap, unconditional final observable check. Independently asks
+     * the provider whether the branch exists on origin (the single most
+     * important fact: did anything actually reach the remote?). Runs even when
+     * the review budget is exhausted, because it costs ~$0 in tokens and is
+     * the harness's last line of defence against a confabulated "it shipped".
+     * Records loop.cheap_observable_check with the result.
+     */
+    private runCheapObservableCheck;
     private readLocalVerification;
     /**
      * beta.7 fix #2: project the cost of an upcoming sub-task. Prefer the
