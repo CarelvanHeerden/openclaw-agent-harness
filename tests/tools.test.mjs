@@ -66,11 +66,15 @@ function makeRuntime() {
     // Default: a key resolves (so model_auth_resolvable passes). Tests that
     // want to exercise the missing-key path override runtime.anthropicApiKey.
     anthropicApiKey: async () => "sk-test-key",
+    // Default: a GitHub token resolves (git_credential_resolvable passes).
+    githubServiceFor: () => "github-o",
+    githubToken: async () => "gh-test-token",
     config: {
       storage: { audit_retention_days: 90, prune_terminal_sessions: false, prune_terminal_sessions_days: 365 },
       slack: { listener_enabled: false, channel: "C1", authorised_users: ["U1"] },
       repos: { allowed: ["o/*"] },
       models: { lead: "l", worker: "w", adversary: "a", classifier: "c", auth: { credential_service: "anthropic-x" } },
+      pat_routing: { overrides: {}, commit_identity: {}, default_service_pattern: "github-{owner}", auth: { api_key_env: "GH_TOKEN" } },
       budgets: { session_default_usd: 50 },
     },
   };
@@ -95,14 +99,14 @@ function collectTools() {
   return { api, tools };
 }
 
-test("registration: registers 10 tools",
+test("registration: registers 11 tools",
   { skip: registerHarnessTools === null }, () => {
     const runtime = makeRuntime();
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     assert.deepEqual(
       [...tools.keys()].sort(),
-      ["harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_run", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
+      ["harness_bootstrap_test_repo", "harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_run", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
     );
   });
 
@@ -263,6 +267,23 @@ test("harness_health: DEGRADED when no Anthropic key resolves (model_auth fatal)
     const authCheck = res.details.checks.find((c) => c.name === "model_auth_resolvable");
     assert.equal(authCheck.ok, false);
     assert.match(authCheck.detail, /login|no key/i);
+  });
+
+test("harness_health: DEGRADED when no GitHub token resolves (git_credential fatal)",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    runtime.config.slack = { channel: "C_TEST", authorised_users: ["U1"], reactions: {} };
+    runtime.config.repos = { allowed: ["o/r"] };
+    runtime.config.vercel = { enabled: false };
+    // GitHub token resolution fails (vault empty + env unset).
+    runtime.githubToken = async () => { throw new Error("no GitHub token resolved (vault empty and env GH_TOKEN unset)"); };
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = await tools.get("harness_health").execute({});
+    assert.equal(res.details.ok, false, "missing GitHub token must degrade health");
+    const gh = res.details.checks.find((c) => c.name === "git_credential_resolvable");
+    assert.equal(gh.ok, false);
+    assert.match(gh.detail, /plan phase will fail|no token/i);
   });
 
 test("harness_cancel: sets abort flag on non-terminal session",
@@ -428,4 +449,28 @@ test("harness_status: clear error when only a closed generation is reachable",
       () => tools.get("harness_status").execute({}),
       /re-registering|not open/i,
     );
+  });
+
+test("harness_bootstrap_test_repo: requires owner",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = await tools.get("harness_bootstrap_test_repo").execute({});
+    assert.equal(res.details.ok, false);
+    assert.match(res.content[0].text, /owner is required/i);
+  });
+
+test("harness_bootstrap_test_repo: surfaces a clear error when no token resolves",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    // pat.resolve present, but token resolution fails.
+    runtime.pat = { resolve: () => ({ credentialService: "github-o", commitIdentity: { name: "x", email: "x@e" }, apiBase: "https://api.github.com", provenance: "default_pattern" }) };
+    runtime.githubToken = async () => { throw new Error("no GitHub token resolved (vault empty and env GH_TOKEN unset)"); };
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = await tools.get("harness_bootstrap_test_repo").execute({ owner: "someone", requester: "U1" });
+    assert.equal(res.details.ok, false);
+    assert.equal(res.details.reason, "no_token");
+    assert.match(res.content[0].text, /token/i);
   });

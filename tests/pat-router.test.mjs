@@ -60,3 +60,47 @@ test("PatRouter: invalid repo throws",
     const r = new PatRouter({ overrides: {}, commit_identity: {}, default_service_pattern: "x" });
     assert.throws(() => r.resolve({ slackUserId: "U1", gitHubUser: "c", repoFullName: "no-slash" }));
   });
+
+test("PatRouter: {owner} placeholder (new default) -- no duplicated segment for personal repo",
+  { skip: PatRouter === null }, () => {
+    const r = new PatRouter({
+      overrides: {},
+      commit_identity: {},
+      default_service_pattern: "github-{owner}",
+    });
+    // Personal repo: gitHubUser === owner. Old "github-{user}-{org}" produced
+    // "github-carelvanheerden-carelvanheerden". {owner} gives a single segment.
+    const res = r.resolve({
+      slackUserId: "U1",
+      gitHubUser: "CarelvanHeerden",
+      repoFullName: "CarelvanHeerden/openclaw-agent-harness",
+    });
+    assert.equal(res.credentialService, "github-carelvanheerden");
+    assert.equal(res.provenance, "default_pattern");
+  });
+
+test("PatRouter: {owner}-{repo} placeholders (per-repo tokens)",
+  { skip: PatRouter === null }, () => {
+    const r = new PatRouter({
+      overrides: {},
+      commit_identity: {},
+      default_service_pattern: "github-{owner}-{repo}",
+    });
+    const res = r.resolve({
+      slackUserId: "U1",
+      gitHubUser: "CarelvanHeerden",
+      repoFullName: "CarelvanHeerden/Openclaw-Agent-Harness",
+    });
+    assert.equal(res.credentialService, "github-carelvanheerden-openclaw-agent-harness");
+  });
+
+test("PatRouter: legacy {user}/{org} aliases still resolve",
+  { skip: PatRouter === null }, () => {
+    const r = new PatRouter({
+      overrides: {},
+      commit_identity: {},
+      default_service_pattern: "github-{user}-{org}",
+    });
+    const res = r.resolve({ slackUserId: "U1", gitHubUser: "alice", repoFullName: "acme/widgets" });
+    assert.equal(res.credentialService, "github-alice-acme");
+  });
