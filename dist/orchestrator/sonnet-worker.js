@@ -13,6 +13,7 @@
  * The worker COMMITS but does not PUSH. Push happens once, at the end,
  * by the orchestrator after adversarial review passes.
  */
+import { verifySubTaskOutput } from "./verify.js";
 export function buildWorkerSystemPrompt(brief, subTask) {
     return [
         `You are a focused code-writing worker. Your job is ONE sub-task, nothing more.`,
@@ -41,6 +42,7 @@ export function buildWorkerSystemPrompt(brief, subTask) {
 export async function runWorker(worktreePath, brief, subTask, commitIdentity, deps, resumeSessionId) {
     const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
     const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.`;
+    const subTaskStartMs = Date.now();
     const baseSha = await deps.gitBaseSha(worktreePath);
     const canUseTool = deps.buildCanUseTool();
     let sdkResult;
@@ -73,11 +75,34 @@ export async function runWorker(worktreePath, brief, subTask, commitIdentity, de
         const sha = await deps.gitCommit(worktreePath, `harness(${subTask.seq}): ${subTask.title}`, commitIdentity);
         commitSha = sha ?? undefined;
     }
-    const status = sdkResult.stopReason === "timeout"
+    // SDK stop reason gives a provisional status.
+    let status = sdkResult.stopReason === "timeout"
         ? "timeout"
         : sdkResult.stopReason === "end_turn"
             ? "completed"
             : "failed";
+    // beta.7 fix #1: for sub-tasks with observable side effects, do NOT trust
+    // the SDK signal. Verify against reality; a provisional `completed` that
+    // fails verification becomes `failed` and its spend is flagged wasted.
+    let verification;
+    let wastedSpend = false;
+    if (deps.buildVerifyProbes && (subTask.verify?.length ?? 0) > 0) {
+        const probes = deps.buildVerifyProbes(worktreePath, baseSha);
+        verification = await verifySubTaskOutput(subTask.verify, {
+            defaultBranch: subTask.verify?.reduce((acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc), "") ?? "",
+            subTaskStartMs,
+            baseSha,
+        }, probes);
+        if (status === "completed" && !verification.ok) {
+            status = "failed";
+            wastedSpend = true;
+            deps.logger.warn("[worker] SDK reported success but verification failed", {
+                seq: subTask.seq,
+                summary: verification.summary,
+                costUsd: sdkResult.costUsd,
+            });
+        }
+    }
     return {
         status,
         filesChanged: changed,
@@ -86,8 +111,10 @@ export async function runWorker(worktreePath, brief, subTask, commitIdentity, de
         costUsd: sdkResult.costUsd,
         tokensIn: sdkResult.tokensIn,
         tokensOut: sdkResult.tokensOut,
-        reason: sdkResult.stopReason,
+        reason: verification && !verification.ok ? `verification_failed: ${verification.summary}` : sdkResult.stopReason,
         logsExcerpt: sdkResult.logsExcerpt,
+        verification,
+        wastedSpend,
     };
 }
 //# sourceMappingURL=sonnet-worker.js.map

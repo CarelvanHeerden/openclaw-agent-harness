@@ -28,7 +28,24 @@ export function runtimeBanner(input) {
     if (!input.runtime) {
         return "NO RUNTIME DATA AVAILABLE (runtime bridge disabled).";
     }
-    const p = input.runtime.provider === "manual" ? "MANUAL UPLOAD" : "Vercel preview";
+    const p = input.runtime.provider === "manual"
+        ? "MANUAL UPLOAD"
+        : input.runtime.provider === "local"
+            ? "LOCAL VERIFICATION"
+            : "Vercel preview";
+    // beta.7 fix #1: local provider carries observable-side-effect checks.
+    // These are hard facts (a branch either exists on origin or it does not),
+    // so they DO count as runtime data for sub-tasks with observable outputs.
+    if (input.runtime.provider === "local") {
+        const lines = (input.runtime.localVerification ?? [])
+            .map((v) => `  - sub-task ${v.seq}: ${v.ok ? "VERIFIED" : "FAILED"} — ${v.summary}`)
+            .join("\n");
+        const failed = input.runtime.errorCount ?? 0;
+        if (failed > 0) {
+            return `RUNTIME DATA (LOCAL VERIFICATION): ${failed} observable side-effect(s) FAILED. A worker reported success but the output does not exist. Treat as CRITICAL — do NOT sign off.\n${lines}`;
+        }
+        return `RUNTIME DATA (LOCAL VERIFICATION): all observable side-effects verified against git/provider/disk.\n${lines}`;
+    }
     switch (input.runtime.status) {
         case "ok":
             if (input.runtime.provider === "manual") {

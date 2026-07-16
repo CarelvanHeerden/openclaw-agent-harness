@@ -370,11 +370,20 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                 filesLikelyTouched: { type: "array", items: { type: "string" } },
                 outOfScope: { type: "array", items: { type: "string" } },
                 repoHint: { type: "string" },
-                branchHint: { type: "string" },
+                branchHint: {
+                  type: "string",
+                  description:
+                    "Optional branch name hint. NOT authoritative: the harness namespaces all branches under 'harness/' and slugifies the hint, so the actual branch may differ (e.g. 'smoke/x' -> 'harness/smoke-x'). Read the resolved branch from harness_status or harness_session_get after planning.",
+                },
                 riskLevel: { type: "string", enum: ["low", "medium", "high"] },
               },
             },
-            budgetUsd: { type: "number", minimum: 1 },
+            budgetUsd: {
+              type: "number",
+              minimum: 0.05,
+              description:
+                "Optional per-session budget override (USD). Minimum 0.05; sub-$1 budgets are valid for plan-only dry runs. Capped at budgets.session_hard_ceiling_usd and remaining monthly budget.",
+            },
           },
           required: ["requester", "brief"],
           additionalProperties: false,
@@ -431,7 +440,12 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             request: { type: "string", minLength: 10, description: "The raw natural-language coding request to crystallise and run." },
             slackChannel: { type: "string", minLength: 1, description: "Optional. Slack channel to post progress into." },
             slackThread: { type: "string", minLength: 1, description: "Optional. Thread ts to reply into." },
-            budgetUsd: { type: "number", minimum: 1, description: "Optional per-session budget override (USD)." },
+            budgetUsd: {
+              type: "number",
+              minimum: 0.05,
+              description:
+                "Optional per-session budget override (USD). Minimum 0.05; sub-$1 budgets are valid for plan-only dry runs. Capped at budgets.session_hard_ceiling_usd and remaining monthly budget.",
+            },
           },
           required: ["requester", "request"],
           additionalProperties: false,

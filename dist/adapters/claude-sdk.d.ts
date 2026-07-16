@@ -117,6 +117,10 @@ export declare function runLeadSdk(params: {
     reposAllowed: string[];
     timeoutSeconds: number;
     apiKey?: string;
+    /** Optional logger; enables the periodic `[lead] tick +30s` progress log. */
+    logger?: {
+        warn: (m: string, meta?: unknown) => void;
+    };
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
     costUsd: number;
     tokensIn: number;

@@ -238,3 +238,101 @@ test("loop: threads the session requester into runLead/runWorker/pushBranchAndOp
     assert.equal(seen.worker, "U1", "runWorker should receive the session requester");
     assert.equal(seen.push, "U1", "pushBranchAndOpenPr should receive the session requester");
   });
+
+// --- beta.7 fix #1: verification failure marks sub-task failed ---
+
+test("loop: SDK 'completed' but verification-failed sub-task does NOT ship (beta.7 fix #1)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "SV1", 50);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/wt", subTasks: [{ seq:1, title:"push", intent:"push", filesLikelyTouched:[], successCriteria:["pushed"], estimatedTokens:100, verify:[{kind:"branch_pushed"}] }], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
+    let adversaryCalled = false, prCalled = false;
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      // Worker reports success from SDK but verification proved the push
+      // never happened -> status forced to failed, wastedSpend flagged.
+      runWorker: async () => ({ status: "failed", filesChanged: [], costUsd: 0.90, tokensIn: 1, tokensOut: 1, reason: "verification_failed: branch_pushed (HTTP 404)", verification: { ok: false, results: [{kind:"branch_pushed",passed:false,detail:"HTTP 404"}], summary: "branch_pushed (HTTP 404)" }, wastedSpend: true }),
+      runAdversary: async () => { adversaryCalled = true; return { verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }; },
+      pushBranchAndOpenPr: async () => { prCalled = true; return "https://x/pr/1"; },
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+    });
+    const outcome = await loop.run("SV1", brief);
+    assert.equal(outcome.status, "failed", "must not ship a confabulated success");
+    assert.equal(prCalled, false, "must not open a PR when a sub-task failed verification");
+    assert.equal(adversaryCalled, false, "cycle halts before review on sub-task failure");
+    // Wasted spend was audited.
+    const wasted = state.audits.find((a) => a.event === "loop.subtask_verification");
+    assert.ok(wasted, "verification outcome should be audited");
+    assert.equal(wasted.payload.ok, false);
+  });
+
+// --- beta.7 fix #2: projected-cost gating before a sub-task ---
+
+test("loop: projected-cost gating aborts BEFORE starting an unaffordable sub-task (beta.7 fix #2)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "SB1", 0.15); // tiny budget
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    // Two sub-tasks; first is cheap, second should be gated out before running.
+    const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/wt", subTasks: [
+      { seq:1, title:"a", intent:"a", filesLikelyTouched:[], successCriteria:["a"], estimatedTokens:100 },
+      { seq:2, title:"b", intent:"b", filesLikelyTouched:[], successCriteria:["b"], estimatedTokens:100, dependsOn:[1] },
+    ], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
+    const workerSeqs = [];
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      runWorker: async ({ subTask }) => { workerSeqs.push(subTask.seq); return { status: "completed", filesChanged: ["a"], commitSha: "s", costUsd: 0.10, tokensIn: 1, tokensOut: 1, reason: "end_turn" }; },
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+    });
+    const outcome = await loop.run("SB1", brief);
+    assert.equal(outcome.status, "aborted");
+    assert.equal(outcome.reason, "budget_exhausted");
+    // Sub-task 1 ran (0.10), sub-task 2 was projected 0.10 more -> 0.20 > 0.15 -> gated before running.
+    assert.deepEqual(workerSeqs, [1], "second sub-task must be gated out before execution");
+    const gate = state.audits.find((a) => a.event === "loop.budget_projection_abort");
+    assert.ok(gate, "projection abort should be audited");
+  });
+
+// --- beta.7 fix #2: hard cap before review ---
+
+test("loop: review is skipped + cycle aborts when remaining budget < review estimate (beta.7 fix #2)",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "SB2", 0.55);
+    const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+    const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/wt", subTasks: [{ seq:1, title:"a", intent:"a", filesLikelyTouched:[], successCriteria:["a"], estimatedTokens:100 }], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
+    let adversaryCalled = false;
+    const loop = new OrchestratorLoop({
+      config: config(),
+      state,
+      budget: new BudgetEnforcer(config().budgets, state),
+      pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} },
+      runLead: async () => plan,
+      // Sub-task costs 0.50; review estimate = max observed (0.50) with 0.5 floor.
+      // remaining after sub-task = 0.05, < 0.50 -> review must not run.
+      runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "s", costUsd: 0.50, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => { adversaryCalled = true; return { verdict: "pass", findings: [], summary: "ok", costUsd: 0.50, tokensIn: 1, tokensOut: 1 }; },
+      pushBranchAndOpenPr: async () => "https://x/pr/1",
+      readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
+    });
+    const outcome = await loop.run("SB2", brief);
+    assert.equal(outcome.status, "aborted");
+    assert.equal(outcome.reason, "budget_exhausted");
+    assert.equal(adversaryCalled, false, "adversary must not run when we cannot afford it");
+    const gate = state.audits.find((a) => a.event === "loop.review_budget_abort");
+    assert.ok(gate, "review budget abort should be audited");
+  });
