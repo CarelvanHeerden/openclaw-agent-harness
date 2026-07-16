@@ -134,7 +134,32 @@ export interface SafetyConfig {
 export interface PatRoutingConfig {
   overrides: Record<string, Record<string, string>>;    // { userId: { orgOrRepo: credentialService } }
   commit_identity: Record<string, { name: string; email: string }>;
-  default_service_pattern: string;                       // e.g. "github-{user}-{org}"
+  /**
+   * Template for the vault credential service name. Placeholders:
+   *   {owner} - repo owner (org or user), e.g. "CarelvanHeerden"
+   *   {repo}  - repo name, e.g. "openclaw-agent-harness"
+   *   {user}  - requester's GitHub login (deprecated alias; for a personal
+   *             repo this equals {owner}, which is why the old default
+   *             "github-{user}-{org}" collapsed to a duplicated segment)
+   *   {org}   - repo owner (deprecated alias of {owner})
+   * Default: "github-{owner}" (per-owner tokens). All placeholders are
+   * lower-cased.
+   */
+  default_service_pattern: string;
+  /**
+   * GitHub auth fallback, mirroring `models.auth`. Vault-first (the service
+   * resolved from `default_service_pattern`/overrides), then env fallback.
+   */
+  auth?: PatAuthConfig;
+}
+
+export interface PatAuthConfig {
+  /**
+   * Name of the environment variable holding a GitHub token, used when the
+   * vault lookup for the resolved service fails or returns nothing.
+   * Default: "GH_TOKEN". Lets vault-less deployments just set GH_TOKEN.
+   */
+  api_key_env?: string;
 }
 
 // ---- Defaults ----
@@ -207,7 +232,10 @@ const DEFAULTS: HarnessConfig = {
   pat_routing: {
     overrides: {},
     commit_identity: {},
-    default_service_pattern: "github-{user}-{org}",
+    default_service_pattern: "github-{owner}",
+    auth: {
+      api_key_env: "GH_TOKEN",
+    },
   },
 };
 

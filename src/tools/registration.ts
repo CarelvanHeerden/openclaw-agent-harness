@@ -566,6 +566,52 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             }
           }
 
+          // GitHub auth: can we resolve a token for the target repo? A missing
+          // token means the FIRST session dies at plan phase with a vault
+          // "not found" error -- so this is FATAL, same rationale as model auth.
+          const ghEnvName = liveConfig().pat_routing.auth?.api_key_env || "GH_TOKEN";
+          let ghService: string | undefined;
+          let ghToken: string | undefined;
+          try {
+            const svcFn = liveRuntime().githubServiceFor;
+            ghService = typeof svcFn === "function" ? svcFn() : undefined;
+            const tokFn = liveRuntime().githubToken;
+            if (typeof tokFn === "function" && ghService) {
+              ghToken = await tokFn(ghService);
+            }
+          } catch { /* resolution failed -> ghToken stays undefined */ }
+          {
+            const src = ghService ? `vault:${ghService}` : "(no service resolvable)";
+            checks.push({
+              name: "git_credential_resolvable",
+              ok: !!ghToken,
+              detail: ghToken
+                ? `resolved via ${src} or env:${ghEnvName}`
+                : `no token from ${src} or env:${ghEnvName} (plan phase will fail)`,
+            });
+          }
+
+          // Optional deep check: verify the GitHub token actually authenticates.
+          if (deep) {
+            if (!ghToken) {
+              checks.push({ name: "git_credential_live_ping", ok: false, detail: "skipped: no token to test" });
+            } else {
+              try {
+                const resp = await fetch("https://api.github.com/user", {
+                  headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json", "User-Agent": "openclaw-agent-harness" },
+                });
+                if (resp.ok) {
+                  const who = (await resp.json().catch(() => ({}))) as { login?: string };
+                  checks.push({ name: "git_credential_live_ping", ok: true, detail: `authenticated as ${who.login ?? "(unknown)"}` });
+                } else {
+                  checks.push({ name: "git_credential_live_ping", ok: false, detail: `GitHub API ${resp.status} ${resp.statusText}` });
+                }
+              } catch (err) {
+                checks.push({ name: "git_credential_live_ping", ok: false, detail: `ping failed (network): ${String(err).slice(0, 160)}` });
+              }
+            }
+          }
+
           // Credentials: are we set to talk to Slack/Vercel? (informational, not fatal)
           checks.push({ name: "slack_credential_service_set", ok: !!liveConfig().slack.credential_service });
           checks.push({ name: "vercel_enabled", ok: !!liveConfig().vercel?.enabled });
@@ -577,7 +623,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                 c.name === "db_reachable" ||
                 c.name.startsWith("config_") ||
                 c.name === "model_auth_resolvable" ||
-                c.name === "model_auth_live_ping",
+                c.name === "model_auth_live_ping" ||
+                c.name === "git_credential_resolvable" ||
+                c.name === "git_credential_live_ping",
             )
             .every((c) => c.ok);
           return {
@@ -674,6 +722,138 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             api.logger.error("[tool.resume] loop.run failed", { sessionId, err: String(err) });
           });
           return { content: [{ type: "text", text: `Session ${sessionId} resumed. Watch the Slack thread for progress.` }], details: { ok: true, sessionId } };
+        },
+      }),
+    ),
+  );
+
+  // ---- harness_bootstrap_test_repo ----
+  // Creates a fresh, disposable test repo under the requester's own GitHub
+  // account, seeds it with a minimal README + docs/, and adds it to the LIVE
+  // repos allow-list so a smoke test can target it immediately. This keeps
+  // smoke tests off the harness's own source repo (branch clutter / accidental
+  // PRs). The allow-list addition is IN-MEMORY only (not persisted to config);
+  // it survives until the next plugin (re-)register.
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_bootstrap_test_repo",
+        description:
+          "Create a fresh disposable test repo under the requester's GitHub account (seeded with README + docs/SMOKE.md) and add it to the live repos allow-list, for repeatable smoke tests. Does NOT persist to config. Params: { owner, name?, private?, requester? }.",
+        parameters: {
+          type: "object",
+          properties: {
+            owner: { type: "string", description: "GitHub account (user or org) to create the repo under. Used to resolve the vault credential service." },
+            name: { type: "string", description: "Repo name. Default: 'oah-smoke-test-<timestamp>'." },
+            private: { type: "boolean", description: "Create as private. Default true." },
+            requester: { type: "string", description: "Slack user id of the requester (for audit + PAT routing). Optional." },
+          },
+          required: ["owner"],
+          additionalProperties: false,
+        },
+        execute: async (_callId: unknown, input: unknown) => {
+          const p = (input ?? {}) as { owner?: string; name?: string; private?: boolean; requester?: string };
+          if (!p.owner) {
+            return { content: [{ type: "text", text: "owner is required" }], details: { ok: false, reason: "owner required" } };
+          }
+          const requester = p.requester ?? liveConfig().slack.authorised_users[0] ?? "unknown";
+          const name = p.name ?? `oah-smoke-test-${Date.now()}`;
+          const isPrivate = p.private !== false; // default private
+          const repoFullName = `${p.owner}/${name}`;
+
+          // Resolve a GitHub token (vault-first, env fallback) via the router.
+          let token: string;
+          try {
+            const resolution = liveRuntime().pat.resolve({
+              slackUserId: requester,
+              gitHubUser: p.owner,
+              repoFullName,
+            });
+            token = await liveRuntime().githubToken(resolution.credentialService);
+          } catch (err) {
+            return { content: [{ type: "text", text: `Could not resolve a GitHub token for ${p.owner}: ${String(err)}` }], details: { ok: false, reason: "no_token" } };
+          }
+
+          const ghHeaders = {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "openclaw-agent-harness",
+            "Content-Type": "application/json",
+          };
+
+          // 1) Who am I? Decide user-repo vs org-repo endpoint.
+          let login: string | undefined;
+          try {
+            const who = await fetch("https://api.github.com/user", { headers: ghHeaders });
+            if (who.ok) login = ((await who.json()) as { login?: string }).login;
+          } catch { /* fall through; treat as org create */ }
+
+          const createUrl =
+            login && login.toLowerCase() === p.owner.toLowerCase()
+              ? "https://api.github.com/user/repos"
+              : `https://api.github.com/orgs/${p.owner}/repos`;
+
+          // 2) Create the repo (auto_init gives us a main branch + README).
+          const createResp = await fetch(createUrl, {
+            method: "POST",
+            headers: ghHeaders,
+            body: JSON.stringify({
+              name,
+              private: isPrivate,
+              auto_init: true,
+              description: "Disposable smoke-test repo created by openclaw-agent-harness. Safe to delete.",
+            }),
+          });
+          if (!createResp.ok) {
+            const body = await createResp.text().catch(() => "");
+            return {
+              content: [{ type: "text", text: `GitHub repo create failed: ${createResp.status} ${createResp.statusText} ${body.slice(0, 200)}` }],
+              details: { ok: false, reason: "create_failed", status: createResp.status },
+            };
+          }
+          const created = (await createResp.json()) as { html_url?: string; default_branch?: string };
+          const branch = created.default_branch ?? "main";
+
+          // 3) Seed docs/SMOKE.md (README already exists from auto_init).
+          const seed = async (path: string, content: string, message: string) => {
+            const putResp = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${path}`, {
+              method: "PUT",
+              headers: ghHeaders,
+              body: JSON.stringify({
+                message,
+                content: Buffer.from(content, "utf8").toString("base64"),
+                branch,
+              }),
+            });
+            return putResp.ok;
+          };
+          const seededDocs = await seed(
+            "docs/SMOKE.md",
+            "# Smoke test target\n\nDisposable repo for openclaw-agent-harness smoke tests. Safe to delete.\n",
+            "chore: seed docs/SMOKE.md for harness smoke tests",
+          );
+
+          // 4) Add to the LIVE allow-list (in-memory, not persisted).
+          const allow = liveConfig().repos.allowed;
+          if (!allow.includes(repoFullName)) allow.push(repoFullName);
+
+          liveState().audit("tool.bootstrap_test_repo", { repoFullName, private: isPrivate, requester, seededDocs }, undefined);
+
+          return {
+            content: [{
+              type: "text",
+              text: `Created ${isPrivate ? "private" : "public"} test repo ${repoFullName} (${created.html_url ?? ""}), seeded README + docs/SMOKE.md${seededDocs ? "" : " (docs seed failed)"}, and added it to the live allow-list. Note: allow-list add is in-memory only; add it to config.repos.allowed to persist.`,
+            }],
+            details: {
+              ok: true,
+              repo: repoFullName,
+              url: created.html_url,
+              branch,
+              private: isPrivate,
+              seededDocs,
+              allowListAddedInMemory: true,
+            },
+          };
         },
       }),
     ),

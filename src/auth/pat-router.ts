@@ -43,6 +43,7 @@ export class PatRouter {
       throw new Error(`repoFullName "${input.repoFullName}" is not owner/repo`);
     }
     const owner = parts[0];
+    const repo = parts[1];
 
     const userMap = this.cfg.overrides[input.slackUserId] ?? {};
     let credentialService: string | undefined;
@@ -56,6 +57,11 @@ export class PatRouter {
       provenance = "override_owner";
     } else {
       credentialService = this.cfg.default_service_pattern
+        .replaceAll("{owner}", owner.toLowerCase())
+        .replaceAll("{repo}", repo.toLowerCase())
+        // Deprecated aliases: {user} = requester login, {org} = repo owner.
+        // For a personal repo these collapse to the same value, which is why
+        // the old "github-{user}-{org}" default produced a duplicated segment.
         .replaceAll("{user}", input.gitHubUser.toLowerCase())
         .replaceAll("{org}", owner.toLowerCase());
       provenance = "default_pattern";

@@ -137,6 +137,17 @@ export interface HarnessRuntime {
      * the SDK keeps its default behaviour (may fall back to `/login`).
      */
     anthropicApiKey: () => Promise<string | undefined>;
+    /**
+     * Resolve a GitHub token for a given vault service name (vault-first, then
+     * env fallback via `pat_routing.auth.api_key_env`, default GH_TOKEN).
+     * Used by session start/push and by the health check.
+     */
+    githubToken: (service: string) => Promise<string>;
+    /**
+     * Resolve the credential service name the pat-router would use for a repo
+     * (or the first allowed repo when omitted). For health/introspection.
+     */
+    githubServiceFor: (repoFullName?: string) => string | undefined;
     disposers: Array<() => void | Promise<void>>;
     /**
      * Promise for the async bootstrap phase (reactions poller start,

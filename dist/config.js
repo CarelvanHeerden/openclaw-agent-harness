@@ -75,7 +75,10 @@ const DEFAULTS = {
     pat_routing: {
         overrides: {},
         commit_identity: {},
-        default_service_pattern: "github-{user}-{org}",
+        default_service_pattern: "github-{owner}",
+        auth: {
+            api_key_env: "GH_TOKEN",
+        },
     },
 };
 function mergeDeep(base, override) {

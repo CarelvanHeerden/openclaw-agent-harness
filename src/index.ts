@@ -150,6 +150,17 @@ export interface HarnessRuntime {
    * the SDK keeps its default behaviour (may fall back to `/login`).
    */
   anthropicApiKey: () => Promise<string | undefined>;
+  /**
+   * Resolve a GitHub token for a given vault service name (vault-first, then
+   * env fallback via `pat_routing.auth.api_key_env`, default GH_TOKEN).
+   * Used by session start/push and by the health check.
+   */
+  githubToken: (service: string) => Promise<string>;
+  /**
+   * Resolve the credential service name the pat-router would use for a repo
+   * (or the first allowed repo when omitted). For health/introspection.
+   */
+  githubServiceFor: (repoFullName?: string) => string | undefined;
   disposers: Array<() => void | Promise<void>>;
   /**
    * Promise for the async bootstrap phase (reactions poller start,
@@ -268,6 +279,29 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     return undefined;
   };
 
+  // GitHub token resolver: vault-first (by the pat-router-resolved service),
+  // then env fallback (pat_routing.auth.api_key_env, default GH_TOKEN). Mirrors
+  // the Anthropic resolver above so vault-less deployments can just set
+  // GH_TOKEN. NOT memoised across services (different repos -> different
+  // services), but the CredentialAdapter caches per service internally.
+  const resolveGithubToken = async (service: string): Promise<string> => {
+    try {
+      const v = await creds.getToken(service, "token");
+      if (v) return v;
+    } catch (err) {
+      api.logger.warn("[harness] github vault lookup failed; trying env fallback", { service, err: String(err) });
+    }
+    const envName = config.pat_routing.auth?.api_key_env || "GH_TOKEN";
+    const envVal = process.env[envName];
+    if (envVal) {
+      api.logger.info("[harness] github token resolved from env", { envVar: envName, service });
+      return envVal;
+    }
+    throw new Error(
+      `no GitHub token resolved for service '${service}' (vault empty/failed and env '${envName}' unset)`,
+    );
+  };
+
   const git = new GitAdapter({
     worktreesRoot: config.storage.worktree_root,
     logger: api.logger,
@@ -307,7 +341,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             gitHubUser: owner!,
             repoFullName: repo,
           });
-          const ghToken = await creds.getToken(resolution.credentialService);
+          const ghToken = await resolveGithubToken(resolution.credentialService);
           return git.allocate({
             repoFullName: repo,
             baseBranch: config.repos.default_base_branch,
@@ -435,7 +469,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         gitHubUser: plan.repo.split("/")[0]!,
         repoFullName: plan.repo,
       });
-      const ghToken = await creds.getToken(resolution.credentialService);
+      const ghToken = await resolveGithubToken(resolution.credentialService);
       await git.pushBranch(plan.worktreePath, "origin", plan.branch, ghToken);
       const pr = await createPullRequest({
         repoFullName: plan.repo,
@@ -499,6 +533,26 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     config, state, budget, pat, loop, listener, dispatcher, slack, git, creds,
     crystallise,
     anthropicApiKey,
+    githubToken: resolveGithubToken,
+    githubServiceFor: (repoFullName?: string) => {
+      const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
+      if (!repo) return undefined;
+      // A glob like "owner/<star>" can't resolve a concrete service; require
+      // a concrete owner/repo. Replace a trailing glob segment to at least
+      // resolve the owner. (Built without a literal slash-star regex so the
+      // sdk-compliance comment stripper doesn't mis-parse it.)
+      const glob = "/" + "*"; // avoid a literal slash-star token in source
+      const concrete = repo.endsWith(glob) ? repo.slice(0, -1) + "_probe" : repo;
+      try {
+        return pat.resolve({
+          slackUserId: config.slack.authorised_users[0] ?? "unknown",
+          gitHubUser: concrete.split("/")[0]!,
+          repoFullName: concrete,
+        }).credentialService;
+      } catch {
+        return undefined;
+      }
+    },
     disposers: [],
   };
 

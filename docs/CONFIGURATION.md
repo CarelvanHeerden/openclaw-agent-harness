@@ -162,7 +162,21 @@ fails in a headless container (`Not logged in · Please run /login`).
 `harness_health { deep: true }` additionally verifies the key authenticates.
 Full guide: `docs/AUTH.md`.
 
-### PAT routing
+### PAT routing (GitHub auth)
+
+`pat_routing.default_service_pattern` builds the vault credential service name
+for GitHub tokens. Placeholders (lower-cased): `{owner}`, `{repo}`, and the
+deprecated aliases `{user}` (requester login) / `{org}` (repo owner).
+
+**Default: `github-{owner}`.** The old `github-{user}-{org}` default collapsed
+to a duplicated segment for personal repos (`{user}` == `{org}` == owner), so
+prefer `{owner}` or `{owner}-{repo}`.
+
+`pat_routing.auth.api_key_env` (default `GH_TOKEN`) is the env-var fallback
+used when the vault lookup fails, mirroring `models.auth`. `harness_health`
+reports `git_credential_resolvable` (fatal) and, with `{ deep: true }`,
+`git_credential_live_ping`. Full guide: `docs/GITHUB_AUTH.md`.
+
 
 Every commit and PR is attributed to the requesting user, using their own PAT for the target org. The harness resolves the token in this order:
 
