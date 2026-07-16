@@ -23,14 +23,30 @@
  * This is deliberately conservative: we only INFER a contract when the
  * language strongly implies an observable side effect. A sub-task with an
  * explicit `verify` from the lead always wins (future-proofing).
+ *
+ * beta.9: extended with 8 precise contract kinds. Inference rules added for:
+ *   "write/create/add X"          -> file_written (fs.stat, not git diff)
+ *   "commit" (no push)            -> file_committed (if path mentioned) + commit_made
+ *   "push branch"                 -> branch_pushed + remote_branch_exists + commit_sha_matches
+ *   "verify remote SHA" / pushed  -> remote_branch_exists + commit_sha_matches
+ *   "open PR"                     -> pr_opened + pr_state
+ *   "end-to-end verification"     -> file_pushed + pr_opened + file_in_pr + pr_state
+ *
+ * Backward compat: existing `branch_pushed`, `pr_opened`, `commit_made` kinds
+ * are KEPT in inference output for sub-tasks that matched them in beta.8.
+ * Consumers watching old audit event names will still see them fire.
  */
 const PUSH_RE = /\b(push(ed|es|ing)?|push to (origin|remote)|remote sha|ls-remote)\b/i;
+const VERIFY_REMOTE_RE = /\b(verify (remote|pushed)|verify remote sha|ls-remote|confirm push)\b/i;
 const PR_RE = /\b(pull request|open (a )?pr|draft pr|merge request|\bpr\b|\bmr\b)\b/i;
+const PR_DRAFT_RE = /\bdraft\b/i;
 const COMMIT_RE = /\b(commit(ted|s|ting)?)\b/i;
+const STAGE_RE = /\b(stage|git add)\b/i;
 // file write is inferred from an explicit path in filesLikelyTouched OR
 // "write/create/add <path>" language mentioning a file with an extension.
 const FILE_WRITE_RE = /\b(write|create|add|update|edit|modify)\b.*\b[\w./-]+\.[a-z0-9]{1,6}\b/i;
 const E2E_RE = /\b(end.to.end|e2e|verify (the )?(remote|observable) side.?effects?|final (check|verification))\b/i;
+const SHA_MATCH_RE = /\b(verify remote sha|sha match(es)?|confirm sha|push.*sha|sha.*push)\b/i;
 /** Extract a path token that looks like a file (has an extension). */
 function firstFilePath(subTask) {
     const fromList = subTask.filesLikelyTouched?.find((f) => /\.[a-z0-9]{1,6}$/i.test(f));
@@ -61,21 +77,70 @@ export function inferVerifyContract(subTask) {
         .filter(Boolean)
         .join(" \n ");
     const contract = [];
-    // Order matters for readability of diagnostics, not for correctness.
+    // ---------- PUSH / REMOTE-BRANCH ----------
     if (PUSH_RE.test(haystack) || E2E_RE.test(haystack)) {
+        // Keep backward-compat `branch_pushed` kind for consumers watching old events.
         contract.push({ kind: "branch_pushed" });
+        // beta.9: also add richer remote_branch_exists + commit_sha_matches.
+        contract.push({ kind: "remote_branch_exists" });
+        contract.push({ kind: "commit_sha_matches" });
     }
-    if (PR_RE.test(haystack) || E2E_RE.test(haystack)) {
+    else if (VERIFY_REMOTE_RE.test(haystack) || SHA_MATCH_RE.test(haystack)) {
+        // "verify remote SHA" without an explicit push mention: remote_branch_exists + commit_sha_matches.
+        contract.push({ kind: "remote_branch_exists" });
+        contract.push({ kind: "commit_sha_matches" });
+    }
+    // ---------- PR ----------
+    if (PR_RE.test(haystack)) {
+        // Explicit PR-opening language: infer state as well.
+        const draft = PR_DRAFT_RE.test(haystack);
+        contract.push({ kind: "pr_opened", draft });
+        // beta.9: infer expected state when opening a PR.
+        contract.push({ kind: "pr_state", state: draft ? "draft" : "open" });
+    }
+    else if (E2E_RE.test(haystack)) {
+        // End-to-end verification: PR must exist but state is not specified
+        // (could be draft or open depending on earlier sub-tasks).
         contract.push({ kind: "pr_opened" });
     }
-    if (COMMIT_RE.test(haystack) && !contract.some((c) => c.kind === "branch_pushed")) {
-        // A pure "commit" sub-task (no push) verifies a local commit exists.
-        contract.push({ kind: "commit_made" });
+    // ---------- COMMIT ----------
+    if (COMMIT_RE.test(haystack) || STAGE_RE.test(haystack)) {
+        const hasPush = contract.some((c) => c.kind === "branch_pushed" || c.kind === "remote_branch_exists");
+        if (!hasPush) {
+            // Pure "commit" sub-task (no push): keep backward-compat `commit_made` + add `file_committed` if path known.
+            contract.push({ kind: "commit_made" });
+            const filePath = firstFilePath(subTask);
+            if (filePath) {
+                contract.push({ kind: "file_committed", path: filePath });
+            }
+        }
     }
+    // ---------- FILE WRITE ----------
     const filePath = firstFilePath(subTask);
     if (filePath && FILE_WRITE_RE.test(haystack)) {
+        // beta.9: file_written now uses fs.stat (includes untracked files).
         contract.push({ kind: "file_written", path: filePath });
     }
-    return contract;
+    // ---------- END-TO-END: composite ----------
+    if (E2E_RE.test(haystack)) {
+        // Add file_pushed and file_in_pr for end-to-end verification sub-tasks.
+        if (filePath) {
+            contract.push({ kind: "file_pushed", path: filePath });
+            contract.push({ kind: "file_in_pr", path: filePath });
+        }
+    }
+    // Deduplicate by kind+path (in case of redundant overlaps from regex hits).
+    return dedupe(contract);
+}
+/** Remove exact-duplicate contracts (same kind + same path, if applicable). */
+function dedupe(contracts) {
+    const seen = new Set();
+    return contracts.filter((c) => {
+        const key = c.kind + ("path" in c ? `:${c.path}` : "") + ("state" in c ? `:${c.state}` : "") + ("branch" in c ? `:${c.branch ?? ""}` : "");
+        if (seen.has(key))
+            return false;
+        seen.add(key);
+        return true;
+    });
 }
 //# sourceMappingURL=verify-contract.js.map
