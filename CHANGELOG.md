@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.1.0-beta.12] -- 2026-07-16
+
+### Fixed
+
+- **Contract inference is now negation-aware.** Surfaced by the beta.10
+  happy-path smoke test on Staging (session
+  `6366e03d-3e14-497c-ba1c-f820db20171e`): a sub-task whose intent
+  explicitly said *"Do not push, do not open a PR"* still had
+  `branch_pushed`, `remote_branch_exists`, `commit_sha_matches`, `pr_opened`,
+  and `pr_state` inferred into its contract. The regex-based inference
+  matched on the *presence* of push/PR words regardless of surrounding
+  negation context. The verifier then failed the sub-task because it
+  couldn't find a remote branch / PR the sub-task was explicitly told
+  not to create. Worker did the right thing; verifier disagreed with
+  itself.
+
+  Fix: new `hasPositiveMatch(text, re)` helper iterates matches and
+  rejects any whose immediately preceding ~40-char window (bounded by
+  sentence break) contains a negation cue: `do not`, `don't`, `no`,
+  `without`, `never`, `avoid`, `skip`, `not to`, `stop after`,
+  `instead of`, `rather than`, `shouldn't`, `must not`, `shall not`,
+  `no need to`. Sentence boundaries (`.`, `;`, `\n`) contain the
+  negation scope, so mixed clauses like *"Push the branch. Do not
+  open a PR."* resolve correctly (push positive, PR negated).
+
+### Tests
+
+- New file `tests/beta12-negation-aware.test.mjs` — 9 tests locking in:
+  - The exact Staging happy-path s2 case yields a commit-only contract.
+  - Negated push/PR/commit language does not produce positive kinds.
+  - Positive push/PR language still produces them (no regression).
+  - Mixed clauses are resolved per-sentence-boundary.
+
+- Full suite: **239 -> 248 tests passing**, 0 fail, 0 skip. Typecheck clean.
+
+### Known limitations (not fixed in beta.12)
+
+- **`openPr` / `draftPr` tool-call flags are not yet threaded to the
+  verifier.** Staging flagged this in the same audit report. Currently
+  the contract inference reads only sub-task language, ignoring the
+  session's `openPr: false` flag. If a sub-task's language positively
+  mentions "open a PR" but the caller passed `openPr: false`, the
+  verifier will still infer `pr_opened`. This is a bigger surgery
+  (plan schema needs the flags threaded to sub-tasks) and is deferred.
+  Workaround for now: rely on sub-task-language scoping only, and don't
+  rely on `openPr: false` at the tool-call layer to suppress PR contract
+  inference.
+
+- **Adversary review not yet observed on a passing cycle.** Every smoke
+  test since beta.6 has halted before the reviewer runs. Beta.12 should
+  finally allow the happy-path smoke to complete a full cycle so the
+  runtime dimension can be observed. Re-run the same happy-path smoke
+  on beta.12 to confirm.
+
+### Discovery
+
+The OpenClaw Staging bot on the beta.10 happy-path smoke flagged this
+precisely: *"contract-scope leak: verifier applies session-level
+acceptance to every sub-task."* Actual root cause: negation-blindness
+in the regex inference, not a contract-scope leak. Same symptom, more
+specific fix.
+
+---
+
 ## [0.1.0-beta.11] -- 2026-07-16
 
 ### Fixed
