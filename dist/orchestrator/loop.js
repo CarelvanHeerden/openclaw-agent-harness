@@ -437,11 +437,13 @@ export class OrchestratorLoop {
         }
         this.deps.state.db.prepare(`UPDATE sessions SET final_pr_url = ?, status = 'done', updated_at = ? WHERE id = ?`).run(prUrl, Date.now(), sessionId);
         this.deps.state.audit("loop.shipped", { sessionId, prUrl }, sessionId);
-        // beta.16 fix #3: prune the worktree on `loop.shipped`. Prior to this,
-        // the worktree lived until the pr-watcher observed the PR close/merge,
-        // so every successful smoke left a `pending-<ts>` worktree holding the
-        // smoke branch and blocked the next fetch on that branch.
-        await this.tryReleaseWorktree(sessionId, plan.repo, "shipped");
+        // beta.16 fix #3 + beta.17 correctness: prune the worktree on
+        // `loop.shipped`. Beta.16 emitted the audit event but the underlying
+        // release() silently no-op'd because it reconstructed the path from
+        // sessionId (a UUID) while the allocator used `pending-<Date.now()>`
+        // on-disk ids. Beta.17 threads the actual `worktree_path` from the
+        // sessions row into the release call.
+        await this.tryReleaseWorktree(sessionId, plan.repo, plan.worktreePath, "shipped");
         return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
     }
     /**
@@ -463,22 +465,35 @@ export class OrchestratorLoop {
         }, sessionId);
     }
     /**
-     * beta.16 fix #3: best-effort worktree release. Called on all terminal
-     * transitions (shipped/aborted/failed). Never throws — worktree cleanup
-     * failures are logged and swallowed so they cannot fail an already-
-     * terminal session. The pr-watcher's release-on-close is still a safety
-     * net for the rare case where release() here errors.
+     * beta.16 fix #3 + beta.17 telemetry: best-effort worktree release.
+     * Called on all terminal transitions (shipped/aborted/failed). Never
+     * throws — worktree cleanup failures are logged, audited, and swallowed
+     * so they cannot fail an already-terminal session.
+     *
+     * beta.17: audit payload now carries `{ok, path, error?}` on both the
+     * success and failure events so operators can distinguish
+     * event-fired-but-nothing-happened from event-fired-and-succeeded.
+     * Beta.16's `loop.worktree_released` was a lie on production because
+     * the underlying release() silently no-op'd (see releaseByPath docs).
      */
-    async tryReleaseWorktree(sessionId, repoFullName, reason) {
+    async tryReleaseWorktree(sessionId, repoFullName, worktreePath, reason) {
         if (!this.deps.releaseWorktree)
             return;
         try {
-            await this.deps.releaseWorktree({ sessionId, repoFullName, reason });
-            this.deps.state.audit("loop.worktree_released", { sessionId, reason }, sessionId);
+            const outcome = await this.deps.releaseWorktree({ sessionId, repoFullName, worktreePath, reason });
+            if (outcome.ok) {
+                this.deps.state.audit("loop.worktree_released", { sessionId, reason, ok: true, path: outcome.path ?? worktreePath, ...(outcome.error ? { note: outcome.error } : {}) }, sessionId);
+            }
+            else {
+                this.deps.logger.warn("[loop] worktree release reported not-ok", { sessionId, reason, worktreePath, err: outcome.error });
+                this.deps.state.audit("loop.worktree_release_failed", { sessionId, reason, ok: false, path: outcome.path ?? worktreePath, error: outcome.error ?? "unknown" }, sessionId);
+            }
         }
         catch (err) {
-            this.deps.logger.warn("[loop] worktree release failed", { sessionId, reason, err: String(err) });
-            this.deps.state.audit("loop.worktree_release_failed", { sessionId, reason, err: String(err) }, sessionId);
+            // The releaseWorktree impl threw synchronously / rejected. Different
+            // failure mode from ok:false, but the operator surface is the same.
+            this.deps.logger.warn("[loop] worktree release threw", { sessionId, reason, worktreePath, err: String(err) });
+            this.deps.state.audit("loop.worktree_release_failed", { sessionId, reason, ok: false, path: worktreePath, error: String(err) }, sessionId);
         }
     }
     /**
@@ -567,24 +582,31 @@ export class OrchestratorLoop {
         return { status: "aborted", sessionId, reason, cycles, totalCostUsd };
     }
     /**
-     * beta.16 fix #3: schedule a best-effort worktree release for a session
-     * that has already reached a terminal status. Looks up the repo from the
-     * sessions row (worktreePath is per-session, so we only need the repo
-     * full name to route to the right bare clone). Never throws.
+     * beta.16 fix #3 + beta.17 correctness: schedule a best-effort worktree
+     * release for a session that has already reached a terminal status.
+     * Looks up both `repo` and `worktree_path` from the sessions row so the
+     * release call gets the actual on-disk path (not a reconstruction).
+     * Never throws.
      */
     scheduleWorktreeReleaseForSession(sessionId, reason) {
         if (!this.deps.releaseWorktree)
             return;
         try {
             const row = this.deps.state.db
-                .prepare(`SELECT repo FROM sessions WHERE id = ?`)
+                .prepare(`SELECT repo, worktree_path FROM sessions WHERE id = ?`)
                 .get(sessionId);
-            if (row?.repo) {
-                void this.tryReleaseWorktree(sessionId, row.repo, reason);
+            if (row?.repo && row?.worktree_path) {
+                void this.tryReleaseWorktree(sessionId, row.repo, row.worktree_path, reason);
+            }
+            else if (row?.repo) {
+                // No worktree_path yet (session died before allocation completed):
+                // there's nothing to release, but audit the skip so the stream
+                // stays self-describing.
+                this.deps.state.audit("loop.worktree_release_skipped", { sessionId, reason, reason_skipped: "no worktree_path on session row (likely died pre-allocation)" }, sessionId);
             }
         }
         catch (err) {
-            this.deps.logger.warn("[loop] scheduleWorktreeReleaseForSession failed to look up repo", { sessionId, err: String(err) });
+            this.deps.logger.warn("[loop] scheduleWorktreeReleaseForSession failed to look up session row", { sessionId, err: String(err) });
         }
     }
     /**

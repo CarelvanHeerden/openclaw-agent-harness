@@ -50,7 +50,8 @@ test("PrMergedWatcher: marks merged PR closed, calls slack + git release",
     insertShipped(state.db, "S1", "https://github.com/o/r/pull/9");
 
     let slackText = "";
-    let releasedFor = "";
+    let releasedPath = "";
+    let releasedRepo = "";
     const w = new PrMergedWatcher(state, {
       logger: { info() {}, warn() {}, error() {} },
       fetchImpl: async () => ({
@@ -59,14 +60,24 @@ test("PrMergedWatcher: marks merged PR closed, calls slack + git release",
         json: async () => ({ state: "closed", merged: true, merged_at: "2026-07-13T15:00:00Z" }),
       }),
       slackNotify: async (_ch, _ts, text) => { slackText = text; },
-      git: { release: async (id) => { releasedFor = id; } },
+      // beta.17: pr-watcher now uses releaseByPath(worktreePath, repo) — the
+      // old release(sessionId, repo) shape silently no-op'd because the
+      // allocator uses pending-<ts> ids, not DB session UUIDs.
+      git: {
+        releaseByPath: async (path, repo) => {
+          releasedPath = path;
+          releasedRepo = repo;
+          return { ok: true, path };
+        },
+      },
       resolveGhToken: async () => "ghp_test",
     });
 
     const closed = await w.pollOnce();
     assert.equal(closed, 1);
     assert.match(slackText, /PR merged/);
-    assert.equal(releasedFor, "S1");
+    assert.equal(releasedPath, "/wt/S");
+    assert.equal(releasedRepo, "o/r");
 
     // Second poll should not repeat (pr_closed_at now set)
     const row = state.db.prepare(`SELECT pr_merged, pr_closed_at, pr_merged_at FROM sessions WHERE id='S1'`).get();

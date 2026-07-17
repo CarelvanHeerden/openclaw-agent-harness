@@ -73,7 +73,7 @@ function insertSession(db, id, budget = 50) {
   ).run(id, Date.now(), Date.now(), budget);
 }
 
-function baseDeps(state, plan, releaseCalls) {
+function baseDeps(state, plan, releaseCalls, releaseOutcome = { ok: true }) {
   return {
     config: config(),
     state,
@@ -85,8 +85,10 @@ function baseDeps(state, plan, releaseCalls) {
     runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.01, tokensIn: 1, tokensOut: 1 }),
     pushBranchAndOpenPr: async () => "https://github.com/o/r/pull/1",
     readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
-    releaseWorktree: async ({ sessionId, repoFullName, reason }) => {
-      releaseCalls.push({ sessionId, repoFullName, reason });
+    // beta.17: releaseWorktree now receives worktreePath and returns {ok, error?}.
+    releaseWorktree: async ({ sessionId, repoFullName, worktreePath, reason }) => {
+      releaseCalls.push({ sessionId, repoFullName, worktreePath, reason });
+      return typeof releaseOutcome === "function" ? releaseOutcome() : releaseOutcome;
     },
   };
 }
@@ -119,10 +121,17 @@ test(
     assert.equal(releaseCalls[0].sessionId, "S_SHIP");
     assert.equal(releaseCalls[0].repoFullName, "o/r");
     assert.equal(releaseCalls[0].reason, "shipped");
+    // beta.17: worktreePath must be threaded through. Beta.16's bug was
+    // that this arg didn't exist and release() reconstructed from sessionId.
+    assert.equal(releaseCalls[0].worktreePath, "/tmp/wt/s");
 
     const releasedEvents = state.audits.filter((e) => e.event === "loop.worktree_released");
     assert.equal(releasedEvents.length, 1);
     assert.equal(releasedEvents[0].payload.reason, "shipped");
+    // beta.17: audit payload now carries ok + path so operators can
+    // distinguish event-fired-but-nothing-happened from actual success.
+    assert.equal(releasedEvents[0].payload.ok, true);
+    assert.equal(releasedEvents[0].payload.path, "/tmp/wt/s");
   },
 );
 
@@ -132,8 +141,10 @@ test(
   async () => {
     const state = makeStore();
     insertSession(state.db, "S_ABORT");
-    // Pre-populate repo so scheduleWorktreeReleaseForSession can find it.
-    state.db.prepare(`UPDATE sessions SET repo = 'o/r' WHERE id = 'S_ABORT'`).run();
+    // Pre-populate repo + worktree_path so scheduleWorktreeReleaseForSession
+    // can find both. beta.17: worktree_path is now required (release() no
+    // longer reconstructs it from sessionId).
+    state.db.prepare(`UPDATE sessions SET repo = 'o/r', worktree_path = '/tmp/wt/s_abort' WHERE id = 'S_ABORT'`).run();
     const releaseCalls = [];
 
     const deps = baseDeps(state, plan(), releaseCalls);
@@ -159,7 +170,7 @@ test(
   async () => {
     const state = makeStore();
     insertSession(state.db, "S_FAIL");
-    state.db.prepare(`UPDATE sessions SET repo = 'o/r' WHERE id = 'S_FAIL'`).run();
+    state.db.prepare(`UPDATE sessions SET repo = 'o/r', worktree_path = '/tmp/wt/s_fail' WHERE id = 'S_FAIL'`).run();
     const releaseCalls = [];
 
     const deps = baseDeps(state, plan(), releaseCalls);
@@ -208,6 +219,8 @@ test(
     const releaseCalls = [];
 
     const deps = baseDeps(state, plan(), releaseCalls);
+    // beta.17 covers two failure modes: (a) impl returns {ok:false, error},
+    // (b) impl throws. Both must land in loop.worktree_release_failed.
     deps.releaseWorktree = async () => { throw new Error("git worktree remove exploded"); };
 
     const loop = new OrchestratorLoop(deps);
@@ -217,7 +230,9 @@ test(
     const failEvents = state.audits.filter((e) => e.event === "loop.worktree_release_failed");
     assert.equal(failEvents.length, 1);
     assert.equal(failEvents[0].payload.reason, "shipped");
-    assert.match(failEvents[0].payload.err, /git worktree remove exploded/);
+    // beta.17: payload uses `error` (not `err`) and includes ok:false.
+    assert.equal(failEvents[0].payload.ok, false);
+    assert.match(failEvents[0].payload.error, /git worktree remove exploded/);
 
     const okEvents = state.audits.filter((e) => e.event === "loop.worktree_released");
     assert.equal(okEvents.length, 0);
