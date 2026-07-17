@@ -87,11 +87,39 @@ export interface WorkerDeps {
   buildVerifyProbes?: (worktreePath: string, baseSha: string) => VerifyProbes;
 }
 
+/**
+ * Beta.21: minimal OKF concept shape the worker prompt understands.
+ * Kept local (structural type) so this module doesn't take a cross-
+ * package dep on the crystallise types just for prompt formatting.
+ */
+type WorkerConceptRef = {
+  id: string;
+  path?: string;
+  summary?: string;
+  tags?: string[];
+  content?: string;
+};
+
+/**
+ * Beta.21: hard cap on injected concept content. A worker system prompt is
+ * loaded on every SDK turn, so pulling in an entire long-form knowledge
+ * doc per concept is expensive and dilutes the signal. Keep to short
+ * summaries + first-N-chars of any supplied content.
+ */
+const WORKER_CONCEPT_CONTENT_MAX_CHARS = 4000;
+const WORKER_CONCEPT_TOTAL_MAX_CHARS = 12000;
+
 export function buildWorkerSystemPrompt(
-  brief: { title: string; motivation: string; acceptanceCriteria: string[] },
+  brief: {
+    title: string;
+    motivation: string;
+    acceptanceCriteria: string[];
+    /** Beta.21: OKF concept refs from the crystallised brief. Optional. */
+    relevantConcepts?: WorkerConceptRef[];
+  },
   subTask: LeadPlanSubTask,
 ): string {
-  return [
+  const lines: string[] = [
     `You are a focused code-writing worker. Your job is ONE sub-task, nothing more.`,
     ``,
     `## Overall brief`,
@@ -99,6 +127,33 @@ export function buildWorkerSystemPrompt(
     `Motivation: ${brief.motivation}`,
     `Acceptance criteria (WHOLE feature):`,
     ...brief.acceptanceCriteria.map((c) => `  - ${c}`),
+  ];
+
+  // Beta.21: inject concept context if the brief carries any relevantConcepts.
+  // Only concepts whose `path` is in `subTask.filesLikelyTouched`, OR that
+  // have no path (repo-external knowledge), are included — keeps the
+  // per-sub-task prompt focused instead of dumping the whole bundle.
+  const applicable = pickConceptsForSubTask(brief.relevantConcepts ?? [], subTask);
+  if (applicable.length > 0) {
+    lines.push(``, `## Relevant knowledge (OKF concepts)`);
+    let totalChars = 0;
+    for (const c of applicable) {
+      const header = c.path ? `### ${c.id} — ${c.path}` : `### ${c.id}`;
+      lines.push(``, header);
+      if (c.summary) lines.push(c.summary);
+      if (c.tags && c.tags.length > 0) lines.push(`tags: [${c.tags.join(", ")}]`);
+      if (c.content && totalChars < WORKER_CONCEPT_TOTAL_MAX_CHARS) {
+        const remaining = WORKER_CONCEPT_TOTAL_MAX_CHARS - totalChars;
+        const budget = Math.min(WORKER_CONCEPT_CONTENT_MAX_CHARS, remaining);
+        const snippet = c.content.slice(0, budget);
+        const truncated = c.content.length > budget ? `\n... (truncated, ${c.content.length - budget} chars omitted)` : "";
+        lines.push(``, snippet + truncated);
+        totalChars += snippet.length;
+      }
+    }
+  }
+
+  lines.push(
     ``,
     `## Your sub-task`,
     `Title: ${subTask.title}`,
@@ -113,7 +168,26 @@ export function buildWorkerSystemPrompt(
     `- Do not install global packages, disable safeguards, or exfiltrate anything.`,
     `- If a bash command is refused, explain in prose and continue with an alternative approach.`,
     `- End your turn once the sub-task's success criteria are met.`,
-  ].join("\n");
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Beta.21: choose which concepts are pertinent to this specific sub-task.
+ * Filters to concepts whose `path` matches one of the sub-task's likely
+ * files (exact match or prefix), OR concepts with no `path` (which we
+ * treat as generally applicable to the whole brief).
+ */
+export function pickConceptsForSubTask(
+  concepts: WorkerConceptRef[],
+  subTask: LeadPlanSubTask,
+): WorkerConceptRef[] {
+  if (concepts.length === 0) return [];
+  const files = subTask.filesLikelyTouched;
+  return concepts.filter((c) => {
+    if (!c.path) return true;
+    return files.some((f) => f === c.path || f.startsWith(c.path + "/") || (c.path ?? "").startsWith(f + "/"));
+  });
 }
 
 export async function runWorker(
