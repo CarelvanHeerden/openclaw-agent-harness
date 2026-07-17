@@ -47,7 +47,49 @@ export declare class GitAdapter {
      */
     private makeAskpass;
     allocate(ctx: GitContext): Promise<string>;
-    release(sessionId: string, repoFullName: string): Promise<void>;
+    /**
+     * Release (remove) a session's worktree.
+     *
+     * beta.17 fix: previously reconstructed the worktree path from `sessionId`
+     * via `sessionWorktreePath(sessionId)`. That's wrong: the allocator uses
+     * `pending-<Date.now()>` as the on-disk id (see index.ts allocateWorktree),
+     * NOT the DB session UUID. So the reconstructed path never existed and
+     * `if (!existsSync(wt)) return;` silently no-op'd every release.
+     *
+     * The correct path is stored on `sessions.worktree_path` after allocation
+     * and propagated on `plan.worktreePath`. Callers must pass it explicitly.
+     *
+     * Returns `{ ok, path, error? }` so callers can surface failures in audit
+     * payloads instead of relying on exceptions or fire-and-forget promises.
+     */
+    releaseByPath(worktreePath: string, repoFullName: string): Promise<{
+        ok: boolean;
+        path: string;
+        error?: string;
+    }>;
+    /**
+     * Legacy signature kept for back-compat with callers that still pass a
+     * `sessionId` (github-watcher pre-beta.17). Prefer `releaseByPath` when
+     * the actual worktree path is available (which is nearly always: it's
+     * stored on `sessions.worktree_path`).
+     *
+     * IMPORTANT: this path RECONSTRUCTS the worktree path from `sessionId`
+     * via `sessionWorktreePath` — which is wrong when the allocator used
+     * `pending-<ts>` ids. The github-watcher will be migrated to
+     * releaseByPath in a follow-up. For beta.17 we accept an optional
+     * `worktreePath` override that, when provided, wins over reconstruction.
+     */
+    release(sessionId: string, repoFullName: string, worktreePath?: string): Promise<{
+        ok: boolean;
+        path: string;
+        error?: string;
+    }>;
+    /**
+     * beta.17: enumerate leftover worktrees under the root that look like
+     * per-session allocations (`pending-<timestamp>` or DB-session UUIDs).
+     * Used by the startup self-heal path.
+     */
+    listWorktreeDirs(): Promise<string[]>;
     baseSha(worktreePath: string): Promise<string>;
     listChangedFiles(worktreePath: string, base: string): Promise<string[]>;
     /**
