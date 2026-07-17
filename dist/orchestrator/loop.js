@@ -160,8 +160,19 @@ export class OrchestratorLoop {
                     }
                 }
                 const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
-                this.deps.state.db.prepare(`INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, Date.now(), Date.now());
+                // beta.19 fix: populate `started_at` on insert. The schema has
+                // had this column since inception but nothing wrote to it, so
+                // every sub_task row had `started_at IS NULL`. Now set it to the
+                // same instant as `created_at` — for restart / recovery paths
+                // (INSERT OR REPLACE) this deliberately overwrites any earlier
+                // start time, which matches the previous cycle semantics (a
+                // re-executed sub-task started NOW, not when it was first
+                // scheduled).
+                {
+                    const now = Date.now();
+                    this.deps.state.db.prepare(`INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, started_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, now, now, now);
+                }
                 // Capture the worktree HEAD BEFORE the worker runs, so commit_made
                 // verification (HEAD != base) is meaningful.
                 const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";

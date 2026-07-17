@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.1.0-beta.19] -- 2026-07-17
+
+### Added
+
+- **Lead system prompt: atomicity rule for write+commit and push+PR.**
+  Staging's beta.17 smoke #2 exposed a lead-plan pathology: an acceptance
+  criterion phrased as "append line X and commit locally" was decomposed
+  into 3 sub-tasks (write / commit / verify) instead of one atomic
+  write-and-commit. s2's verify contract (`commit_made`, `file_committed`,
+  `file_written`) compared against s2's own worker-session-start SHA,
+  but the write already happened in s1, so s2's HEAD was unchanged from
+  its base and verification correctly failed. Correct behaviour given
+  the plan, wrong plan.
+
+  Beta.19 adds explicit guidance to the lead system prompt:
+  - **ATOMICITY RULE:** a WRITE action and its accompanying COMMIT belong
+    in ONE mutate sub-task. If a single sentence contains both a write
+    clause and a commit clause, it is one atomic sub-task.
+  - **Corollary:** teaches the model the concrete failure mode of the
+    anti-pattern -- more durable than just saying "don't".
+  - **Anti-pattern named:** 3 sub-tasks (write, commit, verify) for a
+    single write-and-commit criterion. Correct shape: 1 mutate + optional
+    1 observe.
+  - **Extension to push+PR:** "push branch and open a PR" is ONE mutate
+    sub-task with `contractScope='remote'`, not two.
+
+### Fixed
+
+- **`sub_tasks.started_at` is now actually populated.** The column existed
+  in the schema since inception but nothing wrote to it, so every row had
+  `started_at IS NULL`. Staging flagged this as a low-severity finding in
+  the beta.18 smoke report. The INSERT that sets `status='running'` now
+  also sets `started_at` to the same instant as `created_at`.
+
+### Testing
+
+- 6 new tests. Test count: **300 -> 306**.
+  - `beta19-lead-prompt-atomicity.test.mjs`: source-string regression
+    guards on the atomicity rule (any refactor that moves the guidance
+    must update the test, which is deliberately the point).
+  - `beta19-started-at.test.mjs`: end-to-end assertion that
+    `started_at` is populated on real runs, monotonic across sub-tasks.
+
+### Deferred
+
+- Two low-severity findings from Staging's beta.18 report remain open:
+  - Boot double-emit: needs specifics on which event fires twice before
+    a targeted fix is possible.
+  - Null `commit_sha` on `sub_tasks`: currently semantically correct (a
+    sub-task that made no commit legitimately has `NULL`), but the schema
+    could document the semantics or migrate to `''` for clarity. Deferred
+    pending Staging preference.
+
 ## [0.1.0-beta.18] -- 2026-07-17
 
 ### Fixed
