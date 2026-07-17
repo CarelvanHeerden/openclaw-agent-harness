@@ -1,0 +1,1 @@
+- 2026-07-17: beta.15 smoke run (worker sub-task, mutation)
