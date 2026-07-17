@@ -296,11 +296,22 @@ export class OrchestratorLoop {
                         return;
                     }
                 }
-                else if (st.taskMode === "observe" || contract.length === 0) {
-                    // beta.16 fix #2: observe-mode with empty contract (either
-                    // explicit verify:[] or inference filtered everything out) also
-                    // deserves a breadcrumb, otherwise the audit stream is silent
-                    // between the worker cost record and the next transition.
+                else if (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate")) {
+                    // beta.16 fix #2 + beta.18 fix: emit the observe-mode breadcrumb
+                    // when either:
+                    //   (a) taskMode is explicitly 'observe', or
+                    //   (b) the contract is empty AND taskMode is not explicitly
+                    //       'mutate' (defensive for pre-beta.15 plans without
+                    //       taskMode where inference just came up empty).
+                    //
+                    // Beta.16/17 shipped this branch without the `!== "mutate"`
+                    // guard, so a mutate sub-task whose inferred contract was empty
+                    // (or which took the buildVerifyProbes-absent test path) fired
+                    // `loop.subtask_observe_completed` with `taskMode:"mutate"` in
+                    // the payload — an incoherent event where the name says
+                    // "observe" but the payload admits it's a mutation. The inner
+                    // (verification-eligible) branch already had this guard; beta.18
+                    // brings this branch in line.
                     this.emitObserveCompleted(sessionId, st, result, []);
                 }
                 done.add(st.seq);
