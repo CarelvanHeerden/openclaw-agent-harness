@@ -117,20 +117,30 @@ export interface OrchestratorDeps {
     /** Read the current HEAD sha of a worktree (for commit_made verification). */
     worktreeHeadSha?: (worktreePath: string) => Promise<string>;
     /**
-     * beta.16 fix #3: release the per-session git worktree on terminal
-     * transitions (`loop.shipped`, `loop.aborted`, hard failure). Prior to
-     * beta.16 the worktree stayed live until the PR closed/merged (via the
-     * pr-watcher), which meant every successful smoke left a `pending-<ts>`
-     * worktree holding the smoke branch, and subsequent fetches on that
-     * branch failed with `refusing to fetch into branch checked out at ...`.
+     * beta.16 fix #3 + beta.17 correctness: release the per-session git
+     * worktree on terminal transitions (`loop.shipped`, `loop.aborted`, hard
+     * failure). Prior to beta.16 the worktree stayed live until the PR
+     * closed/merged (via the pr-watcher).
+     *
+     * beta.17 change: now returns `{ok, path, error?}` and takes an explicit
+     * `worktreePath` (looked up from the sessions row) rather than relying
+     * on `sessionId` reconstruction. Beta.16's `git.release(sessionId, repo)`
+     * silently no-op'd because the allocator uses `pending-<Date.now()>` on-
+     * disk ids, not DB session UUIDs. Callers must pass `worktreePath`.
+     *
      * Optional for back-compat with tests that stub the orchestrator; when
-     * absent the loop falls back to the pr-watcher's release-on-close path.
+     * absent the pr-watcher's release-on-close remains as a safety net.
      */
     releaseWorktree?: (params: {
         sessionId: string;
         repoFullName: string;
+        worktreePath: string;
         reason: "shipped" | "aborted" | "failed";
-    }) => Promise<void>;
+    }) => Promise<{
+        ok: boolean;
+        path?: string;
+        error?: string;
+    }>;
 }
 export declare class OrchestratorLoop {
     private readonly deps;
@@ -167,11 +177,16 @@ export declare class OrchestratorLoop {
      */
     private emitObserveCompleted;
     /**
-     * beta.16 fix #3: best-effort worktree release. Called on all terminal
-     * transitions (shipped/aborted/failed). Never throws — worktree cleanup
-     * failures are logged and swallowed so they cannot fail an already-
-     * terminal session. The pr-watcher's release-on-close is still a safety
-     * net for the rare case where release() here errors.
+     * beta.16 fix #3 + beta.17 telemetry: best-effort worktree release.
+     * Called on all terminal transitions (shipped/aborted/failed). Never
+     * throws — worktree cleanup failures are logged, audited, and swallowed
+     * so they cannot fail an already-terminal session.
+     *
+     * beta.17: audit payload now carries `{ok, path, error?}` on both the
+     * success and failure events so operators can distinguish
+     * event-fired-but-nothing-happened from event-fired-and-succeeded.
+     * Beta.16's `loop.worktree_released` was a lie on production because
+     * the underlying release() silently no-op'd (see releaseByPath docs).
      */
     private tryReleaseWorktree;
     /**
@@ -204,10 +219,11 @@ export declare class OrchestratorLoop {
     private estimateReviewCost;
     private finaliseAbort;
     /**
-     * beta.16 fix #3: schedule a best-effort worktree release for a session
-     * that has already reached a terminal status. Looks up the repo from the
-     * sessions row (worktreePath is per-session, so we only need the repo
-     * full name to route to the right bare clone). Never throws.
+     * beta.16 fix #3 + beta.17 correctness: schedule a best-effort worktree
+     * release for a session that has already reached a terminal status.
+     * Looks up both `repo` and `worktree_path` from the sessions row so the
+     * release call gets the actual on-disk path (not a reconstruction).
+     * Never throws.
      */
     private scheduleWorktreeReleaseForSession;
     /**

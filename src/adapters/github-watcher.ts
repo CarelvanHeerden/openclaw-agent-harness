@@ -128,12 +128,28 @@ export class PrMergedWatcher {
       this.opts.logger.warn("[pr-watcher] slack notify failed", { err: String(err), sessionId: row.id });
     }
 
-    // Release the worktree
+    // Release the worktree.
+    //
+    // beta.17 correctness: use releaseByPath with the actual
+    // `worktree_path` from the session row. Beta.16 called
+    // `git.release(row.id, row.repo)` which reconstructed the path from
+    // sessionId (a UUID); the allocator uses `pending-<Date.now()>` ids,
+    // so the reconstructed path was wrong and release silently no-op'd.
+    // The pr-watcher was the ORIGINAL release path (pre-beta.16) and
+    // has had this bug since inception — it was never observable because
+    // pr-watcher runs async on PR close and its failure never surfaced.
     if (this.opts.git && row.worktree_path) {
       try {
-        await this.opts.git.release(row.id, row.repo);
+        const outcome = await this.opts.git.releaseByPath(row.worktree_path, row.repo);
+        if (!outcome.ok) {
+          this.opts.logger.warn("[pr-watcher] worktree release reported not-ok", {
+            sessionId: row.id,
+            worktreePath: row.worktree_path,
+            error: outcome.error,
+          });
+        }
       } catch (err) {
-        this.opts.logger.warn("[pr-watcher] worktree release failed", { err: String(err), sessionId: row.id });
+        this.opts.logger.warn("[pr-watcher] worktree release threw", { err: String(err), sessionId: row.id });
       }
     }
   }

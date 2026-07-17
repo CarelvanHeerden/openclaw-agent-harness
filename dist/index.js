@@ -559,15 +559,29 @@ export function bootstrapHarnessSync(api) {
         // git / the provider REST API / disk directly so a confabulated
         // "I pushed" / "I opened a PR" is caught deterministically.
         worktreeHeadSha: async (worktreePath) => git.baseSha(worktreePath).catch(() => ""),
-        // beta.16 fix #3: release the per-session worktree on terminal
-        // transitions (loop.shipped / loop.aborted / hard failure). Prior to
-        // beta.16, worktree cleanup was only wired via the pr-watcher (on PR
-        // close/merge), so every successful smoke left a `pending-<ts>`
-        // worktree holding the smoke branch and blocked the next fetch on
-        // that branch. The pr-watcher's release-on-close remains a safety net.
-        releaseWorktree: async ({ sessionId, repoFullName, reason }) => {
-            api.logger.info("[harness] releasing worktree on terminal transition", { sessionId, reason });
-            await git.release(sessionId, repoFullName);
+        // beta.16 fix #3 + beta.17 correctness: release the per-session
+        // worktree on terminal transitions (loop.shipped / loop.aborted /
+        // hard failure).
+        //
+        // Beta.16 called `git.release(sessionId, repoFullName)` which
+        // reconstructed the worktree path from `sessionId` (a DB UUID). That
+        // was wrong: the allocator uses `pending-<Date.now()>` on-disk ids
+        // (see allocateWorktree in this file), so the reconstructed path
+        // never matched the real worktree and `if (!existsSync(wt)) return`
+        // silently no-op'd every release call. The audit event fired anyway,
+        // producing telemetry-only "released" events that lied.
+        //
+        // Beta.17: thread the actual `worktreePath` (looked up from the
+        // sessions row) into the release call, and surface the {ok, error?}
+        // outcome so audit consumers can distinguish real success from silent
+        // no-op.
+        releaseWorktree: async ({ sessionId, repoFullName, worktreePath, reason }) => {
+            api.logger.info("[harness] releasing worktree on terminal transition", { sessionId, reason, worktreePath });
+            const outcome = await git.releaseByPath(worktreePath, repoFullName);
+            if (!outcome.ok) {
+                api.logger.warn("[harness] worktree release did not succeed", { sessionId, reason, worktreePath, error: outcome.error });
+            }
+            return outcome;
         },
         buildVerifyProbes: ({ plan, requester, worktreePath, baseSha }) => {
             const resolution = pat.resolve({
@@ -1078,7 +1092,7 @@ export function bootstrapHarnessSync(api) {
  * flushed before closing the state DB).
  */
 export async function bootstrapHarnessAsync(runtime, api) {
-    const { config, state, creds, slack } = runtime;
+    const { config, state, creds, slack, git } = runtime;
     // Reactions poller (only if slack.credential_service is set so we have a bot token).
     if (config.slack.credential_service) {
         try {
@@ -1118,6 +1132,36 @@ export async function bootstrapHarnessAsync(runtime, api) {
     }
     else {
         api.logger.info("[harness] slack.credential_service not set; reactions poller idle");
+    }
+    // beta.17: startup worktree self-heal. Scan the worktrees root for
+    // leftover `pending-<ts>` dirs (or UUID dirs) and reap any that
+    // correspond to terminal or unknown sessions. Belt-and-suspenders on
+    // top of the loop-side release: this catches the cases where
+    //   (a) a pre-beta.17 install left worktrees behind (release was broken),
+    //   (b) a crash / container restart happened between `loop.shipped` and
+    //       the release call landing, or
+    //   (c) the pr-watcher's release-on-close also silently failed.
+    try {
+        const { healOrphanedWorktrees } = await import("./state/worktree-heal.js");
+        const healResult = await healOrphanedWorktrees(state, {
+            listWorktreeDirs: () => git.listWorktreeDirs(),
+            releaseByPath: (path, repo) => git.releaseByPath(path, repo),
+            logger: api.logger,
+            fallbackRepoFullName: config.repos.allowed?.[0]?.replace("*", "repo") ?? undefined,
+        });
+        if (healResult.scanned > 0) {
+            api.logger.info("[harness] worktree self-heal complete", healResult);
+            // Emit an audit event so operators can see this in the audit stream too.
+            try {
+                state.audit("harness.worktree_heal", healResult);
+            }
+            catch (err) {
+                api.logger.warn("[harness] worktree heal audit emit failed", { err: String(err) });
+            }
+        }
+    }
+    catch (err) {
+        api.logger.warn("[harness] worktree self-heal on start failed", { err: String(err) });
     }
     // Session recovery: mark stale non-terminal sessions as 'interrupted' and
     // notify their Slack threads. Fresh in-flight sessions stay 'resumable'

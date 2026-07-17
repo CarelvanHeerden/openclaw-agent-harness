@@ -1,5 +1,85 @@
 # Changelog
 
+## [0.1.0-beta.17] -- 2026-07-17
+
+### Fixed
+
+- **Blocker: worktree release was telemetry-only in beta.16.** Discovered by
+  Staging's beta.16 smoke #2: the audit event `loop.worktree_released` fired
+  with `reason:'shipped'`, but the physical worktree stayed on disk with the
+  branch checked out. The next smoke crashed with the same
+  `refusing to fetch into branch checked out at 'pending-<ts>'` error the
+  beta.16 fix was supposed to eliminate.
+
+  Root cause: `git.release(sessionId, repoFullName)` reconstructed the
+  worktree path via `sessionWorktreePath(sessionId)` -> `<worktrees_root>/
+  <sessionId>`. But the allocator (`index.ts allocateWorktree`) uses
+  `sessionId: 'pending-' + Date.now()` as the ON-DISK id, NOT the DB session
+  UUID. So the reconstructed path never existed, `if (!existsSync(wt)) return`
+  silently no-op'd, and the audit event fired regardless. Both the beta.16
+  loop-side wiring AND the pre-beta.16 pr-watcher release-on-close path
+  had this bug -- the pr-watcher's failure was just never observed because
+  it ran async on PR close and its outcome was never surfaced.
+
+  Fix:
+  - New `git.releaseByPath(worktreePath, repoFullName): {ok, path, error?}`
+    is the authoritative release entry point. Takes the actual worktree
+    path (looked up from `sessions.worktree_path`), does the git worktree
+    remove, follows up with `rm -rf` if the dir survives, and prunes bare
+    worktree admin state. Returns a structured outcome.
+  - `git.release(sessionId, repoFullName, worktreePath?)` legacy shape is
+    retained but delegates to `releaseByPath` when `worktreePath` is
+    supplied. The 3-arg form is the correct call.
+  - `OrchestratorDeps.releaseWorktree` signature now includes `worktreePath`
+    and returns `{ok, path?, error?}`. Loop passes `plan.worktreePath` to
+    the release call.
+  - `pr-watcher` uses `releaseByPath(row.worktree_path, row.repo)`.
+
+- **`{ok, error?}` on `loop.worktree_released` / `loop.worktree_release_failed`
+  audit payloads.** Beta.16 fired the success event without any indication
+  of whether the underlying operation succeeded. Beta.17 payloads carry
+  `ok`, `path`, and (on failure) `error`. Would have caught the beta.16
+  bug via audit stream inspection alone.
+
+### Added
+
+- **Startup worktree self-heal.** On plugin init, scan `worktrees_root` for
+  leftover per-session dirs (allocator-shaped names: `pending-<digits>` or
+  UUIDs), cross-check against the sessions table, and force-remove any
+  worktree whose owning session is terminal (`done`/`failed`/`aborted`) or
+  entirely unknown to the DB. Active sessions are preserved.
+
+  Belt-and-suspenders on top of the loop-side release. Also fixes
+  historical debt: every `pending-<ts>` worktree left behind by pre-beta.17
+  gets cleaned up on the first restart after upgrading.
+
+  Emits `harness.worktree_heal` audit event with counts:
+  `{scanned, matched_terminal, matched_active, orphaned, removed, errors}`.
+
+  Defence: `looksLikeAllocatorWorktree()` only matches `pending-<digits>`
+  and UUIDs, so a misconfigured `worktrees_root` pointing at a shared
+  directory cannot cascade into removing user scratch dirs.
+
+### Testing
+
+- 10 new tests. Test count: **287 -> 297**.
+  - `beta17-release-by-path.test.mjs`: real git + real fs. Confirms
+    `releaseByPath` actually removes physical worktree dirs and unregisters
+    them from `git worktree list`.
+  - `beta17-worktree-heal.test.mjs`: unit tests for the self-heal logic
+    (terminal removal, orphan removal, active preservation, allocator-name
+    guard, error reporting).
+
+### Migration notes
+
+- Callers of `git.release(sessionId, repoFullName)` (the 2-arg form) will
+  still compile but continue to silently no-op when the reconstruction is
+  wrong. Prefer `releaseByPath(worktreePath, repoFullName)`.
+- The `releaseWorktree` orchestrator dep signature changed: `worktreePath`
+  is now a required parameter and the return type is `{ok, path?, error?}`.
+  Test doubles that stub this dep will need updating. See
+  `tests/beta16-worktree-release.test.mjs` for the reference shape.
+
 ## [0.1.0-beta.16] -- 2026-07-17
 
 ### Added

@@ -88,17 +88,87 @@ esac
         }
         return wt;
     }
-    async release(sessionId, repoFullName) {
-        const wt = this.sessionWorktreePath(sessionId);
-        if (!existsSync(wt))
-            return;
+    /**
+     * Release (remove) a session's worktree.
+     *
+     * beta.17 fix: previously reconstructed the worktree path from `sessionId`
+     * via `sessionWorktreePath(sessionId)`. That's wrong: the allocator uses
+     * `pending-<Date.now()>` as the on-disk id (see index.ts allocateWorktree),
+     * NOT the DB session UUID. So the reconstructed path never existed and
+     * `if (!existsSync(wt)) return;` silently no-op'd every release.
+     *
+     * The correct path is stored on `sessions.worktree_path` after allocation
+     * and propagated on `plan.worktreePath`. Callers must pass it explicitly.
+     *
+     * Returns `{ ok, path, error? }` so callers can surface failures in audit
+     * payloads instead of relying on exceptions or fire-and-forget promises.
+     */
+    async releaseByPath(worktreePath, repoFullName) {
+        if (!worktreePath)
+            return { ok: false, path: worktreePath, error: "worktreePath is empty" };
+        if (!existsSync(worktreePath))
+            return { ok: true, path: worktreePath, error: "worktree already gone" };
         const bare = this.repoBarePath(repoFullName);
         try {
-            await this.run(["-C", bare, "worktree", "remove", "--force", wt]);
+            // Best-effort: git worktree remove. Uses --force so uncommitted state
+            // doesn't block a terminal-session cleanup.
+            await this.run(["-C", bare, "worktree", "remove", "--force", worktreePath]);
+            // Confirm the physical path is actually gone. `git worktree remove`
+            // sometimes only unregisters the worktree (e.g. if the gitdir link
+            // is broken). Follow up with rm -rf when the dir survives.
+            if (existsSync(worktreePath)) {
+                await rm(worktreePath, { recursive: true, force: true });
+            }
+            // Also prune any dangling worktree admin state in the bare repo.
+            await this.run(["-C", bare, "worktree", "prune"]).catch(() => "");
+            return { ok: true, path: worktreePath };
         }
         catch (err) {
-            this.opts.logger.warn("[git] worktree remove failed; falling back to rm -rf", { err: String(err) });
-            await rm(wt, { recursive: true, force: true });
+            this.opts.logger.warn("[git] worktree remove failed; falling back to rm -rf", { err: String(err), worktreePath });
+            try {
+                await rm(worktreePath, { recursive: true, force: true });
+                // Prune the bare admin state so a subsequent `git fetch` doesn't
+                // choke on "refusing to fetch into branch checked out at ...".
+                await this.run(["-C", bare, "worktree", "prune"]).catch(() => "");
+                return { ok: true, path: worktreePath, error: `git worktree remove failed, fallback rm -rf succeeded: ${String(err)}` };
+            }
+            catch (rmErr) {
+                return { ok: false, path: worktreePath, error: `git worktree remove AND rm -rf failed: ${String(err)} | ${String(rmErr)}` };
+            }
+        }
+    }
+    /**
+     * Legacy signature kept for back-compat with callers that still pass a
+     * `sessionId` (github-watcher pre-beta.17). Prefer `releaseByPath` when
+     * the actual worktree path is available (which is nearly always: it's
+     * stored on `sessions.worktree_path`).
+     *
+     * IMPORTANT: this path RECONSTRUCTS the worktree path from `sessionId`
+     * via `sessionWorktreePath` — which is wrong when the allocator used
+     * `pending-<ts>` ids. The github-watcher will be migrated to
+     * releaseByPath in a follow-up. For beta.17 we accept an optional
+     * `worktreePath` override that, when provided, wins over reconstruction.
+     */
+    async release(sessionId, repoFullName, worktreePath) {
+        const wt = worktreePath && worktreePath.length > 0 ? worktreePath : this.sessionWorktreePath(sessionId);
+        return this.releaseByPath(wt, repoFullName);
+    }
+    /**
+     * beta.17: enumerate leftover worktrees under the root that look like
+     * per-session allocations (`pending-<timestamp>` or DB-session UUIDs).
+     * Used by the startup self-heal path.
+     */
+    async listWorktreeDirs() {
+        const root = this.expand(this.opts.worktreesRoot);
+        try {
+            const { readdir } = await import("node:fs/promises");
+            const entries = await readdir(root, { withFileTypes: true });
+            return entries
+                .filter((e) => e.isDirectory() && e.name !== ".repos")
+                .map((e) => resolve(root, e.name));
+        }
+        catch {
+            return [];
         }
     }
     async baseSha(worktreePath) {
