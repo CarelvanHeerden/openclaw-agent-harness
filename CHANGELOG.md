@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.1.0-beta.22] -- 2026-07-17
+
+### Added
+
+- **OKF auto-forward, Option A: prompt-side.** Beta.21 wired the
+  `relevantConcepts` pass-through end-to-end. Beta.22 teaches the calling
+  OpenClaw agent to actually use it by embedding an explicit forwarding
+  instruction in the `harness_run` (and `harness_start_session`) tool
+  descriptions.
+
+  When the calling agent's context contains one or more `Relevant Knowledge
+  (OKF)` blocks whose subject overlaps the request, it now sees a
+  `REQUIRED WHEN OKF CONTEXT IS PRESENT` header telling it exactly how to
+  map the block fields to a `relevantConcepts` array entry:
+  - `id` -> block's `ID:` value
+  - `path` -> if the block references a repo file, that repo-relative path
+  - `summary` -> block's one-line description
+  - `tags` -> block's `Tags:` list, verbatim
+  - `content` -> OPTIONAL. Full concept file body when known and bounded.
+
+  The instruction also forbids inventing concept ids the OKF context did
+  not surface, and says to omit `relevantConcepts` entirely (not `[]`)
+  when there's nothing to forward.
+
+  Beta.23 will add the deterministic Option B: a plugin-side hook that
+  parses the calling agent's context and injects `relevantConcepts` before
+  the tool call fires, so the auto-forward isn't purely instruction-
+  following.
+
+### Testing
+
+- 5 new tests. Test count: **323 -> 328**.
+  - `beta22-tool-desc-okf.test.mjs`: source-string regression guards on
+    the OKF forwarding rule in both `harness_run` and
+    `harness_start_session` descriptions.
+
+### Backward compatibility
+
+- Description-only change. No schema or behaviour change. Old agents that
+  don't act on the instruction: identical beta.21 behaviour. Old callers
+  passing `relevantConcepts` explicitly: unaffected.
+
 ## [0.1.0-beta.21] -- 2026-07-17
 
 ### Added
