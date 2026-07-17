@@ -256,20 +256,69 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   const budget = new BudgetEnforcer(config.budgets, state);
   const pat = new PatRouter(config.pat_routing);
 
+  // beta.24: track whether the credential_get tool is actually available
+  // so downstream log messages can distinguish "no vault adapter present"
+  // from "vault adapter present but this specific service not found".
+  // Set to true on first successful call; the boot-time warning below
+  // also probes it eagerly so operators don't have to wait for the first
+  // git op to see the state.
+  let credentialGetAvailable: boolean | undefined = undefined;
+
   const creds = new CredentialAdapter({
     logger: api.logger,
     callCredentialGetTool: async (input) => {
       if (!api.callTool) {
-        return { error: "api.callTool not available; cannot read vault" };
+        credentialGetAvailable = false;
+        return { error: "api.callTool not available on plugin API; no vault adapter present" };
       }
       try {
         const r = (await api.callTool("credential_get", input)) as { value?: string; error?: string };
+        // If we get a defined response (even if the entry isn't found),
+        // the adapter is present.
+        credentialGetAvailable = true;
         return r;
       } catch (err) {
+        // Heuristic: if the error mentions "unknown tool" / "not found"
+        // (typical of a missing memory-hybrid plugin), classify as no
+        // adapter. Otherwise treat as a transient / permission error
+        // where the adapter IS present.
+        const msg = String(err).toLowerCase();
+        if (msg.includes("unknown tool") || msg.includes("tool not found") || msg.includes("no such tool") || msg.includes("credential_get") && msg.includes("not registered")) {
+          credentialGetAvailable = false;
+        }
         return { error: String(err) };
       }
     },
   });
+
+  // beta.24: eagerly probe whether the credential_get tool is available at
+  // boot, so we can surface a single, loud warning at start-up rather than
+  // one warning per git operation. This does NOT resolve a real service --
+  // just calls credential_get with a sentinel service name; we don't care
+  // about the result, only about whether the tool exists.
+  (async () => {
+    if (api.callTool) {
+      try {
+        await api.callTool("credential_get", { service: "__harness_boot_probe", type: "token" });
+        credentialGetAvailable = true;
+      } catch (err) {
+        const msg = String(err).toLowerCase();
+        if (msg.includes("unknown tool") || msg.includes("tool not found") || msg.includes("no such tool")) {
+          credentialGetAvailable = false;
+          api.logger.warn(
+            "[harness] no credential vault adapter (`credential_get` tool) is registered. Vault lookups will fail; the harness will always fall back to env vars for tokens. Install the memory-hybrid plugin to enable vault lookups.",
+          );
+        } else {
+          credentialGetAvailable = true;
+        }
+      }
+    } else {
+      credentialGetAvailable = false;
+      api.logger.warn(
+        "[harness] no api.callTool bridge on this plugin API; vault lookups impossible. Env-only mode.",
+      );
+    }
+  })().catch(() => { /* boot probe failure is non-fatal */ });
 
   // Anthropic API key resolver for the embedded Claude Agent SDK.
   // Vault-first, then env fallback. Memoised (including the "not found"
@@ -321,7 +370,22 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const v = await creds.getToken(r.credentialService, "token");
       if (v) return v;
     } catch (err) {
-      api.logger.warn("[harness] git vault lookup failed; trying env fallback", { service: r.credentialService, provider: r.provider, err: String(err) });
+      // beta.24: distinguish "no vault adapter" (structural) from "adapter
+      // present, entry missing" (operator config error). Also inline the
+      // error + service name in the message string so the log survives
+      // meta-stripping (see pr-watcher / crystallise comments).
+      const reason = String(err);
+      if (credentialGetAvailable === false) {
+        api.logger.info(
+          `[harness] git token '${r.credentialService}': using env fallback (no vault adapter; install memory-hybrid to enable)`,
+          { service: r.credentialService, provider: r.provider, envVar: r.apiKeyEnv },
+        );
+      } else {
+        api.logger.warn(
+          `[harness] git vault lookup failed for '${r.credentialService}': ${reason}; trying env fallback`,
+          { service: r.credentialService, provider: r.provider, err: reason },
+        );
+      }
     }
     const envVal = process.env[r.apiKeyEnv];
     if (envVal) {

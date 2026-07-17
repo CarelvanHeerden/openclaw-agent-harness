@@ -64,6 +64,19 @@
         "default_base_branch": { "type": "string", "default": "main" }
       }
     },
+    "logging": {
+      "type": "object",
+      "description": "beta.24: harness log verbosity. When level='debug', SDK errors (crystallise, lead, worker, adversary) log their full error object instead of a one-line summary. Vault-lookup and pat-routing failures also log the exact keys tried. Set to 'debug' during smoke testing to make credential + planner failures diagnosable without a code change.",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["debug", "info", "warn", "error"],
+          "default": "info",
+          "description": "Minimum log level the harness emits. Defaults to 'info' (current behaviour)."
+        }
+      }
+    },
     "models": {
       "type": "object",
       "additionalProperties": false,
@@ -71,7 +84,22 @@
         "lead": { "type": "string" },
         "worker": { "type": "string" },
         "adversary": { "type": "string" },
-        "classifier": { "type": "string" }
+        "classifier": { "type": "string" },
+        "auth": {
+          "type": "object",
+          "description": "beta.4+ addition, beta.24 schema fix. Anthropic API key resolution: vault-first, then env fallback. Both fields optional; when omitted, harness relies solely on env (ANTHROPIC_API_KEY) or SDK default behaviour.",
+          "additionalProperties": false,
+          "properties": {
+            "credential_service": {
+              "type": "string",
+              "description": "Vault service name for the Anthropic API key. Vault-first lookup key."
+            },
+            "api_key_env": {
+              "type": "string",
+              "description": "Environment variable to read on vault miss. Defaults to ANTHROPIC_API_KEY."
+            }
+          }
+        }
       }
     },
     "loop": {

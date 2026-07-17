@@ -413,8 +413,16 @@ export function registerHarnessTools(api, runtime) {
                 cResult = await liveRuntime().crystallise(request, relevantConcepts);
             }
             catch (err) {
-                api.logger.error("[tool.run] crystallise failed", { requester, err: String(err) });
-                return { content: [{ type: "text", text: `Crystallisation failed: ${String(err)}` }], details: { ok: false, crystalliseError: true } };
+                // beta.24: log the error inline in the message string so it
+                // survives log-parsers that strip the meta object. Staging's
+                // beta.23 smoke lost the crystallise error entirely to that
+                // stripping -- we saw `crystallise failed` with no reason for
+                // hours because the reason was in `meta.err` and the log line
+                // only rendered the message. Repeat the meta anyway for
+                // downstream consumers that DO read structured fields.
+                const reason = String(err);
+                api.logger.error(`[tool.run] crystallise failed: ${reason}`, { requester, err: reason });
+                return { content: [{ type: "text", text: `Crystallisation failed: ${reason}` }], details: { ok: false, crystalliseError: true } };
             }
             if (cResult.kind === "reject") {
                 liveState().audit("tool.run.rejected", { requester, intent: cResult.intent, reason: cResult.reason });

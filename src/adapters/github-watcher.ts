@@ -80,7 +80,13 @@ export class PrMergedWatcher {
           closed++;
         }
       } catch (err) {
-        this.opts.logger.warn("[pr-watcher] poll failed", { err: String(err), sessionId: row.id });
+        // beta.24: inline the error in the message string. Staging's log
+        // pipeline strips meta{} objects, which meant beta.23 boot showed
+        // `[pr-watcher] poll failed` 5x with no reason and gave a false
+        // impression of a broken adapter when it was really a routine
+        // 404-on-unknown-PR. Preserve meta for structured consumers.
+        const reason = String(err);
+        this.opts.logger.warn(`[pr-watcher] poll failed: ${reason}`, { err: reason, sessionId: row.id });
       }
     }
     return closed;

@@ -1,5 +1,106 @@
 # Changelog
 
+## [0.1.0-beta.24] -- 2026-07-17
+
+### Fixed
+
+- **Private-repo clone now actually authenticates.** Staging's Thanos smoke
+  (session `b499a9cf`) failed at `git clone --bare` for `Stitch-Vercel/
+  ProjectThanos` with "Repository not found" after 61s. Root cause:
+  GitHub returns 404 (not 401) on unauthenticated requests to private
+  repos. Beta.23's clone step relied on `GIT_ASKPASS` to inject
+  credentials, but git only prompts on 401 — it never got a chance to
+  ask on 404.
+
+  Fix: for the INITIAL bare clone, embed the resolved PAT in the URL
+  passed to git (`https://x-access-token:<token>@github.com/owner/repo.git`).
+  Immediately after clone succeeds, `remote set-url` back to the plain
+  URL so the token is not persisted in `.git/config` on disk. Subsequent
+  fetch/push operations still use `GIT_ASKPASS` (which works because by
+  then git has cached the auth state).
+
+  New exported helper `buildAuthedCloneUrl(repoFullName, token)`:
+  URL-encodes the token so a `%` / `@` / `:` in a future token format
+  cannot mangle the URL.
+
+- **Log lines now include the error reason in the message text.** Staging
+  saw `[tool.run] crystallise failed` five times over the day with no
+  reason string; the reason was in the `meta.err` field but Staging's
+  log rendering strips meta. Fixed at three highest-value sites:
+  - `[tool.run] crystallise failed: <reason>`
+  - `[pr-watcher] poll failed: <reason>`
+  - `[harness] git vault lookup failed for '<service>': <reason>`
+
+  Structured meta is still emitted for downstream consumers that DO read
+  it. This is a log-format fix, not a log-level change; works regardless
+  of `logging.level`.
+
+- **Vault-lookup log clarity.** Beta.23 warned "git vault lookup failed;
+  trying env fallback" on every git op when memory-hybrid wasn't
+  installed. That's a structural absence, not a per-operation failure.
+  Beta.24:
+  - Probes at boot whether the `credential_get` tool is registered.
+  - Emits one loud `warn` at boot if it's not: "no credential vault
+    adapter (`credential_get` tool) is registered. Install the memory-
+    hybrid plugin to enable vault lookups."
+  - Downgrades subsequent per-op fallback logs to `info` with a
+    different message ("using env fallback (no vault adapter)") so the
+    log isn't flooded.
+  - Preserves the loud `warn` for the OTHER case (adapter present,
+    entry missing) which is a real operator config error.
+
+### Added
+
+- **`logging.level` config field.** New config block accepting
+  `"debug" | "info" | "warn" | "error"`, defaulting to `"info"`.
+  Schema + parser + type declared. Actual debug-emit gating is a
+  beta.25 target once we know which specific sites need level-
+  conditional detail; beta.24 lays the groundwork.
+
+### Schema corrections
+
+- **`models.auth` is now declared in the schema.** Beta.4 added the
+  code path that reads `config.models.auth.credential_service` and
+  `api_key_env`, but the JSON schema still had `additionalProperties:
+  false` on `models` and no `auth` property. Gateway startup rejected
+  the config Carel copy-pasted from my beta.20 documentation. Schema
+  now matches runtime behaviour.
+
+### Testing
+
+- 7 new tests. Test count: **348 -> 355**.
+  - `beta24-clone-cred-and-schema.test.mjs`: `buildAuthedCloneUrl`
+    embedding shape, URL-encoding of special chars, exact repro of the
+    Staging Thanos repo.
+  - `beta24-schema-gaps.test.mjs`: `parseHarnessConfig` accepts
+    `models.auth`, accepts `logging.level`, defaults `logging.level`
+    to `info`, back-compat with pre-beta.24 configs.
+
+### Deferred to beta.25
+
+- Actual debug-emit gating on `logging.level`. Beta.24 shipped the
+  schema/type + inline-error-in-message fix; the level-conditional
+  detail gating can be added incrementally.
+
+### Migration notes for operators
+
+- If you were running beta.23 with a workaround (`models.auth` omitted
+  because the schema rejected it), you can now add it back:
+  ```json
+  "models": {
+    ...,
+    "auth": {
+      "credential_service": "anthropic-api-key",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    }
+  }
+  ```
+- The `logging` block is optional:
+  ```json
+  "logging": { "level": "info" }
+  ```
+  Omit for beta.23 behaviour.
+
 ## [0.1.0-beta.23] -- 2026-07-17
 
 ### Added

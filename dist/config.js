@@ -87,6 +87,9 @@ const DEFAULTS = {
             gitlab: { api_base: "https://gitlab.com/api/v4", api_key_env: "GITLAB_TOKEN" },
         },
     },
+    logging: {
+        level: "info",
+    },
 };
 function mergeDeep(base, override) {
     if (override === null || override === undefined)

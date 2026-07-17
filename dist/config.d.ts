@@ -16,6 +16,16 @@ export interface HarnessConfig {
     storage: StorageConfig;
     safety: SafetyConfig;
     pat_routing: PatRoutingConfig;
+    /**
+     * beta.24: harness log verbosity. When `level: 'debug'`, error log sites
+     * (crystallise, lead SDK, worker SDK, adversary SDK, git vault lookup,
+     * pr-watcher) log full error objects instead of one-line summaries.
+     * Defaults to 'info' (pre-beta.24 behaviour).
+     */
+    logging: LoggingConfig;
+}
+export interface LoggingConfig {
+    level: "debug" | "info" | "warn" | "error";
 }
 export interface SlackConfig {
     /**
