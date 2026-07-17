@@ -358,7 +358,12 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       api.registerTool({
         name: "harness_start_session",
         description:
-          "Start a harness session from a STRUCTURED brief (skips the classifier/crystalliser). Use this when you have already refined the request into title + motivation + acceptance criteria. For a raw natural-language request, use harness_run instead. Slack channel/thread are optional; when omitted, progress is not posted to Slack and you poll harness_status / harness_session_get for the outcome.",
+          [
+            "Start a harness session from a STRUCTURED brief (skips the classifier/crystalliser). Use this when you have already refined the request into title + motivation + acceptance criteria. For a raw natural-language request, use harness_run instead. Slack channel/thread are optional; when omitted, progress is not posted to Slack and you poll harness_status / harness_session_get for the outcome.",
+            "",
+            // beta.22: same OKF forwarding rule as harness_run.
+            "OKF forwarding: if your context contains `Relevant Knowledge (OKF)` blocks that relate to the brief, include them under `brief.relevantConcepts` using the same shape documented on `harness_run`. Optional; omit when there are no relevant blocks.",
+          ].join("\n"),
         parameters: {
           type: "object",
           properties: {
@@ -456,7 +461,23 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       api.registerTool({
         name: "harness_run",
         description:
-          "PRIMARY entry point. Hand the harness a raw natural-language coding request; it classifies + crystallises it into a brief and starts a session (plan -> parallel workers -> adversarial review -> PR). Returns either a started sessionId, a clarifying question to relay to the user, or a rejection. Use this instead of harness_start_session unless you have already built a structured brief. Slack channel/thread are optional; omit them for pure agent-orchestrated runs and poll harness_status for the outcome. beta.21: optionally pass `relevantConcepts` if your OpenClaw agent's context enrichment surfaced OKF concept blocks that relate to this request — they'll propagate to the lead planner and workers.",
+          [
+            "PRIMARY entry point. Hand the harness a raw natural-language coding request; it classifies + crystallises it into a brief and starts a session (plan -> parallel workers -> adversarial review -> PR). Returns either a started sessionId, a clarifying question to relay to the user, or a rejection. Use this instead of harness_start_session unless you have already built a structured brief. Slack channel/thread are optional; omit them for pure agent-orchestrated runs and poll harness_status for the outcome.",
+            "",
+            // beta.22: explicit OKF forwarding instruction. The OKF plugin
+            // surfaces "Relevant Knowledge" blocks in your (the calling
+            // agent's) context. Beta.21 wired the pass-through, beta.22
+            // teaches YOU to use it. Beta.23 will add a plugin-side hook
+            // that enforces this deterministically.
+            "REQUIRED WHEN OKF CONTEXT IS PRESENT: if your current turn's context contains one or more `Relevant Knowledge (OKF)` blocks whose subject matter overlaps this request (retry logic, an integration, a documented workflow, etc.), you MUST forward them as `relevantConcepts` on this tool call. Each block gives you an `ID`, an optional description, and links; map them like this:",
+            "  - `id`: the block's `ID:` value (e.g. `services/retry`, `workflows/gmail-sync`).",
+            "  - `path`: if the block references a file in the target repo, include it here (repo-relative). Omit otherwise.",
+            "  - `summary`: the block's one-line description.",
+            "  - `tags`: the block's `Tags:` list, verbatim.",
+            "  - `content`: OPTIONAL. If you can read the concept file itself and its size is under a few thousand chars, include the full markdown here — this is the biggest quality lever on large (10K+ LOC) repos because the worker starts primed instead of exploring the tree blind.",
+            "Do NOT invent concept ids the OKF context did not surface. Do NOT forward OKF blocks whose subject is clearly unrelated to the request (e.g. an unrelated infrastructure concept when the request is a docs typo fix) — forward only what's genuinely relevant.",
+            "If your context contains NO OKF blocks, or none are relevant, omit `relevantConcepts` entirely. Do not pass an empty array.",
+          ].join("\n"),
         parameters: {
           type: "object",
           properties: {
