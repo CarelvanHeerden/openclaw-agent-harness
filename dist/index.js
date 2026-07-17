@@ -28,6 +28,7 @@ import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
+import { parseOkfBlocksFromContext, OkfConceptCache, decideAutoForward, buildRewrittenParams, cacheKeyForCtx, } from "./hooks/okf-auto-forward.js";
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
@@ -914,6 +915,28 @@ export function bootstrapHarnessSync(api) {
     // Tools (sync)
     const disposeTools = registerHarnessTools(api, runtime);
     runtime.disposers.push(disposeTools);
+    // beta.23: OKF auto-forward hooks (Option B).
+    //
+    // beta.21 wired the `relevantConcepts` pass-through end-to-end;
+    // beta.22 added a prompt-side instruction on the tool descriptions.
+    // Beta.23 adds a plugin-side hook pair that deterministically
+    // extracts OKF blocks from the calling agent's context and injects
+    // them into `harness_run` / `harness_start_session` tool params
+    // before the tool call fires. Belt-and-suspenders on top of
+    // Option A: even if a model ignores the tool description, the hook
+    // still gets the concepts through.
+    //
+    // Requires
+    //   plugins.entries.openclaw-agent-harness.hooks.allowConversationAccess: true
+    // in openclaw.json for `before_prompt_build` to receive the current
+    // prompt / messages. When that flag is off, the parser hook is
+    // silently skipped by the platform and auto-forward degrades to the
+    // beta.22 model-instruction path. Runtime never fails hard.
+    {
+        const disposeOkfHooks = registerOkfAutoForwardHooks(api, runtime);
+        for (const d of disposeOkfHooks)
+            runtime.disposers.push(d);
+    }
     // Subscribe to inbound Slack messages.
     //
     // The SDK exposes TWO distinct concepts here:
@@ -1211,6 +1234,128 @@ export async function bootstrapHarness(api) {
     const runtime = bootstrapHarnessSync(api);
     await bootstrapHarnessAsync(runtime, api);
     return runtime;
+}
+/**
+ * beta.23: register the OKF auto-forward hook pair.
+ *
+ * - `before_prompt_build` observes the current turn's context, parses
+ *   any `## Relevant Knowledge (OKF)` section, and caches the parsed
+ *   concepts under the session key.
+ * - `before_tool_call` filtered to `harness_run` /
+ *   `harness_start_session` reads the cache and, when the tool call
+ *   doesn't already carry `relevantConcepts`, rewrites the params to
+ *   inject them.
+ *
+ * Returns an array of disposer functions the caller pushes into the
+ * runtime's teardown list.
+ *
+ * All failures are logged and swallowed. This is a pure enhancement;
+ * a broken hook must not fail an otherwise-healthy harness. If neither
+ * `api.on` nor `api.registerHook` is available, or if the platform
+ * skips `before_prompt_build` because `allowConversationAccess` is
+ * off, the hooks are silently unregistered and auto-forward degrades
+ * to the beta.22 prompt-side path.
+ */
+function registerOkfAutoForwardHooks(api, runtime) {
+    const disposers = [];
+    const cache = new OkfConceptCache();
+    // Store on the runtime so tests + observability can inspect the cache.
+    runtime.okfConceptCache = cache;
+    const promptBuildHandler = async (event) => {
+        try {
+            const evt = (event ?? {});
+            // Aggregate all plausible text sources into one blob. Cheap; the
+            // parser is regex-bounded to the OKF section header.
+            const parts = [];
+            if (typeof evt.systemPrompt === "string")
+                parts.push(evt.systemPrompt);
+            if (typeof evt.prompt === "string")
+                parts.push(evt.prompt);
+            if (Array.isArray(evt.messages)) {
+                for (const m of evt.messages) {
+                    const mm = m;
+                    if (mm && typeof mm.content === "string")
+                        parts.push(mm.content);
+                }
+            }
+            const text = parts.join("\n\n");
+            const concepts = parseOkfBlocksFromContext(text);
+            if (concepts.length === 0)
+                return;
+            const key = cacheKeyForCtx((evt.context ?? evt));
+            if (!key)
+                return;
+            cache.set(key, concepts);
+        }
+        catch (err) {
+            api.logger.warn("[harness] okf-auto-forward: prompt observer failed", { err: String(err) });
+        }
+    };
+    const toolCallHandler = async (event) => {
+        try {
+            const evt = (event ?? {});
+            const toolName = evt.toolName ?? "";
+            if (toolName !== "harness_run" && toolName !== "harness_start_session")
+                return;
+            const key = cacheKeyForCtx((evt.context ?? evt.ctx ?? {}));
+            if (!key)
+                return;
+            const cached = cache.get(key);
+            const decision = decideAutoForward({ toolName, params: evt.params, cached });
+            if (!decision.inject)
+                return;
+            const rewritten = buildRewrittenParams(toolName, evt.params, decision.concepts);
+            api.logger.info("[harness] okf-auto-forward: injected concepts into tool params", {
+                toolName,
+                sessionKey: key,
+                conceptCount: decision.concepts.length,
+                injectionSite: decision.injectionSite,
+            });
+            // eslint-disable-next-line consistent-return
+            return { params: rewritten };
+        }
+        catch (err) {
+            api.logger.warn("[harness] okf-auto-forward: tool-call rewriter failed", { err: String(err) });
+            // Fall through: do not block the tool call on a hook bug.
+        }
+    };
+    const on = (event, handler) => {
+        if (typeof api.on === "function") {
+            const dispose = api.on(event, handler);
+            if (typeof dispose === "function")
+                disposers.push(dispose);
+            return true;
+        }
+        if (typeof api.registerHook === "function") {
+            const dispose = api.registerHook([event], handler, {
+                name: `${PLUGIN_ID}:${event}`,
+                description: `OKF auto-forward ${event} observer/rewriter`,
+            });
+            disposers.push(() => {
+                if (typeof dispose === "function")
+                    dispose();
+                else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function")
+                    dispose.dispose();
+            });
+            return true;
+        }
+        return false;
+    };
+    const promptOk = on("before_prompt_build", promptBuildHandler);
+    const toolOk = on("before_tool_call", toolCallHandler);
+    if (!promptOk && !toolOk) {
+        api.logger.warn("[harness] okf-auto-forward: neither api.on nor api.registerHook available; auto-forward disabled");
+    }
+    else if (!promptOk) {
+        api.logger.warn("[harness] okf-auto-forward: prompt observer could not register; auto-forward will only fire if a caller pre-populates the cache");
+    }
+    else if (!toolOk) {
+        api.logger.warn("[harness] okf-auto-forward: tool-call rewriter could not register; parsing OKF blocks but will not inject");
+    }
+    else {
+        api.logger.info("[harness] okf-auto-forward: hooks registered");
+    }
+    return disposers;
 }
 function renderPrBody(brief, review) {
     return [

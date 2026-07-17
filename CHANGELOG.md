@@ -1,5 +1,75 @@
 # Changelog
 
+## [0.1.0-beta.23] -- 2026-07-17
+
+### Added
+
+- **OKF auto-forward, Option B: deterministic plugin-side hook pair.**
+  Beta.21 wired the `relevantConcepts` pass-through end-to-end.
+  Beta.22 taught the calling agent to forward OKF blocks via a prompt-
+  side instruction (model-reliant). Beta.23 adds a deterministic hook
+  pair so auto-forward doesn't depend on the model following the
+  instruction:
+
+  1. **`before_prompt_build` observer** parses `## Relevant Knowledge
+     (OKF)` sections out of the current turn's context text and caches
+     the parsed concepts (id + summary + tags) under the session key.
+     Cache is bounded (256 sessions, 15-minute TTL, LRU eviction).
+  2. **`before_tool_call` rewriter** filtered to `harness_run` and
+     `harness_start_session`. If the tool params lack a
+     `relevantConcepts` field (agent forgot to forward), look up the
+     cached concepts and rewrite the params. Caller-supplied concepts
+     are never overwritten — explicit forwarding wins.
+
+  Both hooks are fully safe:
+  - Failures are logged and swallowed. A broken hook cannot fail an
+    otherwise-healthy harness.
+  - If the platform skips `before_prompt_build` (because operator
+    hasn't set `plugins.entries.openclaw-agent-harness.hooks.
+    allowConversationAccess: true`), the parser is silently disabled
+    and auto-forward degrades to the beta.22 prompt-side path.
+  - If neither `api.on` nor `api.registerHook` is available on the
+    plugin SDK, hooks are silently unregistered.
+
+  Belt-and-suspenders on top of Option A. Even if a model ignores the
+  tool description, the hook still gets the concepts through.
+
+### Testing
+
+- 20 new tests. Test count: **328 -> 348**.
+  - `beta23-okf-auto-forward.test.mjs`: OKF block parsing (Slack-
+    verbatim shape, fallbacks, no-OKF text, missing-ID skips, variant
+    heading), cache semantics (set/get, TTL expiry, LRU eviction, LRU
+    refresh on read, empty-key no-op), decision logic (positive cases
+    for both tools, respects caller-supplied concepts, no-ops for
+    other tools + empty cache), immutable param rewriting, and
+    `cacheKeyForCtx` precedence.
+
+### Configuration
+
+- To enable the parser hook, add to openclaw.json:
+  ```json
+  {
+    "plugins": {
+      "entries": {
+        "openclaw-agent-harness": {
+          "hooks": {
+            "allowConversationAccess": true
+          }
+        }
+      }
+    }
+  }
+  ```
+  Without this, the parser hook is silently skipped and only the
+  beta.22 prompt-side instruction is in play.
+
+### Backward compatibility
+
+- Fully additive. Old configs (no `allowConversationAccess`) see
+  identical beta.22 behaviour. Old callers that explicitly pass
+  `relevantConcepts` are never overwritten by the hook.
+
 ## [0.1.0-beta.22] -- 2026-07-17
 
 ### Added
