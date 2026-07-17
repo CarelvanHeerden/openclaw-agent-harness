@@ -116,6 +116,21 @@ export interface OrchestratorDeps {
     }) => VerifyProbes;
     /** Read the current HEAD sha of a worktree (for commit_made verification). */
     worktreeHeadSha?: (worktreePath: string) => Promise<string>;
+    /**
+     * beta.16 fix #3: release the per-session git worktree on terminal
+     * transitions (`loop.shipped`, `loop.aborted`, hard failure). Prior to
+     * beta.16 the worktree stayed live until the PR closed/merged (via the
+     * pr-watcher), which meant every successful smoke left a `pending-<ts>`
+     * worktree holding the smoke branch, and subsequent fetches on that
+     * branch failed with `refusing to fetch into branch checked out at ...`.
+     * Optional for back-compat with tests that stub the orchestrator; when
+     * absent the loop falls back to the pr-watcher's release-on-close path.
+     */
+    releaseWorktree?: (params: {
+        sessionId: string;
+        repoFullName: string;
+        reason: "shipped" | "aborted" | "failed";
+    }) => Promise<void>;
 }
 export declare class OrchestratorLoop {
     private readonly deps;
@@ -145,6 +160,21 @@ export declare class OrchestratorLoop {
     private saveReview;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
     /**
+     * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
+     * audit breadcrumb. Fires exactly once per observe-mode sub-task terminal
+     * success. Payload is intentionally similar to `loop.subtask_verification`
+     * so downstream consumers can treat the two events uniformly.
+     */
+    private emitObserveCompleted;
+    /**
+     * beta.16 fix #3: best-effort worktree release. Called on all terminal
+     * transitions (shipped/aborted/failed). Never throws — worktree cleanup
+     * failures are logged and swallowed so they cannot fail an already-
+     * terminal session. The pr-watcher's release-on-close is still a safety
+     * net for the rare case where release() here errors.
+     */
+    private tryReleaseWorktree;
+    /**
      * Pull the latest verification outcome per sub-task from the audit log,
      * to feed the adversary as local runtime data (beta.7 fix #1).
      */
@@ -173,6 +203,19 @@ export declare class OrchestratorLoop {
      */
     private estimateReviewCost;
     private finaliseAbort;
+    /**
+     * beta.16 fix #3: schedule a best-effort worktree release for a session
+     * that has already reached a terminal status. Looks up the repo from the
+     * sessions row (worktreePath is per-session, so we only need the repo
+     * full name to route to the right bare clone). Never throws.
+     */
+    private scheduleWorktreeReleaseForSession;
+    /**
+     * beta.16 fix #3: build a `LoopOutcome` for a hard-failed session and
+     * release the worktree. Centralises the six failure-return sites so we
+     * cannot forget to release the worktree on new failure paths.
+     */
+    private finaliseFailed;
 }
 /**
  * Kahn's-algorithm topological sort of sub-tasks by `dependsOn`.
