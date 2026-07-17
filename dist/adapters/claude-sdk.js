@@ -370,6 +370,17 @@ export async function runLeadSdk(params) {
         "- When in doubt on scope: prefer 'local' + 'observe'. Missing fields = harness falls back to regex inference which is less reliable.",
         // beta.15: reinforce final-verification pattern.
         "- A common plan shape: (1) mutation steps with taskMode='mutate', (2) final observation step with taskMode='observe' and verify:[] to confirm the mutation steps completed correctly. The observation step is optional but useful for reviewer clarity.",
+        // beta.19: atomicity guidance. Staging's beta.17 smoke #2 exposed a
+        // pathology where the lead split "append line X to docs/Y.md, committing
+        // the change locally" into two mutate sub-tasks (write, then commit).
+        // s2's verify contract [commit_made, file_committed, file_written]
+        // compared against s2's own worker-session-start SHA, but the write
+        // happened in s1 -> s2's HEAD was unchanged from its base -> verify
+        // correctly failed. Correct behaviour given the plan, wrong plan.
+        "- ATOMICITY RULE: a WRITE action and its accompanying COMMIT belong in ONE mutate sub-task, not two. If a single sentence or acceptance criterion contains both a write clause and a commit clause (e.g. 'append line X to file Y and commit locally', 'add function Z and commit', 'update docs and commit'), it is ONE atomic sub-task. Split only when the write and commit are genuinely separate acts of work (e.g. write in cycle 1, refactor in cycle 2, then commit both).",
+        "- Corollary: if you split a write from its commit into two sub-tasks, the commit sub-task's verify contract will compare HEAD vs its OWN worker-session-start SHA. If the write already happened in the prior sub-task, the commit sub-task's worker sees the file already present, has nothing new to do, exits with end_turn, and verification (correctly) fails. This is the harness's atomic-work contract with you, not a bug. Avoid it by keeping write+commit together.",
+        "- Anti-pattern to AVOID: 3 sub-tasks (write, commit, verify) for a single write-and-commit criterion. Correct shape: 1 mutate sub-task (write+commit) + optional 1 observe sub-task (verify). If you find yourself planning 3+ sub-tasks for what a single sentence describes, you are over-decomposing.",
+        "- Push-and-PR similarly: 'push branch and open a PR' is ONE mutate sub-task with contractScope='remote', not two.",
         `- reposAllowed: ${JSON.stringify(params.reposAllowed)}`,
         "Output the JSON and nothing else.",
     ].join("\n");
