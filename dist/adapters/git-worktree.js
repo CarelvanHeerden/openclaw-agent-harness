@@ -11,15 +11,40 @@
  * We fetch it once per session start, then create a worktree pointing at
  * the desired base branch.
  *
- * The PAT is never written to any config file, .gitconfig, or URL. It is
- * passed only via GH_TOKEN + GIT_ASKPASS to a helper subprocess, which is
- * why we spawn git via a small askpass wrapper written at runtime.
+ * PAT handling (beta.24):
+ *   - For the INITIAL bare clone, we embed the PAT in the URL passed to git.
+ *     This is required for private repos because GitHub returns 404 (not
+ *     401) on unauthenticated requests, so `GIT_ASKPASS` alone never fires.
+ *     After the clone succeeds we immediately `remote set-url` back to the
+ *     plain URL so the token is NOT persisted in .git/config on disk.
+ *   - For fetch, push, and all subsequent operations, the PAT is passed via
+ *     `GIT_ASKPASS` pointing at a per-invocation shell helper. The URL on
+ *     disk stays plain, and the token lives only in the child process env
+ *     for the duration of the git call.
+ *
+ * The token is never written to any config file, .gitconfig, or URL that
+ * survives past the initial clone command line. The clone command itself
+ * does have the token in its argv for the duration of that one process,
+ * which is unavoidable for the private-repo 404-vs-401 workaround.
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+/**
+ * beta.24: build a token-embedded HTTPS URL for the initial private-repo
+ * clone. Uses the `x-access-token` username convention that GitHub PATs
+ * and GitHub App installation tokens both accept.
+ *
+ * The token is URL-encoded so a `%` / `@` / `:` in a token cannot mangle
+ * the URL. Ghmaller PATs currently only use `[A-Za-z0-9_]`, but this is
+ * defensive against a future token format change.
+ */
+export function buildAuthedCloneUrl(repoFullName, token) {
+    const encoded = encodeURIComponent(token);
+    return `https://x-access-token:${encoded}@github.com/${repoFullName}.git`;
+}
 export class GitAdapter {
     opts;
     constructor(opts) {
@@ -69,19 +94,47 @@ esac
         }
         const ask = await this.makeAskpass(ctx.ghToken);
         try {
-            const url = `https://github.com/${ctx.repoFullName}.git`;
+            // beta.24 fix: use a token-embedded URL for the INITIAL clone.
+            //
+            // Askpass alone is insufficient for private repos because GitHub
+            // returns 404 (not 401) when an unauthenticated request hits a
+            // private repo -- git never gets prompted for credentials because
+            // it doesn't recognise 404 as an auth failure. Staging's beta.23
+            // Thanos smoke session `b499a9cf` hit exactly this: 61s clone,
+            // 'Repository not found', no auth prompt ever fired.
+            //
+            // Fix: embed the token in the URL for the clone/fetch operations
+            // so the request is authenticated from byte one. GitHub then
+            // returns real 200/401 responses. Public repos are unaffected (the
+            // token is still valid; askpass helper also stays wired as a
+            // second belt-and-suspenders channel if git ever prompts).
+            //
+            // AFTER clone succeeds, we `remote set-url` back to the plain URL
+            // so the token is NOT persisted in .git/config on disk. Subsequent
+            // fetch/push operations rely on GIT_ASKPASS to re-inject the token
+            // per-invocation, which works because by then git already knows
+            // the remote is authenticated.
+            const plainUrl = `https://github.com/${ctx.repoFullName}.git`;
+            const authedUrl = buildAuthedCloneUrl(ctx.repoFullName, ctx.ghToken);
             if (!existsSync(bare)) {
                 await mkdir(dirname(bare), { recursive: true });
-                await this.run(["clone", "--bare", "--filter=blob:none", url, bare], undefined, ask.path);
+                await this.run(["clone", "--bare", "--filter=blob:none", authedUrl, bare], undefined, ask.path);
+                // Scrub the token out of the on-disk config immediately after
+                // clone succeeds. Belt-and-suspenders: the plain remote set-url
+                // below covers the worktree config, but the BARE clone also has
+                // its own remote config that gets the authed URL by default.
+                await this.run(["-C", bare, "remote", "set-url", "origin", plainUrl]);
             }
             else {
+                // For fetch on an existing bare, use askpass as before. The
+                // remote URL is already the plain form; askpass injects creds.
                 await this.run(["-C", bare, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"], undefined, ask.path);
             }
             await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch]);
             await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
             await this.run(["-C", wt, "config", "user.email", ctx.commitIdentity.email]);
-            // Ensure the worktree remote points at github over https so push works.
-            await this.run(["-C", wt, "remote", "set-url", "origin", url]);
+            // Ensure the worktree remote is the plain URL (no token on disk).
+            await this.run(["-C", wt, "remote", "set-url", "origin", plainUrl]);
         }
         finally {
             await ask.cleanup();

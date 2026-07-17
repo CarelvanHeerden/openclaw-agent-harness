@@ -11,9 +11,21 @@
  * We fetch it once per session start, then create a worktree pointing at
  * the desired base branch.
  *
- * The PAT is never written to any config file, .gitconfig, or URL. It is
- * passed only via GH_TOKEN + GIT_ASKPASS to a helper subprocess, which is
- * why we spawn git via a small askpass wrapper written at runtime.
+ * PAT handling (beta.24):
+ *   - For the INITIAL bare clone, we embed the PAT in the URL passed to git.
+ *     This is required for private repos because GitHub returns 404 (not
+ *     401) on unauthenticated requests, so `GIT_ASKPASS` alone never fires.
+ *     After the clone succeeds we immediately `remote set-url` back to the
+ *     plain URL so the token is NOT persisted in .git/config on disk.
+ *   - For fetch, push, and all subsequent operations, the PAT is passed via
+ *     `GIT_ASKPASS` pointing at a per-invocation shell helper. The URL on
+ *     disk stays plain, and the token lives only in the child process env
+ *     for the duration of the git call.
+ *
+ * The token is never written to any config file, .gitconfig, or URL that
+ * survives past the initial clone command line. The clone command itself
+ * does have the token in its argv for the duration of that one process,
+ * which is unavoidable for the private-repo 404-vs-401 workaround.
  */
 export interface GitAdapterOptions {
     worktreesRoot: string;
@@ -23,6 +35,16 @@ export interface GitAdapterOptions {
         error: (m: string, meta?: unknown) => void;
     };
 }
+/**
+ * beta.24: build a token-embedded HTTPS URL for the initial private-repo
+ * clone. Uses the `x-access-token` username convention that GitHub PATs
+ * and GitHub App installation tokens both accept.
+ *
+ * The token is URL-encoded so a `%` / `@` / `:` in a token cannot mangle
+ * the URL. Ghmaller PATs currently only use `[A-Za-z0-9_]`, but this is
+ * defensive against a future token format change.
+ */
+export declare function buildAuthedCloneUrl(repoFullName: string, token: string): string;
 export interface GitContext {
     repoFullName: string;
     baseBranch: string;
