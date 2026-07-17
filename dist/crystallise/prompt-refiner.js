@@ -22,7 +22,9 @@
  * The pure orchestration -- takes injected callables so unit tests never
  * hit the network.
  */
-export async function crystallisePrompt(userText, deps) {
+export async function crystallisePrompt(userText, deps, 
+/** beta.21: OKF concepts pre-attached by the caller (typically the OpenClaw agent's context enrichment). Pass-through only — crystalliser does not crawl OKF itself. */
+concepts) {
     const cls = await deps.callClassifier(userText);
     deps.logger.info("[crystalliser] classifier", cls);
     if (cls.intent === "clarify") {
@@ -34,7 +36,13 @@ export async function crystallisePrompt(userText, deps) {
     if (cls.intent === "not_dev" || cls.intent === "unsafe") {
         return { kind: "reject", reason: cls.reason, intent: cls.intent };
     }
-    const brief = await deps.callCrystalliser(userText, cls);
+    const brief = await deps.callCrystalliser(userText, cls, concepts);
+    // beta.21: guarantee concepts land on the brief even if the SDK-side
+    // crystalliser silently drops the field (e.g. pre-beta.21 model version).
+    // The caller's concept list is authoritative when the SDK produces none.
+    if (concepts && concepts.length > 0 && (!brief.relevantConcepts || brief.relevantConcepts.length === 0)) {
+        brief.relevantConcepts = concepts;
+    }
     validateBrief(brief);
     return { kind: "brief", brief, classification: cls };
 }

@@ -1,5 +1,93 @@
 # Changelog
 
+## [0.1.0-beta.21] -- 2026-07-17
+
+### Added
+
+- **OKF concept pass-through: end-to-end plumbing.** The OKF plugin is
+  installed on OpenClaw and enriches an agent turn's context with
+  "Relevant Knowledge" blocks. That enrichment stops at the OpenClaw agent
+  boundary — the harness-internal SDK calls (crystalliser, lead planner,
+  worker) are separate Claude SDK invocations with their own system
+  prompts, so OKF context did NOT propagate without explicit plumbing.
+
+  Beta.21 threads an optional `relevantConcepts` array through:
+  ```
+  harness_run tool  ->  crystallise()  ->  CrystallisedBrief
+                                       ->  lead system prompt
+                                       ->  worker system prompt
+  ```
+
+  The harness does NOT crawl OKF bundles on its own; the plugin is
+  pass-through only. Callers (typically the OpenClaw agent, when its
+  context enrichment has surfaced concept blocks) supply the concept
+  refs at the tool boundary.
+
+  Concept ref shape:
+  ```typescript
+  interface OkfConceptRef {
+    id: string;           // e.g. 'services/retry'
+    path?: string;        // repo-relative path where the concept file lives
+    summary?: string;     // one-line description
+    tags?: string[];      // OKF tags
+    content?: string;     // full concept file body (markdown)
+  }
+  ```
+
+  Downstream effects:
+  - **Crystalliser SDK prompt** gets a `RELEVANT KNOWLEDGE` block listing
+    supplied concepts and instructing the model to add their `path` values
+    to `filesLikelyTouched`. Unrelated `tags` become implicit `outOfScope`
+    hints. Forbids invented concept ids.
+  - **Lead planner SDK prompt** teaches the same rules: use concept
+    `path` in the affected sub-task's `filesLikelyTouched`; treat
+    unrelated concept `tags` as implicit out-of-scope hints.
+  - **Worker system prompt** includes each concept's `id`, `summary`,
+    `tags`, and (bounded) `content` when the sub-task's `filesLikelyTouched`
+    intersects the concept's `path`. Path-less concepts are treated as
+    broadly brief-scoped. Content is capped at 4KB per concept and 12KB
+    total per sub-task to prevent prompt bloat.
+  - **`harness_run` and `harness_start_session` tools** both accept a
+    `relevantConcepts` parameter in their tool schemas.
+
+### Fixed
+
+- **Authoritative concept backfill.** `crystallisePrompt` now backfills
+  `brief.relevantConcepts` from the caller-supplied concepts when the
+  SDK-side crystalliser silently drops the new output field (pre-beta.21
+  model versions may not honour it yet). SDK-enriched concepts (with
+  summaries/tags/content) win over bare backfill.
+
+### Testing
+
+- 17 new tests. Test count: **306 -> 323**.
+  - `beta21-okf-plumbing.test.mjs` (12 tests): propagation, backfill,
+    prompt rendering, worker concept filtering (path/dir-prefix matching
+    + path-less broad-scope), content truncation.
+  - `beta21-lead-prompt-okf.test.mjs` (5 tests): source-string guards on
+    the lead + crystalliser prompt guidance.
+
+### Backward compatibility
+
+- `relevantConcepts` is fully optional on all interfaces:
+  - Old tool callers that omit the field: behaviour identical to beta.20.
+  - Pre-beta.21 briefs restored from the DB: `relevantConcepts` is
+    `undefined`; the lead + worker prompts render exactly as before.
+  - Old test doubles that stub `callCrystalliser` with the 2-arg
+    signature continue to work (3rd arg is optional).
+
+### Migration notes
+
+- To actually benefit from OKF, the OpenClaw agent must forward the
+  concept blocks it received from context enrichment into the
+  `harness_run` tool call as `relevantConcepts: [{id, path?, summary?,
+  tags?, content?}, ...]`. Agents that don't do this see beta.20
+  behaviour.
+- The OpenClaw agent may pass `content` inline (for the concept file's
+  markdown body) or omit it — in which case the worker gets only the
+  id/summary/tags. Passing `content` is strictly better for large repos
+  where the worker would otherwise waste tokens rediscovering context.
+
 ## [0.1.0-beta.20] -- 2026-07-17
 
 ### Added

@@ -33,6 +33,11 @@ interface RunnableBrief {
   repoHint?: string;
   branchHint?: string;
   riskLevel: "low" | "medium" | "high";
+  /**
+   * beta.21: OKF concept refs carried into the plan + worker prompts.
+   * Optional; pre-beta.21 briefs simply omit the field.
+   */
+  relevantConcepts?: Array<{ id: string; path?: string; summary?: string; tags?: string[]; content?: string }>;
 }
 
 export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRuntime): () => void {
@@ -369,6 +374,24 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                 acceptanceCriteria: { type: "array", minItems: 1, items: { type: "string", minLength: 3 } },
                 filesLikelyTouched: { type: "array", items: { type: "string" } },
                 outOfScope: { type: "array", items: { type: "string" } },
+                // beta.21: pass-through OKF concept refs on a pre-built brief.
+                relevantConcepts: {
+                  type: "array",
+                  description:
+                    "Optional. OKF concept references relevant to this brief. Each item: { id, path?, summary?, tags?, content? }. See harness_run docs for semantics.",
+                  items: {
+                    type: "object",
+                    properties: {
+                      id: { type: "string", minLength: 1 },
+                      path: { type: "string" },
+                      summary: { type: "string" },
+                      tags: { type: "array", items: { type: "string" } },
+                      content: { type: "string" },
+                    },
+                    required: ["id"],
+                    additionalProperties: false,
+                  },
+                },
                 repoHint: { type: "string" },
                 branchHint: {
                   type: "string",
@@ -393,7 +416,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             requester: string;
             slackChannel?: string;
             slackThread?: string;
-            brief: { title: string; motivation: string; acceptanceCriteria: string[]; filesLikelyTouched?: string[]; outOfScope?: string[]; repoHint?: string; branchHint?: string; riskLevel?: string };
+            brief: { title: string; motivation: string; acceptanceCriteria: string[]; filesLikelyTouched?: string[]; outOfScope?: string[]; repoHint?: string; branchHint?: string; riskLevel?: string; relevantConcepts?: Array<{ id: string; path?: string; summary?: string; tags?: string[]; content?: string }> };
             budgetUsd?: number;
           };
           const briefFull: RunnableBrief = {
@@ -402,6 +425,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             acceptanceCriteria: brief.acceptanceCriteria,
             filesLikelyTouched: brief.filesLikelyTouched ?? [],
             outOfScope: brief.outOfScope ?? [],
+            relevantConcepts: brief.relevantConcepts,
             repoHint: brief.repoHint,
             branchHint: brief.branchHint,
             riskLevel: (brief.riskLevel ?? "low") as "low" | "medium" | "high",
@@ -432,7 +456,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       api.registerTool({
         name: "harness_run",
         description:
-          "PRIMARY entry point. Hand the harness a raw natural-language coding request; it classifies + crystallises it into a brief and starts a session (plan -> parallel workers -> adversarial review -> PR). Returns either a started sessionId, a clarifying question to relay to the user, or a rejection. Use this instead of harness_start_session unless you have already built a structured brief. Slack channel/thread are optional; omit them for pure agent-orchestrated runs and poll harness_status for the outcome.",
+          "PRIMARY entry point. Hand the harness a raw natural-language coding request; it classifies + crystallises it into a brief and starts a session (plan -> parallel workers -> adversarial review -> PR). Returns either a started sessionId, a clarifying question to relay to the user, or a rejection. Use this instead of harness_start_session unless you have already built a structured brief. Slack channel/thread are optional; omit them for pure agent-orchestrated runs and poll harness_status for the outcome. beta.21: optionally pass `relevantConcepts` if your OpenClaw agent's context enrichment surfaced OKF concept blocks that relate to this request — they'll propagate to the lead planner and workers.",
         parameters: {
           type: "object",
           properties: {
@@ -446,20 +470,39 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               description:
                 "Optional per-session budget override (USD). Minimum 0.05; sub-$1 budgets are valid for plan-only dry runs. Capped at budgets.session_hard_ceiling_usd and remaining monthly budget.",
             },
+            // beta.21: OKF concept pass-through.
+            relevantConcepts: {
+              type: "array",
+              description:
+                "Optional. OKF concept references the OpenClaw agent's context enrichment surfaced as relevant to this request. The harness does NOT crawl OKF itself; this is the pass-through so concepts propagate into the crystallised brief, the lead plan's file hints, and the worker system prompts. Each item: { id, path?, summary?, tags?, content? }. Content is bounded at ~4KB per concept in worker prompts (auto-truncated).",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string", minLength: 1, description: "OKF concept id (e.g. 'services/retry')." },
+                  path: { type: "string", description: "Optional relative path in the target repo where the concept file lives." },
+                  summary: { type: "string", description: "Human-facing one-line summary." },
+                  tags: { type: "array", items: { type: "string" }, description: "OKF tags; used by the lead as heuristic out-of-scope hints." },
+                  content: { type: "string", description: "Optional concept file body (markdown). Injected into the worker prompt when the sub-task touches this concept's path." },
+                },
+                required: ["id"],
+                additionalProperties: false,
+              },
+            },
           },
           required: ["requester", "request"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
-          const { requester, request, slackChannel, slackThread, budgetUsd } = input as {
+          const { requester, request, slackChannel, slackThread, budgetUsd, relevantConcepts } = input as {
             requester: string; request: string; slackChannel?: string; slackThread?: string; budgetUsd?: number;
+            relevantConcepts?: Array<{ id: string; path?: string; summary?: string; tags?: string[]; content?: string }>;
           };
           if (!liveConfig().slack.authorised_users.includes(requester)) {
             return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
           }
           let cResult: Awaited<ReturnType<HarnessRuntime["crystallise"]>>;
           try {
-            cResult = await liveRuntime().crystallise(request);
+            cResult = await liveRuntime().crystallise(request, relevantConcepts);
           } catch (err) {
             api.logger.error("[tool.run] crystallise failed", { requester, err: String(err) });
             return { content: [{ type: "text", text: `Crystallisation failed: ${String(err)}` }], details: { ok: false, crystalliseError: true } };
