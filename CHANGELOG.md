@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.1.0-beta.18] -- 2026-07-17
+
+### Fixed
+
+- **Observe-breadcrumb emitter now correctly gates on `taskMode !== "mutate"`.**
+  Staging's beta.17 smoke #2 caught a semantic incoherence: a mutate
+  sub-task produced `loop.subtask_observe_completed` with `taskMode:"mutate"`
+  in the payload. The event name says "observe_completed", the payload
+  admits it's a mutation.
+
+  Root cause: the emit guard had two branches. The INNER branch
+  (verify-eligible, when `buildVerifyProbes` is wired and `contract.length > 0`)
+  correctly checked `st.taskMode === "observe" || (contract.length === 0
+  && st.taskMode !== "mutate")`. The OUTER `else if` branch (verify path
+  skipped) only checked `st.taskMode === "observe" || contract.length === 0`,
+  missing the `!== "mutate"` guard. Beta.18 brings the two branches in
+  line so the semantics match regardless of which path is taken.
+
+  Beta.17 only exposed this because a test-double / production path with
+  no probes wired hits the outer branch, and the lead planner
+  over-decomposed an "append + commit" brief into separate mutate
+  sub-tasks where s1 had no probes to verify against (probes existed but
+  its inferred contract came up empty for a write-only sub-task).
+
+- **Startup worktree self-heal now always emits its audit event, even
+  when there's nothing to reap.** Beta.17 gated both the info-log AND
+  the `harness.worktree_heal` audit event behind `scanned > 0`. Staging
+  searched the audit vocab after installing beta.17, found no
+  `harness.worktree_heal` event, and reported "no evidence found" for
+  the self-heal. The absence was diagnostically ambiguous: fresh install
+  with no leftovers vs. wiring silently broken.
+
+  Beta.18 emits the audit event unconditionally. Fresh install with a
+  clean root will now produce
+  `{scanned:0, matched_terminal:0, matched_active:0, orphaned:0,
+  removed:0, errors:[]}` — which is boring but present, and lets
+  operators confirm the heal ran. Also emits a new
+  `harness.worktree_heal_failed` audit event on the outer try/catch
+  path, so a genuine wiring failure now surfaces in the audit stream.
+
+### Testing
+
+- 3 new tests. Test count: **297 -> 300**.
+  - `beta18-observe-breadcrumb-guard.test.mjs`:
+    - mutate sub-task with no probes does NOT emit observe breadcrumb
+    - observe sub-task with no probes still emits (regression guard on
+      the tightening)
+    - unspecified `taskMode` with empty contract still emits (defensive
+      default for pre-beta.15 plans)
+
+### Known open item (deferred to beta.19)
+
+- **Lead over-decomposition of "append + commit" briefs.** Staging's
+  beta.17 smoke #2 exposed this: acceptance criteria phrased as
+  "append line X and commit locally" produced 3 sub-tasks (write, commit,
+  verify) where a single atomic mutate would work. s2's contract
+  (`commit_made`/`file_committed`/`file_written`) compared against
+  s2's own worker-session-start SHA, but the write happened in s1, so
+  s2's HEAD was unchanged from its base and verification correctly
+  failed. Correct behaviour given the plan, wrong plan.
+
+  Prompt-tuning target: teach the lead that when a single acceptance
+  criterion has both a write clause and a commit clause, they belong in
+  one mutate sub-task. Deferred to beta.19 because prompt work needs
+  more careful validation than a code-only fix.
+
 ## [0.1.0-beta.17] -- 2026-07-17
 
 ### Fixed

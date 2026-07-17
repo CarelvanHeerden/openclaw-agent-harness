@@ -1149,19 +1149,30 @@ export async function bootstrapHarnessAsync(runtime, api) {
             logger: api.logger,
             fallbackRepoFullName: config.repos.allowed?.[0]?.replace("*", "repo") ?? undefined,
         });
-        if (healResult.scanned > 0) {
-            api.logger.info("[harness] worktree self-heal complete", healResult);
-            // Emit an audit event so operators can see this in the audit stream too.
-            try {
-                state.audit("harness.worktree_heal", healResult);
-            }
-            catch (err) {
-                api.logger.warn("[harness] worktree heal audit emit failed", { err: String(err) });
-            }
+        // beta.18 fix: always log + audit that self-heal ran, even when there
+        // was nothing to reap (`scanned === 0`). Beta.17 gated both behind
+        // `scanned > 0`, which meant a fresh install with no leftovers
+        // produced no evidence self-heal ever ran — Staging searched the
+        // audit vocab and reported "no `harness.worktree_heal`, no
+        // `harness.self_heal`". The absence of the event was diagnostically
+        // ambiguous: did it fire and find nothing, or did the wiring silently
+        // break? Emit unconditionally so operators can always distinguish.
+        api.logger.info("[harness] worktree self-heal complete", healResult);
+        try {
+            state.audit("harness.worktree_heal", healResult);
+        }
+        catch (err) {
+            api.logger.warn("[harness] worktree heal audit emit failed", { err: String(err) });
         }
     }
     catch (err) {
         api.logger.warn("[harness] worktree self-heal on start failed", { err: String(err) });
+        try {
+            state.audit("harness.worktree_heal_failed", { error: String(err) });
+        }
+        catch {
+            // If audit itself is broken, log-only was already best-effort above.
+        }
     }
     // Session recovery: mark stale non-terminal sessions as 'interrupted' and
     // notify their Slack threads. Fresh in-flight sessions stay 'resumable'
