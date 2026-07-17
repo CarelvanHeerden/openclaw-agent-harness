@@ -1,5 +1,103 @@
 # Changelog
 
+## [0.1.0-beta.16] -- 2026-07-17
+
+### Added
+
+- **`loop.subtask_observe_completed` audit breadcrumb.** Fires exactly once
+  per observe-mode sub-task terminal success. Closes a telemetry gap
+  discovered on Staging's beta.15 clean-pass smoke (session `b8b37f87`,
+  PR #36): observe sub-tasks with `verify:[]` or an empty inferred contract
+  correctly emit no `loop.subtask_verification` event (there's nothing to
+  check), which leaves a ~minutes-long silent gap in the audit stream
+  between the worker cost record and the next transition. Operators had
+  to cross-reference the `sub_tasks` table to confirm the observe step
+  ran to completion.
+
+  Payload shape (parallel to `loop.subtask_verification`):
+  ```json
+  {
+    "event": "loop.subtask_observe_completed",
+    "payload": {
+      "sessionId": "<uuid>",
+      "seq": 2,
+      "taskMode": "observe",
+      "verify_count": 0,
+      "worker_files_touched": [],
+      "worker_commit_sha": null,
+      "worker_end_reason": "end_turn",
+      "cost_usd": 0.0912
+    }
+  }
+  ```
+
+  Fires when:
+  - `st.taskMode === "observe"` **or**
+  - contract is empty AND `taskMode` is not `"mutate"` (defensive default
+    for pre-beta.15 plans without `taskMode`)
+
+  Does not fire on `taskMode: "mutate"` even if that sub-task's contract
+  happens to be empty (an explicit mutate contract with `verify:[]` is a
+  planner bug, not a legitimate observe).
+
+### Fixed
+
+- **Worktree pruning on `loop.shipped` and terminal failures/aborts.**
+  Prior to beta.16, worktree cleanup was only wired via the pr-watcher's
+  release-on-close path. Every successful smoke left a `pending-<ts>`
+  worktree holding the smoke branch and blocked the next fetch on that
+  branch with `refusing to fetch into branch checked out at ...`.
+  Discovered on Staging 2026-07-17 08:05 UTC when the beta.16 failure-
+  injection smoke crashed on startup because the beta.15 clean-pass
+  smoke's worktree had never been released.
+
+  Fix: new `releaseWorktree` dep on the orchestrator, invoked on:
+  - `loop.shipped` (PR opened) -- primary win, closes the exact Staging
+    booby-trap.
+  - `loop.aborted` (user_abort_reaction, hard_timeout, budget_exhausted).
+  - Hard failure (plan_failed, adversary_error, pr_error, verification
+    fail, no_review_produced, subtask worker exception, etc.).
+
+  All six hard-failed return sites now route through a new `finaliseFailed`
+  helper so we cannot forget to release on a new failure path added
+  later. Best-effort semantics: release failures are logged and audited
+  (`loop.worktree_release_failed`) but never propagate up to fail the
+  session outcome. The pr-watcher's release-on-close remains as a safety
+  net for the rare case where release() here errors.
+
+### Testing
+
+- **Regression test for beta.15's `baseRef` + `baseSemantics` payload on
+  verify-failed audit events.** Beta.15's happy-path smoke never fired
+  the `commit_verify_failed` / `file_committed_verify_failed` events, so
+  the payload contract was unverified until Staging's failure-injection
+  smoke on 2026-07-17 08:05 UTC (session `1610be9d`). That smoke is now
+  a deterministic test: worker writes+stages a file but skips commit,
+  contract has `file_written`/`file_committed`/`commit_made`, two of
+  three verify checks fail, and the emitted audit events carry the
+  correct `baseRef` (first 12 chars of the worker-session-start SHA) and
+  `baseSemantics: "worker-session-start"`.
+
+  Guards against a refactor that silently drops the fields or moves the
+  pinning point away from worker-session-open (three plausible "start
+  times" exist: session-create, plan-generation, worker-session-open --
+  beta.15 specifically chose the third).
+
+- **Test count: 277 -> 287 (+10 new).**
+
+### Migration notes
+
+- The `releaseWorktree` and `worktreeHeadSha` deps on `OrchestratorDeps`
+  are both optional. Existing test doubles that omit them continue to
+  work (verified by `beta.16: releaseWorktree not called when dep
+  omitted (back-compat)` test). Real deployments should wire
+  `releaseWorktree` -> `git.release(sessionId, repoFullName)` (see
+  `src/index.ts` for the reference wiring).
+
+- No planner/plan-schema changes. `LeadPlanSubTask.taskMode` continues to
+  be interpreted exactly as in beta.15. The observe breadcrumb is a
+  runtime-only enhancement.
+
 ## [0.1.0-beta.15] -- 2026-07-16
 
 ### Added

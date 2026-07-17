@@ -723,6 +723,17 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     // "I pushed" / "I opened a PR" is caught deterministically.
     worktreeHeadSha: async (worktreePath: string) => git.baseSha(worktreePath).catch(() => ""),
 
+    // beta.16 fix #3: release the per-session worktree on terminal
+    // transitions (loop.shipped / loop.aborted / hard failure). Prior to
+    // beta.16, worktree cleanup was only wired via the pr-watcher (on PR
+    // close/merge), so every successful smoke left a `pending-<ts>`
+    // worktree holding the smoke branch and blocked the next fetch on
+    // that branch. The pr-watcher's release-on-close remains a safety net.
+    releaseWorktree: async ({ sessionId, repoFullName, reason }) => {
+      api.logger.info("[harness] releasing worktree on terminal transition", { sessionId, reason });
+      await git.release(sessionId, repoFullName);
+    },
+
     buildVerifyProbes: ({ plan, requester, worktreePath, baseSha }) => {
       const resolution = pat.resolve({
         slackUserId: requester ?? config.slack.authorised_users[0]!,

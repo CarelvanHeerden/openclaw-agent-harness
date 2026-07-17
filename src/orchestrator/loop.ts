@@ -99,6 +99,18 @@ export interface OrchestratorDeps {
 
   /** Read the current HEAD sha of a worktree (for commit_made verification). */
   worktreeHeadSha?: (worktreePath: string) => Promise<string>;
+
+  /**
+   * beta.16 fix #3: release the per-session git worktree on terminal
+   * transitions (`loop.shipped`, `loop.aborted`, hard failure). Prior to
+   * beta.16 the worktree stayed live until the PR closed/merged (via the
+   * pr-watcher), which meant every successful smoke left a `pending-<ts>`
+   * worktree holding the smoke branch, and subsequent fetches on that
+   * branch failed with `refusing to fetch into branch checked out at ...`.
+   * Optional for back-compat with tests that stub the orchestrator; when
+   * absent the loop falls back to the pr-watcher's release-on-close path.
+   */
+  releaseWorktree?: (params: { sessionId: string; repoFullName: string; reason: "shipped" | "aborted" | "failed" }) => Promise<void>;
 }
 
 export class OrchestratorLoop {
@@ -209,9 +221,8 @@ export class OrchestratorLoop {
         .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
       this.deps.state.audit("loop.plan_ready", { sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel }, sessionId);
     } catch (err) {
-      this.setStatus(sessionId, "failed");
       this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
-      return { status: "failed", sessionId, reason: `plan_failed: ${String(err)}`, cycles: 0, totalCostUsd: row.cost_usd };
+      return this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd);
     }
 
     let cycle = 0;
@@ -343,6 +354,15 @@ export class OrchestratorLoop {
             sessionId,
           );
 
+          // beta.16 fix #2: also emit the observe-mode breadcrumb when
+          // taskMode is 'observe' and verification passed. Keeps the audit
+          // stream self-describing on observe sub-tasks (previously silent
+          // because verify:[] means no checks fire, and inference filters
+          // out mutation-scope kinds).
+          if (verification.ok && (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate"))) {
+            this.emitObserveCompleted(sessionId, st, result, contract);
+          }
+
           if (!verification.ok) {
             // Emit per-kind failure events so failures are greppable and
             // operators can debug from audit alone.
@@ -420,6 +440,12 @@ export class OrchestratorLoop {
             failed.seq = st.seq;
             return;
           }
+        } else if (st.taskMode === "observe" || contract.length === 0) {
+          // beta.16 fix #2: observe-mode with empty contract (either
+          // explicit verify:[] or inference filtered everything out) also
+          // deserves a breadcrumb, otherwise the audit stream is silent
+          // between the worker cost record and the next transition.
+          this.emitObserveCompleted(sessionId, st, result, []);
         }
 
         done.add(st.seq);
@@ -458,8 +484,7 @@ export class OrchestratorLoop {
         if (failed.err === "user_abort_reaction") return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
         if (failed.err === "hard_timeout") return this.finaliseAbort(sessionId, "hard_timeout", cycle, totalCost);
         if (failed.err === "budget_exhausted") return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
-        this.setStatus(sessionId, "failed");
-        return { status: "failed", sessionId, reason: String(failed.err), cycles: cycle, totalCostUsd: totalCost };
+        return this.finaliseFailed(sessionId, String(failed.err), cycle, totalCost);
       }
 
       // 2b. Reviewing
@@ -517,8 +542,7 @@ export class OrchestratorLoop {
       try {
         report = await this.deps.runAdversary({ brief, plan, runtime, requester: row.requester });
       } catch (err) {
-        this.setStatus(sessionId, "failed");
-        return { status: "failed", sessionId, reason: `adversary_error: ${String(err)}`, cycles: cycle, totalCostUsd: totalCost };
+        return this.finaliseFailed(sessionId, `adversary_error: ${String(err)}`, cycle, totalCost);
       }
       totalCost += report.costUsd;
       this.addCost(sessionId, report.costUsd);
@@ -541,8 +565,7 @@ export class OrchestratorLoop {
 
       if (decision.nextStatus === "done") break;
       if (decision.nextStatus === "failed") {
-        this.setStatus(sessionId, "failed");
-        return { status: "failed", sessionId, reason: decision.reason, cycles: cycle, totalCostUsd: totalCost };
+        return this.finaliseFailed(sessionId, decision.reason, cycle, totalCost);
       }
       if (decision.nextStatus === "aborted") {
         return this.finaliseAbort(sessionId, decision.reason, cycle, totalCost);
@@ -552,19 +575,68 @@ export class OrchestratorLoop {
 
     // 3. Push + PR
     if (!lastReview) {
-      this.setStatus(sessionId, "failed");
-      return { status: "failed", sessionId, reason: "no_review_produced", cycles: cycle, totalCostUsd: totalCost };
+      return this.finaliseFailed(sessionId, "no_review_produced", cycle, totalCost);
     }
     let prUrl: string;
     try {
       prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
     } catch (err) {
-      this.setStatus(sessionId, "failed");
-      return { status: "failed", sessionId, reason: `pr_error: ${String(err)}`, cycles: cycle, totalCostUsd: totalCost };
+      return this.finaliseFailed(sessionId, `pr_error: ${String(err)}`, cycle, totalCost);
     }
     this.deps.state.db.prepare(`UPDATE sessions SET final_pr_url = ?, status = 'done', updated_at = ? WHERE id = ?`).run(prUrl, Date.now(), sessionId);
     this.deps.state.audit("loop.shipped", { sessionId, prUrl }, sessionId);
+    // beta.16 fix #3: prune the worktree on `loop.shipped`. Prior to this,
+    // the worktree lived until the pr-watcher observed the PR close/merge,
+    // so every successful smoke left a `pending-<ts>` worktree holding the
+    // smoke branch and blocked the next fetch on that branch.
+    await this.tryReleaseWorktree(sessionId, plan.repo, "shipped");
     return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
+  }
+
+  /**
+   * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
+   * audit breadcrumb. Fires exactly once per observe-mode sub-task terminal
+   * success. Payload is intentionally similar to `loop.subtask_verification`
+   * so downstream consumers can treat the two events uniformly.
+   */
+  private emitObserveCompleted(
+    sessionId: string,
+    st: LeadPlanSubTask,
+    result: WorkerResult,
+    contract: unknown[],
+  ): void {
+    this.deps.state.audit(
+      "loop.subtask_observe_completed",
+      {
+        sessionId,
+        seq: st.seq,
+        taskMode: st.taskMode ?? "unspecified",
+        verify_count: contract.length,
+        worker_files_touched: result.filesChanged ?? [],
+        worker_commit_sha: result.commitSha ?? null,
+        worker_end_reason: result.reason ?? null,
+        cost_usd: result.costUsd,
+      },
+      sessionId,
+    );
+  }
+
+  /**
+   * beta.16 fix #3: best-effort worktree release. Called on all terminal
+   * transitions (shipped/aborted/failed). Never throws — worktree cleanup
+   * failures are logged and swallowed so they cannot fail an already-
+   * terminal session. The pr-watcher's release-on-close is still a safety
+   * net for the rare case where release() here errors.
+   */
+  private async tryReleaseWorktree(sessionId: string, repoFullName: string, reason: "shipped" | "aborted" | "failed"): Promise<void> {
+    if (!this.deps.releaseWorktree) return;
+    try {
+      await this.deps.releaseWorktree({ sessionId, repoFullName, reason });
+      this.deps.state.audit("loop.worktree_released", { sessionId, reason }, sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] worktree release failed", { sessionId, reason, err: String(err) });
+      this.deps.state.audit("loop.worktree_release_failed", { sessionId, reason, err: String(err) }, sessionId);
+    }
   }
 
   /**
@@ -652,7 +724,44 @@ export class OrchestratorLoop {
   private finaliseAbort(sessionId: string, reason: string, cycles: number, totalCostUsd: number): LoopOutcome {
     this.setStatus(sessionId, "aborted");
     this.deps.state.audit("loop.aborted", { sessionId, reason }, sessionId);
+    // beta.16 fix #3: release worktree on abort too. Best-effort; we don't
+    // await inside the return path because callers assume finaliseAbort is
+    // synchronous. Instead, kick off the release and let it settle on the
+    // event loop; the failure path is logged and audited inside
+    // tryReleaseWorktree.
+    this.scheduleWorktreeReleaseForSession(sessionId, "aborted");
     return { status: "aborted", sessionId, reason, cycles, totalCostUsd };
+  }
+
+  /**
+   * beta.16 fix #3: schedule a best-effort worktree release for a session
+   * that has already reached a terminal status. Looks up the repo from the
+   * sessions row (worktreePath is per-session, so we only need the repo
+   * full name to route to the right bare clone). Never throws.
+   */
+  private scheduleWorktreeReleaseForSession(sessionId: string, reason: "shipped" | "aborted" | "failed"): void {
+    if (!this.deps.releaseWorktree) return;
+    try {
+      const row = this.deps.state.db
+        .prepare(`SELECT repo FROM sessions WHERE id = ?`)
+        .get(sessionId) as { repo: string | null } | undefined;
+      if (row?.repo) {
+        void this.tryReleaseWorktree(sessionId, row.repo, reason);
+      }
+    } catch (err) {
+      this.deps.logger.warn("[loop] scheduleWorktreeReleaseForSession failed to look up repo", { sessionId, err: String(err) });
+    }
+  }
+
+  /**
+   * beta.16 fix #3: build a `LoopOutcome` for a hard-failed session and
+   * release the worktree. Centralises the six failure-return sites so we
+   * cannot forget to release the worktree on new failure paths.
+   */
+  private finaliseFailed(sessionId: string, reason: string, cycles: number, totalCostUsd: number): LoopOutcome {
+    this.setStatus(sessionId, "failed");
+    this.scheduleWorktreeReleaseForSession(sessionId, "failed");
+    return { status: "failed", sessionId, reason, cycles, totalCostUsd };
   }
 }
 
