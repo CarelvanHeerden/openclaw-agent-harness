@@ -2,8 +2,9 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.20`. 306 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: beta.* Version `0.1.0-beta.21`. 323 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 >
+> **beta.21:** OKF concept pass-through (`relevantConcepts` field on `harness_run` / `harness_start_session` propagates through crystalliser + lead + worker prompts). See [OKF integration](#okf-integration-optional) below.
 > **beta.20:** README task-phrasing guide added (see [How to ask for work](#how-to-ask-for-work-task-phrasing-guide) below).
 > **beta.19:** lead atomicity rule for write+commit and push+PR (avoids over-decomposition of atomic actions into separate sub-tasks); `sub_tasks.started_at` column populated.
 > **beta.16-18:** verification telemetry (`baseRef`/`baseSemantics` on `verify_failed`), observe-mode audit breadcrumb, worktree pruning on terminal transitions with real physical removal, startup worktree self-heal, always-emit heal audit.
@@ -104,6 +105,30 @@ Expected plan shape: 1 mutate sub-task (`taskMode:'mutate'`, `contractScope:'loc
 If you see 3+ sub-tasks for what feels like one action — the lead is over-decomposing. React `:x:` to abort and re-phrase with tighter atomicity (rule #1 above). If sub-tasks fail verify with `commit_verify_failed` and the worker's own audit shows it produced no changes, that's almost always a split write+commit — same fix.
 
 If the plan skips a file you meant to change, your `Where:` field probably wasn't specific enough. Re-run with an explicit path.
+
+## OKF integration (optional)
+
+If you drive the harness through an OpenClaw agent that has the OKF plugin installed, you get a free upgrade on large repos: the OpenClaw agent's context enrichment surfaces "Relevant Knowledge" concept blocks per request, and the agent can forward those into the harness via the `relevantConcepts` parameter on `harness_run` / `harness_start_session`.
+
+Beta.21 threads these concept refs through the whole pipeline:
+
+1. *Crystalliser* uses concept `path` values to seed `filesLikelyTouched` and concept `tags` as implicit `outOfScope` hints when they don't match the request domain.
+2. *Lead planner* uses concept paths to anchor sub-task `filesLikelyTouched` on the right subsystem.
+3. *Worker* system prompt includes the concept `content` (bounded at 4KB per concept) when the sub-task's likely-touched paths intersect the concept's path. This is the material win on 100K+ LOC repos where a worker would otherwise burn tokens rediscovering codebase structure.
+
+Concept shape:
+
+```typescript
+interface OkfConceptRef {
+  id: string;        // e.g. 'services/retry'
+  path?: string;     // repo-relative path where the concept file lives
+  summary?: string;  // one-line description
+  tags?: string[];   // OKF tags
+  content?: string;  // concept file body (markdown); auto-truncated at 4KB in worker prompts
+}
+```
+
+All fields except `id` are optional. Callers that don't have OKF (or don't have relevant concepts for a given request) simply omit the parameter and behaviour matches beta.20.
 
 ## Why
 

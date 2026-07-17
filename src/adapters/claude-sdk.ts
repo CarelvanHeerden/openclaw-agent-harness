@@ -20,6 +20,7 @@
 import type {
   ClassifierResult,
   CrystallisedBrief,
+  OkfConceptRef,
 } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask } from "../orchestrator/fable5-lead.js";
 
@@ -368,20 +369,38 @@ export async function runCrystalliserSdk(params: {
   userText: string;
   timeoutSeconds: number;
   apiKey?: string;
+  /**
+   * beta.21: optional OKF concepts pre-attached by the caller. When
+   * present, they are formatted into the system prompt so the crystalliser
+   * can reference them by id when building the brief. Populated end-to-end
+   * only when the OpenClaw agent surfaced OKF blocks in its own context
+   * and forwarded them to `harness_run`; empty otherwise (behaviour is
+   * identical to pre-beta.21).
+   */
+  concepts?: OkfConceptRef[];
 }): Promise<CrystallisedBrief & { costUsd: number; tokensIn: number; tokensOut: number }> {
+  const conceptBlock = formatConceptBlockForCrystalliser(params.concepts);
   const systemPrompt = [
     "You are a senior engineer refining a rough dev request into a well-scoped brief.",
     "Return STRICT JSON matching CrystallisedBrief:",
     "  { title: string, motivation: string, acceptanceCriteria: string[],",
     "    filesLikelyTouched: string[], outOfScope: string[],",
-    "    repoHint?: string, branchHint?: string, riskLevel: 'low'|'medium'|'high' }",
+    "    repoHint?: string, branchHint?: string, riskLevel: 'low'|'medium'|'high',",
+    "    relevantConcepts?: OkfConceptRef[] }",
+    "OkfConceptRef: { id: string, path?: string, summary?: string, tags?: string[] }",
     "Rules:",
     "- title: concise imperative sentence",
     "- motivation: 1-3 sentences",
     "- acceptanceCriteria: observable, testable outcomes (min 1)",
     "- riskLevel: high if touches auth/secrets/payment code or db schema; medium if user-facing behavior changes; low otherwise.",
+    // beta.21: OKF concept awareness.
+    "- relevantConcepts: pass-through of any RELEVANT KNOWLEDGE concepts the caller supplied (see block below). Do NOT invent new concept ids. When a supplied concept has a `path`, prefer adding that path to `filesLikelyTouched` unless the request explicitly excludes it. When a supplied concept has `tags` unrelated to the request's domain, consider adding a matching directory or subsystem to `outOfScope` so the lead planner doesn't wander.",
+    "- If NO concepts are supplied, omit the `relevantConcepts` field entirely.",
+    conceptBlock,
     "Output the JSON and nothing else.",
-  ].join("\n");
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
 
   const r = await structuredCall<CrystallisedBrief>({
     model: params.model,
@@ -392,6 +411,29 @@ export async function runCrystalliserSdk(params: {
     validation: { requiredKeys: ["title", "motivation", "acceptanceCriteria", "riskLevel"], label: "crystalliser" },
   });
   return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+}
+
+/**
+ * beta.21: render supplied OKF concepts into a block the crystalliser can
+ * reference. Keeps summaries short and omits `content` (large; that's for
+ * the worker, not the crystalliser). Returns empty string when no concepts
+ * are supplied, so the .filter() at the callsite drops the block cleanly.
+ */
+export function formatConceptBlockForCrystalliser(concepts?: OkfConceptRef[]): string {
+  if (!concepts || concepts.length === 0) return "";
+  const rows = concepts.map((c) => {
+    const parts: string[] = [`- id: ${c.id}`];
+    if (c.summary) parts.push(`  summary: ${c.summary}`);
+    if (c.path) parts.push(`  path: ${c.path}`);
+    if (c.tags && c.tags.length > 0) parts.push(`  tags: [${c.tags.join(", ")}]`);
+    return parts.join("\n");
+  });
+  return [
+    "",
+    "RELEVANT KNOWLEDGE (OKF concepts supplied by the caller; DO NOT invent new ids):",
+    ...rows,
+    "",
+  ].join("\n");
 }
 
 export async function runLeadSdk(params: {
@@ -436,6 +478,11 @@ export async function runLeadSdk(params: {
     "- When in doubt on scope: prefer 'local' + 'observe'. Missing fields = harness falls back to regex inference which is less reliable.",
     // beta.15: reinforce final-verification pattern.
     "- A common plan shape: (1) mutation steps with taskMode='mutate', (2) final observation step with taskMode='observe' and verify:[] to confirm the mutation steps completed correctly. The observation step is optional but useful for reviewer clarity.",
+    // beta.21: OKF concept awareness on the lead side.
+    "- The brief MAY include `relevantConcepts` (OKF concept refs supplied by the caller). Each has `id`, and optionally `path`, `summary`, `tags`. When present:",
+    "    * If a concept has a `path`, prefer that path in the affected sub-task's `filesLikelyTouched` unless the brief explicitly excludes it. Cheap way to anchor the plan on the right subsystem.",
+    "    * If a concept has `tags` whose subsystem is unrelated to the request, DO NOT plan sub-tasks that touch that subsystem — treat it as an implicit out-of-scope hint. Example: request is about the retry service, one concept is `infrastructure/nginx` with tags [infrastructure] — do not touch nginx configs.",
+    "    * If NO relevantConcepts are provided, plan as usual. Do NOT invent concepts or reference ids that were not supplied.",
     // beta.19: atomicity guidance. Staging's beta.17 smoke #2 exposed a
     // pathology where the lead split "append line X to docs/Y.md, committing
     // the change locally" into two mutate sub-tasks (write, then commit).

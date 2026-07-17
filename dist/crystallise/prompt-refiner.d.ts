@@ -25,6 +25,30 @@ export interface ClassifierResult {
     reason: string;
     suggestedClarification?: string;
 }
+/**
+ * A single OKF concept referenced by the requester or auto-attached by the
+ * OpenClaw context enrichment layer.
+ *
+ * Beta.21: this is the harness's *pass-through* record of what the caller
+ * (usually the OpenClaw agent) knew was relevant. The harness itself does
+ * NOT crawl OKF bundles or read concept files from disk — it trusts the
+ * caller to supply concept metadata and, optionally, the concept text. The
+ * lead planner uses concept references to bias `filesLikelyTouched` +
+ * `outOfScope`; the worker prompt includes the concept text so it starts
+ * primed instead of exploring the tree blind.
+ */
+export interface OkfConceptRef {
+    /** Concept id from the OKF bundle (e.g. `services/retry`, `infrastructure/n8n`). */
+    id: string;
+    /** Optional relative path in the target repo where the concept file lives. Callers may omit this if the concept is source-of-truth outside the repo. */
+    path?: string;
+    /** Human-facing one-line description of the concept. */
+    summary?: string;
+    /** Optional bag of tags surfaced by OKF (e.g. ["infrastructure", "monitoring"]). Used by the lead as heuristic `outOfScope` hints when a tag does not match the request domain. */
+    tags?: string[];
+    /** Optional concept file body (markdown). When present, injected into the worker's system prompt so it starts primed. Bounded by `services/context-injection` guards downstream. */
+    content?: string;
+}
 export interface CrystallisedBrief {
     title: string;
     motivation: string;
@@ -34,6 +58,14 @@ export interface CrystallisedBrief {
     repoHint?: string;
     branchHint?: string;
     riskLevel: "low" | "medium" | "high";
+    /**
+     * beta.21: OKF concept references carried through from the caller. When
+     * the OpenClaw agent invokes `harness_run` with concepts already surfaced
+     * by the OKF plugin's context enrichment, they land here and propagate
+     * to the lead planner + workers. Optional — pre-beta.21 briefs simply
+     * omit the field.
+     */
+    relevantConcepts?: OkfConceptRef[];
 }
 export interface CrystalliserDeps {
     config: HarnessConfig;
@@ -42,13 +74,22 @@ export interface CrystalliserDeps {
         warn: (m: string, meta?: unknown) => void;
     };
     callClassifier: (userText: string) => Promise<ClassifierResult>;
-    callCrystalliser: (userText: string, classifier: ClassifierResult) => Promise<CrystallisedBrief>;
+    /**
+     * beta.21: the crystalliser callable now receives optional pre-known
+     * concept references so the SDK-side prompt can enrich the brief with
+     * concept-aware `filesLikelyTouched` / `outOfScope` guidance. Callers
+     * that don't have OKF context (e.g. the legacy Slack listener path) pass
+     * `undefined` and behaviour is identical to pre-beta.21.
+     */
+    callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief>;
 }
 /**
  * The pure orchestration -- takes injected callables so unit tests never
  * hit the network.
  */
-export declare function crystallisePrompt(userText: string, deps: CrystalliserDeps): Promise<{
+export declare function crystallisePrompt(userText: string, deps: CrystalliserDeps, 
+/** beta.21: OKF concepts pre-attached by the caller (typically the OpenClaw agent's context enrichment). Pass-through only — crystalliser does not crawl OKF itself. */
+concepts?: OkfConceptRef[]): Promise<{
     kind: "brief";
     brief: CrystallisedBrief;
     classification: ClassifierResult;

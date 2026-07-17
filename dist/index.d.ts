@@ -115,7 +115,15 @@ export interface HarnessRuntime {
      * Returns a discriminated union: a `brief` ready to run, a `clarify`
      * question to put back to the requester, or a `reject` with reason.
      */
-    crystallise: (userText: string) => Promise<{
+    crystallise: (userText: string, 
+    /**
+     * beta.21: optional OKF concept refs pre-attached by the caller
+     * (typically the OpenClaw agent's context enrichment). Pass-through
+     * only; the harness does not crawl OKF itself. Concepts propagate
+     * into the crystallised brief so the lead planner and workers see
+     * them downstream.
+     */
+    concepts?: import("./crystallise/prompt-refiner.js").OkfConceptRef[]) => Promise<{
         kind: "brief";
         brief: CrystallisedBrief;
         costUsd: number;

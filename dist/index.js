@@ -61,7 +61,7 @@ export function bootstrapHarnessSync(api) {
     // Crystalliser closure. Shared by the (optional) Slack dispatcher AND the
     // agent-callable `harness_run` tool, so the agent-orchestrated path uses
     // exactly the same classify -> refine pipeline as the autonomous listener.
-    const crystallise = async (userText) => {
+    const crystallise = async (userText, concepts) => {
         const result = await crystallisePrompt(userText, {
             config,
             logger: api.logger,
@@ -71,13 +71,17 @@ export function bootstrapHarnessSync(api) {
                 timeoutSeconds: 60,
                 apiKey: await anthropicApiKey(),
             }),
-            callCrystalliser: async () => runCrystalliserSdk({
+            // beta.21: forward pre-attached concepts (if any) into the SDK-side
+            // crystalliser prompt. Undefined/empty is identical to pre-beta.21
+            // behaviour.
+            callCrystalliser: async (_userText, _cls, ctxConcepts) => runCrystalliserSdk({
                 model: config.models.lead,
                 userText,
                 timeoutSeconds: 120,
                 apiKey: await anthropicApiKey(),
+                concepts: ctxConcepts,
             }),
-        });
+        }, concepts);
         // crystallisePrompt returns a discriminated union; add cost=0 for now
         // (real cost is aggregated per-model call). Full cost tracking lives
         // in Phase D telemetry work.

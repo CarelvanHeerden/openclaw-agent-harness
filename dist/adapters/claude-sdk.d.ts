@@ -16,7 +16,7 @@
  * without the real SDK installed. Production code will error clearly if
  * the SDK is missing.
  */
-import type { ClassifierResult, CrystallisedBrief } from "../crystallise/prompt-refiner.js";
+import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan } from "../orchestrator/fable5-lead.js";
 /**
  * Build the `env` passed to the SDK subprocess.
@@ -106,11 +106,27 @@ export declare function runCrystalliserSdk(params: {
     userText: string;
     timeoutSeconds: number;
     apiKey?: string;
+    /**
+     * beta.21: optional OKF concepts pre-attached by the caller. When
+     * present, they are formatted into the system prompt so the crystalliser
+     * can reference them by id when building the brief. Populated end-to-end
+     * only when the OpenClaw agent surfaced OKF blocks in its own context
+     * and forwarded them to `harness_run`; empty otherwise (behaviour is
+     * identical to pre-beta.21).
+     */
+    concepts?: OkfConceptRef[];
 }): Promise<CrystallisedBrief & {
     costUsd: number;
     tokensIn: number;
     tokensOut: number;
 }>;
+/**
+ * beta.21: render supplied OKF concepts into a block the crystalliser can
+ * reference. Keeps summaries short and omits `content` (large; that's for
+ * the worker, not the crystalliser). Returns empty string when no concepts
+ * are supplied, so the .filter() at the callsite drops the block cleanly.
+ */
+export declare function formatConceptBlockForCrystalliser(concepts?: OkfConceptRef[]): string;
 export declare function runLeadSdk(params: {
     model: string;
     brief: CrystallisedBrief;

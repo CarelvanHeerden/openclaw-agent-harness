@@ -137,7 +137,17 @@ export interface HarnessRuntime {
    * Returns a discriminated union: a `brief` ready to run, a `clarify`
    * question to put back to the requester, or a `reject` with reason.
    */
-  crystallise: (userText: string) => Promise<
+  crystallise: (
+    userText: string,
+    /**
+     * beta.21: optional OKF concept refs pre-attached by the caller
+     * (typically the OpenClaw agent's context enrichment). Pass-through
+     * only; the harness does not crawl OKF itself. Concepts propagate
+     * into the crystallised brief so the lead planner and workers see
+     * them downstream.
+     */
+    concepts?: import("./crystallise/prompt-refiner.js").OkfConceptRef[],
+  ) => Promise<
     | { kind: "brief"; brief: CrystallisedBrief; costUsd: number }
     | { kind: "clarify"; question: string; costUsd: number }
     | { kind: "reject"; intent: "not_dev" | "unsafe"; reason: string; costUsd: number }
@@ -197,23 +207,31 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   // Crystalliser closure. Shared by the (optional) Slack dispatcher AND the
   // agent-callable `harness_run` tool, so the agent-orchestrated path uses
   // exactly the same classify -> refine pipeline as the autonomous listener.
-  const crystallise: HarnessRuntime["crystallise"] = async (userText: string) => {
-    const result = await crystallisePrompt(userText, {
-      config,
-      logger: api.logger,
-      callClassifier: async () => runClassifierSdk({
-        model: config.models.classifier,
-        userText,
-        timeoutSeconds: 60,
-        apiKey: await anthropicApiKey(),
-      }),
-      callCrystalliser: async () => runCrystalliserSdk({
-        model: config.models.lead,
-        userText,
-        timeoutSeconds: 120,
-        apiKey: await anthropicApiKey(),
-      }),
-    });
+  const crystallise: HarnessRuntime["crystallise"] = async (userText, concepts) => {
+    const result = await crystallisePrompt(
+      userText,
+      {
+        config,
+        logger: api.logger,
+        callClassifier: async () => runClassifierSdk({
+          model: config.models.classifier,
+          userText,
+          timeoutSeconds: 60,
+          apiKey: await anthropicApiKey(),
+        }),
+        // beta.21: forward pre-attached concepts (if any) into the SDK-side
+        // crystalliser prompt. Undefined/empty is identical to pre-beta.21
+        // behaviour.
+        callCrystalliser: async (_userText, _cls, ctxConcepts) => runCrystalliserSdk({
+          model: config.models.lead,
+          userText,
+          timeoutSeconds: 120,
+          apiKey: await anthropicApiKey(),
+          concepts: ctxConcepts,
+        }),
+      },
+      concepts,
+    );
     // crystallisePrompt returns a discriminated union; add cost=0 for now
     // (real cost is aggregated per-model call). Full cost tracking lives
     // in Phase D telemetry work.

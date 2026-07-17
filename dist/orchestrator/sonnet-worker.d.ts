@@ -92,11 +92,32 @@ export interface WorkerDeps {
      */
     buildVerifyProbes?: (worktreePath: string, baseSha: string) => VerifyProbes;
 }
+/**
+ * Beta.21: minimal OKF concept shape the worker prompt understands.
+ * Kept local (structural type) so this module doesn't take a cross-
+ * package dep on the crystallise types just for prompt formatting.
+ */
+type WorkerConceptRef = {
+    id: string;
+    path?: string;
+    summary?: string;
+    tags?: string[];
+    content?: string;
+};
 export declare function buildWorkerSystemPrompt(brief: {
     title: string;
     motivation: string;
     acceptanceCriteria: string[];
+    /** Beta.21: OKF concept refs from the crystallised brief. Optional. */
+    relevantConcepts?: WorkerConceptRef[];
 }, subTask: LeadPlanSubTask): string;
+/**
+ * Beta.21: choose which concepts are pertinent to this specific sub-task.
+ * Filters to concepts whose `path` matches one of the sub-task's likely
+ * files (exact match or prefix), OR concepts with no `path` (which we
+ * treat as generally applicable to the whole brief).
+ */
+export declare function pickConceptsForSubTask(concepts: WorkerConceptRef[], subTask: LeadPlanSubTask): WorkerConceptRef[];
 export declare function runWorker(worktreePath: string, brief: {
     title: string;
     motivation: string;
@@ -105,4 +126,5 @@ export declare function runWorker(worktreePath: string, brief: {
     name: string;
     email: string;
 }, deps: WorkerDeps, resumeSessionId?: string): Promise<WorkerResult>;
+export {};
 //# sourceMappingURL=sonnet-worker.d.ts.map

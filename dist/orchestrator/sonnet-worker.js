@@ -14,8 +14,16 @@
  * by the orchestrator after adversarial review passes.
  */
 import { verifySubTaskOutput } from "./verify.js";
+/**
+ * Beta.21: hard cap on injected concept content. A worker system prompt is
+ * loaded on every SDK turn, so pulling in an entire long-form knowledge
+ * doc per concept is expensive and dilutes the signal. Keep to short
+ * summaries + first-N-chars of any supplied content.
+ */
+const WORKER_CONCEPT_CONTENT_MAX_CHARS = 4000;
+const WORKER_CONCEPT_TOTAL_MAX_CHARS = 12000;
 export function buildWorkerSystemPrompt(brief, subTask) {
-    return [
+    const lines = [
         `You are a focused code-writing worker. Your job is ONE sub-task, nothing more.`,
         ``,
         `## Overall brief`,
@@ -23,21 +31,50 @@ export function buildWorkerSystemPrompt(brief, subTask) {
         `Motivation: ${brief.motivation}`,
         `Acceptance criteria (WHOLE feature):`,
         ...brief.acceptanceCriteria.map((c) => `  - ${c}`),
-        ``,
-        `## Your sub-task`,
-        `Title: ${subTask.title}`,
-        `Intent: ${subTask.intent}`,
-        `Files likely touched: ${subTask.filesLikelyTouched.join(", ") || "(unspecified)"}`,
-        `Success criteria for THIS sub-task:`,
-        ...subTask.successCriteria.map((c) => `  - ${c}`),
-        ``,
-        `## Rules`,
-        `- Work only inside the worktree; never touch other paths.`,
-        `- Do not run 'git push'. The orchestrator handles pushes.`,
-        `- Do not install global packages, disable safeguards, or exfiltrate anything.`,
-        `- If a bash command is refused, explain in prose and continue with an alternative approach.`,
-        `- End your turn once the sub-task's success criteria are met.`,
-    ].join("\n");
+    ];
+    // Beta.21: inject concept context if the brief carries any relevantConcepts.
+    // Only concepts whose `path` is in `subTask.filesLikelyTouched`, OR that
+    // have no path (repo-external knowledge), are included — keeps the
+    // per-sub-task prompt focused instead of dumping the whole bundle.
+    const applicable = pickConceptsForSubTask(brief.relevantConcepts ?? [], subTask);
+    if (applicable.length > 0) {
+        lines.push(``, `## Relevant knowledge (OKF concepts)`);
+        let totalChars = 0;
+        for (const c of applicable) {
+            const header = c.path ? `### ${c.id} — ${c.path}` : `### ${c.id}`;
+            lines.push(``, header);
+            if (c.summary)
+                lines.push(c.summary);
+            if (c.tags && c.tags.length > 0)
+                lines.push(`tags: [${c.tags.join(", ")}]`);
+            if (c.content && totalChars < WORKER_CONCEPT_TOTAL_MAX_CHARS) {
+                const remaining = WORKER_CONCEPT_TOTAL_MAX_CHARS - totalChars;
+                const budget = Math.min(WORKER_CONCEPT_CONTENT_MAX_CHARS, remaining);
+                const snippet = c.content.slice(0, budget);
+                const truncated = c.content.length > budget ? `\n... (truncated, ${c.content.length - budget} chars omitted)` : "";
+                lines.push(``, snippet + truncated);
+                totalChars += snippet.length;
+            }
+        }
+    }
+    lines.push(``, `## Your sub-task`, `Title: ${subTask.title}`, `Intent: ${subTask.intent}`, `Files likely touched: ${subTask.filesLikelyTouched.join(", ") || "(unspecified)"}`, `Success criteria for THIS sub-task:`, ...subTask.successCriteria.map((c) => `  - ${c}`), ``, `## Rules`, `- Work only inside the worktree; never touch other paths.`, `- Do not run 'git push'. The orchestrator handles pushes.`, `- Do not install global packages, disable safeguards, or exfiltrate anything.`, `- If a bash command is refused, explain in prose and continue with an alternative approach.`, `- End your turn once the sub-task's success criteria are met.`);
+    return lines.join("\n");
+}
+/**
+ * Beta.21: choose which concepts are pertinent to this specific sub-task.
+ * Filters to concepts whose `path` matches one of the sub-task's likely
+ * files (exact match or prefix), OR concepts with no `path` (which we
+ * treat as generally applicable to the whole brief).
+ */
+export function pickConceptsForSubTask(concepts, subTask) {
+    if (concepts.length === 0)
+        return [];
+    const files = subTask.filesLikelyTouched;
+    return concepts.filter((c) => {
+        if (!c.path)
+            return true;
+        return files.some((f) => f === c.path || f.startsWith(c.path + "/") || (c.path ?? "").startsWith(f + "/"));
+    });
 }
 export async function runWorker(worktreePath, brief, subTask, commitIdentity, deps, resumeSessionId) {
     const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
