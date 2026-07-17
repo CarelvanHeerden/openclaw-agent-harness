@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.0-beta.20] -- 2026-07-17
+
+### Added
+
+- **README: task-phrasing guide.** New top-level section "How to ask for
+  work" between the two-modes intro and the Why section. Covers:
+  - **Tier 1** — plain-English asks for small changes on repos you know.
+  - **Tier 2** — structured template for larger repos (`Task/Repo/Where/
+    Do NOT/Done when/Risk`).
+  - **Golden rules** — five phrasings that measurably affect plan
+    quality (atomicity, out-of-scope, observable done-when, local-scope
+    preference, honest risk).
+  - **Four worked examples** — bugfix, small feature, refactor, docs-only.
+    Each shows the recommended brief shape and the expected plan shape
+    the lead planner should produce.
+  - **Troubleshooting** — what to do if the plan is wrong (`:x:` +
+    re-phrase with tighter atomicity, most common cause is a split
+    write+commit).
+
+  Complements the beta.19 atomicity rule on the lead planner side:
+  beta.19 taught the model, beta.20 teaches the user.
+
+### Testing
+
+- No new tests. This is a docs-only release; the beta.19 test suite
+  (306 tests) continues to pass.
+
 ## [0.1.0-beta.19] -- 2026-07-17
 
 ### Added

@@ -2,11 +2,13 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.15`. 277 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: beta.* Version `0.1.0-beta.20`. 306 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 >
-> **beta.10 fix:** the 5 new beta.9 optional verify probes (`fileExistsOnDisk`, `fileCommittedSince`, `remoteBranchSha`, `remoteFileExists`, `prForBranch`, `prFiles`, `localHeadSha`) are now provided by the production `buildVerifyProbes` factories in both the loop-path and worker-path. Beta.9 shipped the graceful-skip fallback but no factory was providing the probes, so 5 of 8 contract kinds were pass-as-skipped in real runs. Beta.10 wires them all to real `fs.stat` / `git log` / `git ls-remote` / provider REST calls. See [CHANGELOG](CHANGELOG.md).
->
-> **beta.9 fix:** `file_written` verification now uses `fs.stat` (includes untracked files), fixing the beta.8 false-negative that blocked the write→commit→push plan shape. 7 new precise contract kinds added.
+> **beta.20:** README task-phrasing guide added (see [How to ask for work](#how-to-ask-for-work-task-phrasing-guide) below).
+> **beta.19:** lead atomicity rule for write+commit and push+PR (avoids over-decomposition of atomic actions into separate sub-tasks); `sub_tasks.started_at` column populated.
+> **beta.16-18:** verification telemetry (`baseRef`/`baseSemantics` on `verify_failed`), observe-mode audit breadcrumb, worktree pruning on terminal transitions with real physical removal, startup worktree self-heal, always-emit heal audit.
+> **beta.14-15:** authoritative `contractScope` and `taskMode` plan fields that promote scope decisions to first-class (replacing regex-inference whack-a-mole).
+> **beta.10:** the 5 new beta.9 optional verify probes are now provided by the production `buildVerifyProbes` factories in both the loop-path and worker-path. See [CHANGELOG](CHANGELOG.md) for the full arc.
 
 ### Two ways to drive it
 
@@ -14,6 +16,94 @@
 - **Autonomous listener (opt-in).** Set `slack.listener_enabled: true` and the plugin subscribes to `message_received` and treats allow-listed messages in `slack.channel` as dev requests directly, bypassing the agent. Useful for a dedicated dev channel, but it competes with your OpenClaw agent for messages, so it's off by default.
 
 Either way the pipeline is identical; only the *entry point* differs.
+
+## How to ask for work: task-phrasing guide
+
+The harness works best when your request tells the lead planner three things: *what* changes, *where* it belongs, and *how you'd know it worked*. There are two ways to do this — pick the one that matches the size of the ask.
+
+### Tier 1: just talk to your OpenClaw agent
+
+> Say what should change, what shouldn't, and how you'd know it worked. The crystalliser will ask if it's unclear. Trust it — clarifying questions save a $2 wasted run.
+
+For small, well-scoped changes on a repo you know well, plain English works. Example:
+
+> "On `carel/homelab-tools`, add a `--dry-run` flag to `scripts/backup.py` that skips actual `rsync` but prints what it would do. Don't touch the existing behaviour. Tests should still pass."
+
+The crystalliser will structure that into a brief, hand it to the lead planner, and away it goes. If any of the fields (repo, done-when, out-of-scope) are ambiguous, the crystalliser will ask you before spending model tokens.
+
+### Tier 2: structured template (recommended for larger repos)
+
+On a big codebase (10K+ LOC) the lead planner can't hold the whole tree in context, so it needs *pointers*. Use this shape:
+
+```
+Task: <what you want done, one sentence>
+Repo: <owner/repo>
+Where: <specific files or directories where the change belongs>
+Do NOT: <things not to touch — dependencies, unrelated files, refactors>
+Done when:
+  - <2-4 concrete acceptance criteria — the reviewer uses these>
+Risk: low | medium | high
+```
+
+Every field is optional except `Task` and `Done when`. The others sharpen the plan; the more you provide, the less the lead has to guess.
+
+### Golden rules for phrasing
+
+A few phrasings that measurably affect plan quality (all learned the hard way through smoke tests):
+
+1. *Keep atomic actions in one sentence.* "Append the line and commit locally" — not two bullets. The lead knows write+commit is one sub-task if you write it that way. Same for "push the branch and open a PR".
+2. *Be explicit about out-of-scope.* "Do NOT touch `src/legacy/`, `package-lock.json`, or any dependencies." Reduces wandering more than any other single field.
+3. *Anchor "done when" in observable facts.* "Tests pass" is weak. "`npm run test:integration` passes AND `docs/CHANGELOG.md` has a new entry" is strong — the reviewer can check both.
+4. *Prefer local scope on small changes.* Say "No push, no PR" if you want to inspect the branch first. The plan will use `contractScope: 'local'` and skip the remote verification path.
+5. *Name the risk honestly.* `high` risk widens the reviewer's checklist and triggers a stricter review pass. Don't downplay a schema migration as `low`.
+
+### Four worked examples
+
+**Bugfix.**
+> Task: The retry logic in `src/lib/http/client.ts` doesn't reset the backoff counter on a successful request between failures. Fix it and add a regression test.
+> Repo: carel/service-mesh
+> Where: `src/lib/http/client.ts`, `tests/lib/http/client.test.ts`
+> Do NOT: change the public API, touch other callers, refactor unrelated retry code in `src/lib/queue/`
+> Done when: new test in `tests/lib/http/client.test.ts` reproduces the bug and passes; existing tests still pass; no changes outside the two files above
+> Risk: low
+
+Expected plan shape: 1 mutate sub-task (fix + test in one atomic write+commit), 1 observe sub-task (`verify:[]` sanity check), push+PR sub-task.
+
+**Small feature.**
+> Task: Add a `--json` output flag to `scripts/report.py` that emits the same data as machine-readable JSON.
+> Repo: carel/homelab-tools
+> Where: `scripts/report.py`, `tests/test_report.py`, `README.md` (usage section only)
+> Do NOT: change the default (human) output, add new dependencies, touch `scripts/backup.py`
+> Done when: `python scripts/report.py --json` emits valid JSON matching the fields in the human output; test in `tests/test_report.py` parses that output with `json.loads`; README has a one-line usage example
+> Risk: low
+
+Expected plan shape: 1-2 mutate sub-tasks (implementation + test + docs, atomic if phrased tightly), 1 observe, push+PR.
+
+**Refactor.**
+> Task: Extract the duplicated timestamp-formatting code (currently inline in 3 files under `src/handlers/`) into a shared helper in `src/util/time.ts`. Behaviour must be identical.
+> Repo: carel/service-mesh
+> Where: new file `src/util/time.ts`; existing files `src/handlers/{a,b,c}.ts`; tests under `tests/util/` and `tests/handlers/`
+> Do NOT: change the timestamp *format* or the timezone handling; do NOT touch anything outside the four handler files or the new util; do NOT rename existing exports
+> Done when: all three handlers import from `src/util/time.ts`; new `tests/util/time.test.ts` covers the helper; existing handler tests pass unchanged
+> Risk: medium
+
+Expected plan shape: multiple mutate sub-tasks (one per file or one for the util + one for all three handlers), 1 observe sub-task confirming call sites all delegate, push+PR. Higher risk widens the reviewer's checklist.
+
+**Docs-only.**
+> Task: Document the environment variables the harness needs, in a new `docs/ENV.md` file.
+> Repo: CarelvanHeerden/openclaw-agent-harness
+> Where: `docs/ENV.md` (new file only)
+> Do NOT: change any code, config, or existing docs; do NOT list variables that aren't actually read by the codebase
+> Done when: file exists with entries for `ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITLAB_TOKEN`; each entry names the code path that reads it (grep for `process.env.<name>`); no other files changed
+> Risk: low
+
+Expected plan shape: 1 mutate sub-task (`taskMode:'mutate'`, `contractScope:'local'`), optional observe, push+PR. No test-related sub-tasks because there are no tests to run.
+
+### What if the harness plans it wrong
+
+If you see 3+ sub-tasks for what feels like one action — the lead is over-decomposing. React `:x:` to abort and re-phrase with tighter atomicity (rule #1 above). If sub-tasks fail verify with `commit_verify_failed` and the worker's own audit shows it produced no changes, that's almost always a split write+commit — same fix.
+
+If the plan skips a file you meant to change, your `Where:` field probably wasn't specific enough. Re-run with an explicit path.
 
 ## Why
 
@@ -128,7 +218,7 @@ Only from `slack.authorised_users`:
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 157 tests
+npm test        # runs 306 tests as of 0.1.0-beta.20
 npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 ```
 
@@ -140,7 +230,7 @@ For repeatable smoke tests, `harness_bootstrap_test_repo` creates a fresh dispos
 
 - `npm run typecheck` -- strict TS, no `any` leaks in `src/`
 - `npm run build` -- emits `dist/` + copies `schema.sql`
-- `npm test` -- Node test runner, 136 tests as of `0.1.0-beta.2`
+- `npm test` -- Node test runner, 306 tests as of `0.1.0-beta.20`
 - `npm run smoke` -- post-build bootstrap sanity
 
 CI on every push and PR: `.github/workflows/ci.yml`.
