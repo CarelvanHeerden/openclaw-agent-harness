@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.0-beta.26] -- 2026-07-18
+
+### Docs
+
+- **`harness-credentials` skill:** two clarifications from Staging's first
+  beta.25 Tier-2 setup run:
+  - Tier 2 must use a **direct file `edit` on `openclaw.json`, not**
+    `gateway config.patch` — the hierarchical token fields
+    (`pat_routing.<provider>.<org>.<person>.token|email|name|slack_user_id`)
+    are protected paths that `config.patch` refuses.
+  - Documented **resolution precedence** (hierarchy is resolved first and
+    short-circuits the legacy `overrides` / `default_service_pattern` path)
+    and added an optional step to clean up now-dead legacy `overrides` /
+    `commit_identity` entries for a repo that has been migrated to the
+    hierarchy.
+
+  Skill-doc only; no code change. Build + tests unchanged from beta.25 (366).
+
 ## [0.1.0-beta.25] -- 2026-07-18
 
 ### Added
