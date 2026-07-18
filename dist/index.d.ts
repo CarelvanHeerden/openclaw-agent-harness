@@ -181,6 +181,7 @@ export interface HarnessRuntime {
     mergePr: (args: {
         sessionId: string;
         invokedBy?: string;
+        repairBudgetUsd?: number;
     }) => Promise<MergePrResult>;
     /**
      * Resolve the credential service name the pat-router would use for a repo

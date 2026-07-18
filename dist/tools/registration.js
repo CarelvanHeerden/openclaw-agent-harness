@@ -261,13 +261,14 @@ export function registerHarnessTools(api, runtime) {
             properties: {
                 sessionId: { type: "string", minLength: 1, description: "The harness session whose PR to merge." },
                 invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker; must be in slack.authorised_users if provided." },
+                repairBudgetUsd: { type: "number", minimum: 0, description: "Optional override (USD) for the post-merge deploy-repair budget on Vercel projects. Defaults to budgets.daily_max_usd * vercel.deploy_repair.budget_ratio." },
             },
             required: ["sessionId"],
             additionalProperties: false,
         },
         execute: async (_callId, input) => {
-            const { sessionId, invokedBy } = input;
-            const res = await liveRuntime().mergePr({ sessionId, invokedBy });
+            const { sessionId, invokedBy, repairBudgetUsd } = input;
+            const res = await liveRuntime().mergePr({ sessionId, invokedBy, repairBudgetUsd });
             return { content: [{ type: "text", text: res.message }], details: res };
         },
     })));

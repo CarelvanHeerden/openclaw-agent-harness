@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.1.0-beta.36] -- 2026-07-18
+
+Fully-automated post-merge deploy repair (human out of the loop) for
+Vercel-configured projects. Merging to `main` triggers the production deploy,
+which is the runtime arbiter the in-loop adversary never had.
+
+### Vercel-aware merge gate
+
+`harness_merge_pr` now overrides a `do_not_merge` recommendation and
+auto-merges ONLY when BOTH: (a) the project is Vercel-configured, and (b) the
+reason is a `revise` verdict (improvable) with NO blocking-severity finding.
+A `block` verdict, a surviving blocking-severity finding, or a non-Vercel
+project still HARD-refuses (human merges via the GitHub UI). This closes the
+beta.35 gap where a correct-but-revise UI PR could only be merged by hand.
+
+### Post-merge deploy-repair loop
+
+When a merged PR's Vercel deployment comes back ERROR:
+1. The harness builds a repair brief from the Vercel build logs and runs the
+   full pipeline (crystallise -> plan -> work -> review -> ship) off latest
+   `main`, in the SAME session (`deploy_repair_attempt` counter), and merges
+   the repair PR.
+2. Re-verifies the deploy for the new merge SHA. READY -> done (repaired).
+3. Up to `vercel.deploy_repair.max_attempts` (default 3) repair PRs.
+4. If still failing after all attempts, it REVERTS every merge (original PR +
+   all repair PRs, newest-first) to restore a healthy `main` -- via direct
+   push, or an auto-merged revert PR when `main` is branch-protected -- and
+   leaves the last repair attempt as an OPEN PR for human review, with a loud
+   error explaining the whole chain.
+5. The repair loop shares ONE budget = `budgets.daily_max_usd *
+   vercel.deploy_repair.budget_ratio` (default 25%), overridable per call via
+   `harness_merge_pr`'s `repairBudgetUsd`. If exhausted mid-loop, it reverts
+   to a working `main` and PAUSES for the user's go-ahead rather than leaving
+   `main` broken.
+
+### Config / schema / DB
+
+- New `budgets.daily_max_usd` (default 200; must be >= daily_warn_usd).
+- New `vercel.deploy_repair { enabled, max_attempts, budget_ratio }`.
+- New session columns `deploy_repair_attempt`, `parent_session_id` (additive).
+- New git adapter `revertCommits` (worktree revert; direct-push or
+  revert-branch fallback). New audit events `deploy.repair_*`.
+
+### Tests
+
+- 415 -> 428: deploy-repair state machine (all branches: repaired / reverted
+  / budget_paused / attempt-failed / revert-failed), real-git revertCommits,
+  Vercel-aware gate + config guards, manifest declarations.
+
 ## [0.1.0-beta.35] -- 2026-07-18
 
 Fixes the revise-loop failure surfaced by the beta.34 taxonomy-dropdown smoke

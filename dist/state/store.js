@@ -61,8 +61,10 @@ export function openStateStoreSync(pathHint) {
         { table: "sessions", column: "pr_number", type: "INTEGER" }, // GitHub PR number
         { table: "sessions", column: "merge_recommendation", type: "TEXT" }, // 'merge' | 'do_not_merge'
         { table: "sessions", column: "merge_recommendation_reason", type: "TEXT" }, // human-readable reasoning
-        { table: "sessions", column: "deploy_status", type: "TEXT" }, // 'ready'|'error'|'pending'|'unavailable'|NULL
+        { table: "sessions", column: "deploy_status", type: "TEXT" }, // 'ready'|'error'|'pending'|'unavailable'|'reverted'|'repair_budget_paused'|NULL
         { table: "sessions", column: "deploy_detail", type: "TEXT" }, // logs excerpt / url / error
+        { table: "sessions", column: "deploy_repair_attempt", type: "INTEGER" }, // beta.36: post-merge deploy-repair attempt count
+        { table: "sessions", column: "parent_session_id", type: "TEXT" }, // beta.36: links a repair session to the session whose deploy it repairs
     ];
     for (const m of additiveMigrations) {
         try {
