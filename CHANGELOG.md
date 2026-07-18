@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.1.0-beta.35] -- 2026-07-18
+
+Fixes the revise-loop failure surfaced by the beta.34 taxonomy-dropdown smoke
+(session ea881f25): the worker delivered a CORRECT fix on cycle 1, the
+adversary returned `revise` (wanting runtime evidence the loop can't produce
+on a repo with no in-loop preview deploy), and the run then died -- first
+because a revise cycle re-ran the mutate sub-task and failed `commit_made`
+(HEAD == base, because a correct worker made no new commit), and structurally
+because a UI change can never reach a clean `pass` without a runtime render.
+Three composing fixes:
+
+### #1 + #2: a revise-cycle no-op is legal
+
+On a revise cycle (cycle > 1), if the worker completes with NO new commit and
+the ONLY failing verify checks are the "no change" kinds (`commit_made` /
+`file_committed` / `file_written`), the sub-task is marked
+`completed_no_change` (effective task-mode = observe for this pass) and the
+loop proceeds instead of hard-failing. The worker having nothing to change on
+a revise pass is a valid outcome. Any OTHER failure -- a claimed push/PR/file
+that didn't happen -- still hard-fails: the trust-but-verify / confabulation
+guarantee is unchanged. New audit event `loop.subtask_revise_no_change`.
+
+### #3: ship-on-max-cycles-revise + honest PR annotation
+
+When the loop exhausts `max_cycles` with a `revise` (NOT `block`) verdict, it
+now SHIPS the PR instead of throwing away a correct fix. `revise` means
+"improvable", not "broken". The PR body carries an explicit "Shipped without a
+clean adversary pass" section listing the outstanding findings, and calls out
+that the harness has no in-loop preview deploy so runtime findings will be
+verified for real by the post-merge Vercel deploy verification
+(`harness_merge_pr`). The derived merge recommendation is `do_not_merge`
+(beta.34 hard gate) -- the PR exists but a HUMAN approves the merge, which is
+exactly the "you review, then tell me to merge and verify the deploy" flow.
+A `block` verdict still hard-fails and ships nothing.
+
+### Tests
+
+- 408 -> 415: `advance` ship-on-revise / fail-on-block, revise-no-op source
+  guards (incl. a check that the no-change set excludes push/PR kinds so
+  confabulation still fails), renderPrBody annotation.
+
 ## [0.1.0-beta.34] -- 2026-07-18
 
 Completes the ship->review->merge->verify tail of the original design, plus

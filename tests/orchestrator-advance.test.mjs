@@ -44,11 +44,24 @@ test("advance: adversary revise -> back to executing while cycles remain",
     assert.equal(r.reason, "adversary_revise");
   });
 
-test("advance: adversary revise on last cycle -> failed",
+test("advance: beta.35 — adversary REVISE on last cycle -> SHIP (done), not failed",
   { skip: OrchestratorLoop === null }, () => {
+    // beta.35 fix #3: a `revise` (improvable, not broken) verdict on the last
+    // cycle now SHIPS the PR with a "shipped without a clean pass" annotation
+    // rather than throwing away a correct fix. Merge recommendation will be
+    // do_not_merge (human approves), preserving the beta.34 hard gate.
     const r = OrchestratorLoop.advance({ ...base, currentStatus: "reviewing", verdict: "revise", cyclesRan: 2, maxCycles: 3 });
+    assert.equal(r.nextStatus, "done");
+    assert.equal(r.reason, "shipped_max_cycles_revise");
+  });
+
+test("advance: beta.35 — adversary BLOCK on last cycle still FAILS (ships nothing)",
+  { skip: OrchestratorLoop === null }, () => {
+    // A genuine blocking defect must still hard-fail even on the last cycle;
+    // only `revise` gets the ship-anyway treatment.
+    const r = OrchestratorLoop.advance({ ...base, currentStatus: "reviewing", verdict: "block", cyclesRan: 2, maxCycles: 3 });
     assert.equal(r.nextStatus, "failed");
-    assert.equal(r.reason, "max_cycles_reached");
+    assert.equal(r.reason, "adversary_block");
   });
 
 test("advance: user abort short-circuits everything",
