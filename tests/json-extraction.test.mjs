@@ -71,3 +71,11 @@ test("extractJson: bracket depth counting handles nested + strings",
     assert.equal(parsed.a.b, "} not the end");
     assert.deepEqual(parsed.c, [1, 2, 3]);
   });
+
+test("extractJson: prose-only output throws a diagnostic 'model returned prose' error (beta.27)",
+  { skip: extractJson === null }, () => {
+    assert.throws(
+      () => extractJson("I'll help you fix the Morning Briefings typo. First I'll explore the repo."),
+      /model returned prose.*allowedTools/,
+    );
+  });
