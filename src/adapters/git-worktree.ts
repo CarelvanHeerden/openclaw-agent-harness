@@ -145,10 +145,16 @@ esac
         // below covers the worktree config, but the BARE clone also has
         // its own remote config that gets the authed URL by default.
         await this.run(["-C", bare, "remote", "set-url", "origin", plainUrl]);
+        // beta.34: install the persistent cred helper (token-less; reads
+        // $OAH_GH_TOKEN at invocation). Makes every subsequent origin op
+        // auth automatically, incl. git-spawned promisor fetches.
+        await this.installCredHelper(bare);
       } else {
+        // beta.34: ensure the helper exists on pre-beta.34 bare repos too.
+        await this.installCredHelper(bare).catch(() => {});
         // For fetch on an existing bare, use askpass as before. The
         // remote URL is already the plain form; askpass injects creds.
-        await this.run(["-C", bare, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"], undefined, ask.path);
+        await this.run(["-C", bare, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"], undefined, ask.path, ctx.ghToken);
       }
       // beta.29 fix: `worktree add` must run WITH the askpass helper.
       //
@@ -164,7 +170,7 @@ esac
       // because askpass WAS wired there. Thread the same helper through the
       // worktree-add blob fetch. GIT_TERMINAL_PROMPT=0 in the helper env also
       // turns a would-be hang into a fast, diagnosable failure.
-      await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path);
+      await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
       await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
       await this.run(["-C", wt, "config", "user.email", ctx.commitIdentity.email]);
       // Ensure the worktree remote is the plain URL (no token on disk).
@@ -328,7 +334,27 @@ esac
   async pushBranch(worktreePath: string, remote: string, branch: string, ghToken: string): Promise<void> {
     const ask = await this.makeAskpass(ghToken);
     try {
-      await this.run(["-C", worktreePath, "push", remote, `${branch}:${branch}`], undefined, ask.path);
+      await this.run(["-C", worktreePath, "push", remote, `${branch}:${branch}`], undefined, ask.path, ghToken);
+    } catch (err) {
+      // beta.34: push-exit-code assertion. Turn a generic non-zero-exit push
+      // failure into a CLEAR auth error when the stderr shows the classic
+      // credential-less symptoms. Before beta.33 a cred-less push failed
+      // silently and only surfaced downstream as a remote-404 verify miss;
+      // now the harness raises a precise, greppable error the loop can act
+      // on (retry with fresh creds / abort with a real reason) instead of a
+      // vague "verify failed".
+      const msg = String(err);
+      if (
+        /could not read Username|Authentication failed|terminal prompts disabled|fatal: could not read|Invalid username or password|Permission to .* denied/i.test(
+          msg,
+        )
+      ) {
+        throw new Error(
+          `git push authentication failed for ${remote}/${branch}: ${msg.slice(0, 300)}. ` +
+            `The push had no usable credentials (askpass/env/cred-helper all missing or the token is invalid/lacks 'contents:write').`,
+        );
+      }
+      throw err;
     } finally {
       await ask.cleanup();
     }
@@ -344,7 +370,42 @@ esac
     return this.run(["-C", worktreePath, "diff", base, "HEAD"]);
   }
 
-  private run(args: string[], _cwd?: string, askpassPath?: string): Promise<string> {
+  /**
+   * beta.34: install a persistent credential helper into the bare repo
+   * config (Staging's recommended hardening, option 1). The helper script
+   * contains NO token — it reads `$OAH_GH_TOKEN` from the process env at
+   * invocation time and prints `username=x-access-token` / `password=$token`.
+   * This makes EVERY git op against origin auth automatically (including
+   * sub-processes git spawns internally, e.g. promisor blob fetches during
+   * push, which do NOT inherit GIT_ASKPASS reliably), without persisting the
+   * token on disk. Consistent with the "never persist the token" invariant:
+   * only a reference to an env var is written to config.
+   *
+   * Callers must set `OAH_GH_TOKEN` in the git child env for ops that need
+   * auth (see `run(..., token)`). askpass stays wired as a second channel.
+   */
+  private async installCredHelper(bareRepoPath: string): Promise<void> {
+    const dir = join(bareRepoPath, "oah-cred");
+    await mkdir(dir, { recursive: true });
+    const helper = join(dir, "credential-helper.sh");
+    // Only `get` needs to answer; store/erase are no-ops. No token in here.
+    const script = `#!/bin/sh
+case "$1" in
+  get)
+    printf 'username=x-access-token\\n'
+    printf 'password=%s\\n' "$OAH_GH_TOKEN"
+    ;;
+esac
+`;
+    await writeFile(helper, script, "utf8");
+    await chmod(helper, 0o700);
+    // Point github.com credential lookups at the helper. Absolute path so it
+    // works regardless of git's cwd. Overwrite (--replace-all) to stay idempotent.
+    await this.run(["-C", bareRepoPath, "config", "--replace-all", "credential.https://github.com.helper", helper]);
+    await this.run(["-C", bareRepoPath, "config", "credential.https://github.com.useHttpPath", "false"]);
+  }
+
+  private run(args: string[], _cwd?: string, askpassPath?: string, token?: string): Promise<string> {
     return new Promise((resolveP, rejectP) => {
       const env: NodeJS.ProcessEnv = { ...process.env };
       if (askpassPath) {
@@ -352,6 +413,10 @@ esac
         env.GIT_TERMINAL_PROMPT = "0";
         env.GCM_INTERACTIVE = "never";
       }
+      // beta.34: expose the token to the persistent cred-helper (which reads
+      // $OAH_GH_TOKEN). Never logged, never persisted; lives only in this
+      // child process env.
+      if (token) env.OAH_GH_TOKEN = token;
       const proc = spawn("git", args, { env });
       let out = "";
       let err = "";

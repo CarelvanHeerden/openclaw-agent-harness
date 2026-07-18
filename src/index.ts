@@ -40,7 +40,7 @@ import {
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
-import { createPullRequest } from "./adapters/github.js";
+import { createPullRequest, getPullRequest, getCombinedStatus, mergePullRequest } from "./adapters/github.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import {
   estimateSubTaskCost,
@@ -51,7 +51,7 @@ import {
   runLeadSdk,
   runWorkerSdk,
 } from "./adapters/claude-sdk.js";
-import { fetchBranchLogs } from "./vercel/logs.js";
+import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
 import { crystallisePrompt, type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
 import { runLeadPlanner } from "./orchestrator/fable5-lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/sonnet-worker.js";
@@ -185,6 +185,14 @@ export interface HarnessRuntime {
    */
   preflight: (args: { requester: string; repoFullName: string }) => Promise<PreflightResult>;
   /**
+   * beta.34: hard-gated PR merge + post-merge Vercel deploy verification.
+   * Enforces the merge recommendation: if the session's recommendation is
+   * `do_not_merge`, it REFUSES (no override; the escape hatch is the GitHub
+   * UI). Otherwise re-checks CI, merges (squash), records the merge, and
+   * verifies the Vercel deployment for the merge commit. Never force-merges.
+   */
+  mergePr: (args: { sessionId: string; invokedBy?: string }) => Promise<MergePrResult>;
+  /**
    * Resolve the credential service name the pat-router would use for a repo
    * (or the first allowed repo when omitted). For health/introspection.
    */
@@ -209,6 +217,20 @@ export interface PreflightResult {
   message: string;
   /** Provenance of the routing decision, for logging. */
   provenance?: string;
+}
+
+/** beta.34: result of a harness_merge_pr invocation. */
+export interface MergePrResult {
+  ok: boolean;
+  /** True when the hard gate refused the merge (recommendation = do_not_merge). */
+  refused?: boolean;
+  merged?: boolean;
+  mergeSha?: string;
+  recommendation?: "merge" | "do_not_merge";
+  /** Deploy verification outcome (when Vercel enabled + a merge happened). */
+  deploy?: { status: "ready" | "error" | "pending" | "unavailable"; detail: string; deploymentUrl?: string; logsExcerpt?: string };
+  /** Human-facing message summarising the outcome. */
+  message: string;
 }
 
 let currentRuntime: HarnessRuntime | null = null;
@@ -372,6 +394,44 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     api.logger.warn(
       "[harness] no Anthropic API key resolved (vault + env both empty); SDK may fall back to interactive /login and fail in headless containers",
       { credentialService: auth.credential_service || "(unset)", envVar: envName },
+    );
+    return undefined;
+  };
+
+  // beta.34: Vercel token resolver. Vault-first (config.vercel.credential_service)
+  // then env fallback (config.vercel.api_key_env, default VERCEL_TOKEN). Same
+  // pattern as anthropicApiKey / resolveGitToken so the env-only Staging
+  // container (no vault) can supply the token via env instead of losing it.
+  // Memoised; returns undefined when neither source has it.
+  let vercelTokenResolved = false;
+  let vercelTokenValue: string | undefined;
+  const resolveVercelToken = async (): Promise<string | undefined> => {
+    if (vercelTokenResolved) return vercelTokenValue;
+    vercelTokenResolved = true;
+    // 1) Vault (preferred).
+    if (config.vercel?.credential_service) {
+      try {
+        const v = await creds.getToken(config.vercel.credential_service);
+        if (v) {
+          vercelTokenValue = v;
+          api.logger.info("[harness] vercel token resolved from vault", { service: config.vercel.credential_service });
+          return vercelTokenValue;
+        }
+      } catch (err) {
+        api.logger.warn("[harness] vercel vault lookup failed; trying env fallback", { service: config.vercel.credential_service, err: String(err) });
+      }
+    }
+    // 2) Env fallback.
+    const envName = config.vercel?.api_key_env || "VERCEL_TOKEN";
+    const envVal = process.env[envName];
+    if (envVal) {
+      vercelTokenValue = envVal;
+      api.logger.info("[harness] vercel token resolved from env", { envVar: envName });
+      return vercelTokenValue;
+    }
+    api.logger.warn(
+      "[harness] no Vercel token resolved (vault + env both empty); deploy verification will be unavailable",
+      { credentialService: config.vercel?.credential_service || "(unset)", envVar: envName },
     );
     return undefined;
   };
@@ -822,7 +882,19 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       }
       // Otherwise fall back to Vercel bridge, only if explicitly enabled.
       if (!config.vercel?.enabled) return undefined;
-      const token = await creds.getToken(config.vercel.credential_service);
+      // beta.34: vault-first + env fallback (was vault-only, which lost the
+      // token on the vault-less Staging container).
+      const token = await resolveVercelToken();
+      if (!token) {
+        // No token from vault or env -> deploy verification unavailable.
+        // Surface it explicitly rather than calling the API unauthenticated.
+        return {
+          provider: "vercel" as const,
+          status: "unavailable" as const,
+          logsExcerpt: "Vercel token unavailable (no vault entry and env fallback unset). Set VERCEL_TOKEN or the vault service.",
+          errorCount: undefined,
+        };
+      }
       return fetchBranchLogs({
         vercelToken: token,
         teamId: config.vercel.team_id,
@@ -1275,6 +1347,111 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           `store it under your identity (${resolution.person ?? requester}) so future runs just work.`,
       };
     },
+    mergePr: async ({ sessionId, invokedBy }) => {
+      if (invokedBy && !config.slack.authorised_users.includes(invokedBy)) {
+        return { ok: false, message: `Invoker ${invokedBy} is not authorised.` };
+      }
+      const row = state.db
+        .prepare(
+          `SELECT repo, requester_gh, requester, status, pr_number, final_pr_url, merge_recommendation, merge_recommendation_reason, pr_merged
+             FROM sessions WHERE id = ?`,
+        )
+        .get(sessionId) as
+        | {
+            repo: string; requester_gh: string; requester: string; status: string;
+            pr_number: number | null; final_pr_url: string | null;
+            merge_recommendation: string | null; merge_recommendation_reason: string | null;
+            pr_merged: number | null;
+          }
+        | undefined;
+      if (!row) return { ok: false, message: `No session ${sessionId}.` };
+      if (!row.pr_number || !row.final_pr_url) {
+        return { ok: false, message: `Session ${sessionId} has no open PR to merge (status: ${row.status}).` };
+      }
+      if (row.pr_merged === 1) {
+        return { ok: false, merged: true, message: `PR #${row.pr_number} is already merged.` };
+      }
+      // ---- HARD GATE ----
+      const rec = (row.merge_recommendation ?? "do_not_merge") as "merge" | "do_not_merge";
+      if (rec !== "merge") {
+        state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, recommendation: rec }, sessionId);
+        return {
+          ok: false,
+          refused: true,
+          recommendation: rec,
+          message:
+            `Refusing to merge PR #${row.pr_number}. This is a HARD SAFETY GATE that cannot be bypassed by the harness. ` +
+            `Recommendation: DO NOT MERGE — ${row.merge_recommendation_reason ?? "no clean adversary sign-off"}. ` +
+            `If you want to merge anyway, do it from the GitHub UI (that decision is deliberately outside this automation).`,
+        };
+      }
+      // Resolve token for the repo.
+      let ghToken: string;
+      try {
+        const resolution = pat.resolve({
+          slackUserId: row.requester,
+          gitHubUser: row.repo.split("/")[0]!,
+          repoFullName: row.repo,
+        });
+        ghToken = await resolveGitToken(resolution);
+      } catch (err) {
+        return { ok: false, recommendation: rec, message: `Could not resolve a token to merge PR #${row.pr_number}: ${String(err)}` };
+      }
+      // Re-check CI on the PR head right before merge (recommendation was
+      // computed at ship time; CI may have moved).
+      let mergeSha = "";
+      try {
+        const pr = await getPullRequest({ repoFullName: row.repo, prNumber: row.pr_number, ghToken });
+        if (pr.merged) {
+          state.db.prepare(`UPDATE sessions SET pr_merged = 1, pr_merged_at = ?, updated_at = ? WHERE id = ?`).run(Date.now(), Date.now(), sessionId);
+          return { ok: true, merged: true, recommendation: rec, message: `PR #${row.pr_number} was already merged on GitHub.` };
+        }
+        const ci = await getCombinedStatus({ repoFullName: row.repo, sha: pr.headSha, ghToken });
+        if (ci === "failure") {
+          state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "ci_failure" }, sessionId);
+          return {
+            ok: false, refused: true, recommendation: rec,
+            message: `Refusing to merge PR #${row.pr_number}: CI is FAILING on the head commit. Hard gate — fix CI or merge from the GitHub UI.`,
+          };
+        }
+        const merged = await mergePullRequest({ repoFullName: row.repo, prNumber: row.pr_number, ghToken, method: "squash" });
+        mergeSha = merged.sha;
+        state.db.prepare(`UPDATE sessions SET pr_merged = 1, pr_merged_at = ?, updated_at = ? WHERE id = ?`).run(Date.now(), Date.now(), sessionId);
+        state.audit("tool.merged", { sessionId, prNumber: row.pr_number, mergeSha, ci }, sessionId);
+      } catch (err) {
+        return { ok: false, recommendation: rec, message: `Merge of PR #${row.pr_number} failed: ${String(err)}` };
+      }
+      // ---- Post-merge Vercel deploy verification ----
+      let deploy: MergePrResult["deploy"];
+      if (config.vercel?.enabled) {
+        const vToken = await resolveVercelToken();
+        if (!vToken) {
+          deploy = { status: "unavailable", detail: "Vercel enabled but no token (vault + env empty)." };
+        } else {
+          const dv = await verifyDeploymentForSha({
+            vercelToken: vToken,
+            teamId: config.vercel.team_id,
+            projectId: config.vercel.project_id,
+            sha: mergeSha,
+            waitSeconds: config.vercel.preview_wait_seconds,
+            logger: api.logger,
+          });
+          deploy = { status: dv.status, detail: dv.detail, deploymentUrl: dv.deploymentUrl, logsExcerpt: dv.logsExcerpt };
+          state.db.prepare(`UPDATE sessions SET deploy_status = ?, deploy_detail = ?, updated_at = ? WHERE id = ?`).run(dv.status, `${dv.detail}${dv.logsExcerpt ? "\n" + dv.logsExcerpt : ""}`.slice(0, 5000), Date.now(), sessionId);
+          state.audit("tool.deploy_verified", { sessionId, mergeSha, deployStatus: dv.status }, sessionId);
+        }
+      }
+      const deployMsg =
+        deploy?.status === "ready" ? ` Deploy is READY (${deploy.deploymentUrl}).`
+        : deploy?.status === "error" ? ` \u26a0\ufe0f Deploy ERRORED — ${deploy.detail}`
+        : deploy?.status === "pending" ? ` Deploy still building — ${deploy.detail}`
+        : deploy?.status === "unavailable" ? ` Deploy status unavailable — ${deploy.detail}`
+        : "";
+      return {
+        ok: true, merged: true, mergeSha, recommendation: rec, deploy,
+        message: `Merged PR #${row.pr_number} (squash, ${mergeSha.slice(0, 12)}).${deployMsg}`,
+      };
+    },
     disposers: [],
   };
 
@@ -1339,42 +1516,31 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   //
   // Autonomous mode (`slack.listener_enabled: true`) is opt-in: the plugin
   // then treats allow-listed messages in `slack.channel` as dev requests.
-  if (!config.slack.listener_enabled) {
-    api.logger.info(
-      "[harness] slack.listener_enabled=false -- agent-orchestrated mode. " +
-        "The plugin will NOT listen to Slack; drive it via harness_run / harness_start_session tools.",
+  // beta.34: the harness Slack LISTENER is removed. The harness is a pure
+  // tool-driven engine: the OpenClaw agent is the SOLE operator and drives it
+  // via harness_run / harness_start_session / harness_merge_pr / ... The
+  // harness NEVER subscribes to inbound Slack messages, so:
+  //   - it can never be independently addressed in a channel (the privileged
+  //     surface — PATs, PR merges — is only reachable through the agent's tool
+  //     layer, which carries the agent's auth/approval context);
+  //   - the bot-to-bot loop risk is structurally eliminated (no two OpenClaws
+  //     talking in a channel).
+  // `config.slack.listener_enabled` is now IGNORED (kept for config
+  // back-compat; a `true` value is logged and does nothing). Progress
+  // posting to a channel/thread explicitly passed into a tool call still
+  // works via the dispatcher/slack adapter — that's OUTBOUND only.
+  void messageHandler; // retained for potential future use; never subscribed.
+  if (config.slack.listener_enabled) {
+    api.logger.warn(
+      "[harness] slack.listener_enabled=true is IGNORED as of beta.34 -- the Slack listener was removed. " +
+        "The harness is tool-driven only (drive it via harness_run / harness_start_session / harness_merge_pr). " +
+        "Remove this config key.",
     );
-  } else if (typeof api.on === "function") {
-    // The ONLY valid event name is `message_received` (underscore). It is in
-    // the runtime's PLUGIN_HOOK_NAMES list and is dispatched on every inbound
-    // message. The dotted form `message.received` is NOT a real hook name --
-    // registering it produces `unknown typed hook "message.received" ignored`.
-    //
-    // `api.on(...)` on this runtime ALWAYS returns `undefined` (registerTypedHook
-    // pushes to registry.typedHooks and returns void), so we must NOT gate
-    // registration on a truthy return; typed hooks are torn down with the plugin.
-    const maybeDispose = api.on("message_received", messageHandler);
-    if (typeof maybeDispose === "function") {
-      runtime.disposers.push(maybeDispose);
-    }
-    api.logger.info("[harness] slack.listener_enabled=true -- autonomous mode, listening on message_received.");
-  } else if (typeof api.registerHook === "function") {
-    // Named hook path (older/alternate SDK shape). `opts.name` is REQUIRED
-    // by the SDK registry. Register ONLY the valid underscore event name.
-    const dispose = api.registerHook(
-      ["message_received"],
-      messageHandler,
-      {
-        name: `${PLUGIN_ID}:slack-message-listener`,
-        description: "Forward inbound Slack messages to the harness channel listener",
-      },
-    );
-    runtime.disposers.push(() => {
-      if (typeof dispose === "function") dispose();
-      else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
-    });
   } else {
-    api.logger.warn("[harness] slack.listener_enabled=true but neither api.on nor api.registerHook present; Slack listener will be idle.");
+    api.logger.info(
+      "[harness] tool-driven mode -- the harness does NOT listen to Slack. " +
+        "Drive it via harness_run / harness_start_session / harness_merge_pr tools.",
+    );
   }
 
   // Retention prune on service start (sync -- pruneRetention is a plain

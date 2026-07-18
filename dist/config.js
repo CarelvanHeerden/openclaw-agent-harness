@@ -53,6 +53,7 @@ const DEFAULTS = {
         subtask_concurrency: 1,
     },
     vercel: {
+        api_key_env: "VERCEL_TOKEN",
         enabled: false,
         credential_service: "",
         project_id: "",
