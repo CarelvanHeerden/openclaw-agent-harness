@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.1.0-beta.31] -- 2026-07-18
+
+### Fixed
+
+- **Lead planner JSON extraction handles double-encoded / file-write-shaped
+  output.** Staging ProjectThanos session `78237f43` failed at
+  `loop.plan_failed` with
+  `[lead] JSON.parse failed: SyntaxError: Unexpected token '\', "\n{\n \"r\"..."`.
+  The lead model emitted its plan as if writing it to a file: a ```json fence
+  whose CONTENT was a JSON-string-ESCAPED payload (`\n{\n \"repo\": ...`). The
+  old `extractJson` grabbed the first fence blindly and returned the escaped
+  text; `JSON.parse` then choked on the leading `\`.
+
+  This is a THIRD, distinct bug from the beta.28 classifier fix and the
+  beta.29/30 restart fixes -- the classifier (`tools: []`) was working; the
+  brief crystallised fine; the run died at the lead-plan gate. (Note: with
+  `tools: []` the lead has no real Write tool, so this was the model
+  *narrating* a file-write in prose, not an actual tool call.)
+
+  Fix: `extractJson` now gathers candidates (all fenced blocks + a balanced
+  brace-scan of the raw text + a JSON-string-unescape pass of each) and
+  returns the FIRST candidate that actually parses. Handles raw JSON, fenced
+  JSON, prose-wrapped JSON, and double-encoded (escaped-string) JSON. Plus a
+  belt-and-braces lead system-prompt clause: "Return the JSON DIRECTLY as your
+  reply; do NOT write it to a file or wrap it in a fence."
+
+### Tests
+
+- 377 -> 381: reproduce the exact `78237f43` escaped-newline payload, the
+  double-encoded fenced case, plain-raw-JSON regression, and
+  first-parseable-candidate preference.
+
 ## [0.1.0-beta.30] -- 2026-07-18
 
 ### Fixed
