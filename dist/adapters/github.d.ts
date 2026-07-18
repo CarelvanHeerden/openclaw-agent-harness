@@ -33,4 +33,38 @@ export declare function verifyRepoAccess(input: {
     scopes?: string;
     reason?: string;
 }>;
+/** beta.34: fetch a PR's head SHA + state (open/closed, merged). */
+export declare function getPullRequest(input: {
+    repoFullName: string;
+    prNumber: number;
+    ghToken: string;
+}): Promise<{
+    headSha: string;
+    state: string;
+    merged: boolean;
+    mergeable: boolean | null;
+    baseBranch: string;
+}>;
+/**
+ * beta.34: combined CI status for a commit SHA. Merges the legacy Statuses
+ * API and the Check Runs API into one verdict: "success" | "failure" |
+ * "pending" | "none" (no checks configured).
+ */
+export declare function getCombinedStatus(input: {
+    repoFullName: string;
+    sha: string;
+    ghToken: string;
+}): Promise<"success" | "failure" | "pending" | "none">;
+/** beta.34: merge a PR (squash by default). Returns the merge commit SHA. */
+export declare function mergePullRequest(input: {
+    repoFullName: string;
+    prNumber: number;
+    ghToken: string;
+    method?: "squash" | "merge" | "rebase";
+    commitTitle?: string;
+}): Promise<{
+    merged: boolean;
+    sha: string;
+    message: string;
+}>;
 //# sourceMappingURL=github.d.ts.map

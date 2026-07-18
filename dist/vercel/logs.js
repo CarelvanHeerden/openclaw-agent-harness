@@ -15,6 +15,67 @@
  */
 const API = "https://api.vercel.com";
 /**
+ * beta.34: verify the Vercel deployment for a specific commit SHA (the merge
+ * commit produced by harness_merge_pr). Polls deployments filtered to the
+ * project, matches on `meta.githubCommitSha`, waits for a terminal state,
+ * and on ERROR pulls the build logs. Returns a compact result for reporting.
+ */
+export async function verifyDeploymentForSha(input) {
+    const start = Date.now();
+    const poll = input.pollIntervalMs ?? 10_000;
+    const qs = new URLSearchParams({ projectId: input.projectId, limit: "20" });
+    if (input.teamId)
+        qs.set("teamId", input.teamId);
+    let lastDep = null;
+    while (Date.now() - start < input.waitSeconds * 1000) {
+        const res = await fetch(`${API}/v6/deployments?${qs}`, {
+            headers: { Authorization: `Bearer ${input.vercelToken}`, "User-Agent": "openclaw-agent-harness/0.1" },
+        });
+        if (res.ok) {
+            const j = (await res.json());
+            const dep = (j.deployments ?? []).find((d) => d.meta?.githubCommitSha === input.sha) ?? null;
+            if (dep) {
+                lastDep = dep;
+                if (dep.state === "READY") {
+                    return { status: "ready", deploymentUrl: dep.url, detail: `Deployment ${dep.uid} is READY at ${dep.url}.` };
+                }
+                if (dep.state === "ERROR" || dep.state === "CANCELED") {
+                    const logs = await fetchDeploymentLogs({ ...input, deploymentId: dep.uid }).catch(() => "");
+                    return {
+                        status: "error",
+                        deploymentUrl: dep.url,
+                        detail: `Deployment ${dep.uid} ended in state ${dep.state}.`,
+                        logsExcerpt: logs.slice(0, 3000),
+                    };
+                }
+            }
+        }
+        else {
+            input.logger.warn("[vercel] deploy-verify list failed", { status: res.status });
+        }
+        await new Promise((r) => setTimeout(r, poll));
+    }
+    if (lastDep) {
+        return { status: "pending", deploymentUrl: lastDep.url, detail: `Deployment ${lastDep.uid} still ${lastDep.state} after ${input.waitSeconds}s.` };
+    }
+    return { status: "unavailable", detail: `No Vercel deployment found for commit ${input.sha.slice(0, 12)} within ${input.waitSeconds}s.` };
+}
+async function fetchDeploymentLogs(input) {
+    const qs = new URLSearchParams({ limit: "100" });
+    if (input.teamId)
+        qs.set("teamId", input.teamId);
+    const res = await fetch(`${API}/v2/deployments/${input.deploymentId}/events?${qs}`, {
+        headers: { Authorization: `Bearer ${input.vercelToken}`, "User-Agent": "openclaw-agent-harness/0.1" },
+    });
+    if (!res.ok)
+        return "";
+    const events = (await res.json());
+    return events
+        .filter((e) => e.text)
+        .map((e) => e.text)
+        .join("\n");
+}
+/**
  * Wait for the latest deployment on `branch` to reach a terminal state.
  * Returns the deployment record or null if the wait window elapses.
  */

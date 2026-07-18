@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.1.0-beta.34] -- 2026-07-18
+
+Completes the ship->review->merge->verify tail of the original design, plus
+git-auth hardening and the removal of the Slack listener. Five changes, kept
+as cohesive units:
+
+### 1. Vercel token vault->env fallback
+
+`config.vercel.api_key_env` (default `VERCEL_TOKEN`). The Vercel token now
+resolves vault-first then env-fallback (mirrors GitHub/Anthropic), so the
+env-only Staging container (no vault) can supply it via env instead of
+losing it. New memoised `resolveVercelToken`; `fetchRuntime` uses it and
+surfaces an explicit "unavailable" runtime when neither source has a token.
+
+### 2. Git-auth hardening
+
+- Persistent, TOKEN-LESS credential helper installed on the bare repo
+  (`credential.https://github.com.helper`) that reads `$OAH_GH_TOKEN` at
+  invocation. Makes EVERY origin op auth automatically (incl. git-spawned
+  promisor blob fetches), removing the per-invocation askpass fragility.
+  Only a reference to an env var is written to config -- the token is still
+  never persisted on disk. askpass stays wired as a second channel.
+- Push-exit-code assertion in `pushBranch`: a cred-less/auth-failed push now
+  raises a CLEAR, greppable auth error (`could not read Username` /
+  `Authentication failed` / ...) instead of surfacing only as a downstream
+  remote-404 verify miss.
+
+### 3. Post-ship merge recommendation
+
+At `loop.shipped` the harness derives a MERGE / DO-NOT-MERGE recommendation
+from the FINAL adversary verdict + findings + whether a clean pass was
+reached (no second model call). Persisted on the session (`pr_number`,
+`merge_recommendation`, `merge_recommendation_reason`) + in the audit event.
+By design a do-not-merge is rare -- it means the loop shipped without a
+clean pass, a blocking finding survived, or (checked at merge) CI is red.
+
+### 4. `harness_merge_pr` tool -- HARD-GATED merge + deploy verify
+
+New tool. Merges the session's PR (squash) ONLY when the recommendation is
+`merge`. If it's `do_not_merge` (or CI is failing at merge time), it
+REFUSES and tells the user to merge from the GitHub UI -- the harness
+cannot be told to override (hard safety gate, no force path). Re-checks CI
+on the PR head right before merging. After a successful merge it verifies
+the Vercel deployment for the merge commit and reports READY/ERROR (with
+build logs on error), persisted to `deploy_status` / `deploy_detail`.
+
+### 5. Slack listener removed -- pure tool-driven engine
+
+The harness no longer subscribes to inbound Slack messages under any config.
+`slack.listener_enabled` is ignored (logged if `true`). The OpenClaw agent
+is the sole operator, driving the harness via tools. This makes the
+privileged surface (PATs, PR merges) reachable only through the agent's tool
+layer (which carries auth/approval context) and structurally eliminates the
+bot-to-bot loop risk. Outbound progress posting to an explicitly-passed
+channel/thread still works.
+
+### Tests
+
+- 387 -> 405: merge-recommendation derivation, github CI-status/merge/get-PR
+  adapters, Vercel deploy-by-SHA verify. Updated beta.29 (worktree-add token
+  arg), sdk-compliance (listener removed), tool-count (12) tests.
+
 ## [0.1.0-beta.33] -- 2026-07-18
 
 ### Fixed -- push/PR are NOT sub-tasks (the breakthrough-run root cause)

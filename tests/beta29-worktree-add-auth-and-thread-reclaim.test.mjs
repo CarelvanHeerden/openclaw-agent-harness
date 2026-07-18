@@ -32,7 +32,9 @@ test("beta.29: worktree add is invoked with the askpass helper (src)", () => {
   const src = readFileSync(resolve(repoRoot, "src/adapters/git-worktree.ts"), "utf8");
   // Find the `worktree`, `add` run call and confirm it passes ask.path
   // (the 3rd arg to run() that wires GIT_ASKPASS).
-  const m = src.match(/run\(\s*\[\s*"-C",\s*bare,\s*"worktree",\s*"add"[\s\S]*?\]\s*,\s*undefined\s*,\s*ask\.path\s*\)/);
+  // beta.34 threads an extra token arg after ask.path for the cred-helper env;
+  // ask.path must still be present as the 3rd arg.
+  const m = src.match(/run\(\s*\[\s*"-C",\s*bare,\s*"worktree",\s*"add"[\s\S]*?\]\s*,\s*undefined\s*,\s*ask\.path\s*(?:,\s*ctx\.ghToken\s*)?\)/);
   assert.ok(
     m,
     "worktree add run() must pass `ask.path` so the promisor blob fetch during checkout is authenticated.",
@@ -41,7 +43,7 @@ test("beta.29: worktree add is invoked with the askpass helper (src)", () => {
 
 test("beta.29: compiled worktree add carries askpass (dist)", { skip: !existsSync(resolve(repoRoot, "dist/adapters/git-worktree.js")) }, () => {
   const src = readFileSync(resolve(repoRoot, "dist/adapters/git-worktree.js"), "utf8");
-  const m = src.match(/"worktree",\s*"add"[\s\S]{0,120}?ask\.path/);
+  const m = src.match(/"worktree",\s*"add"[\s\S]{0,160}?ask\.path/);
   assert.ok(m, "dist must carry ask.path on the worktree add call.");
 });
 

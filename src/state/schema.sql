@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   pr_merged                INTEGER,          -- 0 | 1 | NULL (unknown)
   pr_closed_at             INTEGER,          -- epoch ms; NULL until watcher observes close
   pr_merged_at             INTEGER,          -- epoch ms; NULL if closed without merge
+  -- beta.34: post-ship merge recommendation + deploy verification
+  pr_number                INTEGER,          -- GitHub PR number (for harness_merge_pr)
+  merge_recommendation     TEXT,             -- 'merge' | 'do_not_merge'
+  merge_recommendation_reason TEXT,          -- human-readable reasoning
+  deploy_status            TEXT,             -- 'ready'|'error'|'pending'|'unavailable'|NULL
+  deploy_detail            TEXT,             -- logs excerpt / deployment url / error
   -- Recovery checkpointing
   current_cycle            INTEGER NOT NULL DEFAULT 0,
   last_completed_sub_task  TEXT,

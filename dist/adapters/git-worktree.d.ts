@@ -136,6 +136,21 @@ export declare class GitAdapter {
     pushBranch(worktreePath: string, remote: string, branch: string, ghToken: string): Promise<void>;
     formatPatch(worktreePath: string, base: string, outFile: string): Promise<void>;
     diff(worktreePath: string, base: string): Promise<string>;
+    /**
+     * beta.34: install a persistent credential helper into the bare repo
+     * config (Staging's recommended hardening, option 1). The helper script
+     * contains NO token — it reads `$OAH_GH_TOKEN` from the process env at
+     * invocation time and prints `username=x-access-token` / `password=$token`.
+     * This makes EVERY git op against origin auth automatically (including
+     * sub-processes git spawns internally, e.g. promisor blob fetches during
+     * push, which do NOT inherit GIT_ASKPASS reliably), without persisting the
+     * token on disk. Consistent with the "never persist the token" invariant:
+     * only a reference to an env var is written to config.
+     *
+     * Callers must set `OAH_GH_TOKEN` in the git child env for ops that need
+     * auth (see `run(..., token)`). askpass stays wired as a second channel.
+     */
+    private installCredHelper;
     private run;
 }
 //# sourceMappingURL=git-worktree.d.ts.map

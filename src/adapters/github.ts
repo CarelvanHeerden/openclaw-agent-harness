@@ -88,3 +88,96 @@ export async function verifyRepoAccess(input: { repoFullName: string; ghToken: s
   const scopes = res.headers.get("x-oauth-scopes") ?? undefined;
   return { ok: true, status: res.status, scopes };
 }
+
+const GH_HEADERS = (token: string) => ({
+  Authorization: `Bearer ${token}`,
+  Accept: "application/vnd.github+json",
+  "X-GitHub-Api-Version": "2022-11-28",
+  "User-Agent": "openclaw-agent-harness/0.1",
+});
+
+/** beta.34: fetch a PR's head SHA + state (open/closed, merged). */
+export async function getPullRequest(input: {
+  repoFullName: string;
+  prNumber: number;
+  ghToken: string;
+}): Promise<{ headSha: string; state: string; merged: boolean; mergeable: boolean | null; baseBranch: string }> {
+  const res = await fetch(`https://api.github.com/repos/${input.repoFullName}/pulls/${input.prNumber}`, {
+    headers: GH_HEADERS(input.ghToken),
+  });
+  if (!res.ok) throw new Error(`GitHub get PR #${input.prNumber} failed ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const j = (await res.json()) as {
+    head: { sha: string }; state: string; merged: boolean; mergeable: boolean | null; base: { ref: string };
+  };
+  return { headSha: j.head.sha, state: j.state, merged: j.merged, mergeable: j.mergeable, baseBranch: j.base.ref };
+}
+
+/**
+ * beta.34: combined CI status for a commit SHA. Merges the legacy Statuses
+ * API and the Check Runs API into one verdict: "success" | "failure" |
+ * "pending" | "none" (no checks configured).
+ */
+export async function getCombinedStatus(input: {
+  repoFullName: string;
+  sha: string;
+  ghToken: string;
+}): Promise<"success" | "failure" | "pending" | "none"> {
+  // Legacy combined status.
+  const sRes = await fetch(`https://api.github.com/repos/${input.repoFullName}/commits/${input.sha}/status`, {
+    headers: GH_HEADERS(input.ghToken),
+  });
+  let statusState = "";
+  let statusCount = 0;
+  if (sRes.ok) {
+    const sj = (await sRes.json()) as { state: string; total_count: number };
+    statusState = sj.state; // success | failure | pending | error
+    statusCount = sj.total_count;
+  }
+  // Check runs.
+  const cRes = await fetch(`https://api.github.com/repos/${input.repoFullName}/commits/${input.sha}/check-runs`, {
+    headers: GH_HEADERS(input.ghToken),
+  });
+  let checkConclusions: string[] = [];
+  if (cRes.ok) {
+    const cj = (await cRes.json()) as { check_runs: Array<{ status: string; conclusion: string | null }> };
+    // Any still-running check => pending.
+    if (cj.check_runs.some((r) => r.status !== "completed")) return "pending";
+    checkConclusions = cj.check_runs.map((r) => r.conclusion ?? "");
+  }
+  const anyFailure =
+    statusState === "failure" ||
+    statusState === "error" ||
+    checkConclusions.some((c) => ["failure", "timed_out", "cancelled", "action_required"].includes(c));
+  if (anyFailure) return "failure";
+  // Nothing configured: GitHub reports the combined status `state` as
+  // "pending" with total_count 0 when there are no statuses at all. Treat
+  // that (with no check runs either) as "none", not a real pending.
+  if (statusCount === 0 && checkConclusions.length === 0) return "none";
+  if (statusState === "pending") return "pending";
+  const anySuccess = statusState === "success" || checkConclusions.some((c) => c === "success");
+  if (anySuccess) return "success";
+  return "success";
+}
+
+/** beta.34: merge a PR (squash by default). Returns the merge commit SHA. */
+export async function mergePullRequest(input: {
+  repoFullName: string;
+  prNumber: number;
+  ghToken: string;
+  method?: "squash" | "merge" | "rebase";
+  commitTitle?: string;
+}): Promise<{ merged: boolean; sha: string; message: string }> {
+  const res = await fetch(`https://api.github.com/repos/${input.repoFullName}/pulls/${input.prNumber}/merge`, {
+    method: "PUT",
+    headers: { ...GH_HEADERS(input.ghToken), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      merge_method: input.method ?? "squash",
+      ...(input.commitTitle ? { commit_title: input.commitTitle } : {}),
+    }),
+  });
+  const j = (await res.json().catch(() => ({}))) as { merged?: boolean; sha?: string; message?: string };
+  if (!res.ok) {
+    throw new Error(`GitHub merge PR #${input.prNumber} failed ${res.status}: ${j.message ?? ""}`.slice(0, 400));
+  }
+  return { merged: !!j.merged, sha: j.sha ?? "", message: j.message ?? "" };
+}

@@ -101,14 +101,14 @@ function collectTools() {
   return { api, tools };
 }
 
-test("registration: registers 11 tools",
+test("registration: registers 12 tools",
   { skip: registerHarnessTools === null }, () => {
     const runtime = makeRuntime();
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     assert.deepEqual(
       [...tools.keys()].sort(),
-      ["harness_bootstrap_test_repo", "harness_cancel", "harness_health", "harness_resume", "harness_retention_prune", "harness_run", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
+      ["harness_bootstrap_test_repo", "harness_cancel", "harness_health", "harness_merge_pr", "harness_resume", "harness_retention_prune", "harness_run", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
     );
   });
 

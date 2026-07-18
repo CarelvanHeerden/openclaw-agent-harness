@@ -123,6 +123,14 @@ export interface LoopConfig {
 export interface VercelConfig {
     enabled: boolean;
     credential_service: string;
+    /**
+     * beta.34: env-var fallback for the Vercel token, mirroring the GitHub /
+     * Anthropic pattern. Read only if `credential_service` is unset or the
+     * vault lookup fails/returns empty. Lets vault-less deployments (e.g. the
+     * env-only Staging container, which has no memory-hybrid vault) supply the
+     * token via env instead of losing it. Default: "VERCEL_TOKEN".
+     */
+    api_key_env?: string;
     team_id?: string;
     project_id: string;
     preview_wait_seconds: number;

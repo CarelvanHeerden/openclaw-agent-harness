@@ -17,6 +17,12 @@
  * driver, so `advance()` can be unit-tested standalone.
  */
 import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
+import { deriveMergeRecommendation } from "./merge-recommendation.js";
+/** beta.34: extract the PR number from a GitHub PR URL (.../pull/846). */
+function parsePrNumber(prUrl) {
+    const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
+    return m ? Number(m[1]) : undefined;
+}
 import { inferVerifyContract } from "./verify-contract.js";
 import { verifySubTaskOutput } from "./verify.js";
 export class OrchestratorLoop {
@@ -457,8 +463,20 @@ export class OrchestratorLoop {
         catch (err) {
             return this.finaliseFailed(sessionId, `pr_error: ${String(err)}`, cycle, totalCost);
         }
-        this.deps.state.db.prepare(`UPDATE sessions SET final_pr_url = ?, status = 'done', updated_at = ? WHERE id = ?`).run(prUrl, Date.now(), sessionId);
-        this.deps.state.audit("loop.shipped", { sessionId, prUrl }, sessionId);
+        // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
+        // the final review + whether we reached a clean pass. Persist it + the PR
+        // number for the harness_merge_pr hard gate.
+        const reachedCleanPass = lastReview.verdict === "pass";
+        const rec = deriveMergeRecommendation({
+            review: { verdict: lastReview.verdict, findings: lastReview.findings ?? [] },
+            reachedCleanPass,
+            ciStatus: undefined, // the merge tool re-checks CI at merge time
+        });
+        const prNumber = parsePrNumber(prUrl);
+        this.deps.state.db
+            .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
+            .run(prUrl, prNumber ?? null, rec.recommendation, rec.reason, Date.now(), sessionId);
+        this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: rec.recommendation, reason: rec.reason }, sessionId);
         // beta.16 fix #3 + beta.17 correctness: prune the worktree on
         // `loop.shipped`. Beta.16 emitted the audit event but the underlying
         // release() silently no-op'd because it reconstructed the path from
