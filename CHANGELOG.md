@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.1.0-beta.33] -- 2026-07-18
+
+### Fixed -- push/PR are NOT sub-tasks (the breakthrough-run root cause)
+
+beta.32 was the first run to reach the worker: on ProjectThanos the worker
+made the Gamorning->Good morning change *perfectly* (2 commits, clean diff,
+zero residual), then the run died at a final "Push branch and open PR"
+sub-task (session 534be94a).
+
+**Root cause (architectural):** the lead planner was told `contractScope:
+'remote'` sub-tasks "push to origin, open a PR". But a worker CANNOT push --
+`git push` is bash-guard-blocked and the worker's bash git has no credentials.
+Meanwhile the harness ALREADY pushes the branch and opens the PR itself, in
+its endgame (`pushBranchAndOpenPr`), automatically and unconditionally after
+the adversary review passes, using an authenticated token + askpass. So the
+lead's push/PR sub-task was both redundant AND fatal: it always failed
+verification (worker never pushed -> remote 404) and aborted the run *before*
+the adversary and *before* the harness's own working push ever ran.
+
+**Fix (two guards):**
+
+1. *Lead prompt:* push + PR are removed from the lead's vocabulary. The
+   prompt now says explicitly: DO NOT PLAN PUSH OR PR SUB-TASKS -- the harness
+   does that after review. `contractScope: 'remote'`/`'mixed'` are marked
+   RESERVED / do-not-use; every sub-task must be `'local'`. Plans end at the
+   local commit that produces the change.
+
+2. *Harness sanitiser (belt-and-braces):* `runLeadPlanner` now sanitises any
+   push/PR sub-task the (non-deterministic) lead emits anyway, BEFORE
+   validation: strip all remote verify kinds (`branch_pushed`,
+   `remote_branch_exists`, `file_pushed`, `pr_opened`, `pr_state`,
+   `file_in_pr`, `commit_sha_matches`), force `contractScope: 'local'`, and
+   drop pure push/PR-only sub-tasks when nothing depends on them (otherwise
+   neutralise in place so the topo order is preserved). A stray remote
+   sub-task can no longer kill an otherwise-good plan.
+
+Updated the beta.19 push-atomicity prompt test (its rule is superseded: push
+is no longer a sub-task).
+
+### Tests
+
+- 383 -> 387: sanitiser drop/coerce/last-subtask cases + prompt regression
+  guard.
+
 ## [0.1.0-beta.32] -- 2026-07-18
 
 ### Fixed (from a full critical-path + peripheral code audit)
