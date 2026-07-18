@@ -62,6 +62,10 @@ Routing is hierarchical: `provider → org → person → { token, name, email, 
   `vault` (credential-vault service name).
 - **No silent fallback:** if a requester is not listed under an org that IS
   configured, the harness hard-fails rather than borrowing another user's token.
+- **Precedence:** the hierarchy is resolved FIRST. When
+  `pat_routing.<provider>.<org>` exists, it wins and short-circuits the legacy
+  `overrides` / `default_service_pattern` path entirely. So a hierarchical
+  entry always beats any leftover legacy `overrides` for the same provider+org.
 
 ## Collect these before doing anything
 
@@ -118,9 +122,22 @@ Use when there's no vault but you can edit config.
    `{ "env": "VAR_NAME" }` and tell the operator to set that env var, OR use
    `{ "value": "..." }` inline if the user explicitly accepts the risk of a
    secret in the config file.
+   - **Use a direct file `edit` on `openclaw.json`, NOT `gateway config.patch`.**
+     The hierarchical token fields
+     (`pat_routing.<provider>.<org>.<person>.token.value|env|vault`, `.email`,
+     `.name`, `.slack_user_id`) are protected paths that `config.patch`
+     refuses. Read the file, splice the person node in while preserving the
+     rest, and write it back in one edit.
 3. Trigger a config reload (gateway restart/reload). Verify the reload was
    accepted (watch for `config reload skipped (invalid config)`).
 4. Confirm and ask for message redaction.
+5. **Clean up stale legacy entries (optional but recommended).** If a legacy
+   `pat_routing.overrides[<slackId>][<org or org/repo>]` or
+   `commit_identity[<slackId>]` entry exists for the SAME repo/org you just
+   added hierarchically, it is now dead weight: the hierarchy is resolved
+   FIRST and short-circuits the legacy path, so the old override is never
+   consulted for that provider+org. Leaving it is harmless but confusing;
+   removing it avoids "which token wins?" questions later.
 
 ### Tier 3 — Emit copy-paste JSON (no vault, no write access)
 
