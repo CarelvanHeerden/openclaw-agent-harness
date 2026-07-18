@@ -52,8 +52,24 @@ export class OrchestratorLoop {
                     return { nextStatus: "done", reason: "adversary_pass" };
                 if (input.verdict === "block")
                     return { nextStatus: "failed", reason: "adversary_block" };
-                if (input.cyclesRan >= input.maxCycles - 1)
-                    return { nextStatus: "failed", reason: "max_cycles_reached" };
+                if (input.cyclesRan >= input.maxCycles - 1) {
+                    // beta.35 fix #3: cycles exhausted with a `revise` (NOT `block`)
+                    // verdict. `revise` means "improvable", not "broken" -- and on a
+                    // repo with no in-loop preview-deploy the adversary structurally
+                    // cannot reach `pass` on a UI change (it will always want runtime
+                    // evidence it can't get). Rather than throwing away a correct fix
+                    // (the old `max_cycles_reached` -> failed path), SHIP the PR with
+                    // an honest "shipped without a clean pass" annotation in the body
+                    // (renderPrBody #3). The post-ship merge recommendation is derived
+                    // from `reachedCleanPass=false`, so it comes out `do_not_merge`
+                    // (beta.34 hard gate): the PR exists, but a HUMAN must approve the
+                    // merge (via harness_merge_pr, which will refuse and point to the
+                    // GitHub UI, or via the UI directly) -- which is exactly the
+                    // "you review, then tell me to merge and verify the deploy" flow.
+                    // A `block` verdict never reaches here (returned above): a genuine
+                    // blocking defect still hard-fails and ships nothing.
+                    return { nextStatus: "done", reason: "shipped_max_cycles_revise" };
+                }
                 return { nextStatus: "executing", reason: "adversary_revise" };
             case "done":
             case "failed":
@@ -238,6 +254,49 @@ export class OrchestratorLoop {
                         this.emitObserveCompleted(sessionId, st, result, contract);
                     }
                     if (!verification.ok) {
+                        // ---- beta.35 fix #1 + #2: legal no-op on a REVISE cycle ----
+                        // On a revise cycle (cycle > 1) the plan's mutate sub-task is
+                        // re-run against a base = the worker's current HEAD (the commit it
+                        // already produced on cycle 1). If the worker correctly concludes
+                        // there is nothing to change (the code already satisfies the
+                        // criteria; the adversary's revise findings were about runtime
+                        // evidence / PR-description text / accepted nits), it ends with
+                        // `end_turn` and NO new commit. The old code then failed the
+                        // `commit_made` contract (HEAD == base) and killed the whole
+                        // session -- even though the fix was already correct.
+                        //
+                        // A revise cycle that makes no change is a VALID outcome. So: if
+                        // this is a revise cycle, the worker completed cleanly, and the
+                        // ONLY failing checks are the "no new commit / no new file change"
+                        // kinds (i.e. the effective task-mode is 'observe' for this pass,
+                        // #2), downgrade the sub-task to `completed_no_change` and let the
+                        // loop proceed to ship. Any OTHER kind of failure (a real
+                        // confabulation: claimed a push/PR that didn't happen, wrote a
+                        // file that isn't there) still hard-fails -- we do NOT weaken the
+                        // trust-but-verify guarantee.
+                        const NO_CHANGE_KINDS = new Set(["commit_made", "file_committed", "file_written"]);
+                        const failedResults = verification.results.filter((x) => !x.passed);
+                        const onlyNoChangeFailures = failedResults.length > 0 &&
+                            failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
+                        const workerMadeNoCommit = !result.commitSha; // worker itself reports no commit
+                        if (cycle > 1 && onlyNoChangeFailures && workerMadeNoCommit) {
+                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`).run(`revise no-op: worker made no change (${verification.summary}); code already satisfies criteria`, Date.now(), subTaskId);
+                            this.deps.state.audit("loop.subtask_revise_no_change", {
+                                sessionId,
+                                seq: st.seq,
+                                cycle,
+                                taskMode: st.taskMode ?? "unspecified",
+                                effectiveTaskMode: "observe",
+                                baseRef: subTaskBaseSha ? subTaskBaseSha.slice(0, 12) : "(unknown)",
+                                failedKinds: failedResults.map((x) => x.kind),
+                                summary: verification.summary,
+                            }, sessionId);
+                            this.deps.logger.info("[loop] revise cycle no-op accepted (worker had nothing to change)", {
+                                sessionId, seq: st.seq, cycle,
+                            });
+                            done.add(st.seq);
+                            return;
+                        }
                         // Emit per-kind failure events so failures are greppable and
                         // operators can debug from audit alone.
                         // beta.9: new specific events + backward-compat old event names

@@ -1918,14 +1918,44 @@ function registerOkfAutoForwardHooks(
 
 function renderPrBody(
   brief: { title: string; motivation: string; acceptanceCriteria: string[] },
-  review: { verdict: string; findings: unknown[]; summary: string },
+  review: { verdict: string; findings: any[]; summary: string },
 ): string {
+  // beta.35 fix #3: when the run ships WITHOUT a clean adversary pass
+  // (verdict !== 'pass'), the reviewer's outstanding findings -- typically
+  // "no runtime evidence" ones the loop structurally cannot satisfy (no
+  // in-loop preview deploy) -- become an explicit, honest PR annotation
+  // instead of silently killing the run. The runtime-dimension findings in
+  // particular are exactly what the post-merge Vercel deploy verification
+  // (harness_merge_pr) checks for real, so we call that out: the loop
+  // couldn't render it, but the merge step will verify the actual deploy.
+  const shippedWithoutCleanPass = review.verdict !== "pass";
+  const runtimeFindings = (review.findings ?? []).filter(
+    (f: any) =>
+      f?.dimension === "runtime" ||
+      /runtime|preview|deploy|render/i.test(String(f?.title ?? "") + " " + String(f?.detail ?? "")),
+  );
+  const reviseAnnotation = shippedWithoutCleanPass
+    ? [
+        ``,
+        `## ⚠\ufe0f Shipped without a clean adversary pass (verdict: ${review.verdict})`,
+        `The adversary did not sign off with \`pass\`. The outstanding findings below were judged non-blocking for merge purposes, ` +
+          `but they are NOT resolved in-loop and must be verified before/at merge.`,
+        runtimeFindings.length
+          ? `\n**Runtime not verified in-loop (${runtimeFindings.length} finding${runtimeFindings.length === 1 ? "" : "s"}):** the harness has no in-loop preview-deploy pipeline, so it could not render/exercise this change. ` +
+            `The post-merge Vercel deploy verification (\`harness_merge_pr\`) will verify the real deployment for the merge commit (READY/ERROR + build logs).`
+          : ``,
+        ...runtimeFindings.map(
+          (f: any) => `- **${(f.severity ?? "info").toUpperCase()}** [${f.dimension}] ${f.title}`,
+        ),
+      ]
+    : [];
   return [
     `## Motivation`,
     brief.motivation,
     ``,
     `## Acceptance criteria`,
     ...brief.acceptanceCriteria.map((c) => `- [ ] ${c}`),
+    ...reviseAnnotation,
     ``,
     `## Adversarial review`,
     `Verdict: **${review.verdict}**`,
