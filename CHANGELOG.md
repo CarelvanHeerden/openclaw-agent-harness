@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.1.0-beta.29] -- 2026-07-18
+
+### Fixed
+
+- **`git worktree add` promisor-fetch auth failure.** The bare clone uses
+  `--filter=blob:none` (partial clone), so checking out files during
+  `worktree add` triggers a lazy promisor fetch back to origin. After the
+  clone we `remote set-url` to the token-less URL, and `worktree add` ran with
+  NO askpass helper -> git tried to prompt and failed:
+  `fatal: could not read Username for 'https://github.com'` /
+  `fatal: could not fetch <sha> from promisor remote` (Staging ProjectThanos
+  session `781a9532`). Fix: thread the askpass helper through the
+  `worktree add` call so the blob fetch is authenticated. The initial clone
+  was unaffected (it already used both the token-embedded URL and askpass).
+
+- **A failed session no longer permanently locks its Slack thread.** The
+  UNIQUE `(slack_channel, slack_thread)` index made a thread a singleton, so a
+  terminal (`failed`/`aborted`/`done`) session's row kept blocking any retry
+  in the same thread with `duplicateThread` (Staging had to open a fresh
+  thread to retry). Fix: `startSessionRow` now frees the thread when the only
+  prior session(s) on it are terminal (their worktrees/PRs are already cleaned
+  up), and emits a `tool.run.thread_reclaimed` audit event. A NON-terminal
+  (active) session still blocks with an explicit "already active" reason. The
+  terminal set (`done`/`failed`/`aborted`) matches the orchestrator loop's.
+
+### Tests
+
+- 370 -> 374: askpass on `worktree add` (src + dist), thread-reclaim query +
+  terminal-set match + active-session block + audit event.
+
 ## [0.1.0-beta.28] -- 2026-07-18
 
 ### Fixed
