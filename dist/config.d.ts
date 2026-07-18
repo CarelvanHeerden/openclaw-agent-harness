@@ -56,6 +56,12 @@ export interface BudgetsConfig {
     session_default_usd: number;
     session_hard_ceiling_usd: number;
     daily_warn_usd: number;
+    /**
+     * beta.36: hard daily spend ceiling (USD). Used as the basis for the
+     * post-merge deploy-repair budget (`vercel.deploy_repair.budget_ratio` of
+     * this). Must be >= daily_warn_usd. Default 200.
+     */
+    daily_max_usd: number;
     monthly_warn_ratio: number;
 }
 export interface ReposConfig {
@@ -134,6 +140,28 @@ export interface VercelConfig {
     team_id?: string;
     project_id: string;
     preview_wait_seconds: number;
+    /**
+     * beta.36: post-merge deploy-repair loop. When Vercel is configured and a
+     * merged PR's deployment comes back ERROR, the harness auto-attempts fixes
+     * (up to `max_attempts` new PRs) driven by the Vercel build logs. If it
+     * still fails, it reverts ALL merges (main PR + every repair PR) and leaves
+     * the last attempt as an open PR for human review.
+     */
+    deploy_repair?: DeployRepairConfig;
+}
+export interface DeployRepairConfig {
+    /** Master switch. Default true when a vercel block is present. */
+    enabled: boolean;
+    /** Max repair PRs before giving up and reverting. Default 3. */
+    max_attempts: number;
+    /**
+     * Repair budget as a fraction of `budgets.daily_max_usd`. The whole repair
+     * loop (all attempts) shares this pool; if exhausted mid-loop, the harness
+     * reverts to a working `main` and pauses for the user's go-ahead. Default
+     * 0.25 (25% of daily max). User-overridable per invocation via the
+     * `harness_merge_pr` `repairBudgetUsd` param.
+     */
+    budget_ratio: number;
 }
 export interface StorageConfig {
     state_db_path: string;

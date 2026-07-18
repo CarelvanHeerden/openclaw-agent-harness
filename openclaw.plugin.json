@@ -107,6 +107,12 @@
             "type": "number",
             "minimum": 0
           },
+          "daily_max_usd": {
+            "type": "number",
+            "minimum": 0,
+            "default": 200,
+            "description": "Hard daily spend ceiling (USD); basis for the deploy-repair budget. Must be >= daily_warn_usd."
+          },
           "monthly_warn_ratio": {
             "type": "number",
             "minimum": 0,
@@ -235,6 +241,16 @@
             "minimum": 30,
             "maximum": 3600,
             "default": 300
+          },
+          "deploy_repair": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "beta.36: post-merge deploy-repair loop. On a merged PR whose Vercel deploy ERRORs, auto-attempt fixes (up to max_attempts new PRs) from the build logs; if still failing, revert all merges and leave the last attempt open for review.",
+            "properties": {
+              "enabled": { "type": "boolean", "default": true },
+              "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
+              "budget_ratio": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.25, "description": "Repair budget as a fraction of budgets.daily_max_usd, shared across all attempts." }
+            }
           }
         }
       },

@@ -1,0 +1,167 @@
+/**
+ * beta.36: post-merge Vercel deploy-repair state machine.
+ *
+ * When a PR is merged to `main` on a Vercel-configured project, merging is
+ * what triggers the production deployment. The deployment is then the runtime
+ * arbiter the in-loop adversary never had (no in-loop preview deploy). So:
+ *
+ *   merge -> verify deploy for merge SHA
+ *     READY  -> done (success)
+ *     ERROR  -> repair loop:
+ *                 for attempt in 1..max_attempts:
+ *                   build a repair brief from the Vercel build logs
+ *                   run the FULL harness pipeline (crystallise->plan->work->
+ *                     review->ship) off the now-broken main, in the SAME
+ *                     session (deploy_repair_attempt counter)
+ *                   merge the repair PR
+ *                   re-verify the deploy for the new merge SHA
+ *                     READY -> done (repaired)
+ *                     ERROR -> next attempt
+ *                 all attempts failed OR repair budget exhausted:
+ *                   REVERT every merge (original PR + all repair PRs) so main
+ *                     is healthy again (direct push, or auto-merged revert PR
+ *                     when main is branch-protected)
+ *                   leave the last repair attempt as an OPEN PR for human
+ *                     review, post a loud error explaining the whole chain
+ *
+ * The whole repair loop shares ONE budget pool =
+ *   budgets.daily_max_usd * vercel.deploy_repair.budget_ratio
+ * (user-overridable per invocation). If it's exhausted mid-loop we STOP,
+ * revert to a working main, and pause for the user's go-ahead rather than
+ * leaving main broken.
+ *
+ * This module is deps-injected so it stays unit-testable without a live
+ * gateway. The runtime (index.ts) satisfies `DeployRepairDeps`.
+ */
+/**
+ * Drive the post-merge deploy-repair state machine. Pure control flow; all
+ * I/O is via `deps`.
+ */
+export async function runDeployRepair(deps, input) {
+    const { sessionId, repoFullName, originalMergeSha } = input;
+    // Merge SHAs we may have to revert, newest-first as we go. Original PR is
+    // the OLDEST, so it goes LAST in the revert list (we unshift newer ones).
+    const mergedShas = [originalMergeSha];
+    let totalCost = 0;
+    let lastRepairPrUrl;
+    let lastRepairPrNumber;
+    deps.audit("deploy.repair_started", { sessionId, originalMergeSha, maxAttempts: input.maxAttempts, repairBudgetUsd: input.repairBudgetUsd, error: input.originalDeploy.detail }, sessionId);
+    let lastDeploy = input.originalDeploy;
+    for (let attempt = 1; attempt <= input.maxAttempts; attempt++) {
+        const budgetRemaining = input.repairBudgetUsd - totalCost;
+        if (budgetRemaining <= 0) {
+            deps.logger.warn("[deploy-repair] repair budget exhausted before attempt", { sessionId, attempt, totalCost });
+            return finaliseRevert(deps, input, mergedShas, totalCost, lastRepairPrUrl, "budget_paused", attempt - 1);
+        }
+        deps.audit("deploy.repair_attempt", { sessionId, attempt, budgetRemaining, deployError: lastDeploy.detail }, sessionId);
+        deps.persist(sessionId, { deploy_repair_attempt: attempt });
+        let repair;
+        try {
+            repair = await deps.runRepairAttempt({ sessionId, repoFullName, attempt, deploy: lastDeploy, budgetRemaining });
+        }
+        catch (err) {
+            deps.logger.error?.("[deploy-repair] repair attempt threw", { sessionId, attempt, err: String(err) });
+            repair = { shipped: false, costUsd: 0, reason: `repair attempt threw: ${String(err)}` };
+        }
+        totalCost += repair.costUsd;
+        if (!repair.shipped || !repair.mergeSha) {
+            // The repair pipeline itself failed to produce a merged fix. Record the
+            // (possibly open) PR for the human handoff and stop attempting: if the
+            // harness couldn't even ship a fix, more attempts won't help.
+            if (repair.prUrl) {
+                lastRepairPrUrl = repair.prUrl;
+                lastRepairPrNumber = repair.prNumber;
+            }
+            deps.audit("deploy.repair_attempt_failed", { sessionId, attempt, reason: repair.reason ?? "did not ship a merged fix", prUrl: repair.prUrl }, sessionId);
+            return finaliseRevert(deps, input, mergedShas, totalCost, lastRepairPrUrl, "reverted", attempt);
+        }
+        // A repair PR was merged; it's now part of what we'd have to revert.
+        mergedShas.unshift(repair.mergeSha);
+        lastRepairPrUrl = repair.prUrl;
+        lastRepairPrNumber = repair.prNumber;
+        // Re-verify the deploy for the new merge SHA.
+        let dv;
+        try {
+            dv = await deps.verifyDeploy({ repoFullName, sha: repair.mergeSha });
+        }
+        catch (err) {
+            dv = { status: "error", detail: `deploy verify threw: ${String(err)}` };
+        }
+        lastDeploy = dv;
+        deps.audit("deploy.repair_reverify", { sessionId, attempt, mergeSha: repair.mergeSha, status: dv.status }, sessionId);
+        if (dv.status === "ready") {
+            deps.audit("deploy.repaired", { sessionId, attempts: attempt, mergeSha: repair.mergeSha, deploymentUrl: dv.deploymentUrl, totalCostUsd: totalCost }, sessionId);
+            deps.persist(sessionId, { deploy_status: "ready", deploy_detail: `repaired after ${attempt} attempt(s): ${dv.detail}`.slice(0, 5000), deploy_repair_attempt: attempt });
+            return {
+                outcome: "repaired",
+                attempts: attempt,
+                totalCostUsd: totalCost,
+                finalDeploy: dv,
+                message: `Deploy repaired after ${attempt} attempt(s). Now READY (${dv.deploymentUrl ?? "url n/a"}). Repair spend $${totalCost.toFixed(2)}.`,
+            };
+        }
+        // pending/unavailable/error -> treat as not-yet-healthy and continue,
+        // unless we're out of attempts (loop guard handles that).
+        void lastRepairPrNumber;
+    }
+    // Exhausted all attempts without a healthy deploy.
+    deps.audit("deploy.repair_exhausted", { sessionId, attempts: input.maxAttempts, totalCostUsd: totalCost }, sessionId);
+    return finaliseRevert(deps, input, mergedShas, totalCost, lastRepairPrUrl, "reverted", input.maxAttempts);
+}
+/**
+ * Revert all merges to restore a healthy main, leave the last repair attempt
+ * as an open PR for human review, and build the loud handoff message.
+ */
+async function finaliseRevert(deps, input, mergedShas, totalCost, reviewPrUrl, outcome, attempts) {
+    const { sessionId, repoFullName } = input;
+    let revert;
+    try {
+        revert = await deps.revertMerges({ sessionId, repoFullName, shas: mergedShas });
+    }
+    catch (err) {
+        deps.logger.error?.("[deploy-repair] revert FAILED", { sessionId, err: String(err) });
+        deps.audit("deploy.repair_revert_failed", { sessionId, shas: mergedShas, err: String(err) }, sessionId);
+        deps.persist(sessionId, {
+            deploy_status: "error",
+            deploy_detail: `DEPLOY REPAIR FAILED AND REVERT FAILED. main may be BROKEN. Reverting SHAs ${mergedShas.join(", ")} errored: ${String(err)}`.slice(0, 5000),
+            deploy_repair_attempt: attempts,
+        });
+        return {
+            outcome: "revert_failed",
+            attempts,
+            totalCostUsd: totalCost,
+            reviewPrUrl,
+            message: `\u{1f6a8} DEPLOY REPAIR FAILED and the automatic REVERT ALSO FAILED. ` +
+                `main may be in a BROKEN state \u2014 manual intervention required. ` +
+                `Merges that need reverting (newest-first): ${mergedShas.map((s) => s.slice(0, 12)).join(", ")}. ` +
+                `Error: ${String(err).slice(0, 300)}`,
+        };
+    }
+    deps.audit(outcome === "budget_paused" ? "deploy.repair_budget_paused" : "deploy.repair_reverted", { sessionId, revertedShas: mergedShas, pushedToMain: revert.pushedToMain, revertPrUrl: revert.revertPrUrl, reviewPrUrl, attempts, totalCostUsd: totalCost }, sessionId);
+    deps.persist(sessionId, {
+        deploy_status: outcome === "budget_paused" ? "repair_budget_paused" : "reverted",
+        deploy_detail: `Deploy could not be repaired in ${attempts} attempt(s)` +
+            (outcome === "budget_paused" ? " (repair budget exhausted)" : "") +
+            `. Reverted ${mergedShas.length} merge(s) to restore main` +
+            (revert.pushedToMain ? " (direct push)" : ` (via revert PR ${revert.revertPrUrl ?? "n/a"})`) +
+            `. Last attempt left open for review: ${reviewPrUrl ?? "n/a"}.`,
+        deploy_repair_attempt: attempts,
+    });
+    const budgetNote = outcome === "budget_paused"
+        ? `The repair budget ($${input.repairBudgetUsd.toFixed(2)}) was exhausted after ${attempts} attempt(s). ` +
+            `main has been reverted to a WORKING state; the repair is PAUSED. Reply to authorise more budget to continue.`
+        : `The deploy could not be fixed in ${attempts} attempt(s). main has been reverted to a WORKING state.`;
+    return {
+        outcome,
+        attempts,
+        totalCostUsd: totalCost,
+        reviewPrUrl,
+        revertPrUrl: revert.revertPrUrl,
+        message: `\u26a0\ufe0f ${budgetNote} ` +
+            `Reverted ${mergedShas.length} merge(s)` +
+            (revert.pushedToMain ? " straight to main." : ` via an auto-merged revert PR (${revert.revertPrUrl ?? "n/a"}).`) +
+            (reviewPrUrl ? ` The latest fix attempt is left OPEN for human review: ${reviewPrUrl}` : ` No open fix PR remains.`) +
+            ` Repair spend $${totalCost.toFixed(2)}.`,
+    };
+}
+//# sourceMappingURL=deploy-repair.js.map
