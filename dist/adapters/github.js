@@ -7,7 +7,7 @@
  */
 export async function createPullRequest(input) {
     const url = `https://api.github.com/repos/${input.repoFullName}/pulls`;
-    const res = await fetch(url, {
+    const post = async (draft) => fetch(url, {
         method: "POST",
         headers: {
             Authorization: `Bearer ${input.ghToken}`,
@@ -21,9 +21,21 @@ export async function createPullRequest(input) {
             body: input.body,
             head: input.head,
             base: input.base,
-            draft: !!input.draft,
+            draft,
         }),
     });
+    let res = await post(!!input.draft);
+    // beta.32: draft PRs are rejected with HTTP 422 on repos that don't
+    // support them (private repos on free plans, certain repo types). Rather
+    // than kill the run at the final step, retry as a non-draft PR. The
+    // verdict warning is already embedded in the PR body, so a human still
+    // sees the review outcome.
+    if (!res.ok && res.status === 422 && input.draft) {
+        const peek = await res.clone().text().catch(() => "");
+        if (/draft/i.test(peek)) {
+            res = await post(false);
+        }
+    }
     if (!res.ok) {
         const text = await res.text();
         throw new Error(`GitHub PR create failed ${res.status}: ${text.slice(0, 400)}`);
