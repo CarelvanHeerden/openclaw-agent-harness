@@ -61,7 +61,8 @@
         "can_create": { "type": "boolean", "default": false },
         "create_org": { "type": "string" },
         "create_visibility": { "type": "string", "enum": ["private", "public"] },
-        "default_base_branch": { "type": "string", "default": "main" }
+        "default_base_branch": { "type": "string", "default": "main" },
+        "draft_pr_on_nonpass": { "type": "boolean", "default": false }
       }
     },
     "logging": {

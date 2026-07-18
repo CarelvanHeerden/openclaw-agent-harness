@@ -96,7 +96,14 @@ const NEGATION_CUE_RE = /\b(do(es)? not|don't|doesn't|didn't|didn't|shouldn't|sh
  * verbs. If a sub-task says "push branch AND verify remote SHA", the push
  * clause is authoritative and both kinds are inferred as before.
  */
-const ABSENCE_ASSERTION_RE = /\b(no (push|pr|pull request|merge request|mr|remote|remote tracking|remote-tracking|network mutation)|(did|does|was|is) not (push|exist|created|on origin|created|pushed)|(no remote branch|branch (is )?only local|not on origin|absent from origin|read.?only)|(git branch -r|refs\/remotes\/) [^.\n]*(empty|no output|clean|no remote))\b/i;
+// beta.32: removed the bare `read.?only` alternative. It matched "read-only"
+// ANYWHERE in the concatenated title/intent/successCriteria and globally
+// suppressed the entire push+PR contract for any task that merely mentioned
+// the phrase in passing. Observation-only scope is now expressed explicitly
+// via `taskMode`/`contractScope` (beta.14/15), so this loose heuristic is
+// both redundant and a false-negative footgun. The remaining terms all
+// require actual absence phrasing ("no push", "not on origin", etc.).
+const ABSENCE_ASSERTION_RE = /\b(no (push|pr|pull request|merge request|mr|remote|remote tracking|remote-tracking|network mutation)|(did|does|was|is) not (push|exist|created|on origin|created|pushed)|(no remote branch|branch (is )?only local|not on origin|absent from origin)|(git branch -r|refs\/remotes\/) [^.\n]*(empty|no output|clean|no remote))\b/i;
 
 /** True when text asserts the *absence* of a remote artifact (branch, PR, push). */
 function assertsAbsence(text: string): boolean {

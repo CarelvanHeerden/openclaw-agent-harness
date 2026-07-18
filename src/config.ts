@@ -69,6 +69,15 @@ export interface ReposConfig {
   create_org: string;
   create_visibility: "private" | "public";
   default_base_branch: string;    // e.g. "main"
+  /**
+   * beta.32: when the adversary verdict is not a clean "pass", open the PR
+   * as a GitHub *draft*. Default FALSE. Draft PRs are rejected with HTTP 422
+   * on repos that don't support them (private repos on free plans, some repo
+   * types), which would kill the run at the very last step. Even when true,
+   * the live path retries as a non-draft PR on a 422 rather than failing.
+   * The verdict warning always goes in the PR body regardless of draft state.
+   */
+  draft_pr_on_nonpass?: boolean;
 }
 
 export interface ModelsConfig {
@@ -269,6 +278,7 @@ const DEFAULTS: HarnessConfig = {
     create_org: "",
     create_visibility: "private",
     default_base_branch: "main",
+    draft_pr_on_nonpass: false,
   },
   models: {
     lead: "claude-fable-5",
@@ -303,7 +313,22 @@ const DEFAULTS: HarnessConfig = {
   },
   safety: {
     worker_permission_mode: "acceptEdits",
-    bash_whitelist: ["git", "pnpm", "npm", "node", "ls", "cat", "grep", "head", "tail", "wc", "jq", "sed", "awk", "find", "which", "echo", "printf", "test"],
+    // beta.32: widened so a worker can actually build/test/inspect to
+    // self-verify a change. The old list lacked tsc/make/python/pytest/diff
+    // etc., so a worker that ran a build or test after editing hit a hard
+    // reject. Deliberately EXCLUDES file-mutating shell commands
+    // (cp/mv/ln/tee/mkdir/touch): file writes must go through the SDK
+    // Write/Edit tools, which enforce `path_denylist` (bash args are NOT
+    // path-denylist-checked, so allowing `cp x .env` here would bypass it).
+    // bash_denylist_tokens below remain the hard safety guard.
+    bash_whitelist: [
+      "git", "pnpm", "npm", "npx", "yarn", "node", "tsc", "tsx", "deno", "bun",
+      "python", "python3", "pip", "pip3", "pytest", "go", "cargo", "make", "just",
+      "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
+      "find", "which", "echo", "printf", "test", "true", "false", "pwd",
+      "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
+      "realpath", "xargs", "comm",
+    ],
     bash_denylist_tokens: ["sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill"],
     path_denylist: [".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519"],
     allow_git_push: false,

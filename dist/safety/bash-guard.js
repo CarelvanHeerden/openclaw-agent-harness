@@ -38,7 +38,18 @@ const DENYLIST_TOKEN_DEFAULTS = [
 ];
 export function defaultGuardConfig() {
     return {
-        whitelist: ["git", "pnpm", "npm", "node", "ls", "cat", "grep", "head", "tail", "wc", "jq", "sed", "awk", "find", "which", "echo", "printf", "test"],
+        // beta.32: keep in sync with config.ts safety.bash_whitelist default.
+        // Production uses the config value; this is the standalone fallback.
+        // Excludes file-mutating shell commands (writes go through SDK Write/Edit
+        // which enforce path_denylist).
+        whitelist: [
+            "git", "pnpm", "npm", "npx", "yarn", "node", "tsc", "tsx", "deno", "bun",
+            "python", "python3", "pip", "pip3", "pytest", "go", "cargo", "make", "just",
+            "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
+            "find", "which", "echo", "printf", "test", "true", "false", "pwd",
+            "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
+            "realpath", "xargs", "comm",
+        ],
         denylistTokens: DENYLIST_TOKEN_DEFAULTS,
         allowGitPush: false,
         allowNetworkCommands: false,

@@ -46,3 +46,25 @@ test("bash-guard: contract cases (require build)", { skip: guardCommand === null
     }
   }
 });
+
+// beta.32: whitelist widened so a worker can build/test/inspect to self-verify
+// a change. File-mutating shell commands stay OUT (writes must go through the
+// SDK Write/Edit tools which enforce path_denylist).
+test("bash-guard: beta.32 widened whitelist allows build/test/inspect commands",
+  { skip: guardCommand === null }, () => {
+    for (const cmd of ["tsc -p tsconfig.json", "npm test", "pytest -q", "make build", "diff a.txt b.txt", "node --test", "npx tsc", "go build ./..."]) {
+      const res = guardCommand(cmd);
+      assert.equal(res.allowed, true, `expected allowed: "${cmd}" got ${JSON.stringify(res)}`);
+    }
+  });
+
+test("bash-guard: beta.32 still rejects file-mutating shell commands (path_denylist bypass guard)",
+  { skip: guardCommand === null }, () => {
+    // cp/mv/ln/tee/mkdir/touch are NOT whitelisted — a worker must use the SDK
+    // Write/Edit tools for file writes (those enforce path_denylist; bash args
+    // are not path-checked).
+    for (const cmd of ["cp secret .env", "mv a b", "ln -s x y", "tee /etc/passwd", "mkdir foo", "touch bar"]) {
+      const res = guardCommand(cmd);
+      assert.equal(res.allowed, false, `expected rejected: "${cmd}" got ${JSON.stringify(res)}`);
+    }
+  });

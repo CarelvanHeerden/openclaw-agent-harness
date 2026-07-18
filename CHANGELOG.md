@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.1.0-beta.32] -- 2026-07-18
+
+### Fixed (from a full critical-path + peripheral code audit)
+
+After 31 iterations the harness had never changed a line of code end-to-end
+because every run died BEFORE the worker (classifier, then lead-plan). With
+those gates fixed (beta.28/31), a code audit found DOWNSTREAM landmines that
+would have killed the first successful run at later stages:
+
+- **PR opened as draft on any non-`pass` verdict -> HTTP 422 on repos that
+  don't support drafts (private/free), killing the run at the final step.**
+  Now defaults to NON-draft (`repos.draft_pr_on_nonpass`, default false), and
+  `createPullRequest` retries non-draft on a draft-related 422. The verdict
+  warning stays in the PR body regardless. (The dead, unused
+  `src/adapters/github-pr.ts` — which had the same bug — was removed; the live
+  path is `createPullRequest` in `github.ts`.)
+
+- **bash-guard whitelist too narrow for a worker to build/test/inspect.** The
+  old list lacked `tsc/tsx/make/python/pytest/go/cargo/diff/sort/...`, so a
+  worker running a build or test to self-verify hit a hard reject. Widened to
+  common build/test/inspect commands. Deliberately still EXCLUDES file-mutating
+  shell commands (`cp/mv/ln/tee/mkdir/touch`) — file writes must go through the
+  SDK Write/Edit tools, which enforce `path_denylist` (bash args are not
+  path-checked, so allowing `cp x .env` would bypass it).
+
+- **`verify-contract` absence heuristic globally suppressed the push+PR
+  contract for any task mentioning "read-only" in passing.** Removed the bare
+  `read.?only` alternative from `ABSENCE_ASSERTION_RE`; observation-only scope
+  is expressed explicitly via `taskMode`/`contractScope` (beta.14/15). The
+  remaining terms all require real absence phrasing.
+
+### Audit notes (verified, NOT bugs)
+
+- verify.ts remote probes use `ctx.defaultBranch`, but that value is seeded
+  from `plan.branch` (the `harness/...` branch) at both call sites — not the
+  repo default branch. Remote verification targets the correct branch.
+- pat-router's `github-{owner}` default service misses the vault on env-only
+  instances (e.g. Staging) but cleanly falls back to `GH_TOKEN`. Not fatal
+  there.
+
+### Tests
+
+- 381 -> 383: live `createPullRequest` draft/422-retry behaviour, widened
+  bash-guard whitelist + file-mutator rejection. Removed dead github-pr tests.
+
 ## [0.1.0-beta.31] -- 2026-07-18
 
 ### Fixed
