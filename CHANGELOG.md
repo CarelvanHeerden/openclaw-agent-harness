@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.1.0-beta.30] -- 2026-07-18
+
+### Fixed
+
+- **Restart no longer silently strands an in-flight session in
+  agent-orchestrated mode.** When the harness process restarts mid-run,
+  session recovery marked a fresh in-flight session `resumable` and posted a
+  Slack "React :arrows_counterclockwise: to resume" note. But in the default
+  agent-orchestrated mode (`slack.listener_enabled=false`) there is NO reaction
+  poller and NO Slack listener, so a `resumable` session could NEVER be
+  resumed -- it stranded silently (and held its thread lock). This was the
+  beta.29 ProjectThanos symptom: the container restarted ~4 min into the run,
+  the session sat at `planning`, and the log went dead after `[crystalliser]
+  classifier` with nothing driving it forward.
+
+  Fix: in agent-orchestrated mode, recovery now **auto-resumes** fresh
+  in-flight sessions -- re-driving the loop from the stored crystallised brief
+  (`recovery.auto_resuming` audit event) -- instead of waiting for a reaction
+  that can never arrive. Stale sessions (older than the hard timeout) are
+  still marked `interrupted`. Listener mode keeps the conservative
+  human-in-the-loop `resumable` + Slack-note behaviour. A defensive
+  `recovery.autoresume_unavailable` audit fires if the mode is set without an
+  auto-resume handler.
+
+  NOTE: this makes a restart *survivable*; it does not address WHY a container
+  might restart every few minutes (crash loop / repeated re-install), which is
+  an environment concern to investigate separately.
+
+### Tests
+
+- 374 -> 377: agent-orchestrated auto-resume, defensive strand-risk audit, and
+  listener-mode conservative behaviour.
+
 ## [0.1.0-beta.29] -- 2026-07-18
 
 ### Fixed
