@@ -72,6 +72,32 @@ export function registerHarnessTools(api, runtime) {
         const slackChannel = params.slackChannel ?? "";
         // Synthesise a unique thread key when the agent supplies none.
         const slackThread = params.slackThread ?? `agent:${sessionId}`;
+        // beta.29: the UNIQUE index on (slack_channel, slack_thread) makes a
+        // thread a singleton. But a TERMINAL prior session (done/failed/aborted)
+        // should NOT permanently lock its thread -- otherwise every failed run
+        // leaves its thread unusable and retries in-thread are impossible
+        // (Staging ProjectThanos: session 781a9532 failed at worktree-add, then
+        // the retry was rejected as duplicateThread). Free the thread iff the
+        // only prior session on it is terminal. If a NON-terminal (active)
+        // session exists, we still block (a real duplicate).
+        if (slackThread) {
+            const prior = liveDb()
+                .prepare(`SELECT id, status FROM sessions WHERE slack_channel = ? AND slack_thread = ?`)
+                .all(slackChannel, slackThread);
+            const TERMINAL = new Set(["done", "failed", "aborted"]);
+            const active = prior.find((p) => !TERMINAL.has(p.status));
+            if (active) {
+                return { ok: false, duplicateThread: true, reason: `Session ${active.id} is already active (status=${active.status}) for thread ${slackThread}` };
+            }
+            if (prior.length > 0) {
+                // All prior sessions on this thread are terminal -- release the
+                // thread slot so the retry can take it. Their worktrees/PRs were
+                // already cleaned up on the terminal transition.
+                const del = liveDb().prepare(`DELETE FROM sessions WHERE slack_channel = ? AND slack_thread = ? AND status IN ('done','failed','aborted')`);
+                const info = del.run(slackChannel, slackThread);
+                liveState().audit("tool.run.thread_reclaimed", { channel: slackChannel, thread: slackThread, freed: info.changes, priorIds: prior.map((p) => p.id) });
+            }
+        }
         try {
             liveDb()
                 .prepare(`INSERT INTO sessions (
