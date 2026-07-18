@@ -195,18 +195,22 @@ async function structuredCall<T>(params: {
       options: {
         model: params.model,
         systemPrompt: params.systemPrompt,
-        // beta.27: these are SINGLE-SHOT structured JSON extractors
+        // These are SINGLE-SHOT structured JSON extractors
         // (classifier / crystalliser / lead / adversary), NOT agents.
-        // `permissionMode: "plan"` alone still leaves read-only exploration
-        // tools enabled, and the SDK's Claude Code agent will happily go
-        // "help the user" mode -- exploring the local filesystem
-        // (e.g. /app/extensions) and narrating a prose plan instead of
-        // emitting the JSON contract. That produced
-        // `[classifier] extractJson failed: no JSON in output: "I'll help you fix the ..."`
-        // on the first ProjectThanos smoke. Force NO tools so the model must
-        // answer directly. `allowedTools: []` disables tool_use entirely;
-        // `permissionMode: "plan"` stays as belt-and-braces.
-        allowedTools: [],
+        // The SDK's Claude Code agent otherwise goes "help the user" mode --
+        // exploring the local filesystem (e.g. /app) and narrating a prose
+        // plan instead of emitting the JSON contract, producing
+        // `[classifier] extractJson failed: no JSON in output: "I'll ..."`.
+        //
+        // beta.28: `tools: []` is the authoritative switch that DISABLES all
+        // built-in tools (per sdk.d.ts: "[] (empty array) - Disable all
+        // built-in tools"). beta.27 wrongly used `allowedTools: []`, which is
+        // only the auto-APPROVE list ("To restrict which tools are available,
+        // use the `tools` option instead") -- a no-op, so the agent kept
+        // wandering. `disallowedTools` names the exploration tools as a
+        // second layer; `permissionMode: "plan"` is belt-and-braces.
+        tools: [],
+        disallowedTools: ["Task", "Bash", "Read", "Glob", "Grep", "Edit", "Write", "WebFetch", "WebSearch"],
         permissionMode: "plan" as const,
         env: buildSdkEnv(params.apiKey),
         abortSignal: abort.signal,
@@ -260,7 +264,7 @@ export function extractJson(text: string): string {
   if (start === -1) {
     throw new Error(
       `no JSON in output (model returned prose, not the JSON contract — ` +
-        `check that structured calls run with allowedTools: []): ${text.slice(0, 200)}`,
+        `check that structured calls run with tools: [] to disable built-in tools): ${text.slice(0, 200)}`,
     );
   }
   const opening = text[start]!;

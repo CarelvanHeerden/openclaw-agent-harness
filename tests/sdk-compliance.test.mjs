@@ -245,21 +245,33 @@ test("sdk: dist register() is synchronous (does not return Promise)", { skip: !e
   );
 });
 
-// beta.27: structured SDK calls (classifier/crystalliser/lead/adversary) must
+// beta.28: structured SDK calls (classifier/crystalliser/lead/adversary) must
 // run with NO tools. Otherwise the SDK's Claude Code agent explores the local
 // filesystem and narrates prose instead of emitting the JSON contract, which
-// broke the first ProjectThanos smoke with
-// `[classifier] extractJson failed: no JSON in output: "I'll help you fix the ..."`.
-test("sdk: structuredCall disables tools via allowedTools: [] (beta.27)", () => {
+// broke the ProjectThanos smoke with
+// `[classifier] extractJson failed: no JSON in output: "I'm in plan mode ..."`.
+//
+// The authoritative switch is `tools: []` (disables all built-in tools).
+// beta.27 wrongly used `allowedTools: []` (auto-approve list, a no-op) and the
+// agent kept wandering. This test guards against regressing to that mistake.
+test("sdk: structuredCall disables tools via tools: [] (beta.28)", () => {
   const src = readFileSync(resolve(repoRoot, "src/adapters/claude-sdk.ts"), "utf8");
   assert.match(
     src,
-    /allowedTools:\s*\[\s*\]/,
-    "src/adapters/claude-sdk.ts must set `allowedTools: []` on the structured sdk.query call so the extractors cannot go agentic.",
+    /\btools:\s*\[\s*\]/,
+    "src/adapters/claude-sdk.ts must set `tools: []` on the structured sdk.query call to disable all built-in tools.",
   );
 });
 
-test("sdk: compiled structuredCall keeps allowedTools: [] (beta.27)", { skip: !existsSync(resolve(repoRoot, "dist/adapters/claude-sdk.js")) }, () => {
+test("sdk: structuredCall does NOT rely on allowedTools:[] alone (beta.28 regression guard)", () => {
+  // allowedTools is the auto-approve list, not a restriction. If someone
+  // removes `tools: []` and leaves only `allowedTools: []`, the agent will
+  // wander again. Require `tools: []` to be present regardless.
+  const src = readFileSync(resolve(repoRoot, "src/adapters/claude-sdk.ts"), "utf8");
+  assert.match(src, /\btools:\s*\[\s*\]/, "tools: [] must be present (allowedTools: [] alone is insufficient).");
+});
+
+test("sdk: compiled structuredCall keeps tools: [] (beta.28)", { skip: !existsSync(resolve(repoRoot, "dist/adapters/claude-sdk.js")) }, () => {
   const src = readFileSync(resolve(repoRoot, "dist/adapters/claude-sdk.js"), "utf8");
-  assert.match(src, /allowedTools:\s*\[\s*\]/, "dist must carry allowedTools: [] on the structured call.");
+  assert.match(src, /\btools:\s*\[\s*\]/, "dist must carry tools: [] on the structured call.");
 });
