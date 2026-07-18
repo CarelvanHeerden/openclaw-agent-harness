@@ -8,16 +8,19 @@
  *   - stale by clock (updated_at older than `recovery.stale_after_seconds`):
  *       mark 'interrupted' and post a Slack note.
  *   - fresh:
- *       mark 'resumable' — the dispatcher will pick these up on the next
- *       inbound message OR the retention/cron worker can attempt an
- *       automatic resume.
+ *       LISTENER mode (slack.listener_enabled): mark 'resumable' and post a
+ *         Slack note; the reaction handler resumes on a human :arrows_counterclockwise:.
+ *       AGENT-ORCHESTRATED mode (default, slack.listener_enabled=false):
+ *         there is NO reaction poller and NO Slack listener, so a 'resumable'
+ *         session can NEVER be resumed -- it strands silently (and holds its
+ *         thread lock). This was the beta.29 ProjectThanos symptom: the
+ *         container restarted ~4min into a run, the session sat at 'planning',
+ *         recovery marked it 'resumable', and the log went dead with nothing
+ *         ever driving it forward. In this mode we AUTO-RESUME fresh sessions
+ *         by re-driving the loop from their stored crystallised brief.
  *
- * Recovery is deliberately conservative: we NEVER auto-restart an
- * expensive worker session without a human touch. Instead, the harness
- * posts a Slack message like
- *   ":arrows_counterclockwise: This session was interrupted at cycle 2,
- *    sub-task 5. React :arrows_counterclockwise: to resume, :x: to abort."
- * and lets the reaction handler take it from there.
+ * Stale sessions (older than the hard timeout) are always marked
+ * 'interrupted' -- they're too old to safely auto-resume.
  */
 import type { StateStore } from "./store.js";
 export interface RecoveryOptions {
@@ -27,6 +30,15 @@ export interface RecoveryOptions {
         info: (m: string, meta?: unknown) => void;
         warn: (m: string, meta?: unknown) => void;
     };
+    /**
+     * When true (agent-orchestrated mode, no reaction poller / Slack listener),
+     * fresh in-flight sessions are auto-resumed instead of being left in the
+     * un-resumable 'resumable' state. `autoResume` re-drives the loop from the
+     * session's stored crystallised brief. Must be provided when
+     * `agentOrchestrated` is true.
+     */
+    agentOrchestrated?: boolean;
+    autoResume?: (session: RecoveredSession) => Promise<void>;
 }
 export interface RecoveredSession {
     id: string;

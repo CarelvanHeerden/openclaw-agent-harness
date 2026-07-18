@@ -1553,13 +1553,39 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
   }
 
   // Session recovery: mark stale non-terminal sessions as 'interrupted' and
-  // notify their Slack threads. Fresh in-flight sessions stay 'resumable'
-  // (deliberately conservative -- see src/state/recovery.ts).
+  // notify their Slack threads. Fresh in-flight sessions:
+  //   - agent-orchestrated mode (default): AUTO-RESUME (re-drive the loop) --
+  //     there is no reaction poller / listener to resume them otherwise, so
+  //     they'd strand silently (beta.30 fix for the ProjectThanos symptom).
+  //   - listener mode: stay 'resumable' for a human reaction.
+  const agentOrchestrated = !config.slack.listener_enabled;
   try {
     const { recoverSessions } = await import("./state/recovery.js");
     const result = await recoverSessions(state, {
       staleAfterSeconds: config.loop.session_hard_timeout_seconds,
       logger: api.logger,
+      agentOrchestrated,
+      autoResume: async (s) => {
+        const row = state.db
+          .prepare(`SELECT crystallised_prompt FROM sessions WHERE id = ?`)
+          .get(s.id) as { crystallised_prompt?: string } | undefined;
+        if (!row?.crystallised_prompt) {
+          api.logger.warn("[harness] recovery auto-resume: no crystallised brief, marking interrupted", { sessionId: s.id });
+          state.db.prepare(`UPDATE sessions SET status = 'interrupted', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
+          return;
+        }
+        const brief = JSON.parse(row.crystallised_prompt);
+        state.db.prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
+        api.logger.warn("[harness] recovery auto-resuming session (agent-orchestrated mode)", { sessionId: s.id, wasStatus: s.status });
+        if (s.slack_channel && s.slack_thread) {
+          await slack
+            .replyInThread(s.slack_channel, s.slack_thread, `:arrows_counterclockwise: Harness restarted mid-run; auto-resuming this session from its plan (agent-orchestrated mode).`)
+            .catch(() => undefined);
+        }
+        void runtime.loop.run(s.id, brief).catch((err) => {
+          api.logger.error("[harness] recovery auto-resume loop.run failed", { sessionId: s.id, err: String(err) });
+        });
+      },
       notify: async (s) => {
         const msg = s.stale
           ? `:arrows_counterclockwise: This harness session was interrupted at cycle ${s.cycles_ran} (state \`${s.status}\`). React :arrows_counterclockwise: to resume, :x: to abort.`
