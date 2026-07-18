@@ -57,13 +57,23 @@ export interface RunWorkerResult {
 }
 export declare function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult>;
 /**
- * Extracts the first well-formed top-level JSON object or array from a
- * string. Handles the common case where the model wraps output in prose
- * or a fenced code block despite instructions.
+ * Extract the JSON contract from a model's raw output.
  *
- * WARNING: prefer `extractAndValidateJson()` over calling this directly.
- * If the model outputs `{"foo":1}\n{"bar":2}` we return only the first object;
- * without validation you can silently miss the second half of the response.
+ * beta.31: the lead planner (session 78237f43) failed with
+ *   `[lead] JSON.parse failed: SyntaxError: Unexpected token '\', "\n{\n \"r\"..."`
+ * The model wrapped its plan as a JSON-STRING-ENCODED payload (as if writing
+ * it to a file): the ```json fence content was the escaped string
+ * `\n{\n \"repo\": ...` rather than raw JSON. The old code grabbed the first
+ * fence blindly and returned the escaped text, which JSON.parse rejects on
+ * the leading `\`.
+ *
+ * New strategy: gather CANDIDATES (all fenced blocks + the first balanced
+ * brace-scan of the whole text + a JSON-string-unescape of each candidate)
+ * and return the FIRST candidate that actually parses. This tolerates:
+ *   - raw JSON,
+ *   - ```json fenced JSON,
+ *   - double-encoded (JSON-string-escaped) JSON, incl. inside a fence,
+ *   - JSON preceded/followed by prose.
  */
 export declare function extractJson(text: string): string;
 export interface JsonValidationOptions<T> {

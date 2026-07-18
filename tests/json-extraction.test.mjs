@@ -79,3 +79,49 @@ test("extractJson: prose-only output throws a diagnostic 'model returned prose' 
       /model returned prose.*tools: \[\]/,
     );
   });
+
+// beta.31: session 78237f43 — the lead model emitted its plan as if writing a
+// file: a ```json fence whose CONTENT was a JSON-string-escaped payload
+// (`\n{\n \"repo\": ...`). extractJson used to return that escaped text and
+// JSON.parse choked on the leading `\`. Now it must unwrap -> parse.
+test("extractJson: double-encoded (JSON-string-escaped) fenced JSON is unwrapped and parses (beta.31)",
+  { skip: extractJson === null }, () => {
+    // Reproduce the exact shape: the real JSON, JSON-string-encoded, inside a fence.
+    const realPlan = { repo: "Stitch-Vercel/ProjectThanos", branch: "harness/x", subTasks: [] };
+    const escaped = JSON.stringify(realPlan); // {"repo":"..."}
+    // Now double-encode: put it as an escaped string (as the Write content would be)
+    const doubleEncoded = JSON.stringify("```json\n" + JSON.stringify(realPlan, null, 1) + "\n```").slice(1, -1);
+    const raw = "```json\n" + doubleEncoded + "\n```";
+    const j = extractJson(raw);
+    const parsed = JSON.parse(j);
+    assert.equal(parsed.repo, "Stitch-Vercel/ProjectThanos");
+    assert.equal(parsed.branch, "harness/x");
+    assert.ok(Array.isArray(parsed.subTasks));
+    void escaped;
+  });
+
+test("extractJson: the literal 78237f43 escaped-newline payload no longer throws (beta.31)",
+  { skip: extractJson === null }, () => {
+    // The error was: Unexpected token '\', "\n{\n \"r\"..."
+    // i.e. the extracted content began with an escaped newline + escaped quotes.
+    const inner = '\\n{\\n \\"repo\\": \\"Stitch-Vercel/ProjectThanos\\", \\"branch\\": \\"harness/x\\", \\"subTasks\\": []\\n}';
+    const raw = "```json\n" + inner + "\n```";
+    const j = extractJson(raw);
+    // must not throw, and must produce parseable JSON with the right repo
+    const parsed = JSON.parse(j);
+    assert.equal(parsed.repo, "Stitch-Vercel/ProjectThanos");
+  });
+
+test("extractJson: plain raw JSON (no fence) still works (beta.31 regression)",
+  { skip: extractJson === null }, () => {
+    const parsed = JSON.parse(extractJson('{"repo":"o/r","subTasks":[1,2]}'));
+    assert.equal(parsed.repo, "o/r");
+  });
+
+test("extractJson: prefers the FIRST parseable candidate (fence over balanced) (beta.31)",
+  { skip: extractJson === null }, () => {
+    const raw = 'Here is the plan:\n```json\n{"repo":"a/b","n":1}\n```\nand some trailing {"junk":true}';
+    const parsed = JSON.parse(extractJson(raw));
+    assert.equal(parsed.repo, "a/b");
+    assert.equal(parsed.n, 1);
+  });

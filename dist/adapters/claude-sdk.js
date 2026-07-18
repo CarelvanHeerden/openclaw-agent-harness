@@ -210,21 +210,21 @@ async function structuredCall(params) {
  * If the model outputs `{"foo":1}\n{"bar":2}` we return only the first object;
  * without validation you can silently miss the second half of the response.
  */
-export function extractJson(text) {
-    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fence?.[1])
-        return fence[1].trim();
-    const start = text.search(/[{[]/);
-    if (start === -1) {
-        throw new Error(`no JSON in output (model returned prose, not the JSON contract — ` +
-            `check that structured calls run with tools: [] to disable built-in tools): ${text.slice(0, 200)}`);
-    }
-    const opening = text[start];
+/**
+ * Scan for the first balanced {...} or [...] object starting at `from`,
+ * respecting string literals and escapes. Returns the substring or null.
+ */
+function scanBalanced(text, from = 0) {
+    const start = text.slice(from).search(/[{[]/);
+    if (start === -1)
+        return null;
+    const abs = from + start;
+    const opening = text[abs];
     const closing = opening === "{" ? "}" : "]";
     let depth = 0;
     let inStr = false;
     let esc = false;
-    for (let i = start; i < text.length; i++) {
+    for (let i = abs; i < text.length; i++) {
         const ch = text[i];
         if (esc) {
             esc = false;
@@ -245,10 +245,94 @@ export function extractJson(text) {
         else if (ch === closing) {
             depth--;
             if (depth === 0)
-                return text.slice(start, i + 1);
+                return text.slice(abs, i + 1);
         }
     }
-    throw new Error("unbalanced JSON in output");
+    return null;
+}
+function parsesAsJson(s) {
+    try {
+        JSON.parse(s);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Extract the JSON contract from a model's raw output.
+ *
+ * beta.31: the lead planner (session 78237f43) failed with
+ *   `[lead] JSON.parse failed: SyntaxError: Unexpected token '\', "\n{\n \"r\"..."`
+ * The model wrapped its plan as a JSON-STRING-ENCODED payload (as if writing
+ * it to a file): the ```json fence content was the escaped string
+ * `\n{\n \"repo\": ...` rather than raw JSON. The old code grabbed the first
+ * fence blindly and returned the escaped text, which JSON.parse rejects on
+ * the leading `\`.
+ *
+ * New strategy: gather CANDIDATES (all fenced blocks + the first balanced
+ * brace-scan of the whole text + a JSON-string-unescape of each candidate)
+ * and return the FIRST candidate that actually parses. This tolerates:
+ *   - raw JSON,
+ *   - ```json fenced JSON,
+ *   - double-encoded (JSON-string-escaped) JSON, incl. inside a fence,
+ *   - JSON preceded/followed by prose.
+ */
+export function extractJson(text) {
+    const candidates = [];
+    // 1. All fenced blocks (```json ... ``` or ``` ... ```), in order.
+    const fenceRe = /```(?:json)?\s*([\s\S]*?)```/g;
+    let m;
+    while ((m = fenceRe.exec(text)) !== null) {
+        if (m[1])
+            candidates.push(m[1].trim());
+    }
+    // 2. First balanced object in the raw text (prose-wrapped JSON).
+    const balanced = scanBalanced(text);
+    if (balanced)
+        candidates.push(balanced);
+    // 3. For each candidate, also try a JSON-string-unescape pass. If a
+    //    candidate is escaped text like `\n{\n \"repo\"...`, wrapping it in
+    //    quotes and JSON.parse-ing yields the real JSON string, which we then
+    //    re-scan for a balanced object. This handles the double-encoded case.
+    const unescaped = [];
+    for (const c of candidates) {
+        if (!(c.includes('\\"') || c.includes("\\n")))
+            continue;
+        // The candidate is (likely) the escaped BODY of a JSON string, e.g.
+        // `\n{\n \"repo\"...`. Its embedded quotes are already backslash-escaped,
+        // so wrap in quotes and parse directly. Only if that fails do we try
+        // escaping bare quotes (for a half-escaped candidate).
+        let decoded = null;
+        try {
+            decoded = JSON.parse(`"${c}"`);
+        }
+        catch {
+            try {
+                decoded = JSON.parse(`"${c.replace(/(?<!\\)"/g, '\\"')}"`);
+            }
+            catch {
+                decoded = null;
+            }
+        }
+        if (decoded) {
+            const inner = scanBalanced(decoded) ?? decoded;
+            unescaped.push(inner);
+        }
+    }
+    candidates.push(...unescaped);
+    // Return the first candidate that actually parses.
+    for (const c of candidates) {
+        if (parsesAsJson(c))
+            return c;
+    }
+    // Fall back to the first candidate at all (preserves prior behaviour of
+    // returning *something* so the caller's JSON.parse produces the real
+    // diagnostic), or throw the prose error if we found nothing JSON-shaped.
+    if (candidates.length > 0)
+        return candidates[0];
+    throw new Error(`no JSON in output (model returned prose, not the JSON contract — ` +
+        `check that structured calls run with tools: [] to disable built-in tools): ${text.slice(0, 200)}`);
 }
 /**
  * Robust wrapper around `extractJson()`.
@@ -440,6 +524,11 @@ export async function runLeadSdk(params) {
         "- Anti-pattern to AVOID: 3 sub-tasks (write, commit, verify) for a single write-and-commit criterion. Correct shape: 1 mutate sub-task (write+commit) + optional 1 observe sub-task (verify). If you find yourself planning 3+ sub-tasks for what a single sentence describes, you are over-decomposing.",
         "- Push-and-PR similarly: 'push branch and open a PR' is ONE mutate sub-task with contractScope='remote', not two.",
         `- reposAllowed: ${JSON.stringify(params.reposAllowed)}`,
+        // beta.31: session 78237f43 failed because the model tried to WRITE the
+        // plan to a file (`.claude/plans/...md`) with the JSON as a
+        // ```json-fenced, JSON-string-escaped payload, which the extractor then
+        // mis-parsed. Tell the lead to return the JSON DIRECTLY as its message.
+        "CRITICAL OUTPUT RULE: Return the JSON object DIRECTLY as your reply text. Do NOT write it to a file, do NOT wrap it in a code fence, do NOT describe it, do NOT narrate a plan. Your ENTIRE reply must be the raw JSON object and nothing else.",
         "Output the JSON and nothing else.",
     ].join("\n");
     const r = await structuredCall({
