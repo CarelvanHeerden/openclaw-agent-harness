@@ -40,9 +40,9 @@ const fakeApi = {
   registerTool: (def) => { registeredTools.add(def.name); return () => {}; },
   // New-style config surface (definePluginEntry expects api.pluginConfig).
   pluginConfig: {
-    // listener_enabled: true so smoke exercises the autonomous Slack-listener
-    // path (message_received hook). Agent-orchestrated mode (the default) is
-    // asserted separately below via a second registration.
+    // listener_enabled: true is deliberately set here to prove beta.34's
+    // removal of the Slack listener is honoured EVEN when the (now-ignored)
+    // key is on -- the plugin must still NOT register message_received.
     slack: { listener_enabled: true, channel: "C_SMOKE", authorised_users: ["U_SMOKE"] },
     repos: { allowed: ["smoke/*"] },
     storage: { state_db_path: `${stateDir}/state.db`, worktree_root: `${stateDir}/wt` },
@@ -125,14 +125,15 @@ for (const t of expectTools) {
   }
 }
 
-// The plugin must register the inbound-message listener under the ONLY
-// valid event name: `message_received` (underscore). The dotted form
-// `message.received` is NOT a real runtime hook name -- registering it
-// produces `unknown typed hook "message.received" ignored` and the listener
-// never fires. Assert both: (a) the correct name IS registered, and
-// (b) the invalid dotted name is NEVER registered.
-if (!registeredHooks.has("message_received")) {
-  console.error(`FAIL: message hook not registered under "message_received" (got: ${JSON.stringify([...registeredHooks])})`);
+// beta.34 REMOVED the Slack listener: the harness is pure tool-driven, so it
+// must NEVER register a `message_received` hook -- not even when
+// `slack.listener_enabled: true` (that key is now ignored). The privileged
+// surface (PATs, merges) is reachable only through the agent's tool layer,
+// which structurally eliminates the bot-to-bot loop risk. Assert:
+//   (a) `message_received` is NOT registered even with listener_enabled=true;
+//   (b) the invalid dotted form `message.received` is NEVER registered.
+if (registeredHooks.has("message_received")) {
+  console.error(`FAIL: message_received was registered even though the Slack listener was removed in beta.34 (got: ${JSON.stringify([...registeredHooks])}). The harness must be tool-driven only.`);
   failed++;
 }
 if (registeredHooks.has("message.received")) {
