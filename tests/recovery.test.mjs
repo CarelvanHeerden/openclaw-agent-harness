@@ -82,3 +82,61 @@ test("recoverSessions: moves stale to interrupted, calls notify",
     const freshStatus = state.db.prepare(`SELECT status FROM sessions WHERE id = 'fresh'`).get().status;
     assert.equal(freshStatus, "reviewing");
   });
+
+// beta.30: in agent-orchestrated mode a fresh in-flight session must be
+// AUTO-RESUMED (no reaction poller / listener to resume it otherwise). This
+// was the ProjectThanos symptom: container restarted mid-run, session sat at
+// 'planning', recovery marked it 'resumable', logs went dead.
+test("recoverSessions: agent-orchestrated mode auto-resumes fresh sessions (does NOT strand)",
+  { skip: recoverSessions === null }, async () => {
+    const { state, audits } = makeStore();
+    const now = Date.now();
+    insertSession(state.db, "stale", "executing", now - 7200 * 1000);
+    insertSession(state.db, "fresh", "planning", now);
+    const resumed = [];
+    const { interrupted, resumable } = await recoverSessions(state, {
+      staleAfterSeconds: 3600,
+      agentOrchestrated: true,
+      autoResume: async (s) => { resumed.push(s.id); },
+      notify: async () => { throw new Error("notify must NOT be called for auto-resumed fresh sessions"); },
+      logger: { info() {}, warn() {} },
+    });
+    assert.equal(interrupted, 1);
+    assert.equal(resumable, 1);
+    // fresh session was auto-resumed, not left waiting on a reaction.
+    assert.deepEqual(resumed, ["fresh"]);
+    assert.ok(audits.some((a) => a.event === "recovery.auto_resuming" && a.sessionId === "fresh"));
+    // stale still marked interrupted.
+    assert.equal(state.db.prepare(`SELECT status FROM sessions WHERE id = 'stale'`).get().status, "interrupted");
+  });
+
+test("recoverSessions: agentOrchestrated without autoResume audits the strand risk (defensive)",
+  { skip: recoverSessions === null }, async () => {
+    const { state, audits } = makeStore();
+    insertSession(state.db, "fresh", "planning", Date.now());
+    const { resumable } = await recoverSessions(state, {
+      staleAfterSeconds: 3600,
+      agentOrchestrated: true,
+      // no autoResume provided
+      logger: { info() {}, warn() {} },
+    });
+    assert.equal(resumable, 1);
+    assert.ok(audits.some((a) => a.event === "recovery.autoresume_unavailable" && a.sessionId === "fresh"));
+  });
+
+test("recoverSessions: listener mode keeps conservative 'resumable' + notify (no auto-resume)",
+  { skip: recoverSessions === null }, async () => {
+    const { state, audits } = makeStore();
+    insertSession(state.db, "fresh", "planning", Date.now());
+    const notified = [];
+    const { resumable } = await recoverSessions(state, {
+      staleAfterSeconds: 3600,
+      agentOrchestrated: false,
+      autoResume: async () => { throw new Error("autoResume must NOT be called in listener mode"); },
+      notify: async (s) => { notified.push(s.id); },
+      logger: { info() {}, warn() {} },
+    });
+    assert.equal(resumable, 1);
+    assert.deepEqual(notified, ["fresh"]);
+    assert.ok(audits.some((a) => a.event === "recovery.marked_resumable" && a.sessionId === "fresh"));
+  });
