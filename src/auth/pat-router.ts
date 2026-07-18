@@ -21,7 +21,7 @@
  * trivially unit-testable and safe to log.
  */
 
-import type { GitProvider, PatRoutingConfig, ProviderConfig } from "../config.js";
+import type { GitProvider, PatRoutingConfig, PersonToken, ProviderConfig, TokenPointer } from "../config.js";
 
 export interface PatResolutionInput {
   slackUserId: string;
@@ -38,7 +38,36 @@ export interface PatResolution {
   commitIdentity: { name: string; email: string };
   apiBase: string;             // provider REST API base
   apiKeyEnv: string;           // env var to use as a token fallback for this provider
-  provenance: "override_repo" | "override_owner" | "default_pattern";
+  provenance:
+    | "hierarchy"              // beta.25 provider->org->person match
+    | "override_repo"
+    | "override_owner"
+    | "default_pattern";
+  /**
+   * beta.25: when the hierarchical config matched, the token pointer for the
+   * resolved person. The caller resolves this DIRECTLY (value|env|vault),
+   * bypassing the legacy vault-first/env-fallback path. Undefined for
+   * legacy (flat) resolutions, which continue to use `credentialService`.
+   */
+  tokenPointer?: TokenPointer;
+  /** beta.25: person key that matched in the hierarchy (for logging/audit). */
+  person?: string;
+}
+
+/** Thrown when the hierarchical config exists but the requester has no entry. */
+export class PatRequesterNotAuthorisedError extends Error {
+  constructor(
+    readonly provider: GitProvider,
+    readonly org: string,
+    readonly slackUserId: string,
+  ) {
+    super(
+      `no ${provider} token configured for requester '${slackUserId}' under org '${org}'. ` +
+        `Add a person entry at pat_routing.${provider}.${org}.<person> with a matching slack_user_id, ` +
+        `token, name and email. (No silent fallback to another user's token.)`,
+    );
+    this.name = "PatRequesterNotAuthorisedError";
+  }
 }
 
 const PROVIDER_DEFAULTS: Record<GitProvider, ProviderConfig> = {
@@ -75,6 +104,40 @@ export class PatRouter {
     return this.cfg.user_identities?.[slackUserId]?.[provider];
   }
 
+  /** Does the hierarchical config define any org entries for this provider? */
+  private hasHierarchyFor(provider: GitProvider, owner: string): boolean {
+    const orgs = this.cfg[provider];
+    if (!orgs) return false;
+    return !!(orgs[owner] ?? orgs[owner.toLowerCase()]);
+  }
+
+  /**
+   * beta.25 hierarchical lookup: provider -> org(owner) -> person, matched to
+   * the requester by `slack_user_id`. Returns undefined if this provider/org
+   * is not configured hierarchically (caller then uses the legacy path).
+   * Throws PatRequesterNotAuthorisedError if the org IS configured but the
+   * requester has no entry (no silent fallback).
+   */
+  private resolveHierarchy(
+    provider: GitProvider,
+    owner: string,
+    slackUserId: string,
+  ): { person: string; node: PersonToken } | undefined {
+    const orgs = this.cfg[provider];
+    if (!orgs) return undefined;
+    const orgNode = orgs[owner] ?? orgs[owner.toLowerCase()];
+    if (!orgNode) return undefined;
+
+    for (const [person, node] of Object.entries(orgNode)) {
+      if (node.slack_user_id && node.slack_user_id === slackUserId) {
+        return { person, node };
+      }
+    }
+    // Org is configured hierarchically but this requester is not listed.
+    // Hard fail — never fall back to another person's token.
+    throw new PatRequesterNotAuthorisedError(provider, owner, slackUserId);
+  }
+
   resolve(input: PatResolutionInput): PatResolution {
     const parts = input.repoFullName.split("/");
     if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -84,6 +147,27 @@ export class PatRouter {
     const repo = parts[1];
     const provider = this.resolveProvider(owner, input.provider);
     const pcfg = this.providerConfig(provider);
+
+    // beta.25: hierarchical routing takes precedence when configured for this
+    // provider+org. It carries its own token pointer + commit identity, so it
+    // short-circuits the legacy vault-service resolution entirely.
+    if (this.hasHierarchyFor(provider, owner)) {
+      const hit = this.resolveHierarchy(provider, owner, input.slackUserId);
+      if (hit) {
+        return {
+          provider,
+          // Synthetic service name for logging/audit continuity; the token is
+          // resolved from tokenPointer, not this name.
+          credentialService: `${provider}-${owner.toLowerCase()}-${hit.person.toLowerCase()}`,
+          commitIdentity: { name: hit.node.name, email: hit.node.email },
+          apiBase: pcfg.api_base,
+          apiKeyEnv: pcfg.api_key_env,
+          provenance: "hierarchy",
+          tokenPointer: hit.node.token,
+          person: hit.person,
+        };
+      }
+    }
 
     const userMap = this.cfg.overrides[input.slackUserId] ?? {};
     let credentialService: string | undefined;

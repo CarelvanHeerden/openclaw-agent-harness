@@ -1,6 +1,6 @@
 {
   "name": "openclaw-agent-harness",
-  "version": "0.1.0-beta.24",
+  "version": "0.1.0-beta.25",
   "description": "Multi-agent orchestration harness for OpenClaw. Fable-5 lead + Sonnet workers + adversarial reviewer, driven from Slack.",
   "type": "module",
   "main": "dist/index.js",
@@ -25,7 +25,8 @@
     "openclaw.plugin.json",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs",
+    "skills"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql",

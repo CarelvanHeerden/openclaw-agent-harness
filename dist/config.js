@@ -91,6 +91,42 @@ const DEFAULTS = {
         level: "info",
     },
 };
+/**
+ * beta.25: validate the hierarchical pat_routing tree. Each person node must
+ * carry a name, a real-looking email, and exactly one token pointer
+ * (value|env|vault). Fails loud at config load so the operator never
+ * discovers a missing email mid-run.
+ */
+export function validatePatHierarchy(pr) {
+    const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    for (const provider of ["github", "gitlab"]) {
+        const orgs = pr[provider];
+        if (!orgs)
+            continue;
+        for (const [org, people] of Object.entries(orgs)) {
+            if (!people || typeof people !== "object") {
+                throw new Error(`harness.pat_routing.${provider}.${org} must be an object of { person: {...} }`);
+            }
+            for (const [person, node] of Object.entries(people)) {
+                const loc = `harness.pat_routing.${provider}.${org}.${person}`;
+                if (!node || typeof node !== "object")
+                    throw new Error(`${loc} must be an object`);
+                if (!node.name || !node.name.trim())
+                    throw new Error(`${loc}.name is required`);
+                if (!node.email || !emailRe.test(node.email))
+                    throw new Error(`${loc}.email is required and must be a valid email`);
+                const tp = node.token;
+                if (!tp || typeof tp !== "object")
+                    throw new Error(`${loc}.token is required (one of value|env|vault)`);
+                const set = [tp.value, tp.env, tp.vault].filter((x) => x !== undefined && x !== "");
+                if (set.length === 0)
+                    throw new Error(`${loc}.token must set exactly one of value|env|vault (none set)`);
+                if (set.length > 1)
+                    throw new Error(`${loc}.token must set exactly one of value|env|vault (${set.length} set)`);
+            }
+        }
+    }
+}
 function mergeDeep(base, override) {
     if (override === null || override === undefined)
         return base;
@@ -147,6 +183,9 @@ export function parseHarnessConfig(input) {
         if (!merged.vercel.project_id)
             throw new Error("harness.vercel.project_id required when vercel.enabled");
     }
+    // beta.25: validate the hierarchical pat_routing tree up front so
+    // operators find misconfig at config-load / reload, not mid-run.
+    validatePatHierarchy(merged.pat_routing);
     return merged;
 }
 //# sourceMappingURL=config.js.map

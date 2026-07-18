@@ -151,10 +151,44 @@
     "pat_routing": {
       "type": "object",
       "additionalProperties": false,
+      "$defs": {
+        "personToken": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["token", "name", "email"],
+          "properties": {
+            "token": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Exactly one of value | env | vault.",
+              "properties": {
+                "value": { "type": "string", "description": "Inline secret (single-operator; setter accepts risk)." },
+                "env": { "type": "string", "description": "Env var name holding the token." },
+                "vault": { "type": "string", "description": "Credential-vault service name (requires memory-hybrid)." }
+              },
+              "minProperties": 1,
+              "maxProperties": 1
+            },
+            "name": { "type": "string", "description": "Git commit author name." },
+            "email": { "type": "string", "format": "email", "description": "Git commit author email (required)." },
+            "slack_user_id": { "type": "string", "description": "Slack user id mapping an inbound request to this person. Auto-captured in vault/self-write tiers; manual in copy-paste tier." }
+          }
+        },
+        "orgMap": {
+          "type": "object",
+          "description": "Repo owner/org -> { person: PersonToken }.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/properties/pat_routing/$defs/personToken" }
+          }
+        }
+      },
       "properties": {
+        "github": { "$ref": "#/properties/pat_routing/$defs/orgMap", "description": "beta.25 hierarchical GitHub routing: org -> person -> token." },
+        "gitlab": { "$ref": "#/properties/pat_routing/$defs/orgMap", "description": "beta.25 hierarchical GitLab routing: org -> person -> token." },
         "overrides": {
           "type": "object",
-          "description": "{ slackUserId: { repoFullNameOrOwner: credentialServiceName } }",
+          "description": "Legacy: { slackUserId: { repoFullNameOrOwner: credentialServiceName } }",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": { "type": "string" }
@@ -162,6 +196,7 @@
         },
         "commit_identity": {
           "type": "object",
+          "description": "Legacy per-user commit identity (superseded by hierarchical name/email).",
           "additionalProperties": {
             "type": "object",
             "required": ["name", "email"],
@@ -171,7 +206,34 @@
             }
           }
         },
-        "default_service_pattern": { "type": "string", "default": "github-{user}-{org}" }
+        "user_identities": {
+          "type": "object",
+          "description": "Legacy: { slackUserId: { github?: login, gitlab?: login } }",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        },
+        "default_provider": { "type": "string", "enum": ["github", "gitlab"] },
+        "provider_by_owner": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "enum": ["github", "gitlab"] }
+        },
+        "providers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "api_base": { "type": "string" },
+              "api_key_env": { "type": "string" }
+            }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "properties": { "api_key_env": { "type": "string" } }
+        },
+        "default_service_pattern": { "type": "string", "default": "github-{owner}" }
       }
     }
   }
