@@ -134,6 +134,35 @@ export declare class GitAdapter {
         email: string;
     }): Promise<string | null>;
     pushBranch(worktreePath: string, remote: string, branch: string, ghToken: string): Promise<void>;
+    /**
+     * beta.36: revert a list of (squash-)merge commits on `main`, newest first.
+     *
+     * Used by the deploy-repair loop when a merged change plus up to N repair
+     * PRs still can't produce a healthy Vercel deploy: we undo ALL of them to
+     * put `main` back to a working state, then leave the last repair attempt as
+     * an open PR for human review.
+     *
+     * Squash merges are single-parent commits, so a plain `git revert <sha>`
+     * (no --mainline) is correct. We revert in the given order (caller passes
+     * newest-first so the reverts apply cleanly in reverse-chronological order).
+     *
+     * Strategy: fetch latest `main` into the bare repo, create a scratch
+     * worktree on it, apply the reverts, then TRY to push straight to `main`.
+     * If that push is rejected (branch protection — the 95% case), we push the
+     * reverts to a dedicated branch and return `{ pushedToMain: false, branch }`
+     * so the caller opens + auto-merges a revert PR instead.
+     *
+     * Returns the scratch worktree path so the caller can release it.
+     */
+    revertCommits(repoFullName: string, shas: string[], ghToken: string, opts?: {
+        baseBranch?: string;
+        revertBranch?: string;
+    }): Promise<{
+        pushedToMain: boolean;
+        branch: string;
+        worktreePath: string;
+        revertedShas: string[];
+    }>;
     formatPatch(worktreePath: string, base: string, outFile: string): Promise<void>;
     diff(worktreePath: string, base: string): Promise<string>;
     /**

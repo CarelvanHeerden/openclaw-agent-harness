@@ -24,6 +24,7 @@ const DEFAULTS = {
         session_default_usd: 50,
         session_hard_ceiling_usd: 200,
         daily_warn_usd: 100,
+        daily_max_usd: 200,
         monthly_warn_ratio: 0.8,
     },
     repos: {
@@ -58,6 +59,11 @@ const DEFAULTS = {
         credential_service: "",
         project_id: "",
         preview_wait_seconds: 300,
+        deploy_repair: {
+            enabled: true,
+            max_attempts: 3,
+            budget_ratio: 0.25,
+        },
     },
     storage: {
         state_db_path: "~/.openclaw/workspace/openclaw-agent-harness/state.db",
@@ -190,6 +196,18 @@ export function parseHarnessConfig(input) {
     }
     if (merged.budgets.monthly_per_user_usd <= 0) {
         throw new Error("harness.budgets.monthly_per_user_usd must be > 0");
+    }
+    if (merged.budgets.daily_max_usd < merged.budgets.daily_warn_usd) {
+        throw new Error("harness.budgets.daily_max_usd must be >= daily_warn_usd");
+    }
+    if (merged.vercel.deploy_repair) {
+        const dr = merged.vercel.deploy_repair;
+        if (dr.max_attempts < 1 || dr.max_attempts > 10) {
+            throw new Error("harness.vercel.deploy_repair.max_attempts must be between 1 and 10");
+        }
+        if (dr.budget_ratio <= 0 || dr.budget_ratio > 1) {
+            throw new Error("harness.vercel.deploy_repair.budget_ratio must be in (0, 1]");
+        }
     }
     if (merged.repos.allowed.length === 0) {
         throw new Error("harness.repos.allowed must list at least one owner or owner/repo glob");

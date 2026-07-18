@@ -44,6 +44,7 @@
         "session_default_usd": { "type": "number", "minimum": 1 },
         "session_hard_ceiling_usd": { "type": "number", "minimum": 1 },
         "daily_warn_usd": { "type": "number", "minimum": 0 },
+        "daily_max_usd": { "type": "number", "minimum": 0, "default": 200 },
         "monthly_warn_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
       }
     },
@@ -124,7 +125,8 @@
         "api_key_env": { "type": "string", "default": "VERCEL_TOKEN", "description": "Env-var fallback for the Vercel token when the vault is unavailable or empty." },
         "team_id": { "type": "string" },
         "project_id": { "type": "string" },
-        "preview_wait_seconds": { "type": "integer", "minimum": 30, "maximum": 3600, "default": 300 }
+        "preview_wait_seconds": { "type": "integer", "minimum": 30, "maximum": 3600, "default": 300 },
+        "deploy_repair": { "type": "object", "additionalProperties": false, "properties": { "enabled": { "type": "boolean", "default": true }, "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 }, "budget_ratio": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.25 } } }
       }
     },
     "storage": {

@@ -360,6 +360,76 @@ esac
     }
   }
 
+  /**
+   * beta.36: revert a list of (squash-)merge commits on `main`, newest first.
+   *
+   * Used by the deploy-repair loop when a merged change plus up to N repair
+   * PRs still can't produce a healthy Vercel deploy: we undo ALL of them to
+   * put `main` back to a working state, then leave the last repair attempt as
+   * an open PR for human review.
+   *
+   * Squash merges are single-parent commits, so a plain `git revert <sha>`
+   * (no --mainline) is correct. We revert in the given order (caller passes
+   * newest-first so the reverts apply cleanly in reverse-chronological order).
+   *
+   * Strategy: fetch latest `main` into the bare repo, create a scratch
+   * worktree on it, apply the reverts, then TRY to push straight to `main`.
+   * If that push is rejected (branch protection — the 95% case), we push the
+   * reverts to a dedicated branch and return `{ pushedToMain: false, branch }`
+   * so the caller opens + auto-merges a revert PR instead.
+   *
+   * Returns the scratch worktree path so the caller can release it.
+   */
+  async revertCommits(
+    repoFullName: string,
+    shas: string[],
+    ghToken: string,
+    opts?: { baseBranch?: string; revertBranch?: string },
+  ): Promise<{ pushedToMain: boolean; branch: string; worktreePath: string; revertedShas: string[] }> {
+    const bare = this.repoBarePath(repoFullName);
+    const baseBranch = opts?.baseBranch ?? "main";
+    const revertBranch = opts?.revertBranch ?? `harness/deploy-repair-revert-${Date.now()}`;
+    const ask = await this.makeAskpass(ghToken);
+    const scratch = resolve(this.expand(this.opts.worktreesRoot), `revert-${Date.now()}`);
+    try {
+      // Make sure the bare repo has the freshest main (repair PRs merged since
+      // allocation).
+      await this.run(["-C", bare, "fetch", "--prune", "origin", `+refs/heads/${baseBranch}:refs/heads/${baseBranch}`], undefined, ask.path, ghToken);
+      // Scratch worktree on a fresh revert branch pointing at latest main.
+      await this.run(["-C", bare, "worktree", "add", "-B", revertBranch, scratch, baseBranch], undefined, ask.path, ghToken);
+      // Set a commit identity for the revert commits (worktree-local).
+      await this.run(["-C", scratch, "config", "user.name", "openclaw-agent-harness"]);
+      await this.run(["-C", scratch, "config", "user.email", "harness@openclaw.local"]);
+      const reverted: string[] = [];
+      for (const sha of shas) {
+        if (!sha) continue;
+        // --no-edit keeps the default "Revert ..." message; -m not needed for
+        // single-parent squash commits. If a revert conflicts we abort and
+        // surface a clear error — a conflicted auto-revert must not be pushed.
+        try {
+          await this.run(["-C", scratch, "revert", "--no-edit", sha]);
+          reverted.push(sha);
+        } catch (err) {
+          await this.run(["-C", scratch, "revert", "--abort"]).catch(() => {});
+          throw new Error(`revert of ${sha.slice(0, 12)} conflicted; aborting auto-revert (main left untouched by this method): ${String(err).slice(0, 200)}`);
+        }
+      }
+      // Try direct push to main first.
+      try {
+        await this.run(["-C", scratch, "push", "origin", `HEAD:${baseBranch}`], undefined, ask.path, ghToken);
+        return { pushedToMain: true, branch: revertBranch, worktreePath: scratch, revertedShas: reverted };
+      } catch (pushErr) {
+        // Branch protection (or non-fast-forward). Fall back to a revert branch
+        // + PR. Push the branch so the caller can open the PR.
+        await this.run(["-C", scratch, "push", "origin", `${revertBranch}:${revertBranch}`], undefined, ask.path, ghToken);
+        void pushErr;
+        return { pushedToMain: false, branch: revertBranch, worktreePath: scratch, revertedShas: reverted };
+      }
+    } finally {
+      await ask.cleanup();
+    }
+  }
+
   async formatPatch(worktreePath: string, base: string, outFile: string): Promise<void> {
     const patch = await this.run(["-C", worktreePath, "format-patch", `${base}..HEAD`, "--stdout"]);
     await mkdir(dirname(outFile), { recursive: true });

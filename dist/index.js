@@ -36,6 +36,7 @@ import { createPullRequest, getPullRequest, getCombinedStatus, mergePullRequest 
 import { SlackAdapter } from "./adapters/slack.js";
 import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runWorkerSdk, } from "./adapters/claude-sdk.js";
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
+import { runDeployRepair } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt } from "./crystallise/prompt-refiner.js";
 import { runLeadPlanner } from "./orchestrator/fable5-lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/sonnet-worker.js";
@@ -1113,7 +1114,7 @@ export function bootstrapHarnessSync(api) {
                     `store it under your identity (${resolution.person ?? requester}) so future runs just work.`,
             };
         },
-        mergePr: async ({ sessionId, invokedBy }) => {
+        mergePr: async ({ sessionId, invokedBy, repairBudgetUsd }) => {
             if (invokedBy && !config.slack.authorised_users.includes(invokedBy)) {
                 return { ok: false, message: `Invoker ${invokedBy} is not authorised.` };
             }
@@ -1129,18 +1130,51 @@ export function bootstrapHarnessSync(api) {
             if (row.pr_merged === 1) {
                 return { ok: false, merged: true, message: `PR #${row.pr_number} is already merged.` };
             }
-            // ---- HARD GATE ----
+            // Is this project Vercel-configured? That decides the gate policy.
+            const vercelConfigured = !!(config.vercel?.enabled && config.vercel.project_id);
+            // The FINAL adversary verdict for this session (distinguishes a
+            // "revise" do-not-merge from a genuinely blocking one).
+            const lastReviewRow = state.db
+                .prepare(`SELECT verdict, findings FROM reviews WHERE session_id = ? ORDER BY cycle DESC LIMIT 1`)
+                .get(sessionId);
+            const lastVerdict = (lastReviewRow?.verdict ?? "").toLowerCase();
+            let hasBlockingFinding = false;
+            try {
+                const findings = lastReviewRow?.findings ? JSON.parse(lastReviewRow.findings) : [];
+                const BLOCKING = new Set(["block", "blocker", "critical", "high"]);
+                hasBlockingFinding = findings.some((f) => BLOCKING.has((f.severity ?? "").toLowerCase()));
+            }
+            catch { /* ignore malformed */ }
+            // ---- GATE (beta.36: Vercel-aware) ----
+            // Baseline recommendation from ship time.
             const rec = (row.merge_recommendation ?? "do_not_merge");
-            if (rec !== "merge") {
-                state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, recommendation: rec }, sessionId);
+            // A do-not-merge is OVERRIDABLE (auto-merge allowed) ONLY when:
+            //   - the project is Vercel-configured (so the post-merge deploy
+            //     verification is the runtime arbiter the loop never had), AND
+            //   - the reason is a `revise` verdict (improvable), NOT a `block`
+            //     verdict and NOT a surviving blocking-severity finding.
+            // A `block` verdict, a blocking-severity finding, or a non-Vercel
+            // project keeps the HARD refuse (human merges via the GitHub UI).
+            const reviseOnly = lastVerdict === "revise" && !hasBlockingFinding;
+            const overridable = vercelConfigured && reviseOnly;
+            if (rec !== "merge" && !overridable) {
+                state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, recommendation: rec, lastVerdict, hasBlockingFinding, vercelConfigured }, sessionId);
                 return {
                     ok: false,
                     refused: true,
                     recommendation: rec,
-                    message: `Refusing to merge PR #${row.pr_number}. This is a HARD SAFETY GATE that cannot be bypassed by the harness. ` +
+                    message: `Refusing to merge PR #${row.pr_number}. HARD SAFETY GATE. ` +
                         `Recommendation: DO NOT MERGE — ${row.merge_recommendation_reason ?? "no clean adversary sign-off"}. ` +
-                        `If you want to merge anyway, do it from the GitHub UI (that decision is deliberately outside this automation).`,
+                        (lastVerdict === "block" || hasBlockingFinding
+                            ? `The adversary raised a BLOCKING concern; this is never auto-overridden. `
+                            : !vercelConfigured
+                                ? `This project has no Vercel deploy verification, so there's no runtime arbiter to auto-merge behind. `
+                                : ``) +
+                        `To merge anyway, use the GitHub UI (deliberately outside this automation).`,
                 };
+            }
+            if (rec !== "merge" && overridable) {
+                state.audit("tool.merge_override", { sessionId, prNumber: row.pr_number, reason: "vercel_revise_override", lastVerdict }, sessionId);
             }
             // Resolve token for the repo.
             let ghToken;
@@ -1180,12 +1214,14 @@ export function bootstrapHarnessSync(api) {
             catch (err) {
                 return { ok: false, recommendation: rec, message: `Merge of PR #${row.pr_number} failed: ${String(err)}` };
             }
-            // ---- Post-merge Vercel deploy verification ----
+            // ---- Post-merge Vercel deploy verification (+ beta.36 repair loop) ----
             let deploy;
+            let repairMessage = "";
             if (config.vercel?.enabled) {
                 const vToken = await resolveVercelToken();
                 if (!vToken) {
                     deploy = { status: "unavailable", detail: "Vercel enabled but no token (vault + env empty)." };
+                    state.db.prepare(`UPDATE sessions SET deploy_status = ?, deploy_detail = ?, updated_at = ? WHERE id = ?`).run("unavailable", deploy.detail, Date.now(), sessionId);
                 }
                 else {
                     const dv = await verifyDeploymentForSha({
@@ -1199,6 +1235,30 @@ export function bootstrapHarnessSync(api) {
                     deploy = { status: dv.status, detail: dv.detail, deploymentUrl: dv.deploymentUrl, logsExcerpt: dv.logsExcerpt };
                     state.db.prepare(`UPDATE sessions SET deploy_status = ?, deploy_detail = ?, updated_at = ? WHERE id = ?`).run(dv.status, `${dv.detail}${dv.logsExcerpt ? "\n" + dv.logsExcerpt : ""}`.slice(0, 5000), Date.now(), sessionId);
                     state.audit("tool.deploy_verified", { sessionId, mergeSha, deployStatus: dv.status }, sessionId);
+                    // ---- beta.36: deploy ERRORED -> auto-repair loop ----
+                    const repairCfg = config.vercel.deploy_repair;
+                    if (dv.status === "error" && repairCfg?.enabled) {
+                        const repairBudget = repairBudgetUsd && repairBudgetUsd > 0
+                            ? repairBudgetUsd
+                            : config.budgets.daily_max_usd * repairCfg.budget_ratio;
+                        const repairResult = await runDeployRepair(buildDeployRepairDeps({ config, state, git, pat, crystallise, loop, api, resolveGitToken, resolveVercelToken, requester: row.requester }), {
+                            sessionId,
+                            repoFullName: row.repo,
+                            originalMergeSha: mergeSha,
+                            originalDeploy: { status: "error", detail: dv.detail, deploymentUrl: dv.deploymentUrl, logsExcerpt: dv.logsExcerpt },
+                            maxAttempts: repairCfg.max_attempts,
+                            repairBudgetUsd: repairBudget,
+                        });
+                        repairMessage = ` ${repairResult.message}`;
+                        if (repairResult.outcome === "repaired" && repairResult.finalDeploy) {
+                            deploy = {
+                                status: repairResult.finalDeploy.status,
+                                detail: repairResult.finalDeploy.detail,
+                                deploymentUrl: repairResult.finalDeploy.deploymentUrl,
+                                logsExcerpt: repairResult.finalDeploy.logsExcerpt,
+                            };
+                        }
+                    }
                 }
             }
             const deployMsg = deploy?.status === "ready" ? ` Deploy is READY (${deploy.deploymentUrl}).`
@@ -1208,7 +1268,7 @@ export function bootstrapHarnessSync(api) {
                             : "";
             return {
                 ok: true, merged: true, mergeSha, recommendation: rec, deploy,
-                message: `Merged PR #${row.pr_number} (squash, ${mergeSha.slice(0, 12)}).${deployMsg}`,
+                message: `Merged PR #${row.pr_number} (squash, ${mergeSha.slice(0, 12)}).${deployMsg}${repairMessage}`,
             };
         },
         disposers: [],
@@ -1670,6 +1730,129 @@ function registerOkfAutoForwardHooks(api, runtime) {
         api.logger.info("[harness] okf-auto-forward: hooks registered");
     }
     return disposers;
+}
+/** beta.36: extract a PR/MR number from a GitHub/GitLab PR URL. */
+function parsePrNumber(prUrl) {
+    const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
+    return m ? Number(m[1]) : undefined;
+}
+/**
+ * beta.36: build the deps bundle for the post-merge deploy-repair state
+ * machine. All I/O the machine needs (run a repair pipeline, verify a deploy,
+ * revert merges, persist) is closed over the runtime's adapters here.
+ */
+function buildDeployRepairDeps(ctx) {
+    const { config, state, git, pat, crystallise, loop, api, resolveGitToken, resolveVercelToken, requester } = ctx;
+    const tokenFor = async (repoFullName) => {
+        const resolution = pat.resolve({ slackUserId: requester, gitHubUser: repoFullName.split("/")[0], repoFullName });
+        return resolveGitToken(resolution);
+    };
+    return {
+        audit: (event, payload, sessionId) => state.audit(event, payload, sessionId),
+        logger: api.logger,
+        persist: (sessionId, patch) => {
+            const cols = Object.keys(patch);
+            if (cols.length === 0)
+                return;
+            const set = cols.map((c) => `${c} = ?`).join(", ");
+            const vals = cols.map((c) => patch[c]);
+            state.db.prepare(`UPDATE sessions SET ${set}, updated_at = ? WHERE id = ?`).run(...vals, Date.now(), sessionId);
+        },
+        verifyDeploy: async ({ repoFullName, sha }) => {
+            void repoFullName;
+            const vToken = await resolveVercelToken();
+            if (!vToken || !config.vercel?.project_id) {
+                return { status: "unavailable", detail: "no vercel token/project" };
+            }
+            const dv = await verifyDeploymentForSha({
+                vercelToken: vToken,
+                teamId: config.vercel.team_id,
+                projectId: config.vercel.project_id,
+                sha,
+                waitSeconds: config.vercel.preview_wait_seconds,
+                logger: api.logger,
+            });
+            return { status: dv.status, detail: dv.detail, deploymentUrl: dv.deploymentUrl, logsExcerpt: dv.logsExcerpt };
+        },
+        revertMerges: async ({ sessionId, repoFullName, shas }) => {
+            const ghToken = await tokenFor(repoFullName);
+            const r = await git.revertCommits(repoFullName, shas, ghToken, { baseBranch: config.repos.default_base_branch });
+            if (r.pushedToMain) {
+                return { ok: true, pushedToMain: true, detail: `reverted ${r.revertedShas.length} commit(s) straight to ${config.repos.default_base_branch}` };
+            }
+            // Branch-protected: open + auto-merge a revert PR.
+            try {
+                const pr = await createPullRequest({
+                    repoFullName,
+                    head: r.branch,
+                    base: config.repos.default_base_branch,
+                    title: `harness: revert failed deploy-repair chain (session ${sessionId.slice(0, 8)})`,
+                    body: `Automated revert of a deploy-repair chain that could not produce a healthy Vercel deployment. Reverts ${r.revertedShas.length} merge(s) to restore \`${config.repos.default_base_branch}\` to a working state.`,
+                    ghToken,
+                    draft: false,
+                });
+                await mergePullRequest({ repoFullName, prNumber: pr.number, ghToken, method: "merge" });
+                await git.releaseByPath(r.worktreePath, repoFullName).catch(() => { });
+                return { ok: true, pushedToMain: false, revertPrUrl: pr.htmlUrl, detail: `reverted via auto-merged revert PR ${pr.htmlUrl}` };
+            }
+            catch (err) {
+                await git.releaseByPath(r.worktreePath, repoFullName).catch(() => { });
+                throw new Error(`revert branch pushed but revert-PR merge failed: ${String(err)}`);
+            }
+        },
+        runRepairAttempt: async ({ sessionId, repoFullName, attempt, deploy, budgetRemaining }) => {
+            // Build a repair brief from the deploy error + logs.
+            const logs = (deploy.logsExcerpt ?? deploy.detail ?? "").slice(0, 6000);
+            const repairText = `The production Vercel deployment for the merge to \`${config.repos.default_base_branch}\` FAILED to build/deploy. ` +
+                `Diagnose the cause from the build output below and fix it. This is deploy-repair attempt ${attempt}. ` +
+                `Make the minimal change that makes the deployment succeed; do not change unrelated behaviour.\n\n` +
+                `Vercel deploy error: ${deploy.detail}\n\nBuild log excerpt:\n${logs}`;
+            let brief;
+            try {
+                const c = await crystallise(repairText);
+                if (c.kind !== "brief") {
+                    return { shipped: false, costUsd: 0, reason: `crystallise did not yield a brief (${c.kind})` };
+                }
+                brief = { ...c.brief, repoHint: repoFullName };
+            }
+            catch (err) {
+                return { shipped: false, costUsd: 0, reason: `crystallise threw: ${String(err)}` };
+            }
+            // Create a distinct repair session sharing the parent's requester,
+            // budgeted by the remaining repair pool.
+            const repairSessionId = globalThis.crypto?.randomUUID?.() ?? `repair-${Date.now()}`;
+            state.db
+                .prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran, parent_session_id)
+           VALUES (?, ?, '', ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0, ?)`)
+                .run(repairSessionId, `agent:${repairSessionId}`, requester, requester, JSON.stringify(brief), Date.now(), Date.now(), budgetRemaining, sessionId);
+            state.audit("deploy.repair_session_started", { sessionId, repairSessionId, attempt }, sessionId);
+            let outcome;
+            try {
+                outcome = await loop.run(repairSessionId, brief);
+            }
+            catch (err) {
+                return { shipped: false, costUsd: 0, reason: `repair loop threw: ${String(err)}` };
+            }
+            if (outcome.status !== "shipped") {
+                // Read whatever PR (if any) the repair session opened for the handoff.
+                const rr = state.db.prepare(`SELECT final_pr_url FROM sessions WHERE id = ?`).get(repairSessionId);
+                return { shipped: false, costUsd: outcome.totalCostUsd, reason: `repair pipeline ${outcome.status}: ${"reason" in outcome ? outcome.reason : ""}`, prUrl: rr?.final_pr_url ?? undefined };
+            }
+            // Merge the repair PR.
+            const prNumber = parsePrNumber(outcome.prUrl);
+            if (!prNumber)
+                return { shipped: false, costUsd: outcome.totalCostUsd, reason: `could not parse PR number from ${outcome.prUrl}`, prUrl: outcome.prUrl };
+            try {
+                const ghToken = await tokenFor(repoFullName);
+                const merged = await mergePullRequest({ repoFullName, prNumber, ghToken, method: "squash" });
+                state.db.prepare(`UPDATE sessions SET pr_merged = 1, pr_merged_at = ?, updated_at = ? WHERE id = ?`).run(Date.now(), Date.now(), repairSessionId);
+                return { shipped: true, prUrl: outcome.prUrl, prNumber, mergeSha: merged.sha, costUsd: outcome.totalCostUsd };
+            }
+            catch (err) {
+                return { shipped: false, costUsd: outcome.totalCostUsd, reason: `repair PR merge failed: ${String(err)}`, prUrl: outcome.prUrl, prNumber };
+            }
+        },
+    };
 }
 function renderPrBody(brief, review) {
     // beta.35 fix #3: when the run ships WITHOUT a clean adversary pass

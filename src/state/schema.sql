@@ -28,8 +28,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   pr_number                INTEGER,          -- GitHub PR number (for harness_merge_pr)
   merge_recommendation     TEXT,             -- 'merge' | 'do_not_merge'
   merge_recommendation_reason TEXT,          -- human-readable reasoning
-  deploy_status            TEXT,             -- 'ready'|'error'|'pending'|'unavailable'|NULL
+  deploy_status            TEXT,             -- 'ready'|'error'|'pending'|'unavailable'|'reverted'|'repair_budget_paused'|NULL
   deploy_detail            TEXT,             -- logs excerpt / deployment url / error
+  deploy_repair_attempt    INTEGER,          -- beta.36: post-merge deploy-repair attempt count
+  parent_session_id        TEXT,             -- beta.36: repair session -> parent session id
   -- Recovery checkpointing
   current_cycle            INTEGER NOT NULL DEFAULT 0,
   last_completed_sub_task  TEXT,
