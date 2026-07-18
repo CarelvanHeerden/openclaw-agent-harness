@@ -20,7 +20,8 @@
       "harness_cancel",
       "harness_resume",
       "harness_retention_prune",
-      "harness_bootstrap_test_repo"
+      "harness_bootstrap_test_repo",
+      "harness_merge_pr"
     ]
   },
   "configSchema": {
@@ -37,7 +38,7 @@
           "listener_enabled": {
             "type": "boolean",
             "default": false,
-            "description": "When true, the plugin listens to `channel` and treats allow-listed messages as dev requests (autonomous mode). When false (default), the OpenClaw agent orchestrates the harness via tools (harness_run, harness_status, ...) and the plugin does not listen to Slack."
+            "description": "DEPRECATED as of beta.34: IGNORED. The Slack listener was removed; the harness is tool-driven only (drive it via harness_run / harness_start_session / harness_merge_pr). A `true` value is logged and does nothing. This key is retained only for config back-compat."
           },
           "channel": {
             "type": "string",
@@ -217,6 +218,11 @@
           },
           "credential_service": {
             "type": "string"
+          },
+          "api_key_env": {
+            "type": "string",
+            "default": "VERCEL_TOKEN",
+            "description": "Env-var fallback for the Vercel token when the vault is unavailable or empty."
           },
           "team_id": {
             "type": "string"
