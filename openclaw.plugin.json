@@ -5,6 +5,9 @@
   "activation": {
     "onStartup": true
   },
+  "skills": [
+    "skills/harness-credentials"
+  ],
   "contracts": {
     "tools": [
       "harness_run",
@@ -299,11 +302,28 @@
       },
       "pat_routing": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
+        "description": "Git credential routing. beta.25 hierarchical shape (github/gitlab -> org -> person -> {token,name,email,slack_user_id}) plus legacy flat fields. See docs/GITHUB_AUTH.md.",
         "properties": {
+          "github": {
+            "type": "object",
+            "description": "Hierarchical GitHub routing: org -> person -> {token:{value|env|vault}, name, email, slack_user_id}.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": { "type": "object" }
+            }
+          },
+          "gitlab": {
+            "type": "object",
+            "description": "Hierarchical GitLab routing: org -> person -> {token:{value|env|vault}, name, email, slack_user_id}.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": { "type": "object" }
+            }
+          },
           "overrides": {
             "type": "object",
-            "description": "{ slackUserId: { repoFullNameOrOwner: credentialServiceName } }",
+            "description": "Legacy: { slackUserId: { repoFullNameOrOwner: credentialServiceName } }",
             "additionalProperties": {
               "type": "object",
               "additionalProperties": {
@@ -313,6 +333,7 @@
           },
           "commit_identity": {
             "type": "object",
+            "description": "Legacy per-user commit identity (superseded by hierarchical name/email).",
             "additionalProperties": {
               "type": "object",
               "required": [
@@ -330,9 +351,26 @@
               }
             }
           },
+          "user_identities": {
+            "type": "object",
+            "additionalProperties": { "type": "object" }
+          },
+          "default_provider": { "type": "string", "enum": ["github", "gitlab"] },
+          "provider_by_owner": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "enum": ["github", "gitlab"] }
+          },
+          "providers": {
+            "type": "object",
+            "additionalProperties": { "type": "object" }
+          },
+          "auth": {
+            "type": "object",
+            "additionalProperties": true
+          },
           "default_service_pattern": {
             "type": "string",
-            "default": "github-{user}-{org}"
+            "default": "github-{owner}"
           }
         }
       }

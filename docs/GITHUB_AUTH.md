@@ -57,7 +57,96 @@ Placeholders (all lower-cased):
 
 **Default: `github-{owner}`** (per-owner tokens).
 
-## Multi-user (per-requester) tokens
+## Hierarchical routing (recommended for multi-user) — beta.25
+
+The flat `default_service_pattern` cannot encode all the axes that matter for
+a real team: **provider × org × person × purpose** (e.g. Carel's *private*
+token vs Carel's *stitch* token). Beta.25 adds a first-class hierarchy:
+`pat_routing.<provider>.<org>.<person>`.
+
+```jsonc
+{
+  "pat_routing": {
+    "github": {
+      "stitch-vercel": {
+        "Janice": {
+          "token": { "env": "GH_STITCH_JANICE" },
+          "name":  "Janice Doe",
+          "email": "janice@stitch.example",
+          "slack_user_id": "U0..."
+        }
+      },
+      "CarelvanHeerden": {
+        "CarelvanHeerden": {
+          "token": { "value": "ghp_..." },
+          "name":  "Carel van Heerden",
+          "email": "carel@example.com",
+          "slack_user_id": "U03HD5QEBFU"
+        }
+      }
+    },
+    "gitlab": {
+      "exipay": {
+        "CarelvanHeerden": { "token": { "env": "GL_EXIPAY_CAREL" }, "name": "...", "email": "...", "slack_user_id": "U0..." },
+        "Francois":        { "token": { "vault": "gitlab-exipay-francois" }, "name": "...", "email": "...", "slack_user_id": "U0..." }
+      }
+    }
+  }
+}
+```
+
+- **org** = the repo *owner* (`owner/repo` → `owner`).
+- **person** = *who is asking*, matched to the requester by `slack_user_id`.
+- **token** = exactly one of `value` (inline secret in `openclaw.json`),
+  `env` (env-var name), or `vault` (credential-vault service name).
+- **name + email** become the git commit identity — colocated per person per
+  org, so the same person may commit under different emails in different orgs.
+- **No silent fallback.** If an org is configured here but the requester is
+  not listed under it, the run fails with a clear
+  "no token configured for requester" error rather than borrowing another
+  user's token.
+
+The hierarchy takes precedence over the legacy flat fields below, which remain
+for back-compat.
+
+### Vault is a first-class requirement for corporate multi-user
+
+For a true multi-user deployment, install the **memory-hybrid** plugin and use
+`vault` token pointers. Rationale:
+
+- The operator **should not see** other users' tokens — with `vault`, the
+  secret lives only in the encrypted credential store; `openclaw.json` holds
+  just a pointer.
+- Users **should not need to know their Slack user id** — when a user sets up
+  their token by talking to OpenClaw, the `slack_user_id` is captured
+  automatically from the inbound message.
+
+The bundled **`harness-credentials`** skill (auto-installed with the plugin)
+walks the agent through storing credentials in the correct tier:
+
+1. **Vault** (recommended): store token in the vault under
+   `harness-pat-{provider}-{org}-{person}`, add a `{ "vault": ... }` pointer,
+   auto-capture the Slack id.
+2. **Self-write `openclaw.json` + reload**: no vault, but the agent can edit
+   config — writes an `env`/`value` pointer and reloads.
+3. **Emit copy-paste JSON**: no vault and no config-write — the agent prints
+   the exact snippet for the operator to paste (and the operator must add the
+   `slack_user_id` by hand, since there is no auto-capture on a manual edit).
+
+`value`/`env` (non-vault) pointers are fine for **single-operator or
+small-team** setups where the operator accepts secrets living in config/env.
+They are **not** appropriate for corporate multi-user, where the operator
+must not be able to read colleagues' tokens.
+
+### Preflight
+
+Before a run, the harness checks it has routing + `name` + a valid `email` +
+a resolvable token for the requester and target repo. If anything is missing
+it returns an actionable message up front ("Before I run this on X I need a
+git commit email and a github token…") instead of failing mid-run. Relay that
+to the user and use the `harness-credentials` skill to fill the gap.
+
+## Multi-user (per-requester) tokens (legacy flat template)
 
 To give each requester their **own** token, map their Slack id to their
 provider login and use `{requester}` (or `{provider}-{requester}`) in the

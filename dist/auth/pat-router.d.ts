@@ -20,7 +20,7 @@
  * credential vault / env. Keeping this router side-effect-free means it is
  * trivially unit-testable and safe to log.
  */
-import type { GitProvider, PatRoutingConfig } from "../config.js";
+import type { GitProvider, PatRoutingConfig, TokenPointer } from "../config.js";
 export interface PatResolutionInput {
     slackUserId: string;
     slackHandle?: string;
@@ -38,7 +38,23 @@ export interface PatResolution {
     };
     apiBase: string;
     apiKeyEnv: string;
-    provenance: "override_repo" | "override_owner" | "default_pattern";
+    provenance: "hierarchy" | "override_repo" | "override_owner" | "default_pattern";
+    /**
+     * beta.25: when the hierarchical config matched, the token pointer for the
+     * resolved person. The caller resolves this DIRECTLY (value|env|vault),
+     * bypassing the legacy vault-first/env-fallback path. Undefined for
+     * legacy (flat) resolutions, which continue to use `credentialService`.
+     */
+    tokenPointer?: TokenPointer;
+    /** beta.25: person key that matched in the hierarchy (for logging/audit). */
+    person?: string;
+}
+/** Thrown when the hierarchical config exists but the requester has no entry. */
+export declare class PatRequesterNotAuthorisedError extends Error {
+    readonly provider: GitProvider;
+    readonly org: string;
+    readonly slackUserId: string;
+    constructor(provider: GitProvider, org: string, slackUserId: string);
 }
 export declare class PatRouter {
     private readonly cfg;
@@ -48,6 +64,16 @@ export declare class PatRouter {
     private providerConfig;
     /** Requester login for the active provider, from user_identities. May be undefined. */
     private requesterLogin;
+    /** Does the hierarchical config define any org entries for this provider? */
+    private hasHierarchyFor;
+    /**
+     * beta.25 hierarchical lookup: provider -> org(owner) -> person, matched to
+     * the requester by `slack_user_id`. Returns undefined if this provider/org
+     * is not configured hierarchically (caller then uses the legacy path).
+     * Throws PatRequesterNotAuthorisedError if the org IS configured but the
+     * requester has no entry (no silent fallback).
+     */
+    private resolveHierarchy;
     resolve(input: PatResolutionInput): PatResolution;
 }
 //# sourceMappingURL=pat-router.d.ts.map

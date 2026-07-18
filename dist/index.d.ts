@@ -12,7 +12,7 @@
  *
  * Shape mirrors memory-hybrid.
  */
-import type { HarnessConfig } from "./config.js";
+import type { HarnessConfig, TokenPointer } from "./config.js";
 import { openStateStore } from "./state/store.js";
 import { OrchestratorLoop } from "./orchestrator/loop.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
@@ -156,7 +156,21 @@ export interface HarnessRuntime {
         credentialService: string;
         apiKeyEnv: string;
         provider: string;
+        tokenPointer?: TokenPointer;
+        person?: string;
     }) => Promise<string>;
+    /**
+     * beta.25: preflight completeness check. Given a requester + concrete
+     * repo, verify EVERYTHING the harness will need to commit + push on that
+     * requester's behalf is present up front: routing entry, commit identity
+     * (name + email), and a resolvable token. Returns { ok:true } or
+     * { ok:false, missing:[...], message } describing exactly what to ask the
+     * user for BEFORE a run starts. Never throws.
+     */
+    preflight: (args: {
+        requester: string;
+        repoFullName: string;
+    }) => Promise<PreflightResult>;
     /**
      * Resolve the credential service name the pat-router would use for a repo
      * (or the first allowed repo when omitted). For health/introspection.
@@ -177,6 +191,15 @@ export interface HarnessRuntime {
      * notifications have flushed before closing the state DB.
      */
     asyncBootstrap?: Promise<void>;
+}
+export interface PreflightResult {
+    ok: boolean;
+    /** Machine-readable list of what's missing: 'token' | 'email' | 'name' | 'routing' | 'slack_user_id'. */
+    missing: string[];
+    /** Human-facing, actionable message to relay to the requester. Empty when ok. */
+    message: string;
+    /** Provenance of the routing decision, for logging. */
+    provenance?: string;
 }
 /**
  * Synchronous phase of plugin bootstrap.

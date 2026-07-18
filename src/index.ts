@@ -17,7 +17,7 @@ import { readFile, writeFile, stat } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
-import type { HarnessConfig } from "./config.js";
+import type { HarnessConfig, TokenPointer } from "./config.js";
 import { parseHarnessConfig } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { OrchestratorLoop } from "./orchestrator/loop.js";
@@ -174,7 +174,16 @@ export interface HarnessRuntime {
    */
   githubToken: (service: string) => Promise<string>;
   /** Provider-aware token resolver: vault-first, then per-provider env fallback. */
-  gitToken: (r: { credentialService: string; apiKeyEnv: string; provider: string }) => Promise<string>;
+  gitToken: (r: { credentialService: string; apiKeyEnv: string; provider: string; tokenPointer?: TokenPointer; person?: string }) => Promise<string>;
+  /**
+   * beta.25: preflight completeness check. Given a requester + concrete
+   * repo, verify EVERYTHING the harness will need to commit + push on that
+   * requester's behalf is present up front: routing entry, commit identity
+   * (name + email), and a resolvable token. Returns { ok:true } or
+   * { ok:false, missing:[...], message } describing exactly what to ask the
+   * user for BEFORE a run starts. Never throws.
+   */
+  preflight: (args: { requester: string; repoFullName: string }) => Promise<PreflightResult>;
   /**
    * Resolve the credential service name the pat-router would use for a repo
    * (or the first allowed repo when omitted). For health/introspection.
@@ -190,6 +199,16 @@ export interface HarnessRuntime {
    * notifications have flushed before closing the state DB.
    */
   asyncBootstrap?: Promise<void>;
+}
+
+export interface PreflightResult {
+  ok: boolean;
+  /** Machine-readable list of what's missing: 'token' | 'email' | 'name' | 'routing' | 'slack_user_id'. */
+  missing: string[];
+  /** Human-facing, actionable message to relay to the requester. Empty when ok. */
+  message: string;
+  /** Provenance of the routing decision, for logging. */
+  provenance?: string;
 }
 
 let currentRuntime: HarnessRuntime | null = null;
@@ -364,8 +383,44 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   // user + provider. NOT memoised across services (different users/repos ->
   // different services), but the CredentialAdapter caches per service.
   const resolveGitToken = async (
-    r: { credentialService: string; apiKeyEnv: string; provider: string },
+    r: { credentialService: string; apiKeyEnv: string; provider: string; tokenPointer?: TokenPointer; person?: string },
   ): Promise<string> => {
+    // beta.25: hierarchical routing supplies a direct token pointer
+    // (value | env | vault). This takes precedence over the legacy
+    // vault-service-name path and does NOT silently fall back to a
+    // per-provider env var — if the pointer can't resolve, fail loud so a
+    // misconfigured user's request never borrows another user's token.
+    if (r.tokenPointer) {
+      const tp = r.tokenPointer;
+      if (tp.value) return tp.value;
+      if (tp.env) {
+        const v = process.env[tp.env];
+        if (v) {
+          api.logger.info("[harness] git token resolved from hierarchy env pointer", { envVar: tp.env, provider: r.provider, person: r.person });
+          return v;
+        }
+        throw new Error(
+          `no ${r.provider} token: hierarchy env pointer '${tp.env}' is unset (person '${r.person ?? "?"}', service '${r.credentialService}')`,
+        );
+      }
+      if (tp.vault) {
+        try {
+          const v = await creds.getToken(tp.vault, "token");
+          if (v) return v;
+        } catch (err) {
+          throw new Error(
+            `no ${r.provider} token: hierarchy vault pointer '${tp.vault}' lookup failed (${String(err)}). ` +
+              `Install/enable memory-hybrid, or switch this person's token pointer to env/value.`,
+          );
+        }
+        throw new Error(
+          `no ${r.provider} token: hierarchy vault pointer '${tp.vault}' returned empty (person '${r.person ?? "?"}')`,
+        );
+      }
+      throw new Error(
+        `no ${r.provider} token: hierarchy person '${r.person ?? "?"}' has an empty token pointer (need one of value|env|vault)`,
+      );
+    }
     try {
       const v = await creds.getToken(r.credentialService, "token");
       if (v) return v;
@@ -1153,6 +1208,67 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       } catch {
         return undefined;
       }
+    },
+    preflight: async ({ requester, repoFullName }) => {
+      // 1) Resolve routing. A PatRequesterNotAuthorisedError here means the
+      //    org is configured hierarchically but this requester has no entry.
+      let resolution;
+      try {
+        resolution = pat.resolve({
+          slackUserId: requester,
+          gitHubUser: repoFullName.split("/")[0]!,
+          repoFullName,
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          missing: ["routing"],
+          message:
+            `I don't have credentials set up for you to work in ${repoFullName}. ` +
+            `${String(err instanceof Error ? err.message : err)} ` +
+            `Tell me your git email and a token for this repo and I'll store it, ` +
+            `or ask your OpenClaw operator to add you.`,
+        };
+      }
+
+      // 2) Commit identity completeness (name + email). Email is the one
+      //    Carel flagged: fail up front, not mid-run.
+      const missing: string[] = [];
+      const idName = resolution.commitIdentity?.name?.trim();
+      const idEmail = resolution.commitIdentity?.email?.trim();
+      // A synthesised default identity (owner + noreply) is the legacy
+      // fallback; only treat email as genuinely present when it looks real.
+      if (!idName) missing.push("name");
+      if (!idEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(idEmail)) missing.push("email");
+
+      // 3) Token resolvability. Try to resolve without leaking the value.
+      let tokenOk = false;
+      let tokenErr = "";
+      try {
+        const t = await resolveGitToken(resolution);
+        tokenOk = !!t;
+      } catch (err) {
+        tokenErr = String(err instanceof Error ? err.message : err);
+      }
+      if (!tokenOk) missing.push("token");
+
+      if (missing.length === 0) {
+        return { ok: true, missing: [], message: "", provenance: resolution.provenance };
+      }
+
+      const parts: string[] = [];
+      if (missing.includes("email")) parts.push("a git commit email address");
+      if (missing.includes("name")) parts.push("a git commit name");
+      if (missing.includes("token")) parts.push(`a ${resolution.provider} token${tokenErr ? ` (${tokenErr})` : ""}`);
+      return {
+        ok: false,
+        missing,
+        provenance: resolution.provenance,
+        message:
+          `Before I run this on ${repoFullName} I need ${parts.join(" and ")}. ` +
+          `Please provide ${missing.includes("token") ? "the token" : "it"} and I'll ` +
+          `store it under your identity (${resolution.person ?? requester}) so future runs just work.`,
+      };
     },
     disposers: [],
   };

@@ -144,7 +144,50 @@ export interface SafetyConfig {
 
 export type GitProvider = "github" | "gitlab";
 
+/**
+ * A token pointer. Exactly one of `value` | `env` | `vault` must be set.
+ *   - value: inline secret in openclaw.json (single-operator; setter accepts risk)
+ *   - env:   name of an environment variable holding the token
+ *   - vault: credential-vault service name (requires memory-hybrid plugin)
+ */
+export interface TokenPointer {
+  value?: string;
+  env?: string;
+  vault?: string;
+}
+
+/**
+ * A person node in the hierarchical `pat_routing.<provider>.<org>.<person>`
+ * tree. Colocates everything about one requester's authority for one org:
+ * the token to commit under, the git commit identity, and the Slack user id
+ * that maps an inbound request to this person.
+ */
+export interface PersonToken {
+  /** Token pointer: one of value | env | vault. */
+  token: TokenPointer;
+  /** Git commit author name. Required. */
+  name: string;
+  /** Git commit author email. Required (validated at config load). */
+  email: string;
+  /**
+   * Slack user id for this person. In vault / self-write tiers OpenClaw
+   * captures this automatically from the inbound message. In the manual
+   * copy-paste tier the operator must fill it in by hand.
+   */
+  slack_user_id?: string;
+}
+
 export interface PatRoutingConfig {
+  /**
+   * beta.25 hierarchical routing. Keyed by provider, then repo owner/org,
+   * then person key. Person is matched to the requester via
+   * `PersonToken.slack_user_id`. Takes precedence over the legacy flat
+   * fields below. Example:
+   *   { github: { "stitch-vercel": { "Janice": { token: {env:"..."}, name, email, slack_user_id } } } }
+   */
+  github?: Record<string, Record<string, PersonToken>>;
+  gitlab?: Record<string, Record<string, PersonToken>>;
+
   overrides: Record<string, Record<string, string>>;    // { userId: { orgOrRepo: credentialService } }
   commit_identity: Record<string, { name: string; email: string }>;
   /**
@@ -286,6 +329,36 @@ const DEFAULTS: HarnessConfig = {
   },
 };
 
+/**
+ * beta.25: validate the hierarchical pat_routing tree. Each person node must
+ * carry a name, a real-looking email, and exactly one token pointer
+ * (value|env|vault). Fails loud at config load so the operator never
+ * discovers a missing email mid-run.
+ */
+export function validatePatHierarchy(pr: PatRoutingConfig): void {
+  const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  for (const provider of ["github", "gitlab"] as const) {
+    const orgs = pr[provider];
+    if (!orgs) continue;
+    for (const [org, people] of Object.entries(orgs)) {
+      if (!people || typeof people !== "object") {
+        throw new Error(`harness.pat_routing.${provider}.${org} must be an object of { person: {...} }`);
+      }
+      for (const [person, node] of Object.entries(people)) {
+        const loc = `harness.pat_routing.${provider}.${org}.${person}`;
+        if (!node || typeof node !== "object") throw new Error(`${loc} must be an object`);
+        if (!node.name || !node.name.trim()) throw new Error(`${loc}.name is required`);
+        if (!node.email || !emailRe.test(node.email)) throw new Error(`${loc}.email is required and must be a valid email`);
+        const tp = node.token;
+        if (!tp || typeof tp !== "object") throw new Error(`${loc}.token is required (one of value|env|vault)`);
+        const set = [tp.value, tp.env, tp.vault].filter((x) => x !== undefined && x !== "");
+        if (set.length === 0) throw new Error(`${loc}.token must set exactly one of value|env|vault (none set)`);
+        if (set.length > 1) throw new Error(`${loc}.token must set exactly one of value|env|vault (${set.length} set)`);
+      }
+    }
+  }
+}
+
 function mergeDeep<T>(base: T, override: unknown): T {
   if (override === null || override === undefined) return base;
   if (typeof base !== "object" || Array.isArray(base)) return (override as T) ?? base;
@@ -340,6 +413,10 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
     if (!merged.vercel.credential_service) throw new Error("harness.vercel.credential_service required when vercel.enabled");
     if (!merged.vercel.project_id) throw new Error("harness.vercel.project_id required when vercel.enabled");
   }
+
+  // beta.25: validate the hierarchical pat_routing tree up front so
+  // operators find misconfig at config-load / reload, not mid-run.
+  validatePatHierarchy(merged.pat_routing);
 
   return merged;
 }

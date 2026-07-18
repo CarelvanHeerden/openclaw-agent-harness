@@ -20,6 +20,21 @@
  * credential vault / env. Keeping this router side-effect-free means it is
  * trivially unit-testable and safe to log.
  */
+/** Thrown when the hierarchical config exists but the requester has no entry. */
+export class PatRequesterNotAuthorisedError extends Error {
+    provider;
+    org;
+    slackUserId;
+    constructor(provider, org, slackUserId) {
+        super(`no ${provider} token configured for requester '${slackUserId}' under org '${org}'. ` +
+            `Add a person entry at pat_routing.${provider}.${org}.<person> with a matching slack_user_id, ` +
+            `token, name and email. (No silent fallback to another user's token.)`);
+        this.provider = provider;
+        this.org = org;
+        this.slackUserId = slackUserId;
+        this.name = "PatRequesterNotAuthorisedError";
+    }
+}
 const PROVIDER_DEFAULTS = {
     github: { api_base: "https://api.github.com", api_key_env: "GH_TOKEN" },
     gitlab: { api_base: "https://gitlab.com/api/v4", api_key_env: "GITLAB_TOKEN" },
@@ -53,6 +68,36 @@ export class PatRouter {
     requesterLogin(slackUserId, provider) {
         return this.cfg.user_identities?.[slackUserId]?.[provider];
     }
+    /** Does the hierarchical config define any org entries for this provider? */
+    hasHierarchyFor(provider, owner) {
+        const orgs = this.cfg[provider];
+        if (!orgs)
+            return false;
+        return !!(orgs[owner] ?? orgs[owner.toLowerCase()]);
+    }
+    /**
+     * beta.25 hierarchical lookup: provider -> org(owner) -> person, matched to
+     * the requester by `slack_user_id`. Returns undefined if this provider/org
+     * is not configured hierarchically (caller then uses the legacy path).
+     * Throws PatRequesterNotAuthorisedError if the org IS configured but the
+     * requester has no entry (no silent fallback).
+     */
+    resolveHierarchy(provider, owner, slackUserId) {
+        const orgs = this.cfg[provider];
+        if (!orgs)
+            return undefined;
+        const orgNode = orgs[owner] ?? orgs[owner.toLowerCase()];
+        if (!orgNode)
+            return undefined;
+        for (const [person, node] of Object.entries(orgNode)) {
+            if (node.slack_user_id && node.slack_user_id === slackUserId) {
+                return { person, node };
+            }
+        }
+        // Org is configured hierarchically but this requester is not listed.
+        // Hard fail — never fall back to another person's token.
+        throw new PatRequesterNotAuthorisedError(provider, owner, slackUserId);
+    }
     resolve(input) {
         const parts = input.repoFullName.split("/");
         if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -62,6 +107,26 @@ export class PatRouter {
         const repo = parts[1];
         const provider = this.resolveProvider(owner, input.provider);
         const pcfg = this.providerConfig(provider);
+        // beta.25: hierarchical routing takes precedence when configured for this
+        // provider+org. It carries its own token pointer + commit identity, so it
+        // short-circuits the legacy vault-service resolution entirely.
+        if (this.hasHierarchyFor(provider, owner)) {
+            const hit = this.resolveHierarchy(provider, owner, input.slackUserId);
+            if (hit) {
+                return {
+                    provider,
+                    // Synthetic service name for logging/audit continuity; the token is
+                    // resolved from tokenPointer, not this name.
+                    credentialService: `${provider}-${owner.toLowerCase()}-${hit.person.toLowerCase()}`,
+                    commitIdentity: { name: hit.node.name, email: hit.node.email },
+                    apiBase: pcfg.api_base,
+                    apiKeyEnv: pcfg.api_key_env,
+                    provenance: "hierarchy",
+                    tokenPointer: hit.node.token,
+                    person: hit.person,
+                };
+            }
+        }
         const userMap = this.cfg.overrides[input.slackUserId] ?? {};
         let credentialService;
         let provenance;
