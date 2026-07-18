@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.1.0-beta.28] -- 2026-07-18
+
+### Fixed
+
+- **Actually disable tools on the structured extractors (beta.27 used the
+  wrong SDK option).** beta.27 set `allowedTools: []` to stop the
+  classifier/crystalliser going agentic — but `allowedTools` is the
+  *auto-approve* list, not a restriction (SDK docs: "To restrict which tools
+  are available, use the `tools` option instead"). So beta.27 was a no-op and
+  the ProjectThanos smoke reproduced the exact failure on beta.27:
+  `[classifier] extractJson failed: no JSON in output ... "I'm in plan mode,
+  so I'll start by exploring the codebase ... Let me launch Explore agents"`.
+
+  Correct fix: **`tools: []`** on the structured `sdk.query` call — the
+  documented switch that disables all built-in tools (sdk.d.ts: "[] (empty
+  array) - Disable all built-in tools"). Also names the exploration tools in
+  `disallowedTools` as a second layer, and keeps `permissionMode: "plan"`.
+  The improved "model returned prose" error (from beta.27) fired correctly and
+  confirmed the diagnosis in the logs.
+
+  Only the four structured extractors (classifier/crystalliser/lead/adversary,
+  which share one `structuredCall()`) are affected. `runWorkerSdk` keeps full
+  tool access — the worker still needs tools to do the actual coding.
+
+  Lesson logged: verify SDK option semantics against the type defs before
+  shipping, don't assume from the name.
+
+### Tests
+
+- 369 -> 370: assert `tools: []` (not just `allowedTools: []`) in source and
+  compiled output, plus a regression guard that `allowedTools: []` alone is
+  insufficient.
+
 ## [0.1.0-beta.27] -- 2026-07-18
 
 ### Fixed
