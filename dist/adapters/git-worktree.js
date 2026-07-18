@@ -130,7 +130,21 @@ esac
                 // remote URL is already the plain form; askpass injects creds.
                 await this.run(["-C", bare, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"], undefined, ask.path);
             }
-            await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch]);
+            // beta.29 fix: `worktree add` must run WITH the askpass helper.
+            //
+            // The bare clone above uses `--filter=blob:none` (partial clone /
+            // promisor remote), so blobs are fetched lazily. Checking out files
+            // during `worktree add` triggers a promisor fetch back to origin. By
+            // this point we've `remote set-url` to the plain (token-less) URL, and
+            // the previous code ran `worktree add` with NO askpass -> git had no
+            // credential source, tried to prompt, and failed with
+            //   `fatal: could not read Username for 'https://github.com': No such device or address`
+            //   `fatal: could not fetch <sha> from promisor remote`
+            // (Staging ProjectThanos session 781a9532.) Initial clone worked only
+            // because askpass WAS wired there. Thread the same helper through the
+            // worktree-add blob fetch. GIT_TERMINAL_PROMPT=0 in the helper env also
+            // turns a would-be hang into a fast, diagnosable failure.
+            await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path);
             await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
             await this.run(["-C", wt, "config", "user.email", ctx.commitIdentity.email]);
             // Ensure the worktree remote is the plain URL (no token on disk).
