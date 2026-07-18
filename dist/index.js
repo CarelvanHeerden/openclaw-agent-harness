@@ -642,7 +642,12 @@ export function bootstrapHarnessSync(api) {
                 title: `harness: ${brief.title}`,
                 body: renderPrBody(brief, reviewReport),
                 ghToken,
-                draft: reviewReport.verdict !== "pass",
+                // beta.32: default to NON-draft. Opening a draft PR on a repo that
+                // doesn't support drafts (private/free) returns HTTP 422 and killed
+                // the run at the final step. Only draft when explicitly enabled; the
+                // adapter also retries non-draft on a 422. The verdict warning is in
+                // the PR body regardless.
+                draft: (config.repos.draft_pr_on_nonpass ?? false) && reviewReport.verdict !== "pass",
             });
             return pr.htmlUrl;
         },

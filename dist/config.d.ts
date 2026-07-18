@@ -64,6 +64,15 @@ export interface ReposConfig {
     create_org: string;
     create_visibility: "private" | "public";
     default_base_branch: string;
+    /**
+     * beta.32: when the adversary verdict is not a clean "pass", open the PR
+     * as a GitHub *draft*. Default FALSE. Draft PRs are rejected with HTTP 422
+     * on repos that don't support them (private repos on free plans, some repo
+     * types), which would kill the run at the very last step. Even when true,
+     * the live path retries as a non-draft PR on a 422 rather than failing.
+     * The verdict warning always goes in the PR body regardless of draft state.
+     */
+    draft_pr_on_nonpass?: boolean;
 }
 export interface ModelsConfig {
     lead: string;
