@@ -24,6 +24,7 @@ const EXPECTED_TOOLS = [
   "harness_resume",
   "harness_retention_prune",
   "harness_bootstrap_test_repo",
+  "harness_merge_pr",
 ];
 
 test("sdk: openclaw.plugin.json exists", () => {
