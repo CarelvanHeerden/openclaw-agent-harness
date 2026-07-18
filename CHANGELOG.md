@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.1.0-beta.25] -- 2026-07-18
+
+### Added
+
+- **Hierarchical `pat_routing` (first-class multi-user credentials).** New
+  config shape: `pat_routing.<provider>.<org>.<person>` where each person node
+  is `{ token, name, email, slack_user_id }`. The person is matched to the
+  inbound requester by `slack_user_id`; the node carries its own token pointer
+  and commit identity. This replaces the need to slug provider/org/person into
+  flat env-var names (which could not encode `carel-private` vs `carel-stitch`).
+
+  - **Token pointer** is exactly one of `value` (inline secret), `env` (env var
+    name), or `vault` (credential-vault service name). Enforced at config load.
+  - **No silent fallback.** If an org is configured hierarchically but the
+    requester is not listed under it, the router throws
+    `PatRequesterNotAuthorisedError` — it never borrows another user's token.
+  - **Commit identity is colocated** per person-per-org (`name` + `email`),
+    so the same person can commit under different emails in different orgs.
+  - **Back-compat:** the legacy flat fields (`overrides`, `commit_identity`,
+    `default_service_pattern`, `user_identities`) still work and are consulted
+    only when no hierarchical entry matches.
+
+- **Preflight completeness check.** Before a run starts, the harness verifies
+  it has everything it needs for the requester + target repo — routing entry,
+  commit `name`, a valid commit `email`, and a resolvable token — and returns
+  an actionable "I need X" message up front instead of dying mid-run on a
+  missing email. Wired into `harness_run` (fires when the brief pins a
+  concrete repo) via new `HarnessRuntime.preflight(...)`. Emits
+  `tool.run.preflight_incomplete` audit events.
+
+- **Config-load validation for the hierarchy** (`validatePatHierarchy`): each
+  person node must have a non-empty `name`, a valid `email`, and exactly one
+  token pointer. Fails at config load / reload, not mid-run.
+
+- **Bundled skill `skills/harness-credentials`** (auto-installed with the
+  plugin via the manifest `skills` field). Teaches the agent the three-tier
+  credential-setup protocol: (1) **vault** (recommended, corporate multi-user
+  — operator never sees other users' tokens, Slack UUID auto-captured), (2)
+  **self-write `openclaw.json` + reload**, (3) **emit copy-paste JSON** when
+  there is neither vault nor config-write access. Includes the never-echo-token
+  / ask-for-redaction rules.
+
+### Docs
+
+- `docs/GITHUB_AUTH.md`: vault stated as a **first-class requirement for
+  multi-user** deployments, with the hierarchical config shape and the
+  three-tier fallback documented. Env/inline JSON framed as single-operator /
+  small-team, not corporate.
+
 ## [0.1.0-beta.24] -- 2026-07-17
 
 ### Fixed

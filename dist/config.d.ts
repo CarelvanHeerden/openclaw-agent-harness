@@ -134,7 +134,47 @@ export interface SafetyConfig {
     allow_network_commands: boolean;
 }
 export type GitProvider = "github" | "gitlab";
+/**
+ * A token pointer. Exactly one of `value` | `env` | `vault` must be set.
+ *   - value: inline secret in openclaw.json (single-operator; setter accepts risk)
+ *   - env:   name of an environment variable holding the token
+ *   - vault: credential-vault service name (requires memory-hybrid plugin)
+ */
+export interface TokenPointer {
+    value?: string;
+    env?: string;
+    vault?: string;
+}
+/**
+ * A person node in the hierarchical `pat_routing.<provider>.<org>.<person>`
+ * tree. Colocates everything about one requester's authority for one org:
+ * the token to commit under, the git commit identity, and the Slack user id
+ * that maps an inbound request to this person.
+ */
+export interface PersonToken {
+    /** Token pointer: one of value | env | vault. */
+    token: TokenPointer;
+    /** Git commit author name. Required. */
+    name: string;
+    /** Git commit author email. Required (validated at config load). */
+    email: string;
+    /**
+     * Slack user id for this person. In vault / self-write tiers OpenClaw
+     * captures this automatically from the inbound message. In the manual
+     * copy-paste tier the operator must fill it in by hand.
+     */
+    slack_user_id?: string;
+}
 export interface PatRoutingConfig {
+    /**
+     * beta.25 hierarchical routing. Keyed by provider, then repo owner/org,
+     * then person key. Person is matched to the requester via
+     * `PersonToken.slack_user_id`. Takes precedence over the legacy flat
+     * fields below. Example:
+     *   { github: { "stitch-vercel": { "Janice": { token: {env:"..."}, name, email, slack_user_id } } } }
+     */
+    github?: Record<string, Record<string, PersonToken>>;
+    gitlab?: Record<string, Record<string, PersonToken>>;
     overrides: Record<string, Record<string, string>>;
     commit_identity: Record<string, {
         name: string;
@@ -189,5 +229,12 @@ export interface PatAuthConfig {
      */
     api_key_env?: string;
 }
+/**
+ * beta.25: validate the hierarchical pat_routing tree. Each person node must
+ * carry a name, a real-looking email, and exactly one token pointer
+ * (value|env|vault). Fails loud at config load so the operator never
+ * discovers a missing email mid-run.
+ */
+export declare function validatePatHierarchy(pr: PatRoutingConfig): void;
 export declare function parseHarnessConfig(input: unknown): HarnessConfig;
 //# sourceMappingURL=config.d.ts.map

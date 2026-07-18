@@ -543,6 +543,24 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (cResult.kind === "clarify") {
             return { content: [{ type: "text", text: `Needs clarification: ${cResult.question}` }], details: { ok: false, needsClarification: true, question: cResult.question } };
           }
+          // beta.25 preflight: if the brief pins a concrete repo, verify we
+          // have everything (routing + name + email + token) for THIS
+          // requester before starting a run. Fail up front with an
+          // actionable ask rather than dying mid-run on a missing email or
+          // an unauthorised requester. When repoHint is a glob or absent,
+          // the lead picks the repo and allocateWorktree enforces the same
+          // checks (with clear errors) at that point.
+          const repoHint = cResult.brief.repoHint;
+          if (repoHint && repoHint.includes("/") && !repoHint.includes("*")) {
+            const pf = await liveRuntime().preflight({ requester, repoFullName: repoHint });
+            if (!pf.ok) {
+              liveState().audit("tool.run.preflight_incomplete", { requester, repo: repoHint, missing: pf.missing, provenance: pf.provenance });
+              return {
+                content: [{ type: "text", text: pf.message }],
+                details: { ok: false, preflightIncomplete: true, missing: pf.missing, repo: repoHint },
+              };
+            }
+          }
           const res = startSessionFromBrief({
             requester, brief: cResult.brief, slackChannel, slackThread, budgetUsd,
             auditEvent: "tool.run",
