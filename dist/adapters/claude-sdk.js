@@ -147,7 +147,19 @@ async function structuredCall(params) {
             options: {
                 model: params.model,
                 systemPrompt: params.systemPrompt,
-                permissionMode: "plan", // no tool use
+                // beta.27: these are SINGLE-SHOT structured JSON extractors
+                // (classifier / crystalliser / lead / adversary), NOT agents.
+                // `permissionMode: "plan"` alone still leaves read-only exploration
+                // tools enabled, and the SDK's Claude Code agent will happily go
+                // "help the user" mode -- exploring the local filesystem
+                // (e.g. /app/extensions) and narrating a prose plan instead of
+                // emitting the JSON contract. That produced
+                // `[classifier] extractJson failed: no JSON in output: "I'll help you fix the ..."`
+                // on the first ProjectThanos smoke. Force NO tools so the model must
+                // answer directly. `allowedTools: []` disables tool_use entirely;
+                // `permissionMode: "plan"` stays as belt-and-braces.
+                allowedTools: [],
+                permissionMode: "plan",
                 env: buildSdkEnv(params.apiKey),
                 abortSignal: abort.signal,
             },
@@ -199,8 +211,10 @@ export function extractJson(text) {
     if (fence?.[1])
         return fence[1].trim();
     const start = text.search(/[{[]/);
-    if (start === -1)
-        throw new Error(`no JSON in output: ${text.slice(0, 200)}`);
+    if (start === -1) {
+        throw new Error(`no JSON in output (model returned prose, not the JSON contract — ` +
+            `check that structured calls run with allowedTools: []): ${text.slice(0, 200)}`);
+    }
     const opening = text[start];
     const closing = opening === "{" ? "}" : "]";
     let depth = 0;

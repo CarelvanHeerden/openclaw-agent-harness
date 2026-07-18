@@ -244,3 +244,22 @@ test("sdk: dist register() is synchronous (does not return Promise)", { skip: !e
     "dist/index.js contains `register: async (` -- register() must be synchronous per OpenClaw plugin SDK contract.",
   );
 });
+
+// beta.27: structured SDK calls (classifier/crystalliser/lead/adversary) must
+// run with NO tools. Otherwise the SDK's Claude Code agent explores the local
+// filesystem and narrates prose instead of emitting the JSON contract, which
+// broke the first ProjectThanos smoke with
+// `[classifier] extractJson failed: no JSON in output: "I'll help you fix the ..."`.
+test("sdk: structuredCall disables tools via allowedTools: [] (beta.27)", () => {
+  const src = readFileSync(resolve(repoRoot, "src/adapters/claude-sdk.ts"), "utf8");
+  assert.match(
+    src,
+    /allowedTools:\s*\[\s*\]/,
+    "src/adapters/claude-sdk.ts must set `allowedTools: []` on the structured sdk.query call so the extractors cannot go agentic.",
+  );
+});
+
+test("sdk: compiled structuredCall keeps allowedTools: [] (beta.27)", { skip: !existsSync(resolve(repoRoot, "dist/adapters/claude-sdk.js")) }, () => {
+  const src = readFileSync(resolve(repoRoot, "dist/adapters/claude-sdk.js"), "utf8");
+  assert.match(src, /allowedTools:\s*\[\s*\]/, "dist must carry allowedTools: [] on the structured call.");
+});

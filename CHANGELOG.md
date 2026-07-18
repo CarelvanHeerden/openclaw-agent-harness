@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.1.0-beta.27] -- 2026-07-18
+
+### Fixed
+
+- **Classifier / crystalliser no longer go agentic and break the JSON
+  contract.** The structured SDK extractors (classifier, crystalliser, lead,
+  adversary) run through the Claude Agent SDK. They were called with only
+  `permissionMode: "plan"`, which still leaves read-only exploration tools
+  enabled — so on the first `Stitch-Vercel/ProjectThanos` smoke the classifier
+  agent wandered into the container's local source tree (`/app/extensions/`)
+  and narrated a prose plan ("I'll help you fix the …") instead of emitting
+  JSON. `extractJson` then threw
+  `[classifier] extractJson failed: no JSON in output: "I'll help you fix the ..."`.
+
+  Fix: set `allowedTools: []` on the structured `sdk.query` call in
+  `structuredCall()` so tool use is disabled entirely and the model must
+  answer directly with the JSON contract. `permissionMode: "plan"` kept as
+  belt-and-braces. This affects all four structured extractors at their single
+  choke point.
+
+  `harness_start_session` (hand-crafted brief, bypasses the classifier) was
+  never affected — which is why the smoke's fallback path worked.
+
+- **Clearer extractor error on prose output.** `extractJson` now says
+  "model returned prose, not the JSON contract — check that structured calls
+  run with allowedTools: []" instead of a bare "no JSON in output", so a
+  future regression is diagnosable at a glance.
+
+### Tests
+
+- 366 -> 369 (+3): source + compiled assertions that the structured call sets
+  `allowedTools: []`, and that prose-only output yields the new diagnostic error.
+
 ## [0.1.0-beta.26] -- 2026-07-18
 
 ### Docs
