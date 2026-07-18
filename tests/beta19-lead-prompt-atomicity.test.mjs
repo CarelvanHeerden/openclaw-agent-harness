@@ -56,9 +56,14 @@ test("beta.19: lead prompt names the anti-pattern to AVOID (3 sub-tasks for one 
   );
 });
 
-test("beta.19: atomicity rule extends to push+PR", () => {
+test("beta.33: push/PR are no longer sub-tasks at all (superseded beta.19 push atomicity rule)", () => {
+  // beta.19 originally said 'push branch and open a PR' is ONE mutate
+  // sub-task. beta.33 changed the architecture: push + PR are done by the
+  // harness endgame after review, NOT by any sub-task. Assert the old
+  // (now-wrong) wording is gone and the new rule is present.
   assert.ok(
-    /'push branch and open a PR' is ONE mutate sub-task/.test(source),
-    "atomicity rule must cover the push+PR case too",
+    !/'push branch and open a PR' is ONE mutate sub-task/.test(source),
+    "the old 'push+PR is one mutate sub-task' rule must be removed (push/PR are not sub-tasks in beta.33)",
   );
+  assert.match(source, /never plan a sub-task for it|DO NOT PLAN PUSH OR PR SUB-TASKS/);
 });

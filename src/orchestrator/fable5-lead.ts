@@ -160,6 +160,13 @@ export async function runLeadPlanner(
   deps: LeadDeps,
 ): Promise<LeadPlan> {
   const raw = await deps.callLeadModel(brief, deps.config.repos.allowed);
+  // beta.33: defensively strip push/PR sub-tasks BEFORE validation. The lead
+  // prompt forbids them, but LLMs are non-deterministic. Push + PR are the
+  // harness endgame's exclusive job (pushBranchAndOpenPr, post-review). A
+  // worker cannot push, so any push/PR sub-task would fail verification and
+  // abort the run before review. Coerce here so a stray remote sub-task can
+  // never kill an otherwise-good plan. (Belt-and-braces to the prompt fix.)
+  sanitizeRemoteSubTasks(raw, deps.logger);
   validatePlan(raw, deps.config);
   const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch);
   const approxCostUsd = deps.estimateCost(raw);
@@ -199,4 +206,82 @@ function validatePlan(
   }
   const seqs = new Set(plan.subTasks.map((s) => s.seq));
   if (seqs.size !== plan.subTasks.length) throw new Error("duplicate sub-task seq numbers");
+}
+
+// beta.33: remote verify kinds a worker can never satisfy (the harness pushes
+// + opens the PR itself, after review). Any of these on a sub-task means the
+// lead planned a push/PR step, which always failed and aborted the run.
+const REMOTE_VERIFY_KINDS = new Set([
+  "branch_pushed",
+  "remote_branch_exists",
+  "file_pushed",
+  "pr_opened",
+  "pr_state",
+  "file_in_pr",
+  "commit_sha_matches",
+]);
+
+// Push/PR-only intent (no file/commit work) — used to decide if a sub-task is
+// purely a (now-forbidden) push/PR step that can be safely dropped.
+const PUSH_PR_ONLY_RE =
+  /\b(push(ing|es)?\b|open(ing|s)?\s+(a\s+)?(pull request|pr|merge request|mr)|create\s+(a\s+)?(pull request|pr|merge request|mr))\b/i;
+const LOCAL_WORK_RE = /\b(write|edit|modify|add|remove|delete|update|commit|refactor|rename|create\s+file|implement|fix|change)\b/i;
+
+/**
+ * beta.33: neutralise push/PR sub-tasks the lead emitted despite the prompt.
+ *
+ * - Strip all remote verify kinds and force `contractScope: 'local'` on every
+ *   sub-task (the harness verifies/pushes remotely, not the worker).
+ * - If a sub-task, after stripping, is PURELY a push/PR step (intent matches
+ *   push/PR language and has no local-work language) AND nothing depends on
+ *   it, drop it entirely — it's redundant with the harness endgame.
+ * - Otherwise keep it as a local sub-task with the remote checks removed, so
+ *   it can't fail on a remote 404.
+ *
+ * Mutates `plan` in place. Best-effort + logged; never throws.
+ */
+function sanitizeRemoteSubTasks(
+  plan: { subTasks: LeadPlanSubTask[] },
+  logger: { info: (m: string, meta?: unknown) => void },
+): void {
+  let strippedKinds = 0;
+  let coercedScope = 0;
+  for (const st of plan.subTasks) {
+    if (st.contractScope && st.contractScope !== "local") {
+      st.contractScope = "local";
+      coercedScope++;
+    }
+    if (Array.isArray(st.verify) && st.verify.length > 0) {
+      const before = st.verify.length;
+      st.verify = st.verify.filter((v) => !REMOTE_VERIFY_KINDS.has(v.kind));
+      strippedKinds += before - st.verify.length;
+    }
+  }
+
+  // Identify pure push/PR-only sub-tasks that are safe to drop (nothing
+  // depends on them). Do NOT drop if a dependency points at them, to avoid
+  // breaking the topo order — just leave them neutralised (local, no remote
+  // verify) so the worker no-ops harmlessly.
+  const dependedOn = new Set<number>();
+  for (const st of plan.subTasks) for (const d of st.dependsOn ?? []) dependedOn.add(d);
+  const droppable = plan.subTasks.filter((st) => {
+    const text = `${st.title} ${st.intent} ${(st.successCriteria ?? []).join(" ")}`;
+    const pushPrOnly = PUSH_PR_ONLY_RE.test(text) && !LOCAL_WORK_RE.test(text);
+    const noVerify = !st.verify || st.verify.length === 0;
+    return pushPrOnly && noVerify && !dependedOn.has(st.seq);
+  });
+  if (droppable.length > 0 && droppable.length < plan.subTasks.length) {
+    const dropSeqs = new Set(droppable.map((s) => s.seq));
+    plan.subTasks = plan.subTasks.filter((s) => !dropSeqs.has(s.seq));
+    logger.info("[lead] beta.33: dropped push/PR-only sub-task(s) (harness pushes after review)", {
+      dropped: [...dropSeqs],
+    });
+  }
+
+  if (strippedKinds > 0 || coercedScope > 0) {
+    logger.info("[lead] beta.33: neutralised remote verify on sub-tasks", {
+      strippedRemoteKinds: strippedKinds,
+      coercedToLocal: coercedScope,
+    });
+  }
 }

@@ -487,13 +487,25 @@ export async function runLeadSdk(params) {
         "- Prefer 3-8 sub-tasks. Hard cap 20.",
         "- Each sub-task must be independently reviewable.",
         "- reviewChecklist has one item per acceptance criterion + one for tests + one for docs.",
-        // beta.14: authoritative scope axis (local vs remote).
-        "- contractScope tells the harness verifier which side-effects to check:",
-        "    'local'  = sub-task only touches worktree fs + git (write file, commit, verify local state). NO push. NO PR. NO remote lookup. Use this for ALL observation-only / read-only / write-only / commit-only sub-tasks.",
-        "    'remote' = sub-task pushes to origin, opens a PR, verifies remote SHA, or otherwise interacts with the provider (GitHub/GitLab).",
-        "    'mixed'  = both local AND remote in the same sub-task. Rare; prefer decomposition when possible.",
-        "- If a sub-task says 'Do not push' / 'Do not open a PR' / 'observation only' / 'read-only', it MUST have contractScope: 'local'.",
-        "- If a sub-task says 'push branch' / 'open PR' / 'verify remote SHA', it MUST have contractScope: 'remote'.",
+        // beta.33: CRITICAL ARCHITECTURE RULE. Push + PR are NOT sub-tasks.
+        // The harness has a dedicated endgame (pushBranchAndOpenPr in loop.ts)
+        // that pushes the branch and opens the PR AUTOMATICALLY and
+        // unconditionally AFTER the adversary review passes, using a properly
+        // authenticated token + askpass helper. A worker CANNOT push (git push
+        // is bash-guard-blocked and the worker's bash git has no credentials).
+        // Prior to beta.33 the lead was told 'remote' sub-tasks push/open PRs;
+        // it dutifully planned a final 'push + PR' sub-task, which ALWAYS failed
+        // verification (worker never pushed -> remote 404) and killed the run
+        // BEFORE the adversary and before the harness's own working push. See
+        // session 534be94a (beta.32 smoke).
+        "- DO NOT PLAN PUSH OR PR SUB-TASKS. Pushing the branch and opening the pull/merge request is done AUTOMATICALLY by the harness after review passes. It is NOT your job and NOT a worker's job. Your plan must end with the LOCAL work (write/edit/commit/verify) that produces the change. A worker cannot push; any push/PR sub-task will fail and abort the whole run.",
+        // beta.14/33: contractScope now only distinguishes local work; 'remote'
+        // exists for backward-compat but the lead must never emit it.
+        "- contractScope tells the harness verifier which side-effects to check. You should ONLY ever use 'local':",
+        "    'local'  = sub-task only touches worktree fs + git (write file, commit, verify local state). NO push. NO PR. NO remote lookup. Use this for ALL sub-tasks.",
+        "    'remote' = RESERVED for the harness. Do NOT use. (The harness pushes + opens the PR itself after review.)",
+        "    'mixed'  = Do NOT use.",
+        "- Every sub-task you emit MUST have contractScope: 'local'. If you think a sub-task needs to push or open a PR, you are wrong — drop it; the harness does that step.",
         // beta.15: authoritative mode axis (observe vs mutate).
         "- taskMode tells the harness verifier whether the sub-task PRODUCES artifacts or just checks them:",
         "    'observe' = sub-task is read-only. It does NOT write files, make commits, push, or open PRs. Use for pure verification / assertion / inspection sub-tasks.",
@@ -522,7 +534,12 @@ export async function runLeadSdk(params) {
         "- ATOMICITY RULE: a WRITE action and its accompanying COMMIT belong in ONE mutate sub-task, not two. If a single sentence or acceptance criterion contains both a write clause and a commit clause (e.g. 'append line X to file Y and commit locally', 'add function Z and commit', 'update docs and commit'), it is ONE atomic sub-task. Split only when the write and commit are genuinely separate acts of work (e.g. write in cycle 1, refactor in cycle 2, then commit both).",
         "- Corollary: if you split a write from its commit into two sub-tasks, the commit sub-task's verify contract will compare HEAD vs its OWN worker-session-start SHA. If the write already happened in the prior sub-task, the commit sub-task's worker sees the file already present, has nothing new to do, exits with end_turn, and verification (correctly) fails. This is the harness's atomic-work contract with you, not a bug. Avoid it by keeping write+commit together.",
         "- Anti-pattern to AVOID: 3 sub-tasks (write, commit, verify) for a single write-and-commit criterion. Correct shape: 1 mutate sub-task (write+commit) + optional 1 observe sub-task (verify). If you find yourself planning 3+ sub-tasks for what a single sentence describes, you are over-decomposing.",
-        "- Push-and-PR similarly: 'push branch and open a PR' is ONE mutate sub-task with contractScope='remote', not two.",
+        // beta.33: push/PR are no longer sub-tasks at all (the harness does them
+        // after review). If the brief says 'open a PR' / 'push the branch',
+        // that's satisfied by the harness endgame automatically — do NOT emit a
+        // sub-task for it. Your last sub-task is the local commit that produces
+        // the change (+ optional local verify).
+        "- The brief's request to 'open a PR' or 'push' is fulfilled by the harness AFTER review — never plan a sub-task for it. End your plan at the local commit that produces the change.",
         `- reposAllowed: ${JSON.stringify(params.reposAllowed)}`,
         // beta.31: session 78237f43 failed because the model tried to WRITE the
         // plan to a file (`.claude/plans/...md`) with the JSON as a
