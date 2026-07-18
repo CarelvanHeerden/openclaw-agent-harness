@@ -56,9 +56,35 @@ interface VercelDeployment {
     meta?: {
         githubCommitRef?: string;
         branchAlias?: string;
+        githubCommitSha?: string;
     };
     created: number;
 }
+export interface DeployVerifyInput {
+    vercelToken: string;
+    teamId?: string;
+    projectId: string;
+    sha: string;
+    waitSeconds: number;
+    pollIntervalMs?: number;
+    logger: {
+        info: (m: string, meta?: unknown) => void;
+        warn: (m: string, meta?: unknown) => void;
+    };
+}
+export interface DeployVerifyResult {
+    status: "ready" | "error" | "pending" | "unavailable";
+    deploymentUrl?: string;
+    detail: string;
+    logsExcerpt?: string;
+}
+/**
+ * beta.34: verify the Vercel deployment for a specific commit SHA (the merge
+ * commit produced by harness_merge_pr). Polls deployments filtered to the
+ * project, matches on `meta.githubCommitSha`, waits for a terminal state,
+ * and on ERROR pulls the build logs. Returns a compact result for reporting.
+ */
+export declare function verifyDeploymentForSha(input: DeployVerifyInput): Promise<DeployVerifyResult>;
 /**
  * Wait for the latest deployment on `branch` to reach a terminal state.
  * Returns the deployment record or null if the wait window elapses.

@@ -172,6 +172,17 @@ export interface HarnessRuntime {
         repoFullName: string;
     }) => Promise<PreflightResult>;
     /**
+     * beta.34: hard-gated PR merge + post-merge Vercel deploy verification.
+     * Enforces the merge recommendation: if the session's recommendation is
+     * `do_not_merge`, it REFUSES (no override; the escape hatch is the GitHub
+     * UI). Otherwise re-checks CI, merges (squash), records the merge, and
+     * verifies the Vercel deployment for the merge commit. Never force-merges.
+     */
+    mergePr: (args: {
+        sessionId: string;
+        invokedBy?: string;
+    }) => Promise<MergePrResult>;
+    /**
      * Resolve the credential service name the pat-router would use for a repo
      * (or the first allowed repo when omitted). For health/introspection.
      */
@@ -200,6 +211,24 @@ export interface PreflightResult {
     message: string;
     /** Provenance of the routing decision, for logging. */
     provenance?: string;
+}
+/** beta.34: result of a harness_merge_pr invocation. */
+export interface MergePrResult {
+    ok: boolean;
+    /** True when the hard gate refused the merge (recommendation = do_not_merge). */
+    refused?: boolean;
+    merged?: boolean;
+    mergeSha?: string;
+    recommendation?: "merge" | "do_not_merge";
+    /** Deploy verification outcome (when Vercel enabled + a merge happened). */
+    deploy?: {
+        status: "ready" | "error" | "pending" | "unavailable";
+        detail: string;
+        deploymentUrl?: string;
+        logsExcerpt?: string;
+    };
+    /** Human-facing message summarising the outcome. */
+    message: string;
 }
 /**
  * Synchronous phase of plugin bootstrap.

@@ -217,11 +217,15 @@ test("sdk: dist does not register the invalid dotted event 'message.received'", 
     false,
     'dist/index.js has CODE referencing the invalid dotted event "message.received". Use only "message_received" (underscore) -- the dotted name is not in the runtime PLUGIN_HOOK_NAMES and is silently ignored.',
   );
-  // Sanity: the valid name must still be present in code.
+  // beta.34: the Slack LISTENER was removed. The harness is tool-driven only
+  // and must NOT subscribe to inbound messages at all -- so the code must NOT
+  // register any message hook (neither dotted nor underscore). This makes the
+  // privileged surface (PATs, PR merges) reachable ONLY through the agent's
+  // tool layer, and structurally eliminates the bot-to-bot loop risk.
   assert.equal(
-    /["']message_received["']/.test(codeOnly),
-    true,
-    'dist/index.js must register the inbound-message listener under "message_received".',
+    /\.on\(\s*["']message_received["']|registerHook\(\s*\[\s*["']message_received["']/.test(codeOnly),
+    false,
+    'beta.34 removed the Slack listener: dist/index.js must NOT subscribe to "message_received" (no api.on / registerHook for it). The harness is tool-driven only.',
   );
 });
 

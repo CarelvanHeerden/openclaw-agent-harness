@@ -254,6 +254,24 @@ export function registerHarnessTools(api, runtime) {
         },
     })));
     disposers.push(toDispose(api.registerTool({
+        name: "harness_merge_pr",
+        description: "Merge the pull request a completed harness session opened, then verify the deployment. HARD SAFETY GATE: the harness only merges when its post-ship recommendation is 'merge'. If the recommendation is 'do_not_merge' (or CI is failing), it REFUSES and the user must merge from the GitHub UI — the harness cannot be told to override. Use after a session reaches 'done' with a PR, when the user has approved the merge. On a Vercel-enabled repo it polls the deployment for the merge commit and reports READY/ERROR (with build logs on error).",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string", minLength: 1, description: "The harness session whose PR to merge." },
+                invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker; must be in slack.authorised_users if provided." },
+            },
+            required: ["sessionId"],
+            additionalProperties: false,
+        },
+        execute: async (_callId, input) => {
+            const { sessionId, invokedBy } = input;
+            const res = await liveRuntime().mergePr({ sessionId, invokedBy });
+            return { content: [{ type: "text", text: res.message }], details: res };
+        },
+    })));
+    disposers.push(toDispose(api.registerTool({
         name: "harness_upload_logs",
         description: "Attach runtime logs to a session manually. Use when the target repo does NOT deploy to Vercel (Cloudflare, AWS, on-prem) or when the Vercel bridge is disabled. The adversary reads the most recent upload for a session and treats it as runtime evidence with provider=\"manual\".",
         parameters: {

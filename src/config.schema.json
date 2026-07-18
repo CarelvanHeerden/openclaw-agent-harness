@@ -121,6 +121,7 @@
       "properties": {
         "enabled": { "type": "boolean", "default": false },
         "credential_service": { "type": "string" },
+        "api_key_env": { "type": "string", "default": "VERCEL_TOKEN", "description": "Env-var fallback for the Vercel token when the vault is unavailable or empty." },
         "team_id": { "type": "string" },
         "project_id": { "type": "string" },
         "preview_wait_seconds": { "type": "integer", "minimum": 30, "maximum": 3600, "default": 300 }
