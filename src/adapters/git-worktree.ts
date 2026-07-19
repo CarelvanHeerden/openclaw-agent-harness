@@ -161,10 +161,28 @@ esac
       } else {
         // beta.34: ensure the helper exists on pre-beta.34 bare repos too.
         await this.installCredHelper(bare).catch(() => {});
-        // For fetch on an existing bare, use askpass as before. The
-        // remote URL is already the plain form; askpass injects creds.
-        await this.run(["-C", bare, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"], undefined, ask.path, ctx.ghToken);
       }
+      // beta.46: ALWAYS refresh into REMOTE-TRACKING refs (refs/remotes/origin/*),
+      // NOT local branch heads (refs/heads/*), on BOTH the fresh-clone and
+      // existing-bare paths.
+      //
+      // The old existing-bare mirror refspec `+refs/heads/*:refs/heads/*`
+      // force-updated every LOCAL branch head, and git REFUSES to update a head
+      // currently checked out in a worktree:
+      //   fatal: refusing to fetch into branch 'refs/heads/<b>'
+      //          checked out at '<worktree>'
+      // On a revise the pinned branch is (or, via a leftover pending-<ts>
+      // worktree from a prior aborted run, was) checked out, so the mirror fetch
+      // aborted the whole run during planning (Staging session dab303e8, PR #858,
+      // worktree pending-1784500729321). Fetching into remote-tracking refs never
+      // touches local heads, so it can never be refused on account of a checkout.
+      //
+      // A fresh `git clone --bare` mirrors into LOCAL refs/heads/* and configures
+      // NO remote-tracking refspec, so `origin/<branch>` would not resolve. We
+      // therefore run this fetch on the fresh path too so that `origin/<branch>`
+      // exists uniformly and the reuse/base checkouts below can rely on it.
+      // GIT_ASKPASS injects creds per-invocation (remote URL is the plain form).
+      await this.run(["-C", bare, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"], undefined, ask.path, ctx.ghToken);
       // beta.29 fix: `worktree add` must run WITH the askpass helper.
       //
       // The bare clone above uses `--filter=blob:none` (partial clone /
@@ -189,19 +207,28 @@ esac
       // holding this branch so the add can proceed cleanly.
       await this.reconcileBranchWorktrees(bare, ctx.sessionBranch, wt);
       if (ctx.reuseExistingBranch) {
-        // beta.44 revise: check out the existing branch at its own tip so the
-        // prior session's commits are preserved (new work stacks on the PR
-        // head). No `-B` and no base ref -> git resolves <branch> to the
-        // fetched remote-tracking ref. If the branch somehow doesn't exist
-        // (deleted remotely between ship and revise), fall back to creating it
-        // from base so revise still produces a usable worktree.
+        // beta.44 revise: check out the EXISTING branch at the pushed PR head so
+        // the prior session's commits are preserved (new work stacks on the PR
+        // head).
+        //
+        // beta.46: with the remote-tracking fetch above, the PR head lives at
+        // `origin/<branch>` (the prior run pushed it -- that is why the PR
+        // exists). Create/reset the local branch to that ref with `-B ... <wt>
+        // origin/<branch>`. `-B` is safe here because reconcileBranchWorktrees
+        // already released any OTHER worktree holding the branch, and
+        // origin/<branch> IS the authoritative PR head, so the reset preserves
+        // (does not discard) the prior commits. If the remote branch is gone
+        // (deleted between ship and revise), fall back to creating it from base
+        // so revise still produces a usable worktree.
+        const remoteRef = `origin/${ctx.sessionBranch}`;
         try {
-          await this.run(["-C", bare, "worktree", "add", wt, ctx.sessionBranch], undefined, ask.path, ctx.ghToken);
+          await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, remoteRef], undefined, ask.path, ctx.ghToken);
         } catch {
           await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
         }
       } else {
-        await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
+        // beta.46: base checkout resolves from the remote-tracking ref too.
+        await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, `origin/${ctx.baseBranch}`], undefined, ask.path, ctx.ghToken);
       }
       await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
       await this.run(["-C", wt, "config", "user.email", ctx.commitIdentity.email]);
@@ -486,9 +513,14 @@ esac
     try {
       // Make sure the bare repo has the freshest main (repair PRs merged since
       // allocation).
-      await this.run(["-C", bare, "fetch", "--prune", "origin", `+refs/heads/${baseBranch}:refs/heads/${baseBranch}`], undefined, ask.path, ghToken);
+      // beta.46: fetch base into a remote-tracking ref (never refuses on a
+      // checkout) and branch the scratch worktree off `origin/<base>`, matching
+      // the allocate() refspec change. Guards against the same
+      // "refusing to fetch into branch ... checked out" failure if base is ever
+      // held by a worktree.
+      await this.run(["-C", bare, "fetch", "--prune", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`], undefined, ask.path, ghToken);
       // Scratch worktree on a fresh revert branch pointing at latest main.
-      await this.run(["-C", bare, "worktree", "add", "-B", revertBranch, scratch, baseBranch], undefined, ask.path, ghToken);
+      await this.run(["-C", bare, "worktree", "add", "-B", revertBranch, scratch, `origin/${baseBranch}`], undefined, ask.path, ghToken);
       // Set a commit identity for the revert commits (worktree-local).
       await this.run(["-C", scratch, "config", "user.name", "openclaw-agent-harness"]);
       await this.run(["-C", scratch, "config", "user.email", "harness@openclaw.local"]);
