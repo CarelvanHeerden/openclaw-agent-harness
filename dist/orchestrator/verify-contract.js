@@ -128,14 +128,72 @@ function hasPositiveMatch(text, re) {
     }
     return false;
 }
+/**
+ * Prose abbreviations whose trailing `.<letter>` looks like a file extension to
+ * a naive regex. `e.g.` -> matches `e.g` (ext `.g`), `i.e.` -> `i.e` (ext `.e`).
+ * beta.39: these tokenised into literal verification-contract paths (Staging's
+ * ProjectThanos beta.38 smoke: the brief's `filesLikelyTouched` prose
+ * "e.g. hooks/useTaxonomy or lib/taxonomy" produced an expected file `e.g`, the
+ * verifier stat'd for a file named `e.g`, and failed a sub-task whose worker had
+ * actually committed the correct change). Match the whole token, case-insensitive.
+ */
+const PROSE_ABBREV_RE = /^(?:e\.g|i\.e|etc|vs|cf|al|viz|approx|no|fig|ca)$/i;
+/**
+ * A path token is only accepted as a real file path when it (a) contains a
+ * directory separator (`src/hooks/use-taxonomy.ts`, `pkg/mod.go`) OR (b) ends
+ * in a known code/text file extension, AND is not a prose abbreviation, AND the
+ * base name has real substance (not a bare 1-char stem like `e.g`).
+ *
+ * This is deliberately conservative: a false NEGATIVE (no path inferred) is
+ * safe -- the sub-task simply gets a `commit_made`/`file_written`-without-path
+ * contract (existence still verified, just not pinned to a filename). A false
+ * POSITIVE (a prose token treated as a path) is fatal -- it fails a correct
+ * worker's sub-task, which is exactly the beta.38 smoke failure.
+ */
+const KNOWN_FILE_EXT_RE = /\.(?:tsx?|jsx?|mjs|cjs|json|md|mdx|ya?ml|toml|css|scss|sass|less|html?|py|go|rs|rb|java|kt|kts|c|cc|cpp|h|hpp|cs|php|swift|sh|bash|zsh|sql|graphql|gql|proto|txt|env|lock|ini|cfg|conf|xml|svg|vue|svelte|astro|prisma|dockerfile)$/i;
+function looksLikeRealPath(token) {
+    if (!token)
+        return false;
+    // Strip a trailing sentence dot that a `\b` boundary can leave attached
+    // (`file.ts.` at end of a sentence) before validating.
+    const t = token.replace(/\.$/, "");
+    if (PROSE_ABBREV_RE.test(t))
+        return false;
+    const hasSep = t.includes("/");
+    const hasKnownExt = KNOWN_FILE_EXT_RE.test(t);
+    if (!hasSep && !hasKnownExt)
+        return false;
+    // Guard against a bare 1-2 char stem with a bogus 1-char "extension"
+    // (`e.g`, `a.b`) that slipped past the abbrev list: require the base name
+    // (everything before the final dot, last path segment) to be >= 2 chars
+    // when there's no separator.
+    if (!hasSep) {
+        const lastSeg = t.split("/").pop() ?? t;
+        const stem = lastSeg.replace(/\.[^.]*$/, "");
+        if (stem.length < 2)
+            return false;
+    }
+    return true;
+}
 /** Extract a path token that looks like a file (has an extension). */
 function firstFilePath(subTask) {
-    const fromList = subTask.filesLikelyTouched?.find((f) => /\.[a-z0-9]{1,6}$/i.test(f));
+    // Prefer an explicit filesLikelyTouched entry that is itself a real path.
+    const fromList = subTask.filesLikelyTouched?.find((f) => /\.[a-z0-9]{1,6}$/i.test(f) && looksLikeRealPath(f));
     if (fromList)
         return fromList;
+    // Fallback: scan title+intent prose for an embedded path-like token, but
+    // reject prose abbreviations and non-path tokens (beta.39).
     const text = `${subTask.title} ${subTask.intent}`;
-    const m = text.match(/\b([\w./-]+\.[a-z0-9]{1,6})\b/i);
-    return m?.[1];
+    const globalRe = /\b([\w./-]+\.[a-z0-9]{1,6})\b/gi;
+    let m;
+    while ((m = globalRe.exec(text)) !== null) {
+        if (m.index === globalRe.lastIndex)
+            globalRe.lastIndex++;
+        const candidate = m[1];
+        if (candidate && looksLikeRealPath(candidate))
+            return candidate;
+    }
+    return undefined;
 }
 /**
  * beta.14: scope-classification of verify contract kinds.
