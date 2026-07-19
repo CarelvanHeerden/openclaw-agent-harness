@@ -21,8 +21,14 @@ export async function healOrphanedWorktrees(state, deps) {
         matched_active: 0,
         orphaned: 0,
         removed: 0,
+        protected_running: 0,
+        protected_recent: 0,
         errors: [],
     };
+    // beta.45: build the protected set (exact paths + basenames) from live loops.
+    const protectedPaths = new Set(deps.protectedWorktreePaths ?? []);
+    const protectedBasenames = new Set((deps.protectedWorktreePaths ?? []).map((p) => basename(p)));
+    const graceMs = typeof deps.graceMs === "number" ? deps.graceMs : 120_000;
     let dirs;
     try {
         dirs = await deps.listWorktreeDirs();
@@ -53,6 +59,32 @@ export async function healOrphanedWorktrees(state, deps) {
     }
     for (const dir of dirs) {
         const bn = basename(dir);
+        // beta.45 GUARD 1: never touch a worktree belonging to a live loop.
+        // Checked BEFORE session-row classification because the row's
+        // `worktree_path` may not be written yet for a just-allocated dir.
+        if (protectedPaths.has(dir) || protectedBasenames.has(bn)) {
+            result.protected_running += 1;
+            deps.logger.info("[worktree-heal] skipping live-loop worktree", { dir });
+            continue;
+        }
+        // beta.45 GUARD 2: never touch an allocator dir modified within the grace
+        // window. A `pending-<ts>` dir freshly created by an in-flight allocation
+        // may not yet have its session row / worktree_path persisted, so it would
+        // otherwise be misclassified as an `orphan` and reaped mid-run. A
+        // genuinely-orphaned dir simply gets reaped on a later bootstrap once it
+        // ages past the window. False-skip is safe; false-reap is fatal.
+        if (looksLikeAllocatorWorktree(bn) && typeof deps.dirMtimeMs === "function") {
+            const mtime = deps.dirMtimeMs(dir);
+            if (mtime != null && Date.now() - mtime < graceMs) {
+                result.protected_recent += 1;
+                deps.logger.info("[worktree-heal] skipping recently-modified allocator dir", {
+                    dir,
+                    ageMs: Date.now() - mtime,
+                    graceMs,
+                });
+                continue;
+            }
+        }
         const row = rowsByPath.get(dir) ?? rowsByBasename.get(bn);
         const isTerminal = row && ["done", "failed", "aborted"].includes(row.status);
         const isActive = row && !isTerminal;

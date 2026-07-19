@@ -1525,11 +1525,49 @@ export async function bootstrapHarnessAsync(runtime, api) {
     //   (c) the pr-watcher's release-on-close also silently failed.
     try {
         const { healOrphanedWorktrees } = await import("./state/worktree-heal.js");
+        // beta.45: resolve worktree paths for loops running in THIS process so the
+        // self-heal never reaps a live run's worktree. A concurrent bootstrap
+        // (gateway plugin-registry re-registration when an unrelated plugin
+        // reloads -- see openclaw#87046 / #107596 eviction family) would otherwise
+        // race in and remove the running revise/worker worktree as an "orphan",
+        // because the sessions row's `worktree_path` isn't written until AFTER the
+        // lead plan completes. Protect by both DB-resolved path and by simply
+        // passing the live session ids' recorded worktree_path where available.
+        const liveSessionIds = runningSessionIds();
+        const protectedWorktreePaths = [];
+        if (liveSessionIds.length > 0) {
+            try {
+                const placeholders = liveSessionIds.map(() => "?").join(",");
+                const liveRows = state.db
+                    .prepare(`SELECT worktree_path FROM sessions WHERE id IN (${placeholders})`)
+                    .all(...liveSessionIds);
+                // NOTE: worktree_path is '' (empty) at session INSERT and only gets the
+                // real pending-<ts> path at loop.ts:481 AFTER the lead plan completes.
+                // During that planning window Guard 1 (path) can't match -- Guard 2
+                // (mtime grace window) is the primary protection then. Skip empties.
+                for (const r of liveRows)
+                    if (r.worktree_path && r.worktree_path.trim())
+                        protectedWorktreePaths.push(r.worktree_path);
+            }
+            catch (err) {
+                api.logger.warn("[harness] worktree-heal: failed to resolve live session worktrees", { err: String(err) });
+            }
+        }
+        const { statSync } = await import("node:fs");
         const healResult = await healOrphanedWorktrees(state, {
             listWorktreeDirs: () => git.listWorktreeDirs(),
             releaseByPath: (path, repo) => git.releaseByPath(path, repo),
             logger: api.logger,
             fallbackRepoFullName: config.repos.allowed?.[0]?.replace("*", "repo") ?? undefined,
+            protectedWorktreePaths,
+            dirMtimeMs: (p) => {
+                try {
+                    return statSync(p).mtimeMs;
+                }
+                catch {
+                    return null;
+                }
+            },
         });
         // beta.18 fix: always log + audit that self-heal ran, even when there
         // was nothing to reap (`scanned === 0`). Beta.17 gated both behind
