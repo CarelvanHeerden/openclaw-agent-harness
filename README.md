@@ -211,6 +211,7 @@ Nothing pushes until the adversary passes (or a human drops `:rocket:`). Reactio
 - `harness_run` -- **primary agent entry point**: raw request -> crystallise -> start session (returns sessionId, a clarifying question, or a rejection)
 - `harness_start_session` -- start from a pre-built structured brief (skips crystallisation); Slack channel/thread optional
 - `harness_status` -- active sessions + monthly spend
+- `harness_progress` -- **poll live progress for a running session**: current phase, per-sub-task N/M status, running cost vs budget, recent lifecycle events, PR/deploy state, `msSinceLastEvent`, and a ready-to-post `headline` line. The harness is tool-driven and never posts to Slack itself, so the calling agent polls this (~30-60s) right after kicking off a run and relays `headline` to the user, stopping when `terminal` is true. Without it an agent-orchestrated run gives the user zero feedback.
 - `harness_health` -- DB reachable, schema OK, config valid, cred set
 - `harness_session_get` -- one session with sub-tasks/reviews/audit
 - `harness_telemetry` -- monthly ledger + session cost breakdown

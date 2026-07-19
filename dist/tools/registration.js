@@ -8,6 +8,7 @@
  */
 import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
+import { buildProgressSnapshot } from "../orchestrator/progress.js";
 function toDispose(x) {
     return () => {
         if (typeof x === "function")
@@ -152,6 +153,46 @@ export function registerHarnessTools(api, runtime) {
                 details: {
                     ok: true,
                     activeSessionCount: sessions.length,
+                },
+            };
+        },
+    })));
+    // beta.37: poll-model progress. The harness is tool-driven and must not post
+    // to Slack itself. The calling OpenClaw agent polls THIS tool on an interval
+    // (e.g. every 30-60s) and relays each new update to Slack in its own voice,
+    // stopping when `terminal` is true. All data is read straight from the
+    // sessions / sub_tasks / audit_log tables the loop already writes -- no new
+    // hot-path writes. Returns a `headline` string the agent can post verbatim.
+    disposers.push(toDispose(api.registerTool({
+        name: "harness_progress",
+        description: "Poll live progress for a harness run started by harness_run / harness_start_session. Returns the current phase, per-sub-task N/M status, running cost vs budget, recent lifecycle events, PR/deploy state, ms-since-last-event, and a ready-to-post `headline` line. The harness NEVER posts to Slack itself (tool-driven) -- YOU poll this on an interval (~30-60s) and relay `headline` (or a rephrase) to the user, stopping when `terminal` is true. Use this right after kicking off a run so the user gets feedback instead of silence.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string", description: "The sessionId returned by harness_run / harness_start_session." },
+                eventLimit: { type: "number", minimum: 1, maximum: 50, description: "How many recent audit events to include in the tail (default 12)." },
+            },
+            required: ["sessionId"],
+            additionalProperties: false,
+        },
+        execute: (_callId, input) => {
+            const opts = (input ?? {});
+            const sessionId = String(opts.sessionId ?? "").trim();
+            if (!sessionId) {
+                return {
+                    content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "sessionId is required" }) }],
+                    details: { ok: false },
+                };
+            }
+            const snapshot = buildProgressSnapshot(liveDb(), sessionId, opts.eventLimit ?? 12);
+            return {
+                content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }],
+                details: {
+                    ok: snapshot.ok,
+                    found: snapshot.found,
+                    terminal: snapshot.terminal,
+                    phase: snapshot.phase,
+                    headline: snapshot.headline,
                 },
             };
         },
