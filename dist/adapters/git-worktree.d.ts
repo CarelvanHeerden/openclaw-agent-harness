@@ -84,6 +84,30 @@ export declare class GitAdapter {
      * Returns `{ ok, path, error? }` so callers can surface failures in audit
      * payloads instead of relying on exceptions or fire-and-forget promises.
      */
+    /**
+     * beta.38: robust recursive directory removal.
+     *
+     * `fs.rm(recursive, force)` alone loses a race against still-open file
+     * handles and against native-module symlink trees. Real-world failure
+     * (Staging ProjectThanos smoke): a Next.js worktree's
+     * `node_modules/@next/swc-linux-x64-musl` left the dir non-empty:
+     *   ENOTEMPTY: directory not empty, rmdir '.../@next/swc-linux-x64-musl'
+     * Node's own `rm` supports retry-on-EBUSY/ENOTEMPTY via `maxRetries` +
+     * `retryDelay`; we opt in so transient filehandle races self-heal instead
+     * of orphaning a directory that then collides with the next run.
+     */
+    private robustRemoveDir;
+    /**
+     * beta.38: before `git worktree add -B <branch>`, ensure no OTHER worktree
+     * still holds <branch>. `git worktree add -B` refuses when the branch is
+     * checked out elsewhere. We (1) prune dangling admin entries, then (2) parse
+     * `git worktree list --porcelain`, and for any registered worktree that is
+     * NOT the target path AND is on <branch>, force-remove it (git first, then a
+     * robust rm fallback). Best-effort: failures are logged, not thrown -- the
+     * subsequent `worktree add` will surface a clear error if reconciliation was
+     * insufficient.
+     */
+    private reconcileBranchWorktrees;
     releaseByPath(worktreePath: string, repoFullName: string): Promise<{
         ok: boolean;
         path: string;

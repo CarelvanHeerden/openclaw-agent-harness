@@ -150,6 +150,15 @@ esac
             // because askpass WAS wired there. Thread the same helper through the
             // worktree-add blob fetch. GIT_TERMINAL_PROMPT=0 in the helper env also
             // turns a would-be hang into a fast, diagnosable failure.
+            // beta.38: reconcile any pre-existing checkout of this branch BEFORE
+            // adding. A `git worktree add -B <branch>` fails hard if <branch> is
+            // already checked out in ANOTHER worktree:
+            //   fatal: '<branch>' is already checked out at '<other-worktree>'
+            // This happens when a prior worktree for the same branch was left on
+            // disk (e.g. a crashed/interrupted run, or a re-driven session). Prune
+            // dangling admin state, then locate and release any live worktree still
+            // holding this branch so the add can proceed cleanly.
+            await this.reconcileBranchWorktrees(bare, ctx.sessionBranch, wt);
             await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
             await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
             await this.run(["-C", wt, "config", "user.email", ctx.commitIdentity.email]);
@@ -176,6 +185,70 @@ esac
      * Returns `{ ok, path, error? }` so callers can surface failures in audit
      * payloads instead of relying on exceptions or fire-and-forget promises.
      */
+    /**
+     * beta.38: robust recursive directory removal.
+     *
+     * `fs.rm(recursive, force)` alone loses a race against still-open file
+     * handles and against native-module symlink trees. Real-world failure
+     * (Staging ProjectThanos smoke): a Next.js worktree's
+     * `node_modules/@next/swc-linux-x64-musl` left the dir non-empty:
+     *   ENOTEMPTY: directory not empty, rmdir '.../@next/swc-linux-x64-musl'
+     * Node's own `rm` supports retry-on-EBUSY/ENOTEMPTY via `maxRetries` +
+     * `retryDelay`; we opt in so transient filehandle races self-heal instead
+     * of orphaning a directory that then collides with the next run.
+     */
+    async robustRemoveDir(dir) {
+        if (!existsSync(dir))
+            return;
+        await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+    }
+    /**
+     * beta.38: before `git worktree add -B <branch>`, ensure no OTHER worktree
+     * still holds <branch>. `git worktree add -B` refuses when the branch is
+     * checked out elsewhere. We (1) prune dangling admin entries, then (2) parse
+     * `git worktree list --porcelain`, and for any registered worktree that is
+     * NOT the target path AND is on <branch>, force-remove it (git first, then a
+     * robust rm fallback). Best-effort: failures are logged, not thrown -- the
+     * subsequent `worktree add` will surface a clear error if reconciliation was
+     * insufficient.
+     */
+    async reconcileBranchWorktrees(bare, branch, targetPath) {
+        try {
+            await this.run(["-C", bare, "worktree", "prune"]).catch(() => "");
+            const listing = await this.run(["-C", bare, "worktree", "list", "--porcelain"]).catch(() => "");
+            // Porcelain groups are separated by blank lines; each has a `worktree <path>`
+            // and, when on a branch, a `branch refs/heads/<name>` line.
+            const groups = listing.split(/\n\n+/);
+            const ref = `refs/heads/${branch}`;
+            for (const g of groups) {
+                const pathMatch = g.match(/^worktree\s+(.+)$/m);
+                const branchMatch = g.match(/^branch\s+(.+)$/m);
+                if (!pathMatch || !branchMatch)
+                    continue;
+                const wtPath = pathMatch[1].trim();
+                const wtRef = branchMatch[1].trim();
+                if (wtRef !== ref)
+                    continue;
+                if (resolve(wtPath) === resolve(targetPath))
+                    continue; // it's our target; leave it
+                this.opts.logger.warn("[git] reconcile: branch already checked out in another worktree; releasing it", {
+                    branch,
+                    staleWorktree: wtPath,
+                    targetPath,
+                });
+                await this.run(["-C", bare, "worktree", "remove", "--force", wtPath]).catch(async (err) => {
+                    this.opts.logger.warn("[git] reconcile: git worktree remove failed; robust rm fallback", { wtPath, err: String(err) });
+                    await this.robustRemoveDir(wtPath).catch(() => undefined);
+                });
+                if (existsSync(wtPath))
+                    await this.robustRemoveDir(wtPath).catch(() => undefined);
+            }
+            await this.run(["-C", bare, "worktree", "prune"]).catch(() => "");
+        }
+        catch (err) {
+            this.opts.logger.warn("[git] reconcileBranchWorktrees failed (non-fatal)", { branch, err: String(err) });
+        }
+    }
     async releaseByPath(worktreePath, repoFullName) {
         if (!worktreePath)
             return { ok: false, path: worktreePath, error: "worktreePath is empty" };
@@ -190,7 +263,7 @@ esac
             // sometimes only unregisters the worktree (e.g. if the gitdir link
             // is broken). Follow up with rm -rf when the dir survives.
             if (existsSync(worktreePath)) {
-                await rm(worktreePath, { recursive: true, force: true });
+                await this.robustRemoveDir(worktreePath);
             }
             // Also prune any dangling worktree admin state in the bare repo.
             await this.run(["-C", bare, "worktree", "prune"]).catch(() => "");
@@ -199,7 +272,7 @@ esac
         catch (err) {
             this.opts.logger.warn("[git] worktree remove failed; falling back to rm -rf", { err: String(err), worktreePath });
             try {
-                await rm(worktreePath, { recursive: true, force: true });
+                await this.robustRemoveDir(worktreePath);
                 // Prune the bare admin state so a subsequent `git fetch` doesn't
                 // choke on "refusing to fetch into branch checked out at ...".
                 await this.run(["-C", bare, "worktree", "prune"]).catch(() => "");

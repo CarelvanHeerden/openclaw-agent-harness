@@ -45,7 +45,17 @@ export type LoopOutcome = {
     reason: string;
     cycles: number;
     totalCostUsd: number;
+} | {
+    status: "skipped_already_running";
+    sessionId: string;
+    reason: string;
+    cycles: number;
+    totalCostUsd: number;
 };
+/** True if a loop for this session is currently running in this process. */
+export declare function isSessionLoopRunning(sessionId: string): boolean;
+/** Test/diagnostic helper: snapshot of currently-running session ids. */
+export declare function runningSessionIds(): string[];
 export interface OrchestratorDeps {
     config: HarnessConfig;
     state: StateStore;
@@ -168,7 +178,16 @@ export declare class OrchestratorLoop {
     private checkpoint;
     private addCost;
     private saveReview;
+    /**
+     * beta.38: re-entrancy guard. If a loop for this session is already running
+     * in this process (plugin re-register mid-run), do NOT start a second one --
+     * that races the live loop's worktree and kills the run. Return a distinct
+     * `skipped_already_running` outcome so callers (recovery) can log-and-move-on.
+     * The guard is registered/cleared here so EVERY entry path (fresh run and
+     * recovery auto-resume both call `run()`) is covered and can't be forgotten.
+     */
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
+    private runInner;
     /**
      * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
      * audit breadcrumb. Fires exactly once per observe-mode sub-task terminal
