@@ -86,7 +86,9 @@ test("beta.38: branch-collision semantics — releasing the stale worktree unblo
     const p2 = join(root, `pending-${Date.now()}-2`);
     const add2 = spawnSync("git", ["-C", bare, "worktree", "add", "-B", branch, p2, "main"], { encoding: "utf8" });
     assert.notEqual(add2.status, 0, "second add on the same branch must fail while p1 holds it");
-    assert.match(add2.stderr, /already checked out/i);
+    // git phrases this differently across versions: older git says
+    // "already checked out at", newer git says "already used by worktree at".
+    assert.match(add2.stderr, /already (checked out|used by worktree)/i);
 
     // reconcile: release p1 (what reconcileBranchWorktrees does), then retry.
     spawnSync("git", ["-C", bare, "worktree", "remove", "--force", p1], { stdio: "ignore" });
