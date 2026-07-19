@@ -458,6 +458,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         description:
           [
             "Start a harness session from a STRUCTURED brief (skips the classifier/crystalliser). Use this when you have already refined the request into title + motivation + acceptance criteria. For a raw natural-language request, use harness_run instead. Slack channel/thread are optional; when omitted, progress is not posted to Slack and you poll harness_status / harness_session_get for the outcome.",
+            "AUTOMATIC PROGRESS (REQUIRED): the harness NEVER posts to Slack itself. AFTER this returns ok:true, you MUST immediately begin surfacing progress: poll harness_progress with the returned sessionId every ~45s and relay its headline to the user, stopping when terminal is true. The success result carries a details.feedback directive with the exact poll target, interval, field, and stop condition -- follow it. Prefer scheduling a ~45s cron that calls harness_progress and posts each new headline. Do NOT fire-and-forget and leave the user in silence.",
             "",
             // beta.22: same OKF forwarding rule as harness_run.
             "OKF forwarding: if your context contains `Relevant Knowledge (OKF)` blocks that relate to the brief, include them under `brief.relevantConcepts` using the same shape documented on `harness_run`. Optional; omit when there are no relevant blocks.",
@@ -540,8 +541,16 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (!res.ok) {
             return { content: [{ type: "text", text: res.reason }], details: { ok: false, unauthorised: res.unauthorised, duplicateThread: res.duplicateThread } };
           }
-          const where = slackThread ? "Watch the Slack thread for progress." : "Poll harness_status / harness_session_get for progress.";
-          return { content: [{ type: "text", text: `Session ${res.sessionId} started. ${where}` }], details: { ok: true, sessionId: res.sessionId } };
+          const feedback = {
+            poll: "harness_progress",
+            args: { sessionId: res.sessionId },
+            intervalSeconds: 45,
+            relayField: "headline",
+            until: "terminal",
+            instruction:
+              "Poll harness_progress with this sessionId every ~45s and relay its `headline` (or a rephrase) to the user until `terminal` is true. Prefer scheduling a 45s cron so progress surfaces across turns. Do not fire-and-forget -- the harness does NOT post to Slack itself.",
+          };
+          return { content: [{ type: "text", text: `Session ${res.sessionId} started. Surface progress automatically: poll harness_progress (sessionId ${res.sessionId}) every ~45s and relay \`headline\` until terminal. The harness will not post to Slack itself.` }], details: { ok: true, sessionId: res.sessionId, feedback } };
         },
       }),
     ),
@@ -561,6 +570,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         description:
           [
             "PRIMARY entry point. Hand the harness a raw natural-language coding request; it classifies + crystallises it into a brief and starts a session (plan -> parallel workers -> adversarial review -> PR). Returns either a started sessionId, a clarifying question to relay to the user, or a rejection. Use this instead of harness_start_session unless you have already built a structured brief. Slack channel/thread are optional; omit them for pure agent-orchestrated runs and poll harness_status for the outcome.",
+            "AUTOMATIC PROGRESS (REQUIRED): the harness NEVER posts to Slack itself. AFTER this returns ok:true, you MUST immediately begin surfacing progress: poll harness_progress with the returned sessionId every ~45s and relay its headline to the user, stopping when terminal is true. The success result carries a details.feedback directive with the exact poll target, interval, field, and stop condition -- follow it. Prefer scheduling a ~45s cron that calls harness_progress and posts each new headline, so progress surfaces even across turns. Do NOT fire-and-forget and leave the user in silence.",
             "",
             // beta.22: explicit OKF forwarding instruction. The OKF plugin
             // surfaces "Relevant Knowledge" blocks in your (the calling
@@ -666,10 +676,18 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (!res.ok) {
             return { content: [{ type: "text", text: res.reason }], details: { ok: false, unauthorised: res.unauthorised, duplicateThread: res.duplicateThread } };
           }
-          const where = slackThread ? "Progress will post to the Slack thread." : "Poll harness_status / harness_session_get for progress.";
+          const feedback = {
+            poll: "harness_progress",
+            args: { sessionId: res.sessionId },
+            intervalSeconds: 45,
+            relayField: "headline",
+            until: "terminal",
+            instruction:
+              "Poll harness_progress with this sessionId every ~45s and relay its `headline` (or a rephrase) to the user until `terminal` is true. Prefer scheduling a 45s cron so progress surfaces across turns. Do not fire-and-forget -- the harness does NOT post to Slack itself.",
+          };
           return {
-            content: [{ type: "text", text: `Session ${res.sessionId} started for "${cResult.brief.title}". ${where}` }],
-            details: { ok: true, sessionId: res.sessionId, brief: cResult.brief },
+            content: [{ type: "text", text: `Session ${res.sessionId} started for "${cResult.brief.title}". Surface progress automatically: poll harness_progress (sessionId ${res.sessionId}) every ~45s and relay \`headline\` until terminal. The harness will not post to Slack itself.` }],
+            details: { ok: true, sessionId: res.sessionId, brief: cResult.brief, feedback },
           };
         },
       }),

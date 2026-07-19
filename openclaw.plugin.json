@@ -219,6 +219,13 @@
             "maximum": 86400,
             "default": 2700,
             "description": "beta.40: reclaim threshold for a wedged loop. If run() is asked to start a session still marked running by the module-level re-entrancy guard, but its last_checkpoint_at/updated_at has not advanced for this many seconds, the tracked loop is treated as dead (torn down with a prior runtime on plugin re-register), the stale guard entry is force-cleared, and the fresh run proceeds. Must exceed a normal long worker SDK call so a busy loop is never reclaimed."
+          },
+          "teardown_drain_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 86400,
+            "default": 3600,
+            "description": "beta.41: max seconds teardown() waits for a still-running loop from the runtime being torn down to finish before closing its state DB. A plugin re-register (OKF / gateway auto-discovery churn when plugins.allow is empty) schedules a fire-and-forget teardown of the previous runtime; closing the DB out from under an in-flight loop.run() crashes the run. Draining first prevents that. Bounded so a wedged loop can't block teardown forever."
           }
         }
       },

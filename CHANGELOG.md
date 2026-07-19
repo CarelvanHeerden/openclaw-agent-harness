@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.1.0-beta.41] -- 2026-07-19
+
+Re-register-during-run crash fix + automatic progress feedback.
+
+### 1. Teardown drain-guard (the actual crash cause)
+
+The beta.39 AND beta.40 ProjectThanos smokes both died at
+`[tool.start_session] loop crashed`, ~10s after a plugin re-register fired
+mid-run. Root cause (verified in code + logs): Staging's `plugins.allow` is
+empty, so the GATEWAY periodically re-runs plugin auto-discovery and calls
+`register()` on every discovered plugin (OKF + harness together -- OKF is only
+the loudest symptom; it forwards nothing to the harness). Each harness
+re-register schedules a fire-and-forget `teardown()` of the previous runtime.
+`teardown()` ran `runtime.state.close()` -- closing the DB out from under an
+in-flight `loop.run()` that still holds `runtime.state.db`. The loop's next
+`db.prepare()` then throws "database is not open" -> `loop crashed`. beta.38's
+re-entrancy guard correctly stopped the NEW runtime from double-driving the
+session, but nothing stopped the OLD runtime's DB from being closed under the
+still-live loop.
+
+Fix: `teardown()` now DRAINS running loops before closing. Before disposers /
+`state.close()`, it waits (bounded by new config `loop.teardown_drain_seconds`,
+default 3600s) while `runningSessionIds().length > 0`. The re-entrancy guard
+already keeps the old loop as sole owner of the session, so we simply hold its
+DB open until it finishes, then tear down. If the drain deadline is exceeded
+(genuinely-wedged loop) it proceeds anyway and logs loudly -- bounded, never
+infinite. New config added to BOTH `openclaw.plugin.json` (gateway source of
+truth) and `src/config.ts`.
+
+Note: the *root* trigger (repeated auto-discovery re-register) is fixed
+operationally by setting `plugins.allow` on the host; this harness change is
+defense-in-depth so a stray re-register can never crash a run again.
+
+### 2. Automatic progress feedback (Option B -- no direct-Slack)
+
+Until now, agent-orchestrated runs surfaced progress only if the caller was
+*told* to poll `harness_progress`. beta.41 makes it automatic without the
+harness ever posting to Slack itself (Carel's hard constraint; beta.34
+invariant preserved):
+
+- Every successful `harness_run` / `harness_start_session` return now carries a
+  machine-readable `details.feedback` directive: `{ poll: "harness_progress",
+  args: { sessionId }, intervalSeconds: 45, relayField: "headline", until:
+  "terminal", instruction }`. The human-facing `content` text says the same, so
+  an agent that only reads `content` still learns the contract.
+- Both tool DESCRIPTIONS gained an imperative post-call protocol ("AFTER this
+  returns ok:true you MUST poll harness_progress every ~45s and relay headline
+  until terminal; prefer a cron; do not fire-and-forget"). Tool descriptions are
+  read on every call -- the closest thing to a deterministic contract without
+  the harness acting.
+
+Effect: what Staging was doing manually (a 45s progress-poll cron relaying
+headlines) becomes the harness's built-in usage contract, inherited by any
+OpenClaw that calls it. Harness stays tool-driven and Slack-silent.
+
+Tests 463 -> 471 (+8: `beta41-auto-feedback` +4, `beta41-teardown-drain` +4).
+typecheck + build + full suite + smoke green.
+
 ## [0.1.0-beta.40] -- 2026-07-19
 
 Classifier persona-drift hardening. From the beta.39 ProjectThanos smoke
