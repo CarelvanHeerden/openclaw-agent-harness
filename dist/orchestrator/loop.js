@@ -25,6 +25,36 @@ function parsePrNumber(prUrl) {
 }
 import { inferVerifyContract } from "./verify-contract.js";
 import { verifySubTaskOutput } from "./verify.js";
+/**
+ * beta.38: module-level set of session ids whose loop is CURRENTLY running in
+ * THIS process. The single source of truth for "is this session's loop alive?"
+ *
+ * WHY: `recoverSessions` runs on every plugin bootstrap. A plugin RE-REGISTER
+ * (e.g. the OKF bundle-reindex churn) triggers bootstrap WITHOUT the process
+ * dying -- so the previous generation's `loop.run()` may still be executing in
+ * the background. Recovery, seeing a still-`executing` session, would assume
+ * the process died and re-drive `loop.run()` -- spawning a SECOND concurrent
+ * loop for the same session. That second loop's `git worktree add` then
+ * collides with the first loop's still-live worktree (Staging ProjectThanos
+ * smoke, session 36f53c40: `fatal: '<branch>' is already checked out at
+ * '<pending-...>'` -> loop.plan_failed -> whole run killed after sub-task 1).
+ *
+ * This module-level set answers the question precisely: within one process
+ * lifetime it tracks every live loop, so recovery can skip a session that is
+ * still running. On a REAL process restart the module is re-instantiated fresh
+ * (empty set), so recovery correctly auto-resumes genuinely-dead sessions.
+ * It lives at module scope (not on the runtime instance) so it survives a
+ * plugin re-register the same way `runtime-registry` does.
+ */
+const runningSessions = new Set();
+/** True if a loop for this session is currently running in this process. */
+export function isSessionLoopRunning(sessionId) {
+    return runningSessions.has(sessionId);
+}
+/** Test/diagnostic helper: snapshot of currently-running session ids. */
+export function runningSessionIds() {
+    return [...runningSessions];
+}
 export class OrchestratorLoop {
     deps;
     constructor(deps) {
@@ -104,7 +134,36 @@ export class OrchestratorLoop {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(`${sessionId}-r${cycle}`, sessionId, cycle, report.verdict, JSON.stringify(report.findings), report.summary, report.costUsd, report.sdkSessionId ?? null, Date.now());
     }
+    /**
+     * beta.38: re-entrancy guard. If a loop for this session is already running
+     * in this process (plugin re-register mid-run), do NOT start a second one --
+     * that races the live loop's worktree and kills the run. Return a distinct
+     * `skipped_already_running` outcome so callers (recovery) can log-and-move-on.
+     * The guard is registered/cleared here so EVERY entry path (fresh run and
+     * recovery auto-resume both call `run()`) is covered and can't be forgotten.
+     */
     async run(sessionId, brief) {
+        if (runningSessions.has(sessionId)) {
+            this.deps.state.audit("loop.run_skipped_already_running", { sessionId, reason: "a loop for this session is already running in this process" }, sessionId);
+            this.deps.logger.warn("[loop] run() skipped: session loop already running (re-entrant call)", { sessionId });
+            const cur = this.deps.state.db.prepare(`SELECT cycles_ran, cost_usd FROM sessions WHERE id = ?`).get(sessionId);
+            return {
+                status: "skipped_already_running",
+                sessionId,
+                reason: "loop already running in this process",
+                cycles: cur?.cycles_ran ?? 0,
+                totalCostUsd: cur?.cost_usd ?? 0,
+            };
+        }
+        runningSessions.add(sessionId);
+        try {
+            return await this.runInner(sessionId, brief);
+        }
+        finally {
+            runningSessions.delete(sessionId);
+        }
+    }
+    async runInner(sessionId, brief) {
         const row = this.deps.state.db
             .prepare(`SELECT id, requester, cost_usd, budget_usd, cycles_ran, status FROM sessions WHERE id = ?`)
             .get(sessionId);

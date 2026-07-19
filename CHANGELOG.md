@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.1.0-beta.38] -- 2026-07-19
+
+Recovery re-entrancy guard + worktree-collision fixes. From the beta.36
+ProjectThanos smoke (session 36f53c40), which failed with no PR: the loop
+crashed on a `git worktree add` collision right after sub-task 1.
+
+### The real bug: recovery re-drove a still-running loop
+
+`recoverSessions` runs on EVERY plugin bootstrap. A plugin RE-REGISTER (the
+OKF bundle-reindex churn) triggers bootstrap WITHOUT the process dying, so the
+previous generation's `loop.run()` is still executing in the background.
+Recovery, seeing a still-`executing` session, assumed a dead process and
+re-drove `loop.run()` -- spawning a SECOND concurrent loop for the same
+session. The second loop's `git worktree add -B <branch>` then collided with
+the first loop's still-live worktree:
+`fatal: '<branch>' is already checked out at '<pending-...>'` -> loop.plan_failed
+-> whole run killed after sub-task 1.
+
+**Fix (primary):** a module-level `runningSessions` guard in `loop.ts`. Every
+`run()` (fresh AND recovery auto-resume both call it) registers on entry and
+clears in `finally`. A re-entrant call for a session already running in-process
+returns a new `skipped_already_running` outcome instead of starting a second
+loop. The set is per-session (independent sessions still run concurrently) and
+module-scoped so it survives a plugin re-register; on a REAL restart the module
+is fresh (empty) so genuinely-dead sessions still auto-resume. New audit event
+`loop.run_skipped_already_running`.
+
+### Secondary: worktree add reconciliation
+
+`git worktree add -B <branch>` refuses when <branch> is already checked out
+elsewhere. New `reconcileBranchWorktrees` runs before every add: prunes
+dangling admin state, parses `git worktree list --porcelain`, and force-releases
+any OTHER worktree still holding the target branch. Belt-and-braces for the
+genuine restart case (worktree survived on disk).
+
+### Secondary: robust worktree removal
+
+The cleanup `rm(recursive, force)` had no retries and lost the race against
+Next.js `node_modules/@next/swc-*` native-symlink trees (ENOTEMPTY in the
+smoke). New `robustRemoveDir` uses `fs.rm(..., { maxRetries: 5, retryDelay: 250 })`
+so transient filehandle/ENOTEMPTY races self-heal. Wired into `releaseByPath`
+(both the primary and fallback paths) and the reconcile path.
+
+Tests 436 -> 441 (+5: `tests/beta38-recovery-reentrancy.test.mjs`,
+`tests/beta38-worktree-collision.test.mjs`). typecheck + build + full suite +
+smoke green.
+
 ## [0.1.0-beta.37] -- 2026-07-19
 
 Poll-model progress so agent-orchestrated runs stop being silent.
