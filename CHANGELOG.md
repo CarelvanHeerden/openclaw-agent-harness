@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.1.0-beta.37] -- 2026-07-19
+
+Poll-model progress so agent-orchestrated runs stop being silent.
+
+### The problem
+
+The harness is tool-driven (beta.34 removed the Slack listener): a `harness_run`
+returns a `sessionId` immediately and the loop runs in the background. Users got
+**zero feedback** and reasonably assumed the run had hung. The old
+`reportProgress` hook tried to post directly to `sessions.slack_channel` /
+`slack_thread`, but for an agent-orchestrated run those are `""` /
+`"agent:<uuid>"` (no real Slack binding). Every post was rejected by Slack and
+swallowed by a blind `.catch(() => {})` -- not one progress line ever reached
+anyone. Direct-to-Slack was also architecturally wrong: the harness must not
+talk to Slack itself.
+
+### The fix: `harness_progress` (poll model)
+
+New tool the calling OpenClaw agent polls (~30-60s) and relays to Slack in its
+own voice, stopping when `terminal` is true. Returns a snapshot built entirely
+from data the loop already persists -- **no new hot-path writes**:
+
+- **phase** (from session status), **cycle**
+- **per-sub-task N/M** with live status + cost (from `sub_tasks`)
+- **running cost vs budget** + ratio
+- **recent lifecycle events** tail (from `audit_log`, deterministically ordered
+  by `(created_at, id)` so same-millisecond events tail in insertion order)
+- **PR number / URL / deploy status**, `msSinceLastEvent`
+- a ready-to-post, Slack-mrkdwn-safe **`headline`** line (single line, no
+  tables/headings) e.g. `Executing sub-task 2/3 -- Update dropdown ($0.42/$3.00).`
+
+`reportProgress` is retained ONLY as an audit-writer (`loop.progress` rows) so
+phase transitions appear in the event tail; it no longer touches Slack.
+
+Manifest + smoke + compliance tool lists updated (13 tools). 8 new tests
+(`tests/beta37-progress-poll.test.mjs`); 428 -> 436 total.
+
 ## [0.1.0-beta.36] -- 2026-07-18
 
 Fully-automated post-merge deploy repair (human out of the loop) for
