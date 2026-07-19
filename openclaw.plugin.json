@@ -201,6 +201,13 @@
             "maximum": 7200,
             "default": 900
           },
+          "lead_timeout_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 7200,
+            "default": 900,
+            "description": "beta.43: max seconds the lead-planner SDK call may run before it is treated as a hang and the run fails cleanly (loop.lead_timeout). The lead await was unbounded (beta.42 only bounded the worker); a healthy long plan was indistinguishable from a wedge."
+          },
           "session_hard_timeout_seconds": {
             "type": "integer",
             "minimum": 300,

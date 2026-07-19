@@ -50,6 +50,7 @@ const DEFAULTS = {
         adversarial_pass_ends_early: true,
         worker_timeout_seconds: 1800,
         adversary_timeout_seconds: 900,
+        lead_timeout_seconds: 900,
         session_hard_timeout_seconds: 7200,
         subtask_concurrency: 1,
         stuck_loop_seconds: 2700,

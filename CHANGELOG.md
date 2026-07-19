@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.1.0-beta.43] -- 2026-07-19
+
+Close the last two unbounded SDK awaits. beta.42 bounded the *worker* await;
+the *lead* and *adversary* awaits were still unbounded. On the beta.42
+ProjectThanos smoke this directly caused a misdiagnosis: a healthy ~10-minute
+lead/refactor call was indistinguishable from a hang because there was no
+timeout to convert a real hang into a clean failure.
+
+### What changed
+
+- `runLead` await (`loop.ts` planning phase) is now
+  `withTimeout(runLead(...), loop.lead_timeout_seconds)`. New config
+  `lead_timeout_seconds` (default 900s) added to `src/config.ts` + the
+  `openclaw.plugin.json` manifest. A hung planner now fails the run cleanly and
+  emits `loop.lead_timeout` + `loop.plan_failed`.
+- `runAdversary` await (`loop.ts` review phase) is now
+  `withTimeout(runAdversary(...), loop.adversary_timeout_seconds)`.
+  `adversary_timeout_seconds` existed in config (900s) but was declared and
+  never enforced on the await -- now it is. A hung reviewer fails cleanly and
+  emits `loop.adversary_timeout`.
+
+With beta.42 (worker) + beta.43 (lead + adversary), **all four structured SDK
+awaits are now bounded** -- no harness SDK call can hang the loop indefinitely.
+
+### Not done (deliberately, per evidence)
+
+A harness-side mid-turn *heartbeat* was considered and rejected: `harness_run`
+is fire-and-forget (`void loop.run(...)`), so the gateway-level
+`active_work_without_progress` reaper that fired at ~10min was watching the
+*caller's* embedded_run, not the detached harness loop. A harness heartbeat
+would decorate the wrong layer. The correct fix for the reaper is the
+gateway-side `diagnostics.stuckSessionAbortMs` config (operator-set), paired
+with these bounded awaits so a genuine hang still fails fast.
+
+Tests 478 -> 482 (+4). typecheck + build + full suite + smoke green.
+
 ## [0.1.0-beta.42] -- 2026-07-19
 
 The actual wedge fix. Root-caused the ~5h30m silent wedge that killed the

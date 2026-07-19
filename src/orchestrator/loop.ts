@@ -468,12 +468,23 @@ export class OrchestratorLoop {
     await this.deps.reportProgress?.(sessionId, "planning");
     let plan: LeadPlan;
     try {
-      plan = await this.deps.runLead(brief, { requester: row.requester });
+      // beta.43: bound the lead-planner SDK call by lead_timeout_seconds. The
+      // lead await was UNBOUNDED (beta.42 only bounded the worker). A hung
+      // planner froze the run with no timeout -- and a healthy long plan was
+      // indistinguishable from a wedge, which is exactly what caused the
+      // beta.42 smoke misdiagnosis.
+      plan = await withTimeout(
+        this.deps.runLead(brief, { requester: row.requester }),
+        this.deps.config.loop.lead_timeout_seconds,
+      );
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
         .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
       this.deps.state.audit("loop.plan_ready", { sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel }, sessionId);
     } catch (err) {
+      if (err instanceof WorkerTimeoutError) {
+        this.deps.state.audit("loop.lead_timeout", { sessionId, lead_timeout_seconds: this.deps.config.loop.lead_timeout_seconds }, sessionId);
+      }
       this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
       return this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd);
     }
@@ -886,8 +897,17 @@ export class OrchestratorLoop {
       }
       let report: ReviewReport;
       try {
-        report = await this.deps.runAdversary({ brief, plan, runtime, requester: row.requester });
+        // beta.43: bound the adversary SDK call by adversary_timeout_seconds
+        // (previously declared in config but UNENFORCED on this await). A hung
+        // reviewer froze the run at the review phase with no timeout.
+        report = await withTimeout(
+          this.deps.runAdversary({ brief, plan, runtime, requester: row.requester }),
+          this.deps.config.loop.adversary_timeout_seconds,
+        );
       } catch (err) {
+        if (err instanceof WorkerTimeoutError) {
+          this.deps.state.audit("loop.adversary_timeout", { sessionId, cycle, adversary_timeout_seconds: this.deps.config.loop.adversary_timeout_seconds }, sessionId);
+        }
         return this.finaliseFailed(sessionId, `adversary_error: ${String(err)}`, cycle, totalCost);
       }
       totalCost += report.costUsd;

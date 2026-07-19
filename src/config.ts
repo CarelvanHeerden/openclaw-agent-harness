@@ -127,6 +127,15 @@ export interface LoopConfig {
   adversarial_pass_ends_early: boolean;
   worker_timeout_seconds: number;
   adversary_timeout_seconds: number;
+  /**
+   * beta.43: max seconds the lead-planner SDK call may run before it is treated
+   * as a hang and the run fails cleanly. Like worker_timeout_seconds before
+   * beta.42, the lead await was previously UNBOUNDED -- a hung planner froze
+   * the run with no timeout. (This is the gap that made a healthy ~10min lead
+   * call on the beta.42 ProjectThanos smoke look indistinguishable from a
+   * wedge.) Default 900s.
+   */
+  lead_timeout_seconds: number;
   session_hard_timeout_seconds: number;
   /** Max sub-tasks a cycle will run concurrently. Default 1 (sequential). */
   subtask_concurrency: number;
@@ -371,6 +380,7 @@ const DEFAULTS: HarnessConfig = {
     adversarial_pass_ends_early: true,
     worker_timeout_seconds: 1800,
     adversary_timeout_seconds: 900,
+    lead_timeout_seconds: 900,
     session_hard_timeout_seconds: 7200,
     subtask_concurrency: 1,
     stuck_loop_seconds: 2700,
