@@ -39,6 +39,16 @@ interface RunnableBrief {
    * Optional; pre-beta.21 briefs simply omit the field.
    */
   relevantConcepts?: Array<{ id: string; path?: string; summary?: string; tags?: string[]; content?: string }>;
+  /**
+   * beta.44: revise flow. When set, this brief is a REVISE of a prior shipped
+   * session -- the loop must build on the prior session's existing branch
+   * (pinnedBranch, used verbatim -- NOT slugified) so new commits stack on the
+   * existing PR head and the SAME PR updates rather than a new one opening.
+   * reviseOfSessionId links the new session to the one being revised for
+   * audit/traceability.
+   */
+  reviseOfSessionId?: string;
+  pinnedBranch?: string;
 }
 
 export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRuntime): () => void {
@@ -946,6 +956,279 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             api.logger.error("[tool.resume] loop.run failed", { sessionId, err: String(err) });
           });
           return { content: [{ type: "text", text: `Session ${sessionId} resumed. Watch the Slack thread for progress.` }], details: { ok: true, sessionId } };
+        },
+      }),
+    ),
+  );
+
+  // ---- beta.44: revise flow (harness_list_revisable + harness_revise) ----
+  //
+  // Real-world UX: a user sees a shipped PR with merge_recommendation =
+  // 'do_not_merge' + N adversary findings and needs a SELF-SERVICE way to say
+  // "fix those findings" without knowing a session id, extracting findings by
+  // hand, or having an operator pick up the pieces. These two tools close that
+  // loop:
+  //   - harness_list_revisable: enumerate open harness PRs that aren't
+  //     merge-ready, so the agent can present a picker.
+  //   - harness_revise: given a sessionId OR prNumber (or NEITHER -> returns
+  //     the revisable list so the caller can pick), load the prior session's
+  //     stored adversary findings + branch, auto-build a revise brief, and
+  //     re-run the loop PINNED to the existing branch so new commits stack on
+  //     the same PR head and the SAME PR updates.
+
+  interface RevisableRow {
+    id: string;
+    repo: string;
+    branch: string;
+    pr_number: number | null;
+    final_pr_url: string | null;
+    merge_recommendation: string | null;
+    merge_recommendation_reason: string | null;
+    crystallised_prompt: string | null;
+    created_at: number;
+  }
+
+  // A session is "revisable" iff it shipped a PR that isn't merge-ready.
+  // status='done' (shipped), pr_number present, and merge_recommendation is
+  // anything other than 'merge' (do_not_merge, or null when shipped at max
+  // cycles without a clean pass).
+  function listRevisableRows(): RevisableRow[] {
+    return liveDb()
+      .prepare(
+        `SELECT id, repo, branch, pr_number, final_pr_url, merge_recommendation,
+                merge_recommendation_reason, crystallised_prompt, created_at
+           FROM sessions
+          WHERE status = 'done'
+            AND pr_number IS NOT NULL
+            AND (merge_recommendation IS NULL OR merge_recommendation != 'merge')
+          ORDER BY created_at DESC
+          LIMIT 50`,
+      )
+      .all() as unknown as RevisableRow[];
+  }
+
+  // Load the LATEST review's findings for a session (highest cycle).
+  function latestFindings(sessionId: string): { verdict: string; findings: unknown[]; summary: string | null; cycle: number } | undefined {
+    const r = liveDb()
+      .prepare(
+        `SELECT verdict, findings, summary, cycle FROM reviews WHERE session_id = ? ORDER BY cycle DESC, created_at DESC LIMIT 1`,
+      )
+      .get(sessionId) as { verdict: string; findings: string; summary: string | null; cycle: number } | undefined;
+    if (!r) return undefined;
+    let findings: unknown[] = [];
+    try {
+      const parsed = JSON.parse(r.findings);
+      if (Array.isArray(parsed)) findings = parsed;
+    } catch {
+      /* leave empty */
+    }
+    return { verdict: r.verdict, findings, summary: r.summary, cycle: r.cycle };
+  }
+
+  function summariseRevisable(row: RevisableRow): Record<string, unknown> {
+    const fnd = latestFindings(row.id);
+    let title = row.branch;
+    try {
+      if (row.crystallised_prompt) {
+        const b = JSON.parse(row.crystallised_prompt) as { title?: string };
+        if (b.title) title = b.title;
+      }
+    } catch {
+      /* keep branch as title */
+    }
+    return {
+      sessionId: row.id,
+      prNumber: row.pr_number,
+      prUrl: row.final_pr_url,
+      repo: row.repo,
+      branch: row.branch,
+      title,
+      mergeRecommendation: row.merge_recommendation ?? "do_not_merge",
+      reason: row.merge_recommendation_reason ?? null,
+      findingCount: fnd?.findings.length ?? 0,
+      lastVerdict: fnd?.verdict ?? null,
+    };
+  }
+
+  // Build a revise brief from a prior session + its stored findings. The new
+  // brief carries the ORIGINAL goal forward (so the worker doesn't regress the
+  // passing criteria) and adds the findings as the primary work items, pinned
+  // to the existing branch.
+  function buildReviseBrief(row: RevisableRow): RunnableBrief | { error: string } {
+    const fnd = latestFindings(row.id);
+    let orig: Partial<RunnableBrief> = {};
+    try {
+      if (row.crystallised_prompt) orig = JSON.parse(row.crystallised_prompt) as Partial<RunnableBrief>;
+    } catch {
+      /* fall through with empty orig */
+    }
+    const findings = fnd?.findings ?? [];
+    const findingLines = findings.map((f, i) => {
+      const o = (f ?? {}) as Record<string, unknown>;
+      const sev = o.severity ?? o.level ?? "";
+      const msg = o.message ?? o.finding ?? o.detail ?? o.description ?? JSON.stringify(o);
+      const loc = o.location ?? o.file ?? o.path ?? "";
+      return `${i + 1}. [${String(sev)}] ${String(msg)}${loc ? ` (${String(loc)})` : ""}`;
+    });
+    const acceptance = [
+      "Address each adversary finding listed below without regressing the original acceptance criteria.",
+      ...findingLines,
+    ];
+    if (Array.isArray(orig.acceptanceCriteria)) {
+      acceptance.push("--- original acceptance criteria (must still hold) ---", ...orig.acceptanceCriteria);
+    }
+    const brief: RunnableBrief = {
+      title: orig.title ? `Revise: ${orig.title}` : `Revise PR #${row.pr_number}`,
+      motivation:
+        `Revise the existing PR #${row.pr_number} on branch ${row.branch}. The adversary review returned ` +
+        `${fnd?.verdict ?? "revise"} with ${findings.length} finding(s)` +
+        (row.merge_recommendation_reason ? ` (merge recommendation: ${row.merge_recommendation_reason})` : "") +
+        `. Build ON the existing branch -- do not start over. Only make the changes needed to resolve the findings.`,
+      acceptanceCriteria: acceptance,
+      filesLikelyTouched: Array.isArray(orig.filesLikelyTouched) ? orig.filesLikelyTouched : [],
+      outOfScope: Array.isArray(orig.outOfScope)
+        ? orig.outOfScope
+        : ["Unrelated refactors", "Changes outside the scope of the listed findings"],
+      relevantConcepts: orig.relevantConcepts,
+      repoHint: row.repo,
+      riskLevel: (orig.riskLevel as RunnableBrief["riskLevel"]) ?? "low",
+      reviseOfSessionId: row.id,
+      pinnedBranch: row.branch,
+    };
+    return brief;
+  }
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_list_revisable",
+        description:
+          "List shipped harness PRs that are NOT merge-ready (merge_recommendation != 'merge'), so a user can pick one to revise. " +
+          "Each item: sessionId, prNumber, prUrl, repo, branch, title, mergeRecommendation, reason, findingCount, lastVerdict. " +
+          "Use this when a user asks to 'fix the findings' / 'revise' WITHOUT naming a specific PR -- present the list and let them choose, then call harness_revise with the chosen prNumber or sessionId.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute: async () => {
+          const rows = listRevisableRows();
+          const items = rows.map(summariseRevisable);
+          return {
+            content: [{ type: "text", text: JSON.stringify({ count: items.length, revisable: items }, null, 2) }],
+            details: { ok: true, count: items.length, revisable: items },
+          };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_revise",
+        description:
+          "Revise a shipped-but-not-merge-ready harness PR by addressing its adversary findings, UPDATING THE SAME PR (new commits stack on the existing branch head -- no new PR opens). " +
+          "Target resolution: pass `prNumber` OR `sessionId` to revise that specific one. Pass NEITHER to get back the revisable list (needsSelection=true) so the caller can present a picker and re-invoke with a choice. " +
+          "The revise brief is built AUTOMATICALLY from the prior session's stored adversary findings + original goal -- the user does NOT need to know the session id or restate the findings. " +
+          "Returns the new revise sessionId (fire-and-forget loop; watch harness_progress). requester must be in slack.authorised_users.",
+        parameters: {
+          type: "object",
+          properties: {
+            requester: { type: "string", minLength: 1, description: "Slack user id of the invoker. Must be in slack.authorised_users." },
+            prNumber: { type: "number", description: "PR number to revise. Alternative to sessionId." },
+            sessionId: { type: "string", minLength: 1, description: "Shipped session id to revise. Alternative to prNumber." },
+            budgetUsd: { type: "number", minimum: 0.05, description: "Optional per-session budget override for the revise run." },
+          },
+          required: ["requester"],
+          additionalProperties: false,
+        },
+        execute: async (_callId: unknown, input: unknown) => {
+          const { requester, prNumber, sessionId, budgetUsd } = input as {
+            requester: string;
+            prNumber?: number;
+            sessionId?: string;
+            budgetUsd?: number;
+          };
+          if (!liveConfig().slack.authorised_users.includes(requester)) {
+            return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          }
+          // No target -> return the picker list.
+          if (prNumber === undefined && !sessionId) {
+            const items = listRevisableRows().map(summariseRevisable);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    items.length === 0
+                      ? "No revisable PRs (nothing shipped with a non-merge recommendation)."
+                      : `Which PR would you like to revise? ${items.length} option(s):\n` +
+                        items.map((i) => `• PR #${i.prNumber} — ${i.title} (${i.findingCount} findings, ${i.mergeRecommendation})`).join("\n"),
+                },
+              ],
+              details: { ok: true, needsSelection: true, count: items.length, revisable: items },
+            };
+          }
+          // Resolve the target row.
+          let row: RevisableRow | undefined;
+          if (sessionId) {
+            row = liveDb()
+              .prepare(
+                `SELECT id, repo, branch, pr_number, final_pr_url, merge_recommendation, merge_recommendation_reason, crystallised_prompt, created_at FROM sessions WHERE id = ?`,
+              )
+              .get(sessionId) as unknown as RevisableRow | undefined;
+          } else if (prNumber !== undefined) {
+            row = liveDb()
+              .prepare(
+                `SELECT id, repo, branch, pr_number, final_pr_url, merge_recommendation, merge_recommendation_reason, crystallised_prompt, created_at FROM sessions WHERE pr_number = ? ORDER BY created_at DESC LIMIT 1`,
+              )
+              .get(prNumber) as unknown as RevisableRow | undefined;
+          }
+          if (!row) {
+            return { content: [{ type: "text", text: `No shipped session found for ${sessionId ? `session ${sessionId}` : `PR #${prNumber}`}.` }], details: { ok: false, notFound: true } };
+          }
+          if (!row.pr_number || !row.branch) {
+            return { content: [{ type: "text", text: `Session ${row.id} has no PR/branch to revise.` }], details: { ok: false, noPr: true } };
+          }
+          const built = buildReviseBrief(row);
+          if ("error" in built) {
+            return { content: [{ type: "text", text: built.error }], details: { ok: false, error: built.error } };
+          }
+          const started = startSessionFromBrief({
+            requester,
+            brief: built,
+            budgetUsd,
+            auditEvent: "tool.revise",
+          });
+          if (!started.ok) {
+            return { content: [{ type: "text", text: `Could not start revise: ${started.reason}` }], details: { ...started, ok: false } };
+          }
+          liveState().audit(
+            "tool.revise.started",
+            { newSessionId: started.sessionId, reviseOfSessionId: row.id, prNumber: row.pr_number, branch: row.branch, requester },
+            started.sessionId,
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Revising PR #${row.pr_number} (branch ${row.branch}) as session ${started.sessionId}. New commits will update the same PR. Watch harness_progress for the new session.`,
+              },
+            ],
+            details: {
+              ok: true,
+              sessionId: started.sessionId,
+              reviseOfSessionId: row.id,
+              prNumber: row.pr_number,
+              branch: row.branch,
+              feedback: {
+                poll: "harness_progress",
+                args: { sessionId: started.sessionId },
+                intervalSeconds: 45,
+                relayField: "headline",
+                until: "terminal",
+                instruction:
+                  "Poll harness_progress every ~45s and relay the headline until terminal; the revise updates the SAME PR.",
+              },
+            },
+          };
         },
       }),
     ),

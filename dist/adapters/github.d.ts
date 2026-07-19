@@ -18,6 +18,8 @@ export interface CreatePrOutput {
     number: number;
     htmlUrl: string;
     nodeId: string;
+    /** beta.44: true when the PR already existed (revise) and was updated by the push, not newly created. */
+    updatedExisting?: boolean;
 }
 export declare function createPullRequest(input: CreatePrInput): Promise<CreatePrOutput>;
 /**

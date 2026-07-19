@@ -160,6 +160,17 @@ export async function runLeadPlanner(
   deps: LeadDeps,
 ): Promise<LeadPlan> {
   const raw = await deps.callLeadModel(brief, deps.config.repos.allowed);
+  // beta.44: revise flow. When the brief pins a branch (a revise of a prior
+  // shipped session), the plan MUST build on that exact branch so new commits
+  // stack on the existing PR head and the SAME PR updates. Override the lead's
+  // (slugified/rewritten) branch + repo verbatim BEFORE validation so the
+  // worktree is allocated on the existing branch, not a fresh one. repoHint on
+  // a revise brief is authoritative (it came from the prior session's repo).
+  if (brief.pinnedBranch) {
+    raw.branch = brief.pinnedBranch;
+    if (brief.repoHint && brief.repoHint.includes("/")) raw.repo = brief.repoHint;
+    deps.logger.info("[lead] revise: branch pinned", { branch: raw.branch, repo: raw.repo, reviseOf: brief.reviseOfSessionId });
+  }
   // beta.33: defensively strip push/PR sub-tasks BEFORE validation. The lead
   // prompt forbids them, but LLMs are non-deterministic. Push + PR are the
   // harness endgame's exclusive job (pushBranchAndOpenPr, post-review). A
