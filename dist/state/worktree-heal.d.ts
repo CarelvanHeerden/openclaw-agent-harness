@@ -30,6 +30,27 @@ export interface WorktreeHealDeps {
     };
     /** Provide a plausible default repo for `pending-<ts>` worktrees without a matching session row. Used only for `git worktree prune` routing; the release still works on the path. */
     fallbackRepoFullName?: string;
+    /**
+     * beta.45: worktree paths belonging to loops that are CURRENTLY running in
+     * this process (from `runningSessionIds()` -> their sessions.worktree_path).
+     * The heal MUST NOT touch these. A concurrent bootstrap (e.g. triggered by
+     * the gateway's plugin-registry re-registration when an unrelated plugin
+     * reloads) would otherwise reap a live run's worktree out from under it.
+     * Matched by exact path AND basename (a just-allocated `pending-<ts>` dir
+     * may not have its `worktree_path` column persisted yet, so the caller
+     * should pass whatever it can resolve).
+     */
+    protectedWorktreePaths?: string[];
+    /**
+     * beta.45: return the last-modified time (ms) of a worktree dir, or null if
+     * it can't be stat'd. Used to protect just-allocated `pending-<ts>` dirs
+     * whose owning session row hasn't written `worktree_path` yet (the loop
+     * writes it only AFTER lead-plan completes). If a dir was modified within
+     * `graceMs`, it is treated as possibly-live and skipped.
+     */
+    dirMtimeMs?: (worktreePath: string) => number | null;
+    /** beta.45: grace window (ms) for the mtime guard above. Default 120000 (2 min). */
+    graceMs?: number;
 }
 export interface WorktreeHealResult {
     scanned: number;
@@ -37,6 +58,10 @@ export interface WorktreeHealResult {
     matched_active: number;
     orphaned: number;
     removed: number;
+    /** beta.45: dirs skipped because they belong to a currently-running loop. */
+    protected_running: number;
+    /** beta.45: dirs skipped because they were modified within the grace window. */
+    protected_recent: number;
     errors: Array<{
         path: string;
         error: string;

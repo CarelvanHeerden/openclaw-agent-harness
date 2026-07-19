@@ -25,6 +25,27 @@ export interface WorktreeHealDeps {
   logger: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void; error: (m: string, meta?: unknown) => void };
   /** Provide a plausible default repo for `pending-<ts>` worktrees without a matching session row. Used only for `git worktree prune` routing; the release still works on the path. */
   fallbackRepoFullName?: string;
+  /**
+   * beta.45: worktree paths belonging to loops that are CURRENTLY running in
+   * this process (from `runningSessionIds()` -> their sessions.worktree_path).
+   * The heal MUST NOT touch these. A concurrent bootstrap (e.g. triggered by
+   * the gateway's plugin-registry re-registration when an unrelated plugin
+   * reloads) would otherwise reap a live run's worktree out from under it.
+   * Matched by exact path AND basename (a just-allocated `pending-<ts>` dir
+   * may not have its `worktree_path` column persisted yet, so the caller
+   * should pass whatever it can resolve).
+   */
+  protectedWorktreePaths?: string[];
+  /**
+   * beta.45: return the last-modified time (ms) of a worktree dir, or null if
+   * it can't be stat'd. Used to protect just-allocated `pending-<ts>` dirs
+   * whose owning session row hasn't written `worktree_path` yet (the loop
+   * writes it only AFTER lead-plan completes). If a dir was modified within
+   * `graceMs`, it is treated as possibly-live and skipped.
+   */
+  dirMtimeMs?: (worktreePath: string) => number | null;
+  /** beta.45: grace window (ms) for the mtime guard above. Default 120000 (2 min). */
+  graceMs?: number;
 }
 
 export interface WorktreeHealResult {
@@ -33,6 +54,10 @@ export interface WorktreeHealResult {
   matched_active: number;
   orphaned: number;
   removed: number;
+  /** beta.45: dirs skipped because they belong to a currently-running loop. */
+  protected_running: number;
+  /** beta.45: dirs skipped because they were modified within the grace window. */
+  protected_recent: number;
   errors: Array<{ path: string; error: string }>;
 }
 
@@ -43,8 +68,15 @@ export async function healOrphanedWorktrees(state: StateStore, deps: WorktreeHea
     matched_active: 0,
     orphaned: 0,
     removed: 0,
+    protected_running: 0,
+    protected_recent: 0,
     errors: [],
   };
+
+  // beta.45: build the protected set (exact paths + basenames) from live loops.
+  const protectedPaths = new Set<string>(deps.protectedWorktreePaths ?? []);
+  const protectedBasenames = new Set<string>((deps.protectedWorktreePaths ?? []).map((p) => basename(p)));
+  const graceMs = typeof deps.graceMs === "number" ? deps.graceMs : 120_000;
 
   let dirs: string[];
   try {
@@ -74,6 +106,35 @@ export async function healOrphanedWorktrees(state: StateStore, deps: WorktreeHea
 
   for (const dir of dirs) {
     const bn = basename(dir);
+
+    // beta.45 GUARD 1: never touch a worktree belonging to a live loop.
+    // Checked BEFORE session-row classification because the row's
+    // `worktree_path` may not be written yet for a just-allocated dir.
+    if (protectedPaths.has(dir) || protectedBasenames.has(bn)) {
+      result.protected_running += 1;
+      deps.logger.info("[worktree-heal] skipping live-loop worktree", { dir });
+      continue;
+    }
+
+    // beta.45 GUARD 2: never touch an allocator dir modified within the grace
+    // window. A `pending-<ts>` dir freshly created by an in-flight allocation
+    // may not yet have its session row / worktree_path persisted, so it would
+    // otherwise be misclassified as an `orphan` and reaped mid-run. A
+    // genuinely-orphaned dir simply gets reaped on a later bootstrap once it
+    // ages past the window. False-skip is safe; false-reap is fatal.
+    if (looksLikeAllocatorWorktree(bn) && typeof deps.dirMtimeMs === "function") {
+      const mtime = deps.dirMtimeMs(dir);
+      if (mtime != null && Date.now() - mtime < graceMs) {
+        result.protected_recent += 1;
+        deps.logger.info("[worktree-heal] skipping recently-modified allocator dir", {
+          dir,
+          ageMs: Date.now() - mtime,
+          graceMs,
+        });
+        continue;
+      }
+    }
+
     const row = rowsByPath.get(dir) ?? rowsByBasename.get(bn);
     const isTerminal = row && ["done", "failed", "aborted"].includes(row.status);
     const isActive = row && !isTerminal;
