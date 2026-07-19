@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.1.0-beta.39] -- 2026-07-19
+
+Verification-contract path sanitisation. From the beta.38 ProjectThanos smoke
+(session d0d73a40): the re-entrancy guard held (no collision, no
+`loop.run_skipped_already_running`), but the run still failed -- at
+`failed_verification` on a sub-task whose worker had actually committed the
+correct change (`0beaff1`, real `useTaxonomy` hook extraction, 2 files).
+
+### The bug: prose abbreviations tokenised into file paths
+
+The brief's `filesLikelyTouched` (and the echoed sub-task intent) contained the
+prose `"e.g. hooks/useTaxonomy or lib/taxonomy"`. `firstFilePath` in
+`verify-contract.ts` fell through to a text-scan regex
+`/\b([\w./-]+\.[a-z0-9]{1,6})\b/i`, whose `\b` word-boundary matched `e.g`
+(treating `.g` as a 1-char file extension). That literal `e.g` became a
+`file_written` / `file_committed` verification-contract path. The verifier then
+stat'd for a file named `e.g`, didn't find it, and marked the sub-task
+`failed_verification` -- failing a correct worker. Any brief using `e.g.`,
+`i.e.`, `etc.` (etc.) in file hints or intent tripped it.
+
+### Fix
+
+`firstFilePath` now validates every candidate through `looksLikeRealPath`:
+a token is accepted only if it contains a `/` OR ends in a known code/text
+extension, is NOT a prose abbreviation (`e.g`/`i.e`/`etc`/`vs`/`cf`/...), and
+(when separator-less) has a >=2-char stem. The `filesLikelyTouched` scan and the
+title/intent fallback both gate through it. A false negative (no path inferred)
+is safe -- existence is still verified via `commit_made`/`file_written`, just
+not pinned to a filename. A false positive is fatal (fails a correct worker),
+so the validator errs conservative.
+
+Tests 441 -> 452 (+11: `tests/beta39-prose-path-sanitise.test.mjs`) --
+reproduces the exact smoke sub-task, the abbreviation false positives, and
+confirms real paths (`src/hooks/use-taxonomy.ts`, prose-embedded
+`src/app/router.tsx`, extension-less `pkg/mod.go`) still resolve. typecheck +
+build + full suite + smoke green.
+
+### Not shipped (needs confirmation, not guesswork)
+
+Staging also observed the gateway watchdog reap a session `b1cff4d2` for
+`active_work_without_progress`. Staging confirmed its own agent turn did NOT
+block (ended ~12s after `harness_run` returned, `stopReason: stop`, relied on a
+4-min cron poll). `b1cff4d2` is likely an internal embedded_run child during a
+long SDK call, but its identity is unconfirmed -- so no watchdog/heartbeat
+change is shipped here. A blocking `harness_run --wait` would not address that
+reap case regardless (those are agent turns of their own, not children of the
+caller's turn).
+
 ## [0.1.0-beta.38] -- 2026-07-19
 
 Recovery re-entrancy guard + worktree-collision fixes. From the beta.36
