@@ -276,22 +276,60 @@ export class OrchestratorLoop {
    */
   async run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
     if (runningSessions.has(sessionId)) {
+      // beta.40: the guard entry exists -- but is the tracked loop actually
+      // ALIVE, or a zombie? `runningSessions` is module-scoped and survives a
+      // plugin re-register, but the loop it tracks can be torn down WITH the
+      // old runtime on re-register. Staging beta.39 smoke (session 07e4c28a):
+      // the guard fired at 11:05:26, then the original loop went silent for
+      // 110 min -- the guard permanently blocked recovery from reclaiming a
+      // dead loop. So: if the session's last progress (checkpoint / updated_at)
+      // is stale beyond `stuck_loop_seconds`, treat the tracked loop as dead,
+      // force-clear the stale guard entry, and proceed with THIS run. The
+      // threshold is safely larger than a normal long worker SDK call, so a
+      // legitimately-busy loop is never reclaimed.
+      const prog = this.deps.state.db
+        .prepare(`SELECT cycles_ran, cost_usd, last_checkpoint_at, updated_at FROM sessions WHERE id = ?`)
+        .get(sessionId) as
+        | { cycles_ran: number; cost_usd: number; last_checkpoint_at: number | null; updated_at: number | null }
+        | undefined;
+      const lastProgressMs = Math.max(prog?.last_checkpoint_at ?? 0, prog?.updated_at ?? 0);
+      const staleMs = Date.now() - lastProgressMs;
+      const stuckThresholdMs = (this.deps.config.loop.stuck_loop_seconds ?? 2700) * 1000;
+      const isStuck = lastProgressMs > 0 && staleMs > stuckThresholdMs;
+
+      if (!isStuck) {
+        // Live loop (or fresh enough to be presumed live): skip the re-entry.
+        this.deps.state.audit(
+          "loop.run_skipped_already_running",
+          { sessionId, reason: "a loop for this session is already running in this process", staleMs },
+          sessionId,
+        );
+        this.deps.logger.warn("[loop] run() skipped: session loop already running (re-entrant call)", { sessionId, staleMs });
+        return {
+          status: "skipped_already_running",
+          sessionId,
+          reason: "loop already running in this process",
+          cycles: prog?.cycles_ran ?? 0,
+          totalCostUsd: prog?.cost_usd ?? 0,
+        };
+      }
+
+      // Zombie loop: reclaim it.
       this.deps.state.audit(
-        "loop.run_skipped_already_running",
-        { sessionId, reason: "a loop for this session is already running in this process" },
+        "loop.run_reclaimed_stuck",
+        {
+          sessionId,
+          reason: "tracked loop made no progress past stuck_loop_seconds; force-clearing stale guard and re-driving",
+          staleMs,
+          stuckThresholdMs,
+        },
         sessionId,
       );
-      this.deps.logger.warn("[loop] run() skipped: session loop already running (re-entrant call)", { sessionId });
-      const cur = this.deps.state.db.prepare(`SELECT cycles_ran, cost_usd FROM sessions WHERE id = ?`).get(sessionId) as
-        | { cycles_ran: number; cost_usd: number }
-        | undefined;
-      return {
-        status: "skipped_already_running",
-        sessionId,
-        reason: "loop already running in this process",
-        cycles: cur?.cycles_ran ?? 0,
-        totalCostUsd: cur?.cost_usd ?? 0,
-      };
+      this.deps.logger.warn(
+        "[loop] reclaiming stuck loop (no progress past stuck_loop_seconds); force-clearing guard and restarting",
+        { sessionId, staleMs, stuckThresholdMs },
+      );
+      runningSessions.delete(sessionId);
     }
     runningSessions.add(sessionId);
     try {

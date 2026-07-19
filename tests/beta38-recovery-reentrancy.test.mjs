@@ -43,7 +43,7 @@ function config(overrides = {}) {
     budgets: { monthly_per_user_usd: 1000, session_default_usd: 50, session_hard_ceiling_usd: 200, daily_warn_usd: 100, monthly_warn_ratio: 0.8 },
     repos: { allowed: ["o/*"], can_create: false, create_org: "", create_visibility: "private", default_base_branch: "main" },
     models: { lead: "claude-fable-5", worker: "claude-sonnet-5", adversary: "claude-fable-5", classifier: "claude-haiku-4-5" },
-    loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600 },
+    loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 2700 },
     storage: { state_db_path: ":memory:", worktree_root: "/tmp/wt", audit_retention_days: 90, prune_terminal_sessions: 365 },
     pat_routing: { overrides: {}, commit_identity: {}, default_service_pattern: "github-{user}-{org}" },
     safety: { worker_permission_mode: "acceptEdits", bash_whitelist: ["git", "echo"], bash_denylist_tokens: ["rm"], path_denylist: [".env"] },
@@ -85,7 +85,7 @@ const plan = {
 
 function makeLoop(state, deps = {}) {
   return new OrchestratorLoop({
-    config: config(),
+    config: deps.config ?? config(),
     state,
     budget: new BudgetEnforcer(config().budgets, state),
     pat: new PatRouter(config().pat_routing),
@@ -168,4 +168,87 @@ test("beta38: independent sessions run concurrently (guard is per-session, not g
     const [ao, bo] = await Promise.all([a, b]);
     assert.equal(ao.status, "shipped");
     assert.equal(bo.status, "shipped");
+  });
+
+// ============================================================
+// beta.40: stuck-loop reclaim -- the guard must not permanently block
+// recovery of a zombie loop (Staging beta.39 smoke: 07e4c28a wedged 110 min
+// after the guard fired, because the tracked loop was torn down on re-register
+// but its runningSessions entry survived).
+// ============================================================
+
+// Both tests below get a REAL in-flight loop into `runningSessions` via a
+// gated first run (the module-level set isn't exported, so we can't seed it
+// directly -- and this is more faithful to production anyway). We then make
+// that in-flight session's DB progress stale (or fresh) and fire a second,
+// re-entrant run() to exercise the stale-vs-fresh branch of the guard.
+
+test("beta40: a STALE guard entry (no progress past stuck_loop_seconds) is reclaimed, not skipped",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "Z1", "executing");
+
+    // First run parks in runLead -> registers Z1 in runningSessions and stays
+    // in-flight (the "zombie" we can't otherwise fabricate).
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let firstLead = 0, secondLead = 0;
+    const loop = makeLoop(state, {
+      config: config({ loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 60 } }),
+      runLead: async () => { firstLead++; await gate; return plan; },
+    });
+    const first = loop.run("Z1", brief);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(isSessionLoopRunning("Z1"), true, "first run registered the guard");
+
+    // Make the in-flight session look stale (last progress 1h ago) -> the
+    // second run() must treat it as a zombie and reclaim.
+    const longAgo = Date.now() - 60 * 60 * 1000;
+    state.db.prepare(`UPDATE sessions SET last_checkpoint_at = ?, updated_at = ? WHERE id = ?`).run(longAgo, longAgo, "Z1");
+
+    const loop2 = makeLoop(state, {
+      config: config({ loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 60 } }),
+      runLead: async () => { secondLead++; return plan; },
+    });
+    const out = await loop2.run("Z1", brief);
+    assert.equal(out.status, "shipped", "a stuck/zombie loop must be reclaimed and re-driven to completion");
+    assert.equal(secondLead, 1, "the reclaimed run must actually execute (runLead called)");
+    assert.ok(state.audits.some((a) => a.event === "loop.run_reclaimed_stuck"), "must audit loop.run_reclaimed_stuck");
+
+    // Let the original (zombie) first run finish so we don't leak a pending
+    // promise; its finally{} clears the guard.
+    release();
+    await first.catch(() => undefined);
+  });
+
+test("beta40: a FRESH guard entry (recent progress) is still skipped, not reclaimed",
+  { skip: OrchestratorLoop === null }, async () => {
+    const state = makeStore();
+    insertSession(state.db, "Z2", "executing");
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let secondLead = 0;
+    const loop = makeLoop(state, {
+      config: config({ loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 2700 } }),
+      runLead: async () => { await gate; return plan; },
+    });
+    const first = loop.run("Z2", brief);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(isSessionLoopRunning("Z2"), true);
+
+    // Recent progress (2s ago) -> a legitimately-busy loop must NOT be reclaimed.
+    const recent = Date.now() - 2000;
+    state.db.prepare(`UPDATE sessions SET last_checkpoint_at = ?, updated_at = ? WHERE id = ?`).run(recent, recent, "Z2");
+
+    const loop2 = makeLoop(state, {
+      config: config({ loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 2700 } }),
+      runLead: async () => { secondLead++; return plan; },
+    });
+    const out = await loop2.run("Z2", brief);
+    assert.equal(out.status, "skipped_already_running", "a busy loop must still be skipped");
+    assert.equal(secondLead, 0, "the busy loop must NOT be re-driven");
+    assert.ok(!state.audits.some((a) => a.event === "loop.run_reclaimed_stuck"));
+
+    release();
+    await first.catch(() => undefined);
   });
