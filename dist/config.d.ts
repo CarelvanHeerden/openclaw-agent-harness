@@ -139,6 +139,18 @@ export interface LoopConfig {
      * never reclaimed. Default 2700 (45 min).
      */
     stuck_loop_seconds: number;
+    /**
+     * beta.41: max seconds teardown() waits for a still-running loop from the
+     * runtime being torn down to finish before closing its state DB. A plugin
+     * re-register (OKF / gateway auto-discovery churn when `plugins.allow` is
+     * empty) schedules a fire-and-forget teardown of the previous runtime;
+     * closing the DB out from under an in-flight `loop.run()` throws "database is
+     * not open" and crashes the run (killed the beta.39 + beta.40 ProjectThanos
+     * smokes at exactly this point). We drain running loops first, bounded by
+     * this timeout. Default 3600 (1 h) -- long enough for any real run, bounded
+     * so a genuinely-wedged loop can't block teardown forever.
+     */
+    teardown_drain_seconds: number;
 }
 export interface VercelConfig {
     enabled: boolean;

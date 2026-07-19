@@ -18,7 +18,7 @@ import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { parseHarnessConfig } from "./config.js";
 import { openStateStoreSync } from "./state/store.js";
-import { OrchestratorLoop } from "./orchestrator/loop.js";
+import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
 import { SlackReactionsReader } from "./slack/reactions.js";
@@ -1915,6 +1915,40 @@ async function teardown(runtime, api) {
         catch (err) {
             api.logger.warn("[harness] async bootstrap rejected during teardown", { err: String(err) });
         }
+    }
+    // beta.41: DO NOT tear down the runtime (esp. `state.close()`) while a loop
+    // from THIS runtime is still executing. A plugin RE-REGISTER (the recurring
+    // OKF / gateway auto-discovery churn on Staging: `plugins.allow` empty ->
+    // gateway re-runs discovery -> register() called on every plugin) schedules
+    // a fire-and-forget teardown of the previous runtime. If that teardown closes
+    // the DB out from under an in-flight `loop.run()` (which holds
+    // `runtime.state.db`), the loop's next prepare() throws "database is not
+    // open" -> `loop crashed`. This killed the beta.39 AND beta.40 ProjectThanos
+    // smokes at exactly this point. So: drain running loops first, bounded by
+    // `loop.teardown_drain_seconds`. The re-entrancy guard (beta.38) already
+    // prevents the NEW runtime from double-driving the same session, so the old
+    // loop keeps ownership until it finishes; we just hold its DB open for it.
+    const drainSeconds = runtime.config?.loop?.teardown_drain_seconds ?? 3600;
+    const drainDeadline = Date.now() + drainSeconds * 1000;
+    let waited = false;
+    while (runningSessionIds().length > 0 && Date.now() < drainDeadline) {
+        if (!waited) {
+            api.logger.info("[harness] teardown deferred: waiting for running loop(s) to drain before closing runtime", {
+                running: runningSessionIds(),
+                drainSeconds,
+            });
+            waited = true;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (runningSessionIds().length > 0) {
+        api.logger.warn("[harness] teardown drain deadline exceeded; proceeding with teardown despite running loop(s)", {
+            running: runningSessionIds(),
+            drainSeconds,
+        });
+    }
+    else if (waited) {
+        api.logger.info("[harness] teardown drain complete; running loop(s) finished, proceeding to close runtime");
     }
     for (const d of runtime.disposers.reverse()) {
         try {
