@@ -71,6 +71,13 @@ export interface CrystallisedBrief {
    * omit the field.
    */
   relevantConcepts?: OkfConceptRef[];
+  /**
+   * beta.44: revise flow. reviseOfSessionId links this to the shipped session
+   * being revised; pinnedBranch is used VERBATIM as the branch (not slugified)
+   * so revise commits stack on the existing PR head and update the same PR.
+   */
+  reviseOfSessionId?: string;
+  pinnedBranch?: string;
 }
 
 export interface CrystalliserDeps {

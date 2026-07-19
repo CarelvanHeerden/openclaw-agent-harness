@@ -565,6 +565,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             sessionId: `pending-${Date.now()}`,
             ghToken,
             commitIdentity: resolution.commitIdentity,
+            // beta.44: on a revise (brief.pinnedBranch set), check out the
+            // existing branch at its tip instead of resetting to base, so the
+            // prior PR's commits are preserved and new work stacks on them.
+            reuseExistingBranch: !!brief.pinnedBranch,
           });
         },
         estimateCost: (p) => p.subTasks.reduce((acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens), 0),

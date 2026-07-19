@@ -116,6 +116,8 @@ const expectTools = [
   "harness_cancel",
   "harness_resume",
   "harness_retention_prune",
+  "harness_list_revisable",
+  "harness_revise",
 ];
 
 let failed = 0;

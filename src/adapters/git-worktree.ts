@@ -60,6 +60,15 @@ export interface GitContext {
   sessionId: string;
   ghToken: string;
   commitIdentity: { name: string; email: string };
+  /**
+   * beta.44: revise flow. When true, check out the EXISTING sessionBranch at
+   * its own tip (`worktree add <wt> <branch>`) instead of resetting it to
+   * baseBranch (`worktree add -B <branch> <wt> <base>`). This preserves the
+   * prior session's commits so a revise stacks new work on the existing PR
+   * head. The `+refs/heads/*` fetch above makes the remote branch ref
+   * available locally before the checkout.
+   */
+  reuseExistingBranch?: boolean;
 }
 
 export class GitAdapter {
@@ -179,7 +188,21 @@ esac
       // dangling admin state, then locate and release any live worktree still
       // holding this branch so the add can proceed cleanly.
       await this.reconcileBranchWorktrees(bare, ctx.sessionBranch, wt);
-      await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
+      if (ctx.reuseExistingBranch) {
+        // beta.44 revise: check out the existing branch at its own tip so the
+        // prior session's commits are preserved (new work stacks on the PR
+        // head). No `-B` and no base ref -> git resolves <branch> to the
+        // fetched remote-tracking ref. If the branch somehow doesn't exist
+        // (deleted remotely between ship and revise), fall back to creating it
+        // from base so revise still produces a usable worktree.
+        try {
+          await this.run(["-C", bare, "worktree", "add", wt, ctx.sessionBranch], undefined, ask.path, ctx.ghToken);
+        } catch {
+          await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
+        }
+      } else {
+        await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
+      }
       await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
       await this.run(["-C", wt, "config", "user.email", ctx.commitIdentity.email]);
       // Ensure the worktree remote is the plain URL (no token on disk).

@@ -36,6 +36,34 @@ export async function createPullRequest(input) {
             res = await post(false);
         }
     }
+    // beta.44: on a revise, a PR already exists for this head branch. GitHub
+    // returns 422 with "A pull request already exists for <owner>:<head>". The
+    // push (done before this call) has ALREADY updated that PR's head, so this
+    // is success, not failure: look up the existing open PR for the head and
+    // return it. This is what makes revise UPDATE the same PR instead of
+    // erroring or opening a duplicate.
+    if (!res.ok && res.status === 422) {
+        const peek = await res.clone().text().catch(() => "");
+        if (/pull request already exists/i.test(peek)) {
+            const [owner] = input.repoFullName.split("/");
+            const lookup = `https://api.github.com/repos/${input.repoFullName}/pulls?head=${owner}:${encodeURIComponent(input.head)}&state=open`;
+            const found = await fetch(lookup, {
+                headers: {
+                    Authorization: `Bearer ${input.ghToken}`,
+                    Accept: "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "User-Agent": "openclaw-agent-harness/0.1",
+                },
+            });
+            if (found.ok) {
+                const arr = (await found.json());
+                if (Array.isArray(arr) && arr.length > 0) {
+                    const existing = arr[0];
+                    return { number: existing.number, htmlUrl: existing.html_url, nodeId: existing.node_id, updatedExisting: true };
+                }
+            }
+        }
+    }
     if (!res.ok) {
         const text = await res.text();
         throw new Error(`GitHub PR create failed ${res.status}: ${text.slice(0, 400)}`);
