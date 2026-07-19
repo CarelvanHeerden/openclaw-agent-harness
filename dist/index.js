@@ -975,20 +975,23 @@ export function bootstrapHarnessSync(api) {
                 budgetBump: !!parsed.budgetBump,
             };
         },
+        // beta.37: progress is surfaced via the POLL model, not a direct Slack
+        // post. The harness is tool-driven (beta.34 removed the Slack listener),
+        // so it must NOT talk to Slack itself. The old implementation posted to
+        // sessions.slack_channel/thread — which are ""/"agent:<uuid>" for
+        // agent-orchestrated runs — so every post was rejected by Slack and
+        // swallowed by a blind .catch(() => {}); not a single line ever reached
+        // anyone. Now reportProgress ONLY writes a `loop.progress` audit row so the
+        // phase transition shows up in the event tail that `harness_progress`
+        // returns. The calling OpenClaw agent polls `harness_progress` and relays
+        // updates to Slack in its own voice.
         reportProgress: async (sessionId, status, meta) => {
-            const row = state.db.prepare(`SELECT slack_channel, slack_thread FROM sessions WHERE id = ?`).get(sessionId);
-            if (!row)
-                return;
-            const label = {
-                crystallising: ":brain: Crystallising…",
-                planning: ":memo: Planning…",
-                executing: `:hammer: Executing cycle ${meta?.cycle ?? 1}…`,
-                reviewing: `:mag: Adversarial review of cycle ${meta?.cycle ?? 1}…`,
-                done: ":tada: Done.",
-                failed: ":x: Failed.",
-                aborted: ":octagonal_sign: Aborted.",
-            }[status] ?? status;
-            await slack.replyInThread(row.slack_channel, row.slack_thread, label).catch(() => { });
+            try {
+                state.audit("loop.progress", { status, ...(meta && typeof meta === "object" ? meta : { meta }) }, sessionId);
+            }
+            catch (err) {
+                api.logger.warn("[harness] reportProgress audit failed", { sessionId, status, err: String(err) });
+            }
         },
     });
     const dispatcher = new Dispatcher({
