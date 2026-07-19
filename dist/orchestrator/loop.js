@@ -47,6 +47,27 @@ import { verifySubTaskOutput } from "./verify.js";
  * plugin re-register the same way `runtime-registry` does.
  */
 const runningSessions = new Set();
+/**
+ * beta.42: active stall-watchdog timers, keyed by sessionId. When the
+ * re-entrancy guard SKIPS a re-entry (`loop.run_skipped_already_running`), it
+ * arms a timer here. beta.40's reclaim was PASSIVE -- it only re-evaluated
+ * staleness when something re-called run(); a loop that wedged with no
+ * subsequent re-register was never re-checked (Staging beta.40 smoke: session
+ * 18a3f0a1 wedged ~5h30m, staleMs read 10 at skip time because updated_at had
+ * just been written, and nothing ever re-called run() to notice it go stale).
+ * The watchdog fixes that: it re-checks `updated_at` after a delay and, if the
+ * tracked loop has made no progress, force-deregisters the stale handle so the
+ * next recovery/run can reclaim it, and emits `loop.wedge_detected`.
+ */
+const stallWatchdogs = new Map();
+/** Test/diagnostic helper: clear any armed watchdog for a session. */
+export function clearStallWatchdog(sessionId) {
+    const t = stallWatchdogs.get(sessionId);
+    if (t) {
+        clearTimeout(t);
+        stallWatchdogs.delete(sessionId);
+    }
+}
 /** True if a loop for this session is currently running in this process. */
 export function isSessionLoopRunning(sessionId) {
     return runningSessions.has(sessionId);
@@ -54,6 +75,41 @@ export function isSessionLoopRunning(sessionId) {
 /** Test/diagnostic helper: snapshot of currently-running session ids. */
 export function runningSessionIds() {
     return [...runningSessions];
+}
+/**
+ * beta.42: bound a promise by a timeout. The worker SDK call was previously
+ * awaited with NO timeout (loop.ts runOne), so a hung worker (SDK socket
+ * stall, or the runtime torn down under the await by a plugin re-register)
+ * left the `await` unresolved forever -> the loop froze, `updated_at` stopped,
+ * and the hard-deadline check (only evaluated BETWEEN sub-tasks) never ran.
+ * That was the true root cause of the ~5h30m silent wedge on the beta.39 +
+ * beta.40 ProjectThanos smokes. Racing the worker against a rejecting timeout
+ * converts an infinite hang into a bounded, catchable failure that the loop's
+ * existing try/catch already handles (marks the sub_task failed, sets
+ * failed.err, returns). Returns a tuple so the caller can clear the timer.
+ */
+export class WorkerTimeoutError extends Error {
+    seconds;
+    constructor(seconds) {
+        super(`worker exceeded worker_timeout_seconds (${seconds}s) with no result`);
+        this.seconds = seconds;
+        this.name = "WorkerTimeoutError";
+    }
+}
+export async function withTimeout(p, seconds) {
+    if (!(seconds > 0))
+        return p; // 0/undefined disables the bound (defensive)
+    let timer;
+    const timeout = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new WorkerTimeoutError(seconds)), seconds * 1000);
+    });
+    try {
+        return await Promise.race([p, timeout]);
+    }
+    finally {
+        if (timer)
+            clearTimeout(timer);
+    }
 }
 export class OrchestratorLoop {
     deps;
@@ -166,6 +222,12 @@ export class OrchestratorLoop {
                 // Live loop (or fresh enough to be presumed live): skip the re-entry.
                 this.deps.state.audit("loop.run_skipped_already_running", { sessionId, reason: "a loop for this session is already running in this process", staleMs }, sessionId);
                 this.deps.logger.warn("[loop] run() skipped: session loop already running (re-entrant call)", { sessionId, staleMs });
+                // beta.42: arm an ACTIVE stall-watchdog. beta.40's reclaim was passive
+                // (only re-checked on a subsequent run() call); a wedge with no further
+                // re-register was never noticed. Re-check `updated_at` after
+                // stall_watchdog_seconds; if the tracked loop made no progress,
+                // force-deregister its stale handle so recovery/next-run can reclaim it.
+                this.armStallWatchdog(sessionId, lastProgressMs);
                 return {
                     status: "skipped_already_running",
                     sessionId,
@@ -185,12 +247,63 @@ export class OrchestratorLoop {
             runningSessions.delete(sessionId);
         }
         runningSessions.add(sessionId);
+        clearStallWatchdog(sessionId); // a live loop is (re)taking ownership
         try {
             return await this.runInner(sessionId, brief);
         }
         finally {
             runningSessions.delete(sessionId);
+            clearStallWatchdog(sessionId);
         }
+    }
+    /**
+     * beta.42: arm an active stall-watchdog for a session whose re-entry the
+     * guard just skipped. After `loop.stall_watchdog_seconds`, re-read the
+     * session's progress; if it has NOT advanced past `lastProgressMs` AND the
+     * guard entry is still present, the tracked loop is wedged with no external
+     * re-entry to reclaim it -- force-deregister the stale handle (so the next
+     * recovery/run reclaims it) and emit `loop.wedge_detected`. Idempotent: an
+     * existing timer for the session is replaced.
+     */
+    armStallWatchdog(sessionId, lastProgressMs) {
+        const seconds = this.deps.config.loop.stall_watchdog_seconds ?? 90;
+        if (!(seconds > 0))
+            return;
+        clearStallWatchdog(sessionId);
+        const timer = setTimeout(() => {
+            stallWatchdogs.delete(sessionId);
+            try {
+                if (!runningSessions.has(sessionId))
+                    return; // loop finished/reclaimed already
+                const prog = this.deps.state.db
+                    .prepare(`SELECT last_checkpoint_at, updated_at FROM sessions WHERE id = ?`)
+                    .get(sessionId);
+                const nowProgress = Math.max(prog?.last_checkpoint_at ?? 0, prog?.updated_at ?? 0);
+                if (nowProgress > lastProgressMs)
+                    return; // progressed -- healthy, no action
+                // No forward progress since the skip: the tracked loop is wedged and
+                // nothing re-entered to reclaim it. Force-deregister so recovery/next
+                // run can take over.
+                runningSessions.delete(sessionId);
+                this.deps.state.audit("loop.wedge_detected", {
+                    sessionId,
+                    reason: "no forward progress after run_skipped_already_running; stale guard handle force-deregistered",
+                    stallWatchdogSeconds: seconds,
+                    lastProgressMs,
+                }, sessionId);
+                this.deps.logger.warn("[loop] wedge detected: stale guard handle force-deregistered by stall-watchdog", {
+                    sessionId,
+                    stallWatchdogSeconds: seconds,
+                });
+            }
+            catch (err) {
+                this.deps.logger.warn("[loop] stall-watchdog check failed", { sessionId, err: String(err) });
+            }
+        }, seconds * 1000);
+        // Don't keep the process alive solely for this timer.
+        if (typeof timer.unref === "function")
+            timer.unref();
+        stallWatchdogs.set(sessionId, timer);
     }
     async runInner(sessionId, brief) {
         const row = this.deps.state.db
@@ -288,11 +401,20 @@ export class OrchestratorLoop {
                 const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
                 let result;
                 try {
-                    result = await this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester });
+                    // beta.42: bound the worker SDK call by worker_timeout_seconds. Without
+                    // this, a hung worker await never resolves and wedges the whole loop
+                    // silently (no timeout fires -- the hard-deadline check only runs
+                    // between sub-tasks). A timeout here rejects, and the existing catch
+                    // marks the sub_task failed + fails the run cleanly.
+                    result = await withTimeout(this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester }), this.deps.config.loop.worker_timeout_seconds);
                 }
                 catch (err) {
+                    const isTimeout = err instanceof WorkerTimeoutError;
                     this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`).run(`worker threw: ${String(err)}`, Date.now(), subTaskId);
-                    failed.err = `worker_error: ${String(err)}`;
+                    if (isTimeout) {
+                        this.deps.state.audit("loop.worker_timeout", { sessionId, seq: st.seq, worker_timeout_seconds: this.deps.config.loop.worker_timeout_seconds }, sessionId);
+                    }
+                    failed.err = isTimeout ? `worker_timeout: ${String(err)}` : `worker_error: ${String(err)}`;
                     failed.seq = st.seq;
                     return;
                 }

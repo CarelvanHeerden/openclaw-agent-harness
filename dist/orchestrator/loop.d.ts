@@ -52,10 +52,29 @@ export type LoopOutcome = {
     cycles: number;
     totalCostUsd: number;
 };
+/** Test/diagnostic helper: clear any armed watchdog for a session. */
+export declare function clearStallWatchdog(sessionId: string): void;
 /** True if a loop for this session is currently running in this process. */
 export declare function isSessionLoopRunning(sessionId: string): boolean;
 /** Test/diagnostic helper: snapshot of currently-running session ids. */
 export declare function runningSessionIds(): string[];
+/**
+ * beta.42: bound a promise by a timeout. The worker SDK call was previously
+ * awaited with NO timeout (loop.ts runOne), so a hung worker (SDK socket
+ * stall, or the runtime torn down under the await by a plugin re-register)
+ * left the `await` unresolved forever -> the loop froze, `updated_at` stopped,
+ * and the hard-deadline check (only evaluated BETWEEN sub-tasks) never ran.
+ * That was the true root cause of the ~5h30m silent wedge on the beta.39 +
+ * beta.40 ProjectThanos smokes. Racing the worker against a rejecting timeout
+ * converts an infinite hang into a bounded, catchable failure that the loop's
+ * existing try/catch already handles (marks the sub_task failed, sets
+ * failed.err, returns). Returns a tuple so the caller can clear the timer.
+ */
+export declare class WorkerTimeoutError extends Error {
+    readonly seconds: number;
+    constructor(seconds: number);
+}
+export declare function withTimeout<T>(p: Promise<T>, seconds: number): Promise<T>;
 export interface OrchestratorDeps {
     config: HarnessConfig;
     state: StateStore;
@@ -187,6 +206,16 @@ export declare class OrchestratorLoop {
      * recovery auto-resume both call `run()`) is covered and can't be forgotten.
      */
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
+    /**
+     * beta.42: arm an active stall-watchdog for a session whose re-entry the
+     * guard just skipped. After `loop.stall_watchdog_seconds`, re-read the
+     * session's progress; if it has NOT advanced past `lastProgressMs` AND the
+     * guard entry is still present, the tracked loop is wedged with no external
+     * re-entry to reclaim it -- force-deregister the stale handle (so the next
+     * recovery/run reclaims it) and emit `loop.wedge_detected`. Idempotent: an
+     * existing timer for the session is replaced.
+     */
+    private armStallWatchdog;
     private runInner;
     /**
      * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
