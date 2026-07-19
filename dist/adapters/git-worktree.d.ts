@@ -55,6 +55,15 @@ export interface GitContext {
         name: string;
         email: string;
     };
+    /**
+     * beta.44: revise flow. When true, check out the EXISTING sessionBranch at
+     * its own tip (`worktree add <wt> <branch>`) instead of resetting it to
+     * baseBranch (`worktree add -B <branch> <wt> <base>`). This preserves the
+     * prior session's commits so a revise stacks new work on the existing PR
+     * head. The `+refs/heads/*` fetch above makes the remote branch ref
+     * available locally before the checkout.
+     */
+    reuseExistingBranch?: boolean;
 }
 export declare class GitAdapter {
     private readonly opts;
