@@ -125,6 +125,20 @@ export interface LoopConfig {
     session_hard_timeout_seconds: number;
     /** Max sub-tasks a cycle will run concurrently. Default 1 (sequential). */
     subtask_concurrency: number;
+    /**
+     * beta.40: stuck-loop reclaim threshold (seconds). The beta.38 re-entrancy
+     * guard (`runningSessions`) is module-scoped and survives a plugin
+     * re-register, but the loop it tracks can be torn down WITH the old runtime
+     * on re-register -- leaving a zombie entry that permanently blocks recovery
+     * from re-driving the session (Staging beta.39 smoke: session 07e4c28a wedged
+     * silently for 110 min after the guard fired). When `run()` is asked to start
+     * a session still marked running, but its `last_checkpoint_at`/`updated_at`
+     * has not advanced for THIS many seconds, the tracked loop is treated as dead:
+     * the stale entry is force-cleared and the fresh run proceeds. Must be safely
+     * larger than a normal long worker SDK call so a legitimately-busy loop is
+     * never reclaimed. Default 2700 (45 min).
+     */
+    stuck_loop_seconds: number;
 }
 export interface VercelConfig {
     enabled: boolean;
