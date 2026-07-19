@@ -52,6 +52,7 @@ const DEFAULTS = {
         adversary_timeout_seconds: 900,
         session_hard_timeout_seconds: 7200,
         subtask_concurrency: 1,
+        stuck_loop_seconds: 2700,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",
