@@ -45,18 +45,39 @@ test("beta44: lead planner pins the branch verbatim when brief.pinnedBranch is s
   assert.ok(pinIdx > -1 && validateIdx > -1 && pinIdx < validateIdx, "pin must be applied before validatePlan(raw)");
 });
 
-test("beta44: git.allocate checks out the existing branch (no -B, no base) on reuseExistingBranch", () => {
+test("beta44/46: git.allocate checks out the existing branch at origin/<branch> on reuseExistingBranch", () => {
   assert.match(gitSrc, /reuseExistingBranch\?: boolean;/, "GitContext must declare reuseExistingBranch");
+  // beta.46: reuse path resets the local branch to the pushed PR head
+  // (origin/<branch>) with -B, after the remote-tracking fetch. The old
+  // beta.44 form (`worktree add <wt> <sessionBranch>` off a LOCAL head) was
+  // changed because the local-head mirror fetch is refused when the branch is
+  // checked out (Staging dab303e8 / PR #858).
   assert.match(
     gitSrc,
-    /if\s*\(\s*ctx\.reuseExistingBranch\s*\)\s*\{[\s\S]*worktree",\s*"add",\s*wt,\s*ctx\.sessionBranch/,
-    "reuse path must run `worktree add <wt> <sessionBranch>` (checkout existing tip, no -B/base)",
+    /if\s*\(\s*ctx\.reuseExistingBranch\s*\)\s*\{[\s\S]*worktree",\s*"add",\s*"-B",\s*ctx\.sessionBranch,\s*wt,\s*remoteRef/,
+    "reuse path must run `worktree add -B <sessionBranch> <wt> origin/<sessionBranch>` (reset to pushed PR head)",
   );
-  // Non-reuse path must still reset to base with -B.
   assert.match(
     gitSrc,
-    /worktree",\s*"add",\s*"-B",\s*ctx\.sessionBranch,\s*wt,\s*ctx\.baseBranch/,
-    "non-reuse path must keep the -B <branch> <wt> <base> form",
+    /const\s+remoteRef\s*=\s*`origin\/\$\{ctx\.sessionBranch\}`/,
+    "reuse path must resolve remoteRef = origin/<sessionBranch>",
+  );
+  // beta.46: non-reuse path also branches off the remote-tracking base ref.
+  assert.match(
+    gitSrc,
+    /worktree",\s*"add",\s*"-B",\s*ctx\.sessionBranch,\s*wt,\s*`origin\/\$\{ctx\.baseBranch\}`/,
+    "non-reuse path must branch off origin/<baseBranch>",
+  );
+  // beta.46: the mirror fetch must target remote-tracking refs, never local heads.
+  assert.match(
+    gitSrc,
+    /fetch",\s*"--prune",\s*"origin",\s*"\+refs\/heads\/\*:refs\/remotes\/origin\/\*"/,
+    "allocate must fetch into refs/remotes/origin/* (not refs/heads/*)",
+  );
+  assert.doesNotMatch(
+    gitSrc,
+    /"\+refs\/heads\/\*:refs\/heads\/\*"/,
+    "the local-head mirror refspec must be gone (it is refused on a checked-out branch)",
   );
 });
 
