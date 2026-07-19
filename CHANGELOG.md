@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.1.0-beta.42] -- 2026-07-19
+
+The actual wedge fix. Root-caused the ~5h30m silent wedge that killed the
+beta.39 AND beta.40 ProjectThanos smokes (session 18a3f0a1 on beta.40 wedged
+for 5h30m in sub-task 1). beta.38/40/41 all addressed the re-register churn and
+its guard, but none fixed the wedge itself.
+
+### Root cause (verified in loop.ts)
+
+The worker SDK call was awaited with NO timeout: `result = await
+this.deps.runWorker(...)`. `worker_timeout_seconds` config existed but was never
+enforced on that await. The loop's hard-deadline check runs only BETWEEN
+sub-tasks, never during a worker call. So if `runWorker` hangs (SDK socket
+stall, or -- the trigger here -- the runtime torn down under the await by a
+plugin re-register), the `await` never resolves: the loop freezes, `updated_at`
+stops, and no timeout ever fires. Permanent silent wedge.
+
+### Fix 1 (the cure): bound the worker await
+
+New `withTimeout(promise, seconds)` + `WorkerTimeoutError`. The worker call is
+now `withTimeout(runWorker(...), loop.worker_timeout_seconds)`. A hang rejects
+with `WorkerTimeoutError`, which the existing try/catch already handles (marks
+the sub_task failed, fails the run cleanly) + emits `loop.worker_timeout`. An
+infinite hang becomes a bounded, catchable failure.
+
+### Fix 2: make beta.40's reclaim ACTIVE (stall-watchdog)
+
+beta.40's stuck-loop reclaim was PASSIVE -- it only re-evaluated staleness when
+something re-called `run()`. At the 18a3f0a1 wedge, the guard skip saw
+`staleMs: 10` (updated_at had just been written by plan_ready), correctly
+skipped, then the loop wedged and nothing ever re-called `run()` to notice it go
+stale (Staging's diagnosis: the reclaim never got a second chance). Fix: when
+the guard SKIPS a re-entry (`loop.run_skipped_already_running`), it now arms an
+active timer for `loop.stall_watchdog_seconds` (default 90s); on fire it
+re-reads `updated_at`/`last_checkpoint_at`, and if there was no forward progress
+AND the guard handle is still present, it force-deregisters the stale handle
+(`loop.wedge_detected`) so recovery/next-run can reclaim. Note: my code already
+read `updated_at` (not the in-memory promise, contra one part of Staging's
+report) -- the defect was the check being passive, not the signal it read.
+
+New config `loop.worker_timeout_seconds` is now ENFORCED (was declared,
+unused); new `loop.stall_watchdog_seconds` added to both `openclaw.plugin.json`
+(gateway source of truth) and `src/config.ts`.
+
+Tests 471 -> 478 (+7: `beta42-worker-timeout` +5, `beta42-stall-watchdog` +2).
+typecheck + build + full suite + smoke green.
+
+### Also surfaced (Carel-side, not harness code)
+
+`GH_TOKEN` is genuinely unset in Staging's container env -- a real smoke would
+fail at PR push. Set it host-side before the next end-to-end run.
+
 ## [0.1.0-beta.41] -- 2026-07-19
 
 Re-register-during-run crash fix + automatic progress feedback.

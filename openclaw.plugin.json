@@ -226,6 +226,13 @@
             "maximum": 86400,
             "default": 3600,
             "description": "beta.41: max seconds teardown() waits for a still-running loop from the runtime being torn down to finish before closing its state DB. A plugin re-register (OKF / gateway auto-discovery churn when plugins.allow is empty) schedules a fire-and-forget teardown of the previous runtime; closing the DB out from under an in-flight loop.run() crashes the run. Draining first prevents that. Bounded so a wedged loop can't block teardown forever."
+          },
+          "stall_watchdog_seconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 3600,
+            "default": 90,
+            "description": "beta.42: active stall-watchdog delay. When the re-entrancy guard skips a re-entry (loop.run_skipped_already_running) it arms a timer for this long, then re-checks the session's progress; if none, the wedged loop's stale guard handle is force-deregistered (loop.wedge_detected) so recovery/next-run can reclaim it. Makes beta.40's passive reclaim active -- a loop that wedges with no further re-register is now noticed."
           }
         }
       },

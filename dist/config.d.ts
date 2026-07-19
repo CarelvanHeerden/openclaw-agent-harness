@@ -151,6 +151,18 @@ export interface LoopConfig {
      * so a genuinely-wedged loop can't block teardown forever.
      */
     teardown_drain_seconds: number;
+    /**
+     * beta.42: active stall-watchdog delay (seconds). When the re-entrancy guard
+     * SKIPS a re-entry (loop.run_skipped_already_running), it arms a timer for
+     * this long, then re-checks the session's last_checkpoint_at/updated_at. If
+     * no forward progress AND the guard handle is still present, the tracked loop
+     * is wedged with no external re-entry to reclaim it -- the stale handle is
+     * force-deregistered (loop.wedge_detected) so recovery/next-run can take
+     * over. beta.40's reclaim was passive (only re-checked on a subsequent run()
+     * call); this makes it active. Should be short relative to a full run but
+     * longer than a normal event gap. Default 90s.
+     */
+    stall_watchdog_seconds: number;
 }
 export interface VercelConfig {
     enabled: boolean;
