@@ -174,6 +174,7 @@ export async function runWorker(worktreePath, brief, subTask, commitIdentity, de
         tokensOut: sdkResult.tokensOut,
         reason: verification && !verification.ok ? `verification_failed: ${verification.summary}` : sdkResult.stopReason,
         logsExcerpt: sdkResult.logsExcerpt,
+        finalMessage: sdkResult.finalMessage,
         verification,
         wastedSpend,
     };

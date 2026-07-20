@@ -27,6 +27,12 @@ export interface WorkerResult {
     reason?: string;
     logsExcerpt?: string;
     /**
+     * beta.48 (C1): the worker's final assistant text message. Persisted on
+     * every turn so a zero-side-effect end_turn (reasoned refusal) is visible
+     * to the harness / operator instead of being an opaque empty turn.
+     */
+    finalMessage?: string;
+    /**
      * Result of post-execution observable-side-effect verification (beta.7
      * fix #1). Undefined when the sub-task declared no `verify` contracts.
      * When present and `!ok`, `status` is forced to `failed` and `costUsd` is
@@ -67,6 +73,7 @@ export interface WorkerDeps {
         tokensIn: number;
         tokensOut: number;
         logsExcerpt: string;
+        finalMessage?: string;
     }>;
     /**
      * Injected git operations. Wraps `git -C <worktree>` calls.
