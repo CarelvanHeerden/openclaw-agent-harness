@@ -106,11 +106,35 @@ export async function runWorker(worktreePath, brief, subTask, commitIdentity, de
             reason: `sdk_error: ${String(err)}`,
         };
     }
-    const changed = await deps.gitListChangedFiles(worktreePath, baseSha);
+    let changed = await deps.gitListChangedFiles(worktreePath, baseSha);
     let commitSha;
     if (changed.length > 0) {
+        // Uncommitted working-tree changes exist -> the harness commits them.
         const sha = await deps.gitCommit(worktreePath, `harness(${subTask.seq}): ${subTask.title}`, commitIdentity);
         commitSha = sha ?? undefined;
+    }
+    // beta.47: the worker may have committed its OWN changes during the turn
+    // (via its git tool), leaving a clean working tree. In that case the block
+    // above is skipped and commitSha stays undefined even though HEAD moved.
+    // Always reconcile against HEAD: if HEAD advanced past baseSha and we don't
+    // yet have a sha, record HEAD as the commit sha and backfill filesChanged
+    // from base..HEAD. This makes commit_sha bookkeeping correct regardless of
+    // WHO made the commit (session 94a516a0 root cause).
+    if (!commitSha && deps.gitHeadSha && baseSha) {
+        try {
+            const head = await deps.gitHeadSha(worktreePath);
+            if (head && head !== baseSha) {
+                commitSha = head;
+                if (changed.length === 0 && deps.gitListCommittedFiles) {
+                    const committed = await deps.gitListCommittedFiles(worktreePath, baseSha);
+                    if (committed.length > 0)
+                        changed = committed;
+                }
+            }
+        }
+        catch {
+            // HEAD lookup best-effort; leave commitSha as-is on failure.
+        }
     }
     // SDK stop reason gives a provisional status.
     let status = sdkResult.stopReason === "timeout"

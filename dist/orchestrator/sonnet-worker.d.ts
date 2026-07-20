@@ -78,6 +78,22 @@ export interface WorkerDeps {
     gitListChangedFiles: (worktreePath: string, base: string) => Promise<string[]>;
     gitBaseSha: (worktreePath: string) => Promise<string>;
     /**
+     * beta.47: current HEAD sha of the worktree. Used to detect a worker that
+     * committed its OWN changes during the turn (via its git tool), which
+     * leaves the working tree clean so `gitListChangedFiles` returns empty and
+     * the harness never runs its own commit -> commitSha was silently lost
+     * (session 94a516a0: commit_made verifier passed on HEAD!=base but the
+     * sub_task row had commit_sha=null). Optional for back-compat; when absent
+     * behaviour is unchanged.
+     */
+    gitHeadSha?: (worktreePath: string) => Promise<string>;
+    /**
+     * beta.47: files touched by commits in base..HEAD (includes worker
+     * self-commits, unlike the working-tree diff). Optional; used to backfill
+     * filesChanged when the worker self-committed.
+     */
+    gitListCommittedFiles?: (worktreePath: string, base: string) => Promise<string[]>;
+    /**
      * canUseTool guard factory. The orchestrator builds one per session
      * with the bash guard + path denylist wired in.
      */
