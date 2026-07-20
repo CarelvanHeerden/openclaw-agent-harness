@@ -53,4 +53,8 @@ export declare function pathMatchRule(committed: string, contract: string): stri
 export declare function pathMatches(committed: string, contract: string): boolean;
 /** True if ANY committed file satisfies the contract path. */
 export declare function anyPathMatches(committedFiles: string[], contract: string): boolean;
+export declare function resolveContractPath(realFiles: string[], contract: string): {
+    file: string;
+    rule: string;
+} | null;
 //# sourceMappingURL=path-match.d.ts.map

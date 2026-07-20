@@ -21,7 +21,7 @@ import type { HarnessConfig, TokenPointer } from "./config.js";
 import { parseHarnessConfig } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
-import { pathMatchRule } from "./orchestrator/path-match.js";
+import { pathMatchRule, resolveContractPath } from "./orchestrator/path-match.js";
 import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
 import { SlackReactionsReader } from "./slack/reactions.js";
@@ -641,13 +641,22 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             },
             fileWrittenSince: async (path, sinceMs) => {
               try {
-                const abs = resolve(worktreePath, path);
+                // beta.51: resolve the lead's contract path to the REAL changed
+                // file via structural matching (route group / src-prefix /
+                // monorepo drift), then stat THAT file. beta.50 fixed this for
+                // file_committed but left file_written on exact resolve(),
+                // which ENOENT'd on the literal brief path (the #858 seq-4
+                // failure). See path-match.ts.
+                const changed = await git.listChangedFiles(worktreePath, baseSha);
+                const match = resolveContractPath(changed, path);
+                if (!match) {
+                  return { written: false, detail: `file not in diff vs base (${changed.length} changed: ${changed.slice(0, 8).join(", ")})` };
+                }
+                const abs = resolve(worktreePath, match.file);
                 const st = await stat(abs);
                 const freshEnough = st.mtimeMs >= sinceMs - 1000; // 1s clock slack
-                if (!freshEnough) return { written: false, detail: `mtime ${new Date(st.mtimeMs).toISOString()} predates sub-task start` };
-                const changed = await git.listChangedFiles(worktreePath, baseSha);
-                const inDiff = changed.some((f) => resolve(worktreePath, f) === abs);
-                return { written: inDiff, detail: inDiff ? "file changed vs base + mtime fresh" : "file mtime fresh but not in diff vs base" };
+                if (!freshEnough) return { written: false, detail: `${match.file} (via ${match.rule}) mtime ${new Date(st.mtimeMs).toISOString()} predates sub-task start` };
+                return { written: true, detail: `file changed vs base + mtime fresh (${match.file} via ${match.rule} match)` };
               } catch (err) {
                 return { written: false, detail: `stat error: ${String(err)}` };
               }
@@ -667,23 +676,39 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             // regardless of who's driving verification. ----
 
             fileExistsOnDisk: async (path: string) => {
-              try {
-                const abs = resolve(worktreePath, path);
+              // Primary: literal path (untracked files won't be in git diff, so
+              // we can't rely on the changed-file list here). beta.51 fallback:
+              // if the literal path is absent, resolve it structurally against
+              // committed+changed files (route group / src-prefix drift).
+              const tryStat = async (rel: string) => {
+                const abs = resolve(worktreePath, rel);
                 const st = await stat(abs);
-                const exists = st.isFile();
-                const nonEmpty = st.size > 0;
+                return { isFile: st.isFile(), size: st.size };
+              };
+              try {
+                const s = await tryStat(path);
                 return {
-                  exists,
-                  nonEmpty,
-                  detail: exists
-                    ? nonEmpty
-                      ? `file present (${st.size} bytes)`
-                      : "file present but empty"
-                    : "path exists but is not a regular file",
+                  exists: s.isFile,
+                  nonEmpty: s.size > 0,
+                  detail: s.isFile ? (s.size > 0 ? `file present (${s.size} bytes)` : "file present but empty") : "path exists but is not a regular file",
                 };
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                return { exists: false, nonEmpty: false, detail: `stat error: ${msg}` };
+              } catch {
+                try {
+                  const committed = await git.listCommittedFiles(worktreePath, baseSha).catch(() => [] as string[]);
+                  const match = resolveContractPath(committed, path);
+                  if (match) {
+                    const s = await tryStat(match.file);
+                    return {
+                      exists: s.isFile,
+                      nonEmpty: s.size > 0,
+                      detail: s.isFile ? `file present via ${match.rule} match (${match.file}, ${s.size} bytes)` : "matched path is not a regular file",
+                    };
+                  }
+                  return { exists: false, nonEmpty: false, detail: `no file matching contract path (checked literal + ${committed.length} committed)` };
+                } catch (err2) {
+                  const msg = err2 instanceof Error ? err2.message : String(err2);
+                  return { exists: false, nonEmpty: false, detail: `stat error: ${msg}` };
+                }
               }
             },
 
@@ -1041,12 +1066,21 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         },
         fileWrittenSince: async (path: string, sinceMs: number) => {
           try {
-            const abs = resolve(worktreePath, path);
+            // beta.51: structural path resolution (see path-match.ts) so a
+            // route-semantics contract path matches the real committed/changed
+            // filesystem path.
+            const changed = await git.listChangedFiles(worktreePath, baseSha || (await git.baseSha(worktreePath)));
+            const match = resolveContractPath(changed, path);
+            if (!match) {
+              return { written: false, detail: `file not in diff vs base (${changed.length} changed: ${changed.slice(0, 8).join(", ")})` };
+            }
+            if (sinceMs === 0) {
+              return { written: true, detail: `file changed vs base (${match.file} via ${match.rule} match)` };
+            }
+            const abs = resolve(worktreePath, match.file);
             const st = await stat(abs);
             const freshEnough = st.mtimeMs >= sinceMs - 1000;
-            const changed = await git.listChangedFiles(worktreePath, baseSha || (await git.baseSha(worktreePath)));
-            const inDiff = changed.some((f) => resolve(worktreePath, f) === abs);
-            return { written: (sinceMs === 0 ? true : freshEnough) && inDiff, detail: inDiff ? "file changed vs base" : "file not in diff vs base" };
+            return { written: freshEnough, detail: freshEnough ? `file changed vs base (${match.file} via ${match.rule} match)` : `${match.file} mtime predates sub-task start` };
           } catch (err) {
             return { written: false, detail: `stat error: ${String(err)}` };
           }
@@ -1065,23 +1099,37 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
 
         /** file_written kind: fs.stat on the worktree. Includes untracked files (fixes beta.8 bug). */
         fileExistsOnDisk: async (path: string) => {
-          try {
-            const abs = resolve(worktreePath, path);
+          // beta.51: literal-path primary (untracked files aren't in git diff),
+          // structural committed-file fallback for route-group / prefix drift.
+          const tryStat = async (rel: string) => {
+            const abs = resolve(worktreePath, rel);
             const st = await stat(abs);
-            const exists = st.isFile();
-            const nonEmpty = st.size > 0;
+            return { isFile: st.isFile(), size: st.size };
+          };
+          try {
+            const s = await tryStat(path);
             return {
-              exists,
-              nonEmpty,
-              detail: exists
-                ? nonEmpty
-                  ? `file present (${st.size} bytes)`
-                  : "file present but empty"
-                : "path exists but is not a regular file",
+              exists: s.isFile,
+              nonEmpty: s.size > 0,
+              detail: s.isFile ? (s.size > 0 ? `file present (${s.size} bytes)` : "file present but empty") : "path exists but is not a regular file",
             };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            return { exists: false, nonEmpty: false, detail: `stat error: ${msg}` };
+          } catch {
+            try {
+              const committed = await git.listCommittedFiles(worktreePath, baseSha).catch(() => [] as string[]);
+              const match = resolveContractPath(committed, path);
+              if (match) {
+                const s = await tryStat(match.file);
+                return {
+                  exists: s.isFile,
+                  nonEmpty: s.size > 0,
+                  detail: s.isFile ? `file present via ${match.rule} match (${match.file}, ${s.size} bytes)` : "matched path is not a regular file",
+                };
+              }
+              return { exists: false, nonEmpty: false, detail: `no file matching contract path (checked literal + ${committed.length} committed)` };
+            } catch (err2) {
+              const msg = err2 instanceof Error ? err2.message : String(err2);
+              return { exists: false, nonEmpty: false, detail: `stat error: ${msg}` };
+            }
           }
         },
 
