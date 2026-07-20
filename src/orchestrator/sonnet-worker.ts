@@ -72,6 +72,22 @@ export interface WorkerDeps {
   gitCommit: (worktreePath: string, message: string, identity: { name: string; email: string }) => Promise<string | null>;
   gitListChangedFiles: (worktreePath: string, base: string) => Promise<string[]>;
   gitBaseSha: (worktreePath: string) => Promise<string>;
+  /**
+   * beta.47: current HEAD sha of the worktree. Used to detect a worker that
+   * committed its OWN changes during the turn (via its git tool), which
+   * leaves the working tree clean so `gitListChangedFiles` returns empty and
+   * the harness never runs its own commit -> commitSha was silently lost
+   * (session 94a516a0: commit_made verifier passed on HEAD!=base but the
+   * sub_task row had commit_sha=null). Optional for back-compat; when absent
+   * behaviour is unchanged.
+   */
+  gitHeadSha?: (worktreePath: string) => Promise<string>;
+  /**
+   * beta.47: files touched by commits in base..HEAD (includes worker
+   * self-commits, unlike the working-tree diff). Optional; used to backfill
+   * filesChanged when the worker self-committed.
+   */
+  gitListCommittedFiles?: (worktreePath: string, base: string) => Promise<string[]>;
 
   /**
    * canUseTool guard factory. The orchestrator builds one per session
@@ -229,15 +245,37 @@ export async function runWorker(
     };
   }
 
-  const changed = await deps.gitListChangedFiles(worktreePath, baseSha);
+  let changed = await deps.gitListChangedFiles(worktreePath, baseSha);
   let commitSha: string | undefined;
   if (changed.length > 0) {
+    // Uncommitted working-tree changes exist -> the harness commits them.
     const sha = await deps.gitCommit(
       worktreePath,
       `harness(${subTask.seq}): ${subTask.title}`,
       commitIdentity,
     );
     commitSha = sha ?? undefined;
+  }
+  // beta.47: the worker may have committed its OWN changes during the turn
+  // (via its git tool), leaving a clean working tree. In that case the block
+  // above is skipped and commitSha stays undefined even though HEAD moved.
+  // Always reconcile against HEAD: if HEAD advanced past baseSha and we don't
+  // yet have a sha, record HEAD as the commit sha and backfill filesChanged
+  // from base..HEAD. This makes commit_sha bookkeeping correct regardless of
+  // WHO made the commit (session 94a516a0 root cause).
+  if (!commitSha && deps.gitHeadSha && baseSha) {
+    try {
+      const head = await deps.gitHeadSha(worktreePath);
+      if (head && head !== baseSha) {
+        commitSha = head;
+        if (changed.length === 0 && deps.gitListCommittedFiles) {
+          const committed = await deps.gitListCommittedFiles(worktreePath, baseSha);
+          if (committed.length > 0) changed = committed;
+        }
+      }
+    } catch {
+      // HEAD lookup best-effort; leave commitSha as-is on failure.
+    }
   }
 
   // SDK stop reason gives a provisional status.

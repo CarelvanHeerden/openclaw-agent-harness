@@ -113,7 +113,25 @@ export function openStateStoreSync(pathHint) {
             db.close();
         },
         audit: (event, payload, sessionId) => {
-            insertAudit.run(sessionId ?? null, event, JSON.stringify(payload ?? {}), Date.now());
+            // beta.47: guard against a post-close write. On a terminal transition
+            // the worktree-release path (loop.tryReleaseWorktree) can run AFTER the
+            // teardown drain has closed the runtime (session 94a516a0, PR #858):
+            // the release impl threw, its catch handler called audit(), and the
+            // prepared statement was already finalized -> "statement has been
+            // finalized" thrown at process level. Terminal state was already
+            // persisted; only this trailing bookkeeping row is lost. Skip cleanly
+            // when the store is closed, and never let a finalized-statement error
+            // escape to the process.
+            if (!open)
+                return;
+            try {
+                insertAudit.run(sessionId ?? null, event, JSON.stringify(payload ?? {}), Date.now());
+            }
+            catch {
+                // Store was closed concurrently between the `open` check and the
+                // write (teardown race). Dropping a trailing audit row is acceptable;
+                // crashing the process is not.
+            }
         },
     };
 }
