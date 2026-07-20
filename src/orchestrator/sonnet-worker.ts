@@ -191,6 +191,22 @@ export function buildWorkerSystemPrompt(
     `- Do not install global packages, disable safeguards, or exfiltrate anything.`,
     `- If a bash command is refused, explain in prose and continue with an alternative approach.`,
     `- End your turn once the sub-task's success criteria are met.`,
+    ``,
+    `## Execution protocol (CRITICAL)`,
+    `- You have EXACTLY ONE turn to complete this sub-task. Dispatch is one-shot.`,
+    `- There is NO event stream from the harness back to you mid-turn. There is`,
+    `  NO "Monitor event", no "ready signal", no background callback. NOTHING will`,
+    `  ever notify you or resume you. If you end your turn waiting for such an`,
+    `  event, the work simply does not get done and the sub-task FAILS.`,
+    `- NEVER 'await', 'wait for', or 'poll for' a harness/monitor/install event.`,
+    `  These mechanisms do not exist in this harness.`,
+    `- If you need a long-running process (npm install / npm ci, tsc, a build, a`,
+    `  test run), run it INLINE in a single Bash tool call that BLOCKS until the`,
+    `  process exits (e.g. \`npm ci && npx tsc --noEmit\`), read its result, then`,
+    `  continue working in the SAME turn. Do not background it and wait.`,
+    `- Only run verification (typecheck/tests) if THIS sub-task's success criteria`,
+    `  require it. Do not go off-plan to self-verify; make the required edit and`,
+    `  commit. Committing the correct change is what completes the sub-task.`,
   );
   return lines.join("\n");
 }

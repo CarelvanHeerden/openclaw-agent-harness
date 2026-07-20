@@ -79,6 +79,17 @@ export type LoopOutcome =
 const runningSessions = new Set<string>();
 
 /**
+ * beta.52: detect a worker that ended its turn WAITING for a mid-turn event
+ * that does not exist in the one-shot harness protocol (session fc64d8ea #858
+ * sub-task 3: "I'll await the Monitor event signaling tsc is ready"). Matches
+ * "await/wait for/waiting for/poll for ... (monitor/harness/install/build/tsc)
+ * event/signal/ready" phrasing. Used ONLY to TAG the failure distinctly from a
+ * reasoned refusal; the worker-prompt hardening is what prevents it.
+ */
+const WORKER_PROTOCOL_ASSUMPTION_RE =
+  /\b(await|wait(ing)?\s+for|poll(ing)?\s+for)\b[^.\n]{0,80}\b(monitor|harness|install|build|tsc|ready|completion|background)\b[^.\n]{0,40}\b(event|signal|ready|notif|callback|complet)/i;
+
+/**
  * beta.42: active stall-watchdog timers, keyed by sessionId. When the
  * re-entrancy guard SKIPS a re-entry (`loop.run_skipped_already_running`), it
  * arms a timer here. beta.40's reclaim was PASSIVE -- it only re-evaluated
@@ -820,6 +831,38 @@ export class OrchestratorLoop {
             const NO_CHANGE_ONLY = failedResults.length > 0 && failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
             const refusalText = (result.finalMessage ?? "").trim();
             const looksLikeRefusal = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0;
+            // ---- beta.52: distinguish a PROTOCOL-ASSUMPTION failure from a
+            // reasoned refusal. Session fc64d8ea (beta.51 revise of #858) sub-
+            // task 3: the worker ended its turn with 24 words -- "The install
+            // is still completing. I'll await the Monitor event signaling tsc
+            // is ready rather than polling further." -- and ZERO side-effects.
+            // That is NOT a reasoned refusal (it did not dispute the task); it
+            // HALLUCINATED a mid-turn event stream that does not exist in the
+            // one-shot harness protocol, and exited waiting for a signal that
+            // never comes. The beta.52 worker-prompt hardening kills the
+            // behaviour; this tag makes the pattern greppable in metrics so we
+            // can tell "worker was wrong about the harness" apart from "worker
+            // correctly refused a bad task". Does NOT change pass/fail.
+            const looksLikeProtocolAssumption =
+              looksLikeRefusal && WORKER_PROTOCOL_ASSUMPTION_RE.test(refusalText);
+            if (looksLikeProtocolAssumption) {
+              const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+              this.deps.state.audit(
+                "loop.worker_incorrect_protocol_assumption",
+                {
+                  sessionId,
+                  seq: st.seq,
+                  cycle,
+                  reasonFirstLine: firstLine.slice(0, 300),
+                  finalMessage: refusalText.slice(0, 4000),
+                  failedKinds: failedResults.map((x) => x.kind),
+                },
+                sessionId,
+              );
+              this.deps.logger.warn("[loop] worker made an INCORRECT PROTOCOL ASSUMPTION (awaited a non-existent mid-turn event; zero side-effects)", {
+                sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200),
+              });
+            }
             if (looksLikeRefusal) {
               const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
               this.deps.state.audit(
@@ -843,9 +886,11 @@ export class OrchestratorLoop {
             // summary so harness_progress.headline and the terminal update
             // show "worker refused: <reason>" rather than a bare
             // verification-failed string.
-            const failSummary = looksLikeRefusal
-              ? `worker refused (no changes made): ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
-              : `verification failed: ${verification.summary}`;
+            const failSummary = looksLikeProtocolAssumption
+              ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+              : looksLikeRefusal
+                ? `worker refused (no changes made): ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+                : `verification failed: ${verification.summary}`;
             this.deps.state.db.prepare(
               `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,
             ).run(failSummary, Date.now(), subTaskId);
