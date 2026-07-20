@@ -54,6 +54,13 @@ export interface RunWorkerResult {
     tokensIn: number;
     tokensOut: number;
     logsExcerpt: string;
+    /**
+     * beta.48 (C1 observability): the worker's LAST assistant text message.
+     * Captured on every turn so a zero-side-effect `end_turn` (e.g. a reasoned
+     * refusal like session dca2f3b5's) is never opaque to the harness. Empty
+     * string when the worker produced no text (pure tool turn).
+     */
+    finalMessage: string;
 }
 export declare function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult>;
 /**

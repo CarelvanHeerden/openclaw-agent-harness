@@ -118,18 +118,44 @@ export function tokenise(cmd) {
     return { tokens };
 }
 const OPERATORS = new Set(["|", "||", "&", "&&", ";", ">", ">>", "<", "<<"]);
+// beta.48 (P5): a redirect operator attaches a file to the CURRENT command;
+// it does NOT start a new command. Its following token is a redirect TARGET
+// (a filename), not a command name. Treating `>` as a segment boundary meant
+// `foo 2>/dev/null` tokenised to [`foo`,`2`,`>`,`/dev/null`] and split into a
+// second "segment" whose base was `/dev/null` -> rejected as `command
+// "/dev/null" not in whitelist`. The worker (session dca2f3b5) hit this twice.
+// True SEGMENT separators (pipe / list) start a new command; REDIRECTS do not.
+const SEGMENT_SEPARATORS = new Set(["|", "||", "&", "&&", ";"]);
+const REDIRECT_OPERATORS = new Set([">", ">>", "<", "<<"]);
 /**
- * Split token list into pipe segments. Each segment is a list of tokens
- * representing one command. Segments are separated by any operator.
+ * Split token list into pipe/list segments. Each segment is a list of tokens
+ * representing one command. Segments are separated by pipe/list operators
+ * only. Redirect operators (`>`, `>>`, `<`, `<<`) and their immediately
+ * following target token are stripped from the segment so the redirect target
+ * (a filename like /dev/null) is never mistaken for a command. The network
+ * exfiltration check on /dev/tcp|/dev/udp runs separately over the FULL token
+ * list in guardCommand (before this split), so dropping targets here does not
+ * weaken that check.
  */
 function splitSegments(tokens) {
     const segments = [];
     let cur = [];
-    for (const t of tokens) {
-        if (OPERATORS.has(t)) {
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (SEGMENT_SEPARATORS.has(t)) {
             if (cur.length > 0)
                 segments.push(cur);
             cur = [];
+        }
+        else if (REDIRECT_OPERATORS.has(t)) {
+            // Skip the redirect operator AND its target token (the filename that
+            // follows). e.g. `> /dev/null`, `2>> log.txt`, `< input`.
+            // Also drop a trailing bare file-descriptor prefix already pushed onto
+            // cur (the `2` in `foo 2>/dev/null`) so it isn't left as a stray arg.
+            const last = cur[cur.length - 1];
+            if (last !== undefined && /^[0-9]+$/.test(last))
+                cur.pop();
+            i++; // consume the target token as well
         }
         else {
             cur.push(t);

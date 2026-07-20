@@ -605,6 +605,30 @@ export class OrchestratorLoop {
         );
         this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
 
+        // beta.48 (C1): always emit the worker's final message as a
+        // breadcrumb, on EVERY sub-task (not just failures). This eliminates
+        // the "opaque worker turn" blind spot (session dca2f3b5) where a
+        // zero-side-effect end_turn was indistinguishable from a crash in the
+        // harness log. Truncated; empty string when the worker produced only
+        // tool calls and no concluding text.
+        {
+          const fm = (result.finalMessage ?? "").trim();
+          this.deps.state.audit(
+            "loop.worker_end_turn",
+            {
+              sessionId,
+              seq: st.seq,
+              cycle,
+              status: result.status,
+              commitSha: result.commitSha ?? null,
+              filesTouched: result.filesChanged,
+              hasFinalMessage: fm.length > 0,
+              finalMessage: fm.slice(0, 4000),
+            },
+            sessionId,
+          );
+        }
+
         // If the worker itself failed/timed out, halt now.
         if (result.status !== "completed") {
           failed.err = `subtask_${st.seq}_${result.status}: ${result.reason ?? "no reason"}`;
@@ -776,13 +800,59 @@ export class OrchestratorLoop {
                   this.deps.state.audit("loop.verify_failed", { ...payload, kind: r.kind }, sessionId);
               }
             }
+            // ---- beta.48 (C1 + C2): reasoned-refusal observability ----
+            // Session dca2f3b5 (beta.47 revise of #858) exposed a blind spot:
+            // a worker can end its turn with `end_turn` + ZERO filesystem
+            // side-effects because it made a REASONED REFUSAL (e.g. "the
+            // sub-task's premise is factually false, renaming would regress
+            // the repo"). The harness saw "0/N checks passed, worker did
+            // nothing" and terminated, throwing away the worker's structured
+            // explanation. The refusal was CORRECT but invisible. Detect the
+            // shape (every failing check is a no-change kind AND the worker
+            // made no commit AND it left a non-empty final message) and
+            // surface that message so operators/downstream see WHY, instead
+            // of an opaque empty turn. NOTE: this does NOT change the pass/
+            // fail decision (the sub-task still fails verification) -- it only
+            // makes the reason observable. We deliberately do NOT auto-accept
+            // the refusal: a worker refusing on a false premise is a signal
+            // that an UPSTREAM artefact (adversary finding / brief) was wrong,
+            // which a human or a future replan loop should resolve.
+            const NO_CHANGE_ONLY = failedResults.length > 0 && failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
+            const refusalText = (result.finalMessage ?? "").trim();
+            const looksLikeRefusal = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0;
+            if (looksLikeRefusal) {
+              const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+              this.deps.state.audit(
+                "loop.worker_refusal",
+                {
+                  sessionId,
+                  seq: st.seq,
+                  cycle,
+                  reasonFirstLine: firstLine.slice(0, 300),
+                  finalMessage: refusalText.slice(0, 4000),
+                  failedKinds: failedResults.map((x) => x.kind),
+                  summary: verification.summary,
+                },
+                sessionId,
+              );
+              this.deps.logger.warn("[loop] worker made a reasoned refusal (zero side-effects + explanation)", {
+                sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200),
+              });
+            }
+            // beta.48 (C2): fold the refusal first-line into the persisted
+            // summary so harness_progress.headline and the terminal update
+            // show "worker refused: <reason>" rather than a bare
+            // verification-failed string.
+            const failSummary = looksLikeRefusal
+              ? `worker refused (no changes made): ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+              : `verification failed: ${verification.summary}`;
             this.deps.state.db.prepare(
               `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,
-            ).run(`verification failed: ${verification.summary}`, Date.now(), subTaskId);
+            ).run(failSummary, Date.now(), subTaskId);
             this.deps.logger.warn("[loop] harness-side verification FAILED (worker confabulated success)", {
               sessionId, seq: st.seq, costUsd: result.costUsd, summary: verification.summary,
             });
-            failed.err = `subtask_${st.seq}_failed_verification: ${verification.summary}`;
+            failed.err = `subtask_${st.seq}_failed_verification: ${failSummary}`;
             failed.seq = st.seq;
             return;
           }

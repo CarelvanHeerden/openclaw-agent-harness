@@ -62,6 +62,10 @@ export async function runWorkerSdk(params) {
     let tokensIn = 0;
     let tokensOut = 0;
     const logLines = [];
+    // beta.48: track the most recent assistant text block(s) as the worker's
+    // final message. Reset on each assistant message so we keep only the LAST
+    // turn's text (the concluding statement / refusal), not the whole stream.
+    let finalMessage = "";
     try {
         const stream = sdk.query({
             prompt: params.userMessage,
@@ -89,6 +93,20 @@ export async function runWorkerSdk(params) {
             if (message.type === "system" && message.subtype === "init") {
                 sdkSessionId = message.session_id;
             }
+            if (message.type === "assistant") {
+                // Collect this assistant message's text blocks. A message may mix
+                // text + tool_use; we keep only the text. Overwriting per assistant
+                // message means finalMessage ends as the LAST turn's text.
+                const content = message.message?.content;
+                if (Array.isArray(content)) {
+                    const text = content
+                        .filter((c) => c?.type === "text" && typeof c.text === "string")
+                        .map((c) => c.text)
+                        .join("");
+                    if (text.trim())
+                        finalMessage = text;
+                }
+            }
             if (message.type === "result") {
                 stopReason = message.subtype === "success" ? "end_turn" : "tool_error";
                 costUsd = message.total_cost_usd ?? 0;
@@ -114,6 +132,7 @@ export async function runWorkerSdk(params) {
         tokensIn,
         tokensOut,
         logsExcerpt: logLines.slice(-25).join("\n"),
+        finalMessage,
     };
 }
 // ---- Structured-output helpers (classifier, crystalliser, lead, adversary) ----
