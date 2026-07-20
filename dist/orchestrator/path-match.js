@@ -109,4 +109,38 @@ export function pathMatches(committed, contract) {
 export function anyPathMatches(committedFiles, contract) {
     return committedFiles.some((f) => pathMatches(f, contract));
 }
+/**
+ * beta.51: resolve a lead-authored contract path to the ACTUAL repo-relative
+ * file among a list of real files (from `git diff --name-only` /
+ * `git log --name-only`). Returns the best structural match, preferring the
+ * strictest rule. This lets every path-resolving verifier (file_written,
+ * file_committed, file_exists, file_pushed) share ONE normalization instead of
+ * each doing its own exact `resolve()` compare -- the beta.50 miss was fixing
+ * only `file_committed` and leaving `file_written` on exact-match, so seq 4 of
+ * the #858 revise passed file_committed (via route-group) but died on
+ * file_written (stat of the literal brief path ENOENT'd).
+ *
+ * Returns { file, rule } for the best match, or null if none match.
+ */
+const RULE_RANK = {
+    exact: 0,
+    "route-group": 1,
+    suffix: 2,
+    "basename-dir": 3,
+    basename: 4,
+};
+export function resolveContractPath(realFiles, contract) {
+    let best = null;
+    for (const f of realFiles) {
+        const rule = pathMatchRule(f, contract);
+        if (!rule)
+            continue;
+        if (rule === "exact")
+            return { file: f, rule };
+        if (best === null || (RULE_RANK[rule] ?? 9) < (RULE_RANK[best.rule] ?? 9)) {
+            best = { file: f, rule };
+        }
+    }
+    return best;
+}
 //# sourceMappingURL=path-match.js.map

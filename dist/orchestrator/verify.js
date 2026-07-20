@@ -23,6 +23,7 @@
  * beta.9: extended with 6 new contract kinds and split `file_written` to use
  * fs.stat instead of git diff, fixing the untracked-file bug from beta.8.
  */
+import { anyPathMatches } from "./path-match.js";
 /**
  * Pure evaluator: given per-check booleans, decide overall pass/fail and
  * build the summary. Separated so tests don't need real probes.
@@ -154,7 +155,9 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
             case "file_in_pr": {
                 if (probes.prFiles && v.prNumber !== undefined) {
                     const r = await probes.prFiles(v.prNumber);
-                    const present = r.files.some((f) => f.filename === v.path || f.filename.endsWith(`/${v.path}`));
+                    // beta.51: structural match so a route-semantics contract path finds
+                    // the real filesystem path in the PR file list (route group / prefix).
+                    const present = anyPathMatches(r.files.map((f) => f.filename), v.path);
                     results.push({ kind: v.kind, passed: present, detail: present ? `${v.path} in PR #${v.prNumber} files` : `${v.path} not found in PR #${v.prNumber} files; ${r.detail}` });
                 }
                 else if (probes.prForBranch && probes.prFiles) {
@@ -166,7 +169,7 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     }
                     else {
                         const r = await probes.prFiles(prNum);
-                        const present = r.files.some((f) => f.filename === v.path || f.filename.endsWith(`/${v.path}`));
+                        const present = anyPathMatches(r.files.map((f) => f.filename), v.path);
                         results.push({ kind: v.kind, passed: present, detail: present ? `${v.path} in PR #${prNum} files` : `${v.path} not found in PR #${prNum}; ${r.detail}` });
                     }
                 }

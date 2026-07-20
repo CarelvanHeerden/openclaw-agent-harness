@@ -25,6 +25,7 @@
  */
 
 import type { SubTaskVerify } from "./fable5-lead.js";
+import { anyPathMatches } from "./path-match.js";
 
 export interface VerifyProbeResult {
   kind: SubTaskVerify["kind"];
@@ -248,7 +249,9 @@ export async function verifySubTaskOutput(
       case "file_in_pr": {
         if (probes.prFiles && v.prNumber !== undefined) {
           const r = await probes.prFiles(v.prNumber);
-          const present = r.files.some((f) => f.filename === v.path || f.filename.endsWith(`/${v.path}`));
+          // beta.51: structural match so a route-semantics contract path finds
+          // the real filesystem path in the PR file list (route group / prefix).
+          const present = anyPathMatches(r.files.map((f) => f.filename), v.path);
           results.push({ kind: v.kind, passed: present, detail: present ? `${v.path} in PR #${v.prNumber} files` : `${v.path} not found in PR #${v.prNumber} files; ${r.detail}` });
         } else if (probes.prForBranch && probes.prFiles) {
           // Look up prNumber from branch if not specified.
@@ -258,7 +261,7 @@ export async function verifySubTaskOutput(
             results.push({ kind: v.kind, passed: false, detail: `no open PR found to check file in; ${pr.detail}` });
           } else {
             const r = await probes.prFiles(prNum);
-            const present = r.files.some((f) => f.filename === v.path || f.filename.endsWith(`/${v.path}`));
+            const present = anyPathMatches(r.files.map((f) => f.filename), v.path);
             results.push({ kind: v.kind, passed: present, detail: present ? `${v.path} in PR #${prNum} files` : `${v.path} not found in PR #${prNum}; ${r.detail}` });
           }
         } else {
