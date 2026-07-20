@@ -651,6 +651,26 @@ export async function runLeadSdk(params: {
     // sub-task for it. Your last sub-task is the local commit that produces
     // the change (+ optional local verify).
     "- The brief's request to 'open a PR' or 'push' is fulfilled by the harness AFTER review — never plan a sub-task for it. End your plan at the local commit that produces the change.",
+    // beta.47: DETERMINISTIC-OUTCOME rules. Session 94a516a0 (revise of PR
+    // #858) failed sub-task 1 because the plan hedged a load-bearing rename
+    // behind a self-defeating escape clause ('move grc/ to governance-risk/;
+    // skip rename if grc dirs already exist elsewhere — check first'). The
+    // grc/ dirs it wanted renamed TRIVIALLY satisfy 'grc dirs exist', so the
+    // worker skipped the rename, hardened the OLD paths in-place, and the
+    // verify contract (hard-pinned to the NEW path) correctly caught ENOENT.
+    // The ambiguity propagated: intent -> successCriteria -> filesLikelyTouched
+    // all disagreed, and downstream sub-tasks 2/3/5 hardcoded an outcome
+    // sub-task 1 was allowed to skip. Root shape: the lead treats prose as
+    // advisory and hedges mutations with unchecked OR-branches, while only
+    // the derived verify contract is load-bearing. These rules force the
+    // prose to be as deterministic as the contract.
+    "- DETERMINISTIC OUTCOMES (CRITICAL). Every mutate sub-task must have exactly ONE outcome. Do NOT write escape hatches of the form 'do X unless Y, in which case document Y' where Y has no observable, machine-checkable proof. Phrases like 'skip the rename if the dirs already exist', 'retain if still used, note why', 'or pre-existing failures are documented', 'confirm addressed or justify as N/A' are FORBIDDEN — they let a worker satisfy the criterion by narration, and they make the sub-task's outcome unpredictable to downstream sub-tasks and to the verifier. Decide the outcome AT PLAN TIME. If you genuinely cannot decide without inspecting the repo, split into (a) a taskMode:'observe' probe sub-task that greps/checks and reports, then (b) a following mutate sub-task whose intent is unconditional given (a)'s finding. Never fold the uncertainty into a single mutate sub-task as an OR-branch.",
+    "- OUTCOME PROPAGATION. A downstream sub-task (via dependsOn) MUST NOT hardcode an outcome that an upstream sub-task is permitted to skip. If sub-task 1 renames a module to path P, and sub-task 2 imports from P, then sub-task 1's rename MUST be unconditional (per the rule above) — otherwise sub-task 2 is impossible-as-stated when 1 skips. Before emitting the plan, check: for every dependsOn edge, does the downstream intent/filesLikelyTouched assume a specific upstream result? If yes, that upstream result must be deterministic, not hedged.",
+    "- RENAME/MOVE HYGIENE. For a rename or move, `filesLikelyTouched` MUST list ONLY the DESTINATION paths, never both source and destination. The source path belongs in the `intent` prose ('move src/old/x.ts to src/new/x.ts'). Listing both gives the worker no positional signal about which side is the target and is a common cause of edits landing on the wrong (old) path. Also: a rename that other sub-tasks depend on is LOAD-BEARING — give it its own single-purpose sub-task, do NOT bundle it with unrelated hardening/refactor edits.",
+    "- ONE CONCERN PER SUB-TASK. Do not bundle many independent mutations behind a single sub-task with only a few observable checks (e.g. rename + 5 unrelated in-file edits + aria-label all in one sub-task). When a worker partially completes such a bundle, verification fails with a MISLEADING signal (the contract flags the one load-bearing miss while the worker did the other five). Prefer several focused sub-tasks whose successCriteria map 1:1 to observable outcomes. A good sub-task's successCriteria are ALL machine-checkable statements about files/commits, not narrated judgements.",
+    "- SPECIFICITY IS FREE. Ambiguity in intent/successCriteria/filesLikelyTouched costs you nothing to avoid but can fatally mislead the worker, because only the derived verify contract actually gates the run — the prose must AGREE with the contract you'd expect. When in doubt, pick the specific concrete outcome (a real path, a definite action) rather than a hedge. A plan that reads like a precise checklist beats one that reads like cautious advice.",
+    // beta.47: observe sub-tasks must report structured pass/fail, not hedge.
+    "- OBSERVE sub-tasks (taskMode:'observe') must have CHECKABLE successCriteria: 'report a structured pass/fail per item', 'git status is clean', 'no out-of-scope files changed (git diff)'. Do NOT phrase an observe criterion as 'confirm X or justify as N/A' — that is an unchecked escape hatch. The observe sub-task reports facts; it does not get to excuse a missing outcome.",
     `- reposAllowed: ${JSON.stringify(params.reposAllowed)}`,
     // beta.31: session 78237f43 failed because the model tried to WRITE the
     // plan to a file (`.claude/plans/...md`) with the JSON as a

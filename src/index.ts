@@ -596,6 +596,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           gitBaseSha: (wt) => git.baseSha(wt),
           gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),
           gitCommit: (wt, msg, id) => git.commit(wt, msg, id),
+          // beta.47: reconcile commit sha when the worker self-commits.
+          gitHeadSha: (wt) => git.baseSha(wt),
+          gitListCommittedFiles: (wt, base) => git.listCommittedFiles(wt, base),
           // beta.7 fix #1: real observable-side-effect probes. These hit the
           // provider REST API / disk / git so a worker cannot self-report a
           // push, PR, or file write that never happened.
@@ -1842,6 +1845,17 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
       logger: api.logger,
       agentOrchestrated,
       autoResume: async (s) => {
+        // beta.47: recovery runs on every bootstrap (incl. plugin re-register
+        // churn while a session is still mid-flight). If a loop for this
+        // session is ALREADY running in-process, re-driving it is pointless
+        // noise: the beta.38 re-entrancy guard would just skip it with
+        // `loop.run_skipped_already_running` (session 94a516a0 emitted two of
+        // those, staleMs 8/11, during a <2min planning window). Skip the
+        // re-drive entirely instead of flipping status + re-calling run().
+        if (runningSessionIds().includes(s.id)) {
+          api.logger.info("[harness] recovery: session loop already running in-process, skipping auto-resume", { sessionId: s.id });
+          return;
+        }
         const row = state.db
           .prepare(`SELECT crystallised_prompt FROM sessions WHERE id = ?`)
           .get(s.id) as { crystallised_prompt?: string } | undefined;
