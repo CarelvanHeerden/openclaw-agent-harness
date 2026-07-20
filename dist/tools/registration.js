@@ -9,6 +9,7 @@
 import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
+import { isConditionalFinding } from "../orchestrator/finding-hygiene.js";
 function toDispose(x) {
     return () => {
         if (typeof x === "function")
@@ -859,13 +860,45 @@ export function registerHarnessTools(api, runtime) {
             reason: row.merge_recommendation_reason ?? null,
             findingCount: fnd?.findings.length ?? 0,
             lastVerdict: fnd?.verdict ?? null,
+            // beta.49: expose each finding with its 1-based index + a conditional
+            // flag, so a caller can pass dropFindings:[n] for stale/wrong findings
+            // and see which will be auto-demoted (verify-premise-first) by C.
+            findings: (fnd?.findings ?? []).map((f, i) => {
+                const o = (f ?? {});
+                return {
+                    index: i + 1,
+                    severity: String(o.severity ?? o.level ?? ""),
+                    summary: String(o.message ?? o.finding ?? o.detail ?? o.description ?? "").slice(0, 200),
+                    conditional: isConditionalFinding(f),
+                };
+            }),
         };
     }
+    // beta.49 (C): a finding is CONDITIONAL when its stated action depends on an
+    // unresolved premise about repo state. Session 21da9f9c's immortal finding
+    // 10 is exactly this shape and kept being replayed verbatim into every
+    // revise-of-21da9f9c because buildReviseBrief pulls stored findings without
+    // re-checking premises. C3 disciplined the ADVERSARY at emission time, but
+    // the revise path never re-runs the adversary, so a stale pre-C3 finding
+    // survives forever. `isConditionalFinding` (pure, in finding-hygiene.ts)
+    // detects that class so the brief can demote it from a hard mandate to a
+    // VERIFY-PREMISE-FIRST instruction: the lead (already P1-disciplined) emits
+    // an observe probe sub-task that greps the repo, and only a mutate sub-task
+    // if the premise holds. Combined with beta.48 C1/C2, a false premise now
+    // produces a VISIBLE non-fatal skip instead of a hard worker refusal.
     // Build a revise brief from a prior session + its stored findings. The new
     // brief carries the ORIGINAL goal forward (so the worker doesn't regress the
     // passing criteria) and adds the findings as the primary work items, pinned
     // to the existing branch.
-    function buildReviseBrief(row) {
+    //
+    // beta.49:
+    //   A (dropFindings): 1-based indices (as shown in the finding list / the
+    //     picker) to EXCLUDE from the revise brief entirely -- the manual escape
+    //     hatch for a stale/wrong finding (e.g. finding 10 on #858).
+    //   C (auto-demote conditional findings): any finding whose premise is an
+    //     unresolved repo-state conditional is rewritten into a verify-first
+    //     instruction rather than a hard mandate.
+    function buildReviseBrief(row, opts = {}) {
         const fnd = latestFindings(row.id);
         let orig = {};
         try {
@@ -875,16 +908,42 @@ export function registerHarnessTools(api, runtime) {
         catch {
             /* fall through with empty orig */
         }
-        const findings = fnd?.findings ?? [];
-        const findingLines = findings.map((f, i) => {
+        const allFindings = fnd?.findings ?? [];
+        const drop = new Set((opts.dropFindings ?? []).filter((n) => Number.isInteger(n) && n >= 1));
+        const droppedIdx = [];
+        const demotedIdx = [];
+        // Keep 1-based display indices STABLE (matching the picker / prior report)
+        // even after dropping, so a human referencing "finding 10" always means the
+        // same finding regardless of how many were dropped.
+        const findingLines = [];
+        allFindings.forEach((f, i) => {
+            const displayIdx = i + 1;
+            if (drop.has(displayIdx)) {
+                droppedIdx.push(displayIdx);
+                return;
+            }
             const o = (f ?? {});
             const sev = o.severity ?? o.level ?? "";
             const msg = o.message ?? o.finding ?? o.detail ?? o.description ?? JSON.stringify(o);
             const loc = o.location ?? o.file ?? o.path ?? "";
-            return `${i + 1}. [${String(sev)}] ${String(msg)}${loc ? ` (${String(loc)})` : ""}`;
+            const base = `${displayIdx}. [${String(sev)}] ${String(msg)}${loc ? ` (${String(loc)})` : ""}`;
+            if (isConditionalFinding(f)) {
+                demotedIdx.push(displayIdx);
+                findingLines.push(`${base} -- CONDITIONAL PREMISE: this finding's action depends on an unverified claim about repo state. ` +
+                    `Do NOT treat it as a mandate. FIRST verify the premise by grepping/inspecting the repo (an observe sub-task). ` +
+                    `Only act if the premise holds; if the repo contradicts it, report the finding as invalid and make NO change for it.`);
+            }
+            else {
+                findingLines.push(base);
+            }
         });
         const acceptance = [
             "Address each adversary finding listed below without regressing the original acceptance criteria.",
+            ...(demotedIdx.length
+                ? [
+                    "NOTE: findings marked CONDITIONAL PREMISE must be premise-verified against the current repo BEFORE any change; a contradicted premise means skip that finding, not fail.",
+                ]
+                : []),
             ...findingLines,
         ];
         if (Array.isArray(orig.acceptanceCriteria)) {
@@ -893,7 +952,8 @@ export function registerHarnessTools(api, runtime) {
         const brief = {
             title: orig.title ? `Revise: ${orig.title}` : `Revise PR #${row.pr_number}`,
             motivation: `Revise the existing PR #${row.pr_number} on branch ${row.branch}. The adversary review returned ` +
-                `${fnd?.verdict ?? "revise"} with ${findings.length} finding(s)` +
+                `${fnd?.verdict ?? "revise"} with ${allFindings.length} finding(s)` +
+                (droppedIdx.length ? ` (excluding dropped finding(s) ${droppedIdx.join(", ")})` : "") +
                 (row.merge_recommendation_reason ? ` (merge recommendation: ${row.merge_recommendation_reason})` : "") +
                 `. Build ON the existing branch -- do not start over. Only make the changes needed to resolve the findings.`,
             acceptanceCriteria: acceptance,
@@ -907,7 +967,12 @@ export function registerHarnessTools(api, runtime) {
             reviseOfSessionId: row.id,
             pinnedBranch: row.branch,
         };
-        return brief;
+        // _reviseMeta is advisory (audit/telemetry only) and is stripped before
+        // the brief is handed to startSessionFromBrief so it never reaches the
+        // loop / crystallised_prompt.
+        return Object.assign(brief, {
+            _reviseMeta: { total: allFindings.length, dropped: droppedIdx, demoted: demotedIdx },
+        });
     }
     disposers.push(toDispose(api.registerTool({
         name: "harness_list_revisable",
@@ -929,6 +994,7 @@ export function registerHarnessTools(api, runtime) {
         description: "Revise a shipped-but-not-merge-ready harness PR by addressing its adversary findings, UPDATING THE SAME PR (new commits stack on the existing branch head -- no new PR opens). " +
             "Target resolution: pass `prNumber` OR `sessionId` to revise that specific one. Pass NEITHER to get back the revisable list (needsSelection=true) so the caller can present a picker and re-invoke with a choice. " +
             "The revise brief is built AUTOMATICALLY from the prior session's stored adversary findings + original goal -- the user does NOT need to know the session id or restate the findings. " +
+            "beta.49: pass `dropFindings: [n, ...]` (1-based indices as shown by harness_list_revisable) to EXCLUDE stale/wrong findings from the revise (e.g. a finding whose premise is factually false). Conditional findings (premise depends on unverified repo state) are AUTOMATICALLY demoted to verify-premise-first, not dropped. " +
             "Returns the new revise sessionId (fire-and-forget loop; watch harness_progress). requester must be in slack.authorised_users.",
         parameters: {
             type: "object",
@@ -937,12 +1003,17 @@ export function registerHarnessTools(api, runtime) {
                 prNumber: { type: "number", description: "PR number to revise. Alternative to sessionId." },
                 sessionId: { type: "string", minLength: 1, description: "Shipped session id to revise. Alternative to prNumber." },
                 budgetUsd: { type: "number", minimum: 0.05, description: "Optional per-session budget override for the revise run." },
+                dropFindings: {
+                    type: "array",
+                    items: { type: "number", minimum: 1 },
+                    description: "1-based finding indices (from harness_list_revisable) to EXCLUDE from this revise. Use for stale/false findings.",
+                },
             },
             required: ["requester"],
             additionalProperties: false,
         },
         execute: async (_callId, input) => {
-            const { requester, prNumber, sessionId, budgetUsd } = input;
+            const { requester, prNumber, sessionId, budgetUsd, dropFindings } = input;
             if (!liveConfig().slack.authorised_users.includes(requester)) {
                 return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
@@ -980,25 +1051,42 @@ export function registerHarnessTools(api, runtime) {
             if (!row.pr_number || !row.branch) {
                 return { content: [{ type: "text", text: `Session ${row.id} has no PR/branch to revise.` }], details: { ok: false, noPr: true } };
             }
-            const built = buildReviseBrief(row);
+            const built = buildReviseBrief(row, { dropFindings });
             if ("error" in built) {
                 return { content: [{ type: "text", text: built.error }], details: { ok: false, error: built.error } };
             }
+            // Strip the advisory _reviseMeta before the brief goes to the loop /
+            // crystallised_prompt (it's audit-only).
+            const { _reviseMeta, ...cleanBrief } = built;
             const started = startSessionFromBrief({
                 requester,
-                brief: built,
+                brief: cleanBrief,
                 budgetUsd,
                 auditEvent: "tool.revise",
             });
             if (!started.ok) {
                 return { content: [{ type: "text", text: `Could not start revise: ${started.reason}` }], details: { ...started, ok: false } };
             }
-            liveState().audit("tool.revise.started", { newSessionId: started.sessionId, reviseOfSessionId: row.id, prNumber: row.pr_number, branch: row.branch, requester }, started.sessionId);
+            liveState().audit("tool.revise.started", {
+                newSessionId: started.sessionId,
+                reviseOfSessionId: row.id,
+                prNumber: row.pr_number,
+                branch: row.branch,
+                requester,
+                // beta.49 A+C: record which findings were dropped/demoted so the
+                // revise's provenance is auditable.
+                findingsTotal: _reviseMeta?.total ?? 0,
+                findingsDropped: _reviseMeta?.dropped ?? [],
+                findingsDemotedConditional: _reviseMeta?.demoted ?? [],
+            }, started.sessionId);
             return {
                 content: [
                     {
                         type: "text",
-                        text: `Revising PR #${row.pr_number} (branch ${row.branch}) as session ${started.sessionId}. New commits will update the same PR. Watch harness_progress for the new session.`,
+                        text: `Revising PR #${row.pr_number} (branch ${row.branch}) as session ${started.sessionId}. ` +
+                            (_reviseMeta?.dropped.length ? `Dropped finding(s) ${_reviseMeta.dropped.join(", ")}. ` : "") +
+                            (_reviseMeta?.demoted.length ? `Auto-demoted conditional finding(s) ${_reviseMeta.demoted.join(", ")} to verify-first. ` : "") +
+                            `New commits will update the same PR. Watch harness_progress for the new session.`,
                     },
                 ],
                 details: {
@@ -1007,6 +1095,8 @@ export function registerHarnessTools(api, runtime) {
                     reviseOfSessionId: row.id,
                     prNumber: row.pr_number,
                     branch: row.branch,
+                    findingsDropped: _reviseMeta?.dropped ?? [],
+                    findingsDemotedConditional: _reviseMeta?.demoted ?? [],
                     feedback: {
                         poll: "harness_progress",
                         args: { sessionId: started.sessionId },
