@@ -19,6 +19,7 @@ import { mkdir } from "node:fs/promises";
 import { parseHarnessConfig } from "./config.js";
 import { openStateStoreSync } from "./state/store.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
+import { pathMatchRule } from "./orchestrator/path-match.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
 import { SlackReactionsReader } from "./slack/reactions.js";
@@ -462,13 +463,27 @@ export function bootstrapHarnessSync(api) {
                     fileCommittedSince: async (path, base) => {
                         try {
                             const files = await git.listCommittedFiles(worktreePath, base);
-                            const absTarget = resolve(worktreePath, path);
-                            const committed = files.some((f) => resolve(worktreePath, f) === absTarget || f === path);
+                            // beta.50: match by structural equivalence, not exact string --
+                            // the lead authors contract paths from route/URL semantics but
+                            // the worker commits real filesystem paths (Next.js route
+                            // groups, monorepo prefixes, etc). See path-match.ts.
+                            let matchedFile;
+                            let matchedRule = null;
+                            for (const f of files) {
+                                const rule = pathMatchRule(f, path);
+                                if (rule) {
+                                    matchedFile = f;
+                                    matchedRule = rule;
+                                    if (rule === "exact")
+                                        break;
+                                }
+                            }
+                            const committed = matchedRule !== null;
                             return {
                                 committed,
                                 detail: committed
-                                    ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD (${files.length} file(s) total)`
-                                    : `file not in commits since base (${files.length} file(s) checked)`,
+                                    ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD via ${matchedRule} match (${matchedFile}; ${files.length} file(s) total)`
+                                    : `file not in commits since base (${files.length} file(s) checked: ${files.slice(0, 8).join(", ")})`,
                             };
                         }
                         catch (err) {
@@ -837,13 +852,26 @@ export function bootstrapHarnessSync(api) {
                 fileCommittedSince: async (path, base) => {
                     try {
                         const files = await git.listCommittedFiles(worktreePath, base);
-                        const absTarget = resolve(worktreePath, path);
-                        const committed = files.some((f) => resolve(worktreePath, f) === absTarget || f === path);
+                        // beta.50: structural path matching (see path-match.ts) so a
+                        // route-group / monorepo-prefixed committed path still satisfies a
+                        // route-semantics contract path.
+                        let matchedFile;
+                        let matchedRule = null;
+                        for (const f of files) {
+                            const rule = pathMatchRule(f, path);
+                            if (rule) {
+                                matchedFile = f;
+                                matchedRule = rule;
+                                if (rule === "exact")
+                                    break;
+                            }
+                        }
+                        const committed = matchedRule !== null;
                         return {
                             committed,
                             detail: committed
-                                ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD (${files.length} file(s) total)`
-                                : `file not in commits since base (${files.length} file(s) checked)`,
+                                ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD via ${matchedRule} match (${matchedFile}; ${files.length} file(s) total)`
+                                : `file not in commits since base (${files.length} file(s) checked: ${files.slice(0, 8).join(", ")})`,
                         };
                     }
                     catch (err) {
