@@ -228,6 +228,28 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
   const spentUsd = row.cost_usd ?? 0;
   const ratio = budgetUsd > 0 ? round(spentUsd / budgetUsd, 4) : 0;
 
+  // beta.50: when a run failed on a verifier path mismatch (only
+  // `file_committed`/`file_written`/`file_pushed` failed while a commit WAS
+  // made), surface the specific mismatch in the headline instead of a generic
+  // "Failed during failed" -- makes the route-group / path-drift class instant
+  // to diagnose. Scan the most recent verify-failure event.
+  let failureDetail: string | undefined;
+  if (status === "failed" || status === "failed_verification") {
+    const PATH_FAIL = new Set([
+      "loop.file_committed_verify_failed",
+      "loop.file_written_verify_failed",
+      "loop.file_pushed_verify_failed",
+    ]);
+    for (let i = recentEvents.length - 1; i >= 0; i--) {
+      const ev = recentEvents[i]!;
+      if (PATH_FAIL.has(ev.event)) {
+        const d = (ev.detail ?? {}) as { detail?: string };
+        if (typeof d.detail === "string") failureDetail = `verifier path check: ${d.detail}`;
+        break;
+      }
+    }
+  }
+
   const headline = buildHeadline({
     phase,
     status,
@@ -239,6 +261,7 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     budgetUsd,
     prNumber: row.pr_number ?? null,
     deployStatus: row.deploy_status ?? null,
+    failureDetail,
   });
 
   return {
@@ -279,6 +302,7 @@ export function buildHeadline(input: {
   budgetUsd: number;
   prNumber: number | null;
   deployStatus: string | null;
+  failureDetail?: string;
 }): string {
   const cost = input.budgetUsd > 0 ? ` (${fmtUsd(input.spentUsd)}/${fmtUsd(input.budgetUsd)})` : ` (${fmtUsd(input.spentUsd)})`;
 
@@ -287,7 +311,8 @@ export function buildHeadline(input: {
     return `Done${pr}${cost}.`;
   }
   if (input.status === "failed" || input.status === "failed_verification") {
-    return `Failed during ${input.phase.toLowerCase()}${cost}.`;
+    const why = input.failureDetail ? ` — ${input.failureDetail}` : "";
+    return `Failed during ${input.phase.toLowerCase()}${why}${cost}.`;
   }
   if (input.status === "aborted") return `Aborted${cost}.`;
 

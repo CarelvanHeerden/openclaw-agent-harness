@@ -104,5 +104,6 @@ export declare function buildHeadline(input: {
     budgetUsd: number;
     prNumber: number | null;
     deployStatus: string | null;
+    failureDetail?: string;
 }): string;
 //# sourceMappingURL=progress.d.ts.map
