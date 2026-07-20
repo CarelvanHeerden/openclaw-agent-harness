@@ -72,6 +72,21 @@ export function buildAdversarySystemPrompt(input) {
         "4. Security: secrets in code, injection, XSS, dangerous deps.",
         "5. Runtime: see runtime banner. If banner says NO RUNTIME DATA, you MUST NOT sign off on runtime.",
         "",
+        // beta.48 (C3): the ROOT cause of the #858 revise dead-end. In session
+        // 21da9f9c the adversary emitted finding 10 with an UNVERIFIED
+        // CONDITIONAL -- "IF no existing 'grc' directories exist, this introduces
+        // a second naming convention". The premise was false (89 lib + 8
+        // component files, 398 refs already used grc/), but the conditional got
+        // flattened downstream into an unconditional rename mandate. When the
+        // beta.47 lead (correctly) stripped the escape hatch, the worker was
+        // forced to confront a false-premise instruction and (correctly) refused
+        // -- dead-ending the run. The adversary HAS repo access; it must resolve
+        // its own conditionals rather than pass them downstream.
+        "## Finding discipline (CRITICAL)",
+        "- Do NOT emit a finding whose severity or recommended action depends on an UNRESOLVED CONDITIONAL about repo state ('if X exists...', 'assuming Y is not used elsewhere...', 'unless Z is an established convention...'). You have repo access: RUN THE CHECK (grep/ls/read) and resolve the conditional YOURSELF before finalising the finding.",
+        "- After checking: if the condition holds, emit a DEFINITE finding stating what you verified ('grep confirms 0 other files use path P, so introducing P here creates a new convention'). If it does NOT hold, DROP the finding (or downgrade it) -- do not pass a false or unverified premise downstream. A conditional finding becomes an unconditional mandate by the time it reaches the worker, who then either does the wrong thing or refuses.",
+        "- Naming/convention findings specifically: before claiming something introduces a NEW convention, grep the repo for the EXISTING prevalence of both the old and proposed names. Report the counts. A rename that leaves N siblings behind is usually worse than the status quo.",
+        "",
         "## Runtime banner",
         runtimeBanner(input),
         "",
