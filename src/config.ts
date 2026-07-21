@@ -220,6 +220,22 @@ export interface LoopConfig {
    * terminal-fail behaviour.
    */
   clarification_escalation_enabled?: boolean;
+  /**
+   * beta.62 (fix #2/#3): when a cycle-N adversary review CRASHES (SDK error,
+   * parse error, or a post-review persist throw) rather than returning a
+   * verdict, and (a) a PRIOR cycle already produced a completed adversary
+   * review (`lastReview`) AND (b) this cycle's own sub-task self-verification
+   * was fully green, DO NOT discard the work: open the PR anyway with
+   * `merge_recommendation = 'needs_human_review'` so a human can inspect the
+   * adversary-motivated commits (exactly the b60-attempt-2 smoke failure --
+   * 8 good commits, all cycle-1 findings addressed, seq-6 self-verify green,
+   * but the cycle-2 review call crashed silently and the run threw the work
+   * away). When the graceful PR path is NOT taken (e.g. a cycle-1 crash, or
+   * the push itself fails), the worktree is PRESERVED (not released) so the
+   * commit chain remains inspectable on disk. Default true. Set false to keep
+   * the old hard-fail-and-release behaviour on a review crash.
+   */
+  graceful_pr_on_review_crash?: boolean;
 }
 
 export interface VercelConfig {
@@ -433,6 +449,7 @@ const DEFAULTS: HarnessConfig = {
     budget_reserve_ratio: 0.15,
     env_wait_retry_enabled: true,
     clarification_escalation_enabled: true,
+    graceful_pr_on_review_crash: true,
   },
   vercel: {
     api_key_env: "VERCEL_TOKEN",

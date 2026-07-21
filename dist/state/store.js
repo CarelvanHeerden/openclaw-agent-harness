@@ -64,7 +64,7 @@ export function openStateStoreSync(pathHint) {
         { table: "sessions", column: "pr_merged_at", type: "INTEGER" }, // epoch ms (nullable)
         // beta.34: post-ship merge recommendation + PR number for the merge tool.
         { table: "sessions", column: "pr_number", type: "INTEGER" }, // GitHub PR number
-        { table: "sessions", column: "merge_recommendation", type: "TEXT" }, // 'merge' | 'do_not_merge'
+        { table: "sessions", column: "merge_recommendation", type: "TEXT" }, // 'merge' | 'do_not_merge' | 'needs_human_review'
         { table: "sessions", column: "merge_recommendation_reason", type: "TEXT" }, // human-readable reasoning
         { table: "sessions", column: "deploy_status", type: "TEXT" }, // 'ready'|'error'|'pending'|'unavailable'|'reverted'|'repair_budget_paused'|NULL
         { table: "sessions", column: "deploy_detail", type: "TEXT" }, // logs excerpt / url / error

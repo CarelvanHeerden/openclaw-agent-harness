@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   pr_merged_at             INTEGER,          -- epoch ms; NULL if closed without merge
   -- beta.34: post-ship merge recommendation + deploy verification
   pr_number                INTEGER,          -- GitHub PR number (for harness_merge_pr)
-  merge_recommendation     TEXT,             -- 'merge' | 'do_not_merge'
+  merge_recommendation     TEXT,             -- 'merge' | 'do_not_merge' | 'needs_human_review'
   merge_recommendation_reason TEXT,          -- human-readable reasoning
   deploy_status            TEXT,             -- 'ready'|'error'|'pending'|'unavailable'|'reverted'|'repair_budget_paused'|NULL
   deploy_detail            TEXT,             -- logs excerpt / deployment url / error
