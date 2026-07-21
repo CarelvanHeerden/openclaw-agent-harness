@@ -76,9 +76,9 @@ test("beta51: no match returns null", () => {
 // ---------------------------------------------------------------------------
 // Wiring: every path-resolving verifier uses the shared matcher.
 // ---------------------------------------------------------------------------
-test("beta51: index.ts imports resolveContractPath", () => {
+test("beta51/59: index.ts imports resolveContractPath (pathMatchRule no longer used directly)", () => {
   const src = S("src/index.ts");
-  assert.match(src, /import \{ pathMatchRule, resolveContractPath \} from "\.\/orchestrator\/path-match\.js"/);
+  assert.match(src, /import \{ resolveContractPath \} from "\.\/orchestrator\/path-match\.js"/);
 });
 
 // beta.56 (P0-5): the worker-path probe factory was REMOVED (it duplicated
@@ -86,24 +86,25 @@ test("beta51: index.ts imports resolveContractPath", () => {
 // retry/clarification machinery by pre-failing results). The loop-path
 // factory is now the single verification site, so exactly ONE occurrence of
 // each structural-matching pattern is correct.
-test("beta51/56: the (single) fileWrittenSince factory resolves via resolveContractPath (no exact resolve() diff match)", () => {
+test("beta51/56/59: the (single) fileWrittenSince factory resolves via resolveContractPath with basename fallback", () => {
   const src = S("src/index.ts");
-  const uses = src.match(/resolveContractPath\(changed, path\)/g) ?? [];
-  assert.equal(uses.length, 1, `exactly one fileWrittenSince factory must use resolveContractPath (found ${uses.length})`);
+  const uses = src.match(/resolveContractPath\(changed, path, \{ allowBasenameFallback: true \}\)/g) ?? [];
+  assert.equal(uses.length, 1, `exactly one fileWrittenSince factory must use resolveContractPath+fallback (found ${uses.length})`);
   // the old exact-equality diff match must be gone
   assert.doesNotMatch(src, /changed\.some\(\(f\) => resolve\(worktreePath, f\) === abs\)/);
 });
 
-test("beta51/56: the (single) fileExistsOnDisk factory has a structural committed-file fallback", () => {
+test("beta51/56/59: the (single) fileExistsOnDisk factory has a structural committed-file fallback (with basename fallback)", () => {
   const src = S("src/index.ts");
-  const fallbacks = src.match(/resolveContractPath\(committed, path\)/g) ?? [];
+  const fallbacks = src.match(/resolveContractPath\(committed, path, \{ allowBasenameFallback: true \}\)/g) ?? [];
   assert.equal(fallbacks.length, 1, `exactly one fileExistsOnDisk factory needs the committed-file fallback (found ${fallbacks.length})`);
 });
 
-test("beta51/56: file_committed still uses pathMatchRule (beta.50, single factory)", () => {
+test("beta51/56/59: fileCommittedSince resolves via resolveContractPath (no longer a hand-rolled pathMatchRule loop)", () => {
   const src = S("src/index.ts");
-  const uses = src.match(/const rule = pathMatchRule\(f, path\)/g) ?? [];
-  assert.equal(uses.length, 1, "the loop-path fileCommittedSince factory keeps pathMatchRule");
+  assert.match(src, /resolveContractPath\(files, path, \{ allowBasenameFallback: true \}\)/);
+  // the old hand-rolled loop must be gone
+  assert.doesNotMatch(src, /const rule = pathMatchRule\(f, path\)/);
 });
 
 test("beta51: file_in_pr uses anyPathMatches (route-group tolerant PR file match)", () => {
