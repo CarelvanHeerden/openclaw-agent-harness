@@ -744,11 +744,24 @@ export class OrchestratorLoop {
         // actual sub-task costs so far). Abort before burning spend instead
         // of the old post-hoc check that let a $1 budget balloon to $2.10.
         if (!reactions.budgetBump) {
-          const projected = totalCost + this.estimateSubTaskCost(st, subTaskCosts);
-          if (projected > row.budget_usd) {
+          const subEst = this.estimateSubTaskCost(st, subTaskCosts);
+          // beta.61: reserve headroom for the pending adversary review + push
+          // that must run AFTER the last sub-task of the cycle. The b60 smoke
+          // died at cycle-2 seq-4 completion with 0 budget left for the
+          // cycle-2 review -- so all findings were addressed but NO PR opened,
+          // one review short of the deliverable. Reserving up front makes the
+          // guard abort EARLY and cleanly (before starting a sub-task whose
+          // completion would leave no room to finish the cycle) instead of
+          // stranding committed work with no PR. Reserve = a fraction of the
+          // TOTAL budget (covers review + packaging/push), applied only while
+          // the review has not yet run this cycle.
+          const reserveRatio = this.deps.config.loop.budget_reserve_ratio ?? 0.15;
+          const reserve = row.budget_usd * Math.max(0, Math.min(0.9, reserveRatio));
+          const projected = totalCost + subEst;
+          if (projected + reserve > row.budget_usd) {
             this.deps.state.audit(
               "loop.budget_projection_abort",
-              { sessionId, seq: st.seq, totalCost, projected, budget: row.budget_usd },
+              { sessionId, seq: st.seq, totalCost, projected, reserve, budget: row.budget_usd },
               sessionId,
             );
             failed.err = "budget_exhausted"; failed.seq = st.seq; return;

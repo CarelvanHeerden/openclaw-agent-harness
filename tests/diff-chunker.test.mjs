@@ -54,8 +54,12 @@ test("checkPriceDrift: > 20% drift -> warn",
     assert.ok(r.drift > 0.2);
   });
 
-test("checkPriceDrift: unknown model -> no warn",
+test("checkPriceDrift: unknown model -> WARN (beta.61 supersedes the old no-warn behavior)",
   { skip: checkPriceDrift === null }, () => {
+    // beta.61: an unpriced model is itself a warn condition. Previously this
+    // silently returned warn:false -- which is exactly why the b60 opus worker
+    // (no price-table entry) never surfaced its ~5x mispricing.
     const r = checkPriceDrift("claude-nothing", 1.0, 100_000, 50_000);
-    assert.equal(r.warn, false);
+    assert.equal(r.warn, true);
+    assert.equal(r.unknownModel, true);
   });

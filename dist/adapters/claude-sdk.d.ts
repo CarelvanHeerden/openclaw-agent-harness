@@ -186,6 +186,60 @@ export declare const PRICES: Record<string, {
     input: number;
     output: number;
 }>;
+/**
+ * beta.61: the price used when a model id is NOT in the table (and not
+ * overridden). Previously this silently fell back to sonnet -- which
+ * UNDER-estimates for a more expensive model and lets a run overshoot its
+ * budget (exactly the b60 opus-priced-as-sonnet miss). A budget projection
+ * must FAIL SAFE: an unknown model is assumed to be the MOST EXPENSIVE known
+ * tier, so we over-reserve rather than under-reserve. Combined with the
+ * checkPriceDrift unknown-model warning, an operator sees the mispricing on
+ * run 1 and can add an exact price_override.
+ */
+export declare function mostExpensivePrice(table: Record<string, {
+    input: number;
+    output: number;
+}>): {
+    input: number;
+    output: number;
+};
+/** beta.61: true when a model id has neither a table entry nor an override. */
+export declare function isUnknownModel(model: string, overrides?: Record<string, {
+    input: number;
+    output: number;
+}>): boolean;
+/**
+ * beta.61: fetch the list of live model ids from the Anthropic Models API
+ * (GET /v1/models). IMPORTANT LIMITATION: Anthropic exposes NO pricing API --
+ * /v1/models returns model IDs and display names only, NOT per-token prices
+ * (pricing lives in the docs, not the API). So this canNOT auto-refresh the
+ * PRICES table with real numbers; it can only tell us WHICH model ids exist,
+ * so the harness can warn when a configured model is (a) not in our price
+ * table and (b) either a real live model we simply haven't priced, or a
+ * renamed/deprecated id. Best-effort: any network/auth error returns null and
+ * the caller degrades to the static table. Never throws.
+ */
+export declare function fetchLiveModelIds(apiKey: string, opts?: {
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+}): Promise<string[] | null>;
+/**
+ * beta.61: assess pricing health of the CONFIGURED models. Returns per-model
+ * flags: `unpriced` (not in the price table/overrides -> projections fall back
+ * to the most-expensive tier), and `notLive` (a live model list was fetched and
+ * this id was absent -> possibly renamed/deprecated). `liveIds` null means the
+ * Models API was unreachable, so `notLive` is left undefined (unknown, not
+ * false). Pure/deterministic given inputs -- no network here (fetch is done by
+ * fetchLiveModelIds and passed in) so it is unit-testable.
+ */
+export declare function assessModelPricingHealth(configuredModels: string[], liveIds: string[] | null, overrides?: Record<string, {
+    input: number;
+    output: number;
+}>): Array<{
+    model: string;
+    unpriced: boolean;
+    notLive?: boolean;
+}>;
 export declare function estimateSubTaskCost(model: string, tokens: number, overrides?: Record<string, {
     input: number;
     output: number;
@@ -203,5 +257,6 @@ export declare function checkPriceDrift(model: string, actualCostUsd: number, to
     drift: number;
     warn: boolean;
     estimated: number;
+    unknownModel?: boolean;
 };
 //# sourceMappingURL=claude-sdk.d.ts.map

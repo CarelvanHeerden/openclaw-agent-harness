@@ -35,7 +35,7 @@ import { CredentialAdapter } from "./adapters/credentials.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { createPullRequest, getPullRequest, getCombinedStatus, mergePullRequest } from "./adapters/github.js";
 import { SlackAdapter } from "./adapters/slack.js";
-import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runWorkerSdk, } from "./adapters/claude-sdk.js";
+import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, } from "./adapters/claude-sdk.js";
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt } from "./crystallise/prompt-refiner.js";
@@ -1390,6 +1390,37 @@ export async function bootstrapHarnessAsync(runtime, api) {
     }
     else {
         api.logger.info("[harness] slack.credential_service not set; reactions poller idle");
+    }
+    // beta.61: startup model-pricing health check (Carel's ask -- "the harness
+    // should check latest pricing on the anthropic api"). LIMITATION: Anthropic
+    // has NO pricing API -- GET /v1/models returns model IDs only, not per-token
+    // prices. So we cannot auto-refresh the PRICES numbers; what we CAN do is
+    // fetch the live model list and warn when a CONFIGURED model is (a) not in
+    // our price table (projections fall back to the most-expensive tier -- add a
+    // price_override) or (b) not in the live model list (renamed/deprecated id).
+    // This is exactly the b60 trap: worker swapped sonnet->opus but the opus id
+    // wasn't priced, so budget projections silently ran ~5x low. Best-effort,
+    // never throws, never blocks bootstrap.
+    try {
+        const configuredModels = [config.models.lead, config.models.worker, config.models.adversary, config.models.classifier];
+        const apiKey = await runtime.anthropicApiKey();
+        const liveIds = apiKey ? await fetchLiveModelIds(apiKey) : null;
+        const health = assessModelPricingHealth(configuredModels, liveIds, config.models.price_overrides);
+        const unpriced = health.filter((h) => h.unpriced).map((h) => h.model);
+        const notLive = health.filter((h) => h.notLive === true).map((h) => h.model);
+        if (unpriced.length > 0) {
+            api.logger.warn("[harness] model pricing health: configured model(s) have NO price-table entry; budget projections fall back to the most-expensive tier. Add harness.models.price_overrides for accurate budgeting.", { unpriced });
+            state.audit("harness.model_pricing_unpriced", { unpriced, notLive }, "");
+        }
+        if (notLive.length > 0) {
+            api.logger.warn("[harness] model pricing health: configured model(s) not found in the live Anthropic /v1/models list; the id may be renamed or deprecated.", { notLive });
+        }
+        if (liveIds === null) {
+            api.logger.info("[harness] model pricing health: /v1/models unreachable (no key or network); using static price table.");
+        }
+    }
+    catch (err) {
+        api.logger.warn("[harness] model pricing health check failed (non-fatal)", { err: String(err) });
     }
     // beta.17: startup worktree self-heal. Scan the worktrees root for
     // leftover `pending-<ts>` dirs (or UUID dirs) and reap any that

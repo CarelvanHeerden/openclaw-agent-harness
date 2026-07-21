@@ -193,6 +193,17 @@ export interface LoopConfig {
    */
   subtask_deadline_seconds: number;
   /**
+   * beta.61: fraction of the TOTAL session budget to hold in reserve for the
+   * pending adversary review + packaging/push while a cycle's review has not
+   * yet run. The pre-sub-task budget projection adds this reserve, so the loop
+   * aborts EARLY (before starting a sub-task that would leave no room to finish
+   * the cycle) rather than completing every sub-task and then dying one review
+   * short of a PR -- exactly the b60 smoke failure (all findings addressed,
+   * budget exhausted at cycle-2 seq-4, cycle-2 review never ran, no PR). Clamped
+   * to [0, 0.9]. Default 0.15.
+   */
+  budget_reserve_ratio: number;
+  /**
    * beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn
    * "Monitor event" (env-wait hallucination) and made no committed change,
    * re-invoke the sub-task ONCE with corrective context instead of failing the
@@ -419,6 +430,7 @@ const DEFAULTS: HarnessConfig = {
     teardown_drain_seconds: 3600,
     stall_watchdog_seconds: 90,
     subtask_deadline_seconds: 2100,
+    budget_reserve_ratio: 0.15,
     env_wait_retry_enabled: true,
     clarification_escalation_enabled: true,
   },
