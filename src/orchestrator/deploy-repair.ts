@@ -100,7 +100,7 @@ export interface DeployRepairInput {
 }
 
 export interface DeployRepairResult {
-  outcome: "repaired" | "reverted" | "budget_paused" | "revert_failed";
+  outcome: "repaired" | "reverted" | "budget_paused" | "revert_failed" | "unverified";
   attempts: number;
   totalCostUsd: number;
   /** Final healthy deploy (when repaired). */
@@ -193,12 +193,36 @@ export async function runDeployRepair(
         message: `Deploy repaired after ${attempt} attempt(s). Now READY (${dv.deploymentUrl ?? "url n/a"}). Repair spend $${totalCost.toFixed(2)}.`,
       };
     }
-    // pending/unavailable/error -> treat as not-yet-healthy and continue,
+    // beta.57 (P3): pending/unavailable is NOT evidence of a broken deploy --
+    // it is ABSENCE of evidence (Vercel still building past the wait window,
+    // or the token/API being unavailable). Reverting a possibly-good merge on
+    // that basis destroys real work. Stop WITHOUT reverting and hand off to a
+    // human to verify the deploy manually. Only a verified ERROR keeps the
+    // repair loop (and the eventual revert) going.
+    if (dv.status === "pending" || dv.status === "unavailable") {
+      deps.audit("deploy.repair_unverified", { sessionId, attempt, mergeSha: repair.mergeSha, status: dv.status, totalCostUsd: totalCost }, sessionId);
+      deps.persist(sessionId, {
+        deploy_status: dv.status,
+        deploy_detail: `deploy state UNVERIFIED after repair attempt ${attempt} (${dv.status}): ${dv.detail}. Merges left in place; verify the deployment manually.`.slice(0, 5000),
+        deploy_repair_attempt: attempt,
+      });
+      return {
+        outcome: "unverified",
+        attempts: attempt,
+        totalCostUsd: totalCost,
+        finalDeploy: dv,
+        reviewPrUrl: lastRepairPrUrl,
+        message:
+          `\u26a0\ufe0f Deploy state is UNVERIFIED (${dv.status}) after repair attempt ${attempt} -- the harness could not get a definitive READY/ERROR from Vercel. ` +
+          `Nothing was reverted (the merges may be fine). Verify the deployment manually. Repair spend $${totalCost.toFixed(2)}.`,
+      };
+    }
+    // status === "error" -> genuinely broken; continue to the next attempt,
     // unless we're out of attempts (loop guard handles that).
     void lastRepairPrNumber;
   }
 
-  // Exhausted all attempts without a healthy deploy.
+  // Exhausted all attempts with a VERIFIED broken deploy.
   deps.audit("deploy.repair_exhausted", { sessionId, attempts: input.maxAttempts, totalCostUsd: totalCost }, sessionId);
   return finaliseRevert(deps, input, mergedShas, totalCost, lastRepairPrUrl, "reverted", input.maxAttempts);
 }

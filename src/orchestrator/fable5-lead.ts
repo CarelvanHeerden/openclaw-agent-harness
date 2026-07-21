@@ -258,7 +258,14 @@ function sanitizeRemoteSubTasks(
   let strippedKinds = 0;
   let coercedScope = 0;
   for (const st of plan.subTasks) {
-    if (st.contractScope && st.contractScope !== "local") {
+    // beta.56 (P0-4): coerce to 'local' even when contractScope is ABSENT.
+    // The beta.33 sanitiser only rewrote an explicit non-local scope, so a
+    // sub-task with no contractScope and no explicit verify fell through to
+    // regex inference, which can still infer branch_pushed/pr_opened from
+    // ambient wording ("commit so it can be pushed") -- checks a worker can
+    // never satisfy. Workers are structurally local-only (the harness pushes
+    // after review), so 'local' is always correct here.
+    if (st.contractScope !== "local") {
       st.contractScope = "local";
       coercedScope++;
     }
@@ -293,6 +300,19 @@ function sanitizeRemoteSubTasks(
     logger.info("[lead] beta.33: neutralised remote verify on sub-tasks", {
       strippedRemoteKinds: strippedKinds,
       coercedToLocal: coercedScope,
+    });
+  }
+
+  // beta.57 (P1): the lead prompt now REQUIRES explicit verify + taskMode on
+  // every sub-task. Tolerate omissions (regex inference remains the safety
+  // net) but surface them loudly so prompt regressions are visible in ops
+  // logs instead of silently degrading to inference.
+  const missingVerify = plan.subTasks.filter((st) => !Array.isArray(st.verify)).map((st) => st.seq);
+  const missingMode = plan.subTasks.filter((st) => !st.taskMode).map((st) => st.seq);
+  if (missingVerify.length > 0 || missingMode.length > 0) {
+    logger.info("[lead] beta.57: plan omitted explicit verify/taskMode on sub-task(s); falling back to inference", {
+      missingVerify,
+      missingTaskMode: missingMode,
     });
   }
 }

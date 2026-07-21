@@ -13,7 +13,6 @@
  * The worker COMMITS but does not PUSH. Push happens once, at the end,
  * by the orchestrator after adversarial review passes.
  */
-import { verifySubTaskOutput } from "./verify.js";
 /**
  * Beta.21: hard cap on injected concept content. A worker system prompt is
  * loaded on every SDK turn, so pulling in an entire long-form knowledge
@@ -86,7 +85,6 @@ dispatchHint) {
     const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
     const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
         (dispatchHint ? `\n\n${dispatchHint}` : "");
-    const subTaskStartMs = Date.now();
     const baseSha = await deps.gitBaseSha(worktreePath);
     const canUseTool = deps.buildCanUseTool();
     let sdkResult;
@@ -158,33 +156,25 @@ dispatchHint) {
         }
     }
     // SDK stop reason gives a provisional status.
-    let status = sdkResult.stopReason === "timeout"
+    //
+    // beta.56 (P0-5): the worker-path verification that used to run here was
+    // REMOVED. It duplicated the loop-path verification (loop.ts runs
+    // inferVerifyContract -- whose precedence 1 is the explicit `verify` -- on
+    // every sub-task) with two defects the loop path doesn't have:
+    //   1. It computed `defaultBranch` as "" unless a branch_pushed entry
+    //      carried an explicit branch, so provider probes ran with an empty
+    //      branch (GET /pulls?head=owner: matches ALL PRs -> false PASS;
+    //      ?ref= falls back to the default branch -> checks main, not the
+    //      session branch). The loop path passes plan.branch correctly.
+    //   2. By forcing status='failed' BEFORE the loop saw the result, it took
+    //      loop.ts's `result.status !== "completed"` early-exit and BYPASSED
+    //      the entire beta.53/54/55 retry / refusal / clarification machinery.
+    // The loop is now the single verification site.
+    const status = sdkResult.stopReason === "timeout"
         ? "timeout"
         : sdkResult.stopReason === "end_turn"
             ? "completed"
             : "failed";
-    // beta.7 fix #1: for sub-tasks with observable side effects, do NOT trust
-    // the SDK signal. Verify against reality; a provisional `completed` that
-    // fails verification becomes `failed` and its spend is flagged wasted.
-    let verification;
-    let wastedSpend = false;
-    if (deps.buildVerifyProbes && (subTask.verify?.length ?? 0) > 0) {
-        const probes = deps.buildVerifyProbes(worktreePath, baseSha);
-        verification = await verifySubTaskOutput(subTask.verify, {
-            defaultBranch: subTask.verify?.reduce((acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc), "") ?? "",
-            subTaskStartMs,
-            baseSha,
-        }, probes);
-        if (status === "completed" && !verification.ok) {
-            status = "failed";
-            wastedSpend = true;
-            deps.logger.warn("[worker] SDK reported success but verification failed", {
-                seq: subTask.seq,
-                summary: verification.summary,
-                costUsd: sdkResult.costUsd,
-            });
-        }
-    }
     return {
         status,
         filesChanged: changed,
@@ -193,12 +183,10 @@ dispatchHint) {
         costUsd: sdkResult.costUsd,
         tokensIn: sdkResult.tokensIn,
         tokensOut: sdkResult.tokensOut,
-        reason: verification && !verification.ok ? `verification_failed: ${verification.summary}` : sdkResult.stopReason,
+        reason: sdkResult.stopReason,
         logsExcerpt: sdkResult.logsExcerpt,
         finalMessage: sdkResult.finalMessage,
         uncommittedFiles,
-        verification,
-        wastedSpend,
     };
 }
 //# sourceMappingURL=sonnet-worker.js.map

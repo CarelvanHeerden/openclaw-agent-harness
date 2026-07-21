@@ -18,19 +18,6 @@
  */
 import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan } from "../orchestrator/fable5-lead.js";
-/**
- * Build the `env` passed to the SDK subprocess.
- *
- * The embedded Claude Code binary reads ANTHROPIC_API_KEY from its process
- * environment. We inherit the parent env and, when the harness has resolved
- * an explicit key (vault or config env-var), set ANTHROPIC_API_KEY so the
- * subprocess never falls back to the interactive `/login` session store
- * (which does not exist in a headless container).
- *
- * Returns `undefined` when no explicit key is supplied, so the SDK keeps its
- * default behaviour (inherit parent env) for local dev where the developer
- * may already be logged in.
- */
 export declare function buildSdkEnv(apiKey?: string): Record<string, string> | undefined;
 export interface RunWorkerParams {
     worktreePath: string;

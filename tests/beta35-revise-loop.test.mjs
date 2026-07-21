@@ -44,9 +44,20 @@ const base = {
 
 test("#3: advance ships (done) on revise at last cycle",
   { skip: OrchestratorLoop === null }, () => {
-    const r = OrchestratorLoop.advance({ ...base, verdict: "revise", cyclesRan: 2, maxCycles: 3 });
+    // beta.57 (P3): last cycle == cyclesRan reaching maxCycles (the old
+    // `>= maxCycles - 1` check shipped one cycle early).
+    const r = OrchestratorLoop.advance({ ...base, verdict: "revise", cyclesRan: 3, maxCycles: 3 });
     assert.equal(r.nextStatus, "done");
     assert.equal(r.reason, "shipped_max_cycles_revise");
+  });
+
+test("#3 (beta.57): advance still loops to executing on revise at cyclesRan = maxCycles - 1",
+  { skip: OrchestratorLoop === null }, () => {
+    // Guard the off-by-one fix: with max_cycles 3, cycle 2's revise must NOT
+    // ship early -- cycle 3 still runs.
+    const r = OrchestratorLoop.advance({ ...base, verdict: "revise", cyclesRan: 2, maxCycles: 3 });
+    assert.equal(r.nextStatus, "executing");
+    assert.equal(r.reason, "adversary_revise");
   });
 
 test("#3: advance still fails on block at last cycle (ships nothing)",

@@ -16,7 +16,6 @@
 
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./fable5-lead.js";
-import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
 
 export interface WorkerResult {
   status: "completed" | "failed" | "timeout";
@@ -43,15 +42,6 @@ export interface WorkerResult {
    * The retry-with-context logic (P1b) branches on whether this is non-empty.
    */
   uncommittedFiles?: string[];
-  /**
-   * Result of post-execution observable-side-effect verification (beta.7
-   * fix #1). Undefined when the sub-task declared no `verify` contracts.
-   * When present and `!ok`, `status` is forced to `failed` and `costUsd` is
-   * wasted spend.
-   */
-  verification?: VerifyOutcome;
-  /** True when the SDK reported success but verification proved otherwise. */
-  wastedSpend?: boolean;
 }
 
 export interface WorkerDeps {
@@ -116,13 +106,6 @@ export interface WorkerDeps {
    * with the bash guard + path denylist wired in.
    */
   buildCanUseTool: () => (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }>;
-
-  /**
-   * Observable-side-effect probes for post-execution verification (beta.7
-   * fix #1). Optional: when absent, verification is skipped and the SDK
-   * signal is trusted (back-compat with existing test doubles).
-   */
-  buildVerifyProbes?: (worktreePath: string, baseSha: string) => VerifyProbes;
 }
 
 /**
@@ -274,7 +257,6 @@ export async function runWorker(
     `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
     (dispatchHint ? `\n\n${dispatchHint}` : "");
 
-  const subTaskStartMs = Date.now();
   const baseSha = await deps.gitBaseSha(worktreePath);
   const canUseTool = deps.buildCanUseTool();
 
@@ -349,43 +331,26 @@ export async function runWorker(
   }
 
   // SDK stop reason gives a provisional status.
-  let status: WorkerResult["status"] =
+  //
+  // beta.56 (P0-5): the worker-path verification that used to run here was
+  // REMOVED. It duplicated the loop-path verification (loop.ts runs
+  // inferVerifyContract -- whose precedence 1 is the explicit `verify` -- on
+  // every sub-task) with two defects the loop path doesn't have:
+  //   1. It computed `defaultBranch` as "" unless a branch_pushed entry
+  //      carried an explicit branch, so provider probes ran with an empty
+  //      branch (GET /pulls?head=owner: matches ALL PRs -> false PASS;
+  //      ?ref= falls back to the default branch -> checks main, not the
+  //      session branch). The loop path passes plan.branch correctly.
+  //   2. By forcing status='failed' BEFORE the loop saw the result, it took
+  //      loop.ts's `result.status !== "completed"` early-exit and BYPASSED
+  //      the entire beta.53/54/55 retry / refusal / clarification machinery.
+  // The loop is now the single verification site.
+  const status: WorkerResult["status"] =
     sdkResult.stopReason === "timeout"
       ? "timeout"
       : sdkResult.stopReason === "end_turn"
         ? "completed"
         : "failed";
-
-  // beta.7 fix #1: for sub-tasks with observable side effects, do NOT trust
-  // the SDK signal. Verify against reality; a provisional `completed` that
-  // fails verification becomes `failed` and its spend is flagged wasted.
-  let verification: VerifyOutcome | undefined;
-  let wastedSpend = false;
-  if (deps.buildVerifyProbes && (subTask.verify?.length ?? 0) > 0) {
-    const probes = deps.buildVerifyProbes(worktreePath, baseSha);
-    verification = await verifySubTaskOutput(
-      subTask.verify,
-      {
-        defaultBranch:
-          subTask.verify?.reduce<string>(
-            (acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc),
-            "",
-          ) ?? "",
-        subTaskStartMs,
-        baseSha,
-      },
-      probes,
-    );
-    if (status === "completed" && !verification.ok) {
-      status = "failed";
-      wastedSpend = true;
-      deps.logger.warn("[worker] SDK reported success but verification failed", {
-        seq: subTask.seq,
-        summary: verification.summary,
-        costUsd: sdkResult.costUsd,
-      });
-    }
-  }
 
   return {
     status,
@@ -395,11 +360,9 @@ export async function runWorker(
     costUsd: sdkResult.costUsd,
     tokensIn: sdkResult.tokensIn,
     tokensOut: sdkResult.tokensOut,
-    reason: verification && !verification.ok ? `verification_failed: ${verification.summary}` : sdkResult.stopReason,
+    reason: sdkResult.stopReason,
     logsExcerpt: sdkResult.logsExcerpt,
     finalMessage: sdkResult.finalMessage,
     uncommittedFiles,
-    verification,
-    wastedSpend,
   };
 }

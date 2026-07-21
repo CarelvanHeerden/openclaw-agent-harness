@@ -1,5 +1,191 @@
 # Changelog
 
+## [0.1.0-beta.57] -- 2026-07-21
+
+The P1/P2/P3 fixes from the same full-code review that produced the beta.56
+P0 set. Ships together with beta.56 in one release (beta.56 was never tagged
+separately).
+
+### P1: verification is now fail-closed and contract-first
+
+- **Missing probes FAIL CLOSED** (`verify.ts`): a verify kind whose probe the
+  caller didn't provide used to skip-PASS ("graceful skip"), so a mis-wired
+  caller could green-light contracts it structurally could not check. Now
+  `fileCommittedSince`, `remoteFileExists`, `prForBranch`, `prFiles`, and the
+  SHA probes fail closed with an explicit "failing closed (cannot verify)"
+  detail. The only remaining fallbacks are ones that verify via ANOTHER probe
+  (`file_written` -> `fileWrittenSince`, `remote_branch_exists` ->
+  `remoteBranchExists`, `pr_opened` -> `prUrlPresent`).
+- **`pr_state`: "closed" is no longer conflated with "merged"**. GitHub
+  reports `state=closed` for both merged and rejected PRs; the probe now
+  carries `merged_at`-derived `merged` and the verifier computes the
+  effective state, so a rejected PR can't satisfy a `pr_state: merged`
+  contract.
+- **`file_written` freshness enforced**: the loop now passes the sub-task's
+  actual start time (previously hard-coded 0) and `fileExistsOnDisk` rejects
+  a file whose mtime predates it -- a stale pre-existing file no longer
+  vacuously satisfies the contract.
+- **env-wait retry gated on observable state, not prose** (`loop.ts`): the
+  beta.52->54 regex-widening treadmill ends. The one-shot corrective retry
+  now fires on the state invariant (mutate-shaped sub-task, no commit, only
+  no-change kinds failing) unconditionally on cycle 1; on revise cycles the
+  phrasing regex remains as the tiebreaker between "legal nothing-to-do" and
+  "confabulated wait". The regex result is kept in the audit payload as
+  telemetry (`phrasingMatched`).
+- **Lead plans must declare `verify` + `taskMode` explicitly**
+  (`fable5-lead.ts`): the SubTask schema in the lead prompt now spells out
+  the local verify kinds and requires an explicit `verify` array (empty for
+  observe steps) and `taskMode` on every sub-task. Regex inference remains
+  only as a safety net, and the sanitiser logs when a plan relies on it.
+- **Teardown drains only its own sessions** (`index.ts`, `loop.ts`): the
+  drain loop used the module-global `runningSessionIds()` registry, which
+  deliberately survives a re-register -- so a doomed runtime waited (up to
+  `teardown_drain_seconds`) for the NEW runtime's loops. `OrchestratorLoop`
+  now tracks per-instance `ownedSessions` and teardown drains on those.
+
+### P2: bash-guard hardening + PAT hygiene + tool auth
+
+- **Bash guard** (`bash-guard.ts`): newlines are now command separators
+  (multi-line payloads no longer hide behind line 1); command substitution is
+  rejected inside double quotes too; `/dev/tcp`+`/dev/udp` redirect targets
+  are blocked; redirect targets and arguments to file-reading commands
+  (cat/head/tail/grep/sed/awk/...) are checked against `safety.path_denylist`
+  (so `cat .env` is caught at the guard, not just the SDK Read tool);
+  interpreter inline-code flags (`sh -c`, `python -c`, `node -e`, ...) are
+  refused; nested-command hosts (`xargs`, `env`, `find -exec`) re-run the
+  guard on the command they host; shells (`sh`/`bash`/`zsh`/...) join the
+  default denylist tokens.
+- **PATs never touch disk and never reach workers**: the git askpass helper
+  now reads `$OAH_GH_TOKEN` from the child-process environment instead of
+  embedding the token in the script file; git error messages are scrubbed
+  with `redactSecrets` (raw + URL-encoded token, plus `https://user@` forms);
+  and `buildSdkEnv` filters TOKEN/SECRET/PASSWORD/API_KEY/CREDENTIAL-shaped
+  variables out of the worker SDK subprocess env (only `ANTHROPIC_API_KEY`
+  is deliberately passed through).
+- **`invokedBy` is REQUIRED on privileged tools**: `harness_cancel`,
+  `harness_resume`, and `harness_answer` used to skip the authorised-users
+  check entirely when `invokedBy` was omitted. It is now a required schema
+  parameter and an absent value is refused as unauthorised.
+
+### P3: lifecycle, state, and provider correctness
+
+- **Worktree lifecycle**: pending allocation ids get a random suffix
+  (`pending-<ts>-<hex8>`, collision-proof under concurrent starts); in-flight
+  allocations/reverts are registered in an `inFlightWorktrees` set that the
+  startup heal AND branch-reconcile refuse to reap; the heal recognises the
+  new id shape and `revert-*` scratch worktrees.
+- **`max_cycles` off-by-one fixed** (`loop.ts` `advance`): the
+  ship-on-revise gate fired at `cyclesRan >= maxCycles - 1`, so `max_cycles:
+  3` only ever ran 2 cycles. Now the configured count actually runs.
+- **Adversary diff tempfile is deleted** after the review (try/finally).
+- **State store**: `PRAGMA busy_timeout = 5000` (concurrent writers got
+  instant SQLITE_BUSY); recovery now also picks up `resumable` sessions;
+  thread reclaim RE-KEYS the old terminal row's `slack_thread` to
+  `retired:<id>:<thread>` instead of DELETEing it (the pr-watcher's record of
+  an open PR and the revise lineage survive); requested session budgets are
+  clamped to `session_hard_ceiling_usd` with an audit event.
+- **Provider correctness**: `createPullRequest` accepts the resolved
+  `apiBase` (GitHub Enterprise routing) at both PR-create sites; the
+  pr-watcher resolves tokens via the shared vault-first + env-fallback
+  `resolveGitToken` (vault-less Staging could never see merges); GitLab repos
+  get an explicit PREFLIGHT note that MR creation isn't implemented yet
+  (issue #25) instead of burning the budget and failing at the final step;
+  deploy-repair no longer auto-reverts on a `pending`/`unavailable` deploy
+  status -- it stops with a new `unverified` outcome and asks for manual
+  verification (only a definitive ERROR reverts).
+- **Manifest/schema drift**: `openclaw.plugin.json` + `config.schema.json`
+  catch up with `config.ts` (`models.price_overrides`, `models.auth`,
+  top-level `logging`, and the beta.41-55 `loop.*` keys);
+  `harness_health` no longer fails the Slack-channel check when
+  `slack.listener_enabled` is false (agent-orchestrated deployments).
+
+### Tests
+
+613 pass (was 611 pre-review). Fail-open "graceful skip" tests flipped to
+assert fail-closed; new guards for the `pr_state` merged/closed distinction,
+the missing-`invokedBy` refusal, and the `max_cycles` off-by-one (revise at
+`cyclesRan == maxCycles - 1` must keep executing).
+
+## [0.1.0-beta.56] -- 2026-07-21 (not tagged separately; shipped in the beta.57 release)
+
+The five P0 fixes from the full-code review. Two of these are the structural
+convergence bugs behind most of the beta.44-55 pathologies; the other three
+directly affect the beta.55 human-in-the-loop test path.
+
+### 1. Revise cycles now carry the adversary's findings to the workers (P0-1)
+
+Root cause of the non-converging revise loop: on an `adversary_revise`
+verdict, `loop.ts` re-dispatched the SAME sub-task prompts verbatim --
+`runWorker({brief, subTask, plan})` carried no findings, so cycle 2 was
+cycle 1 replayed against a moved base SHA. The worker either did nothing
+(the beta.35 "revise no-op" carve-out) or redid identical work; the
+immortal-finding treadmill (beta.44/49) and the refusal spiral trace here.
+
+New `buildReviseDispatchHint(review)` (exported from `loop.ts`) renders the
+previous cycle's verdict, summary, and non-info findings into a dispatch
+hint passed to every worker on cycle > 1, with an explicit "if none of these
+findings apply to this sub-task, make NO changes and end your turn" clause
+so the beta.35 legal-no-op path is preserved. On an env-wait retry the
+revise hint composes with the corrective hint.
+
+### 2. The adversary now sees the brief it reviews against (P0-2)
+
+`index.ts` passed only `brief.title` as `crystallisedPrompt`, and
+`buildAdversarySystemPrompt` never included even that in the prompt. The
+adversary judged "spec fidelity" from the lead's checklist paraphrase alone,
+inflating spurious `revise` verdicts (which then fed bug #1). The prompt now
+contains a "## The brief (SOURCE OF TRUTH for spec fidelity)" section with
+title, motivation, acceptance criteria, and out-of-scope items.
+
+### 3. harness_answer disposer leak fixed (P0-3)
+
+`registration.ts` wrapped `harness_answer` in `toDispose(...)` but discarded
+the result instead of `disposers.push(...)`-ing it (15 pushes vs 16
+registrations). On every plugin re-register the tool leaked: never
+unregistered on teardown, duplicate-registered on the next register. Found
+before the first live test of the beta.55 clarification flow, which this
+tool is the resume path for.
+
+### 4. beta.33 sanitiser hole closed: absent contractScope is now coerced (P0-4)
+
+`sanitizeRemoteSubTasks` only rewrote an EXPLICIT non-local `contractScope`.
+A sub-task with no contractScope and no explicit `verify` fell through to
+regex inference, which can still infer `branch_pushed`/`pr_opened` from
+ambient wording ("commit the change so it can be pushed") -- contract kinds a
+worker structurally cannot satisfy (the known-fatal beta.33 class). Workers
+are local-only by architecture, so the sanitiser now forces
+`contractScope: 'local'` on every sub-task, absent or not.
+
+### 5. Worker-path verification removed; the loop is the single verification site (P0-5)
+
+`sonnet-worker.ts` ran its own `verifySubTaskOutput` on explicit `verify`
+contracts, duplicating the loop-path verification with two defects the loop
+path doesn't have:
+
+- It computed `defaultBranch` as `""` unless a `branch_pushed` entry carried
+  an explicit branch, so provider probes ran with an EMPTY branch:
+  `GET /pulls?head=owner:` matches ALL PRs (false PASS on `pr_opened`/
+  `pr_state`); `?ref=` falls back to the repo default branch (`file_pushed`
+  checked main, not the session branch). The loop path passes `plan.branch`.
+- By forcing `status='failed'` before the loop saw the result, it took
+  loop.ts's `result.status !== "completed"` early-exit and BYPASSED the
+  entire beta.53/54/55 retry / refusal / clarification machinery whenever
+  the lead emitted an explicit non-empty `verify`.
+
+The worker-path probe factory in `index.ts` (~250 lines, a drifting
+copy-paste of the loop-path factory) is deleted with it. `WorkerResult`
+loses the now-meaningless `verification`/`wastedSpend` fields.
+
+### Tests
+
+- New `tests/beta56-p0-fixes.test.mjs`: revise-hint rendering + loop-level
+  integration (cycle 2 dispatch carries the findings), adversary prompt
+  contains the brief, disposer-count parity in registration.ts, absent
+  contractScope coerced to local with no remote kinds inferred, worker path
+  free of verification.
+- `tests/beta51-path-match-sweep.test.mjs` updated: the structural-matching
+  assertions now expect exactly ONE probe factory (the loop path).
+
 ## [0.1.0-beta.43] -- 2026-07-19
 
 Close the last two unbounded SDK awaits. beta.42 bounded the *worker* await;

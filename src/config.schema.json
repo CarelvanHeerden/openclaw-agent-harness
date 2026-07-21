@@ -87,6 +87,19 @@
         "worker": { "type": "string" },
         "adversary": { "type": "string" },
         "classifier": { "type": "string" },
+        "price_overrides": {
+          "type": "object",
+          "description": "beta.57 schema fix (drift): per-model price overrides for cost estimation, keyed by model id. Values are USD per million tokens.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["input", "output"],
+            "properties": {
+              "input": { "type": "number", "minimum": 0 },
+              "output": { "type": "number", "minimum": 0 }
+            }
+          }
+        },
         "auth": {
           "type": "object",
           "description": "beta.4+ addition, beta.24 schema fix. Anthropic API key resolution: vault-first, then env fallback. Both fields optional; when omitted, harness relies solely on env (ANTHROPIC_API_KEY) or SDK default behaviour.",
@@ -112,8 +125,14 @@
         "adversarial_pass_ends_early": { "type": "boolean", "default": true },
         "worker_timeout_seconds": { "type": "integer", "minimum": 30, "maximum": 21600, "default": 1800 },
         "adversary_timeout_seconds": { "type": "integer", "minimum": 30, "maximum": 7200, "default": 900 },
+        "lead_timeout_seconds": { "type": "integer", "minimum": 30, "maximum": 7200, "default": 900 },
         "session_hard_timeout_seconds": { "type": "integer", "minimum": 300, "maximum": 86400, "default": 7200 },
-        "subtask_concurrency": { "type": "integer", "minimum": 1, "maximum": 8, "default": 1 }
+        "subtask_concurrency": { "type": "integer", "minimum": 1, "maximum": 8, "default": 1 },
+        "stuck_loop_seconds": { "type": "integer", "minimum": 300, "maximum": 86400, "default": 2700 },
+        "teardown_drain_seconds": { "type": "integer", "minimum": 30, "maximum": 86400, "default": 3600 },
+        "stall_watchdog_seconds": { "type": "integer", "minimum": 10, "maximum": 3600, "default": 90 },
+        "env_wait_retry_enabled": { "type": "boolean", "default": true },
+        "clarification_escalation_enabled": { "type": "boolean", "default": true }
       }
     },
     "vercel": {
