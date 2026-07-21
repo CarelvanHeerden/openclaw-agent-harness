@@ -893,14 +893,118 @@ export async function runAdversarySdk(params: {
  * without waiting for a release.
  */
 export const PRICES: Record<string, { input: number; output: number }> = {
+  // opus-tier (most capable, most expensive)
   "claude-fable-5": { input: 10, output: 50 },
+  "claude-mythos-5": { input: 10, output: 50 },
+  // beta.61: aliases some deployments use for the opus-tier worker. Without
+  // these, a config that set worker to a bare "opus"/"claude-opus-*" string
+  // fell through to the sonnet fallback and was priced ~5x too low -- the
+  // dominant half of the b60 smoke's ~15x cost under-estimate (worker was
+  // swapped sonnet->opus, but the table had no opus key so the projection
+  // stayed at sonnet rates and the >20% drift warning silently never fired).
+  "claude-opus-4-8": { input: 15, output: 75 },
+  "claude-opus-4-6": { input: 15, output: 75 },
+  opus: { input: 15, output: 75 },
+  // sonnet-tier
   "claude-sonnet-5": { input: 3, output: 15 },
+  "claude-sonnet-4-6": { input: 3, output: 15 },
+  sonnet: { input: 3, output: 15 },
+  // haiku-tier
   "claude-haiku-4-5": { input: 1, output: 5 },
+  haiku: { input: 1, output: 5 },
 };
+
+/**
+ * beta.61: the price used when a model id is NOT in the table (and not
+ * overridden). Previously this silently fell back to sonnet -- which
+ * UNDER-estimates for a more expensive model and lets a run overshoot its
+ * budget (exactly the b60 opus-priced-as-sonnet miss). A budget projection
+ * must FAIL SAFE: an unknown model is assumed to be the MOST EXPENSIVE known
+ * tier, so we over-reserve rather than under-reserve. Combined with the
+ * checkPriceDrift unknown-model warning, an operator sees the mispricing on
+ * run 1 and can add an exact price_override.
+ */
+export function mostExpensivePrice(table: Record<string, { input: number; output: number }>): { input: number; output: number } {
+  let max = { input: 0, output: 0 };
+  for (const p of Object.values(table)) {
+    // rank by output price (the dominant term in the 20/80 split)
+    if (p.output > max.output || (p.output === max.output && p.input > max.input)) max = p;
+  }
+  return max.output > 0 ? max : { input: 15, output: 75 };
+}
+
+/** beta.61: true when a model id has neither a table entry nor an override. */
+export function isUnknownModel(model: string, overrides?: Record<string, { input: number; output: number }>): boolean {
+  const table = { ...PRICES, ...(overrides ?? {}) };
+  return !table[model];
+}
+
+/**
+ * beta.61: fetch the list of live model ids from the Anthropic Models API
+ * (GET /v1/models). IMPORTANT LIMITATION: Anthropic exposes NO pricing API --
+ * /v1/models returns model IDs and display names only, NOT per-token prices
+ * (pricing lives in the docs, not the API). So this canNOT auto-refresh the
+ * PRICES table with real numbers; it can only tell us WHICH model ids exist,
+ * so the harness can warn when a configured model is (a) not in our price
+ * table and (b) either a real live model we simply haven't priced, or a
+ * renamed/deprecated id. Best-effort: any network/auth error returns null and
+ * the caller degrades to the static table. Never throws.
+ */
+export async function fetchLiveModelIds(apiKey: string, opts?: { fetchImpl?: typeof fetch; timeoutMs?: number }): Promise<string[] | null> {
+  if (!apiKey) return null;
+  const f = opts?.fetchImpl ?? fetch;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), opts?.timeoutMs ?? 8000);
+  try {
+    const res = await f("https://api.anthropic.com/v1/models?limit=1000", {
+      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data?: Array<{ id?: string }> };
+    const ids = (body.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === "string");
+    return ids;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * beta.61: assess pricing health of the CONFIGURED models. Returns per-model
+ * flags: `unpriced` (not in the price table/overrides -> projections fall back
+ * to the most-expensive tier), and `notLive` (a live model list was fetched and
+ * this id was absent -> possibly renamed/deprecated). `liveIds` null means the
+ * Models API was unreachable, so `notLive` is left undefined (unknown, not
+ * false). Pure/deterministic given inputs -- no network here (fetch is done by
+ * fetchLiveModelIds and passed in) so it is unit-testable.
+ */
+export function assessModelPricingHealth(
+  configuredModels: string[],
+  liveIds: string[] | null,
+  overrides?: Record<string, { input: number; output: number }>,
+): Array<{ model: string; unpriced: boolean; notLive?: boolean }> {
+  const seen = new Set<string>();
+  const out: Array<{ model: string; unpriced: boolean; notLive?: boolean }> = [];
+  for (const m of configuredModels) {
+    if (!m || seen.has(m)) continue;
+    seen.add(m);
+    const entry: { model: string; unpriced: boolean; notLive?: boolean } = {
+      model: m,
+      unpriced: isUnknownModel(m, overrides),
+    };
+    if (liveIds) entry.notLive = !liveIds.includes(m);
+    out.push(entry);
+  }
+  return out;
+}
 
 export function estimateSubTaskCost(model: string, tokens: number, overrides?: Record<string, { input: number; output: number }>): number {
   const table = { ...PRICES, ...(overrides ?? {}) };
-  const p = table[model] ?? table["claude-sonnet-5"]!;
+  // beta.61: fail-safe fallback -- unknown model is priced at the MOST
+  // EXPENSIVE known tier (over-reserve), not silently at sonnet (under-reserve).
+  const p = table[model] ?? mostExpensivePrice(table);
   // Rough 20/80 in/out split for planning purposes
   return (tokens * 0.2 * p.input + tokens * 0.8 * p.output) / 1_000_000;
 }
@@ -911,10 +1015,20 @@ export function estimateSubTaskCost(model: string, tokens: number, overrides?: R
  * Callers should log the warning (with model + actual + estimate) so we
  * catch stale price tables in one run instead of over billing cycles.
  */
-export function checkPriceDrift(model: string, actualCostUsd: number, tokensIn: number, tokensOut: number, overrides?: Record<string, { input: number; output: number }>): { drift: number; warn: boolean; estimated: number } {
+export function checkPriceDrift(model: string, actualCostUsd: number, tokensIn: number, tokensOut: number, overrides?: Record<string, { input: number; output: number }>): { drift: number; warn: boolean; estimated: number; unknownModel?: boolean } {
   const table = { ...PRICES, ...(overrides ?? {}) };
   const p = table[model];
-  if (!p) return { drift: 0, warn: false, estimated: 0 };
+  if (!p) {
+    // beta.61: an unknown model is itself a warn condition. Previously this
+    // silently no-op'd (warn:false) -- which is exactly why the b60 opus
+    // worker (no table entry) never surfaced its ~5x mispricing. Report the
+    // estimate computed at the fail-safe most-expensive price so the operator
+    // sees BOTH that the model is unpriced AND how far off the projection was.
+    const fallback = mostExpensivePrice(table);
+    const estimated = (tokensIn * fallback.input + tokensOut * fallback.output) / 1_000_000;
+    const drift = estimated > 0 && actualCostUsd > 0 ? Math.abs(actualCostUsd - estimated) / estimated : 0;
+    return { drift, warn: true, estimated, unknownModel: true };
+  }
   const estimated = (tokensIn * p.input + tokensOut * p.output) / 1_000_000;
   if (estimated <= 0 || actualCostUsd <= 0) return { drift: 0, warn: false, estimated };
   const drift = Math.abs(actualCostUsd - estimated) / estimated;
