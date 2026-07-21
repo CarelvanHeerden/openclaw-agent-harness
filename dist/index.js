@@ -1637,6 +1637,21 @@ export async function bootstrapHarnessAsync(runtime, api) {
                 api.logger.warn("[harness] worktree-heal: failed to resolve live session worktrees", { err: String(err) });
             }
         }
+        // beta.55 (B2): a session paused in `awaiting_clarification` is NOT running
+        // (its loop returned), so runningSessionIds() misses it -- but its worktree
+        // MUST survive so harness_answer can re-drive in place. Add those paths to
+        // the protect set explicitly.
+        try {
+            const pausedRows = state.db
+                .prepare(`SELECT worktree_path FROM sessions WHERE status = 'awaiting_clarification'`)
+                .all();
+            for (const r of pausedRows)
+                if (r.worktree_path && r.worktree_path.trim())
+                    protectedWorktreePaths.push(r.worktree_path);
+        }
+        catch (err) {
+            api.logger.warn("[harness] worktree-heal: failed to resolve awaiting_clarification worktrees", { err: String(err) });
+        }
         const { statSync } = await import("node:fs");
         const healResult = await healOrphanedWorktrees(state, {
             listWorktreeDirs: () => git.listWorktreeDirs(),

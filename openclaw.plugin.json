@@ -20,6 +20,7 @@
       "harness_upload_logs",
       "harness_cancel",
       "harness_resume",
+      "harness_answer",
       "harness_retention_prune",
       "harness_bootstrap_test_repo",
       "harness_merge_pr",
@@ -247,6 +248,11 @@
             "type": "boolean",
             "default": true,
             "description": "beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn 'Monitor event' (env-wait hallucination) and made no committed change, re-invoke the sub-task ONCE with corrective context (branched on whether it wrote-but-didn't-commit) instead of failing the run. Set false to disable the retry; the failure is still tagged loop.worker_env_wait_hallucination."
+          },
+          "clarification_escalation_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.55 (B2): when a worker refuses/confabulates a sub-task even after the beta.54 async-coord retry, pause the session in 'awaiting_clarification' (persisting the worker's question + paused seq, preserving the worktree) and surface it via harness_progress for a human to answer with harness_answer, instead of hard-failing the run. Set false to keep the terminal-fail behaviour."
           }
         }
       },

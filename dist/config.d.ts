@@ -180,6 +180,15 @@ export interface LoopConfig {
      * failure as loop.worker_env_wait_hallucination).
      */
     env_wait_retry_enabled?: boolean;
+    /**
+     * beta.55 (B2): when a worker refuses/confabulates a sub-task even after the
+     * beta.54 async-coord retry, instead of hard-failing the whole run, pause the
+     * session in `awaiting_clarification` (persisting the worker's own question/
+     * reason + the paused seq) and surface it via harness_progress for a human to
+     * answer with harness_answer. Default true. Set false to keep the old
+     * terminal-fail behaviour.
+     */
+    clarification_escalation_enabled?: boolean;
 }
 export interface VercelConfig {
     enabled: boolean;

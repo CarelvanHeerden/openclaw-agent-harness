@@ -108,7 +108,7 @@ test("registration: registers 13 tools",
     registerHarnessTools(api, runtime);
     assert.deepEqual(
       [...tools.keys()].sort(),
-      ["harness_bootstrap_test_repo", "harness_cancel", "harness_health", "harness_list_revisable", "harness_merge_pr", "harness_progress", "harness_resume", "harness_retention_prune", "harness_revise", "harness_run", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
+      ["harness_answer", "harness_bootstrap_test_repo", "harness_cancel", "harness_health", "harness_list_revisable", "harness_merge_pr", "harness_progress", "harness_resume", "harness_retention_prune", "harness_revise", "harness_run", "harness_session_get", "harness_start_session", "harness_status", "harness_telemetry", "harness_upload_logs"],
     );
   });
 
