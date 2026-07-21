@@ -89,7 +89,8 @@ test("beta52/53: loop.ts emits the env-wait hallucination tag distinct from work
   const src = S("src/orchestrator/loop.ts");
   // beta.53 renamed detection to the exported predicate + renamed the event
   // from loop.worker_incorrect_protocol_assumption -> loop.worker_env_wait_hallucination.
-  assert.match(src, /looksLikeProtocolAssumption\s*=\s*\n?\s*looksLikeRefusal && matchesEnvWaitHallucination\(refusalText\)/);
+  // beta.54 broadened the predicate to matchesAsyncCoordConfabulation.
+  assert.match(src, /looksLikeProtocolAssumption\s*=\s*\n?\s*looksLikeRefusal && matchesAsyncCoordConfabulation\(refusalText\)/);
   assert.match(src, /"loop\.worker_env_wait_hallucination"/);
   // headline/summary distinguishes the env-wait case
   assert.match(src, /worker awaited a non-existent mid-turn event and did no work/);

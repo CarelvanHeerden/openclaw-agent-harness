@@ -54,6 +54,8 @@ export type LoopOutcome = {
 };
 /** beta.53: true when the worker awaited a non-existent env/monitor event. */
 export declare function matchesEnvWaitHallucination(text: string): boolean;
+/** beta.54: true when the worker confabulated an async coordination primitive. */
+export declare function matchesAsyncCoordConfabulation(text: string): boolean;
 /** Test/diagnostic helper: clear any armed watchdog for a session. */
 export declare function clearStallWatchdog(sessionId: string): void;
 /** True if a loop for this session is currently running in this process. */
