@@ -129,6 +129,27 @@ export function matchesAsyncCoordConfabulation(text) {
  */
 const ENV_WAIT_RETRYABLE_KINDS = new Set(["commit_made", "file_committed", "file_written"]);
 /**
+ * beta.58 (Bug B): distinguish a GOOD-FAITH premise-contradicted skip from a
+ * bad-faith refusal. `loop.worker_refusal` conflated two opposite semantics:
+ *  - beta.53 seq-3: worker hallucinated a background watcher, wrote nothing
+ *    (bad-faith, genuine refusal).
+ *  - beta.54/55 seq-2: worker correctly determined a CONDITIONAL PREMISE was
+ *    contradicted per the brief's own rules and produced structured evidence
+ *    (good-faith, a correct no-op).
+ * Both produced identical `loop.worker_refusal` events. The discriminator
+ * (Staging's pipe marker): the worker's explanation references a contradicted
+ * premise / invalid finding. This is DIAGNOSTIC ONLY -- it does not change
+ * pass/fail (the escalation-to-clarification path is unchanged); it just emits
+ * a distinct, greppable audit event so operators can tell the two apart.
+ */
+const INVALID_PREMISE_RE = /\b(premise\s+(is\s+)?contradict|contradict\w*\s+(the\s+)?premise|premise\s+(is\s+)?(false|invalid|not\s+met|does\s+not\s+hold)|finding\s+(is\s+)?invalid|invalid\s*[:\-]?\s*premise|premise\s+not\s+satisfied|conditional\s+premise)/i;
+export function matchesInvalidPremiseSkip(text) {
+    const t = (text ?? "").replace(/\s+/g, " ");
+    if (!t)
+        return false;
+    return INVALID_PREMISE_RE.test(t);
+}
+/**
  * beta.55 (B3): detect that a worker PASSED verification but deviated from the
  * literal sub-task wording -- a judgment call it made and documented (the #858
  * sub-task-2 grc case: "I left the non-empty grc/ dirs in place because deleting
@@ -517,7 +538,7 @@ export class OrchestratorLoop {
             // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
             // instead of hard-failing. Carries the ONE question to surface + the
             // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
-            const clarify = { question: null, seq: -1 };
+            const clarify = { question: null, seq: -1, subtask: null };
             const runOne = async (st) => {
                 // beta.53 (P1b): at most ONE env-wait retry per sub-task.
                 let envWaitRetried = false;
@@ -910,7 +931,13 @@ export class OrchestratorLoop {
                         }
                         if (looksLikeRefusal) {
                             const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
-                            this.deps.state.audit("loop.worker_refusal", {
+                            // beta.58 (Bug B): split the audit event by semantics. A refusal
+                            // whose explanation references a contradicted/invalid premise is
+                            // a GOOD-FAITH skip, not a bad-faith refusal -- emit a distinct
+                            // event so breakdowns are diagnosable without reading the prose.
+                            // (Pass/fail is unchanged: both still escalate to clarification.)
+                            const invalidPremiseSkip = matchesInvalidPremiseSkip(refusalText) && failedResults.some((x) => x.kind === "commit_made");
+                            this.deps.state.audit(invalidPremiseSkip ? "loop.worker_skipped_invalid_premise" : "loop.worker_refusal", {
                                 sessionId,
                                 seq: st.seq,
                                 cycle,
@@ -919,9 +946,9 @@ export class OrchestratorLoop {
                                 failedKinds: failedResults.map((x) => x.kind),
                                 summary: verification.summary,
                             }, sessionId);
-                            this.deps.logger.warn("[loop] worker made a reasoned refusal (zero side-effects + explanation)", {
-                                sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200),
-                            });
+                            this.deps.logger.warn(invalidPremiseSkip
+                                ? "[loop] worker skipped a sub-task on a contradicted premise (good-faith, structured)"
+                                : "[loop] worker made a reasoned refusal (zero side-effects + explanation)", { sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200) });
                         }
                         // beta.48 (C2): fold the refusal first-line into the persisted
                         // summary so harness_progress.headline and the terminal update
@@ -955,6 +982,10 @@ export class OrchestratorLoop {
                                 `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ${firstLine.slice(0, 500)}. ` +
                                     `How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, or "abort".)`;
                             clarify.seq = st.seq;
+                            // beta.58 (D1/D2): capture the paused sub-task's title+intent so a
+                            // `skip` answer keys the prohibition by CONTENT (survives a re-plan's
+                            // seq renumbering) and can strip the owning finding line.
+                            clarify.subtask = { title: st.title, intent: st.intent };
                         }
                         return;
                     }
@@ -1027,7 +1058,7 @@ export class OrchestratorLoop {
                 // if we captured a clarification request we pause instead of dying, so
                 // a human can unblock the exact sub-task rather than restart the run.
                 if (clarify.question) {
-                    return this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost);
+                    return this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
                 }
                 if (failed.err === "user_abort_reaction")
                     return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
@@ -1341,9 +1372,9 @@ export class OrchestratorLoop {
      * `awaiting_clarification` as resumable, so a stray re-register or restart
      * won't reap the worktree or auto-fail the pause.
      */
-    finaliseAwaitingClarification(sessionId, question, seq, cycles, totalCostUsd) {
+    finaliseAwaitingClarification(sessionId, question, seq, cycles, totalCostUsd, subtask) {
         this.setStatus(sessionId, "awaiting_clarification");
-        this.deps.state.db.prepare(`UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, updated_at = ? WHERE id = ?`).run(question, seq, Date.now(), sessionId);
+        this.deps.state.db.prepare(`UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, clarification_subtask = ?, updated_at = ? WHERE id = ?`).run(question, seq, subtask ? JSON.stringify(subtask) : null, Date.now(), sessionId);
         this.deps.state.audit("loop.clarification_requested", { sessionId, seq, question: question.slice(0, 1000), cycle: cycles }, sessionId);
         this.deps.logger.warn("[loop] paused for clarification (awaiting_clarification); worktree preserved", {
             sessionId, seq, question: question.slice(0, 200),

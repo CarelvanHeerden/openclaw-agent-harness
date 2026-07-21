@@ -76,6 +76,10 @@ export function openStateStoreSync(pathHint) {
         { table: "sessions", column: "clarification_question", type: "TEXT" }, // the ONE question surfaced to the human
         { table: "sessions", column: "clarification_seq", type: "INTEGER" }, // sub-task seq the loop paused at
         { table: "sessions", column: "clarification_answer", type: "TEXT" }, // the human's answer, folded into the brief on resume
+        // beta.58 (D1/D2): the paused sub-task's title+intent, captured at pause so a
+        // `skip` answer can key the prohibition by CONTENT (not seq number, which a
+        // full re-plan renumbers away) and strip the owning finding line from the brief.
+        { table: "sessions", column: "clarification_subtask", type: "TEXT" }, // JSON { title, intent } of the paused sub-task
     ];
     for (const m of additiveMigrations) {
         try {

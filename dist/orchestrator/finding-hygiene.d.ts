@@ -29,4 +29,19 @@ export declare const CONDITIONAL_FINDING_RE: RegExp;
 export declare function findingText(f: unknown): string;
 /** True when the finding's action depends on an unresolved repo-state premise. */
 export declare function isConditionalFinding(f: unknown): boolean;
+/**
+ * Drop the numbered finding line(s) from `lines` whose content strongly
+ * overlaps the paused sub-task's title/intent (the finding that sub-task was
+ * addressing). Conservative: ONLY numbered finding-shaped lines are eligible
+ * (structural lines like "Address each adversary finding..." or original
+ * acceptance criteria are never touched), and a line is dropped only when the
+ * distinctive-token overlap clears a threshold. A false NEGATIVE (nothing
+ * stripped) is safe -- the content-keyed outOfScope prohibition still tells the
+ * lead not to do the work; a false POSITIVE would silently drop a real finding,
+ * so we err toward keeping.
+ */
+export declare function removeOwningFindingLines(lines: string[], pausedTitle: string, pausedIntent: string): {
+    kept: string[];
+    dropped: string[];
+};
 //# sourceMappingURL=finding-hygiene.d.ts.map
