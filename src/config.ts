@@ -177,6 +177,14 @@ export interface LoopConfig {
    * longer than a normal event gap. Default 90s.
    */
   stall_watchdog_seconds: number;
+  /**
+   * beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn
+   * "Monitor event" (env-wait hallucination) and made no committed change,
+   * re-invoke the sub-task ONCE with corrective context instead of failing the
+   * whole run. Default true. Set false to disable the retry (still tags the
+   * failure as loop.worker_env_wait_hallucination).
+   */
+  env_wait_retry_enabled?: boolean;
 }
 
 export interface VercelConfig {
@@ -386,6 +394,7 @@ const DEFAULTS: HarnessConfig = {
     stuck_loop_seconds: 2700,
     teardown_drain_seconds: 3600,
     stall_watchdog_seconds: 90,
+    env_wait_retry_enabled: true,
   },
   vercel: {
     api_key_env: "VERCEL_TOKEN",

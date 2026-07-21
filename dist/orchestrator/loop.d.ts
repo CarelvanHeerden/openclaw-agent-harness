@@ -52,6 +52,8 @@ export type LoopOutcome = {
     cycles: number;
     totalCostUsd: number;
 };
+/** beta.53: true when the worker awaited a non-existent env/monitor event. */
+export declare function matchesEnvWaitHallucination(text: string): boolean;
 /** Test/diagnostic helper: clear any armed watchdog for a session. */
 export declare function clearStallWatchdog(sessionId: string): void;
 /** True if a loop for this session is currently running in this process. */
@@ -102,6 +104,8 @@ export interface OrchestratorDeps {
         plan: LeadPlan;
         resumeSessionId?: string;
         requester?: string;
+        /** beta.53 (P1b): corrective dispatch context appended on a retry. */
+        dispatchHint?: string;
     }) => Promise<WorkerResult>;
     runAdversary: (params: {
         brief: CrystallisedBrief;

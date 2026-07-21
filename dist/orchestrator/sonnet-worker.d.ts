@@ -33,6 +33,15 @@ export interface WorkerResult {
      */
     finalMessage?: string;
     /**
+     * beta.53 (P2): working-tree files the worker touched but did NOT commit
+     * (from `git status --porcelain`). Empty when the working tree is clean.
+     * Distinguishes a partial-work turn ("wrote X, never committed") from a
+     * genuine zero-work turn -- the beta.52 #858 seq-5 refusal wrote a 1145-byte
+     * edit but `filesChanged` (committed-only) was [], mislabelling it as no-op.
+     * The retry-with-context logic (P1b) branches on whether this is non-empty.
+     */
+    uncommittedFiles?: string[];
+    /**
      * Result of post-execution observable-side-effect verification (beta.7
      * fix #1). Undefined when the sub-task declared no `verify` contracts.
      * When present and `!ok`, `status` is forced to `failed` and `costUsd` is
@@ -101,6 +110,12 @@ export interface WorkerDeps {
      */
     gitListCommittedFiles?: (worktreePath: string, base: string) => Promise<string[]>;
     /**
+     * beta.53 (P2): working-tree status (`git status --porcelain`) to capture
+     * uncommitted/untracked files the worker wrote but did not commit. Optional
+     * (best-effort); when absent, uncommittedFiles is left undefined.
+     */
+    gitStatusPorcelain?: (worktreePath: string) => Promise<string[]>;
+    /**
      * canUseTool guard factory. The orchestrator builds one per session
      * with the bash guard + path denylist wired in.
      */
@@ -148,6 +163,12 @@ export declare function runWorker(worktreePath: string, brief: {
 }, subTask: LeadPlanSubTask, commitIdentity: {
     name: string;
     email: string;
-}, deps: WorkerDeps, resumeSessionId?: string): Promise<WorkerResult>;
+}, deps: WorkerDeps, resumeSessionId?: string, 
+/**
+ * beta.53 (P1b): extra corrective context appended to the dispatch on a
+ * retry (e.g. "your prior turn wrote X but never committed -- just commit
+ * it; there is no Monitor event"). Undefined on the first attempt.
+ */
+dispatchHint?: string): Promise<WorkerResult>;
 export {};
 //# sourceMappingURL=sonnet-worker.d.ts.map

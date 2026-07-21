@@ -76,9 +76,16 @@ export function pickConceptsForSubTask(concepts, subTask) {
         return files.some((f) => f === c.path || f.startsWith(c.path + "/") || (c.path ?? "").startsWith(f + "/"));
     });
 }
-export async function runWorker(worktreePath, brief, subTask, commitIdentity, deps, resumeSessionId) {
+export async function runWorker(worktreePath, brief, subTask, commitIdentity, deps, resumeSessionId, 
+/**
+ * beta.53 (P1b): extra corrective context appended to the dispatch on a
+ * retry (e.g. "your prior turn wrote X but never committed -- just commit
+ * it; there is no Monitor event"). Undefined on the first attempt.
+ */
+dispatchHint) {
     const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
-    const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.`;
+    const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
+        (dispatchHint ? `\n\n${dispatchHint}` : "");
     const subTaskStartMs = Date.now();
     const baseSha = await deps.gitBaseSha(worktreePath);
     const canUseTool = deps.buildCanUseTool();
@@ -136,6 +143,20 @@ export async function runWorker(worktreePath, brief, subTask, commitIdentity, de
             // HEAD lookup best-effort; leave commitSha as-is on failure.
         }
     }
+    // beta.53 (P2): capture uncommitted working-tree changes BEFORE building the
+    // result, so a wrote-but-didn't-commit turn is visible (not mislabelled as
+    // zero side-effects). Only meaningful when nothing was committed this turn.
+    let uncommittedFiles;
+    if (deps.gitStatusPorcelain) {
+        try {
+            const dirty = await deps.gitStatusPorcelain(worktreePath);
+            if (dirty.length > 0)
+                uncommittedFiles = dirty;
+        }
+        catch {
+            // best-effort; leave undefined on failure.
+        }
+    }
     // SDK stop reason gives a provisional status.
     let status = sdkResult.stopReason === "timeout"
         ? "timeout"
@@ -175,6 +196,7 @@ export async function runWorker(worktreePath, brief, subTask, commitIdentity, de
         reason: verification && !verification.ok ? `verification_failed: ${verification.summary}` : sdkResult.stopReason,
         logsExcerpt: sdkResult.logsExcerpt,
         finalMessage: sdkResult.finalMessage,
+        uncommittedFiles,
         verification,
         wastedSpend,
     };

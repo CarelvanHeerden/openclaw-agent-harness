@@ -56,6 +56,7 @@ const DEFAULTS = {
         stuck_loop_seconds: 2700,
         teardown_drain_seconds: 3600,
         stall_watchdog_seconds: 90,
+        env_wait_retry_enabled: true,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",

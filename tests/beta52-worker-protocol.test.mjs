@@ -61,45 +61,36 @@ test("beta52: worker prompt discourages off-plan self-verification", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Part 2: the diagnostic regex (module-scope in loop.ts). We reconstruct it
-// from the source to test behavior without exporting it.
+// Part 2: the diagnostic predicate. beta.52 shipped a module-scope regex; beta.53
+// replaced it with the EXPORTED `matchesEnvWaitHallucination` (sentence-spanning
+// + env-word gate). We test the live exported predicate now (the beta.52 single-
+// clause regex is kept only as a @deprecated constant; its exhaustive behavior
+// is covered in tests/beta53-env-wait-retry.test.mjs).
 // ---------------------------------------------------------------------------
-function protocolAssumptionRe() {
-  const src = S("src/orchestrator/loop.ts");
-  const m = src.match(/const WORKER_PROTOCOL_ASSUMPTION_RE\s*=\s*(\/.*\/[a-z]*);/s);
-  assert.ok(m, "WORKER_PROTOCOL_ASSUMPTION_RE must be defined at module scope in loop.ts");
-  // eslint-disable-next-line no-eval
-  return eval(m[1]);
-}
+const { matchesEnvWaitHallucination } = await import("../dist/orchestrator/loop.js");
 
-test("beta52: regex MATCHES the exact fc64d8ea hallucination", () => {
-  const re = protocolAssumptionRe();
-  assert.equal(re.test("The install is still completing. I'll await the Monitor event signaling tsc is ready rather than polling further."), true);
+test("beta52: predicate MATCHES the exact fc64d8ea hallucination", () => {
+  assert.equal(matchesEnvWaitHallucination("The install is still completing. I'll await the Monitor event signaling tsc is ready rather than polling further."), true);
 });
 
-test("beta52: regex matches other await-nonexistent-event phrasings", () => {
-  const re = protocolAssumptionRe();
-  assert.equal(re.test("Waiting for the build to complete before continuing."), true);
-  assert.equal(re.test("I'll poll for the install ready signal."), true);
-});
-
-test("beta52: regex does NOT match genuine reasoned refusals (no false positives)", () => {
-  const re = protocolAssumptionRe();
+test("beta52: predicate does NOT match genuine reasoned refusals (no false positives)", () => {
   // the beta.48 grc-dir refusal
-  assert.equal(re.test("These directories are NOT empty — they contain ~90 lib files. Deleting them would destroy unrelated code, so I correctly left them in place."), false);
+  assert.equal(matchesEnvWaitHallucination("These directories are NOT empty — they contain ~90 lib files. Deleting them would destroy unrelated code, so I correctly left them in place."), false);
   // the finding-premise refusal
-  assert.equal(re.test("I verified the finding-10 premise against the repo: the route uses governance-risk. The premise holds, so the move is correct."), false);
+  assert.equal(matchesEnvWaitHallucination("I verified the finding-10 premise against the repo: the route uses governance-risk. The premise holds, so the move is correct."), false);
   // a plain completion message
-  assert.equal(re.test("Refactored the page to consume the shared module and committed locally."), false);
+  assert.equal(matchesEnvWaitHallucination("Refactored the page to consume the shared module and committed locally."), false);
 });
 
 // ---------------------------------------------------------------------------
 // Part 2 wiring: loop.ts tags + audits the protocol-assumption case distinctly
 // ---------------------------------------------------------------------------
-test("beta52: loop.ts emits loop.worker_incorrect_protocol_assumption distinct from worker_refusal", () => {
+test("beta52/53: loop.ts emits the env-wait hallucination tag distinct from worker_refusal", () => {
   const src = S("src/orchestrator/loop.ts");
-  assert.match(src, /looksLikeProtocolAssumption\s*=\s*\n?\s*looksLikeRefusal && WORKER_PROTOCOL_ASSUMPTION_RE\.test\(refusalText\)/);
-  assert.match(src, /"loop\.worker_incorrect_protocol_assumption"/);
-  // headline/summary distinguishes the two
+  // beta.53 renamed detection to the exported predicate + renamed the event
+  // from loop.worker_incorrect_protocol_assumption -> loop.worker_env_wait_hallucination.
+  assert.match(src, /looksLikeProtocolAssumption\s*=\s*\n?\s*looksLikeRefusal && matchesEnvWaitHallucination\(refusalText\)/);
+  assert.match(src, /"loop\.worker_env_wait_hallucination"/);
+  // headline/summary distinguishes the env-wait case
   assert.match(src, /worker awaited a non-existent mid-turn event and did no work/);
 });

@@ -172,6 +172,14 @@ export interface LoopConfig {
      * longer than a normal event gap. Default 90s.
      */
     stall_watchdog_seconds: number;
+    /**
+     * beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn
+     * "Monitor event" (env-wait hallucination) and made no committed change,
+     * re-invoke the sub-task ONCE with corrective context instead of failing the
+     * whole run. Default true. Set false to disable the retry (still tags the
+     * failure as loop.worker_env_wait_hallucination).
+     */
+    env_wait_retry_enabled?: boolean;
 }
 export interface VercelConfig {
     enabled: boolean;
