@@ -75,6 +75,52 @@ export function matchesEnvWaitHallucination(text) {
     return WORKER_ENV_WAIT_PART_RE.test(t) && WORKER_ENV_WAIT_ENV_RE.test(t);
 }
 /**
+ * beta.54: BROADENED async-coordination-confabulation detector. beta.53's
+ * `matchesEnvWaitHallucination` AND-gated on an install/build word, on the
+ * (now-disproven) premise that this hallucination is triggered by a missing
+ * environment. Staging beta.53 #858 seq-3 refuted that: on a plain TypeScript
+ * mutate sub-task with NO install path, the worker still ended its turn with
+ *   "I'll wait for the completion notification from the background watcher
+ *    before running the test suite."
+ * -- confabulating an async coordination primitive (a "background watcher" /
+ * "completion notification") and yielding its turn instead of running the
+ * command inline. The env word ('test suite' is not in ENV_RE) was absent, and
+ * the phrase used 'wait for' (not 'waiting for'), so beta.53 missed it twice.
+ *
+ * This predicate captures the CLASS: the worker says it will wait/await for
+ * some notification/event/signal/callback from an imagined watcher/monitor/
+ * background process, WITHOUT requiring any env/install context. It is the
+ * gate for the retry-with-context path (still restricted to no-side-effect
+ * verification kinds, so a confabulated push/PR is never retried).
+ *
+ * Two independent shapes, either suffices:
+ *  (A) an explicit coordination NOUN the harness does not provide
+ *      (monitor/observer/watcher/sentinel/daemon/background process/
+ *       completion notification/callback/webhook) paired with a wait/await/
+ *       notify/resume verb; OR
+ *  (B) a wait/await/poll verb pointed at an event/signal/notification/
+ *      callback/completion the worker expects to ARRIVE (passive coordination).
+ */
+const ASYNC_COORD_NOUN_RE = /\b(monitor|observer|watcher|sentinel|daemon|background\s+(process|task|job|watcher|runner)|completion\s+(notification|signal|event|message)|async\s+(runner|process)|callback|webhook)\b/i;
+const ASYNC_COORD_WAIT_VERB_RE = /\b(wait(ing|s)?\s+for|await(ing|s)?|poll(ing|s)?\s+for|listen(ing)?\s+for|expect(ing)?\s+(a|an|the)?)\b/i;
+const ASYNC_COORD_ARRIVAL_RE = /\b(event|signal|notification|notify|callback|completion|ready\s+message|message\s+from|to\s+(complete|finish|be\s+(ready|done|installed|built)))\b/i;
+/** beta.54: true when the worker confabulated an async coordination primitive. */
+export function matchesAsyncCoordConfabulation(text) {
+    const t = (text ?? "").replace(/\s+/g, " ");
+    if (!t)
+        return false;
+    // Shape A: a coordination NOUN the harness never provides, near a wait verb.
+    const hasNoun = ASYNC_COORD_NOUN_RE.test(t);
+    const hasWaitVerb = ASYNC_COORD_WAIT_VERB_RE.test(t);
+    if (hasNoun && hasWaitVerb)
+        return true;
+    // Shape B: a wait/await/poll verb aimed at an arriving event/signal/notif.
+    if (hasWaitVerb && ASYNC_COORD_ARRIVAL_RE.test(t))
+        return true;
+    // Backward-compat: the original env-wait shape is a strict subset.
+    return matchesEnvWaitHallucination(t);
+}
+/**
  * beta.53 (P1b): verification kinds that are eligible for an env-wait retry.
  * These are the "no observable change" kinds -- a worker that hallucinated a
  * wait produced no commit/no committed-file/wrote-but-didnt-commit. We NEVER
@@ -551,13 +597,17 @@ export class OrchestratorLoop {
                             !result.commitSha &&
                             failedNow.length > 0 &&
                             failedNow.every((x) => ENV_WAIT_RETRYABLE_KINDS.has(x.kind)) &&
-                            matchesEnvWaitHallucination(result.finalMessage ?? "");
+                            // beta.54: broadened to the whole async-coordination-confabulation
+                            // class (the env-wait shape is a strict subset). Catches the b53
+                            // seq-3 "background watcher / completion notification" phrasing
+                            // that had no install word and used 'wait for' not 'waiting for'.
+                            matchesAsyncCoordConfabulation(result.finalMessage ?? "");
                         if (envWaitOnly) {
                             envWaitRetried = true;
                             const wrote = result.uncommittedFiles ?? [];
                             const hint = wrote.length > 0
-                                ? `IMPORTANT: your PREVIOUS turn wrote these files to the worktree but never committed them: ${wrote.join(", ")}. There is NO "Monitor event", no event stream, and nothing will ever notify you -- harness dispatch is one-shot. Do NOT wait for any install/build/lint. Simply \`git add\` and \`git commit\` the work you already did, complete any remaining success criteria inline (run tools with a BLOCKING Bash call if needed, or skip a missing lint/typecheck tool and note it in the commit message), and end your turn.`
-                                : `IMPORTANT: your PREVIOUS turn ended waiting for a nonexistent "Monitor event". The harness has NO such mechanism -- dispatch is one-shot and nothing will notify or resume you. Complete this sub-task NOW without waiting for any installation. If a tool (eslint/tsc/lint) is not installed in the worktree, run \`npm ci\` INLINE in a single blocking Bash call, OR skip that verification step and note it in the commit message. Make the required edit, commit it, and end your turn.`;
+                                ? `IMPORTANT: your PREVIOUS turn wrote these files to the worktree but never committed them: ${wrote.join(", ")}. There is NO background watcher, NO "Monitor event", NO completion notification, and NO event stream -- harness dispatch is one-shot and NOTHING will ever notify or resume you. Do NOT wait for any install/build/lint/test to "notify" you. Simply \`git add\` and \`git commit\` the work you already did, complete any remaining success criteria INLINE (run any command -- including the test suite, tsc, or lint -- directly in a single BLOCKING Bash call and read its output in THIS turn; or skip a missing tool and note it in the commit message), and end your turn.`
+                                : `IMPORTANT: your PREVIOUS turn ended waiting for something that does not exist (a "Monitor event", a "background watcher", a "completion notification", or similar). The harness has NO such mechanism -- dispatch is one-shot and nothing will notify or resume you. Complete this sub-task NOW without waiting for anything. To run tests/build/lint/install, execute the command DIRECTLY in a single blocking Bash call in THIS turn and read its output; do not background it and do not wait for a signal. If a tool (eslint/tsc/lint) is not installed, run \`npm ci\` INLINE first, OR skip that step and note it in the commit message. Make the required edit, commit it, and end your turn.`;
                             this.deps.state.audit("loop.worker_env_wait_retry", {
                                 sessionId, seq: st.seq, cycle,
                                 partialWork: wrote.length > 0,
@@ -747,7 +797,7 @@ export class OrchestratorLoop {
                         // behaviour; this tag makes the pattern greppable in metrics so we
                         // can tell "worker was wrong about the harness" apart from "worker
                         // correctly refused a bad task". Does NOT change pass/fail.
-                        const looksLikeProtocolAssumption = looksLikeRefusal && matchesEnvWaitHallucination(refusalText);
+                        const looksLikeProtocolAssumption = looksLikeRefusal && matchesAsyncCoordConfabulation(refusalText);
                         if (looksLikeProtocolAssumption) {
                             const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
                             this.deps.state.audit("loop.worker_env_wait_hallucination", {

@@ -116,8 +116,10 @@ test("beta53 wiring: loop.ts emits renamed loop.worker_env_wait_hallucination ev
   assert.match(src, /"loop\.worker_env_wait_hallucination"/);
   // old beta.52 event name should be gone as an emitted event
   assert.doesNotMatch(src, /audit\(\s*"loop\.worker_incorrect_protocol_assumption"/);
-  // detection now goes through the exported predicate, not the bare regex
-  assert.match(src, /matchesEnvWaitHallucination\(refusalText\)/);
+  // detection now goes through the exported predicate, not the bare regex.
+  // beta.54 broadened the tag path from matchesEnvWaitHallucination to
+  // matchesAsyncCoordConfabulation (env-wait is a strict subset).
+  assert.match(src, /matchesAsyncCoordConfabulation\(refusalText\)/);
 });
 
 test("beta53 wiring: P1b retry-with-context, ordered AFTER P2 (uncommittedFiles), gated by config", () => {
