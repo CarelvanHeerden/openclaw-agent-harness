@@ -86,6 +86,14 @@ export interface ProgressSnapshot {
      * rephrase. Slack-mrkdwn-safe (no markdown tables/headings).
      */
     headline: string;
+    /**
+     * beta.55 (B2): true when the session is paused in `awaiting_clarification`.
+     * The polling agent MUST relay `clarificationQuestion` to the requester and
+     * resume via harness_answer with their reply.
+     */
+    needsClarification: boolean;
+    clarificationQuestion: string | null;
+    clarificationSeq: number | null;
 }
 /**
  * Build a progress snapshot for a session. Pure read; never mutates state.

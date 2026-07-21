@@ -26,7 +26,7 @@ import type { ReviewReport } from "./fable5-adversary.js";
 import type { WorkerResult } from "./sonnet-worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 import { type VerifyProbes } from "./verify.js";
-export type LoopStatus = "crystallising" | "planning" | "executing" | "reviewing" | "done" | "failed" | "aborted";
+export type LoopStatus = "crystallising" | "planning" | "executing" | "reviewing" | "done" | "failed" | "aborted" | "awaiting_clarification";
 export type LoopOutcome = {
     status: "shipped";
     sessionId: string;
@@ -51,11 +51,19 @@ export type LoopOutcome = {
     reason: string;
     cycles: number;
     totalCostUsd: number;
+} | {
+    status: "awaiting_clarification";
+    sessionId: string;
+    question: string;
+    seq: number;
+    cycles: number;
+    totalCostUsd: number;
 };
 /** beta.53: true when the worker awaited a non-existent env/monitor event. */
 export declare function matchesEnvWaitHallucination(text: string): boolean;
 /** beta.54: true when the worker confabulated an async coordination primitive. */
 export declare function matchesAsyncCoordConfabulation(text: string): boolean;
+export declare function matchesWorkerDeviation(text: string): boolean;
 /** Test/diagnostic helper: clear any armed watchdog for a session. */
 export declare function clearStallWatchdog(sessionId: string): void;
 /** True if a loop for this session is currently running in this process. */
@@ -286,6 +294,16 @@ export declare class OrchestratorLoop {
      * cannot forget to release the worktree on new failure paths.
      */
     private finaliseFailed;
+    /**
+     * beta.55 (B2): pause the session for a human decision. Persists the
+     * question + the paused sub-task seq and sets status `awaiting_clarification`.
+     * CRITICAL: does NOT release the worktree (unlike finaliseFailed/Abort) so
+     * harness_answer can re-drive the loop from the paused seq in place. The
+     * worktree-heal protect set (beta.45) + recovery both treat
+     * `awaiting_clarification` as resumable, so a stray re-register or restart
+     * won't reap the worktree or auto-fail the pause.
+     */
+    private finaliseAwaitingClarification;
 }
 /**
  * Kahn's-algorithm topological sort of sub-tasks by `dependsOn`.

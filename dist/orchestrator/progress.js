@@ -43,6 +43,7 @@ const PHASE_BY_STATUS = {
     failed: "Failed",
     failed_verification: "Failed verification",
     aborted: "Aborted",
+    awaiting_clarification: "Awaiting clarification",
 };
 function round(n, dp = 4) {
     const f = 10 ** dp;
@@ -72,10 +73,14 @@ export function buildProgressSnapshot(db, sessionId, limit = 12) {
         lastEventAt: null,
         recentEvents: [],
         headline: found ? "" : `No harness session with id ${sessionId}.`,
+        needsClarification: false,
+        clarificationQuestion: null,
+        clarificationSeq: null,
     });
     const row = db
         .prepare(`SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
-              pr_number, final_pr_url, deploy_status
+              pr_number, final_pr_url, deploy_status,
+              clarification_question, clarification_seq
          FROM sessions WHERE id = ?`)
         .get(sessionId);
     if (!row)
@@ -157,19 +162,26 @@ export function buildProgressSnapshot(db, sessionId, limit = 12) {
             }
         }
     }
-    const headline = buildHeadline({
-        phase,
-        status,
-        terminal,
-        total: all.length,
-        done,
-        current,
-        spentUsd,
-        budgetUsd,
-        prNumber: row.pr_number ?? null,
-        deployStatus: row.deploy_status ?? null,
-        failureDetail,
-    });
+    // beta.55 (B2): a clarification pause overrides the normal headline so the
+    // polling agent sees the question directly and relays it.
+    const needsClarification = status === "awaiting_clarification";
+    const clarificationQuestion = needsClarification ? (row.clarification_question ?? null) : null;
+    const clarificationSeq = needsClarification ? (row.clarification_seq ?? null) : null;
+    const headline = needsClarification && clarificationQuestion
+        ? `Awaiting clarification: ${clarificationQuestion.slice(0, 400)} (answer via harness_answer sessionId=${sessionId})`
+        : buildHeadline({
+            phase,
+            status,
+            terminal,
+            total: all.length,
+            done,
+            current,
+            spentUsd,
+            budgetUsd,
+            prNumber: row.pr_number ?? null,
+            deployStatus: row.deploy_status ?? null,
+            failureDetail,
+        });
     return {
         ok: true,
         found: true,
@@ -189,6 +201,9 @@ export function buildProgressSnapshot(db, sessionId, limit = 12) {
         lastEventAt,
         recentEvents,
         headline,
+        needsClarification,
+        clarificationQuestion,
+        clarificationSeq,
     };
 }
 function fmtUsd(n) {

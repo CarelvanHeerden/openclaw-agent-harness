@@ -44,7 +44,14 @@ export type LoopStatus =
   | "reviewing"
   | "done"
   | "failed"
-  | "aborted";
+  | "aborted"
+  // beta.55 (B2): a RESUMABLE pause. The loop hit a genuinely-blocking
+  // ambiguity (or a worker refused/confabulated a sub-task even after the
+  // beta.54 retry) and, rather than hard-fail, it persisted the question +
+  // the paused sub-task index and stopped. A human answers via harness_answer
+  // and the loop re-drives from the paused seq. NOT terminal: recovery treats
+  // it like `resumable`, and worktree-heal must NOT reap its worktree.
+  | "awaiting_clarification";
 
 export type LoopOutcome =
   | { status: "shipped"; sessionId: string; prUrl: string; cycles: number; totalCostUsd: number }
@@ -53,7 +60,10 @@ export type LoopOutcome =
   // beta.38: a re-entrant run() call for a session whose loop is ALREADY
   // running in this process (see runningSessions guard below). Returned
   // instead of starting a second concurrent loop.
-  | { status: "skipped_already_running"; sessionId: string; reason: string; cycles: number; totalCostUsd: number };
+  | { status: "skipped_already_running"; sessionId: string; reason: string; cycles: number; totalCostUsd: number }
+  // beta.55 (B2): the loop paused resumably for a human decision. NOT a
+  // failure -- the worktree is preserved and harness_answer re-drives it.
+  | { status: "awaiting_clarification"; sessionId: string; question: string; seq: number; cycles: number; totalCostUsd: number };
 
 /**
  * beta.38: module-level set of session ids whose loop is CURRENTLY running in
@@ -162,6 +172,23 @@ export function matchesAsyncCoordConfabulation(text: string): boolean {
  * env-wait shapes and retrying could mask a real confabulation.
  */
 const ENV_WAIT_RETRYABLE_KINDS = new Set(["commit_made", "file_committed", "file_written"]);
+
+/**
+ * beta.55 (B3): detect that a worker PASSED verification but deviated from the
+ * literal sub-task wording -- a judgment call it made and documented (the #858
+ * sub-task-2 grc case: "I left the non-empty grc/ dirs in place because deleting
+ * them would destroy unrelated code"). This is guess-and-document, which is
+ * defensible for an async harness ONLY if it's VISIBLE. We surface it as a
+ * first-class `loop.worker_deviation` audit event instead of burying it in the
+ * finalMessage prose. Does NOT change pass/fail (the sub-task passed).
+ */
+const WORKER_DEVIATION_RE =
+  /\b(instead of|rather than|chose (not )?to|decided (not )?to|opted (not )?to|I (did not|didn't|left|kept|skipped|avoided)|deviat|as opposed to|in lieu of|preserv\w* (both|the existing)|took a different approach)\b/i;
+export function matchesWorkerDeviation(text: string): boolean {
+  const t = (text ?? "").replace(/\s+/g, " ");
+  if (!t) return false;
+  return WORKER_DEVIATION_RE.test(t);
+}
 /** @deprecated beta.52 single-clause regex; kept for backward-compat tests. */
 const WORKER_PROTOCOL_ASSUMPTION_RE =
   /\b(await|wait(ing)?\s+for|poll(ing)?\s+for)\b[^.\n]{0,80}\b(monitor|harness|install|build|tsc|ready|completion|background)\b[^.\n]{0,40}\b(event|signal|ready|notif|callback|complet)/i;
@@ -361,6 +388,12 @@ export class OrchestratorLoop {
       case "failed":
       case "aborted":
         return { nextStatus: input.currentStatus, reason: "terminal" };
+      // beta.55 (B2): a resting pause. advance() never drives INTO or OUT of
+      // this state (finaliseAwaitingClarification sets it directly; harness_
+      // answer re-drives via loop.run from `planning`), but the switch must be
+      // exhaustive -- staying put is the correct no-op.
+      case "awaiting_clarification":
+        return { nextStatus: input.currentStatus, reason: "awaiting_clarification" };
     }
   }
 
@@ -601,6 +634,10 @@ export class OrchestratorLoop {
       const inFlight: Array<Promise<void>> = [];
       const done = new Set<number>();
       const failed = { seq: -1, err: null as unknown };
+      // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
+      // instead of hard-failing. Carries the ONE question to surface + the
+      // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
+      const clarify = { question: null as string | null, seq: -1 };
 
       const runOne = async (st: LeadPlanSubTask): Promise<void> => {
         // beta.53 (P1b): at most ONE env-wait retry per sub-task.
@@ -1083,6 +1120,26 @@ export class OrchestratorLoop {
             });
             failed.err = `subtask_${st.seq}_failed_verification: ${failSummary}`;
             failed.seq = st.seq;
+            // ---- beta.55 (B2): escalate a reasoned refusal / surviving
+            // confabulation to a HUMAN instead of hard-failing the run. ----
+            // Precondition: this is a genuine refusal (looksLikeRefusal) that
+            // has ALREADY had its beta.54 async-coord retry (envWaitRetried is
+            // true if a retry was attempted; a refusal that reaches here after
+            // the retry, OR one that never qualified for retry, is a real
+            // blocking ambiguity). Rather than kill the whole run, surface the
+            // worker's OWN explanation as a question and pause resumably. The
+            // worktree is preserved (finaliseAwaitingClarification does NOT
+            // release it) so harness_answer can re-drive from this seq in place.
+            if (
+              looksLikeRefusal &&
+              this.deps.config.loop.clarification_escalation_enabled !== false
+            ) {
+              const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+              clarify.question =
+                `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ${firstLine.slice(0, 500)}. ` +
+                `How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, or "abort".)`;
+              clarify.seq = st.seq;
+            }
             return;
           }
         } else if (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate")) {
@@ -1102,6 +1159,25 @@ export class OrchestratorLoop {
           // (verification-eligible) branch already had this guard; beta.18
           // brings this branch in line.
           this.emitObserveCompleted(sessionId, st, result, []);
+        }
+
+        // beta.55 (B3): the sub-task PASSED, but if the worker's own final
+        // message signals it deviated from the literal wording (a judgment
+        // call), make that a first-class audit signal so "guess-and-document"
+        // is auditable rather than buried in prose. Does NOT change pass/fail.
+        {
+          const finalMsg = (result.finalMessage ?? "").trim();
+          if (finalMsg && matchesWorkerDeviation(finalMsg)) {
+            const firstLine = finalMsg.split("\n").map((l) => l.trim()).find(Boolean) ?? finalMsg.slice(0, 200);
+            this.deps.state.audit(
+              "loop.worker_deviation",
+              { sessionId, seq: st.seq, cycle, summary: firstLine.slice(0, 500), finalMessage: finalMsg.slice(0, 2000) },
+              sessionId,
+            );
+            this.deps.logger.info("[loop] worker deviated from literal wording (passed verification, judgment call)", {
+              sessionId, seq: st.seq, summary: firstLine.slice(0, 200),
+            });
+          }
         }
 
         done.add(st.seq);
@@ -1137,6 +1213,13 @@ export class OrchestratorLoop {
       await Promise.allSettled(inFlight);
 
       if (failed.err) {
+        // beta.55 (B2): a resumable clarification pause takes precedence over a
+        // hard-fail. The sub-task DID fail verification (failed.err set), but
+        // if we captured a clarification request we pause instead of dying, so
+        // a human can unblock the exact sub-task rather than restart the run.
+        if (clarify.question) {
+          return this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost);
+        }
         if (failed.err === "user_abort_reaction") return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
         if (failed.err === "hard_timeout") return this.finaliseAbort(sessionId, "hard_timeout", cycle, totalCost);
         if (failed.err === "budget_exhausted") return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
@@ -1481,6 +1564,39 @@ export class OrchestratorLoop {
     this.setStatus(sessionId, "failed");
     this.scheduleWorktreeReleaseForSession(sessionId, "failed");
     return { status: "failed", sessionId, reason, cycles, totalCostUsd };
+  }
+
+  /**
+   * beta.55 (B2): pause the session for a human decision. Persists the
+   * question + the paused sub-task seq and sets status `awaiting_clarification`.
+   * CRITICAL: does NOT release the worktree (unlike finaliseFailed/Abort) so
+   * harness_answer can re-drive the loop from the paused seq in place. The
+   * worktree-heal protect set (beta.45) + recovery both treat
+   * `awaiting_clarification` as resumable, so a stray re-register or restart
+   * won't reap the worktree or auto-fail the pause.
+   */
+  private finaliseAwaitingClarification(
+    sessionId: string,
+    question: string,
+    seq: number,
+    cycles: number,
+    totalCostUsd: number,
+  ): LoopOutcome {
+    this.setStatus(sessionId, "awaiting_clarification");
+    this.deps.state.db.prepare(
+      `UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, updated_at = ? WHERE id = ?`,
+    ).run(question, seq, Date.now(), sessionId);
+    this.deps.state.audit(
+      "loop.clarification_requested",
+      { sessionId, seq, question: question.slice(0, 1000), cycle: cycles },
+      sessionId,
+    );
+    this.deps.logger.warn("[loop] paused for clarification (awaiting_clarification); worktree preserved", {
+      sessionId, seq, question: question.slice(0, 200),
+    });
+    // Deliberately NO scheduleWorktreeReleaseForSession -- the worktree must
+    // survive so the answered resume continues in place.
+    return { status: "awaiting_clarification", sessionId, question, seq, cycles, totalCostUsd };
   }
 }
 

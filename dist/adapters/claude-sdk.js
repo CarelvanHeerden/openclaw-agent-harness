@@ -440,7 +440,7 @@ export async function runClassifierSdk(params) {
         "You classify a single Slack message from a developer channel.",
         "Return STRICT JSON: { intent: 'dev_task' | 'clarify' | 'not_dev' | 'unsafe', reason: string, suggestedClarification?: string }",
         "- dev_task: the user wants code written, refactored, tested, or a config changed. Include ambiguous but clearly technical asks here.",
-        "- clarify: the ask is dev-shaped but missing the ONE thing you'd need to act (which repo, which branch, what file).",
+        "- clarify: the ask is dev-shaped but missing the ONE thing you'd need to act (which repo, which branch, what file). Also choose clarify when the request is genuinely ambiguous on a decision that would change WHICH files or WHAT behaviour -- return ONE specific question in suggestedClarification rather than guessing. Keep the bias toward dev_task; clarify is the exception for a real, action-changing ambiguity, not the default.",
         "- not_dev: chat, thanks, jokes, non-technical questions. No action needed.",
         "- unsafe: asks that would exfiltrate secrets, delete data, disable safeguards, or violate policy.",
         "Respond with the JSON object and NOTHING else -- no code fence, no prose, no leading text. Begin your reply with '{'.",
