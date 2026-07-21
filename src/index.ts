@@ -21,7 +21,7 @@ import type { HarnessConfig, TokenPointer } from "./config.js";
 import { parseHarnessConfig } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
-import { pathMatchRule, resolveContractPath } from "./orchestrator/path-match.js";
+import { resolveContractPath } from "./orchestrator/path-match.js";
 import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
 import { SlackReactionsReader } from "./slack/reactions.js";
@@ -842,7 +842,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             // route-semantics contract path matches the real committed/changed
             // filesystem path.
             const changed = await git.listChangedFiles(worktreePath, baseSha || (await git.baseSha(worktreePath)));
-            const match = resolveContractPath(changed, path);
+            // beta.59: per-sub-task-scoped diff (base = worker-session-start SHA),
+            // so a basename-unique fallback is safe here (a lone same-basename
+            // file in this tiny diff is the file this sub-task just wrote).
+            const match = resolveContractPath(changed, path, { allowBasenameFallback: true });
             if (!match) {
               return { written: false, detail: `file not in diff vs base (${changed.length} changed: ${changed.slice(0, 8).join(", ")})` };
             }
@@ -899,7 +902,8 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           } catch {
             try {
               const committed = await git.listCommittedFiles(worktreePath, baseSha).catch(() => [] as string[]);
-              const match = resolveContractPath(committed, path);
+              // beta.59: per-sub-task-scoped commit list -> basename-unique fallback safe.
+              const match = resolveContractPath(committed, path, { allowBasenameFallback: true });
               if (match) {
                 const s = await tryStat(match.file);
                 return {
@@ -923,16 +927,16 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             // beta.50: structural path matching (see path-match.ts) so a
             // route-group / monorepo-prefixed committed path still satisfies a
             // route-semantics contract path.
-            let matchedFile: string | undefined;
-            let matchedRule: string | null = null;
-            for (const f of files) {
-              const rule = pathMatchRule(f, path);
-              if (rule) {
-                matchedFile = f;
-                matchedRule = rule;
-                if (rule === "exact") break;
-              }
-            }
+            // beta.59: route through resolveContractPath (shared logic) WITH the
+            // basename-unique fallback -- `files` is `git log base..HEAD` where
+            // base = the sub-task's worker-session-start SHA, so this list is
+            // scoped to THIS sub-task's own commit(s); a lone same-basename file
+            // is the file the worker just committed (fixes seq-4 topology drift:
+            // contract `components/governance-risk/risks/...` vs committed
+            // `src/components/grc/...`).
+            const match = resolveContractPath(files, path, { allowBasenameFallback: true });
+            const matchedFile = match?.file;
+            const matchedRule = match?.rule ?? null;
             const committed = matchedRule !== null;
             return {
               committed,
