@@ -294,7 +294,7 @@ test("harness_cancel: sets abort flag on non-terminal session",
     runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, created_at, updated_at, budget_usd, cost_usd, cycles_ran) VALUES ('S1','T','C','U','u','o/r','b','/wt','executing',?,?,50,0,0)`).run(Date.now(), Date.now());
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
-    const res = await tools.get("harness_cancel").execute({ sessionId: "S1", reason: "test" });
+    const res = await tools.get("harness_cancel").execute({ sessionId: "S1", reason: "test", invokedBy: "U1" });
     assert.equal(res.details.ok, true);
     const row = runtime.state.db.prepare(`SELECT reactions_json FROM sessions WHERE id = 'S1'`).get();
     assert.match(row.reactions_json, /"abort":true/);
@@ -306,9 +306,33 @@ test("harness_cancel: refuses terminal session",
     runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, created_at, updated_at, budget_usd, cost_usd, cycles_ran) VALUES ('S1','T','C','U','u','o/r','b','/wt','done',?,?,50,0,0)`).run(Date.now(), Date.now());
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
-    const res = await tools.get("harness_cancel").execute({ sessionId: "S1" });
+    const res = await tools.get("harness_cancel").execute({ sessionId: "S1", invokedBy: "U1" });
     assert.equal(res.details.ok, false);
     assert.equal(res.details.alreadyTerminal, true);
+  });
+
+// beta.57 (P2): invokedBy is REQUIRED on privileged tools -- omitting it used
+// to skip authorisation entirely.
+test("harness_cancel: refuses when invokedBy is missing (beta.57)",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, created_at, updated_at, budget_usd, cost_usd, cycles_ran) VALUES ('S1','T','C','U','u','o/r','b','/wt','executing',?,?,50,0,0)`).run(Date.now(), Date.now());
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = await tools.get("harness_cancel").execute({ sessionId: "S1" });
+    assert.equal(res.details.ok, false);
+    assert.equal(res.details.unauthorised, true);
+  });
+
+test("harness_resume: refuses when invokedBy is missing (beta.57)",
+  { skip: registerHarnessTools === null }, async () => {
+    const runtime = makeRuntime();
+    runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, created_at, updated_at, budget_usd, cost_usd, cycles_ran) VALUES ('S1','T','C','U','u','o/r','b','/wt','interrupted',?,?,50,0,0)`).run(Date.now(), Date.now());
+    const { api, tools } = collectTools();
+    registerHarnessTools(api, runtime);
+    const res = await tools.get("harness_resume").execute({ sessionId: "S1" });
+    assert.equal(res.details.ok, false);
+    assert.equal(res.details.unauthorised, true);
   });
 
 test("harness_resume: kicks loop for interrupted session with brief",
@@ -318,7 +342,7 @@ test("harness_resume: kicks loop for interrupted session with brief",
     runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran) VALUES ('S1','T','C','U','u','o/r','b','/wt','interrupted',?,?,?,50,0,0)`).run(brief, Date.now(), Date.now());
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
-    const res = await tools.get("harness_resume").execute({ sessionId: "S1" });
+    const res = await tools.get("harness_resume").execute({ sessionId: "S1", invokedBy: "U1" });
     assert.equal(res.details.ok, true);
     // Give the fire-and-forget a beat
     await new Promise((r) => setTimeout(r, 20));
@@ -333,7 +357,7 @@ test("harness_resume: refuses done session",
     runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, created_at, updated_at, budget_usd, cost_usd, cycles_ran) VALUES ('S1','T','C','U','u','o/r','b','/wt','done',?,?,50,0,0)`).run(Date.now(), Date.now());
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
-    const res = await tools.get("harness_resume").execute({ sessionId: "S1" });
+    const res = await tools.get("harness_resume").execute({ sessionId: "S1", invokedBy: "U1" });
     assert.equal(res.details.ok, false);
     assert.equal(res.details.badStatus, "done");
   });
@@ -390,7 +414,7 @@ test("harness_resume: refuses session without brief",
     runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, created_at, updated_at, budget_usd, cost_usd, cycles_ran) VALUES ('S1','T','C','U','u','o/r','b','/wt','interrupted',?,?,50,0,0)`).run(Date.now(), Date.now());
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
-    const res = await tools.get("harness_resume").execute({ sessionId: "S1" });
+    const res = await tools.get("harness_resume").execute({ sessionId: "S1", invokedBy: "U1" });
     assert.equal(res.details.ok, false);
     assert.equal(res.details.missingBrief, true);
   });

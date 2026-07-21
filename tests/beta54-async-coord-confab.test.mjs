@@ -126,11 +126,18 @@ test("beta.54: env-wait shape is a strict subset of the broadened predicate", ()
 // ---- source-assertion wiring: broadened predicate is actually used ----
 test("beta.54: loop.ts wires matchesAsyncCoordConfabulation into retry gate AND tag path", () => {
   const src = readFileSync(join(root, "src/orchestrator/loop.ts"), "utf8");
-  // retry gate uses the broadened predicate:
+  // beta.57 (P1): the gate is now observable-state-first. The predicate is
+  // computed once into `phrasingMatched` (kept as telemetry + revise-cycle
+  // tiebreaker), and the retry fires on `cycle === 1 || phrasingMatched`.
   assert.match(
     src,
-    /failedNow\.every[\s\S]{0,600}matchesAsyncCoordConfabulation\(result\.finalMessage/,
-    "retry gate must call matchesAsyncCoordConfabulation on finalMessage",
+    /const phrasingMatched = matchesAsyncCoordConfabulation\(result\.finalMessage/,
+    "retry path must still evaluate matchesAsyncCoordConfabulation on finalMessage",
+  );
+  assert.match(
+    src,
+    /failedNow\.every[\s\S]{0,200}\(cycle === 1 \|\| phrasingMatched\)/,
+    "retry gate must be state-first with the phrasing predicate as revise-cycle tiebreaker",
   );
   // tag path uses the broadened predicate:
   assert.match(

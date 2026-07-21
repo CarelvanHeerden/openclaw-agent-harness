@@ -325,6 +325,11 @@ test("loop: real push (branch on remote) passes harness verification and ships (
         prUrlPresent: async () => ({ present: true, url: "https://x/pr/1", detail: "github PR count 1" }),
         fileWrittenSince: async () => ({ written: true, detail: "ok" }),
         commitMadeSince: async () => ({ made: true, detail: "ok" }),
+        // beta.57 (P1): missing probes now FAIL CLOSED, so the double must
+        // provide the SHA probes the inferred commit_sha_matches check uses
+        // (the real buildVerifyProbes in index.ts always provides them).
+        localHeadSha: async () => ({ sha: "pushsha123", detail: "local HEAD: pushsha123" }),
+        remoteBranchSha: async () => ({ sha: "pushsha123", detail: "remote tip: pushsha123" }),
       }),
     });
     const outcome = await loop.run("SV2", brief);

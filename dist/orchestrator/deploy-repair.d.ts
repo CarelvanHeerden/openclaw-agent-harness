@@ -106,7 +106,7 @@ export interface DeployRepairInput {
     repairBudgetUsd: number;
 }
 export interface DeployRepairResult {
-    outcome: "repaired" | "reverted" | "budget_paused" | "revert_failed";
+    outcome: "repaired" | "reverted" | "budget_paused" | "revert_failed" | "unverified";
     attempts: number;
     totalCostUsd: number;
     /** Final healthy deploy (when repaired). */

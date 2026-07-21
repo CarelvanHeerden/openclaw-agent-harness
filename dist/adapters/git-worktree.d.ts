@@ -54,6 +54,17 @@ export interface GitAdapterOptions {
  * defensive against a future token format change.
  */
 export declare function buildAuthedCloneUrl(repoFullName: string, token: string): string;
+/**
+ * beta.57 (P2): scrub secrets out of strings that end up in error messages /
+ * logs. The initial private-repo clone embeds the PAT in the URL argv (the
+ * beta.24 404-vs-401 workaround), so a failing clone used to throw
+ * `git clone ... https://x-access-token:<PAT>@github.com/...` -- putting the
+ * token into logs, audit payloads, and Slack error posts. Redacts:
+ *   - userinfo in any URL (`scheme://user:secret@host` -> `scheme://***@host`)
+ *   - the exact token value when known.
+ */
+export declare function redactSecrets(text: string, token?: string): string;
+export declare function inFlightWorktreePaths(): string[];
 export interface GitContext {
     repoFullName: string;
     baseBranch: string;
@@ -84,9 +95,16 @@ export declare class GitAdapter {
      * Writes a per-invocation askpass helper that prints the PAT on stdout.
      * The helper is chmod 0700 and lives in a fresh mkdtemp dir; caller
      * must clean it up.
+     *
+     * beta.57 (P2): the token is NO LONGER written into the script body. The
+     * script reads `$OAH_GH_TOKEN` from the child-process env at invocation
+     * (same channel the beta.34 cred helper uses), so the secret never touches
+     * disk and no shell-escaping of the token is needed. Callers that pass
+     * `askpassPath` to run() must also pass the token so the env var is set.
      */
     private makeAskpass;
     allocate(ctx: GitContext): Promise<string>;
+    private allocateInner;
     /**
      * beta.53: install node deps in a freshly-allocated worktree when a
      * package.json is present and node_modules is missing/empty. Prefers a

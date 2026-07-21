@@ -24,7 +24,11 @@ test("beta41: teardown imports and consults runningSessionIds", () => {
     /import \{[^}]*runningSessionIds[^}]*\} from "\.\/orchestrator\/loop\.js"/.test(indexSrc),
     "index.ts must import runningSessionIds from the loop module",
   );
-  assert.ok(indexSrc.includes("runningSessionIds().length > 0"), "teardown must check for running loops");
+  // beta.57 (P1): the drain now checks the OWNED session list (falling back to
+  // the global registry), so a doomed runtime no longer waits on loops owned
+  // by the freshly re-registered runtime.
+  assert.ok(indexSrc.includes("ownedRunning().length > 0"), "teardown must check for running loops it owns");
+  assert.ok(indexSrc.includes("ownedRunningSessionIds"), "teardown must prefer the per-instance owned-session list");
 });
 
 test("beta41: the drain-wait happens BEFORE state.close()", () => {

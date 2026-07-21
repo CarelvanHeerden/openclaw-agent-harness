@@ -19,6 +19,14 @@ export interface GuardConfig {
     denylistTokens: string[];
     allowGitPush: boolean;
     allowNetworkCommands: boolean;
+    /**
+     * beta.57 (P2): optional path denylist (same patterns as safety.path_denylist).
+     * When set, redirect targets and path-looking arguments to read/print
+     * commands (cat/head/tail/grep/sed/awk/...) are checked against it, so a
+     * worker cannot `cat .env` or `sed -n p ~/.ssh/id_rsa` its way past the
+     * SDK Read-tool denylist.
+     */
+    pathDenylist?: string[];
 }
 export interface GuardResult {
     allowed: boolean;
@@ -59,5 +67,10 @@ export declare function buildBashGuard(cfg: {
     allow: boolean;
     reason?: string;
 }>;
+/**
+ * beta.57 (P2): shared path-denylist matcher (same semantics as the SDK
+ * Read/Write guard in buildBashGuard).
+ */
+export declare function pathMatchesDenylist(p: string, patterns: readonly string[]): boolean;
 export declare function guardCommand(cmd: string, cfg?: GuardConfig): GuardResult;
 //# sourceMappingURL=bash-guard.d.ts.map

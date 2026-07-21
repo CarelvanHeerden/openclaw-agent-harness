@@ -6,7 +6,8 @@
  * touch as little of GitHub as possible.
  */
 export async function createPullRequest(input) {
-    const url = `https://api.github.com/repos/${input.repoFullName}/pulls`;
+    const apiBase = input.apiBase ?? "https://api.github.com";
+    const url = `${apiBase}/repos/${input.repoFullName}/pulls`;
     const post = async (draft) => fetch(url, {
         method: "POST",
         headers: {
@@ -46,7 +47,7 @@ export async function createPullRequest(input) {
         const peek = await res.clone().text().catch(() => "");
         if (/pull request already exists/i.test(peek)) {
             const [owner] = input.repoFullName.split("/");
-            const lookup = `https://api.github.com/repos/${input.repoFullName}/pulls?head=${owner}:${encodeURIComponent(input.head)}&state=open`;
+            const lookup = `${apiBase}/repos/${input.repoFullName}/pulls?head=${owner}:${encodeURIComponent(input.head)}&state=open`;
             const found = await fetch(lookup, {
                 headers: {
                     Authorization: `Bearer ${input.ghToken}`,

@@ -198,16 +198,18 @@ test("verifySubTaskOutput: file_committed FAILS when file not in git log",
     assert.match(out.summary, /file_committed/);
   });
 
-test("verifySubTaskOutput: file_committed skips gracefully when probe absent",
+test("verifySubTaskOutput: file_committed FAILS CLOSED when probe absent (beta.57)",
   { skip: verify === null }, async () => {
-    // No fileCommittedSince probe — must not throw, must pass (graceful skip).
+    // beta.57 (P1): a missing probe used to skip-PASS (fail-open), letting a
+    // mis-wired caller green-light contracts it could not verify. Must not
+    // throw, must FAIL with a clear detail.
     const out = await verify.verifySubTaskOutput(
       [{ kind: "file_committed", path: "docs/SMOKE.md" }],
       { defaultBranch: "harness/smoke", subTaskStartMs: 0, baseSha: "abc" },
       probesAllFail, // no fileCommittedSince
     );
-    assert.equal(out.ok, true, "graceful skip should pass when probe absent");
-    assert.match(out.results[0].detail, /skipped/i);
+    assert.equal(out.ok, false, "missing probe must fail closed");
+    assert.match(out.results[0].detail, /failing closed/i);
   });
 
 // ============================================================
@@ -293,15 +295,15 @@ test("verifySubTaskOutput: file_pushed FAILS when file missing on remote branch"
     assert.match(out.summary, /file_pushed/);
   });
 
-test("verifySubTaskOutput: file_pushed skips gracefully when probe absent",
+test("verifySubTaskOutput: file_pushed FAILS CLOSED when probe absent (beta.57)",
   { skip: verify === null }, async () => {
     const out = await verify.verifySubTaskOutput(
       [{ kind: "file_pushed", path: "docs/SMOKE.md" }],
       { defaultBranch: "harness/smoke", subTaskStartMs: 0, baseSha: "abc" },
       probesAllFail,
     );
-    assert.equal(out.ok, true, "graceful skip");
-    assert.match(out.results[0].detail, /skipped/i);
+    assert.equal(out.ok, false, "missing probe must fail closed");
+    assert.match(out.results[0].detail, /failing closed/i);
   });
 
 // ============================================================
@@ -417,15 +419,52 @@ test("verifySubTaskOutput: pr_state FAILS when no PR found",
     assert.match(out.results[0].detail, /no PR found/i);
   });
 
-test("verifySubTaskOutput: pr_state skips gracefully when prForBranch probe absent",
+test("verifySubTaskOutput: pr_state FAILS CLOSED when prForBranch probe absent (beta.57)",
   { skip: verify === null }, async () => {
     const out = await verify.verifySubTaskOutput(
       [{ kind: "pr_state", state: "open" }],
       { defaultBranch: "harness/smoke", subTaskStartMs: 0, baseSha: "abc" },
       probesAllFail,
     );
-    assert.equal(out.ok, true, "graceful skip");
-    assert.match(out.results[0].detail, /skipped/i);
+    assert.equal(out.ok, false, "missing probe must fail closed");
+    assert.match(out.results[0].detail, /failing closed/i);
+  });
+
+// beta.57 (P1): "closed" is NOT "merged". A PR closed WITHOUT merge must not
+// satisfy a pr_state=merged contract; the explicit merged flag disambiguates.
+test("verifySubTaskOutput: pr_state=merged FAILS on closed-without-merge, PASSES on merged (beta.57)",
+  { skip: verify === null }, async () => {
+    const closedNotMerged = {
+      ...probesAllFail,
+      prForBranch: async () => ({
+        count: 1,
+        prs: [{ number: 10, state: "closed", draft: false, url: "https://github.com/o/r/pull/10", merged: false }],
+        detail: "1 closed PR",
+      }),
+    };
+    const outClosed = await verify.verifySubTaskOutput(
+      [{ kind: "pr_state", state: "merged" }],
+      { defaultBranch: "harness/smoke", subTaskStartMs: 0, baseSha: "abc" },
+      closedNotMerged,
+    );
+    assert.equal(outClosed.ok, false, "closed-without-merge must not pass a merged contract");
+    assert.match(outClosed.results[0].detail, /state=closed/);
+
+    const merged = {
+      ...probesAllFail,
+      prForBranch: async () => ({
+        count: 1,
+        prs: [{ number: 11, state: "closed", draft: false, url: "https://github.com/o/r/pull/11", merged: true }],
+        detail: "1 merged PR",
+      }),
+    };
+    const outMerged = await verify.verifySubTaskOutput(
+      [{ kind: "pr_state", state: "merged" }],
+      { defaultBranch: "harness/smoke", subTaskStartMs: 0, baseSha: "abc" },
+      merged,
+    );
+    assert.equal(outMerged.ok, true, outMerged.summary);
+    assert.match(outMerged.results[0].detail, /state=merged/);
   });
 
 // ============================================================
@@ -468,15 +507,15 @@ test("verifySubTaskOutput: file_in_pr FAILS when file NOT in PR files",
     assert.match(out.summary, /file_in_pr/);
   });
 
-test("verifySubTaskOutput: file_in_pr skips gracefully when probe absent",
+test("verifySubTaskOutput: file_in_pr FAILS CLOSED when probe absent (beta.57)",
   { skip: verify === null }, async () => {
     const out = await verify.verifySubTaskOutput(
       [{ kind: "file_in_pr", path: "docs/SMOKE.md", prNumber: 5 }],
       { defaultBranch: "harness/smoke", subTaskStartMs: 0, baseSha: "abc" },
       probesAllFail,
     );
-    assert.equal(out.ok, true, "graceful skip");
-    assert.match(out.results[0].detail, /skipped/i);
+    assert.equal(out.ok, false, "missing probe must fail closed");
+    assert.match(out.results[0].detail, /failing closed/i);
   });
 
 // ============================================================
@@ -534,15 +573,15 @@ test("verifySubTaskOutput: commit_sha_matches FAILS when remote branch not found
     assert.match(out.results[0].detail, /not found/i);
   });
 
-test("verifySubTaskOutput: commit_sha_matches skips gracefully when probes absent",
+test("verifySubTaskOutput: commit_sha_matches FAILS CLOSED when probes absent (beta.57)",
   { skip: verify === null }, async () => {
     const out = await verify.verifySubTaskOutput(
       [{ kind: "commit_sha_matches" }],
       { defaultBranch: "harness/smoke", subTaskStartMs: 0, baseSha: "abc" },
       probesAllFail,
     );
-    assert.equal(out.ok, true, "graceful skip");
-    assert.match(out.results[0].detail, /skipped/i);
+    assert.equal(out.ok, false, "missing probes must fail closed");
+    assert.match(out.results[0].detail, /failing closed/i);
   });
 
 // ============================================================

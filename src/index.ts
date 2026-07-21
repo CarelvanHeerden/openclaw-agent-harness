@@ -13,7 +13,7 @@
  * Shape mirrors memory-hybrid.
  */
 
-import { readFile, writeFile, stat } from "node:fs/promises";
+import { readFile, writeFile, stat, rm } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -563,7 +563,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             repoFullName: repo,
             baseBranch: config.repos.default_base_branch,
             sessionBranch: branch,
-            sessionId: `pending-${Date.now()}`,
+            // beta.57 (P3): a random suffix on the on-disk id. Two allocations
+            // in the same millisecond (concurrent sessions) used to collide on
+            // `pending-<Date.now()>` and abort with "worktree already exists".
+            sessionId: `pending-${Date.now()}-${(globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2)).slice(0, 8)}`,
             ghToken,
             commitIdentity: resolution.commitIdentity,
             // beta.44: on a revise (brief.pinnedBranch set), check out the
@@ -603,259 +606,6 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           // beta.53 (P2): capture uncommitted working-tree changes for the audit
           // + retry logic (wrote-but-didn't-commit vs zero-work).
           gitStatusPorcelain: (wt) => git.statusPorcelain(wt),
-          // beta.7 fix #1: real observable-side-effect probes. These hit the
-          // provider REST API / disk / git so a worker cannot self-report a
-          // push, PR, or file write that never happened.
-          buildVerifyProbes: (worktreePath, baseSha) => ({
-            remoteBranchExists: async (branch) => {
-              const b = branch || plan.branch;
-              try {
-                const ghToken = await resolveGitToken(resolution);
-                // Provider-specific ref lookup. GitHub: GET refs/heads/{b}.
-                // GitLab: GET /projects/{id}/repository/branches/{b}.
-                const [owner, repoName] = plan.repo.split("/");
-                let url: string;
-                if (resolution.provider === "gitlab") {
-                  const projectId = encodeURIComponent(`${owner}/${repoName}`);
-                  url = `${resolution.apiBase}/projects/${projectId}/repository/branches/${encodeURIComponent(b)}`;
-                } else {
-                  url = `${resolution.apiBase}/repos/${owner}/${repoName}/git/refs/heads/${b}`;
-                }
-                const res = await fetch(url, {
-                  headers: {
-                    Authorization: `Bearer ${ghToken}`,
-                    Accept: "application/vnd.github+json",
-                  },
-                });
-                return { exists: res.status === 200, detail: `${resolution.provider} ref lookup HTTP ${res.status}` };
-              } catch (err) {
-                return { exists: false, detail: `ref lookup error: ${String(err)}` };
-              }
-            },
-            prUrlPresent: async () => {
-              // The worker never opens PRs (the loop does, post-review). So a
-              // sub-task claiming pr_opened is inherently suspect: only a
-              // persisted final_pr_url for this worktree/branch counts.
-              const row = state.db
-                .prepare(`SELECT final_pr_url FROM sessions WHERE worktree_path = ? AND final_pr_url IS NOT NULL AND final_pr_url != '' LIMIT 1`)
-                .get(worktreePath) as { final_pr_url?: string } | undefined;
-              const url = row?.final_pr_url;
-              return { present: !!url, url: url ?? undefined, detail: url ? "final_pr_url set" : "no PR URL persisted for this worktree" };
-            },
-            fileWrittenSince: async (path, sinceMs) => {
-              try {
-                // beta.51: resolve the lead's contract path to the REAL changed
-                // file via structural matching (route group / src-prefix /
-                // monorepo drift), then stat THAT file. beta.50 fixed this for
-                // file_committed but left file_written on exact resolve(),
-                // which ENOENT'd on the literal brief path (the #858 seq-4
-                // failure). See path-match.ts.
-                const changed = await git.listChangedFiles(worktreePath, baseSha);
-                const match = resolveContractPath(changed, path);
-                if (!match) {
-                  return { written: false, detail: `file not in diff vs base (${changed.length} changed: ${changed.slice(0, 8).join(", ")})` };
-                }
-                const abs = resolve(worktreePath, match.file);
-                const st = await stat(abs);
-                const freshEnough = st.mtimeMs >= sinceMs - 1000; // 1s clock slack
-                if (!freshEnough) return { written: false, detail: `${match.file} (via ${match.rule}) mtime ${new Date(st.mtimeMs).toISOString()} predates sub-task start` };
-                return { written: true, detail: `file changed vs base + mtime fresh (${match.file} via ${match.rule} match)` };
-              } catch (err) {
-                return { written: false, detail: `stat error: ${String(err)}` };
-              }
-            },
-            commitMadeSince: async (base) => {
-              try {
-                const head = await git.baseSha(worktreePath);
-                const made = head !== base;
-                return { made, detail: made ? `HEAD ${head.slice(0, 7)} != base ${base.slice(0, 7)}` : "no new commit vs base" };
-              } catch (err) {
-                return { made: false, detail: `rev-parse error: ${String(err)}` };
-              }
-            },
-
-            // ---- beta.10 optional probes (worker path). Mirrors the loop-path
-            // factory so sub-task verification hits the same real endpoints
-            // regardless of who's driving verification. ----
-
-            fileExistsOnDisk: async (path: string) => {
-              // Primary: literal path (untracked files won't be in git diff, so
-              // we can't rely on the changed-file list here). beta.51 fallback:
-              // if the literal path is absent, resolve it structurally against
-              // committed+changed files (route group / src-prefix drift).
-              const tryStat = async (rel: string) => {
-                const abs = resolve(worktreePath, rel);
-                const st = await stat(abs);
-                return { isFile: st.isFile(), size: st.size };
-              };
-              try {
-                const s = await tryStat(path);
-                return {
-                  exists: s.isFile,
-                  nonEmpty: s.size > 0,
-                  detail: s.isFile ? (s.size > 0 ? `file present (${s.size} bytes)` : "file present but empty") : "path exists but is not a regular file",
-                };
-              } catch {
-                try {
-                  const committed = await git.listCommittedFiles(worktreePath, baseSha).catch(() => [] as string[]);
-                  const match = resolveContractPath(committed, path);
-                  if (match) {
-                    const s = await tryStat(match.file);
-                    return {
-                      exists: s.isFile,
-                      nonEmpty: s.size > 0,
-                      detail: s.isFile ? `file present via ${match.rule} match (${match.file}, ${s.size} bytes)` : "matched path is not a regular file",
-                    };
-                  }
-                  return { exists: false, nonEmpty: false, detail: `no file matching contract path (checked literal + ${committed.length} committed)` };
-                } catch (err2) {
-                  const msg = err2 instanceof Error ? err2.message : String(err2);
-                  return { exists: false, nonEmpty: false, detail: `stat error: ${msg}` };
-                }
-              }
-            },
-
-            fileCommittedSince: async (path: string, base: string) => {
-              try {
-                const files = await git.listCommittedFiles(worktreePath, base);
-                // beta.50: match by structural equivalence, not exact string --
-                // the lead authors contract paths from route/URL semantics but
-                // the worker commits real filesystem paths (Next.js route
-                // groups, monorepo prefixes, etc). See path-match.ts.
-                let matchedFile: string | undefined;
-                let matchedRule: string | null = null;
-                for (const f of files) {
-                  const rule = pathMatchRule(f, path);
-                  if (rule) {
-                    matchedFile = f;
-                    matchedRule = rule;
-                    if (rule === "exact") break;
-                  }
-                }
-                const committed = matchedRule !== null;
-                return {
-                  committed,
-                  detail: committed
-                    ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD via ${matchedRule} match (${matchedFile}; ${files.length} file(s) total)`
-                    : `file not in commits since base (${files.length} file(s) checked: ${files.slice(0, 8).join(", ")})`,
-                };
-              } catch (err) {
-                return { committed: false, detail: `git log error: ${String(err)}` };
-              }
-            },
-
-            remoteBranchSha: async (branch: string) => {
-              try {
-                const ghToken = await resolveGitToken(resolution).catch(() => undefined);
-                const sha = await git.remoteBranchSha(worktreePath, "origin", branch, ghToken);
-                return {
-                  sha,
-                  detail: sha ? `origin/${branch} tip ${sha.slice(0, 12)}` : `origin has no ref for ${branch}`,
-                };
-              } catch (err) {
-                return { sha: undefined, detail: `ls-remote error: ${String(err)}` };
-              }
-            },
-
-            remoteFileExists: async (path: string, branch: string) => {
-              try {
-                const ghToken = await resolveGitToken(resolution);
-                const [owner, repoName] = plan.repo.split("/");
-                let url: string;
-                if (resolution.provider === "gitlab") {
-                  const projectId = encodeURIComponent(`${owner}/${repoName}`);
-                  url = `${resolution.apiBase}/projects/${projectId}/repository/files/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`;
-                } else {
-                  url = `${resolution.apiBase}/repos/${owner}/${repoName}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=${encodeURIComponent(branch)}`;
-                }
-                const res = await fetch(url, {
-                  headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
-                });
-                return {
-                  exists: res.status === 200,
-                  detail: `${resolution.provider} contents lookup HTTP ${res.status} for ${path}@${branch}`,
-                };
-              } catch (err) {
-                return { exists: false, detail: `contents lookup error: ${String(err)}` };
-              }
-            },
-
-            prForBranch: async (branch: string) => {
-              try {
-                const ghToken = await resolveGitToken(resolution);
-                const [owner, repoName] = plan.repo.split("/");
-                if (resolution.provider === "gitlab") {
-                  const projectId = encodeURIComponent(`${owner}/${repoName}`);
-                  const url = `${resolution.apiBase}/projects/${projectId}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all`;
-                  const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}` } });
-                  const arr = (await res.json().catch(() => [])) as Array<{ iid?: number; state?: string; draft?: boolean; work_in_progress?: boolean; web_url?: string }>;
-                  const prs = Array.isArray(arr)
-                    ? arr
-                        .filter((m) => typeof m.iid === "number")
-                        .map((m) => ({
-                          number: m.iid as number,
-                          state: m.state ?? "unknown",
-                          draft: !!(m.draft || m.work_in_progress),
-                          url: m.web_url ?? "",
-                        }))
-                    : [];
-                  return { count: prs.length, prs, detail: `gitlab MR count ${prs.length} for source_branch=${branch}` };
-                }
-                const url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all`;
-                const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
-                const arr = (await res.json().catch(() => [])) as Array<{ number?: number; state?: string; draft?: boolean; html_url?: string }>;
-                const prs = Array.isArray(arr)
-                  ? arr
-                      .filter((p) => typeof p.number === "number")
-                      .map((p) => ({
-                        number: p.number as number,
-                        state: p.state ?? "unknown",
-                        draft: !!p.draft,
-                        url: p.html_url ?? "",
-                      }))
-                  : [];
-                return { count: prs.length, prs, detail: `github PR count ${prs.length} for head=${owner}:${branch}` };
-              } catch (err) {
-                return { count: 0, prs: [], detail: `PR lookup error: ${String(err)}` };
-              }
-            },
-
-            prFiles: async (prNumber: number) => {
-              try {
-                const ghToken = await resolveGitToken(resolution);
-                const [owner, repoName] = plan.repo.split("/");
-                let url: string;
-                if (resolution.provider === "gitlab") {
-                  const projectId = encodeURIComponent(`${owner}/${repoName}`);
-                  url = `${resolution.apiBase}/projects/${projectId}/merge_requests/${prNumber}/changes`;
-                  const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}` } });
-                  const j = (await res.json().catch(() => ({}))) as { changes?: Array<{ new_path?: string; old_path?: string }> };
-                  const files = (j.changes ?? [])
-                    .map((c) => ({ filename: c.new_path ?? c.old_path ?? "" }))
-                    .filter((f) => f.filename);
-                  return { files, detail: `gitlab MR !${prNumber} changes ${files.length}` };
-                }
-                url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls/${prNumber}/files?per_page=100`;
-                const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
-                const arr = (await res.json().catch(() => [])) as Array<{ filename?: string }>;
-                const files = Array.isArray(arr)
-                  ? arr.filter((f) => typeof f.filename === "string").map((f) => ({ filename: f.filename as string }))
-                  : [];
-                return { files, detail: `github PR #${prNumber} files ${files.length}` };
-              } catch (err) {
-                return { files: [], detail: `PR files lookup error: ${String(err)}` };
-              }
-            },
-
-            localHeadSha: async () => {
-              try {
-                const sha = await git.baseSha(worktreePath);
-                return { sha, detail: `worktree HEAD ${sha.slice(0, 12)}` };
-              } catch (err) {
-                return { sha: "", detail: `rev-parse error: ${String(err)}` };
-              }
-            },
-          }),
         },
         resumeSessionId,
         dispatchHint,
@@ -867,9 +617,22 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const diffFile = resolve(config.storage.worktree_root.replace(/^~/, process.env.HOME ?? ""), `${Date.now()}.diff`);
       await mkdir(dirname(diffFile), { recursive: true });
       await writeFile(diffFile, diffText, "utf8");
-      return runAdversaryCore(
+      // beta.57 (P3): the diff file was written into worktree_root and never
+      // deleted -- one leaked <ts>.diff per review cycle, forever.
+      try {
+        return await runAdversaryCore(
         {
-          crystallisedPrompt: brief.title,
+          // beta.56 (P0-2): pass the FULL brief, not just the title. The
+          // adversary judges spec fidelity against acceptance criteria; it
+          // previously never saw them (and the title alone was also dropped
+          // by the prompt builder -- fixed in fable5-adversary.ts).
+          crystallisedPrompt: [
+            `Title: ${brief.title}`,
+            `Motivation: ${brief.motivation}`,
+            `Acceptance criteria:`,
+            ...brief.acceptanceCriteria.map((c) => `- ${c}`),
+            ...(brief.outOfScope?.length ? ["Out of scope:", ...brief.outOfScope.map((c) => `- ${c}`)] : []),
+          ].join("\n"),
           diffPath: diffFile,
           repoPath: plan.worktreePath,
           runtime,
@@ -902,7 +665,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             };
           },
         },
-      );
+        );
+      } finally {
+        await rm(diffFile, { force: true }).catch(() => undefined);
+      }
     },
 
     fetchRuntime: async ({ plan, sessionId }) => {
@@ -979,6 +745,8 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         title: `harness: ${brief.title}`,
         body: renderPrBody(brief, reviewReport),
         ghToken,
+        // beta.57 (P3): route through the resolved API base (GH Enterprise).
+        apiBase: resolution.apiBase,
         // beta.32: default to NON-draft. Opening a draft PR on a repo that
         // doesn't support drafts (private/free) returns HTTP 422 and killed
         // the run at the final step. Only draft when explicitly enabled; the
@@ -1102,16 +870,27 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // ---- beta.10 optional probes (fully wired) ----
 
         /** file_written kind: fs.stat on the worktree. Includes untracked files (fixes beta.8 bug). */
-        fileExistsOnDisk: async (path: string) => {
+        fileExistsOnDisk: async (path: string, sinceMs?: number) => {
           // beta.51: literal-path primary (untracked files aren't in git diff),
           // structural committed-file fallback for route-group / prefix drift.
           const tryStat = async (rel: string) => {
             const abs = resolve(worktreePath, rel);
             const st = await stat(abs);
-            return { isFile: st.isFile(), size: st.size };
+            return { isFile: st.isFile(), size: st.size, mtimeMs: st.mtimeMs };
           };
           try {
             const s = await tryStat(path);
+            // beta.57 (P1): freshness check. A file that merely PRE-EXISTED the
+            // sub-task must not vacuously satisfy `file_written`. Fresh = mtime
+            // at/after the sub-task start (2s clock slack), which also covers
+            // untracked just-written files that git diff can't see.
+            if (s.isFile && sinceMs && sinceMs > 0 && s.mtimeMs < sinceMs - 2000) {
+              return {
+                exists: true,
+                nonEmpty: false,
+                detail: `file present (${s.size} bytes) but its mtime predates the sub-task start -- pre-existing, not written by this sub-task`,
+              };
+            }
             return {
               exists: s.isFile,
               nonEmpty: s.size > 0,
@@ -1228,7 +1007,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             }
             const url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all`;
             const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
-            const arr = (await res.json().catch(() => [])) as Array<{ number?: number; state?: string; draft?: boolean; html_url?: string }>;
+            const arr = (await res.json().catch(() => [])) as Array<{ number?: number; state?: string; draft?: boolean; html_url?: string; merged_at?: string | null }>;
             const prs = Array.isArray(arr)
               ? arr
                   .filter((p) => typeof p.number === "number")
@@ -1237,6 +1016,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                     state: p.state ?? "unknown",
                     draft: !!p.draft,
                     url: p.html_url ?? "",
+                    // beta.57 (P1): GitHub state is "closed" for BOTH merged and
+                    // rejected PRs; merged_at disambiguates for pr_state.
+                    merged: !!p.merged_at,
                   }))
               : [];
             return { count: prs.length, prs, detail: `github PR count ${prs.length} for head=${owner}:${branch}` };
@@ -1419,7 +1201,14 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       if (!tokenOk) missing.push("token");
 
       if (missing.length === 0) {
-        return { ok: true, missing: [], message: "", provenance: resolution.provenance };
+        // beta.57 (P3): GitLab MR creation is not implemented yet (issue #25).
+        // Say so at PREFLIGHT, before any spend, instead of letting the run
+        // burn its whole budget and fail at the final push-and-open-MR step.
+        const gitlabNote =
+          resolution.provider === "gitlab"
+            ? "Note: automated merge-request creation for GitLab is not yet implemented (issue #25). The run will complete and push its branch, but you will need to open the MR manually."
+            : "";
+        return { ok: true, missing: [], message: gitlabNote, provenance: resolution.provenance };
       }
 
       const parts: string[] = [];
@@ -1437,8 +1226,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       };
     },
     mergePr: async ({ sessionId, invokedBy, repairBudgetUsd }) => {
-      if (invokedBy && !config.slack.authorised_users.includes(invokedBy)) {
-        return { ok: false, message: `Invoker ${invokedBy} is not authorised.` };
+      // beta.57 (P2): invokedBy is REQUIRED. It used to be optional and only
+      // checked when present, so omitting it merged a PR with no authorisation.
+      if (!invokedBy || !config.slack.authorised_users.includes(invokedBy)) {
+        return { ok: false, message: `Invoker ${invokedBy ?? "(missing)"} is not authorised (invokedBy is required).` };
       }
       const row = state.db
         .prepare(
@@ -1722,7 +1513,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           gitHubUser: owner!,
           repoFullName: repo,
         });
-        return creds.getToken(resolution.credentialService);
+        // beta.57 (P3): use the shared vault-first + ENV-FALLBACK resolver.
+        // The watcher previously called creds.getToken() directly (vault-only),
+        // so on the vault-less Staging container every poll failed even though
+        // GH_TOKEN was set -- merged PRs were never noticed and their
+        // worktrees never released.
+        return resolveGitToken(resolution);
       },
     });
     if (api.registerService) {
@@ -1882,6 +1678,16 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
       for (const r of pausedRows) if (r.worktree_path && r.worktree_path.trim()) protectedWorktreePaths.push(r.worktree_path);
     } catch (err) {
       api.logger.warn("[harness] worktree-heal: failed to resolve awaiting_clarification worktrees", { err: String(err) });
+    }
+    // beta.57 (P3): paths with an allocation IN FLIGHT in this process. These
+    // have no session row / worktree_path yet; before this the only shield
+    // was the 2-minute mtime grace window, which a slow `npm ci` bootstrap
+    // could outlive -- letting a concurrent heal reap a mid-allocation dir.
+    try {
+      const { inFlightWorktreePaths } = await import("./adapters/git-worktree.js");
+      protectedWorktreePaths.push(...inFlightWorktreePaths());
+    } catch (err) {
+      api.logger.warn("[harness] worktree-heal: failed to resolve in-flight allocations", { err: String(err) });
     }
     const { statSync } = await import("node:fs");
     const healResult = await healOrphanedWorktrees(state, {
@@ -2187,10 +1993,12 @@ function buildDeployRepairDeps(ctx: {
       }
       // Branch-protected: open + auto-merge a revert PR.
       try {
+        const resolution = pat.resolve({ slackUserId: requester, gitHubUser: repoFullName.split("/")[0]!, repoFullName });
         const pr = await createPullRequest({
           repoFullName,
           head: r.branch,
           base: config.repos.default_base_branch,
+          apiBase: resolution.apiBase,
           title: `harness: revert failed deploy-repair chain (session ${sessionId.slice(0, 8)})`,
           body: `Automated revert of a deploy-repair chain that could not produce a healthy Vercel deployment. Reverts ${r.revertedShas.length} merge(s) to restore \`${config.repos.default_base_branch}\` to a working state.`,
           ghToken,
@@ -2342,20 +2150,29 @@ async function teardown(runtime: HarnessRuntime, api: HarnessPluginApi): Promise
   // loop keeps ownership until it finishes; we just hold its DB open for it.
   const drainSeconds = runtime.config?.loop?.teardown_drain_seconds ?? 3600;
   const drainDeadline = Date.now() + drainSeconds * 1000;
+  // beta.57 (P1): drain only on sessions THIS runtime's loop instance owns.
+  // `runningSessionIds()` is the module-scoped registry shared across runtimes
+  // (it deliberately survives a re-register), so draining on it made the
+  // doomed runtime wait for the NEW runtime's loops too -- up to
+  // teardown_drain_seconds for work whose DB handle it isn't even holding.
+  const ownedRunning = (): string[] =>
+    typeof runtime.loop?.ownedRunningSessionIds === "function"
+      ? runtime.loop.ownedRunningSessionIds()
+      : runningSessionIds();
   let waited = false;
-  while (runningSessionIds().length > 0 && Date.now() < drainDeadline) {
+  while (ownedRunning().length > 0 && Date.now() < drainDeadline) {
     if (!waited) {
       api.logger.info("[harness] teardown deferred: waiting for running loop(s) to drain before closing runtime", {
-        running: runningSessionIds(),
+        running: ownedRunning(),
         drainSeconds,
       });
       waited = true;
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  if (runningSessionIds().length > 0) {
+  if (ownedRunning().length > 0) {
     api.logger.warn("[harness] teardown drain deadline exceeded; proceeding with teardown despite running loop(s)", {
-      running: runningSessionIds(),
+      running: ownedRunning(),
       drainSeconds,
     });
   } else if (waited) {

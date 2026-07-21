@@ -47,6 +47,11 @@ export function openStateStoreSync(pathHint) {
     // `node:sqlite` has no `.pragma()` helper; use `.exec` with PRAGMA text.
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
+    // beta.57 (P3): without a busy_timeout, a concurrent writer (teardown-drain
+    // overlap of two runtimes on re-register churn, or the pr-watcher ticking
+    // during a loop checkpoint) makes SQLite throw SQLITE_BUSY immediately
+    // instead of waiting out the (short) lock -- crashing the loop mid-run.
+    db.exec("PRAGMA busy_timeout = 5000");
     const schema = readFileSync(locateSchema(), "utf8");
     db.exec(schema);
     // Additive migrations. Each entry is 'try to add column, ignore if already there'.
