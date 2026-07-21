@@ -247,6 +247,16 @@ export declare class OrchestratorLoop {
     private readonly ownedSessions;
     ownedRunningSessionIds(): string[];
     /**
+     * beta.60: instance accessor for the module-level re-entrancy guard set (all
+     * in-process running loops, across runtime generations). Used by
+     * harness_resume force-unstick to REFUSE unsticking a session that still has
+     * a live loop-runner tracked -- so we never yank a genuinely-busy loop out
+     * from under itself. A session that wedged with a dead executor will NOT be
+     * in this set once the stall-watchdog/reclaim cleared its handle (or if the
+     * runtime that ran it was torn down), which is exactly when force is safe.
+     */
+    runningSessionIds(): string[];
+    /**
      * beta.42: arm an active stall-watchdog for a session whose re-entry the
      * guard just skipped. After `loop.stall_watchdog_seconds`, re-read the
      * session's progress; if it has NOT advanced past `lastProgressMs` AND the

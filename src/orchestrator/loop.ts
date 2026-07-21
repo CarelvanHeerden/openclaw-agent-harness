@@ -598,6 +598,19 @@ export class OrchestratorLoop {
   }
 
   /**
+   * beta.60: instance accessor for the module-level re-entrancy guard set (all
+   * in-process running loops, across runtime generations). Used by
+   * harness_resume force-unstick to REFUSE unsticking a session that still has
+   * a live loop-runner tracked -- so we never yank a genuinely-busy loop out
+   * from under itself. A session that wedged with a dead executor will NOT be
+   * in this set once the stall-watchdog/reclaim cleared its handle (or if the
+   * runtime that ran it was torn down), which is exactly when force is safe.
+   */
+  runningSessionIds(): string[] {
+    return runningSessionIds();
+  }
+
+  /**
    * beta.42: arm an active stall-watchdog for a session whose re-entry the
    * guard just skipped. After `loop.stall_watchdog_seconds`, re-read the
    * session's progress; if it has NOT advanced past `lastProgressMs` AND the
@@ -1302,10 +1315,45 @@ export class OrchestratorLoop {
           inFlight.length < concurrency &&
           (ordered[idx]!.dependsOn ?? []).every((d) => done.has(d))
         ) {
-          const p = runOne(ordered[idx]!).finally(() => {
-            const i = inFlight.indexOf(p);
-            if (i >= 0) inFlight.splice(i, 1);
-          });
+          const st = ordered[idx]!;
+          // beta.60: bound the ENTIRE runOne, not just the worker SDK call.
+          // beta.42 wrapped runWorker in withTimeout, but runOne ALSO awaits
+          // unbounded git/IO before and after the worker (worktreeHeadSha,
+          // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
+          // hang in ANY of those froze the dispatcher at `await
+          // Promise.race(inFlight)` forever with the sub-task row stuck
+          // `running`, sdk_session_id=null, cost_usd=0, and NO worker process
+          // spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent, no
+          // auto-recovery, because nothing re-called run() to arm the
+          // stall-watchdog). Bounding runOne converts any such hang into a
+          // clean SubTaskDeadlineError -> failed.err -> terminal.
+          const p = withTimeout(runOne(st), this.deps.config.loop.subtask_deadline_seconds)
+            .catch((err) => {
+              if (err instanceof WorkerTimeoutError) {
+                this.deps.state.audit(
+                  "loop.subtask_deadline_exceeded",
+                  { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds },
+                  sessionId,
+                );
+                this.deps.logger.error(
+                  "[loop] sub-task exceeded subtask_deadline_seconds (dispatch hang, likely a stalled git/IO await before or after the worker); failing the run",
+                  { sessionId, seq: st.seq, seconds: this.deps.config.loop.subtask_deadline_seconds },
+                );
+                // mark the stuck row failed so it doesn't linger as `running`
+                this.deps.state.db.prepare(
+                  `UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`,
+                ).run(`sub-task dispatch exceeded ${this.deps.config.loop.subtask_deadline_seconds}s (stalled IO)`, Date.now(), sessionId, cycle, st.seq);
+                if (!failed.err) { failed.err = `subtask_deadline_exceeded (seq ${st.seq})`; failed.seq = st.seq; }
+              } else {
+                // runOne handles its own errors internally; a throw here is
+                // unexpected -- surface it rather than silently dropping.
+                if (!failed.err) { failed.err = `subtask_dispatch_error: ${String(err)}`; failed.seq = st.seq; }
+              }
+            })
+            .finally(() => {
+              const i = inFlight.indexOf(p);
+              if (i >= 0) inFlight.splice(i, 1);
+            });
           inFlight.push(p);
           idx++;
         }
