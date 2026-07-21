@@ -134,10 +134,12 @@ const RULE_RANK: Record<string, number> = {
   suffix: 2,
   "basename-dir": 3,
   basename: 4,
+  "basename-unique": 5,
 };
 export function resolveContractPath(
   realFiles: string[],
   contract: string,
+  opts: { allowBasenameFallback?: boolean } = {},
 ): { file: string; rule: string } | null {
   let best: { file: string; rule: string } | null = null;
   for (const f of realFiles) {
@@ -148,5 +150,38 @@ export function resolveContractPath(
       best = { file: f, rule };
     }
   }
-  return best;
+  if (best) return best;
+
+  // beta.59 (D-path-drift): last-resort BASENAME-UNIQUE fallback.
+  //
+  // ROOT CAUSE (b55-drop10 #858, session 1db243c1, seq 4): the lead bakes a
+  // contract path from the crystallised brief's stale filesLikelyTouched hints
+  // BEFORE the observe probe runs. seq 4's contract was
+  // `components/governance-risk/risks/taxonomy-filter-dropdown.tsx`, but the
+  // worker (correctly, using the probe's discovered layout) committed
+  // `src/components/grc/taxonomy-filter-dropdown.tsx`. Different directory
+  // TOPOLOGY (`grc` vs `governance-risk/risks`), so exact/route-group/suffix/
+  // basename-dir ALL miss -- there is no common trailing path. A correct,
+  // committed change failed verification.
+  //
+  // Fallback: when the contract has directory context AND exactly ONE candidate
+  // file in `realFiles` shares the contract's basename, accept it. SAFETY: this
+  // is only sound because callers pass a PER-SUB-TASK-scoped file list (the
+  // `git log/diff base..HEAD` since the sub-task's own worker-session-start
+  // SHA), NOT the whole repo -- so a lone same-basename file in that tiny set
+  // is demonstrably the file THIS sub-task just wrote. The uniqueness guard
+  // means an ambiguous multi-file basename collision falls through to a real
+  // failure rather than guessing. Opt-in (`allowBasenameFallback`) so
+  // repo-wide callers (e.g. file_in_pr over the whole PR file list) never enable
+  // it. `commit_made` still independently proves a real commit happened.
+  if (opts.allowBasenameFallback) {
+    const t = normalisePath(contract);
+    const tHasDir = t.includes("/");
+    if (tHasDir) {
+      const bn = baseName(t);
+      const hits = realFiles.filter((f) => baseName(f) === bn);
+      if (hits.length === 1) return { file: hits[0]!, rule: "basename-unique" };
+    }
+  }
+  return null;
 }
