@@ -351,7 +351,7 @@ export function bootstrapHarnessSync(api) {
                 estimateCost: (p) => p.subTasks.reduce((acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens), 0),
             });
         },
-        runWorker: async ({ brief, subTask, plan, resumeSessionId, requester }) => {
+        runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint }) => {
             const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
             const canUseTool = buildBashGuard(config.safety);
             const resolution = pat.resolve({
@@ -370,6 +370,9 @@ export function bootstrapHarnessSync(api) {
                 // beta.47: reconcile commit sha when the worker self-commits.
                 gitHeadSha: (wt) => git.baseSha(wt),
                 gitListCommittedFiles: (wt, base) => git.listCommittedFiles(wt, base),
+                // beta.53 (P2): capture uncommitted working-tree changes for the audit
+                // + retry logic (wrote-but-didn't-commit vs zero-work).
+                gitStatusPorcelain: (wt) => git.statusPorcelain(wt),
                 // beta.7 fix #1: real observable-side-effect probes. These hit the
                 // provider REST API / disk / git so a worker cannot self-report a
                 // push, PR, or file write that never happened.
@@ -630,7 +633,7 @@ export function bootstrapHarnessSync(api) {
                         }
                     },
                 }),
-            }, resumeSessionId);
+            }, resumeSessionId, dispatchHint);
         },
         runAdversary: async ({ brief, plan, runtime }) => {
             const diffText = await git.diff(plan.worktreePath, config.repos.default_base_branch);

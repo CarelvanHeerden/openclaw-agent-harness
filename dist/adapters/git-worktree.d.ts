@@ -34,6 +34,15 @@ export interface GitAdapterOptions {
         warn: (m: string, meta?: unknown) => void;
         error: (m: string, meta?: unknown) => void;
     };
+    /**
+     * beta.53 (P3/P4): install node deps (`npm ci`/`npm install`) once at
+     * worktree allocation so workers never hit an un-installed tool mid-turn
+     * (the env-wait "Monitor event" hallucination trigger). Default enabled;
+     * set false to skip (e.g. non-node repos or tests).
+     */
+    bootstrapDeps?: boolean;
+    /** beta.53: max ms for the bootstrap install before it is abandoned. Default 600000. */
+    bootstrapTimeoutMs?: number;
 }
 /**
  * beta.24: build a token-embedded HTTPS URL for the initial private-repo
@@ -78,6 +87,13 @@ export declare class GitAdapter {
      */
     private makeAskpass;
     allocate(ctx: GitContext): Promise<string>;
+    /**
+     * beta.53: install node deps in a freshly-allocated worktree when a
+     * package.json is present and node_modules is missing/empty. Prefers a
+     * clean `npm ci` (respects the lockfile) and falls back to `npm install`
+     * when there is no lockfile. Bounded + best-effort: never throws.
+     */
+    private bootstrapWorktreeDeps;
     /**
      * Release (remove) a session's worktree.
      *
@@ -148,6 +164,18 @@ export declare class GitAdapter {
     baseSha(worktreePath: string): Promise<string>;
     listChangedFiles(worktreePath: string, base: string): Promise<string[]>;
     /**
+     * beta.53 (P2): the working-tree files a worker actually touched, INCLUDING
+     * uncommitted + untracked changes. `listChangedFiles`/`listCommittedFiles`
+     * only see committed work (`git diff`/`git log base..HEAD`), so a worker that
+     * WROTE a file but never ran `git commit` shows up as "no side-effects"
+     * (Staging beta.52 #858 seq-5: the aria-label edit was on disk, 1145 bytes,
+     * but filesTouched was []). `git status --porcelain` surfaces the uncommitted
+     * work so the audit + the retry logic can distinguish a partial-work turn
+     * ("wrote X, didn't commit") from a genuine zero-work turn. Best-effort:
+     * returns [] on any error.
+     */
+    statusPorcelain(worktreePath: string): Promise<string[]>;
+    /**
      * beta.10: files touched by commits in `base..HEAD`.
      * Unlike `listChangedFiles` (`git diff`) this includes files reachable via
      * multi-commit history even if the net diff is empty; unlike `git diff` it
@@ -214,5 +242,11 @@ export declare class GitAdapter {
      */
     private installCredHelper;
     private run;
+    /**
+     * beta.53: run an arbitrary command (e.g. `npm ci`) in `cwd` with a hard
+     * timeout. Used by worktree dep bootstrap. Rejects on non-zero exit, spawn
+     * error, or timeout (the caller treats all as non-fatal best-effort).
+     */
+    private runCmd;
 }
 //# sourceMappingURL=git-worktree.d.ts.map
