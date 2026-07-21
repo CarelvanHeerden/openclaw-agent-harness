@@ -49,11 +49,19 @@ test("beta.29: compiled worktree add carries askpass (dist)", { skip: !existsSyn
 
 test("beta.29: startSessionRow reclaims a thread from a terminal prior session (src)", () => {
   const src = readFileSync(resolve(repoRoot, "src/tools/registration.ts"), "utf8");
-  // Reclaim query deletes only terminal statuses.
+  // beta.57 (P3): reclaim now RE-KEYS the terminal row's slack_thread to a
+  // tombstone instead of DELETEing it -- deleting dropped the pr-watcher's
+  // record of an open PR and the revise lineage. Only terminal statuses are
+  // touched either way.
   assert.match(
     src,
-    /DELETE FROM sessions WHERE slack_channel = \? AND slack_thread = \? AND status IN \('done','failed','aborted'\)/,
-    "must delete only terminal (done/failed/aborted) prior sessions when reclaiming a thread.",
+    /UPDATE sessions SET slack_thread = 'retired:' \|\| id \|\| ':' \|\| slack_thread[\s\S]{0,200}status IN \('done','failed','aborted'\)/,
+    "must re-key (not delete) only terminal (done/failed/aborted) prior sessions when reclaiming a thread.",
+  );
+  assert.doesNotMatch(
+    src,
+    /DELETE FROM sessions WHERE slack_channel = \? AND slack_thread = \?/,
+    "reclaim must no longer DELETE prior session rows.",
   );
   // Non-terminal active session still blocks.
   assert.match(

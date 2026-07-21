@@ -13,6 +13,13 @@ export interface CreatePrInput {
     body: string;
     ghToken: string;
     draft?: boolean;
+    /**
+     * beta.57 (P3): REST API base. Defaults to public github.com; pass the
+     * resolved provider apiBase so GitHub Enterprise hosts work (every other
+     * REST call already routes through resolution.apiBase; this adapter was
+     * the one hardcoded holdout).
+     */
+    apiBase?: string;
 }
 export interface CreatePrOutput {
     number: number;

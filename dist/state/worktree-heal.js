@@ -128,13 +128,18 @@ export async function healOrphanedWorktrees(state, deps) {
     return result;
 }
 /**
- * Match paths the allocator produces: `pending-<digits>` (current allocator,
- * beta-era) and UUIDs (planned future migration). Deliberately conservative
- * so a mis-configured `worktrees_root` cannot cascade into removing arbitrary
+ * Match paths the allocator produces: `pending-<digits>` (pre-beta.57),
+ * `pending-<digits>-<hex8>` (beta.57 collision-safe ids), `revert-<digits>`
+ * (deploy-repair revert scratch worktrees, previously never reaped), and
+ * UUIDs (planned future migration). Deliberately conservative so a
+ * mis-configured `worktrees_root` cannot cascade into removing arbitrary
  * user dirs.
  */
 export function looksLikeAllocatorWorktree(name) {
-    if (/^pending-\d+$/.test(name))
+    if (/^pending-\d+(-[0-9a-f]{1,8})?$/i.test(name))
+        return true;
+    // beta.57 (P3): deploy-repair revert scratch dirs leaked forever before.
+    if (/^revert-\d+$/.test(name))
         return true;
     // UUIDv4-ish
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name))

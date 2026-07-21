@@ -15,7 +15,6 @@
  */
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./fable5-lead.js";
-import { type VerifyProbes, type VerifyOutcome } from "./verify.js";
 export interface WorkerResult {
     status: "completed" | "failed" | "timeout";
     filesChanged: string[];
@@ -41,15 +40,6 @@ export interface WorkerResult {
      * The retry-with-context logic (P1b) branches on whether this is non-empty.
      */
     uncommittedFiles?: string[];
-    /**
-     * Result of post-execution observable-side-effect verification (beta.7
-     * fix #1). Undefined when the sub-task declared no `verify` contracts.
-     * When present and `!ok`, `status` is forced to `failed` and `costUsd` is
-     * wasted spend.
-     */
-    verification?: VerifyOutcome;
-    /** True when the SDK reported success but verification proved otherwise. */
-    wastedSpend?: boolean;
 }
 export interface WorkerDeps {
     config: HarnessConfig;
@@ -123,12 +113,6 @@ export interface WorkerDeps {
         allow: boolean;
         reason?: string;
     }>;
-    /**
-     * Observable-side-effect probes for post-execution verification (beta.7
-     * fix #1). Optional: when absent, verification is skipped and the SDK
-     * signal is trusted (back-compat with existing test doubles).
-     */
-    buildVerifyProbes?: (worktreePath: string, baseSha: string) => VerifyProbes;
 }
 /**
  * Beta.21: minimal OKF concept shape the worker prompt understands.

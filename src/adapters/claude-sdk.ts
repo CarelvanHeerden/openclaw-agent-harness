@@ -37,12 +37,28 @@ import type { LeadPlan, LeadPlanSubTask } from "../orchestrator/fable5-lead.js";
  * default behaviour (inherit parent env) for local dev where the developer
  * may already be logged in.
  */
+/**
+ * beta.57 (P2): env vars that must NEVER reach the worker subprocess. The SDK
+ * child previously inherited the FULL harness env -- including GH_TOKEN /
+ * GITLAB_TOKEN / VERCEL_TOKEN / SLACK tokens -- so any worker could
+ * `echo $GH_TOKEN` (Bash env access is unguardable) and exfiltrate the PAT
+ * the harness so carefully keeps out of git config. The worker needs NONE of
+ * these: git creds are injected per-invocation by the HARNESS's own git ops
+ * (askpass/cred-helper), never the worker's.
+ */
+const SDK_ENV_DENY_EXACT = new Set(["OAH_GH_TOKEN"]);
+const SDK_ENV_DENY_RE = /(^|_)(TOKEN|SECRET|SECRETS|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)(_|$)/i;
+
 export function buildSdkEnv(apiKey?: string): Record<string, string> | undefined {
   if (!apiKey) return undefined;
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v === "string") base[k] = v;
+    if (typeof v !== "string") continue;
+    if (SDK_ENV_DENY_EXACT.has(k)) continue;
+    if (SDK_ENV_DENY_RE.test(k)) continue;
+    base[k] = v;
   }
+  // The ONE secret the SDK subprocess genuinely needs.
   base.ANTHROPIC_API_KEY = apiKey;
   return base;
 }
@@ -618,7 +634,18 @@ export async function runLeadSdk(params: {
     "    subTasks: SubTask[],",
     "    reviewChecklist: string[],",
     "    riskLevel: 'low'|'medium'|'high' }",
-    "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope?: 'local'|'remote'|'mixed', taskMode?: 'observe'|'mutate'|'mixed' }",
+    "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope: 'local', taskMode: 'observe'|'mutate'|'mixed', verify: VerifyCheck[] }",
+    // beta.57 (P1): the verify contract is now an EXPLICIT, REQUIRED field.
+    // Before this, most plans omitted `verify` and the harness fell back to
+    // regex inference over the sub-task's prose -- which mis-fired in both
+    // directions (phantom contracts on observe steps, missed contracts on
+    // mutate steps). Inference still exists as a safety net, but a compliant
+    // plan never relies on it.
+    "VerifyCheck (LOCAL kinds only -- these are the only kinds a worker can satisfy):",
+    "  { kind: 'file_written',   path: string }  -> the file exists in the worktree with fresh content",
+    "  { kind: 'file_committed', path: string }  -> the file appears in a commit made during the sub-task",
+    "  { kind: 'commit_made' }                   -> at least one new commit exists vs the sub-task's start",
+    "- EVERY sub-task MUST carry an explicit `verify` array AND an explicit `taskMode`. For taskMode 'observe' the correct contract is `verify: []`. For taskMode 'mutate' the contract MUST include `{ kind: 'commit_made' }` plus a `file_written`/`file_committed` entry per load-bearing file. Do NOT omit these fields.",
     "Rules:",
     "- Prefer 3-8 sub-tasks. Hard cap 20.",
     "- Each sub-task must be independently reviewable.",
@@ -652,7 +679,7 @@ export async function runLeadSdk(params: {
     "- The two axes compose: `contractScope=local, taskMode=observe` = purest local read-only check. `contractScope=remote, taskMode=mutate` = push+PR. Etc.",
     // beta.15: encourage explicit verify:[] on observation sub-tasks.
     "- Pure-observation sub-tasks that do NOT need any observable-side-effect check may emit `verify: []` explicitly. This is meaningful: it says 'trust the SDK signal, nothing observable to verify'. It's cleaner than relying on inference-then-filter.",
-    "- When in doubt on scope: prefer 'local' + 'observe'. Missing fields = harness falls back to regex inference which is less reliable.",
+    "- When in doubt on scope: prefer 'local' + 'observe'. NEVER omit verify/taskMode: a missing field forces the harness onto regex inference over your prose, which is unreliable and can fail a correct run.",
     // beta.15: reinforce final-verification pattern.
     "- A common plan shape: (1) mutation steps with taskMode='mutate', (2) final observation step with taskMode='observe' and verify:[] to confirm the mutation steps completed correctly. The observation step is optional but useful for reviewer clarity.",
     // beta.21: OKF concept awareness on the lead side.

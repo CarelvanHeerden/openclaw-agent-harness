@@ -62,6 +62,38 @@ export function buildAuthedCloneUrl(repoFullName: string, token: string): string
   return `https://x-access-token:${encoded}@github.com/${repoFullName}.git`;
 }
 
+/**
+ * beta.57 (P2): scrub secrets out of strings that end up in error messages /
+ * logs. The initial private-repo clone embeds the PAT in the URL argv (the
+ * beta.24 404-vs-401 workaround), so a failing clone used to throw
+ * `git clone ... https://x-access-token:<PAT>@github.com/...` -- putting the
+ * token into logs, audit payloads, and Slack error posts. Redacts:
+ *   - userinfo in any URL (`scheme://user:secret@host` -> `scheme://***@host`)
+ *   - the exact token value when known.
+ */
+export function redactSecrets(text: string, token?: string): string {
+  let out = text.replace(/(https?:\/\/)[^@/\s]+@/gi, "$1***@");
+  if (token && token.length > 0) {
+    out = out.split(token).join("***");
+    const encoded = encodeURIComponent(token);
+    if (encoded !== token) out = out.split(encoded).join("***");
+  }
+  return out;
+}
+
+/**
+ * beta.57 (P3): worktree paths with an allocation (or revert scratch) IN
+ * FLIGHT in this process. The startup self-heal and reconcile paths must not
+ * reap a directory that a concurrent allocation is actively building --
+ * before this set existed the only protection was a 2-minute mtime grace
+ * window, which a slow `npm ci` bootstrap could outlive.
+ */
+const inFlightWorktrees = new Set<string>();
+
+export function inFlightWorktreePaths(): string[] {
+  return [...inFlightWorktrees];
+}
+
 export interface GitContext {
   repoFullName: string;
   baseBranch: string;
@@ -100,17 +132,23 @@ export class GitAdapter {
    * Writes a per-invocation askpass helper that prints the PAT on stdout.
    * The helper is chmod 0700 and lives in a fresh mkdtemp dir; caller
    * must clean it up.
+   *
+   * beta.57 (P2): the token is NO LONGER written into the script body. The
+   * script reads `$OAH_GH_TOKEN` from the child-process env at invocation
+   * (same channel the beta.34 cred helper uses), so the secret never touches
+   * disk and no shell-escaping of the token is needed. Callers that pass
+   * `askpassPath` to run() must also pass the token so the env var is set.
    */
-  private async makeAskpass(ghToken: string): Promise<{ path: string; cleanup: () => Promise<void> }> {
+  private async makeAskpass(_ghToken: string): Promise<{ path: string; cleanup: () => Promise<void> }> {
     const { mkdtemp } = await import("node:fs/promises");
     const dir = await mkdtemp(join(tmpdir(), "oah-askpass-"));
     const p = join(dir, "askpass.sh");
     // GH will call this twice: once for username, once for password. We answer
-    // username=`x-access-token`, password=<PAT>. Distinguish via $1.
+    // username=`x-access-token`, password=$OAH_GH_TOKEN. Distinguish via $1.
     const script = `#!/bin/sh
 case "$1" in
   Username*) printf 'x-access-token' ;;
-  *) printf '%s' "${ghToken.replace(/'/g, "'\\''")}" ;;
+  *) printf '%s' "$OAH_GH_TOKEN" ;;
 esac
 `;
     await writeFile(p, script, "utf8");
@@ -131,6 +169,18 @@ esac
       throw new Error(`worktree already exists at ${wt}; refusing to reuse without explicit release`);
     }
 
+    // beta.57 (P3): register the path as in-flight for the FULL allocation
+    // (clone + fetch + worktree add + dep bootstrap). A concurrent self-heal
+    // (plugin re-register churn) can no longer reap the dir mid-allocation.
+    inFlightWorktrees.add(wt);
+    try {
+      return await this.allocateInner(ctx, bare, wt);
+    } finally {
+      inFlightWorktrees.delete(wt);
+    }
+  }
+
+  private async allocateInner(ctx: GitContext, bare: string, wt: string): Promise<string> {
     const ask = await this.makeAskpass(ctx.ghToken);
     try {
       // beta.24 fix: use a token-embedded URL for the INITIAL clone.
@@ -157,7 +207,9 @@ esac
       const authedUrl = buildAuthedCloneUrl(ctx.repoFullName, ctx.ghToken);
       if (!existsSync(bare)) {
         await mkdir(dirname(bare), { recursive: true });
-        await this.run(["clone", "--bare", "--filter=blob:none", authedUrl, bare], undefined, ask.path);
+        // beta.57 (P2): thread the token so the env-reading askpass helper can
+        // answer (it no longer embeds the secret in its script body).
+        await this.run(["clone", "--bare", "--filter=blob:none", authedUrl, bare], undefined, ask.path, ctx.ghToken);
         // Scrub the token out of the on-disk config immediately after
         // clone succeeds. Belt-and-suspenders: the plain remote set-url
         // below covers the worktree config, but the BARE clone also has
@@ -352,6 +404,17 @@ esac
         const wtRef = branchMatch[1]!.trim();
         if (wtRef !== ref) continue;
         if (resolve(wtPath) === resolve(targetPath)) continue; // it's our target; leave it
+        // beta.57 (P3): never force-remove a worktree that ANOTHER in-flight
+        // allocation in this process is actively building. Fail loudly at the
+        // subsequent `worktree add` instead of destroying a live run's dir.
+        if (inFlightWorktrees.has(resolve(wtPath)) || inFlightWorktrees.has(wtPath)) {
+          this.opts.logger.warn("[git] reconcile: branch held by an IN-FLIGHT allocation; refusing to remove it", {
+            branch,
+            inFlightWorktree: wtPath,
+            targetPath,
+          });
+          continue;
+        }
         this.opts.logger.warn("[git] reconcile: branch already checked out in another worktree; releasing it", {
           branch,
           staleWorktree: wtPath,
@@ -505,6 +568,7 @@ esac
         ["-C", worktreePath, "ls-remote", remote, ref],
         undefined,
         ask?.path,
+        ghToken,
       ).catch(() => "");
       // `<sha>\t<ref>` on match; empty on no such branch.
       const line = out.split("\n").map((l) => l.trim()).find(Boolean);
@@ -589,6 +653,10 @@ esac
     const revertBranch = opts?.revertBranch ?? `harness/deploy-repair-revert-${Date.now()}`;
     const ask = await this.makeAskpass(ghToken);
     const scratch = resolve(this.expand(this.opts.worktreesRoot), `revert-${Date.now()}`);
+    // beta.57 (P3): protect the scratch dir from a concurrent self-heal while
+    // the revert is in flight. (The caller releases it when done; a leaked
+    // scratch is reaped by heal via the revert-<ts> pattern once unprotected.)
+    inFlightWorktrees.add(scratch);
     try {
       // Make sure the bare repo has the freshest main (repair PRs merged since
       // allocation).
@@ -629,6 +697,7 @@ esac
         return { pushedToMain: false, branch: revertBranch, worktreePath: scratch, revertedShas: reverted };
       }
     } finally {
+      inFlightWorktrees.delete(scratch);
       await ask.cleanup();
     }
   }
@@ -698,7 +767,7 @@ esac
       proc.on("error", rejectP);
       proc.on("close", (code) => {
         if (code === 0) resolveP(out);
-        else rejectP(new Error(`git ${args.join(" ")} failed (${code}): ${err.trim()}`));
+        else rejectP(new Error(`git ${args.map((a) => redactSecrets(a, token)).join(" ")} failed (${code}): ${redactSecrets(err.trim(), token)}`));
       });
     });
   }

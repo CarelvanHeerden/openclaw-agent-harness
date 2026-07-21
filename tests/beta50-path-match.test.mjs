@@ -126,14 +126,16 @@ test("beta50: anyPathMatches finds the route-group file among many committed", (
 });
 
 // ---------------------------------------------------------------------------
-// wiring: both fileCommittedSince factories use pathMatchRule (source assert).
+// wiring: fileCommittedSince uses pathMatchRule (source assert).
+// beta.56 (P0-5): the worker-path factory was removed (it duplicated the
+// loop-path factory with an empty-branch bug), so exactly ONE occurrence.
 // ---------------------------------------------------------------------------
-test("beta50: both fileCommittedSince factories use pathMatchRule (not exact resolve equality)", () => {
+test("beta50/56: the (single) fileCommittedSince factory uses pathMatchRule (not exact resolve equality)", () => {
   const indexSrc = S("src/index.ts");
   // beta.51 widened this import to also pull resolveContractPath.
   assert.match(indexSrc, /import \{ pathMatchRule(, resolveContractPath)? \} from "\.\/orchestrator\/path-match\.js"/);
   const occurrences = indexSrc.match(/const rule = pathMatchRule\(f, path\)/g) ?? [];
-  assert.equal(occurrences.length, 2, "both loop-path and worker-path factories must use pathMatchRule");
+  assert.equal(occurrences.length, 1, "the loop-path fileCommittedSince factory must use pathMatchRule");
   // the old exact-resolve equality match must be gone from fileCommittedSince
   assert.doesNotMatch(indexSrc, /resolve\(worktreePath, f\) === absTarget \|\| f === path/);
 });

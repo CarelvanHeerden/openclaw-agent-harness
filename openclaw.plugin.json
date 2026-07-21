@@ -175,6 +175,28 @@
           },
           "classifier": {
             "type": "string"
+          },
+          "price_overrides": {
+            "type": "object",
+            "description": "Per-model price overrides for cost estimation, keyed by model id. Values are USD per million tokens.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["input", "output"],
+              "properties": {
+                "input": { "type": "number", "minimum": 0 },
+                "output": { "type": "number", "minimum": 0 }
+              }
+            }
+          },
+          "auth": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Anthropic auth for the embedded Claude Agent SDK. Vault-first (credential_service), env fallback (api_key_env, default ANTHROPIC_API_KEY).",
+            "properties": {
+              "credential_service": { "type": "string" },
+              "api_key_env": { "type": "string", "default": "ANTHROPIC_API_KEY" }
+            }
           }
         }
       },
@@ -435,6 +457,18 @@
           "default_service_pattern": {
             "type": "string",
             "default": "github-{owner}"
+          }
+        }
+      },
+      "logging": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Harness log verbosity. 'debug' makes error sites log full error objects.",
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": ["debug", "info", "warn", "error"],
+            "default": "info"
           }
         }
       }

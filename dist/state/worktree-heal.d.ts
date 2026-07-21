@@ -69,9 +69,11 @@ export interface WorktreeHealResult {
 }
 export declare function healOrphanedWorktrees(state: StateStore, deps: WorktreeHealDeps): Promise<WorktreeHealResult>;
 /**
- * Match paths the allocator produces: `pending-<digits>` (current allocator,
- * beta-era) and UUIDs (planned future migration). Deliberately conservative
- * so a mis-configured `worktrees_root` cannot cascade into removing arbitrary
+ * Match paths the allocator produces: `pending-<digits>` (pre-beta.57),
+ * `pending-<digits>-<hex8>` (beta.57 collision-safe ids), `revert-<digits>`
+ * (deploy-repair revert scratch worktrees, previously never reaped), and
+ * UUIDs (planned future migration). Deliberately conservative so a
+ * mis-configured `worktrees_root` cannot cascade into removing arbitrary
  * user dirs.
  */
 export declare function looksLikeAllocatorWorktree(name: string): boolean;

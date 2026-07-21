@@ -35,6 +35,15 @@ const DENYLIST_TOKEN_DEFAULTS = [
     "kill",
     "killall",
     "pkill",
+    // beta.57 (P2): shells as ARGUMENT tokens. The whitelist already excludes
+    // them as base commands, but `xargs sh -c ...`, `find . -exec bash ...` and
+    // `env sh ...` smuggled a fresh unguarded shell through whitelisted hosts.
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
 ];
 export function defaultGuardConfig() {
     return {
@@ -71,7 +80,12 @@ export function tokenise(cmd) {
     };
     while (i < cmd.length) {
         const ch = cmd[i];
-        if (quote === null && (ch === "`" || (ch === "$" && cmd[i + 1] === "("))) {
+        // beta.57 (P2): command substitution is rejected INSIDE double quotes too.
+        // The shell expands $(...) and backticks within double quotes, so
+        // `echo "$(curl evil)"` was a working bypass of the substitution reject
+        // (only unquoted substitution was caught before). Single quotes do not
+        // expand, so they remain allowed.
+        if ((quote === null || quote === '"') && (ch === "`" || (ch === "$" && cmd[i + 1] === "("))) {
             return { tokens, error: "command substitution not allowed" };
         }
         if (quote === null && ch === "\\") {
@@ -86,6 +100,15 @@ export function tokenise(cmd) {
         }
         if (quote !== null && ch === quote) {
             quote = null;
+            i++;
+            continue;
+        }
+        // beta.57 (P2): a NEWLINE is a command separator, not plain whitespace.
+        // `git status\ncurl evil.com` previously tokenised as one segment whose
+        // base was `git` -- the second command was never whitelist-checked.
+        if (quote === null && ch === "\n") {
+            push();
+            tokens.push(";");
             i++;
             continue;
         }
@@ -139,6 +162,7 @@ const REDIRECT_OPERATORS = new Set([">", ">>", "<", "<<"]);
  */
 function splitSegments(tokens) {
     const segments = [];
+    const redirectTargets = [];
     let cur = [];
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i];
@@ -155,6 +179,13 @@ function splitSegments(tokens) {
             const last = cur[cur.length - 1];
             if (last !== undefined && /^[0-9]+$/.test(last))
                 cur.pop();
+            // beta.57 (P2): the target is no longer just dropped -- it is collected
+            // so guardCommand can check it against the path denylist (`echo x >
+            // .env` was invisible before).
+            const target = tokens[i + 1];
+            if (target !== undefined && !SEGMENT_SEPARATORS.has(target) && !REDIRECT_OPERATORS.has(target)) {
+                redirectTargets.push(target);
+            }
             i++; // consume the target token as well
         }
         else {
@@ -163,7 +194,7 @@ function splitSegments(tokens) {
     }
     if (cur.length > 0)
         segments.push(cur);
-    return segments;
+    return { segments, redirectTargets };
 }
 /**
  * Builds a `canUseTool` callback for the Claude Agent SDK. The callback
@@ -187,22 +218,11 @@ export function buildBashGuard(cfg) {
         denylistTokens: cfg.bash_denylist_tokens,
         allowGitPush: cfg.allow_git_push,
         allowNetworkCommands: cfg.allow_network_commands,
+        // beta.57 (P2): Bash redirect targets + file-reading command args are now
+        // checked against the same path denylist as the SDK Read/Write tools.
+        pathDenylist: cfg.path_denylist,
     };
-    const pathBlocked = (p) => {
-        for (const pat of cfg.path_denylist) {
-            if (pat.endsWith("/") && p.includes(pat))
-                return true;
-            if (pat.includes("*")) {
-                const re = new RegExp("^" + pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
-                if (re.test(p))
-                    return true;
-            }
-            else if (p === pat || p.endsWith("/" + pat)) {
-                return true;
-            }
-        }
-        return false;
-    };
+    const pathBlocked = (p) => pathMatchesDenylist(p, cfg.path_denylist);
     const extractPath = (input, keys) => {
         const rec = input;
         if (!rec)
@@ -251,6 +271,75 @@ export function buildBashGuard(cfg) {
         return { allow: true };
     };
 }
+/**
+ * beta.57 (P2): shared path-denylist matcher (same semantics as the SDK
+ * Read/Write guard in buildBashGuard).
+ */
+export function pathMatchesDenylist(p, patterns) {
+    for (const pat of patterns) {
+        if (pat.endsWith("/") && p.includes(pat))
+            return true;
+        if (pat.includes("*")) {
+            const re = new RegExp("^" + pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
+            if (re.test(p))
+                return true;
+        }
+        else if (p === pat || p.endsWith("/" + pat)) {
+            return true;
+        }
+    }
+    return false;
+}
+// beta.57 (P2): commands that print/transform file contents. Their
+// path-looking args are checked against the path denylist so `cat .env`
+// cannot bypass the SDK Read guard.
+const FILE_READING_COMMANDS = new Set(["cat", "head", "tail", "grep", "rg", "sed", "awk", "cut", "sort", "uniq", "wc", "diff", "comm", "tr"]);
+// beta.57 (P2): interpreters that accept inline code via a flag. Inline code
+// is a fully unguarded escape hatch (`node -e "require('fs')..."`), so those
+// flags are rejected; running a script FILE (`node scripts/x.js`) stays fine.
+const INTERPRETER_INLINE_FLAGS = {
+    node: ["-e", "--eval", "-p", "--print"],
+    deno: ["eval"],
+    bun: ["-e", "--eval", "-p", "--print"],
+    python: ["-c"],
+    python3: ["-c"],
+};
+/**
+ * beta.57 (P2): commands that EXECUTE another command given as an argument
+ * (`xargs CMD`, `env [VAR=x...] CMD`, `find ... -exec CMD`). The nested
+ * command is located and re-checked against the same whitelist/denylist as a
+ * base command, closing the `xargs curl ...` / `env curl ...` hole.
+ */
+function nestedCommandOf(seg, cmdIdx) {
+    const base = seg[cmdIdx];
+    const rest = seg.slice(cmdIdx + 1);
+    if (base === "xargs") {
+        // Skip flags (and their glued values like -I{} / -n1); first bare word is the command.
+        for (const a of rest) {
+            if (a.startsWith("-"))
+                continue;
+            return a;
+        }
+        return undefined;
+    }
+    if (base === "env") {
+        for (const a of rest) {
+            if (a.startsWith("-"))
+                continue;
+            if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(a))
+                continue;
+            return a;
+        }
+        return undefined;
+    }
+    if (base === "find") {
+        const i = rest.findIndex((a) => a === "-exec" || a === "-execdir" || a === "-ok" || a === "-okdir");
+        if (i >= 0)
+            return rest[i + 1];
+        return undefined;
+    }
+    return undefined;
+}
 export function guardCommand(cmd, cfg = defaultGuardConfig()) {
     const t = tokenise(cmd);
     if (t.error)
@@ -261,9 +350,18 @@ export function guardCommand(cmd, cfg = defaultGuardConfig()) {
             return { allowed: false, reason: `network redirection target ${tok}` };
         }
     }
-    const segments = splitSegments(t.tokens);
+    const { segments, redirectTargets } = splitSegments(t.tokens);
     if (segments.length === 0)
         return { allowed: false, reason: "empty command" };
+    // beta.57 (P2): redirect targets are checked against the path denylist.
+    const pathDeny = cfg.pathDenylist ?? [];
+    if (pathDeny.length > 0) {
+        for (const target of redirectTargets) {
+            if (pathMatchesDenylist(target, pathDeny)) {
+                return { allowed: false, reason: `redirect target '${target}' is denylisted` };
+            }
+        }
+    }
     for (const seg of segments) {
         const base = seg[0];
         if (!base)
@@ -292,6 +390,36 @@ export function guardCommand(cmd, cfg = defaultGuardConfig()) {
         }
         if (!cfg.allowNetworkCommands && NETWORK_COMMANDS.includes(effectiveBase)) {
             return { allowed: false, reason: `network command "${effectiveBase}" is not permitted` };
+        }
+        // beta.57 (P2): inline-code interpreter flags are an unguarded escape hatch.
+        const inlineFlags = INTERPRETER_INLINE_FLAGS[effectiveBase];
+        if (inlineFlags) {
+            const hit = seg.slice(cmdIdx + 1).find((a) => inlineFlags.includes(a));
+            if (hit) {
+                return { allowed: false, reason: `inline code via "${effectiveBase} ${hit}" is not permitted (write a script file instead)` };
+            }
+        }
+        // beta.57 (P2): nested-command hosts (xargs/env/find -exec) re-check the
+        // command they would execute against the same rules as a base command.
+        const nested = nestedCommandOf(seg, cmdIdx);
+        if (nested !== undefined) {
+            if (!cfg.whitelist.includes(nested)) {
+                return { allowed: false, reason: `nested command "${nested}" (via ${effectiveBase}) not in whitelist` };
+            }
+            if (!cfg.allowNetworkCommands && NETWORK_COMMANDS.includes(nested)) {
+                return { allowed: false, reason: `nested network command "${nested}" (via ${effectiveBase}) is not permitted` };
+            }
+        }
+        // beta.57 (P2): path-denylist check on args of file-reading commands, so
+        // Bash cannot read what the SDK Read guard refuses.
+        if (pathDeny.length > 0 && FILE_READING_COMMANDS.has(effectiveBase)) {
+            for (const a of seg.slice(cmdIdx + 1)) {
+                if (a.startsWith("-"))
+                    continue;
+                if (pathMatchesDenylist(a, pathDeny)) {
+                    return { allowed: false, reason: `argument path '${a}' is denylisted` };
+                }
+            }
         }
     }
     return { allowed: true };

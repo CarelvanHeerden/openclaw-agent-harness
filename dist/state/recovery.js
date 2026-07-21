@@ -22,7 +22,14 @@
  * Stale sessions (older than the hard timeout) are always marked
  * 'interrupted' -- they're too old to safely auto-resume.
  */
-const NON_TERMINAL = ["crystallising", "planning", "executing", "reviewing"];
+// beta.57 (P3): 'resumable' is included. A session marked 'resumable' by a
+// LISTENER-mode recovery (or by an older build) whose process then died again
+// was invisible to every later recovery scan -- it held its thread lock and
+// stranded forever. In agent-orchestrated mode it now auto-resumes like any
+// other fresh in-flight session; stale ones age out to 'interrupted'.
+// 'awaiting_clarification' stays EXCLUDED on purpose: it is a deliberate
+// human-in-the-loop pause that only harness_answer may resume.
+const NON_TERMINAL = ["crystallising", "planning", "executing", "reviewing", "resumable"];
 export function findInterruptedSessions(state, staleAfterSeconds) {
     const cutoff = Date.now() - staleAfterSeconds * 1000;
     const rows = state.db

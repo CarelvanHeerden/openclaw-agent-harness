@@ -115,6 +115,16 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     if (!liveConfig().slack.authorised_users.includes(params.requester)) {
       return { ok: false, unauthorised: true, reason: `Requester ${params.requester} is not in slack.authorised_users` };
     }
+    // beta.57 (P3): enforce the advertised budget cap. The tool descriptions
+    // have always promised "capped at budgets.session_hard_ceiling_usd", but
+    // the raw value was inserted unchecked -- a budgetUsd of 10000 sailed
+    // straight into sessions.budget_usd and the loop enforced against it.
+    const ceiling = liveConfig().budgets?.session_hard_ceiling_usd;
+    const requestedBudget = params.budgetUsd ?? liveConfig().budgets?.session_default_usd ?? 50;
+    const effectiveBudget = typeof ceiling === "number" && ceiling > 0 ? Math.min(requestedBudget, ceiling) : requestedBudget;
+    if (effectiveBudget < requestedBudget) {
+      liveState().audit("tool.run.budget_clamped", { requester: params.requester, requested: requestedBudget, clamped: effectiveBudget, ceiling });
+    }
     const sessionId = globalThis.crypto?.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const slackChannel = params.slackChannel ?? "";
     // Synthesise a unique thread key when the agent supplies none.
@@ -138,11 +148,21 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       }
       if (prior.length > 0) {
         // All prior sessions on this thread are terminal -- release the
-        // thread slot so the retry can take it. Their worktrees/PRs were
-        // already cleaned up on the terminal transition.
-        const del = liveDb().prepare(`DELETE FROM sessions WHERE slack_channel = ? AND slack_thread = ? AND status IN ('done','failed','aborted')`);
-        const info = del.run(slackChannel, slackThread);
-        liveState().audit("tool.run.thread_reclaimed", { channel: slackChannel, thread: slackThread, freed: info.changes, priorIds: prior.map((p) => p.id) });
+        // thread slot so the retry can take it.
+        //
+        // beta.57 (P3): RE-KEY instead of DELETE. Deleting the prior row
+        // destroyed real state: a 'done' session with an OPEN PR lost its
+        // pr-watcher tracking (merge/close never noticed, worktree never
+        // released) and its revise lineage (harness_list_revisable /
+        // harness_revise resolve by session row). Re-keying the thread to a
+        // unique tombstone frees the UNIQUE(slack_channel, slack_thread) slot
+        // while preserving the rows.
+        const retire = liveDb().prepare(
+          `UPDATE sessions SET slack_thread = 'retired:' || id || ':' || slack_thread, updated_at = ?
+            WHERE slack_channel = ? AND slack_thread = ? AND status IN ('done','failed','aborted')`,
+        );
+        const info = retire.run(Date.now(), slackChannel, slackThread);
+        liveState().audit("tool.run.thread_reclaimed", { channel: slackChannel, thread: slackThread, retired: info.changes, priorIds: prior.map((p) => p.id) });
       }
     }
     try {
@@ -156,7 +176,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         .run(
           sessionId, slackThread, slackChannel, params.requester, params.requester,
           JSON.stringify(params.brief), Date.now(), Date.now(),
-          params.budgetUsd ?? liveConfig().budgets.session_default_usd,
+          effectiveBudget,
         );
     } catch (err) {
       if (String(err).includes("UNIQUE") || String(err).includes("SQLITE_CONSTRAINT")) {
@@ -360,15 +380,18 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           properties: {
             sessionId: { type: "string", minLength: 1 },
             reason: { type: "string", maxLength: 500 },
-            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. If provided, must be in slack.authorised_users." },
+            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. REQUIRED; must be in slack.authorised_users." },
           },
-          required: ["sessionId"],
+          required: ["sessionId", "invokedBy"],
           additionalProperties: false,
         },
         execute: (_callId: unknown, input: unknown) => {
           const { sessionId, reason, invokedBy } = input as { sessionId: string; reason?: string; invokedBy?: string };
-          if (invokedBy && !liveConfig().slack.authorised_users.includes(invokedBy)) {
-            return { content: [{ type: "text", text: `Invoker ${invokedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          // beta.57 (P2): invokedBy is REQUIRED. It used to be optional and
+          // only checked when present, so omitting it skipped authorisation
+          // entirely on a privileged (session-killing) tool.
+          if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
+            return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
           }
           const row = liveDb().prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId) as { status: string; reactions_json?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
@@ -395,10 +418,10 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           type: "object",
           properties: {
             sessionId: { type: "string", minLength: 1, description: "The harness session whose PR to merge." },
-            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker; must be in slack.authorised_users if provided." },
+            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. REQUIRED; must be in slack.authorised_users." },
             repairBudgetUsd: { type: "number", minimum: 0, description: "Optional override (USD) for the post-merge deploy-repair budget on Vercel projects. Defaults to budgets.daily_max_usd * vercel.deploy_repair.budget_ratio." },
           },
-          required: ["sessionId"],
+          required: ["sessionId", "invokedBy"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
@@ -743,7 +766,15 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           }
 
           // Config: minimally-valid?
-          checks.push({ name: "config_slack_channel", ok: !!liveConfig().slack.channel, detail: liveConfig().slack.channel });
+          // beta.57 (P3): slack.channel is only required in LISTENER mode. In
+          // the default agent-orchestrated mode (listener_enabled false) an
+          // empty channel is correct config, not a health failure.
+          const channelRequired = !!liveConfig().slack.listener_enabled;
+          checks.push({
+            name: "config_slack_channel",
+            ok: channelRequired ? !!liveConfig().slack.channel : true,
+            detail: channelRequired ? liveConfig().slack.channel : (liveConfig().slack.channel || "(not required: listener disabled)"),
+          });
           checks.push({ name: "config_authorised_users", ok: liveConfig().slack.authorised_users.length > 0 });
           checks.push({ name: "config_repos_allowed", ok: liveConfig().repos.allowed.length > 0 });
 
@@ -931,15 +962,16 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           type: "object",
           properties: {
             sessionId: { type: "string", minLength: 1 },
-            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. If provided, must be in slack.authorised_users." },
+            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. REQUIRED; must be in slack.authorised_users." },
           },
-          required: ["sessionId"],
+          required: ["sessionId", "invokedBy"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
           const { sessionId, invokedBy } = input as { sessionId: string; invokedBy?: string };
-          if (invokedBy && !liveConfig().slack.authorised_users.includes(invokedBy)) {
-            return { content: [{ type: "text", text: `Invoker ${invokedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+          // beta.57 (P2): invokedBy is REQUIRED (was optional-and-skippable).
+          if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
+            return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
           }
           const row = liveDb().prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId) as { status: string; crystallised_prompt?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
@@ -968,9 +1000,14 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
   // worker refuses/confabulates a sub-task even after the beta.54 retry, the
   // loop pauses (not fails) and surfaces its question via harness_progress; the
   // agent relays it and calls harness_answer with the user's reply.
-  toDispose(
-    api.registerTool({
-      name: "harness_answer",
+  // beta.56 (P0-3): this registration was `toDispose(api.registerTool(...))`
+  // with the disposer DISCARDED (never pushed), so harness_answer leaked
+  // across every plugin re-register: stale-generation duplicate on the next
+  // register, never unregistered on teardown.
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_answer",
       description:
         "Answer a harness session that is paused in 'awaiting_clarification' and resume it. " +
         "The answer is folded into the brief as a directive and the loop re-drives, building on any " +
@@ -981,15 +1018,17 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         properties: {
           sessionId: { type: "string", minLength: 1 },
           answer: { type: "string", minLength: 1, description: "The human's decision for the paused sub-task." },
-          invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. If provided, must be in slack.authorised_users." },
+          invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. REQUIRED; must be in slack.authorised_users." },
         },
-        required: ["sessionId", "answer"],
+        required: ["sessionId", "answer", "invokedBy"],
         additionalProperties: false,
       },
       execute: async (_callId: unknown, input: unknown) => {
         const { sessionId, answer, invokedBy } = input as { sessionId: string; answer: string; invokedBy?: string };
-        if (invokedBy && !liveConfig().slack.authorised_users.includes(invokedBy)) {
-          return { content: [{ type: "text", text: `Invoker ${invokedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+        // beta.57 (P2): invokedBy is REQUIRED -- this tool injects human text
+        // into the brief and re-drives spend, so it must be authorised.
+        if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
+          return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
         }
         const row = liveDb()
           .prepare(`SELECT status, crystallised_prompt, clarification_question, clarification_seq FROM sessions WHERE id = ?`)
@@ -1040,7 +1079,8 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           details: { ok: true, sessionId, resumed: true, seq },
         };
       },
-    }),
+      }),
+    ),
   );
 
   // ---- beta.44: revise flow (harness_list_revisable + harness_revise) ----

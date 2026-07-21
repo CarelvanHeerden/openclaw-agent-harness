@@ -43,9 +43,12 @@ export interface VerifyOutcome {
  * side-effect-free and fully unit-tested.
  *
  * beta.8 probes are REQUIRED (all existing callers provide them).
- * beta.9 probes are OPTIONAL — when absent the relevant kind gracefully falls
- * back to the closest beta.8 probe or skips with a warning in `detail`.
- * This preserves backward compat for test doubles that predate beta.9.
+ * beta.9 probes are OPTIONAL in the type for test-double back-compat, but as
+ * of beta.57 a kind whose probe is missing FAILS CLOSED (it used to skip-pass,
+ * which let a mis-wired caller green-light contracts it could not verify).
+ * The only graceful fallbacks left are ones that verify via ANOTHER probe
+ * (`file_written` -> fileWrittenSince, `remote_branch_exists` -> remoteBranchExists,
+ * `pr_opened` -> prUrlPresent).
  */
 export interface VerifyProbes {
     /** Does `branch` exist on origin? (GET refs/heads/{branch} == 200) */
@@ -78,8 +81,13 @@ export interface VerifyProbes {
      * Does `path` exist on the worktree filesystem and is it non-empty?
      * Fixes the beta.8 `file_written` bug: untracked files are now visible.
      * When absent, `file_written` falls back to `fileWrittenSince` (beta.8 behaviour).
+     *
+     * beta.57 (P1): optional `sinceMs`. When > 0 the probe must ALSO check the
+     * file is fresh (mtime >= sinceMs, or committed/changed since base) so a file
+     * that merely PRE-EXISTED the sub-task can no longer vacuously satisfy a
+     * `file_written` contract.
      */
-    fileExistsOnDisk?: (path: string) => Promise<{
+    fileExistsOnDisk?: (path: string, sinceMs?: number) => Promise<{
         exists: boolean;
         nonEmpty: boolean;
         detail: string;
@@ -114,11 +122,13 @@ export interface VerifyProbes {
      */
     prForBranch?: (branch: string) => Promise<{
         count: number;
+        /** beta.57: `merged` distinguishes merged from closed-without-merge (GitHub state is "closed" for both). Optional for back-compat. */
         prs: Array<{
             number: number;
             state: string;
             draft: boolean;
             url: string;
+            merged?: boolean;
         }>;
         detail: string;
     }>;

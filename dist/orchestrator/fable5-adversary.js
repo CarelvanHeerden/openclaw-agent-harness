@@ -65,6 +65,13 @@ export function buildAdversarySystemPrompt(input) {
         "You are an adversarial code reviewer. Your job is to find EVERY reason this diff should not ship.",
         "Do not be diplomatic. Be exhaustive but honest.",
         "",
+        // beta.56 (P0-2): the brief was never in the prompt. The adversary was
+        // asked to judge "spec fidelity" while `crystallisedPrompt` was accepted
+        // as input and then dropped on the floor -- it reviewed against only the
+        // lead's checklist paraphrase, inflating spurious `revise` verdicts.
+        "## The brief (SOURCE OF TRUTH for spec fidelity)",
+        input.crystallisedPrompt,
+        "",
         "## Dimensions",
         "1. Spec fidelity: does the diff satisfy each acceptance criterion?",
         "2. Codebase fit: does it match existing patterns/conventions?",

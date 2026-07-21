@@ -148,6 +148,36 @@ export function matchesWorkerDeviation(text) {
 const WORKER_PROTOCOL_ASSUMPTION_RE = /\b(await|wait(ing)?\s+for|poll(ing)?\s+for)\b[^.\n]{0,80}\b(monitor|harness|install|build|tsc|ready|completion|background)\b[^.\n]{0,40}\b(event|signal|ready|notif|callback|complet)/i;
 void WORKER_PROTOCOL_ASSUMPTION_RE;
 /**
+ * beta.56 (P0-1): render the previous cycle's adversary review as a corrective
+ * dispatch hint for revise-cycle workers.
+ *
+ * ROOT CAUSE this fixes: on an `adversary_revise` verdict the loop re-ran the
+ * SAME sub-task prompts verbatim -- `runWorker({brief, subTask, plan})` carried
+ * no findings, so cycle 2 was cycle 1 replayed and the loop structurally could
+ * not converge (the immortal-finding treadmill beta.44-49 patched around, the
+ * beta.35 "revise no-op" carve-out, and the refusal spiral all trace here).
+ * The worker on a revise cycle now sees verdict, summary, and the concrete
+ * findings, scoped with an explicit "if none apply to your sub-task, change
+ * nothing" instruction so the beta.35 legal-no-op path still works.
+ */
+export function buildReviseDispatchHint(review) {
+    const all = review.findings ?? [];
+    const actionable = all.filter((f) => f.severity !== "info");
+    const shown = (actionable.length > 0 ? actionable : all).slice(0, 12);
+    const lines = shown.map((f) => {
+        const loc = f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : "";
+        return `- [${f.severity}/${f.dimension}] ${f.title}${loc}: ${f.detail}`.slice(0, 600);
+    });
+    return [
+        `REVISION CYCLE: an adversarial reviewer examined the previous cycle's diff and returned verdict "${review.verdict}".`,
+        `Reviewer summary: ${(review.summary ?? "").slice(0, 800)}`,
+        lines.length > 0 ? `Outstanding findings:` : `(The reviewer returned no itemised findings.)`,
+        ...lines,
+        ``,
+        `Address the findings that fall inside THIS sub-task's files/scope. If none of them apply to this sub-task, make NO changes and end your turn -- do not redo work that is already correct.`,
+    ].join("\n");
+}
+/**
  * beta.42: active stall-watchdog timers, keyed by sessionId. When the
  * re-entrancy guard SKIPS a re-entry (`loop.run_skipped_already_running`), it
  * arms a timer here. beta.40's reclaim was PASSIVE -- it only re-evaluated
@@ -238,7 +268,11 @@ export class OrchestratorLoop {
                     return { nextStatus: "done", reason: "adversary_pass" };
                 if (input.verdict === "block")
                     return { nextStatus: "failed", reason: "adversary_block" };
-                if (input.cyclesRan >= input.maxCycles - 1) {
+                // beta.57 (P3): was `>= maxCycles - 1`, which shipped one cycle EARLY
+                // (max_cycles: 3 ran only 2 execute/review cycles -- the check fired at
+                // the END of cycle 2 with cyclesRan=2 >= 3-1). A config that promises N
+                // cycles now runs N.
+                if (input.cyclesRan >= input.maxCycles) {
                     // beta.35 fix #3: cycles exhausted with a `revise` (NOT `block`)
                     // verdict. `revise` means "improvable", not "broken" -- and on a
                     // repo with no in-loop preview-deploy the adversary structurally
@@ -353,14 +387,29 @@ export class OrchestratorLoop {
             runningSessions.delete(sessionId);
         }
         runningSessions.add(sessionId);
+        this.ownedSessions.add(sessionId);
         clearStallWatchdog(sessionId); // a live loop is (re)taking ownership
         try {
             return await this.runInner(sessionId, brief);
         }
         finally {
             runningSessions.delete(sessionId);
+            this.ownedSessions.delete(sessionId);
             clearStallWatchdog(sessionId);
         }
+    }
+    /**
+     * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is
+     * currently driving. The module-scoped `runningSessions` registry is shared
+     * across runtimes (it deliberately survives a plugin re-register), so a
+     * teardown that drains on it waits for OTHER runtimes' loops too -- on a
+     * re-register churn the doomed runtime could block up to
+     * teardown_drain_seconds for a session it does not own and whose DB handle
+     * it is not holding. Teardown should drain only on sessions it owns.
+     */
+    ownedSessions = new Set();
+    ownedRunningSessionIds() {
+        return [...this.ownedSessions];
     }
     /**
      * beta.42: arm an active stall-watchdog for a session whose re-entry the
@@ -472,6 +521,9 @@ export class OrchestratorLoop {
             const runOne = async (st) => {
                 // beta.53 (P1b): at most ONE env-wait retry per sub-task.
                 let envWaitRetried = false;
+                // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
+                // review's findings or it will simply replay cycle 1's work.
+                const reviseHint = cycle > 1 && lastReview ? buildReviseDispatchHint(lastReview) : undefined;
                 const reactions = await this.deps.readReactions(sessionId);
                 if (reactions.abort) {
                     failed.err = "user_abort_reaction";
@@ -519,6 +571,11 @@ export class OrchestratorLoop {
                 // Capture the worktree HEAD BEFORE the worker runs, so commit_made
                 // verification (HEAD != base) is meaningful.
                 const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+                // beta.57 (P1): capture the sub-task start time so file_written can
+                // reject a file that merely pre-existed (mtime/diff freshness check).
+                // Previously hard-coded to 0, which disabled the freshness check and
+                // let a stale file vacuously satisfy the contract.
+                const subTaskStartedAtMs = Date.now();
                 let result;
                 try {
                     // beta.42: bound the worker SDK call by worker_timeout_seconds. Without
@@ -526,7 +583,7 @@ export class OrchestratorLoop {
                     // silently (no timeout fires -- the hard-deadline check only runs
                     // between sub-tasks). A timeout here rejects, and the existing catch
                     // marks the sub_task failed + fails the run cleanly.
-                    result = await withTimeout(this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester }), this.deps.config.loop.worker_timeout_seconds);
+                    result = await withTimeout(this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester, dispatchHint: reviseHint }), this.deps.config.loop.worker_timeout_seconds);
                 }
                 catch (err) {
                     const isTimeout = err instanceof WorkerTimeoutError;
@@ -586,7 +643,7 @@ export class OrchestratorLoop {
                     const branchHint = contract.reduce((acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc), plan.branch);
                     let verification;
                     try {
-                        verification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: 0, baseSha: subTaskBaseSha }, probes);
+                        verification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs, baseSha: subTaskBaseSha }, probes);
                     }
                     catch (err) {
                         // A probe error is a verification FAILURE, not a pass. Never let
@@ -618,16 +675,23 @@ export class OrchestratorLoop {
                         // missing". If the retry ALSO hallucinates (or otherwise fails
                         // verification) we fall through to the normal terminal handling.
                         const failedNow = verification.results.filter((x) => !x.passed);
+                        // beta.57 (P1): the retry trigger is now the OBSERVABLE STATE
+                        // INVARIANT, not the worker's phrasing. beta.52->53->54 each widened
+                        // a prose regex after a new wording escaped it; the state we
+                        // actually care about is directly checkable: a mutate-shaped
+                        // sub-task ended its turn with NO commit and ONLY local no-change
+                        // kinds failing. On cycle 1 that is never a legal outcome, so the
+                        // one-shot corrective retry fires unconditionally. On revise cycles
+                        // (cycle > 1) a no-commit turn IS often legal (the beta.35 no-op
+                        // downgrade below), so there the regex remains as the tiebreaker
+                        // between "legal nothing-to-do" and "confabulated wait".
+                        const phrasingMatched = matchesAsyncCoordConfabulation(result.finalMessage ?? "");
                         const envWaitOnly = !envWaitRetried &&
                             this.deps.config.loop.env_wait_retry_enabled !== false &&
                             !result.commitSha &&
                             failedNow.length > 0 &&
                             failedNow.every((x) => ENV_WAIT_RETRYABLE_KINDS.has(x.kind)) &&
-                            // beta.54: broadened to the whole async-coordination-confabulation
-                            // class (the env-wait shape is a strict subset). Catches the b53
-                            // seq-3 "background watcher / completion notification" phrasing
-                            // that had no install word and used 'wait for' not 'waiting for'.
-                            matchesAsyncCoordConfabulation(result.finalMessage ?? "");
+                            (cycle === 1 || phrasingMatched);
                         if (envWaitOnly) {
                             envWaitRetried = true;
                             const wrote = result.uncommittedFiles ?? [];
@@ -638,13 +702,19 @@ export class OrchestratorLoop {
                                 sessionId, seq: st.seq, cycle,
                                 partialWork: wrote.length > 0,
                                 uncommittedFiles: wrote,
+                                // beta.57: the regex is now telemetry, not the gate.
+                                phrasingMatched,
                                 priorFinalMessage: (result.finalMessage ?? "").slice(0, 500),
                             }, sessionId);
                             this.deps.logger.warn("[loop] env-wait hallucination detected; retrying sub-task once with corrective context", {
                                 sessionId, seq: st.seq, partialWork: wrote.length > 0,
                             });
                             try {
-                                const retry = await withTimeout(this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester, dispatchHint: hint }), this.deps.config.loop.worker_timeout_seconds);
+                                const retry = await withTimeout(this.deps.runWorker({
+                                    brief, subTask: st, plan, requester: row.requester,
+                                    // Compose the revise context (if any) with the corrective hint.
+                                    dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
+                                }), this.deps.config.loop.worker_timeout_seconds);
                                 this.addCost(sessionId, retry.costUsd);
                                 await this.deps.budget.recordSpend(row.requester, retry.costUsd, sessionId);
                                 totalCost += retry.costUsd;
@@ -655,7 +725,7 @@ export class OrchestratorLoop {
                                     const retryProbes = this.deps.buildVerifyProbes({
                                         plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
                                     });
-                                    retryVerification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: 0, baseSha: subTaskBaseSha }, retryProbes);
+                                    retryVerification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs, baseSha: subTaskBaseSha }, retryProbes);
                                 }
                                 catch (err) {
                                     retryVerification = { ok: false, results: [], summary: `probe error: ${String(err)}` };

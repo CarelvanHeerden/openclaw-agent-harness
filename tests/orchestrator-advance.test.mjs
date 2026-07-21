@@ -50,7 +50,9 @@ test("advance: beta.35 — adversary REVISE on last cycle -> SHIP (done), not fa
     // cycle now SHIPS the PR with a "shipped without a clean pass" annotation
     // rather than throwing away a correct fix. Merge recommendation will be
     // do_not_merge (human approves), preserving the beta.34 hard gate.
-    const r = OrchestratorLoop.advance({ ...base, currentStatus: "reviewing", verdict: "revise", cyclesRan: 2, maxCycles: 3 });
+    // beta.57 (P3): "last cycle" is now cyclesRan == maxCycles (the old
+    // `>= maxCycles - 1` shipped one cycle early: max_cycles 3 ran only 2).
+    const r = OrchestratorLoop.advance({ ...base, currentStatus: "reviewing", verdict: "revise", cyclesRan: 3, maxCycles: 3 });
     assert.equal(r.nextStatus, "done");
     assert.equal(r.reason, "shipped_max_cycles_revise");
   });

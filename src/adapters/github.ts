@@ -14,6 +14,13 @@ export interface CreatePrInput {
   body: string;
   ghToken: string;
   draft?: boolean;
+  /**
+   * beta.57 (P3): REST API base. Defaults to public github.com; pass the
+   * resolved provider apiBase so GitHub Enterprise hosts work (every other
+   * REST call already routes through resolution.apiBase; this adapter was
+   * the one hardcoded holdout).
+   */
+  apiBase?: string;
 }
 
 export interface CreatePrOutput {
@@ -25,7 +32,8 @@ export interface CreatePrOutput {
 }
 
 export async function createPullRequest(input: CreatePrInput): Promise<CreatePrOutput> {
-  const url = `https://api.github.com/repos/${input.repoFullName}/pulls`;
+  const apiBase = input.apiBase ?? "https://api.github.com";
+  const url = `${apiBase}/repos/${input.repoFullName}/pulls`;
   const post = async (draft: boolean) =>
     fetch(url, {
       method: "POST",
@@ -69,7 +77,7 @@ export async function createPullRequest(input: CreatePrInput): Promise<CreatePrO
     const peek = await res.clone().text().catch(() => "");
     if (/pull request already exists/i.test(peek)) {
       const [owner] = input.repoFullName.split("/");
-      const lookup = `https://api.github.com/repos/${input.repoFullName}/pulls?head=${owner}:${encodeURIComponent(input.head)}&state=open`;
+      const lookup = `${apiBase}/repos/${input.repoFullName}/pulls?head=${owner}:${encodeURIComponent(input.head)}&state=open`;
       const found = await fetch(lookup, {
         headers: {
           Authorization: `Bearer ${input.ghToken}`,

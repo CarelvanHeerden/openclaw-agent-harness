@@ -79,7 +79,9 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                 // beta.9 FIX: use fs.stat (includes untracked files) when probe available.
                 // Falls back to git-diff-based probe for backward compat with beta.8 test doubles.
                 if (probes.fileExistsOnDisk) {
-                    const r = await probes.fileExistsOnDisk(v.path);
+                    // beta.57 (P1): thread the sub-task start time so the probe can
+                    // reject a stale pre-existing file (freshness enforced probe-side).
+                    const r = await probes.fileExistsOnDisk(v.path, ctx.subTaskStartMs);
                     const passed = r.exists && r.nonEmpty;
                     results.push({ kind: v.kind, passed, detail: r.detail });
                 }
@@ -102,8 +104,10 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     results.push({ kind: v.kind, passed: r.committed, detail: r.detail });
                 }
                 else {
-                    // Graceful skip: probe not provided; trust SDK signal for this check.
-                    results.push({ kind: v.kind, passed: true, detail: "fileCommittedSince probe not provided; check skipped (SDK trusted)" });
+                    // beta.57 (P1): FAIL CLOSED. A missing probe used to skip-pass,
+                    // which meant a mis-wired caller silently green-lit every contract
+                    // of this kind. Production wires all probes; a missing one is a bug.
+                    results.push({ kind: v.kind, passed: false, detail: "fileCommittedSince probe not provided; failing closed (cannot verify)" });
                 }
                 break;
             }
@@ -128,8 +132,8 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     results.push({ kind: v.kind, passed: r.exists, detail: r.detail });
                 }
                 else {
-                    // Graceful skip: probe not provided.
-                    results.push({ kind: v.kind, passed: true, detail: "remoteFileExists probe not provided; check skipped (SDK trusted)" });
+                    // beta.57 (P1): fail closed on a missing probe.
+                    results.push({ kind: v.kind, passed: false, detail: "remoteFileExists probe not provided; failing closed (cannot verify)" });
                 }
                 break;
             }
@@ -141,14 +145,24 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     }
                     else {
                         const pr = r.prs[0];
-                        // Map GitHub state + draft flag to our state vocabulary.
-                        const effectiveState = pr.draft ? "draft" : pr.state === "closed" ? "merged" : pr.state;
+                        // beta.57 (P1): "closed" is NOT "merged". GitHub reports state
+                        // "closed" for BOTH merged and rejected PRs; the old mapping
+                        // treated a closed-without-merge PR as merged. Use the explicit
+                        // `merged` flag when the probe supplies it (GitHub: merged_at;
+                        // GitLab: state === 'merged'); a probe without the flag maps
+                        // closed to "closed" and a `merged` expectation fails honestly.
+                        const effectiveState = pr.draft
+                            ? "draft"
+                            : pr.merged === true || pr.state === "merged"
+                                ? "merged"
+                                : pr.state;
                         const passed = effectiveState === v.state;
                         results.push({ kind: v.kind, passed, detail: `PR #${pr.number} state=${effectiveState} (expected ${v.state})` });
                     }
                 }
                 else {
-                    results.push({ kind: v.kind, passed: true, detail: "prForBranch probe not provided; check skipped (SDK trusted)" });
+                    // beta.57 (P1): fail closed on a missing probe.
+                    results.push({ kind: v.kind, passed: false, detail: "prForBranch probe not provided; failing closed (cannot verify)" });
                 }
                 break;
             }
@@ -174,7 +188,8 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     }
                 }
                 else {
-                    results.push({ kind: v.kind, passed: true, detail: "prFiles probe not provided; check skipped (SDK trusted)" });
+                    // beta.57 (P1): fail closed on a missing probe.
+                    results.push({ kind: v.kind, passed: false, detail: "prFiles probe not provided; failing closed (cannot verify)" });
                 }
                 break;
             }
@@ -191,7 +206,8 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     }
                 }
                 else {
-                    results.push({ kind: v.kind, passed: true, detail: "localHeadSha/remoteBranchSha probes not provided; check skipped (SDK trusted)" });
+                    // beta.57 (P1): fail closed on missing probes.
+                    results.push({ kind: v.kind, passed: false, detail: "localHeadSha/remoteBranchSha probes not provided; failing closed (cannot verify)" });
                 }
                 break;
             }

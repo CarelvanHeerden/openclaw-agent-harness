@@ -64,6 +64,20 @@ export declare function matchesEnvWaitHallucination(text: string): boolean;
 /** beta.54: true when the worker confabulated an async coordination primitive. */
 export declare function matchesAsyncCoordConfabulation(text: string): boolean;
 export declare function matchesWorkerDeviation(text: string): boolean;
+/**
+ * beta.56 (P0-1): render the previous cycle's adversary review as a corrective
+ * dispatch hint for revise-cycle workers.
+ *
+ * ROOT CAUSE this fixes: on an `adversary_revise` verdict the loop re-ran the
+ * SAME sub-task prompts verbatim -- `runWorker({brief, subTask, plan})` carried
+ * no findings, so cycle 2 was cycle 1 replayed and the loop structurally could
+ * not converge (the immortal-finding treadmill beta.44-49 patched around, the
+ * beta.35 "revise no-op" carve-out, and the refusal spiral all trace here).
+ * The worker on a revise cycle now sees verdict, summary, and the concrete
+ * findings, scoped with an explicit "if none apply to your sub-task, change
+ * nothing" instruction so the beta.35 legal-no-op path still works.
+ */
+export declare function buildReviseDispatchHint(review: ReviewReport): string;
 /** Test/diagnostic helper: clear any armed watchdog for a session. */
 export declare function clearStallWatchdog(sessionId: string): void;
 /** True if a loop for this session is currently running in this process. */
@@ -220,6 +234,17 @@ export declare class OrchestratorLoop {
      * recovery auto-resume both call `run()`) is covered and can't be forgotten.
      */
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
+    /**
+     * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is
+     * currently driving. The module-scoped `runningSessions` registry is shared
+     * across runtimes (it deliberately survives a plugin re-register), so a
+     * teardown that drains on it waits for OTHER runtimes' loops too -- on a
+     * re-register churn the doomed runtime could block up to
+     * teardown_drain_seconds for a session it does not own and whose DB handle
+     * it is not holding. Teardown should drain only on sessions it owns.
+     */
+    private readonly ownedSessions;
+    ownedRunningSessionIds(): string[];
     /**
      * beta.42: arm an active stall-watchdog for a session whose re-entry the
      * guard just skipped. After `loop.stall_watchdog_seconds`, re-read the

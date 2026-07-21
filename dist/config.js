@@ -96,7 +96,10 @@ const DEFAULTS = {
             "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
             "realpath", "xargs", "comm",
         ],
-        bash_denylist_tokens: ["sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill"],
+        // beta.57 (P2): shells added as argument-token denies -- the whitelist
+        // already excludes them as base commands, but `xargs sh -c`, `find -exec
+        // bash` and `env sh` smuggled an unguarded shell through whitelisted hosts.
+        bash_denylist_tokens: ["sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill", "sh", "bash", "zsh", "dash", "ksh", "fish"],
         path_denylist: [".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519"],
         allow_git_push: false,
         allow_network_commands: false,
