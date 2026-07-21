@@ -79,15 +79,46 @@ export type LoopOutcome =
 const runningSessions = new Set<string>();
 
 /**
- * beta.52: detect a worker that ended its turn WAITING for a mid-turn event
- * that does not exist in the one-shot harness protocol (session fc64d8ea #858
- * sub-task 3: "I'll await the Monitor event signaling tsc is ready"). Matches
- * "await/wait for/waiting for/poll for ... (monitor/harness/install/build/tsc)
- * event/signal/ready" phrasing. Used ONLY to TAG the failure distinctly from a
- * reasoned refusal; the worker-prompt hardening is what prevents it.
+ * beta.52/53: detect a worker that ended its turn WAITING for a mid-turn event
+ * that does not exist in the one-shot harness protocol. Two observed cases:
+ *   beta.51 seq-3 (session fc64d8ea): "I'll await the Monitor event signaling
+ *     tsc is ready rather than polling further." (one clause)
+ *   beta.52 seq-5 (session 8464f8ae): "npm ci is still running. The Monitor
+ *     will notify me when eslint is installed. Waiting for that event."
+ *     (split across TWO sentences -- the beta.52 regex REQUIRED the wait-verb,
+ *     the monitor/tool noun, and "event" within ONE clause ([^.\n] stops at the
+ *     period) so it FALSE-NEGATIVED this variant, mis-tagging it as a generic
+ *     refusal.)
+ *
+ * beta.53 (P1a) FIX: match on the DISTINCTIVE phrasings independently, then
+ * require an environment/tool word ANYWHERE in the message. `PART_RE` catches
+ * either half of the seq-5 split ("the Monitor will notify me", "waiting for
+ * that event", "await ... event", "Monitor event"); `ENV_RE` confirms it is an
+ * environment-wait hallucination (not some unrelated use of "event"). Both must
+ * be present. `matchesEnvWaitHallucination` is the exported predicate; the bare
+ * regex export is kept for backward-compat with the beta.52 test.
  */
+const WORKER_ENV_WAIT_PART_RE =
+  /\b(monitor|observer|watcher|sentinel)\s+(event|will\s+notify|notif)|will\s+notify\s+me|await(ing)?\s+(the\s+)?[^.\n]{0,40}\bevent\b|waiting\s+for\s+(that|the|an?)\s+[^.\n]{0,20}\b(event|signal|install|build|completion)\b|poll(ing)?\s+for\s+[^.\n]{0,40}\b(event|signal|ready)\b/i;
+const WORKER_ENV_WAIT_ENV_RE =
+  /\b(install(ing|ed)?|npm|npm\s+ci|yarn|pnpm|node_modules|tsc|typecheck|eslint|lint|build|compil)/i;
+/** beta.53: true when the worker awaited a non-existent env/monitor event. */
+export function matchesEnvWaitHallucination(text: string): boolean {
+  const t = (text ?? "").replace(/\s+/g, " ");
+  return WORKER_ENV_WAIT_PART_RE.test(t) && WORKER_ENV_WAIT_ENV_RE.test(t);
+}
+/**
+ * beta.53 (P1b): verification kinds that are eligible for an env-wait retry.
+ * These are the "no observable change" kinds -- a worker that hallucinated a
+ * wait produced no commit/no committed-file/wrote-but-didnt-commit. We NEVER
+ * retry a confabulated push/PR (branch_pushed, pr_opened, ...): those aren't
+ * env-wait shapes and retrying could mask a real confabulation.
+ */
+const ENV_WAIT_RETRYABLE_KINDS = new Set(["commit_made", "file_committed", "file_written"]);
+/** @deprecated beta.52 single-clause regex; kept for backward-compat tests. */
 const WORKER_PROTOCOL_ASSUMPTION_RE =
   /\b(await|wait(ing)?\s+for|poll(ing)?\s+for)\b[^.\n]{0,80}\b(monitor|harness|install|build|tsc|ready|completion|background)\b[^.\n]{0,40}\b(event|signal|ready|notif|callback|complet)/i;
+void WORKER_PROTOCOL_ASSUMPTION_RE;
 
 /**
  * beta.42: active stall-watchdog timers, keyed by sessionId. When the
@@ -173,6 +204,8 @@ export interface OrchestratorDeps {
     plan: LeadPlan;
     resumeSessionId?: string;
     requester?: string;
+    /** beta.53 (P1b): corrective dispatch context appended on a retry. */
+    dispatchHint?: string;
   }) => Promise<WorkerResult>;
   runAdversary: (params: {
     brief: CrystallisedBrief;
@@ -523,6 +556,8 @@ export class OrchestratorLoop {
       const failed = { seq: -1, err: null as unknown };
 
       const runOne = async (st: LeadPlanSubTask): Promise<void> => {
+        // beta.53 (P1b): at most ONE env-wait retry per sub-task.
+        let envWaitRetried = false;
         const reactions = await this.deps.readReactions(sessionId);
         if (reactions.abort) { failed.err = "user_abort_reaction"; failed.seq = st.seq; return; }
         if (Date.now() > hardDeadlineMs) { failed.err = "hard_timeout"; failed.seq = st.seq; return; }
@@ -691,6 +726,104 @@ export class OrchestratorLoop {
           }
 
           if (!verification.ok) {
+            // ---- beta.53 (P1b): retry-with-context on an env-wait hallucination ----
+            // Staging beta.52 #858 seq-5: the worker WROTE the aria-label edit
+            // (1145 bytes on disk) but never committed, then ended its turn with
+            // "npm ci is still running. The Monitor will notify me when eslint is
+            // installed. Waiting for that event." -- awaiting a mid-turn event
+            // that does not exist. Rather than terminate the whole run on a
+            // recoverable, well-understood hallucination, re-invoke the sub-task
+            // ONCE with corrective context. Because P2 now captures
+            // `uncommittedFiles`, we can branch the hint: for a PARTIAL-work turn
+            // (wrote-but-didn't-commit) the fix is nearly free -- "you already
+            // wrote X, just commit it"; for a ZERO-work turn -- "there is no such
+            // event, do the work now, skip env verification if the tool is
+            // missing". If the retry ALSO hallucinates (or otherwise fails
+            // verification) we fall through to the normal terminal handling.
+            const failedNow = verification.results.filter((x) => !x.passed);
+            const envWaitOnly =
+              !envWaitRetried &&
+              this.deps.config.loop.env_wait_retry_enabled !== false &&
+              !result.commitSha &&
+              failedNow.length > 0 &&
+              failedNow.every((x) => ENV_WAIT_RETRYABLE_KINDS.has(x.kind)) &&
+              matchesEnvWaitHallucination(result.finalMessage ?? "");
+            if (envWaitOnly) {
+              envWaitRetried = true;
+              const wrote = result.uncommittedFiles ?? [];
+              const hint = wrote.length > 0
+                ? `IMPORTANT: your PREVIOUS turn wrote these files to the worktree but never committed them: ${wrote.join(", ")}. There is NO "Monitor event", no event stream, and nothing will ever notify you -- harness dispatch is one-shot. Do NOT wait for any install/build/lint. Simply \`git add\` and \`git commit\` the work you already did, complete any remaining success criteria inline (run tools with a BLOCKING Bash call if needed, or skip a missing lint/typecheck tool and note it in the commit message), and end your turn.`
+                : `IMPORTANT: your PREVIOUS turn ended waiting for a nonexistent "Monitor event". The harness has NO such mechanism -- dispatch is one-shot and nothing will notify or resume you. Complete this sub-task NOW without waiting for any installation. If a tool (eslint/tsc/lint) is not installed in the worktree, run \`npm ci\` INLINE in a single blocking Bash call, OR skip that verification step and note it in the commit message. Make the required edit, commit it, and end your turn.`;
+              this.deps.state.audit(
+                "loop.worker_env_wait_retry",
+                {
+                  sessionId, seq: st.seq, cycle,
+                  partialWork: wrote.length > 0,
+                  uncommittedFiles: wrote,
+                  priorFinalMessage: (result.finalMessage ?? "").slice(0, 500),
+                },
+                sessionId,
+              );
+              this.deps.logger.warn("[loop] env-wait hallucination detected; retrying sub-task once with corrective context", {
+                sessionId, seq: st.seq, partialWork: wrote.length > 0,
+              });
+              try {
+                const retry = await withTimeout(
+                  this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester, dispatchHint: hint }),
+                  this.deps.config.loop.worker_timeout_seconds,
+                );
+                this.addCost(sessionId, retry.costUsd);
+                await this.deps.budget.recordSpend(row.requester, retry.costUsd, sessionId);
+                totalCost += retry.costUsd;
+                if (retry.costUsd > 0) subTaskCosts.push(retry.costUsd);
+                let retryVerification: VerifyOutcome;
+                try {
+                  const retryProbes = this.deps.buildVerifyProbes!({
+                    plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
+                  });
+                  retryVerification = await verifySubTaskOutput(
+                    contract,
+                    { defaultBranch: branchHint, subTaskStartMs: 0, baseSha: subTaskBaseSha },
+                    retryProbes,
+                  );
+                } catch (err) {
+                  retryVerification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+                }
+                this.deps.state.audit(
+                  "loop.subtask_verification",
+                  { sessionId, seq: st.seq, ok: retryVerification.ok, contract, summary: retryVerification.summary, results: retryVerification.results, retry: true },
+                  sessionId,
+                );
+                if (retryVerification.ok) {
+                  this.deps.state.db.prepare(
+                    `UPDATE sub_tasks SET status = ?, cost_usd = cost_usd + ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+                  ).run(
+                    retry.status,
+                    retry.costUsd,
+                    JSON.stringify(retry.filesChanged),
+                    retry.commitSha ?? null,
+                    retry.sdkSessionId ?? null,
+                    `env-wait retry succeeded: ${retryVerification.summary}`,
+                    Date.now(), Date.now(), subTaskId,
+                  );
+                  this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId);
+                  this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
+                  done.add(st.seq);
+                  return;
+                }
+                // Retry also failed verification -> fall through using the
+                // retry's result/verification so the terminal report reflects
+                // the second attempt.
+                this.deps.logger.warn("[loop] env-wait retry FAILED verification; terminating", {
+                  sessionId, seq: st.seq, summary: retryVerification.summary,
+                });
+                result = retry;
+                verification = retryVerification;
+              } catch (err) {
+                this.deps.logger.warn("[loop] env-wait retry threw; terminating", { sessionId, seq: st.seq, err: String(err) });
+                // keep original result/verification; fall through to terminal.
+              }
+            }
             // ---- beta.35 fix #1 + #2: legal no-op on a REVISE cycle ----
             // On a revise cycle (cycle > 1) the plan's mutate sub-task is
             // re-run against a base = the worker's current HEAD (the commit it
@@ -844,11 +977,11 @@ export class OrchestratorLoop {
             // can tell "worker was wrong about the harness" apart from "worker
             // correctly refused a bad task". Does NOT change pass/fail.
             const looksLikeProtocolAssumption =
-              looksLikeRefusal && WORKER_PROTOCOL_ASSUMPTION_RE.test(refusalText);
+              looksLikeRefusal && matchesEnvWaitHallucination(refusalText);
             if (looksLikeProtocolAssumption) {
               const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
               this.deps.state.audit(
-                "loop.worker_incorrect_protocol_assumption",
+                "loop.worker_env_wait_hallucination",
                 {
                   sessionId,
                   seq: st.seq,
@@ -859,7 +992,7 @@ export class OrchestratorLoop {
                 },
                 sessionId,
               );
-              this.deps.logger.warn("[loop] worker made an INCORRECT PROTOCOL ASSUMPTION (awaited a non-existent mid-turn event; zero side-effects)", {
+              this.deps.logger.warn("[loop] worker awaited a non-existent mid-turn event (env-wait hallucination) and did no work", {
                 sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200),
               });
             }

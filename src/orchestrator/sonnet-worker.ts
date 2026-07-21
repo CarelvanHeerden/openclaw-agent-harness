@@ -35,6 +35,15 @@ export interface WorkerResult {
    */
   finalMessage?: string;
   /**
+   * beta.53 (P2): working-tree files the worker touched but did NOT commit
+   * (from `git status --porcelain`). Empty when the working tree is clean.
+   * Distinguishes a partial-work turn ("wrote X, never committed") from a
+   * genuine zero-work turn -- the beta.52 #858 seq-5 refusal wrote a 1145-byte
+   * edit but `filesChanged` (committed-only) was [], mislabelling it as no-op.
+   * The retry-with-context logic (P1b) branches on whether this is non-empty.
+   */
+  uncommittedFiles?: string[];
+  /**
    * Result of post-execution observable-side-effect verification (beta.7
    * fix #1). Undefined when the sub-task declared no `verify` contracts.
    * When present and `!ok`, `status` is forced to `failed` and `costUsd` is
@@ -95,6 +104,12 @@ export interface WorkerDeps {
    * filesChanged when the worker self-committed.
    */
   gitListCommittedFiles?: (worktreePath: string, base: string) => Promise<string[]>;
+  /**
+   * beta.53 (P2): working-tree status (`git status --porcelain`) to capture
+   * uncommitted/untracked files the worker wrote but did not commit. Optional
+   * (best-effort); when absent, uncommittedFiles is left undefined.
+   */
+  gitStatusPorcelain?: (worktreePath: string) => Promise<string[]>;
 
   /**
    * canUseTool guard factory. The orchestrator builds one per session
@@ -236,9 +251,17 @@ export async function runWorker(
   commitIdentity: { name: string; email: string },
   deps: WorkerDeps,
   resumeSessionId?: string,
+  /**
+   * beta.53 (P1b): extra corrective context appended to the dispatch on a
+   * retry (e.g. "your prior turn wrote X but never committed -- just commit
+   * it; there is no Monitor event"). Undefined on the first attempt.
+   */
+  dispatchHint?: string,
 ): Promise<WorkerResult> {
   const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
-  const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.`;
+  const userMessage =
+    `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
+    (dispatchHint ? `\n\n${dispatchHint}` : "");
 
   const subTaskStartMs = Date.now();
   const baseSha = await deps.gitBaseSha(worktreePath);
@@ -301,6 +324,19 @@ export async function runWorker(
     }
   }
 
+  // beta.53 (P2): capture uncommitted working-tree changes BEFORE building the
+  // result, so a wrote-but-didn't-commit turn is visible (not mislabelled as
+  // zero side-effects). Only meaningful when nothing was committed this turn.
+  let uncommittedFiles: string[] | undefined;
+  if (deps.gitStatusPorcelain) {
+    try {
+      const dirty = await deps.gitStatusPorcelain(worktreePath);
+      if (dirty.length > 0) uncommittedFiles = dirty;
+    } catch {
+      // best-effort; leave undefined on failure.
+    }
+  }
+
   // SDK stop reason gives a provisional status.
   let status: WorkerResult["status"] =
     sdkResult.stopReason === "timeout"
@@ -351,6 +387,7 @@ export async function runWorker(
     reason: verification && !verification.ok ? `verification_failed: ${verification.summary}` : sdkResult.stopReason,
     logsExcerpt: sdkResult.logsExcerpt,
     finalMessage: sdkResult.finalMessage,
+    uncommittedFiles,
     verification,
     wastedSpend,
   };

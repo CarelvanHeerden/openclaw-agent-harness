@@ -29,7 +29,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -37,6 +37,15 @@ import { tmpdir } from "node:os";
 export interface GitAdapterOptions {
   worktreesRoot: string;
   logger: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void; error: (m: string, meta?: unknown) => void };
+  /**
+   * beta.53 (P3/P4): install node deps (`npm ci`/`npm install`) once at
+   * worktree allocation so workers never hit an un-installed tool mid-turn
+   * (the env-wait "Monitor event" hallucination trigger). Default enabled;
+   * set false to skip (e.g. non-node repos or tests).
+   */
+  bootstrapDeps?: boolean;
+  /** beta.53: max ms for the bootstrap install before it is abandoned. Default 600000. */
+  bootstrapTimeoutMs?: number;
 }
 
 /**
@@ -238,7 +247,51 @@ esac
       await ask.cleanup();
     }
 
+    // beta.53 (P3/P4): bootstrap node dependencies ONCE at worktree creation,
+    // BEFORE any worker turn. This is the eradicator for the "Monitor event"
+    // env-wait hallucination class: across beta.51 (seq-3, tsc) and beta.52
+    // (seq-5, eslint) the trigger was ALWAYS the same -- a worker hit an
+    // un-installed tool mid-turn, tried to install, then hallucinated waiting
+    // for a nonexistent completion event. If node_modules is already complete
+    // when the worker starts, it never needs to install and never reaches for
+    // the wait crutch. Also cuts the typical run's cost (~$0.50 on the Staging
+    // #858 smoke) since workers stop re-running npm ci mid-turn. Best-effort:
+    // a failed install must NOT block allocation (the worker can still fall
+    // back to its own inline `npm ci`); we log + continue.
+    if (this.opts.bootstrapDeps !== false) {
+      await this.bootstrapWorktreeDeps(wt);
+    }
+
     return wt;
+  }
+
+  /**
+   * beta.53: install node deps in a freshly-allocated worktree when a
+   * package.json is present and node_modules is missing/empty. Prefers a
+   * clean `npm ci` (respects the lockfile) and falls back to `npm install`
+   * when there is no lockfile. Bounded + best-effort: never throws.
+   */
+  private async bootstrapWorktreeDeps(worktreePath: string): Promise<void> {
+    try {
+      const hasPkg = existsSync(join(worktreePath, "package.json"));
+      if (!hasPkg) return;
+      const nm = join(worktreePath, "node_modules");
+      // If node_modules already has content, assume it's usable (checked-in or
+      // from a prior allocation) and skip -- avoids a slow redundant install.
+      if (existsSync(nm)) {
+        try {
+          if (readdirSync(nm).length > 0) return;
+        } catch { /* fall through to install */ }
+      }
+      const hasLock = existsSync(join(worktreePath, "package-lock.json")) || existsSync(join(worktreePath, "npm-shrinkwrap.json"));
+      const args = hasLock ? ["ci"] : ["install"];
+      this.opts.logger?.info?.(`[git-worktree] bootstrapping deps (npm ${args[0]}) in ${worktreePath}`);
+      await this.runCmd("npm", args, worktreePath, this.opts.bootstrapTimeoutMs ?? 600_000);
+      this.opts.logger?.info?.(`[git-worktree] deps bootstrap complete in ${worktreePath}`);
+    } catch (err) {
+      // Best-effort: log and continue. Worker can still self-install inline.
+      this.opts.logger?.warn?.(`[git-worktree] deps bootstrap failed (non-fatal): ${String(err)}`);
+    }
   }
 
   /**
@@ -389,6 +442,32 @@ esac
   async listChangedFiles(worktreePath: string, base: string): Promise<string[]> {
     const out = await this.run(["-C", worktreePath, "diff", "--name-only", base, "HEAD"]);
     return out.split("\n").map((l) => l.trim()).filter(Boolean);
+  }
+
+  /**
+   * beta.53 (P2): the working-tree files a worker actually touched, INCLUDING
+   * uncommitted + untracked changes. `listChangedFiles`/`listCommittedFiles`
+   * only see committed work (`git diff`/`git log base..HEAD`), so a worker that
+   * WROTE a file but never ran `git commit` shows up as "no side-effects"
+   * (Staging beta.52 #858 seq-5: the aria-label edit was on disk, 1145 bytes,
+   * but filesTouched was []). `git status --porcelain` surfaces the uncommitted
+   * work so the audit + the retry logic can distinguish a partial-work turn
+   * ("wrote X, didn't commit") from a genuine zero-work turn. Best-effort:
+   * returns [] on any error.
+   */
+  async statusPorcelain(worktreePath: string): Promise<string[]> {
+    const out = await this.run(["-C", worktreePath, "status", "--porcelain"]).catch(() => "");
+    // porcelain v1: `XY <path>` (or `XY <old> -> <new>` for renames). Strip the
+    // 2-char status + space and take the destination path for renames.
+    return Array.from(
+      new Set(
+        out.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean).map((l) => {
+          const rest = l.slice(3);
+          const arrow = rest.indexOf(" -> ");
+          return (arrow >= 0 ? rest.slice(arrow + 4) : rest).trim();
+        }).filter(Boolean),
+      ),
+    );
   }
 
   /**
@@ -620,6 +699,37 @@ esac
       proc.on("close", (code) => {
         if (code === 0) resolveP(out);
         else rejectP(new Error(`git ${args.join(" ")} failed (${code}): ${err.trim()}`));
+      });
+    });
+  }
+
+  /**
+   * beta.53: run an arbitrary command (e.g. `npm ci`) in `cwd` with a hard
+   * timeout. Used by worktree dep bootstrap. Rejects on non-zero exit, spawn
+   * error, or timeout (the caller treats all as non-fatal best-effort).
+   */
+  private runCmd(cmd: string, args: string[], cwd: string, timeoutMs: number): Promise<string> {
+    return new Promise((resolveP, rejectP) => {
+      const proc = spawn(cmd, args, { cwd, env: { ...process.env } });
+      let out = "";
+      let err = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+        rejectP(new Error(`${cmd} ${args.join(" ")} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      proc.stdout?.on("data", (c) => (out += c.toString()));
+      proc.stderr?.on("data", (c) => (err += c.toString()));
+      proc.on("error", (e) => { if (!settled) { settled = true; clearTimeout(timer); rejectP(e); } });
+      proc.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (code === 0) resolveP(out);
+        else rejectP(new Error(`${cmd} ${args.join(" ")} failed (${code}): ${err.trim().slice(0, 500)}`));
       });
     });
   }
