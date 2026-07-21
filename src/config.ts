@@ -178,6 +178,21 @@ export interface LoopConfig {
    */
   stall_watchdog_seconds: number;
   /**
+   * beta.60: max wall-clock seconds a SINGLE sub-task's dispatch may run before
+   * it is force-failed. beta.42 bounded only the worker SDK call
+   * (worker_timeout_seconds); but runOne ALSO awaits unbounded git/IO between
+   * the row-flip-to-running and the worker spawn -- notably worktreeHeadSha
+   * (git rev-parse), readReactions, verifySubTaskOutput probes, and
+   * budget.recordSpend. A hang in ANY of those wedges the whole dispatcher at
+   * `await Promise.race(inFlight)` with the sub-task row stuck `running`,
+   * `sdk_session_id=null`, `cost_usd=0`, and NO worker process ever spawned --
+   * exactly the b59 PR#858 seq-7 stall (5h30m silent, no auto-recovery). This
+   * bounds the ENTIRE runOne invocation, so no single IO await can freeze the
+   * loop. Must be >= worker_timeout_seconds plus margin for pre/post-worker IO.
+   * Default 2100 (35 min = 30 min worker + 5 min IO headroom).
+   */
+  subtask_deadline_seconds: number;
+  /**
    * beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn
    * "Monitor event" (env-wait hallucination) and made no committed change,
    * re-invoke the sub-task ONCE with corrective context instead of failing the
@@ -403,6 +418,7 @@ const DEFAULTS: HarnessConfig = {
     stuck_loop_seconds: 2700,
     teardown_drain_seconds: 3600,
     stall_watchdog_seconds: 90,
+    subtask_deadline_seconds: 2100,
     env_wait_retry_enabled: true,
     clarification_escalation_enabled: true,
   },

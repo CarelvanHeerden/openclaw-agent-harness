@@ -56,6 +56,7 @@ const DEFAULTS = {
         stuck_loop_seconds: 2700,
         teardown_drain_seconds: 3600,
         stall_watchdog_seconds: 90,
+        subtask_deadline_seconds: 2100,
         env_wait_retry_enabled: true,
         clarification_escalation_enabled: true,
     },

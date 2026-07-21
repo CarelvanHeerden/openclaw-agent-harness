@@ -957,26 +957,50 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       api.registerTool({
         name: "harness_resume",
         description:
-          "Resume an interrupted harness session. Requires the session to be in 'interrupted' or 'resumable' state.",
+          "Resume an interrupted harness session. Requires the session to be in 'interrupted' or 'resumable' state. " +
+          "beta.60: pass force:true to UNSTICK a session whose record says 'executing' or 'planning' but has NO live " +
+          "loop-runner (dead executor) -- e.g. the b59 seq-7 transition stall where the row sat 'executing' with no " +
+          "worker process for hours. force is REFUSED if a live loop-runner still owns the session (use harness_cancel instead).",
         parameters: {
           type: "object",
           properties: {
             sessionId: { type: "string", minLength: 1 },
             invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. REQUIRED; must be in slack.authorised_users." },
+            force: { type: "boolean", description: "beta.60: unstick an 'executing'/'planning' session that has no live loop-runner (dead executor). Refused if a runner is still alive." },
           },
           required: ["sessionId", "invokedBy"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
-          const { sessionId, invokedBy } = input as { sessionId: string; invokedBy?: string };
+          const { sessionId, invokedBy, force } = input as { sessionId: string; invokedBy?: string; force?: boolean };
           // beta.57 (P2): invokedBy is REQUIRED (was optional-and-skippable).
           if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
             return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
           }
           const row = liveDb().prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId) as { status: string; crystallised_prompt?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
-          if (!["interrupted", "resumable"].includes(row.status)) {
-            return { content: [{ type: "text", text: `Cannot resume ${sessionId} in status ${row.status}` }], details: { ok: false, badStatus: row.status } };
+          const RESUMABLE = ["interrupted", "resumable"];
+          // beta.60: force-unstick path. A session can end up `executing`/`planning`
+          // with its sub-task row stuck `running` but NO live loop-runner (the b59
+          // PR#858 seq-7 stall: dispatcher wedged on an unbounded git/IO await, or
+          // the runtime was torn down under it). harness_resume previously REFUSED
+          // ("Cannot resume ... in status executing") with no escape hatch, so the
+          // only recovery was cancel-and-rebuild, discarding real committed work.
+          // With force:true we allow re-driving from planning IFF no live runner
+          // owns the session -- checking runningSessionIds() so we never yank a
+          // session out from under a genuinely-busy in-process loop.
+          if (!RESUMABLE.includes(row.status)) {
+            if (!force) {
+              return { content: [{ type: "text", text: `Cannot resume ${sessionId} in status ${row.status}. If the executor is dead (no live loop-runner), retry with force:true.` }], details: { ok: false, badStatus: row.status } };
+            }
+            if (["done", "failed", "aborted"].includes(row.status)) {
+              return { content: [{ type: "text", text: `Cannot force-resume ${sessionId}: it is terminal (${row.status}). Use harness_revise to start a fresh revise.` }], details: { ok: false, terminal: true, badStatus: row.status } };
+            }
+            const liveRunners = liveRuntime().loop.runningSessionIds();
+            if (liveRunners.includes(sessionId)) {
+              return { content: [{ type: "text", text: `Refusing to force-resume ${sessionId}: a live loop-runner still owns it (status ${row.status}). It is genuinely running, not stuck. Use harness_cancel to stop it.` }], details: { ok: false, liveRunner: true, badStatus: row.status } };
+            }
+            liveState().audit("tool.resume_forced", { sessionId, wasStatus: row.status, invokedBy }, sessionId);
           }
           if (!row.crystallised_prompt) {
             return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
