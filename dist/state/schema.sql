@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   clarification_question   TEXT,             -- the ONE question surfaced to the human
   clarification_seq        INTEGER,          -- sub-task seq the loop paused at
   clarification_answer     TEXT,             -- the human's answer, folded into the brief on resume
+  clarification_subtask    TEXT,             -- beta.58: JSON { title, intent } of the paused sub-task (content-keyed skip)
   -- Recovery checkpointing
   current_cycle            INTEGER NOT NULL DEFAULT 0,
   last_completed_sub_task  TEXT,
