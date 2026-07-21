@@ -63,6 +63,7 @@ export type LoopOutcome = {
 export declare function matchesEnvWaitHallucination(text: string): boolean;
 /** beta.54: true when the worker confabulated an async coordination primitive. */
 export declare function matchesAsyncCoordConfabulation(text: string): boolean;
+export declare function matchesInvalidPremiseSkip(text: string): boolean;
 export declare function matchesWorkerDeviation(text: string): boolean;
 /**
  * beta.56 (P0-1): render the previous cycle's adversary review as a corrective

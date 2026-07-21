@@ -9,7 +9,7 @@
 import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
-import { isConditionalFinding } from "../orchestrator/finding-hygiene.js";
+import { isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
 function toDispose(x) {
     return () => {
         if (typeof x === "function")
@@ -866,7 +866,7 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
             const row = liveDb()
-                .prepare(`SELECT status, crystallised_prompt, clarification_question, clarification_seq FROM sessions WHERE id = ?`)
+                .prepare(`SELECT status, crystallised_prompt, clarification_question, clarification_seq, clarification_subtask FROM sessions WHERE id = ?`)
                 .get(sessionId);
             if (!row)
                 return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
@@ -892,8 +892,37 @@ export function registerHarnessTools(api, runtime) {
             const brief = JSON.parse(row.crystallised_prompt);
             const q = row.clarification_question ?? `sub-task ${seq}`;
             if (/^skip\b/i.test(trimmed)) {
+                // beta.58 (D1/D2): DURABLE skip. The prior beta.55 form phrased the
+                // prohibition by seq number and only appended to outOfScope -- but
+                // harness_answer re-drives via a FULL re-plan (status='planning' ->
+                // loop.run) which RENUMBERS seqs AND re-derives sub-tasks from the
+                // finding lines still present in acceptanceCriteria. So "sub-task 2"
+                // bound to nothing and the lead re-emitted the same work. Fix: key the
+                // prohibition by the paused sub-task's CONTENT (title/intent) and
+                // physically STRIP the owning finding line(s) from acceptanceCriteria
+                // so the lead never re-derives it. Content survives renumbering.
+                let paused = {};
+                try {
+                    if (row.clarification_subtask)
+                        paused = JSON.parse(row.clarification_subtask);
+                }
+                catch { /* ignore */ }
+                const pausedTitle = (paused.title ?? "").trim();
+                const pausedIntent = (paused.intent ?? "").trim();
                 brief.outOfScope = Array.isArray(brief.outOfScope) ? brief.outOfScope : [];
-                brief.outOfScope.push(`Do NOT attempt the previously-blocked sub-task ${seq}. The operator chose to skip it.`);
+                brief.outOfScope.push(pausedTitle || pausedIntent
+                    ? `Do NOT perform the following work under ANY circumstances -- the operator explicitly skipped it: "${(pausedTitle || pausedIntent).slice(0, 300)}". Do not re-plan, rephrase, or promote it to an unconditional step.`
+                    : `Do NOT attempt the previously-blocked sub-task ${seq}. The operator chose to skip it.`);
+                // Strip any acceptanceCriteria finding line whose text overlaps the
+                // paused sub-task's title/intent (the finding the sub-task addressed),
+                // so a re-plan can't re-derive the same mutate from a still-present line.
+                if (Array.isArray(brief.acceptanceCriteria) && (pausedTitle || pausedIntent)) {
+                    const removed = removeOwningFindingLines(brief.acceptanceCriteria, pausedTitle, pausedIntent);
+                    brief.acceptanceCriteria = removed.kept;
+                    if (removed.dropped.length) {
+                        liveState().audit("tool.answer_finding_stripped", { sessionId, seq, droppedLines: removed.dropped.length }, sessionId);
+                    }
+                }
             }
             else {
                 brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
