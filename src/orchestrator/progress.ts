@@ -87,6 +87,14 @@ export interface ProgressSnapshot {
    * rephrase. Slack-mrkdwn-safe (no markdown tables/headings).
    */
   headline: string;
+  /**
+   * beta.55 (B2): true when the session is paused in `awaiting_clarification`.
+   * The polling agent MUST relay `clarificationQuestion` to the requester and
+   * resume via harness_answer with their reply.
+   */
+  needsClarification: boolean;
+  clarificationQuestion: string | null;
+  clarificationSeq: number | null;
 }
 
 const PHASE_BY_STATUS: Record<string, string> = {
@@ -98,6 +106,7 @@ const PHASE_BY_STATUS: Record<string, string> = {
   failed: "Failed",
   failed_verification: "Failed verification",
   aborted: "Aborted",
+  awaiting_clarification: "Awaiting clarification",
 };
 
 interface SessionRow {
@@ -111,6 +120,8 @@ interface SessionRow {
   pr_number: number | null;
   final_pr_url: string | null;
   deploy_status: string | null;
+  clarification_question: string | null;
+  clarification_seq: number | null;
 }
 
 function round(n: number, dp = 4): number {
@@ -142,12 +153,16 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     lastEventAt: null,
     recentEvents: [],
     headline: found ? "" : `No harness session with id ${sessionId}.`,
+    needsClarification: false,
+    clarificationQuestion: null,
+    clarificationSeq: null,
   });
 
   const row = db
     .prepare(
       `SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
-              pr_number, final_pr_url, deploy_status
+              pr_number, final_pr_url, deploy_status,
+              clarification_question, clarification_seq
          FROM sessions WHERE id = ?`,
     )
     .get(sessionId) as SessionRow | undefined;
@@ -250,19 +265,27 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     }
   }
 
-  const headline = buildHeadline({
-    phase,
-    status,
-    terminal,
-    total: all.length,
-    done,
-    current,
-    spentUsd,
-    budgetUsd,
-    prNumber: row.pr_number ?? null,
-    deployStatus: row.deploy_status ?? null,
-    failureDetail,
-  });
+  // beta.55 (B2): a clarification pause overrides the normal headline so the
+  // polling agent sees the question directly and relays it.
+  const needsClarification = status === "awaiting_clarification";
+  const clarificationQuestion = needsClarification ? (row.clarification_question ?? null) : null;
+  const clarificationSeq = needsClarification ? (row.clarification_seq ?? null) : null;
+
+  const headline = needsClarification && clarificationQuestion
+    ? `Awaiting clarification: ${clarificationQuestion.slice(0, 400)} (answer via harness_answer sessionId=${sessionId})`
+    : buildHeadline({
+        phase,
+        status,
+        terminal,
+        total: all.length,
+        done,
+        current,
+        spentUsd,
+        budgetUsd,
+        prNumber: row.pr_number ?? null,
+        deployStatus: row.deploy_status ?? null,
+        failureDetail,
+      });
 
   return {
     ok: true,
@@ -283,6 +306,9 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     lastEventAt,
     recentEvents,
     headline,
+    needsClarification,
+    clarificationQuestion,
+    clarificationSeq,
   };
 }
 

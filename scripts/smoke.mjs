@@ -115,6 +115,7 @@ const expectTools = [
   "harness_upload_logs",
   "harness_cancel",
   "harness_resume",
+  "harness_answer",
   "harness_retention_prune",
   "harness_list_revisable",
   "harness_revise",

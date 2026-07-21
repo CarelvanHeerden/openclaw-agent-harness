@@ -23,6 +23,7 @@ const EXPECTED_TOOLS = [
   "harness_upload_logs",
   "harness_cancel",
   "harness_resume",
+  "harness_answer",
   "harness_retention_prune",
   "harness_bootstrap_test_repo",
   "harness_merge_pr",

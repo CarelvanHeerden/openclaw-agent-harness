@@ -802,6 +802,81 @@ export function registerHarnessTools(api, runtime) {
             return { content: [{ type: "text", text: `Session ${sessionId} resumed. Watch the Slack thread for progress.` }], details: { ok: true, sessionId } };
         },
     })));
+    // ---- beta.55 (B2): harness_answer -- resume a session paused in
+    // `awaiting_clarification` by folding the human's decision into the brief
+    // and re-driving the loop. This is the HUMAN-IN-THE-LOOP resume path: when a
+    // worker refuses/confabulates a sub-task even after the beta.54 retry, the
+    // loop pauses (not fails) and surfaces its question via harness_progress; the
+    // agent relays it and calls harness_answer with the user's reply.
+    toDispose(api.registerTool({
+        name: "harness_answer",
+        description: "Answer a harness session that is paused in 'awaiting_clarification' and resume it. " +
+            "The answer is folded into the brief as a directive and the loop re-drives, building on any " +
+            "work already committed. Special answers: 'abort' (or 'cancel') terminates the session; 'skip' " +
+            "instructs the loop to drop the blocked sub-task and continue.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string", minLength: 1 },
+                answer: { type: "string", minLength: 1, description: "The human's decision for the paused sub-task." },
+                invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. If provided, must be in slack.authorised_users." },
+            },
+            required: ["sessionId", "answer"],
+            additionalProperties: false,
+        },
+        execute: async (_callId, input) => {
+            const { sessionId, answer, invokedBy } = input;
+            if (invokedBy && !liveConfig().slack.authorised_users.includes(invokedBy)) {
+                return { content: [{ type: "text", text: `Invoker ${invokedBy} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+            }
+            const row = liveDb()
+                .prepare(`SELECT status, crystallised_prompt, clarification_question, clarification_seq FROM sessions WHERE id = ?`)
+                .get(sessionId);
+            if (!row)
+                return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+            if (row.status !== "awaiting_clarification") {
+                return { content: [{ type: "text", text: `Session ${sessionId} is not awaiting clarification (status ${row.status})` }], details: { ok: false, badStatus: row.status } };
+            }
+            if (!row.crystallised_prompt) {
+                return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
+            }
+            const trimmed = answer.trim();
+            const seq = row.clarification_seq ?? -1;
+            liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
+            liveState().audit("loop.clarification_answered", { sessionId, seq, answerLen: trimmed.length, invokedBy: invokedBy ?? null }, sessionId);
+            // 'abort'/'cancel' -> terminate the session cleanly (release worktree).
+            if (/^(abort|cancel)\b/i.test(trimmed)) {
+                liveDb().prepare(`UPDATE sessions SET status = 'aborted', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
+                liveState().audit("tool.answer_aborted", { sessionId, seq }, sessionId);
+                return { content: [{ type: "text", text: `Session ${sessionId} aborted per your instruction.` }], details: { ok: true, sessionId, aborted: true } };
+            }
+            // Fold the decision into the brief so the re-plan honours it. For a
+            // 'skip' answer we phrase it as an out-of-scope directive; otherwise as
+            // an acceptance-criteria directive pinned to the blocked sub-task.
+            const brief = JSON.parse(row.crystallised_prompt);
+            const q = row.clarification_question ?? `sub-task ${seq}`;
+            if (/^skip\b/i.test(trimmed)) {
+                brief.outOfScope = Array.isArray(brief.outOfScope) ? brief.outOfScope : [];
+                brief.outOfScope.push(`Do NOT attempt the previously-blocked sub-task ${seq}. The operator chose to skip it.`);
+            }
+            else {
+                brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
+                brief.acceptanceCriteria.push(`OPERATOR CLARIFICATION (for the previously-blocked sub-task ${seq}): In response to "${q.slice(0, 300)}", the operator decided: ${trimmed}. Follow this decision exactly; do not re-raise the same question.`);
+            }
+            // Persist the amended brief so a subsequent restart/recovery re-drives
+            // WITH the clarification baked in.
+            liveDb().prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', updated_at = ? WHERE id = ?`)
+                .run(JSON.stringify(brief), Date.now(), sessionId);
+            liveState().audit("tool.answer_resumed", { sessionId, seq, skip: /^skip\b/i.test(trimmed) }, sessionId);
+            void liveRuntime().loop.run(sessionId, brief).catch((err) => {
+                api.logger.error("[tool.answer] loop.run failed", { sessionId, err: String(err) });
+            });
+            return {
+                content: [{ type: "text", text: `Answer recorded for session ${sessionId}; resuming. Poll harness_progress for status.` }],
+                details: { ok: true, sessionId, resumed: true, seq },
+            };
+        },
+    }));
     // A session is "revisable" iff it shipped a PR that isn't merge-ready.
     // status='done' (shipped), pr_number present, and merge_recommendation is
     // anything other than 'merge' (do_not_merge, or null when shipped at max
