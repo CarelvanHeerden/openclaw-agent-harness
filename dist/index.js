@@ -1026,6 +1026,11 @@ export function bootstrapHarnessSync(api) {
             // ---- GATE (beta.36: Vercel-aware) ----
             // Baseline recommendation from ship time.
             const rec = (row.merge_recommendation ?? "do_not_merge");
+            // beta.62: `needs_human_review` (graceful PR opened after a review crash,
+            // work self-verified green but the adversary never signed off) is NEVER
+            // auto-overridable -- there is no machine verdict to lean on, so a human
+            // MUST look. It always takes the hard-refuse branch regardless of Vercel.
+            const reviewCrashPr = rec === "needs_human_review";
             // A do-not-merge is OVERRIDABLE (auto-merge allowed) ONLY when:
             //   - the project is Vercel-configured (so the post-merge deploy
             //     verification is the runtime arbiter the loop never had), AND
@@ -1034,7 +1039,7 @@ export function bootstrapHarnessSync(api) {
             // A `block` verdict, a blocking-severity finding, or a non-Vercel
             // project keeps the HARD refuse (human merges via the GitHub UI).
             const reviseOnly = lastVerdict === "revise" && !hasBlockingFinding;
-            const overridable = vercelConfigured && reviseOnly;
+            const overridable = vercelConfigured && reviseOnly && !reviewCrashPr;
             if (rec !== "merge" && !overridable) {
                 state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, recommendation: rec, lastVerdict, hasBlockingFinding, vercelConfigured }, sessionId);
                 return {
@@ -1042,12 +1047,16 @@ export function bootstrapHarnessSync(api) {
                     refused: true,
                     recommendation: rec,
                     message: `Refusing to merge PR #${row.pr_number}. HARD SAFETY GATE. ` +
-                        `Recommendation: DO NOT MERGE — ${row.merge_recommendation_reason ?? "no clean adversary sign-off"}. ` +
+                        (reviewCrashPr
+                            ? `Recommendation: NEEDS HUMAN REVIEW — ${row.merge_recommendation_reason ?? "the adversary review did not complete"}. The code work self-verified green but the adversary never produced a sign-off, so a human MUST review before merge. `
+                            : `Recommendation: DO NOT MERGE — ${row.merge_recommendation_reason ?? "no clean adversary sign-off"}. `) +
                         (lastVerdict === "block" || hasBlockingFinding
                             ? `The adversary raised a BLOCKING concern; this is never auto-overridden. `
-                            : !vercelConfigured
-                                ? `This project has no Vercel deploy verification, so there's no runtime arbiter to auto-merge behind. `
-                                : ``) +
+                            : reviewCrashPr
+                                ? `An incomplete adversary review is never auto-overridden. `
+                                : !vercelConfigured
+                                    ? `This project has no Vercel deploy verification, so there's no runtime arbiter to auto-merge behind. `
+                                    : ``) +
                         `To merge anyway, use the GitHub UI (deliberately outside this automation).`,
                 };
             }

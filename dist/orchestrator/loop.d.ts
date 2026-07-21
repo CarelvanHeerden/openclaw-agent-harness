@@ -331,6 +331,33 @@ export declare class OrchestratorLoop {
      */
     private finaliseFailed;
     /**
+     * beta.62 (fix #3): terminal-fail a session WITHOUT releasing the worktree,
+     * so the on-disk commit chain stays inspectable. Used for a review CRASH
+     * that could NOT be salvaged into a graceful PR (e.g. a cycle-1 crash with
+     * no prior review, a non-green self-verify, or the graceful push itself
+     * failed). The b60-attempt-2 failure discarded 8 good commits precisely
+     * because the crash path released the worktree; preserving it means a human
+     * can `git log`/push the branch manually even when the harness couldn't.
+     */
+    private finaliseFailedPreserveWorktree;
+    /**
+     * beta.62 (fix #2/#3): handle an adversary-review CRASH. The completed,
+     * self-verified sub-task work must not be silently discarded (the
+     * b60-attempt-2 failure). GRACEFUL PATH -- when all of:
+     *   - `graceful_pr_on_review_crash` is not disabled, AND
+     *   - a PRIOR cycle already produced a completed adversary review
+     *     (`priorReview`), AND
+     *   - this cycle's own sub-task self-verification is fully GREEN (the latest
+     *     verification for every sub-task passed),
+     * open the PR anyway with `merge_recommendation = 'needs_human_review'` so a
+     * human can inspect the adversary-motivated commits. The harness_merge_pr
+     * hard gate refuses `needs_human_review` (never auto-overridable), so this
+     * cannot silently ship unverified code -- it just preserves the deliverable.
+     * OTHERWISE fail terminally but PRESERVE the worktree (fix #3) so the branch
+     * remains inspectable on disk. Never throws.
+     */
+    private finaliseReviewCrash;
+    /**
      * beta.55 (B2): pause the session for a human decision. Persists the
      * question + the paused sub-task seq and sets status `awaiting_clarification`.
      * CRITICAL: does NOT release the worktree (unlike finaliseFailed/Abort) so

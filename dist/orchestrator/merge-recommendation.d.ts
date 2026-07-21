@@ -17,7 +17,17 @@
  * These feed the HARD GATE in harness_merge_pr: if the recommendation is
  * do_not_merge, the merge tool refuses (no override; use the GitHub UI).
  */
-export type MergeRecommendation = "merge" | "do_not_merge";
+/**
+ * beta.62: added `needs_human_review` -- set ONLY by the graceful-degradation
+ * path in the loop when a cycle-N adversary review crashed but the underlying
+ * work is complete + self-verified green (so the PR is opened for inspection
+ * rather than discarded). It is distinct from `do_not_merge` (which means the
+ * adversary produced a verdict that withheld sign-off): `needs_human_review`
+ * means the adversary NEVER FINISHED, so there is no machine sign-off at all.
+ * The harness_merge_pr HARD GATE treats it exactly like do_not_merge (refuse;
+ * human merges via the GitHub UI) -- it is never auto-overridable.
+ */
+export type MergeRecommendation = "merge" | "do_not_merge" | "needs_human_review";
 export interface ReviewSignal {
     verdict: "pass" | "revise" | "block" | string;
     findings: Array<{

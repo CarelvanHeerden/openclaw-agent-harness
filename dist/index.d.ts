@@ -216,11 +216,11 @@ export interface PreflightResult {
 /** beta.34: result of a harness_merge_pr invocation. */
 export interface MergePrResult {
     ok: boolean;
-    /** True when the hard gate refused the merge (recommendation = do_not_merge). */
+    /** True when the hard gate refused the merge (recommendation = do_not_merge / needs_human_review). */
     refused?: boolean;
     merged?: boolean;
     mergeSha?: string;
-    recommendation?: "merge" | "do_not_merge";
+    recommendation?: "merge" | "do_not_merge" | "needs_human_review";
     /** Deploy verification outcome (when Vercel enabled + a merge happened). */
     deploy?: {
         status: "ready" | "error" | "pending" | "unavailable";

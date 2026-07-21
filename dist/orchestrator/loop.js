@@ -1180,17 +1180,36 @@ export class OrchestratorLoop {
                 // (previously declared in config but UNENFORCED on this await). A hung
                 // reviewer froze the run at the review phase with no timeout.
                 report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester }), this.deps.config.loop.adversary_timeout_seconds);
+                // beta.62 (fix #1): the post-review persist awaits (recordSpend,
+                // saveReview) were OUTSIDE any try/catch. A throw there propagated
+                // uncaught out of runInner -> run()'s try/finally -> the external
+                // fire-and-forget `.catch` which only logs to api.logger (NOT the
+                // audit_log DB). Combined with the non-timeout review error below
+                // emitting NO audit, this produced the b60-attempt-2 signature: no
+                // `loop.review` event, no crash event, `status=failed` with a multi-
+                // minute gap -- indistinguishable from a stall. Fold them into the
+                // same try so any failure surfaces as `loop.review_failed`.
+                totalCost += report.costUsd;
+                this.addCost(sessionId, report.costUsd);
+                await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
+                this.saveReview(sessionId, cycle, report);
             }
             catch (err) {
-                if (err instanceof WorkerTimeoutError) {
+                // beta.43: a hung reviewer is a distinct, already-audited class.
+                const isTimeout = err instanceof WorkerTimeoutError;
+                if (isTimeout) {
                     this.deps.state.audit("loop.adversary_timeout", { sessionId, cycle, adversary_timeout_seconds: this.deps.config.loop.adversary_timeout_seconds }, sessionId);
                 }
-                return this.finaliseFailed(sessionId, `adversary_error: ${String(err)}`, cycle, totalCost);
+                // beta.62 (fix #1): ALWAYS emit a structured crash event so the audit
+                // trail never just stops mid-review. This is the telemetry that was
+                // missing -- without it a review crash is invisible until you read the
+                // sessions row's status column directly.
+                this.deps.state.audit("loop.review_failed", { sessionId, cycle, isTimeout, error: String(err?.message ?? err) }, sessionId);
+                this.deps.logger.error("[loop] adversary review crashed", { sessionId, cycle, isTimeout, err: String(err) });
+                // beta.62 (fix #2/#3): try to salvage the run rather than discard the
+                // completed, self-verified work. Returns a terminal outcome either way.
+                return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
             }
-            totalCost += report.costUsd;
-            this.addCost(sessionId, report.costUsd);
-            await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
-            this.saveReview(sessionId, cycle, report);
             lastReview = report;
             this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length }, sessionId);
             const reactions = await this.deps.readReactions(sessionId);
@@ -1420,6 +1439,86 @@ export class OrchestratorLoop {
         this.setStatus(sessionId, "failed");
         this.scheduleWorktreeReleaseForSession(sessionId, "failed");
         return { status: "failed", sessionId, reason, cycles, totalCostUsd };
+    }
+    /**
+     * beta.62 (fix #3): terminal-fail a session WITHOUT releasing the worktree,
+     * so the on-disk commit chain stays inspectable. Used for a review CRASH
+     * that could NOT be salvaged into a graceful PR (e.g. a cycle-1 crash with
+     * no prior review, a non-green self-verify, or the graceful push itself
+     * failed). The b60-attempt-2 failure discarded 8 good commits precisely
+     * because the crash path released the worktree; preserving it means a human
+     * can `git log`/push the branch manually even when the harness couldn't.
+     */
+    finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd) {
+        this.setStatus(sessionId, "failed");
+        this.deps.state.audit("loop.failed_worktree_preserved", { sessionId, reason, cycles }, sessionId);
+        return { status: "failed", sessionId, reason, cycles, totalCostUsd };
+    }
+    /**
+     * beta.62 (fix #2/#3): handle an adversary-review CRASH. The completed,
+     * self-verified sub-task work must not be silently discarded (the
+     * b60-attempt-2 failure). GRACEFUL PATH -- when all of:
+     *   - `graceful_pr_on_review_crash` is not disabled, AND
+     *   - a PRIOR cycle already produced a completed adversary review
+     *     (`priorReview`), AND
+     *   - this cycle's own sub-task self-verification is fully GREEN (the latest
+     *     verification for every sub-task passed),
+     * open the PR anyway with `merge_recommendation = 'needs_human_review'` so a
+     * human can inspect the adversary-motivated commits. The harness_merge_pr
+     * hard gate refuses `needs_human_review` (never auto-overridable), so this
+     * cannot silently ship unverified code -- it just preserves the deliverable.
+     * OTHERWISE fail terminally but PRESERVE the worktree (fix #3) so the branch
+     * remains inspectable on disk. Never throws.
+     */
+    async finaliseReviewCrash(sessionId, err, cycle, totalCost, ctx) {
+        const reason = `review_crash: ${String(err?.message ?? err)}`;
+        const gracefulEnabled = this.deps.config.loop.graceful_pr_on_review_crash !== false;
+        const priorReview = ctx.lastReview; // set only after a PRIOR cycle's review persisted
+        const selfVerify = this.readLocalVerification(sessionId);
+        const selfVerifyGreen = selfVerify.length > 0 && selfVerify.every((v) => v.ok);
+        const eligible = gracefulEnabled && cycle >= 2 && !!priorReview && selfVerifyGreen;
+        this.deps.state.audit("loop.review_crash_recovery", {
+            sessionId,
+            cycle,
+            eligible,
+            gracefulEnabled,
+            hasPriorReview: !!priorReview,
+            selfVerifyGreen,
+            selfVerifySubtasks: selfVerify.length,
+            selfVerifyFailed: selfVerify.filter((v) => !v.ok).map((v) => v.seq),
+        }, sessionId);
+        if (!eligible || !priorReview) {
+            // Not salvageable into a PR -- fail, but keep the worktree (fix #3).
+            return this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
+        }
+        // GRACEFUL PR: open the PR on the existing branch using the last COMPLETED
+        // review (the prior cycle's), flagged needs_human_review.
+        let prUrl;
+        try {
+            prUrl = await this.deps.pushBranchAndOpenPr({
+                plan: ctx.plan,
+                brief: ctx.brief,
+                reviewReport: priorReview,
+                requester: ctx.row.requester,
+            });
+        }
+        catch (pushErr) {
+            this.deps.state.audit("loop.review_crash_pr_failed", { sessionId, cycle, error: String(pushErr?.message ?? pushErr) }, sessionId);
+            // Push failed too -- preserve the worktree so the branch is still
+            // inspectable on disk.
+            return this.finaliseFailedPreserveWorktree(sessionId, `${reason}; graceful_pr_failed: ${String(pushErr)}`, cycle, totalCost);
+        }
+        const recReason = `The adversary review for cycle ${cycle} crashed before producing a verdict, but all ${selfVerify.length} sub-task(s) self-verified green and the prior cycle's review was addressed. ` +
+            `The commits are opened for MANUAL human review -- there is no machine sign-off, so this is NOT auto-mergeable.`;
+        const prNumber = parsePrNumber(prUrl);
+        this.deps.state.db
+            .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
+            .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
+        this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaReviewCrashRecovery: true }, sessionId);
+        // The deliverable is safely on origin as a PR; releasing the local
+        // worktree is fine here (unlike the non-graceful path).
+        await this.tryReleaseWorktree(sessionId, ctx.plan.repo, ctx.plan.worktreePath, "shipped");
+        return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
     }
     /**
      * beta.55 (B2): pause the session for a human decision. Persists the

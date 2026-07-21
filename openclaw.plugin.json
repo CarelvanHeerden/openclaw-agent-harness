@@ -289,6 +289,11 @@
             "type": "boolean",
             "default": true,
             "description": "beta.55 (B2): when a worker refuses/confabulates a sub-task even after the beta.54 async-coord retry, pause the session in 'awaiting_clarification' (persisting the worker's question + paused seq, preserving the worktree) and surface it via harness_progress for a human to answer with harness_answer, instead of hard-failing the run. Set false to keep the terminal-fail behaviour."
+          },
+          "graceful_pr_on_review_crash": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.62 (fix #2/#3): when a cycle-N adversary review CRASHES (SDK/parse/persist error) instead of returning a verdict, and a PRIOR cycle already produced a completed review AND this cycle's own sub-task self-verification was fully green, open the PR anyway with merge_recommendation='needs_human_review' rather than discarding the adversary-motivated commits (the b60-attempt-2 silent-review-crash failure: 8 good commits, seq-6 self-verify green, cycle-2 review crashed, work thrown away). When the graceful path is NOT taken, the worktree is preserved (not released) so the commit chain stays inspectable. Set false to keep the hard-fail-and-release behaviour."
           }
         }
       },

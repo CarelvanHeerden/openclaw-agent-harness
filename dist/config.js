@@ -60,6 +60,7 @@ const DEFAULTS = {
         budget_reserve_ratio: 0.15,
         env_wait_retry_enabled: true,
         clarification_escalation_enabled: true,
+        graceful_pr_on_review_crash: true,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",
