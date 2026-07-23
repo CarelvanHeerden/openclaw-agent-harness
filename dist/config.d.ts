@@ -323,6 +323,31 @@ export interface LoopConfig {
      */
     stall_graceful_pr?: boolean;
     /**
+     * beta.67 (Bug A): EXTERNAL stall-sweep cadence (seconds). beta.63's
+     * `checkStalls` runs IN-PROCESS, so a dead loop-runner process cannot
+     * watchdog its own death (beta.66 smoke #4). This is the tick interval for
+     * the EXTERNAL `stall-sweep` service (src/index.ts, registered like
+     * pr-watcher / retention-nightly) that runs `loop.sweepStalls()` independent
+     * of any loop process: it runs the existing checkStalls fast path AND reaps
+     * sessions with a pending cancel flag whose loop is dead. Default 60;
+     * clamped [15, 600].
+     */
+    stall_sweep_interval_seconds?: number;
+    /**
+     * beta.67 (P0a): enforce SUBSTANTIVE workerContext on mutate/mixed sub-tasks
+     * (rationale + file-anchored changeSpec/excerpt) at the validatePlan gate.
+     * true (default) -> one bounded lead re-ask then hard-throw. false -> WARN-
+     * only escape hatch. Enforces the founding orchestrator-split goal.
+     */
+    enforce_worker_context?: boolean;
+    /**
+     * beta.67 (P0b): run ONE Fable revise-spec turn between the adversary and
+     * the cycle-2 workers to refresh workerContext (resolved changeSpec) instead
+     * of handing workers the raw findings (the beta.63/64 no-op regression).
+     * false -> beta.66 behaviour. Failure also falls back. Default true.
+     */
+    revise_spec_turn_enabled?: boolean;
+    /**
      * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
      * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
      * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on

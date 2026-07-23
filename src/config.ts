@@ -331,6 +331,31 @@ export interface LoopConfig {
    */
   stall_graceful_pr?: boolean;
   /**
+   * beta.67 (Bug A): EXTERNAL stall-sweep cadence (seconds). beta.63's
+   * `checkStalls` runs IN-PROCESS, so a dead loop-runner process cannot
+   * watchdog its own death (beta.66 smoke #4). This is the tick interval for
+   * the EXTERNAL `stall-sweep` service (src/index.ts, registered like
+   * pr-watcher / retention-nightly) that runs `loop.sweepStalls()` independent
+   * of any loop process: it runs the existing checkStalls fast path AND reaps
+   * sessions with a pending cancel flag whose loop is dead. Default 60;
+   * clamped [15, 600].
+   */
+  stall_sweep_interval_seconds?: number;
+  /**
+   * beta.67 (P0a): enforce SUBSTANTIVE workerContext on mutate/mixed sub-tasks
+   * (rationale + file-anchored changeSpec/excerpt) at the validatePlan gate.
+   * true (default) -> one bounded lead re-ask then hard-throw. false -> WARN-
+   * only escape hatch. Enforces the founding orchestrator-split goal.
+   */
+  enforce_worker_context?: boolean;
+  /**
+   * beta.67 (P0b): run ONE Fable revise-spec turn between the adversary and
+   * the cycle-2 workers to refresh workerContext (resolved changeSpec) instead
+   * of handing workers the raw findings (the beta.63/64 no-op regression).
+   * false -> beta.66 behaviour. Failure also falls back. Default true.
+   */
+  revise_spec_turn_enabled?: boolean;
+  /**
    * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
    * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
    * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on
@@ -611,6 +636,9 @@ const DEFAULTS: HarnessConfig = {
     session_stall_seconds: 1800,
     stall_auto_terminal: true,
     stall_graceful_pr: true,
+    stall_sweep_interval_seconds: 60,
+    enforce_worker_context: true,
+    revise_spec_turn_enabled: true,
     sdk_first_token_timeout_seconds: 30,
     sdk_stream_open_timeout_seconds: 120,
     worker_timeout_retry_enabled: true,
@@ -794,6 +822,11 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   // healthy long run is never mis-detected as a stall. Clamp to >= 300s.
   if (typeof merged.loop.session_stall_seconds === "number" && merged.loop.session_stall_seconds < 300) {
     merged.loop.session_stall_seconds = 300;
+  }
+  // beta.67 (Bug A): clamp the EXTERNAL stall-sweep cadence to [15, 600]s.
+  // Too fast wastes wakeups; too slow lets a dead-loop session linger.
+  if (typeof merged.loop.stall_sweep_interval_seconds === "number") {
+    merged.loop.stall_sweep_interval_seconds = Math.max(15, Math.min(600, merged.loop.stall_sweep_interval_seconds));
   }
   // beta.63 (Fix 2): clamp the per-check-script timeout to a sane floor.
   if (typeof merged.verify.check_script_timeout_seconds === "number" && merged.verify.check_script_timeout_seconds < 10) {

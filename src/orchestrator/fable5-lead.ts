@@ -200,36 +200,136 @@ export interface LeadPlan {
 
 export interface LeadDeps {
   config: HarnessConfig;
-  logger: { info: (m: string, meta?: unknown) => void };
-  callLeadModel: (brief: CrystallisedBrief, repos: string[]) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
+  logger: { info: (m: string, meta?: unknown) => void; warn?: (m: string, meta?: unknown) => void };
+  callLeadModel: (
+    brief: CrystallisedBrief,
+    repos: string[],
+    correctiveNote?: string,
+  ) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
   allocateWorktree: (repo: string, branch: string) => Promise<string>;
   estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
+}
+
+/**
+ * beta.67 (P0a): raised when a plan fails workerContext enforcement AFTER the
+ * one bounded lead re-ask. Surfaced as a plan failure -- a loud fail at
+ * planning beats another silent workers-no-op'd revise cycle downstream.
+ */
+export class LeadPlanValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LeadPlanValidationError";
+  }
+}
+
+// beta.67 (P0a): minimum length for a changeSpec to count as substantive.
+const CHANGESPEC_MIN_CHARS = 40;
+
+// beta.67 (P0a): a changeSpec / excerpt must reference a FILE to be actionable.
+// Kills the length-only hole where filler prose passes on length alone.
+const PATH_TOKEN_RE = /\S+\.(ts|tsx|js|jsx|py|go|rs|md|json|ya?ml)\b|\S+\/\S+/;
+
+/**
+ * beta.67 (P0a): SUBSTANCE check for a sub-task's workerContext -- not mere
+ * field presence. rationale non-empty AND (file-anchored changeSpec >=40 chars
+ * OR a codeExcerpts entry with a real snippet + path). gotchas/relatedSymbols
+ * are optional garnish and do NOT satisfy the gate.
+ */
+export function hasSubstantiveWorkerContext(wc?: WorkerContext): boolean {
+  if (!wc) return false;
+  const hasRationale = typeof wc.rationale === "string" && wc.rationale.trim().length > 0;
+  if (!hasRationale) return false;
+  const changeSpecOk =
+    typeof wc.changeSpec === "string" &&
+    wc.changeSpec.trim().length >= CHANGESPEC_MIN_CHARS &&
+    PATH_TOKEN_RE.test(wc.changeSpec);
+  const excerptOk =
+    Array.isArray(wc.codeExcerpts) &&
+    wc.codeExcerpts.some(
+      (e) =>
+        !!e &&
+        typeof e.snippet === "string" &&
+        e.snippet.trim().length > 0 &&
+        typeof e.path === "string" &&
+        e.path.trim().length > 0,
+    );
+  return changeSpecOk || excerptOk;
+}
+
+// beta.67 (P0a): mutate/mixed MUST carry substantive workerContext; observe is
+// exempt. `mixed` is gated same as `mutate` (a mixed sub-task that mutates
+// without context is the beta.63/64 failure mode wearing a hat).
+const CONTEXT_REQUIRED_MODES = new Set(["mutate", "mixed"]);
+
+/** beta.67 (P0a): seqs of mutate/mixed sub-tasks lacking substantive context. */
+export function subTasksMissingWorkerContext(
+  plan: { subTasks: LeadPlanSubTask[] },
+): number[] {
+  return plan.subTasks
+    .filter(
+      (st) =>
+        CONTEXT_REQUIRED_MODES.has(st.taskMode ?? "") &&
+        !hasSubstantiveWorkerContext(st.workerContext),
+    )
+    .map((st) => st.seq);
 }
 
 export async function runLeadPlanner(
   brief: CrystallisedBrief,
   deps: LeadDeps,
 ): Promise<LeadPlan> {
-  const raw = await deps.callLeadModel(brief, deps.config.repos.allowed);
-  // beta.44: revise flow. When the brief pins a branch (a revise of a prior
-  // shipped session), the plan MUST build on that exact branch so new commits
-  // stack on the existing PR head and the SAME PR updates. Override the lead's
-  // (slugified/rewritten) branch + repo verbatim BEFORE validation so the
-  // worktree is allocated on the existing branch, not a fresh one. repoHint on
-  // a revise brief is authoritative (it came from the prior session's repo).
-  if (brief.pinnedBranch) {
-    raw.branch = brief.pinnedBranch;
-    if (brief.repoHint && brief.repoHint.includes("/")) raw.repo = brief.repoHint;
-    deps.logger.info("[lead] revise: branch pinned", { branch: raw.branch, repo: raw.repo, reviseOf: brief.reviseOfSessionId });
+  // beta.67 (P0a): one BOUNDED re-ask ([initial, one re-ask]); a second
+  // insubstantive plan hard-throws so it surfaces as a plan failure.
+  // Optional-chain `loop`: some unit-test deps pass a partial config without a
+  // `loop` block. Real HarnessConfig always has it; missing -> enforcement on
+  // (but a plan with no mutate/mixed sub-tasks trivially passes the gate).
+  const enforceContext = deps.config.loop?.enforce_worker_context !== false;
+  const maxAttempts = enforceContext ? 2 : 1;
+  let raw: Omit<LeadPlan, "worktreePath" | "approxCostUsd"> | undefined;
+  let correctiveNote: string | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    raw = await deps.callLeadModel(brief, deps.config.repos.allowed, correctiveNote);
+    // beta.44: revise flow. Override the lead branch/repo BEFORE validation.
+    if (brief.pinnedBranch) {
+      raw.branch = brief.pinnedBranch;
+      if (brief.repoHint && brief.repoHint.includes("/")) raw.repo = brief.repoHint;
+      deps.logger.info("[lead] revise: branch pinned", { branch: raw.branch, repo: raw.repo, reviseOf: brief.reviseOfSessionId });
+    }
+    // beta.33: defensively strip push/PR sub-tasks BEFORE validation.
+    sanitizeRemoteSubTasks(raw, deps.logger);
+    validatePlan(raw, deps.config);
+
+    // beta.67 (P0a): workerContext substance gate (mutate/mixed only).
+    if (!enforceContext) break;
+    const missing = subTasksMissingWorkerContext(raw);
+    if (missing.length === 0) break;
+    if (attempt < maxAttempts) {
+      correctiveNote =
+        `WORKER CONTEXT REQUIRED: sub-tasks [${missing.join(", ")}] are taskMode mutate/mixed but ` +
+        `their workerContext is missing or insubstantive. For EACH of those seqs you MUST provide a ` +
+        `workerContext with a non-empty rationale AND concrete file-anchored guidance -- either a ` +
+        `changeSpec that names the exact file+location of the edit (>=40 chars, referencing a real ` +
+        `path like src/foo/bar.ts) OR a codeExcerpts entry with the actual code you read (with its ` +
+        `path). A worker CANNOT implement these correctly from a bare intent; hand down your ` +
+        `investigation. If you cannot produce concrete context for a sub-task, it is mis-scoped -- ` +
+        `split it into an observe (investigate) step + a mutate (implement) step, or reduce its scope.`;
+      deps.logger.warn?.("[lead] workerContext insufficient; re-asking lead once", { missingSeqs: missing, reviseOf: brief.reviseOfSessionId });
+    } else {
+      throw new LeadPlanValidationError(
+        `lead plan sub-tasks [${missing.join(", ")}] are taskMode mutate/mixed but lack substantive ` +
+          `workerContext after one re-ask (rationale + file-anchored changeSpec/excerpt required). ` +
+          `Set loop.enforce_worker_context:false to downgrade this to a warning.`,
+      );
+    }
   }
-  // beta.33: defensively strip push/PR sub-tasks BEFORE validation. The lead
-  // prompt forbids them, but LLMs are non-deterministic. Push + PR are the
-  // harness endgame's exclusive job (pushBranchAndOpenPr, post-review). A
-  // worker cannot push, so any push/PR sub-task would fail verification and
-  // abort the run before review. Coerce here so a stray remote sub-task can
-  // never kill an otherwise-good plan. (Belt-and-braces to the prompt fix.)
-  sanitizeRemoteSubTasks(raw, deps.logger);
-  validatePlan(raw, deps.config);
+  if (!raw) throw new LeadPlanValidationError("lead plan produced no output");
+  // beta.67 (P0a): enforcement off -> WARN-only escape hatch (no retry/throw).
+  if (!enforceContext) {
+    const missing = subTasksMissingWorkerContext(raw);
+    if (missing.length > 0) {
+      deps.logger.warn?.("[lead] workerContext insufficient (enforcement disabled; not retrying)", { missingSeqs: missing, reviseOf: brief.reviseOfSessionId });
+    }
+  }
   const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch);
   const approxCostUsd = deps.estimateCost(raw);
   const plan: LeadPlan = { ...raw, worktreePath, approxCostUsd };

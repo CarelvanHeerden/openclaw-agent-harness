@@ -218,9 +218,11 @@ test("P0-5: sonnet-worker no longer verifies (loop is the single verification si
   assert.doesNotMatch(src, /wastedSpend/, "wastedSpend bookkeeping moved out with the verifier");
 });
 
-test("P0-5: loop still verifies every sub-task via inferVerifyContract (unchanged)", () => {
+test("P0-5: loop still verifies every sub-task via inferVerifyContract (beta.67: now threads effectiveTaskMode)", () => {
   const src = S("src/orchestrator/loop.ts");
-  assert.match(src, /const contract = inferVerifyContract\(st\)/);
+  // beta.67 (Bug C): the call now passes the EFFECTIVE task-mode as a second
+  // arg so a revise-no-change mutate sub-task drops commit_made/file_committed.
+  assert.match(src, /const contract = inferVerifyContract\(st, effectiveTaskMode\)/);
   assert.match(src, /verifySubTaskOutput\(/);
 });
 

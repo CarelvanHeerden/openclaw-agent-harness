@@ -48,7 +48,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- PR-open). The stall watchdog checks non-terminal executing/reviewing/
   -- finalising sessions where now - last_progress_at > loop.session_stall_seconds
   -- and recovers or cleanly fails (preserving the worktree) a wedged run.
-  last_progress_at         INTEGER            -- epoch ms of the last forward progress
+  last_progress_at         INTEGER,           -- epoch ms of the last forward progress
+  -- beta.67 (Bug B): the branch FORK-POINT sha (merge-base of the default base
+  -- branch and HEAD, captured once at plan_ready when the worktree exists).
+  -- The adversary review diffs `git diff <plan_base_sha>..HEAD` against THIS
+  -- so it sees ONLY the branch's own commits, not accumulated main history
+  -- (beta.66 smoke #4 diffed against main-at-review-time and hallucinated
+  -- unrelated commits => false-positive revise + a wasted cycle).
+  plan_base_sha            TEXT               -- fork-point sha for the adversary diff base
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

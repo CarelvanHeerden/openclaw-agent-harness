@@ -370,6 +370,21 @@ export interface OrchestratorDeps {
    * test doubles that ignore it.
    */
   runLead: (brief: CrystallisedBrief, ctx?: { requester?: string }) => Promise<LeadPlan>;
+  /**
+   * beta.67 (P0b): the Fable revise-spec turn. On an adversary `revise`
+   * verdict, runs ONCE at the top of the revise cycle: Fable reads findings +
+   * plan, investigates, and returns REFRESHED sub-tasks whose workerContext
+   * carries a resolved changeSpec. Fed to cycle-2 workers via beta.66's warm
+   * render path -- workers never see raw findings (the beta.63/64 no-op
+   * regression). Optional: unwired OR throws -> fall back to
+   * buildReviseDispatchHint (never worse than beta.66).
+   */
+  runLeadReviseSpec?: (params: {
+    brief: CrystallisedBrief;
+    plan: LeadPlan;
+    review: ReviewReport;
+    requester?: string;
+  }) => Promise<{ subTasks: LeadPlanSubTask[] }>;
   runWorker: (params: {
     brief: CrystallisedBrief;
     subTask: LeadPlanSubTask;
@@ -384,6 +399,13 @@ export interface OrchestratorDeps {
     plan: LeadPlan;
     runtime?: RuntimeSnapshot;
     requester?: string;
+    /**
+     * beta.67 (Bug B): the persisted branch fork-point sha to diff the review
+     * against (`git diff <baseSha>..HEAD`). When set, the adversary sees ONLY
+     * the branch's own commits; when omitted, the implementation falls back to
+     * the default base branch name (prior behaviour).
+     */
+    baseSha?: string;
   }) => Promise<ReviewReport>;
   fetchRuntime?: (params: { plan: LeadPlan; sessionId: string }) => Promise<RuntimeSnapshot | undefined>;
   pushBranchAndOpenPr: (params: {
@@ -419,6 +441,25 @@ export interface OrchestratorDeps {
 
   /** Read the current HEAD sha of a worktree (for commit_made verification). */
   worktreeHeadSha?: (worktreePath: string) => Promise<string>;
+
+  /**
+   * beta.67 (Bug B): compute the branch FORK-POINT sha -- the merge-base of the
+   * default base branch and HEAD in the worktree. Captured once at plan_ready
+   * and persisted on the session (sessions.plan_base_sha) so the adversary
+   * review diffs `git diff <plan_base_sha>..HEAD` (branch-only commits) instead
+   * of against main-at-review-time (which accumulates unrelated history and
+   * caused beta.66 smoke #4's false-positive revise). Optional; when absent the
+   * fork-point is not captured and the adversary falls back to the base-branch
+   * name (prior behaviour).
+   */
+  worktreeMergeBase?: (worktreePath: string, baseBranch: string) => Promise<string>;
+
+  /**
+   * beta.67 (Bug B): count commits in `<base>..HEAD` in the worktree, used only
+   * for the cheap loop.adversary_diff_base sanity log (warn when the branch
+   * has suspiciously many commits vs the plan's sub-task count). Optional.
+   */
+  worktreeCommitCount?: (worktreePath: string, base: string) => Promise<number>;
 
   /**
    * beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree, for the
@@ -802,6 +843,34 @@ export class OrchestratorLoop {
         .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
         .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
       this.deps.state.audit("loop.plan_ready", { sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel }, sessionId);
+      // beta.67 (Bug B): capture the branch FORK-POINT sha ONCE now that the
+      // worktree exists. The worktree was branched from origin/<default base>
+      // (git-worktree allocateInner), so `git merge-base <base> HEAD` is the
+      // stable commit the branch forked from. Persist it so the adversary
+      // review diffs `git diff <plan_base_sha>..HEAD` -- ONLY the branch's own
+      // commits -- instead of against main-at-review-time, which accumulates
+      // unrelated prior-PR/prior-smoke history (beta.66 smoke #4 hallucinated
+      // "5 unrelated commits" and false-positive-revised a 1-commit branch).
+      // Only capture on the FIRST plan (not a re-plan that already has one) and
+      // only when the worktree probe is wired. Never fatal.
+      if (this.deps.worktreeMergeBase) {
+        try {
+          const existing = this.deps.state.db
+            .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+            .get(sessionId) as { plan_base_sha: string | null } | undefined;
+          if (!existing?.plan_base_sha) {
+            const forkPoint = await this.deps.worktreeMergeBase(plan.worktreePath, this.deps.config.repos.default_base_branch).catch(() => "");
+            if (forkPoint) {
+              this.deps.state.db.prepare(`UPDATE sessions SET plan_base_sha = ? WHERE id = ?`).run(forkPoint, sessionId);
+              this.deps.state.audit("loop.plan_base_sha_captured", { sessionId, planBaseSha: forkPoint, baseBranch: this.deps.config.repos.default_base_branch }, sessionId);
+            } else {
+              this.deps.logger.warn("[loop] could not resolve plan_base_sha fork-point; adversary will fall back to base-branch diff", { sessionId });
+            }
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] plan_base_sha capture failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
       // beta.63 (convention-awareness Fix 1): now that the repo is checked out
       // at plan.worktreePath, ingest its declared convention files into the
       // brief so the worker + adversary SDK prompts (no OpenClaw context
@@ -846,6 +915,52 @@ export class OrchestratorLoop {
       // 2a. Executing sub-tasks in dependency order, with bounded concurrency.
       this.setStatus(sessionId, "executing");
       await this.deps.reportProgress?.(sessionId, "executing", { cycle });
+
+      // beta.67 (P0b): FABLE-IN-THE-LOOP revise-spec turn. On a revise cycle
+      // (cycle > 1) run ONE Fable turn that reads the findings and refreshes
+      // each affected sub-task's workerContext, so cycle-2 workers get a
+      // resolved changeSpec via the beta.66 render path -- NEVER the raw
+      // findings (the beta.63/64 no-op regression). Any failure (unwired /
+      // throw / empty) falls back to buildReviseDispatchHint. reviseSpecApplied
+      // gates the raw-hint suppression in runOne.
+      let reviseSpecApplied = false;
+      if (
+        cycle > 1 &&
+        lastReview &&
+        this.deps.config.loop.revise_spec_turn_enabled !== false &&
+        this.deps.runLeadReviseSpec
+      ) {
+        try {
+          const refreshed = await this.deps.runLeadReviseSpec({
+            brief, plan, review: lastReview, requester: row.requester,
+          });
+          if (refreshed?.subTasks && refreshed.subTasks.length > 0) {
+            plan.subTasks = refreshed.subTasks;
+            this.deps.state.db
+              .prepare(`UPDATE sessions SET lead_plan_json = ? WHERE id = ?`)
+              .run(JSON.stringify(plan), sessionId);
+            reviseSpecApplied = true;
+            const withCtx = refreshed.subTasks.filter(
+              (sub) => sub.workerContext && (sub.taskMode === "mutate" || sub.taskMode === "mixed"),
+            ).length;
+            this.deps.state.audit(
+              "loop.revise_spec_applied",
+              { sessionId, cycle, subTasks: refreshed.subTasks.length, withWorkerContext: withCtx },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, {
+              event: "revise_spec_applied", phase: "plan", cycle, subTasks: refreshed.subTasks.length,
+            });
+          } else {
+            this.deps.state.audit("loop.revise_spec_empty", { sessionId, cycle }, sessionId);
+            this.deps.logger.warn("[loop] revise-spec turn returned no sub-tasks; falling back to raw findings hint", { sessionId, cycle });
+          }
+        } catch (err) {
+          this.deps.state.audit("loop.revise_spec_failed", { sessionId, cycle, error: String((err as Error)?.message ?? err) }, sessionId);
+          this.deps.logger.warn("[loop] revise-spec turn failed; falling back to raw findings hint (never worse than beta.66)", { sessionId, cycle, err: String(err) });
+        }
+      }
+
       const ordered = topoSortSubTasks(plan.subTasks);
       const concurrency = Math.max(1, this.deps.config.loop.subtask_concurrency ?? 1);
       const inFlight: Array<Promise<void>> = [];
@@ -861,7 +976,11 @@ export class OrchestratorLoop {
         let envWaitRetried = false;
         // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
         // review's findings or it will simply replay cycle 1's work.
-        const reviseHint = cycle > 1 && lastReview ? buildReviseDispatchHint(lastReview) : undefined;
+        // beta.67 (P0b): suppressed when the revise-spec turn refreshed the plan
+        // (reviseSpecApplied) -- the worker gets the fix via warm workerContext
+        // instead of raw findings. Fallback keeps the beta.56 raw hint.
+        const reviseHint =
+          cycle > 1 && lastReview && !reviseSpecApplied ? buildReviseDispatchHint(lastReview) : undefined;
         const reactions = await this.deps.readReactions(sessionId);
         if (reactions.abort) { failed.err = "user_abort_reaction"; failed.seq = st.seq; return; }
         if (Date.now() > hardDeadlineMs) { failed.err = "hard_timeout"; failed.seq = st.seq; return; }
@@ -1036,7 +1155,28 @@ export class OrchestratorLoop {
         // CLAIMS (inferred from its own language, not from the model). This
         // is what catches a confabulated "I pushed / I opened a PR": we hit
         // git / the provider API ourselves. Runs even for `completed`.
-        const contract = inferVerifyContract(st);
+        // beta.67 (Bug C): compute the EFFECTIVE task-mode for THIS pass. On a
+        // revise cycle (cycle > 1) a plan-time `mutate` sub-task that correctly
+        // makes NO change (the worker made no commit) is a legal no-op -- the
+        // beta.66 loop.subtask_revise_no_change handler already recognises this
+        // AFTER a verify failure, but the verifier still built the contract off
+        // the plan-time `mutate` and hard-failed commit_made/file_committed
+        // because HEAD didn't move. Demote the mode up-front so those kinds are
+        // never included in the contract this pass -> the no-op verifies as a
+        // PASS instead of a false-fail. A real cycle-1 mutate (or a revise pass
+        // that DID commit) keeps effectiveTaskMode === taskMode, so it still
+        // requires commit_made.
+        const effectiveTaskMode =
+          cycle > 1 && st.taskMode === "mutate" && !result.commitSha ? "observe" : st.taskMode;
+        if (effectiveTaskMode !== st.taskMode) {
+          this.deps.state.audit(
+            "loop.subtask_revise_no_change",
+            { sessionId, seq: st.seq, cycle, taskMode: st.taskMode ?? "unspecified", effectiveTaskMode: "observe", trigger: "contract_selection" },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_no_change", phase: "worker", seq: st.seq, cycle, effectiveTaskMode: "observe" });
+        }
+        const contract = inferVerifyContract(st, effectiveTaskMode);
         if (contract.length > 0 && this.deps.buildVerifyProbes) {
           const probes = this.deps.buildVerifyProbes({
             plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
@@ -1642,8 +1782,37 @@ export class OrchestratorLoop {
         // beta.43: bound the adversary SDK call by adversary_timeout_seconds
         // (previously declared in config but UNENFORCED on this await). A hung
         // reviewer froze the run at the review phase with no timeout.
+        // beta.67 (Bug B): read the persisted fork-point sha and hand it to the
+        // adversary so its diff is `git diff <plan_base_sha>..HEAD` -- ONLY
+        // this branch's own commits. Also emit the cheap sanity log
+        // (loop.adversary_diff_base) with the base + HEAD sha and the branch's
+        // commit count; warn when the count is suspiciously high vs the plan's
+        // sub-task count (the beta.66 smoke #4 signature).
+        let adversaryBaseSha: string | undefined;
+        try {
+          const r = this.deps.state.db
+            .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+            .get(sessionId) as { plan_base_sha: string | null } | undefined;
+          adversaryBaseSha = r?.plan_base_sha ?? undefined;
+          if (adversaryBaseSha && this.deps.worktreeHeadSha) {
+            const headSha = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
+            const commitCount = this.deps.worktreeCommitCount
+              ? await this.deps.worktreeCommitCount(plan.worktreePath, adversaryBaseSha).catch(() => -1)
+              : -1;
+            const subTaskCount = plan.subTasks.length;
+            const suspicious = commitCount >= 0 && commitCount > Math.max(subTaskCount * 3, subTaskCount + 5);
+            this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha, headSha, commitCount, subTaskCount, suspicious }, sessionId);
+            if (suspicious) {
+              this.deps.logger.warn("[loop] adversary diff commit count is suspiciously high vs sub-task count -- diff base may be wrong", { sessionId, commitCount, subTaskCount, baseSha: adversaryBaseSha });
+            }
+          } else {
+            this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha ?? null, headSha: null, commitCount: -1, subTaskCount: plan.subTasks.length, fallback: !adversaryBaseSha }, sessionId);
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] adversary_diff_base sanity log failed (non-fatal)", { sessionId, err: String(err) });
+        }
         report = await withTimeout(
-          this.deps.runAdversary({ brief, plan, runtime, requester: row.requester }),
+          this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha }),
           this.deps.config.loop.adversary_timeout_seconds,
         );
         this.deps.interactionLog?.logSdkResponse(sessionId, {
@@ -2469,6 +2638,98 @@ export class OrchestratorLoop {
       handled.push({ sessionId: row.id, phase, msSinceProgress, action: outcome });
     }
     return handled;
+  }
+
+  /**
+   * beta.67 (Bug A): EXTERNAL stall-sweep entry point.
+   *
+   * Origin: beta.66 smoke #4 -- the loop-runner PROCESS died between a
+   * worker's sdk_response and the next handler step. The session record stayed
+   * `status=executing` forever; `ps` showed no live process. beta.63's
+   * in-process `checkStalls` watchdog CANNOT fire in this case: a dead process
+   * cannot watchdog its own death. Also `harness_cancel` set a `reactions_json.
+   * abort` flag that the dead loop never consumed, so the session never
+   * reached a terminal status.
+   *
+   * This method is meant to be called by the EXTERNAL periodic `stall-sweep`
+   * service (registered in src/index.ts like pr-watcher / retention-nightly),
+   * which runs INDEPENDENT of any loop-runner process. On each tick it:
+   *
+   *   1. runs the EXISTING {@link checkStalls} fast path (detection + bounded
+   *      re-tick recovery + auto-terminal transition) -- the external process
+   *      is the safety net, checkStalls is still the in-process fast path;
+   *   2. ADDITIONALLY reaps sessions that have a pending cancel flag
+   *      (`reactions_json.abort`) set but are STILL non-terminal because their
+   *      loop is dead (no live loop-runner) -- transitions those to a terminal
+   *      `failed` (reason `cancelled_dead_loop`) PRESERVING the worktree
+   *      (beta.62 pattern), consuming the cancel the dead loop never did.
+   *
+   * Covers `executing`, `planning`, and `reviewing` (checkStalls covers only
+   * executing/reviewing; a planning session whose loop dies must also be
+   * reaped by the cancel path). Idempotent + never throws. Returns a summary
+   * for tests + telemetry.
+   */
+  async sweepStalls(now = Date.now()): Promise<{
+    ran: boolean;
+    recovered: Array<{ sessionId: string; phase: string; msSinceProgress: number; action: string }>;
+    terminated: Array<{ sessionId: string; phase: string; reason: string }>;
+  }> {
+    this.deps.state.audit("loop.stall_sweep_ran", { at: now }, undefined);
+    const recovered: Array<{ sessionId: string; phase: string; msSinceProgress: number; action: string }> = [];
+    const terminated: Array<{ sessionId: string; phase: string; reason: string }> = [];
+
+    // 1. Fast path: run the EXISTING in-process watchdog logic. From the
+    //    external process this is the actual safety net for a dead executor.
+    try {
+      const handled = await this.checkStalls(now);
+      for (const h of handled) recovered.push(h);
+      if (handled.length > 0) {
+        this.deps.state.audit("loop.stall_sweep_recovered", { count: handled.length, handled }, undefined);
+      }
+    } catch (err) {
+      this.deps.logger.warn("[loop] sweepStalls checkStalls failed", { err: String(err) });
+    }
+
+    // 2. Pending-cancel + dead-loop reaping. A `harness_cancel` set
+    //    reactions_json.abort but the loop-runner is dead, so the abort was
+    //    never consumed and the session sits non-terminal forever.
+    let rows: Array<{ id: string; status: string; reactions_json: string | null; cycles_ran: number; cost_usd: number }>;
+    try {
+      rows = this.deps.state.db
+        .prepare(
+          `SELECT id, status, reactions_json, cycles_ran, cost_usd
+             FROM sessions
+            WHERE status IN ('executing', 'planning', 'reviewing')`,
+        )
+        .all() as typeof rows;
+    } catch (err) {
+      this.deps.logger.warn("[loop] sweepStalls cancel query failed", { err: String(err) });
+      return { ran: true, recovered, terminated };
+    }
+
+    const liveRunners = runningSessionIds();
+    for (const row of rows) {
+      let aborted = false;
+      try {
+        aborted = !!(row.reactions_json ? (JSON.parse(row.reactions_json) as { abort?: boolean }).abort : false);
+      } catch { aborted = false; }
+      if (!aborted) continue;
+      // A live runner will consume the abort at its next checkpoint (beta.55
+      // path at loop.ts ~866); do NOT double-reap it here.
+      if (liveRunners.includes(row.id)) continue;
+
+      // Dead loop with a pending cancel -> consume it: terminal failed,
+      // PRESERVING the worktree (beta.62 pattern) so the branch stays
+      // inspectable on disk.
+      const reason = "cancelled_dead_loop";
+      this.deps.logger.error("[loop] stall-sweep reaping cancelled session with a dead loop", { sessionId: row.id, phase: row.status });
+      this.finaliseFailedPreserveWorktree(row.id, reason, row.cycles_ran ?? 0, row.cost_usd ?? 0);
+      this.deps.state.audit("loop.stall_sweep_terminated", { sessionId: row.id, phase: row.status, reason }, row.id);
+      this.deps.interactionLog?.log(row.id, { event: "stall_sweep_terminated", phase: mapPhase(row.status as LoopStatus), reason });
+      terminated.push({ sessionId: row.id, phase: row.status, reason });
+    }
+
+    return { ran: true, recovered, terminated };
   }
 
   /**

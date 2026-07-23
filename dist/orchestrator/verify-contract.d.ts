@@ -54,5 +54,5 @@ import type { LeadPlanSubTask, SubTaskVerify } from "./fable5-lead.js";
  * Returns [] when the sub-task has no inferable observable output (pure
  * reasoning / analysis), in which case the SDK signal is trusted.
  */
-export declare function inferVerifyContract(subTask: LeadPlanSubTask): SubTaskVerify[];
+export declare function inferVerifyContract(subTask: LeadPlanSubTask, effectiveTaskMode?: LeadPlanSubTask["taskMode"]): SubTaskVerify[];
 //# sourceMappingURL=verify-contract.d.ts.map

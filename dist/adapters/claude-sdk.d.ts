@@ -17,7 +17,8 @@
  * the SDK is missing.
  */
 import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crystallise/prompt-refiner.js";
-import type { LeadPlan } from "../orchestrator/fable5-lead.js";
+import type { LeadPlan, LeadPlanSubTask } from "../orchestrator/fable5-lead.js";
+import type { ReviewReport } from "../orchestrator/fable5-adversary.js";
 export declare function buildSdkEnv(apiKey?: string): Record<string, string> | undefined;
 export interface RunWorkerParams {
     worktreePath: string;
@@ -222,7 +223,33 @@ export declare function runLeadSdk(params: {
     logger?: {
         warn: (m: string, meta?: unknown) => void;
     };
+    /** beta.67 (P0a): corrective note for the ONE bounded workerContext re-ask. */
+    correctiveNote?: string;
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
+    costUsd: number;
+    tokensIn: number;
+    tokensOut: number;
+}>;
+/**
+ * beta.67 (P0b): FABLE-IN-THE-LOOP revise-spec turn. Reads the adversary
+ * findings + current plan, RE-INVESTIGATES, and returns the SAME sub-tasks
+ * (same seqs) with each affected mutate/mixed sub-task's workerContext
+ * REFRESHED to a resolved changeSpec. Fed to cycle-2 workers via the beta.66
+ * warm-context render path -- workers never see the raw findings. HARD
+ * BOUNDARY: reads the adversary OUTPUT only; nothing flows back INTO it.
+ */
+export declare function runLeadReviseSpecSdk(params: {
+    model: string;
+    brief: CrystallisedBrief;
+    subTasks: LeadPlanSubTask[];
+    review: ReviewReport;
+    timeoutSeconds: number;
+    apiKey?: string;
+    logger?: {
+        warn: (m: string, meta?: unknown) => void;
+    };
+}): Promise<{
+    subTasks: LeadPlanSubTask[];
     costUsd: number;
     tokensIn: number;
     tokensOut: number;

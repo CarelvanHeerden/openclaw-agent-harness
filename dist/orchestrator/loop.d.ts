@@ -144,6 +144,23 @@ export interface OrchestratorDeps {
     runLead: (brief: CrystallisedBrief, ctx?: {
         requester?: string;
     }) => Promise<LeadPlan>;
+    /**
+     * beta.67 (P0b): the Fable revise-spec turn. On an adversary `revise`
+     * verdict, runs ONCE at the top of the revise cycle: Fable reads findings +
+     * plan, investigates, and returns REFRESHED sub-tasks whose workerContext
+     * carries a resolved changeSpec. Fed to cycle-2 workers via beta.66's warm
+     * render path -- workers never see raw findings (the beta.63/64 no-op
+     * regression). Optional: unwired OR throws -> fall back to
+     * buildReviseDispatchHint (never worse than beta.66).
+     */
+    runLeadReviseSpec?: (params: {
+        brief: CrystallisedBrief;
+        plan: LeadPlan;
+        review: ReviewReport;
+        requester?: string;
+    }) => Promise<{
+        subTasks: LeadPlanSubTask[];
+    }>;
     runWorker: (params: {
         brief: CrystallisedBrief;
         subTask: LeadPlanSubTask;
@@ -158,6 +175,13 @@ export interface OrchestratorDeps {
         plan: LeadPlan;
         runtime?: RuntimeSnapshot;
         requester?: string;
+        /**
+         * beta.67 (Bug B): the persisted branch fork-point sha to diff the review
+         * against (`git diff <baseSha>..HEAD`). When set, the adversary sees ONLY
+         * the branch's own commits; when omitted, the implementation falls back to
+         * the default base branch name (prior behaviour).
+         */
+        baseSha?: string;
     }) => Promise<ReviewReport>;
     fetchRuntime?: (params: {
         plan: LeadPlan;
@@ -208,6 +232,23 @@ export interface OrchestratorDeps {
     };
     /** Read the current HEAD sha of a worktree (for commit_made verification). */
     worktreeHeadSha?: (worktreePath: string) => Promise<string>;
+    /**
+     * beta.67 (Bug B): compute the branch FORK-POINT sha -- the merge-base of the
+     * default base branch and HEAD in the worktree. Captured once at plan_ready
+     * and persisted on the session (sessions.plan_base_sha) so the adversary
+     * review diffs `git diff <plan_base_sha>..HEAD` (branch-only commits) instead
+     * of against main-at-review-time (which accumulates unrelated history and
+     * caused beta.66 smoke #4's false-positive revise). Optional; when absent the
+     * fork-point is not captured and the adversary falls back to the base-branch
+     * name (prior behaviour).
+     */
+    worktreeMergeBase?: (worktreePath: string, baseBranch: string) => Promise<string>;
+    /**
+     * beta.67 (Bug B): count commits in `<base>..HEAD` in the worktree, used only
+     * for the cheap loop.adversary_diff_base sanity log (warn when the branch
+     * has suspiciously many commits vs the plan's sub-task count). Optional.
+     */
+    worktreeCommitCount?: (worktreePath: string, base: string) => Promise<number>;
     /**
      * beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree, for the
      * best-effort-verify clean-diff check and the scripted-verifier fallback's
@@ -482,6 +523,49 @@ export declare class OrchestratorLoop {
         msSinceProgress: number;
         action: string;
     }>>;
+    /**
+     * beta.67 (Bug A): EXTERNAL stall-sweep entry point.
+     *
+     * Origin: beta.66 smoke #4 -- the loop-runner PROCESS died between a
+     * worker's sdk_response and the next handler step. The session record stayed
+     * `status=executing` forever; `ps` showed no live process. beta.63's
+     * in-process `checkStalls` watchdog CANNOT fire in this case: a dead process
+     * cannot watchdog its own death. Also `harness_cancel` set a `reactions_json.
+     * abort` flag that the dead loop never consumed, so the session never
+     * reached a terminal status.
+     *
+     * This method is meant to be called by the EXTERNAL periodic `stall-sweep`
+     * service (registered in src/index.ts like pr-watcher / retention-nightly),
+     * which runs INDEPENDENT of any loop-runner process. On each tick it:
+     *
+     *   1. runs the EXISTING {@link checkStalls} fast path (detection + bounded
+     *      re-tick recovery + auto-terminal transition) -- the external process
+     *      is the safety net, checkStalls is still the in-process fast path;
+     *   2. ADDITIONALLY reaps sessions that have a pending cancel flag
+     *      (`reactions_json.abort`) set but are STILL non-terminal because their
+     *      loop is dead (no live loop-runner) -- transitions those to a terminal
+     *      `failed` (reason `cancelled_dead_loop`) PRESERVING the worktree
+     *      (beta.62 pattern), consuming the cancel the dead loop never did.
+     *
+     * Covers `executing`, `planning`, and `reviewing` (checkStalls covers only
+     * executing/reviewing; a planning session whose loop dies must also be
+     * reaped by the cancel path). Idempotent + never throws. Returns a summary
+     * for tests + telemetry.
+     */
+    sweepStalls(now?: number): Promise<{
+        ran: boolean;
+        recovered: Array<{
+            sessionId: string;
+            phase: string;
+            msSinceProgress: number;
+            action: string;
+        }>;
+        terminated: Array<{
+            sessionId: string;
+            phase: string;
+            reason: string;
+        }>;
+    }>;
     /**
      * beta.63 (Part A): terminal handling of an UNRECOVERABLE stall. Never
      * evaporate a near-done deliverable: if the branch has commits and
