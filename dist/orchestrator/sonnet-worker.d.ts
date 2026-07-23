@@ -72,8 +72,10 @@ export interface WorkerDeps {
         permissionMode: HarnessConfig["safety"]["worker_permission_mode"];
         resumeSessionId?: string;
         timeoutSeconds: number;
-        /** beta.64 (P0-1): first-token watchdog window; threaded to runWorkerSdk. */
+        /** beta.64 (P0-1) / beta.65 (P0): phase-2 (stream-open -> first-token) watchdog window; threaded to runWorkerSdk. */
         firstTokenTimeoutSeconds?: number;
+        /** beta.65 (P0): phase-1 (call-init -> stream-open) watchdog window; threaded to runWorkerSdk. */
+        streamOpenTimeoutSeconds?: number;
         canUseTool: (toolName: string, toolInput: unknown) => Promise<{
             allow: boolean;
             reason?: string;
