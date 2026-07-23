@@ -317,8 +317,15 @@
             "type": "integer",
             "minimum": 10,
             "maximum": 1800,
-            "default": 90,
-            "description": "beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from worker_timeout_seconds, armed inside runWorkerSdk when the SDK stream opens (system/init). If no first assistant content block (text/tool_use) arrives within this window, the stream is aborted with the distinct stopReason first_token_timeout so the loop retries on a fresh session. This is the beta.63 smoke #2 hang -- the streaming call opened but produced ZERO tokens and sat for the full 1800s worker timeout with no inner-turn stall detection. Clamped [10,1800]."
+            "default": 30,
+            "description": "beta.64 (P0-1) / beta.65 (P0): PHASE-2 first-token watchdog window (seconds). Armed inside consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on the first assistant content block (text/tool_use). No first content block within this window => abort with the distinct stopReason first_token_timeout so the loop retries on a fresh session. beta.65 split-phase redesign: phase 2 (stream-open -> first-token) is always near-instant on success (4-5ms in smoke #3), so the default is LOWERED 90 -> 30. The pre-stream stall is covered by sdk_stream_open_timeout_seconds (phase 1). Clamped [10,1800]."
+          },
+          "sdk_stream_open_timeout_seconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 600,
+            "default": 120,
+            "description": "beta.65 (P0): PHASE-1 stream-open watchdog window (seconds). A SEPARATE timer armed at CALL INITIATION (top of consumeWorkerStream, BEFORE the stream opens) and disarmed when the stream opens (system/init). If the stream never opens within this window, the call is aborted with the same distinct stopReason first_token_timeout so the loop retries on a FRESH SDK session. Covers the beta.64 gap: a PRE-STREAM POST hang (SDK streaming POST never returns its first byte -- smoke #3: 28+min silence, no sdk_stream_opened, no abort) that beta.64's stream-open-armed watchdog never saw. Phase 1 is highly variable even on success (smoke #3: 47s / 422s-succeeded / >1800s-hung), so a legit-but-slow open like 422s WILL be aborted -- CORRECT, because the abort routes into the same first_token_timeout -> one-fresh-session retry path (a cold/unpooled open is fast on retry). Clamped [10,600]."
           },
           "worker_timeout_retry_enabled": {
             "type": "boolean",

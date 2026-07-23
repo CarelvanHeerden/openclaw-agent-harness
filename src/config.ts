@@ -332,15 +332,38 @@ export interface LoopConfig {
   stall_graceful_pr?: boolean;
   /**
    * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
-   * worker_timeout_seconds, armed inside runWorkerSdk when the SDK stream opens
-   * (system/init). If no first assistant content block (text/tool_use) arrives
-   * within this window, the stream is aborted with the distinct stopReason
-   * `first_token_timeout` so the loop retries on a fresh session. This is the
-   * exact beta.63 smoke #2 hang -- the streaming call opened but produced ZERO
-   * tokens and sat for the full 1800s worker timeout with no inner-turn stall
-   * detection. Clamped to [10, 1800]. Default 90.
+   * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
+   * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on
+   * the first assistant content block (text/tool_use). If no first content
+   * block arrives within this window, the stream is aborted with the distinct
+   * stopReason `first_token_timeout` so the loop retries on a fresh session.
+   *
+   * beta.65: split-phase redesign. Live smoke #3 durable-log evidence showed
+   * phase 2 (stream-open -> first-token) is ALWAYS near-instant on success
+   * (4-5ms), while the stall is ALWAYS in PHASE 1 (call-init -> stream-open,
+   * see `sdk_stream_open_timeout_seconds`). So the phase-2 default is LOWERED
+   * 90 -> 30 (still generous vs a <10ms healthy phase 2). Clamped to [10, 1800].
    */
   sdk_first_token_timeout_seconds?: number;
+  /**
+   * beta.65 (P0): PHASE-1 watchdog window (seconds). A SEPARATE timer armed at
+   * CALL INITIATION (the top of consumeWorkerStream, BEFORE the SDK stream
+   * opens) and disarmed when the stream opens (system/init). If the stream
+   * never opens within this window, the call is aborted with the same distinct
+   * stopReason `first_token_timeout` so the loop retries on a FRESH SDK session.
+   *
+   * This is the beta.64 gap: beta.64 armed the first-token watchdog only on
+   * stream-open, so a PRE-STREAM POST hang (the SDK streaming POST never
+   * returns its first byte -- smoke #3: 28+min silence, no sdk_stream_opened,
+   * no abort) was NEVER covered and sat for the full worker timeout (1800s).
+   * Phase 1 is highly variable even on SUCCESS (smoke #3: seq-1 47s, seq-2
+   * 422s-and-succeeded, seq-3 hung >1800s), so the default (120) is set so a
+   * legit-but-slow open like seq-2's 422s WILL be aborted -- that is CORRECT:
+   * the abort routes into the SAME first_token_timeout -> one-fresh-session
+   * retry path, and a cold/unpooled-connection slow open is fast on retry. A
+   * one-retry cost beats waiting 422s+ or hanging forever. Clamped to [10, 600].
+   */
+  sdk_stream_open_timeout_seconds?: number;
   /**
    * beta.64 (P0-2): when a worker sub-task fails with a first_token_timeout OR a
    * worker timeout, RETRY it ONCE on a FRESH SDK session (no resumeSessionId)
@@ -588,7 +611,8 @@ const DEFAULTS: HarnessConfig = {
     session_stall_seconds: 1800,
     stall_auto_terminal: true,
     stall_graceful_pr: true,
-    sdk_first_token_timeout_seconds: 90,
+    sdk_first_token_timeout_seconds: 30,
+    sdk_stream_open_timeout_seconds: 120,
     worker_timeout_retry_enabled: true,
     best_effort_verify: true,
     scripted_verify_fallback: true,
@@ -775,13 +799,20 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   if (typeof merged.verify.check_script_timeout_seconds === "number" && merged.verify.check_script_timeout_seconds < 10) {
     merged.verify.check_script_timeout_seconds = 10;
   }
-  // beta.64 (P0-1): clamp the first-token watchdog window. Must be long enough
-  // that a healthy but slow stream open (cold model, long context) is not
-  // mis-detected, but far shorter than the outer worker timeout so a genuine
-  // no-first-token hang is caught in seconds, not the full 1800s. Clamp [10, 1800].
+  // beta.64 (P0-1) / beta.65 (P0): clamp the PHASE-2 first-token watchdog window
+  // (stream-open -> first-token). Phase 2 is always <10ms on success, so 30s is
+  // generous; kept clamp [10, 1800] for operator flexibility.
   if (typeof merged.loop.sdk_first_token_timeout_seconds === "number") {
     if (merged.loop.sdk_first_token_timeout_seconds < 10) merged.loop.sdk_first_token_timeout_seconds = 10;
     if (merged.loop.sdk_first_token_timeout_seconds > 1800) merged.loop.sdk_first_token_timeout_seconds = 1800;
+  }
+  // beta.65 (P0): clamp the PHASE-1 stream-open watchdog window (call-init ->
+  // stream-open). Phase 1 is highly variable even on success (seq-2 legit 422s),
+  // so the window is longer than phase 2, but a breach is a benign fresh-session
+  // retry, not a terminal fail. Clamp [10, 600].
+  if (typeof merged.loop.sdk_stream_open_timeout_seconds === "number") {
+    if (merged.loop.sdk_stream_open_timeout_seconds < 10) merged.loop.sdk_stream_open_timeout_seconds = 10;
+    if (merged.loop.sdk_stream_open_timeout_seconds > 600) merged.loop.sdk_stream_open_timeout_seconds = 600;
   }
   if (merged.vercel.enabled) {
     if (!merged.vercel.credential_service) throw new Error("harness.vercel.credential_service required when vercel.enabled");

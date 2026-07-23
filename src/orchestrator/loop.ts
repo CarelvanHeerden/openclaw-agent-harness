@@ -2033,12 +2033,24 @@ export class OrchestratorLoop {
         sdkSessionId: result?.sdkSessionId,
       });
       if (firstTokenTimeout) {
+        // beta.65 (P0): split-phase attribution. streamOpened=false => the
+        // PHASE-1 (call-init -> stream-open) watchdog fired (the pre-stream POST
+        // hang beta.64 missed); streamOpened=true => the PHASE-2 (stream-open ->
+        // first-token) watchdog fired (the beta.63 smoke #2 case). Both audit
+        // the same event + route into the same fresh-session retry.
+        const phase = result?.streamOpened ? "phase2_first_token" : "phase1_stream_open";
         this.deps.state.audit(
           "loop.worker_first_token_timeout",
-          { sessionId, seq: st.seq, attempt, sdk_first_token_timeout_seconds: this.deps.config.loop.sdk_first_token_timeout_seconds ?? 90, streamOpened: !!result?.streamOpened },
+          {
+            sessionId, seq: st.seq, attempt, phase, streamOpened: !!result?.streamOpened,
+            sdk_first_token_timeout_seconds: this.deps.config.loop.sdk_first_token_timeout_seconds ?? 30,
+            sdk_stream_open_timeout_seconds: this.deps.config.loop.sdk_stream_open_timeout_seconds ?? 120,
+          },
           sessionId,
         );
-        lastSummary = `worker first_token_timeout (stream opened, zero tokens) attempt ${attempt}`;
+        lastSummary = result?.streamOpened
+          ? `worker first_token_timeout (phase 2: stream opened, zero tokens) attempt ${attempt}`
+          : `worker first_token_timeout (phase 1: stream never opened / pre-stream POST hang) attempt ${attempt}`;
         lastFailErr = `worker_first_token_timeout: seq ${st.seq}`;
       } else {
         this.deps.state.audit(

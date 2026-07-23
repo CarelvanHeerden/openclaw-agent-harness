@@ -73,8 +73,10 @@ export interface WorkerDeps {
     permissionMode: HarnessConfig["safety"]["worker_permission_mode"];
     resumeSessionId?: string;
     timeoutSeconds: number;
-    /** beta.64 (P0-1): first-token watchdog window; threaded to runWorkerSdk. */
+    /** beta.64 (P0-1) / beta.65 (P0): phase-2 (stream-open -> first-token) watchdog window; threaded to runWorkerSdk. */
     firstTokenTimeoutSeconds?: number;
+    /** beta.65 (P0): phase-1 (call-init -> stream-open) watchdog window; threaded to runWorkerSdk. */
+    streamOpenTimeoutSeconds?: number;
     canUseTool: (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }>;
   }) => Promise<{
     sdkSessionId: string;
@@ -292,8 +294,11 @@ export async function runWorker(
       permissionMode: deps.config.safety.worker_permission_mode,
       resumeSessionId,
       timeoutSeconds: deps.config.loop.worker_timeout_seconds,
-      // beta.64 (P0-1): arm the inner first-token watchdog on every worker call.
-      firstTokenTimeoutSeconds: deps.config.loop.sdk_first_token_timeout_seconds ?? 90,
+      // beta.64 (P0-1) / beta.65 (P0): arm the split-phase watchdog on every
+      // worker call. Phase 2 (stream-open -> first-token) default lowered to 30;
+      // phase 1 (call-init -> stream-open) is the new beta.65 pre-stream cover.
+      firstTokenTimeoutSeconds: deps.config.loop.sdk_first_token_timeout_seconds ?? 30,
+      streamOpenTimeoutSeconds: deps.config.loop.sdk_stream_open_timeout_seconds ?? 120,
       canUseTool,
     });
   } catch (err) {

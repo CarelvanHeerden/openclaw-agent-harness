@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.1.0-beta.65] -- 2026-07-23
+
+Fix beta.64 first-token watchdog with a SPLIT-PHASE design -- cover the
+pre-stream POST hang (phase 1) WITHOUT false-positive-aborting a legit slow
+open. beta.64 shipped a first-token watchdog armed ONLY on stream-open
+(`system/init`), so it covered phase 2 (stream-open->first-token) but MISSED
+phase 1 (call-init->stream-open): a PRE-STREAM POST hang where the SDK's
+streaming POST never returns its first byte, so the `for await` never yields
+even `system/init`, the watchdog is never armed, and the harness sits for the
+full `worker_timeout_seconds` (1800s). Smoke #3 durable-log evidence: seq-3
+`sdk_request` then NO `sdk_stream_opened`, NO `sdk_first_token`, 28+min silence,
+no abort, no retry.
+
+The beta.64 `sdk_stream_opened`/`sdk_first_token` events ALSO revealed the hang
+has two distinct phases, and phase 1 is highly variable even on SUCCESS: phase 1
+(sdk_request->sdk_stream_opened) was 47s on seq-1, **422s on seq-2 (AND it
+succeeded)**, and >1800s on seq-3 (the failure); phase 2
+(sdk_stream_opened->sdk_first_token) was always near-instant (4-5ms). So a
+SINGLE call-initiation timer (a naive fix) would false-positive-abort seq-2's
+legit 422s open. The fix is therefore a SPLIT-PHASE watchdog.
+
+### P0 -- split-phase watchdog
+
+- **Phase-1 watchdog** (`sdk_request`/call-init -> stream-open): a SEPARATE
+  timer armed at CALL INITIATION -- the TOP of `consumeWorkerStream`, BEFORE the
+  `for await` (`armStreamOpenWatchdog()`) -- and disarmed on `system/init`.
+  Bound by the NEW config key `loop.sdk_stream_open_timeout_seconds`
+  (**default 120**, clamp [10,600]). Fires when the stream never opens. This is
+  the beta.64 gap the whole beta covers.
+- **Phase-2 watchdog** (stream-open -> first assistant content block): the
+  EXISTING beta.64 behaviour, armed on `system/init`, disarmed on the first
+  content block. Bound by `loop.sdk_first_token_timeout_seconds`, whose
+  **default is LOWERED 90 -> 30** (phase 2 is always <10ms on success, so 30s
+  is generous; clamp unchanged [10,1800]).
+- EITHER timer firing => the SAME distinct stopReason `first_token_timeout` +
+  `abort.abort()`, so both route into the UNCHANGED downstream chain
+  (`runWorkerCallWithRetry` -> one fresh-session retry -> scripted-verify
+  fallback -> best-effort verify -> `needs_human_review` PR).
+- **False-positive is CORRECT-by-design:** a phase-1 breach of a legit-but-slow
+  open (like seq-2's 422s) aborts that attempt and RETRIES on a FRESH SDK
+  session. If the slowness was a cold/unpooled connection, the retry is fast; a
+  one-retry cost beats waiting 422s+ or hanging forever. A first breach is never
+  a terminal fail. (HTTP connection-pooling/keepalive is a separate P1
+  investigation, explicitly OUT OF SCOPE for this beta.)
+- Diagnostics preserved: `sdk_stream_opened` still fires on `system/init`,
+  `sdk_first_token` on the first content block. The `loop.worker_first_token_timeout`
+  audit now carries `phase` (`phase1_stream_open` | `phase2_first_token`) +
+  BOTH window values for attribution.
+- `msToFirstToken` now measured from call initiation (spans BOTH phases);
+  removed the now-dead `streamOpenedAt` local.
+- Config key added to BOTH `src/config.ts` AND the manifest `configSchema`
+  (`additionalProperties:false`).
+
+### Tests
+
+- `tests/beta65-first-token-arming.test.mjs` (13 tests): the KEY test -- a
+  stream that NEVER opens within the phase-1 window triggers
+  `first_token_timeout` + abort (the exact smoke #3 case beta.64 MISSED), plus a
+  proof beta.64's phase-1-disabled shape does NOT catch it; regression guard for
+  the phase-2 stream-opened-no-token case; a legit slow open WITHIN the phase-1
+  window that first-tokens instantly => NO false abort, clean `end_turn`;
+  source-assertions that BOTH timers exist and the phase-1 timer is armed BEFORE
+  the for-await loop (phase-2 inside it); config + manifest + threading +
+  split-phase-audit assertions.
+- Full suite: 724 -> 737 tests, all green. tsc clean, build exit 0, smoke 15
+  tools (unchanged, no new tool).
+
 ## [0.1.0-beta.64] -- 2026-07-23
 
 Inner-turn hang resilience release. Fixes beta.63 smoke #2: a VERIFY sub-task's
