@@ -716,7 +716,9 @@ export async function runLeadSdk(params) {
         "    subTasks: SubTask[],",
         "    reviewChecklist: string[],",
         "    riskLevel: 'low'|'medium'|'high' }",
-        "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope: 'local', taskMode: 'observe'|'mutate'|'mixed', verify: VerifyCheck[] }",
+        "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope: 'local', taskMode: 'observe'|'mutate'|'mixed', verify: VerifyCheck[], workerContext?: WorkerContext }",
+        // beta.66 (warm-worker-context): the schema for the handover Fable gives the worker.
+        "WorkerContext: { rationale: string, codeExcerpts?: {path: string, startLine?: number, snippet: string, note?: string}[], changeSpec?: string, gotchas?: string[], relatedSymbols?: string[] }",
         // beta.57 (P1): the verify contract is now an EXPLICIT, REQUIRED field.
         // Before this, most plans omitted `verify` and the harness fell back to
         // regex inference over the sub-task's prose -- which mis-fired in both
@@ -728,6 +730,12 @@ export async function runLeadSdk(params) {
         "  { kind: 'file_committed', path: string }  -> the file appears in a commit made during the sub-task",
         "  { kind: 'commit_made' }                   -> at least one new commit exists vs the sub-task's start",
         "- EVERY sub-task MUST carry an explicit `verify` array AND an explicit `taskMode`. For taskMode 'observe' the correct contract is `verify: []`. For taskMode 'mutate' the contract MUST include `{ kind: 'commit_made' }` plus a `file_written`/`file_committed` entry per load-bearing file. Do NOT omit these fields.",
+        // beta.66 (warm-worker-context): THE FOUNDING GOAL of this harness. You are
+        // the smart, expensive orchestrator. Your workers are CHEAPER models that
+        // will NOT re-investigate the repo. Hand them your findings, not a bare
+        // ticket, so they implement mechanically instead of re-scanning.
+        "- WARM WORKER CONTEXT (CRITICAL for cost + quality). You are the ORCHESTRATOR: you investigate deeply, your workers are CHEAPER models that will NOT re-explore the repo. For EVERY mutate sub-task, populate `workerContext` with everything a worker needs to implement it CORRECTLY WITHOUT re-reading the codebase: (a) `rationale` -- WHY this change is needed and HOW you decided to shape it; (b) `codeExcerpts` -- the ACTUAL code you read, verbatim, with `path` and `startLine`, so the worker does not re-open files to re-find them; (c) `changeSpec` -- the precise, low-ambiguity edit ('in useTaxonomy() at src/hooks/useTaxonomy.ts:41, replace the hardcoded LABELS map with getTaxonomyOptions() from src/lib/taxonomy-options.ts'); (d) `gotchas` -- traps specific to this sub-task (e.g. 'React 19.2.7 has no React.act; use renderToStaticMarkup for component tests here'); (e) `relatedSymbols` -- exports/functions the worker will need and where they live. If a worker would have to re-derive something you already know, it belongs in workerContext. This is not optional polish -- it is why the harness exists (smart planner + cheap executors). Keep excerpts focused (only lines that matter); do not paste whole files.",
+        "- workerContext is for DEV WORKERS ONLY. The adversary reviewer never sees it and must stay independent. Observe/probe sub-tasks may omit workerContext (they investigate, they don't implement).",
         "Rules:",
         "- Prefer 3-8 sub-tasks. Hard cap 20.",
         "- Each sub-task must be independently reviewable.",

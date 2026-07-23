@@ -22,6 +22,54 @@ import { renderConventionsForPrompt } from "./repo-conventions.js";
  */
 const WORKER_CONCEPT_CONTENT_MAX_CHARS = 4000;
 const WORKER_CONCEPT_TOTAL_MAX_CHARS = 12000;
+// beta.66 (warm-worker-context): total char budget for the lead's handed-down
+// code excerpts, so a verbose plan can't blow the worker context/cost.
+const WORKER_CONTEXT_EXCERPT_TOTAL_MAX_CHARS = 12000;
+const WORKER_CONTEXT_EXCERPT_MAX_CHARS = 4000;
+/**
+ * beta.66: render the lead's WorkerContext into a prompt block. Exported for
+ * unit tests. Returns "" when there is no context (cold behaviour).
+ */
+export function renderWorkerContextBlock(ctx) {
+    if (!ctx)
+        return "";
+    const lines = [
+        ``,
+        `## Implementation context (from the lead investigation)`,
+        `The lead (a stronger model) already investigated this. TRUST and USE this`,
+        `context; do NOT re-explore the repo to re-derive it. Implement the changeSpec`,
+        `below. Only read files this context did not already give you.`,
+    ];
+    if (ctx.rationale)
+        lines.push(``, `### Why / how`, ctx.rationale);
+    if (ctx.changeSpec)
+        lines.push(``, `### Precise change to make`, ctx.changeSpec);
+    if (ctx.relatedSymbols && ctx.relatedSymbols.length > 0) {
+        lines.push(``, `### Related symbols`, ...ctx.relatedSymbols.map((s) => `- ${s}`));
+    }
+    if (ctx.gotchas && ctx.gotchas.length > 0) {
+        lines.push(``, `### Gotchas for this sub-task`, ...ctx.gotchas.map((g) => `- ${g}`));
+    }
+    if (ctx.codeExcerpts && ctx.codeExcerpts.length > 0) {
+        lines.push(``, `### Code the lead already read (do not re-open to re-find these)`);
+        let total = 0;
+        for (const ex of ctx.codeExcerpts) {
+            if (total >= WORKER_CONTEXT_EXCERPT_TOTAL_MAX_CHARS) {
+                lines.push(``, `... (remaining excerpts omitted, char budget reached)`);
+                break;
+            }
+            const anchor = ex.startLine != null ? `${ex.path}:${ex.startLine}` : ex.path;
+            lines.push(``, `#### ${anchor}${ex.note ? ` -- ${ex.note}` : ""}`);
+            const remaining = WORKER_CONTEXT_EXCERPT_TOTAL_MAX_CHARS - total;
+            const budget = Math.min(WORKER_CONTEXT_EXCERPT_MAX_CHARS, remaining);
+            const snippet = ex.snippet.slice(0, budget);
+            const truncated = ex.snippet.length > budget ? `\n... (truncated, ${ex.snippet.length - budget} chars omitted)` : "";
+            lines.push("```", snippet + truncated, "```");
+            total += snippet.length;
+        }
+    }
+    return lines.join("\n");
+}
 export function buildWorkerSystemPrompt(brief, subTask) {
     const lines = [
         `You are a focused code-writing worker. Your job is ONE sub-task, nothing more.`,
@@ -57,7 +105,15 @@ export function buildWorkerSystemPrompt(brief, subTask) {
             }
         }
     }
-    lines.push(``, `## Your sub-task`, `Title: ${subTask.title}`, `Intent: ${subTask.intent}`, `Files likely touched: ${subTask.filesLikelyTouched.join(", ") || "(unspecified)"}`, `Success criteria for THIS sub-task:`, ...subTask.successCriteria.map((c) => `  - ${c}`), ``, `## Rules`, `- Work only inside the worktree; never touch other paths.`, `- Do not run 'git push'. The orchestrator handles pushes.`, `- Do not install global packages, disable safeguards, or exfiltrate anything.`, `- If a bash command is refused, explain in prose and continue with an alternative approach.`, `- End your turn once the sub-task's success criteria are met.`, ``, `## Execution protocol (CRITICAL)`, `- You have EXACTLY ONE turn to complete this sub-task. Dispatch is one-shot.`, `- There is NO event stream from the harness back to you mid-turn. There is`, `  NO "Monitor event", no "ready signal", no background callback. NOTHING will`, `  ever notify you or resume you. If you end your turn waiting for such an`, `  event, the work simply does not get done and the sub-task FAILS.`, `- NEVER 'await', 'wait for', or 'poll for' a harness/monitor/install event.`, `  These mechanisms do not exist in this harness.`, `- If you need a long-running process (npm install / npm ci, tsc, a build, a`, `  test run), run it INLINE in a single Bash tool call that BLOCKS until the`, `  process exits (e.g. \`npm ci && npx tsc --noEmit\`), read its result, then`, `  continue working in the SAME turn. Do not background it and wait.`, `- To RUN TESTS, a BUILD, or LINT: execute the command yourself, directly, in`, `  a single blocking Bash call in THIS turn (e.g. \`npm test\`, \`npx vitest run\`,`, `  \`npm run build\`, \`npx eslint .\`) and read its output. There is NO async`, `  test runner, NO "background watcher", NO "completion notification", and NO`, `  "test-run event". Nobody runs your tests for you and nobody messages you`, `  when they finish. YOU run them, inline, and read the result.`, `- HARD STOP RULE: if you are about to write "I'll wait for", "waiting for the`, `  notification/event/signal", "the monitor/watcher/observer/background process`, `  will notify me", or any phrase implying something will resume you -- STOP.`, `  That mechanism does not exist. Run the command inline instead and continue.`, `  Ending your turn on such a phrase = the sub-task FAILS with zero work done.`, `- Only run verification (typecheck/tests) if THIS sub-task's success criteria`, `  require it. Do not go off-plan to self-verify; make the required edit and`, `  commit. Committing the correct change is what completes the sub-task.`);
+    lines.push(``, `## Your sub-task`, `Title: ${subTask.title}`, `Intent: ${subTask.intent}`, `Files likely touched: ${subTask.filesLikelyTouched.join(", ") || "(unspecified)"}`, `Success criteria for THIS sub-task:`, ...subTask.successCriteria.map((c) => `  - ${c}`));
+    // beta.66 (warm-worker-context): lead the worker with Fable's investigation
+    // (rationale + exact change + code it already read + gotchas) BEFORE the
+    // generic rules, so a cheaper worker implements mechanically instead of
+    // re-scanning the repo. Absent workerContext = unchanged cold behaviour.
+    const contextBlock = renderWorkerContextBlock(subTask.workerContext);
+    if (contextBlock)
+        lines.push(contextBlock);
+    lines.push(``, `## Rules`, `- Work only inside the worktree; never touch other paths.`, `- Do not run 'git push'. The orchestrator handles pushes.`, `- Do not install global packages, disable safeguards, or exfiltrate anything.`, `- If a bash command is refused, explain in prose and continue with an alternative approach.`, `- End your turn once the sub-task's success criteria are met.`, `- If an "Implementation context" block is present above, the lead already`, `  investigated this. Implement its changeSpec directly; do NOT re-explore the`, `  repo to re-derive what it already tells you. Only read files it did not cover.`, ``, `## Execution protocol (CRITICAL)`, `- You have EXACTLY ONE turn to complete this sub-task. Dispatch is one-shot.`, `- There is NO event stream from the harness back to you mid-turn. There is`, `  NO "Monitor event", no "ready signal", no background callback. NOTHING will`, `  ever notify you or resume you. If you end your turn waiting for such an`, `  event, the work simply does not get done and the sub-task FAILS.`, `- NEVER 'await', 'wait for', or 'poll for' a harness/monitor/install event.`, `  These mechanisms do not exist in this harness.`, `- If you need a long-running process (npm install / npm ci, tsc, a build, a`, `  test run), run it INLINE in a single Bash tool call that BLOCKS until the`, `  process exits (e.g. \`npm ci && npx tsc --noEmit\`), read its result, then`, `  continue working in the SAME turn. Do not background it and wait.`, `- To RUN TESTS, a BUILD, or LINT: execute the command yourself, directly, in`, `  a single blocking Bash call in THIS turn (e.g. \`npm test\`, \`npx vitest run\`,`, `  \`npm run build\`, \`npx eslint .\`) and read its output. There is NO async`, `  test runner, NO "background watcher", NO "completion notification", and NO`, `  "test-run event". Nobody runs your tests for you and nobody messages you`, `  when they finish. YOU run them, inline, and read the result.`, `- HARD STOP RULE: if you are about to write "I'll wait for", "waiting for the`, `  notification/event/signal", "the monitor/watcher/observer/background process`, `  will notify me", or any phrase implying something will resume you -- STOP.`, `  That mechanism does not exist. Run the command inline instead and continue.`, `  Ending your turn on such a phrase = the sub-task FAILS with zero work done.`, `- Only run verification (typecheck/tests) if THIS sub-task's success criteria`, `  require it. Do not go off-plan to self-verify; make the required edit and`, `  commit. Committing the correct change is what completes the sub-task.`);
     // beta.63 (Fix 1): the worker gets NO OpenClaw context injection, so the
     // repo's declared conventions must be carried in the prompt explicitly.
     const conventionBlock = renderConventionsForPrompt(brief.repoConventions, "worker");

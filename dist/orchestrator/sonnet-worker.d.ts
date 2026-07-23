@@ -143,6 +143,11 @@ type WorkerConceptRef = {
     tags?: string[];
     content?: string;
 };
+/**
+ * beta.66: render the lead's WorkerContext into a prompt block. Exported for
+ * unit tests. Returns "" when there is no context (cold behaviour).
+ */
+export declare function renderWorkerContextBlock(ctx?: import("./fable5-lead.js").WorkerContext): string;
 export declare function buildWorkerSystemPrompt(brief: {
     title: string;
     motivation: string;

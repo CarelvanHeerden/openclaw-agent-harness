@@ -115,6 +115,54 @@ export type ContractScope = "local" | "remote" | "mixed";
  *   contractScope=remote, taskMode=mutate   → push + PR + create commit.
  */
 export type TaskMode = "observe" | "mutate" | "mixed";
+/**
+ * beta.66 (warm-worker-context): Fable's investigation handed forward to the
+ * dev worker. THIS is the harness's founding goal (the ClaudeDevs
+ * orchestrator-split): a smart, expensive lead investigates deeply, then hands
+ * a CHEAP worker everything it needs to implement WITHOUT re-exploring the
+ * repo. Without this, every worker starts cold and re-derives what Fable
+ * already knew, burning tokens and forcing us onto opus workers.
+ *
+ * Optional + additive (same discipline as verify/contractScope/taskMode):
+ * absent = the pre-beta.66 cold behaviour.
+ *
+ * HARD BOUNDARY: warm context flows lead -> DEV-WORKER ONLY. The adversary
+ * (fable5-adversary.ts) stays cold + independent and NEVER receives this.
+ */
+export interface WorkerContext {
+    /**
+     * Fable's plain-language explanation of WHY this change is needed and HOW it
+     * should be shaped -- the reasoning behind the ticket, not just the outcome.
+     */
+    rationale: string;
+    /**
+     * Verbatim code excerpts Fable actually read, with file+line anchors, so the
+     * worker does not re-open and re-scan the repo to re-find them.
+     */
+    codeExcerpts?: Array<{
+        path: string;
+        startLine?: number;
+        snippet: string;
+        note?: string;
+    }>;
+    /**
+     * The precise, low-ambiguity change instruction, e.g. "in useTaxonomy() at
+     * src/hooks/useTaxonomy.ts:41, replace the hardcoded LABELS map with a call
+     * to getTaxonomyOptions() from src/lib/taxonomy-options.ts".
+     */
+    changeSpec?: string;
+    /**
+     * Gotchas SPECIFIC to this sub-task (distinct from repo-wide repoConventions),
+     * e.g. "React 19.2.7 has no React.act; use renderToStaticMarkup for component
+     * tests in this repo".
+     */
+    gotchas?: string[];
+    /**
+     * Related symbols/functions the worker needs but might not easily find,
+     * e.g. "getTaxonomyOptions is exported from src/lib/taxonomy-options.ts:12".
+     */
+    relatedSymbols?: string[];
+}
 export interface LeadPlanSubTask {
     seq: number;
     title: string;
@@ -150,6 +198,13 @@ export interface LeadPlanSubTask {
      * behaviour (no mutation-scope filtering).
      */
     taskMode?: TaskMode;
+    /**
+     * beta.66 (warm-worker-context): Fable's investigation handed forward so the
+     * (cheaper) dev worker implements mechanically instead of re-exploring the
+     * repo. Optional; absent = cold behaviour. Dev workers ONLY -- never the
+     * adversary. See WorkerContext.
+     */
+    workerContext?: WorkerContext;
 }
 export interface LeadPlan {
     repo: string;
