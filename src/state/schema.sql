@@ -42,7 +42,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_completed_sub_task  TEXT,
   last_checkpoint_at       INTEGER,
   claude_sdk_session_id    TEXT,             -- lead's Claude Agent SDK session UUID
-  last_worker_sdk_session  TEXT               -- most recent worker SDK session
+  last_worker_sdk_session  TEXT,              -- most recent worker SDK session
+  -- beta.63 (Part A): session-level liveness heartbeat. Written on EVERY state
+  -- transition (sub-task start/complete, review start/complete, finalize, push,
+  -- PR-open). The stall watchdog checks non-terminal executing/reviewing/
+  -- finalising sessions where now - last_progress_at > loop.session_stall_seconds
+  -- and recovers or cleanly fails (preserving the worktree) a wedged run.
+  last_progress_at         INTEGER            -- epoch ms of the last forward progress
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

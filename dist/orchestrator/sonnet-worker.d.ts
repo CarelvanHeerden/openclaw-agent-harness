@@ -132,6 +132,8 @@ export declare function buildWorkerSystemPrompt(brief: {
     acceptanceCriteria: string[];
     /** Beta.21: OKF concept refs from the crystallised brief. Optional. */
     relevantConcepts?: WorkerConceptRef[];
+    /** beta.63 (Fix 1): repo conventions ingested at brief build. Optional. */
+    repoConventions?: import("./repo-conventions.js").RepoConvention[];
 }, subTask: LeadPlanSubTask): string;
 /**
  * Beta.21: choose which concepts are pertinent to this specific sub-task.

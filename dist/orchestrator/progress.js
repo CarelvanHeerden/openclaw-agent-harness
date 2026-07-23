@@ -53,7 +53,7 @@ function round(n, dp = 4) {
  * Build a progress snapshot for a session. Pure read; never mutates state.
  * `limit` bounds the recent-event tail (default 12).
  */
-export function buildProgressSnapshot(db, sessionId, limit = 12) {
+export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 1800) {
     const empty = (found) => ({
         ok: true,
         found,
@@ -71,6 +71,8 @@ export function buildProgressSnapshot(db, sessionId, limit = 12) {
         deployStatus: null,
         msSinceLastEvent: null,
         lastEventAt: null,
+        msSinceProgress: null,
+        stalled: false,
         recentEvents: [],
         headline: found ? "" : `No harness session with id ${sessionId}.`,
         needsClarification: false,
@@ -80,7 +82,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12) {
     const row = db
         .prepare(`SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
               pr_number, final_pr_url, deploy_status,
-              clarification_question, clarification_seq
+              clarification_question, clarification_seq, last_progress_at
          FROM sessions WHERE id = ?`)
         .get(sessionId);
     if (!row)
@@ -137,6 +139,14 @@ export function buildProgressSnapshot(db, sessionId, limit = 12) {
         .reverse(); // newest last
     const lastEventAt = evRows.length > 0 ? evRows[0].at : null;
     const msSinceLastEvent = lastEventAt != null ? Date.now() - lastEventAt : null;
+    // beta.63 (Part A): stall surfacing. Only ACTIVE, non-terminal phases can
+    // stall; awaiting_clarification is a resting pause (never "stalled").
+    const lastProgressAt = row.last_progress_at ?? null;
+    const msSinceProgress = lastProgressAt != null ? Date.now() - lastProgressAt : null;
+    const ACTIVE_PHASES = new Set(["executing", "reviewing"]);
+    const stalled = ACTIVE_PHASES.has(status) &&
+        msSinceProgress != null &&
+        msSinceProgress > Math.max(300, stallSeconds) * 1000;
     const budgetUsd = row.budget_usd ?? 0;
     const spentUsd = row.cost_usd ?? 0;
     const ratio = budgetUsd > 0 ? round(spentUsd / budgetUsd, 4) : 0;
@@ -199,6 +209,8 @@ export function buildProgressSnapshot(db, sessionId, limit = 12) {
         deployStatus: row.deploy_status ?? null,
         msSinceLastEvent,
         lastEventAt,
+        msSinceProgress,
+        stalled,
         recentEvents,
         headline,
         needsClarification,

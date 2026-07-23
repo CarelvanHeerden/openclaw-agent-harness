@@ -18,6 +18,7 @@ import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { parseHarnessConfig } from "./config.js";
 import { openStateStoreSync } from "./state/store.js";
+import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { resolveContractPath } from "./orchestrator/path-match.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
@@ -97,6 +98,14 @@ export function bootstrapHarnessSync(api) {
     const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
     mkdirSync(dirname(dbPath), { recursive: true });
     const state = openStateStoreSync(dbPath);
+    // beta.63 (Part B): the harness data dir is the directory holding the state
+    // DB. The interaction log lives in `<dataDir>/logs` by default -- crucially
+    // OUTSIDE the ephemeral git worktree so it survives teardown + restart.
+    const dataDir = dirname(dbPath);
+    const interactionLog = new InteractionLog({
+        config: resolveInteractionLogConfig(config.log, dataDir),
+        logger: api.logger,
+    });
     const budget = new BudgetEnforcer(config.budgets, state);
     const pat = new PatRouter(config.pat_routing);
     // beta.24: track whether the credential_get tool is actually available
@@ -312,6 +321,7 @@ export function bootstrapHarnessSync(api) {
         budget,
         pat,
         logger: api.logger,
+        interactionLog,
         runLead: async (brief, ctx) => {
             const requester = ctx?.requester ?? config.slack.authorised_users[0];
             const raw = await runLeadSdk({
@@ -404,6 +414,9 @@ export function bootstrapHarnessSync(api) {
                     reviewChecklist: plan.reviewChecklist,
                     model: config.models.adversary,
                     timeoutSeconds: config.loop.adversary_timeout_seconds,
+                    // beta.63 (Fix 1): carry the repo conventions ingested at brief build
+                    // so the adversary flags convention violations even when CI is green.
+                    repoConventions: brief.repoConventions,
                 }, {
                     logger: api.logger,
                     readDiff: async (p) => (await readFile(p, "utf8")),
@@ -877,7 +890,7 @@ export function bootstrapHarnessSync(api) {
         logger: api.logger,
     });
     const runtime = {
-        config, state, budget, pat, loop, listener, dispatcher, slack, git, creds,
+        config, state, budget, pat, loop, interactionLog, listener, dispatcher, slack, git, creds,
         crystallise,
         anthropicApiKey,
         githubToken: resolveGithubToken,

@@ -78,6 +78,26 @@ export interface CrystallisedBrief {
    */
   reviseOfSessionId?: string;
   pinnedBranch?: string;
+  /**
+   * beta.63 (convention-awareness Fix 1): the checked-out repo's declared
+   * convention files (.cursor/rules/**, .cursorrules, CONTRIBUTING.md,
+   * CONVENTIONS.md, AGENTS.md, .github/CONTRIBUTING.md) + repo check scripts,
+   * ingested at brief build. The lead + worker + adversary SDK prompts get NO
+   * OpenClaw context injection, so conventions MUST be carried explicitly here
+   * to reach them. Char-budgeted (brief.convention_char_budget); over budget the
+   * LONGEST sources are truncated first with an appended note. Optional; empty/
+   * absent when the repo declares none or ingest is disabled.
+   */
+  repoConventions?: RepoConvention[];
+}
+
+export interface RepoConvention {
+  /** Source label, e.g. ".cursor/rules/keep-okf-current.mdc", "CONTRIBUTING.md", or "package.json#scripts". */
+  source: string;
+  /** The convention text (possibly truncated per the char budget). */
+  text: string;
+  /** True when this source's text was truncated to fit the budget. */
+  truncated?: boolean;
 }
 
 export interface CrystalliserDeps {

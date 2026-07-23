@@ -273,7 +273,11 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               details: { ok: false },
             };
           }
-          const snapshot = buildProgressSnapshot(liveDb(), sessionId, opts.eventLimit ?? 12);
+          // beta.63 (Part A): pass the configured stall window so the snapshot
+          // can flag `stalled: true` + `msSinceProgress` -- a poller SEES a
+          // wedge instead of it looking identical to legit long work.
+          const stallSeconds = liveConfig().loop.session_stall_seconds ?? 1800;
+          const snapshot = buildProgressSnapshot(liveDb(), sessionId, opts.eventLimit ?? 12, stallSeconds);
           return {
             content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }],
             details: {
@@ -282,7 +286,54 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               terminal: snapshot.terminal,
               phase: snapshot.phase,
               headline: snapshot.headline,
+              stalled: snapshot.stalled,
+              msSinceProgress: snapshot.msSinceProgress,
             },
+          };
+        },
+      }),
+    ),
+  );
+
+  // beta.63 (Part B): harness_logs -- return the tail of a session's durable
+  // interaction-log JSONL so an operator can read the SDK/state trail WITHOUT
+  // shell / container access. The log lives outside the worktree so it survives
+  // a worktree release + restart. Secrets are redacted on write, so the tail is
+  // safe to surface. A trailing `sdk_request` with no matching `sdk_response`
+  // is the exact stall signature.
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_logs",
+        description:
+          "Read the tail of a harness session's durable interaction log (structured JSONL written OUTSIDE the git worktree). Returns the last N events: every SDK/LLM call (sdk_request/sdk_response with role, model, promptChars/promptTail, finishReason, costUsd, durationMs), every state_transition, verify_probe, refusal/env-wait/deviation, and stall/recovery event. Use this to diagnose a run that harness_progress shows as stalled -- a trailing sdk_request with no matching sdk_response is the exact hang point. Secrets are redacted on write.",
+        parameters: {
+          type: "object",
+          properties: {
+            sessionId: { type: "string", description: "The sessionId whose interaction log to tail." },
+            limit: { type: "number", minimum: 1, maximum: 1000, description: "How many trailing events to return (default 100)." },
+          },
+          required: ["sessionId"],
+          additionalProperties: false,
+        },
+        execute: (_callId: unknown, input: unknown) => {
+          const opts = (input ?? {}) as { sessionId?: string; limit?: number };
+          const sessionId = String(opts.sessionId ?? "").trim();
+          if (!sessionId) {
+            return { content: [{ type: "text", text: JSON.stringify({ ok: false, reason: "sessionId is required" }) }], details: { ok: false } };
+          }
+          const ilog = liveRuntime().interactionLog;
+          if (!ilog || !ilog.enabled) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ ok: false, enabled: false, reason: "interaction log is disabled (log.interaction_log_enabled=false)" }) }],
+              details: { ok: false, enabled: false },
+            };
+          }
+          const tail = ilog.readSessionTail(sessionId, opts.limit ?? 100);
+          const result = { ok: true, found: tail.found, file: tail.file, totalLines: tail.totalLines, returned: tail.events.length, events: tail.events };
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            details: { ok: true, found: tail.found, returned: tail.events.length, totalLines: tail.totalLines },
           };
         },
       }),
@@ -958,9 +1009,11 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         name: "harness_resume",
         description:
           "Resume an interrupted harness session. Requires the session to be in 'interrupted' or 'resumable' state. " +
-          "beta.60: pass force:true to UNSTICK a session whose record says 'executing' or 'planning' but has NO live " +
+          "beta.60: pass force:true to UNSTICK a session whose record says 'executing', 'planning', or 'reviewing' but has NO live " +
           "loop-runner (dead executor) -- e.g. the b59 seq-7 transition stall where the row sat 'executing' with no " +
-          "worker process for hours. force is REFUSED if a live loop-runner still owns the session (use harness_cancel instead).",
+          "worker process for hours, OR the beta.63 late-stage stall (harness_progress shows stalled:true) where the " +
+          "session went quiet at/after the last sub-task deadline but before finalize. force is REFUSED if a live " +
+          "loop-runner still owns the session (use harness_cancel instead).",
         parameters: {
           type: "object",
           properties: {

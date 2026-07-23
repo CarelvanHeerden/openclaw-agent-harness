@@ -80,6 +80,10 @@ export function openStateStoreSync(pathHint) {
         // `skip` answer can key the prohibition by CONTENT (not seq number, which a
         // full re-plan renumbers away) and strip the owning finding line from the brief.
         { table: "sessions", column: "clarification_subtask", type: "TEXT" }, // JSON { title, intent } of the paused sub-task
+        // beta.63 (Part A): session-level liveness heartbeat for the stall watchdog.
+        // Written on EVERY state transition; the watchdog fails/recovers a session
+        // whose last_progress_at froze past loop.session_stall_seconds.
+        { table: "sessions", column: "last_progress_at", type: "INTEGER" }, // epoch ms of last forward progress
     ];
     for (const m of additiveMigrations) {
         try {

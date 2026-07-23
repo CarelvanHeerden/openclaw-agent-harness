@@ -1,5 +1,80 @@
 # Changelog
 
+## [0.1.0-beta.63] -- 2026-07-23
+
+Three-feature observability + resilience + convention release. All three are
+config-gated and default-ON. New config keys are declared in BOTH `src/config.ts`
+AND the manifest `configSchema` (which is `additionalProperties:false` -- an
+undeclared key rejects the whole config; the beta.34 hard lesson).
+
+### Part B -- durable, structured INTERACTION LOG (`log.*`)
+
+Fixes the b60 "silently stalled ~2 days, undiagnosable" class. The state DB lives
+inside the ephemeral git worktree (released at teardown), the piped stdout freezes
+on restart, and the SDK/LLM calls were captured nowhere durable.
+
+- New append-only, structured **JSONL interaction log written OUTSIDE the git
+  worktree** (`<dataDir>/logs/session-<id>.jsonl` + a rolling global tail
+  `harness-interactions.jsonl`). Survives worktree release + container restart.
+- Logs **every SDK/LLM call** (`sdk_request`/`sdk_response`: role lead|worker|
+  adversary, model, promptChars, promptTail, finishReason, outputChars, costUsd,
+  durationMs, sdkSessionId), **every state transition**, verify probes, refusals,
+  env-wait retries, review crashes, and (Part A) stall/recovery events. A trailing
+  `sdk_request` with no matching `sdk_response` is the exact hang signature.
+- **Secret redaction on write is MANDATORY and NOT disableable** -- every string
+  leaf is scrubbed (reuses the git/exec redaction discipline + standalone token
+  shapes: `sk-ant-`, `ghp_`/`gho_`/`ghs_`/`github_pat_`, `glpat-`, bearer tokens).
+- New **`harness_logs`** tool returns the tail of a session's JSONL so operators
+  read the trail without shell/container access.
+- Config: `log.interaction_log_enabled` (true), `log.dir` (`<dataDir>/logs`),
+  `log.full_prompts` (false -- sizes+tails only; does NOT disable redaction),
+  `log.retention_days` (14, prunes old per-session files).
+
+### Part A -- session-level STALL WATCHDOG (`loop.session_stall_*`)
+
+Binds the SESSION as a whole (beta.42 bound the re-entrancy guard; beta.60 bound
+`runOne`; neither covered the finalize gap the b60 run died in).
+
+- New `session.last_progress_at` column (schema CREATE + additive migration),
+  written on EVERY state transition + sub-task start + finalize/push.
+- New `loop.checkStalls()`: for a non-terminal executing/reviewing session whose
+  `last_progress_at` froze past `loop.session_stall_seconds` (default 1800), emit
+  a loud `loop.session_stalled {phase,msSinceProgress}` (logger + audit +
+  interaction log), attempt bounded self-recovery (re-tick the loop-runner when
+  no live runner owns it), and -- if unrecoverable -- terminal `failed`
+  (reason=`stalled_no_progress`) **PRESERVING the worktree** (beta.62 pattern),
+  plus a graceful push+PR flagged `needs_human_review` when the branch has
+  commits (never evaporate a near-done deliverable).
+- `harness_progress` now surfaces `stalled:true` + `msSinceProgress`;
+  `harness_resume force:true` covers stalled executing/reviewing.
+- Auto-terminal transition is behind its own sub-flag `loop.stall_auto_terminal`
+  (default true) so detection+logging can stay on while auto-transition is
+  toggled off; `loop.stall_graceful_pr` (default true).
+
+### Convention-awareness (`brief.*`, `verify.*`)
+
+Origin: PR #859 was good + green CI but violated the repo's keep-okf-current rule
+(`okf:check` drift) which CI does not gate. **The harness only respects what the
+gates enforce.**
+
+- **Fix 1 (convention-as-context):** at brief build, ingest `.cursor/rules/**`,
+  `.cursorrules`, CONTRIBUTING/CONVENTIONS/AGENTS/.github/CONTRIBUTING + repo
+  check scripts from `package.json#scripts` (`/check|lint|verify|okf/i`) into a
+  new optional brief field `repoConventions[{source,text}]` (char-budgeted,
+  longest-first truncation with a note). Threaded into the lead + worker +
+  adversary SDK prompts (which get NO OpenClaw context injection). Config:
+  `brief.ingest_repo_conventions` (true), `brief.convention_char_budget` (10000).
+- **Fix 2 (convention-as-check):** the final-verify sweep runs repo-declared
+  check scripts (allowlist `verify.check_script_allowlist` default
+  `["okf:check","lint","typecheck","test"]`) inline+blocking; a non-zero exit
+  becomes a REVISE-worthy `loop.convention_check_failed` finding (downgrades a
+  `pass` to `revise`), NOT a hard run-fail; unrunnable/network/timed-out scripts
+  are a non-fatal note. Config: `verify.run_repo_check_scripts` (true),
+  `verify.check_script_timeout_seconds` (600).
+
+Tests: 661 -> 699 (+38). typecheck clean, build exit 0, full suite green, smoke
+asserts the new `harness_logs` tool.
+
 ## [0.1.0-beta.57] -- 2026-07-21
 
 The P1/P2/P3 fixes from the same full-code review that produced the beta.56

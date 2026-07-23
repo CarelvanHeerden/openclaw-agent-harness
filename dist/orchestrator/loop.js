@@ -25,6 +25,7 @@ function parsePrNumber(prUrl) {
 }
 import { inferVerifyContract } from "./verify-contract.js";
 import { verifySubTaskOutput } from "./verify.js";
+import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 /**
  * beta.38: module-level set of session ids whose loop is CURRENTLY running in
  * THIS process. The single source of truth for "is this session's loop alive?"
@@ -325,9 +326,34 @@ export class OrchestratorLoop {
         }
     }
     setStatus(sessionId, status) {
+        // beta.63 (Part A): bump the session-level liveness heartbeat on EVERY
+        // state transition. This is the single column the stall watchdog reads to
+        // tell a legit long phase from a wedge. Cheap (one extra column write).
+        const now = Date.now();
         this.deps.state.db
-            .prepare(`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`)
-            .run(status, Date.now(), sessionId);
+            .prepare(`UPDATE sessions SET status = ?, updated_at = ?, last_progress_at = ? WHERE id = ?`)
+            .run(status, now, now, sessionId);
+        // beta.63 (Part B): mirror the transition into the durable interaction log
+        // (external to the worktree) so a stall's frozen phase + last event ts is
+        // recoverable after a worktree release / container restart.
+        this.deps.interactionLog?.log(sessionId, {
+            event: "state_transition",
+            phase: mapPhase(status),
+            status,
+        });
+    }
+    /**
+     * beta.63 (Part A): mark forward progress WITHOUT a status change (e.g. a
+     * sub-task started/completed, review started, push done). Bumps
+     * last_progress_at so the watchdog sees liveness inside a long phase, and
+     * logs a progress breadcrumb to the interaction log.
+     */
+    markProgress(sessionId, marker, phase, detail) {
+        const now = Date.now();
+        this.deps.state.db
+            .prepare(`UPDATE sessions SET last_progress_at = ?, updated_at = ? WHERE id = ?`)
+            .run(now, now, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "progress", marker, phase, ...(detail ?? {}) });
     }
     checkpoint(sessionId, cycle, lastSubTask, sdkSessionId) {
         this.deps.state.db
@@ -336,9 +362,10 @@ export class OrchestratorLoop {
              last_completed_sub_task = COALESCE(?, last_completed_sub_task),
              last_worker_sdk_session = COALESCE(?, last_worker_sdk_session),
              last_checkpoint_at = ?,
+             last_progress_at = ?,
              updated_at = ?
          WHERE id = ?`)
-            .run(cycle, lastSubTask ?? null, sdkSessionId ?? null, Date.now(), Date.now(), sessionId);
+            .run(cycle, lastSubTask ?? null, sdkSessionId ?? null, Date.now(), Date.now(), Date.now(), sessionId);
     }
     addCost(sessionId, amount) {
         this.deps.state.db
@@ -509,6 +536,14 @@ export class OrchestratorLoop {
         this.setStatus(sessionId, "planning");
         await this.deps.reportProgress?.(sessionId, "planning");
         let plan;
+        // beta.63 (Part B): log the lead SDK call boundaries (request/response) into
+        // the durable interaction log. A request with no matching response is the
+        // exact hang signature the b60 stall left behind.
+        const leadStart = Date.now();
+        this.deps.interactionLog?.logSdkRequest(sessionId, {
+            role: "lead", model: this.deps.config.models.lead, phase: "plan",
+            prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
+        });
         try {
             // beta.43: bound the lead-planner SDK call by lead_timeout_seconds. The
             // lead await was UNBOUNDED (beta.42 only bounded the worker). A hung
@@ -516,15 +551,41 @@ export class OrchestratorLoop {
             // indistinguishable from a wedge, which is exactly what caused the
             // beta.42 smoke misdiagnosis.
             plan = await withTimeout(this.deps.runLead(brief, { requester: row.requester }), this.deps.config.loop.lead_timeout_seconds);
+            this.deps.interactionLog?.logSdkResponse(sessionId, {
+                role: "lead", model: this.deps.config.models.lead, phase: "plan",
+                finishReason: "end_turn", durationMs: Date.now() - leadStart,
+                outputChars: JSON.stringify(plan).length, toolCalls: [],
+            });
             this.deps.state.db
                 .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
                 .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
             this.deps.state.audit("loop.plan_ready", { sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel }, sessionId);
+            // beta.63 (convention-awareness Fix 1): now that the repo is checked out
+            // at plan.worktreePath, ingest its declared convention files into the
+            // brief so the worker + adversary SDK prompts (no OpenClaw context
+            // injection) explicitly carry them. Only on cycle-1 build; idempotent
+            // (re-ingest overwrites). Never fatal.
+            if (this.deps.config.brief?.ingest_repo_conventions !== false && !brief.repoConventions) {
+                try {
+                    const conventions = ingestRepoConventions(plan.worktreePath, this.deps.config.brief?.convention_char_budget ?? 10000);
+                    brief.repoConventions = conventions;
+                    this.deps.state.audit("loop.repo_conventions_ingested", { sessionId, count: conventions.length, sources: conventions.map((c) => c.source) }, sessionId);
+                    this.deps.interactionLog?.log(sessionId, { event: "repo_conventions_ingested", phase: "plan", count: conventions.length, sources: conventions.map((c) => c.source) });
+                }
+                catch (err) {
+                    this.deps.logger.warn("[loop] repo convention ingest failed (non-fatal)", { sessionId, err: String(err) });
+                }
+            }
         }
         catch (err) {
             if (err instanceof WorkerTimeoutError) {
                 this.deps.state.audit("loop.lead_timeout", { sessionId, lead_timeout_seconds: this.deps.config.loop.lead_timeout_seconds }, sessionId);
             }
+            this.deps.interactionLog?.logSdkResponse(sessionId, {
+                role: "lead", model: this.deps.config.models.lead, phase: "plan",
+                finishReason: err instanceof WorkerTimeoutError ? "timeout" : "error", durationMs: Date.now() - leadStart,
+            });
+            this.deps.interactionLog?.log(sessionId, { event: "plan_failed", phase: "plan", error: String(err) });
             this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
             return this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd);
         }
@@ -614,6 +675,9 @@ export class OrchestratorLoop {
                     this.deps.state.db.prepare(`INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, started_at, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, now, now, now);
                 }
+                // beta.63 (Part A): mark forward progress at sub-task START so a long
+                // executing phase (many sub-tasks) reads as live to the watchdog.
+                this.markProgress(sessionId, "subtask_start", "worker", { seq: st.seq, cycle, title: String(st.title).slice(0, 120) });
                 // Capture the worktree HEAD BEFORE the worker runs, so commit_made
                 // verification (HEAD != base) is meaningful.
                 const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
@@ -623,6 +687,14 @@ export class OrchestratorLoop {
                 // let a stale file vacuously satisfy the contract.
                 const subTaskStartedAtMs = Date.now();
                 let result;
+                // beta.63 (Part B): worker SDK call boundary logging. seq + cycle carried
+                // so a stall's sdk_request-without-sdk_response points at the exact
+                // sub-task that hung.
+                const workerStart = Date.now();
+                this.deps.interactionLog?.logSdkRequest(sessionId, {
+                    role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                    prompt: `subtask ${st.seq}: ${st.title}\nintent: ${st.intent ?? ""}\n${reviseHint ?? ""}`,
+                });
                 try {
                     // beta.42: bound the worker SDK call by worker_timeout_seconds. Without
                     // this, a hung worker await never resolves and wedges the whole loop
@@ -630,9 +702,20 @@ export class OrchestratorLoop {
                     // between sub-tasks). A timeout here rejects, and the existing catch
                     // marks the sub_task failed + fails the run cleanly.
                     result = await withTimeout(this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester, dispatchHint: reviseHint }), this.deps.config.loop.worker_timeout_seconds);
+                    this.deps.interactionLog?.logSdkResponse(sessionId, {
+                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        finishReason: result.reason ?? "end_turn", costUsd: result.costUsd,
+                        outputChars: result.finalMessage ? result.finalMessage.length : undefined,
+                        durationMs: Date.now() - workerStart, sdkSessionId: result.sdkSessionId,
+                        finalMessageTail: result.finalMessage ? result.finalMessage.slice(-500) : undefined,
+                    });
                 }
                 catch (err) {
                     const isTimeout = err instanceof WorkerTimeoutError;
+                    this.deps.interactionLog?.logSdkResponse(sessionId, {
+                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        finishReason: isTimeout ? "timeout" : "error", durationMs: Date.now() - workerStart,
+                    });
                     this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`).run(`worker threw: ${String(err)}`, Date.now(), subTaskId);
                     if (isTimeout) {
                         this.deps.state.audit("loop.worker_timeout", { sessionId, seq: st.seq, worker_timeout_seconds: this.deps.config.loop.worker_timeout_seconds }, sessionId);
@@ -697,6 +780,12 @@ export class OrchestratorLoop {
                         verification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
                     }
                     this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: verification.ok, contract, summary: verification.summary, results: verification.results }, sessionId);
+                    // beta.63 (Part B): mirror the verify probe into the durable log so a
+                    // stall trail shows which probes ran + passed before it froze.
+                    this.deps.interactionLog?.log(sessionId, {
+                        event: "verify_probe", phase: "worker", seq: st.seq, cycle,
+                        ok: verification.ok, contract, summary: verification.summary,
+                    });
                     // beta.16 fix #2: also emit the observe-mode breadcrumb when
                     // taskMode is 'observe' and verification passed. Keeps the audit
                     // stream self-describing on observe sub-tasks (previously silent
@@ -744,6 +833,7 @@ export class OrchestratorLoop {
                             const hint = wrote.length > 0
                                 ? `IMPORTANT: your PREVIOUS turn wrote these files to the worktree but never committed them: ${wrote.join(", ")}. There is NO background watcher, NO "Monitor event", NO completion notification, and NO event stream -- harness dispatch is one-shot and NOTHING will ever notify or resume you. Do NOT wait for any install/build/lint/test to "notify" you. Simply \`git add\` and \`git commit\` the work you already did, complete any remaining success criteria INLINE (run any command -- including the test suite, tsc, or lint -- directly in a single BLOCKING Bash call and read its output in THIS turn; or skip a missing tool and note it in the commit message), and end your turn.`
                                 : `IMPORTANT: your PREVIOUS turn ended waiting for something that does not exist (a "Monitor event", a "background watcher", a "completion notification", or similar). The harness has NO such mechanism -- dispatch is one-shot and nothing will notify or resume you. Complete this sub-task NOW without waiting for anything. To run tests/build/lint/install, execute the command DIRECTLY in a single blocking Bash call in THIS turn and read its output; do not background it and do not wait for a signal. If a tool (eslint/tsc/lint) is not installed, run \`npm ci\` INLINE first, OR skip that step and note it in the commit message. Make the required edit, commit it, and end your turn.`;
+                            this.deps.interactionLog?.log(sessionId, { event: "env_wait_retry", phase: "worker", seq: st.seq, cycle, partialWork: wrote.length > 0 });
                             this.deps.state.audit("loop.worker_env_wait_retry", {
                                 sessionId, seq: st.seq, cycle,
                                 partialWork: wrote.length > 0,
@@ -962,6 +1052,10 @@ export class OrchestratorLoop {
                             // event so breakdowns are diagnosable without reading the prose.
                             // (Pass/fail is unchanged: both still escalate to clarification.)
                             const invalidPremiseSkip = matchesInvalidPremiseSkip(refusalText) && failedResults.some((x) => x.kind === "commit_made");
+                            this.deps.interactionLog?.log(sessionId, {
+                                event: invalidPremiseSkip ? "worker_skipped_invalid_premise" : "worker_refusal",
+                                phase: "worker", seq: st.seq, cycle, reasonFirstLine: firstLine.slice(0, 300),
+                            });
                             this.deps.state.audit(invalidPremiseSkip ? "loop.worker_skipped_invalid_premise" : "loop.worker_refusal", {
                                 sessionId,
                                 seq: st.seq,
@@ -1147,6 +1241,15 @@ export class OrchestratorLoop {
                     return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
                 }
             }
+            // beta.63 (convention-awareness Fix 2): FINAL-VERIFY check-script run.
+            // After the cycle's sub-tasks complete, run the repo's DECLARED check
+            // scripts (okf:check / lint / typecheck / test, gated by the allowlist)
+            // inline + blocking in the worktree. A non-zero exit is a REVISE-worthy
+            // finding (folds into this cycle's review as a convention finding), NOT a
+            // hard run-fail -- the code may be correct and only a bundle stale (PR
+            // #859). An unrunnable / network-needing / timed-out script is a non-fatal
+            // note. This catches conventions CI does not gate.
+            const conventionFindings = await this.runFinalVerifyChecks(sessionId, plan, cycle);
             this.setStatus(sessionId, "reviewing");
             await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
             let runtime;
@@ -1175,11 +1278,22 @@ export class OrchestratorLoop {
                 }
             }
             let report;
+            // beta.63 (Part B): adversary SDK call boundary logging.
+            const reviewStart = Date.now();
+            this.deps.interactionLog?.logSdkRequest(sessionId, {
+                role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                prompt: `adversary review cycle ${cycle} for ${brief.title}; checklist: ${(plan.reviewChecklist ?? []).join("; ")}`,
+            });
             try {
                 // beta.43: bound the adversary SDK call by adversary_timeout_seconds
                 // (previously declared in config but UNENFORCED on this await). A hung
                 // reviewer froze the run at the review phase with no timeout.
                 report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester }), this.deps.config.loop.adversary_timeout_seconds);
+                this.deps.interactionLog?.logSdkResponse(sessionId, {
+                    role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                    finishReason: report.verdict, costUsd: report.costUsd, durationMs: Date.now() - reviewStart,
+                    outputChars: report.summary ? report.summary.length : undefined, sdkSessionId: report.sdkSessionId,
+                });
                 // beta.62 (fix #1): the post-review persist awaits (recordSpend,
                 // saveReview) were OUTSIDE any try/catch. A throw there propagated
                 // uncaught out of runInner -> run()'s try/finally -> the external
@@ -1204,14 +1318,31 @@ export class OrchestratorLoop {
                 // trail never just stops mid-review. This is the telemetry that was
                 // missing -- without it a review crash is invisible until you read the
                 // sessions row's status column directly.
+                this.deps.interactionLog?.logSdkResponse(sessionId, {
+                    role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                    finishReason: isTimeout ? "timeout" : "error", durationMs: Date.now() - reviewStart,
+                });
+                this.deps.interactionLog?.log(sessionId, { event: "review_failed", phase: "review", cycle, isTimeout, error: String(err?.message ?? err) });
                 this.deps.state.audit("loop.review_failed", { sessionId, cycle, isTimeout, error: String(err?.message ?? err) }, sessionId);
                 this.deps.logger.error("[loop] adversary review crashed", { sessionId, cycle, isTimeout, err: String(err) });
                 // beta.62 (fix #2/#3): try to salvage the run rather than discard the
                 // completed, self-verified work. Returns a terminal outcome either way.
                 return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
             }
+            // beta.63 (Fix 2): fold the convention-check failures into the review as
+            // REVISE-worthy findings. If the adversary said `pass` but a declared
+            // check script failed, downgrade to `revise` so the worker gets another
+            // cycle to fix the convention violation (e.g. regenerate the OKF bundle).
+            // Never escalates to `block` (not a hard fail) -- max-cycles still ships.
+            if (conventionFindings.length > 0) {
+                report = {
+                    ...report,
+                    findings: [...report.findings, ...conventionFindings],
+                    verdict: report.verdict === "pass" ? "revise" : report.verdict,
+                };
+            }
             lastReview = report;
-            this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length }, sessionId);
+            this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length, conventionFindings: conventionFindings.length }, sessionId);
             const reactions = await this.deps.readReactions(sessionId);
             const decision = OrchestratorLoop.advance({
                 currentStatus: "reviewing",
@@ -1238,12 +1369,18 @@ export class OrchestratorLoop {
             return this.finaliseFailed(sessionId, "no_review_produced", cycle, totalCost);
         }
         let prUrl;
+        // beta.63 (Part A): mark finalize START so the watchdog sees the push/PR
+        // phase as live (this is exactly the b60 gap: quiet AFTER the last sub-task
+        // deadline but BEFORE/at finalize, with no watchdog covering it).
+        this.markProgress(sessionId, "finalize_start", "finalize", { cycle });
         try {
             prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
         }
         catch (err) {
             return this.finaliseFailed(sessionId, `pr_error: ${String(err)}`, cycle, totalCost);
         }
+        // beta.63 (Part A): PR opened -- mark progress before the terminal write.
+        this.markProgress(sessionId, "pr_opened", "finalize", { cycle });
         // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
         // the final review + whether we reached a clean pass. Persist it + the PR
         // number for the harness_merge_pr hard gate.
@@ -1391,6 +1528,72 @@ export class OrchestratorLoop {
             return floor;
         return Math.max(floor, Math.max(...observed));
     }
+    /**
+     * beta.63 (convention-awareness Fix 2): run the repo's DECLARED check scripts
+     * (from package.json#scripts, gated by verify.check_script_allowlist) inline +
+     * blocking in the worktree at the end of a cycle's execution. Returns
+     * REVISE-worthy `ReviewFinding[]` for scripts that exited non-zero; unrunnable/
+     * timed-out scripts produce a NON-FATAL note (no finding). Never throws.
+     * Emits `loop.convention_check_ran` per run and `loop.convention_check_failed`
+     * per non-zero exit.
+     */
+    async runFinalVerifyChecks(sessionId, plan, cycle) {
+        const vcfg = this.deps.config.verify;
+        if (!vcfg || vcfg.run_repo_check_scripts === false)
+            return [];
+        const worktree = plan.worktreePath;
+        if (!worktree)
+            return [];
+        let discovered;
+        try {
+            discovered = discoverCheckScripts(worktree);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] convention check discovery failed (non-fatal)", { sessionId, err: String(err) });
+            return [];
+        }
+        if (discovered.length === 0)
+            return [];
+        let results;
+        try {
+            results = runCheckScripts({
+                repoRoot: worktree,
+                discovered,
+                allowlist: vcfg.check_script_allowlist ?? ["okf:check", "lint", "typecheck", "test"],
+                timeoutSeconds: vcfg.check_script_timeout_seconds ?? 600,
+                runScript: this.deps.runCheckScript,
+            });
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] convention check run failed (non-fatal)", { sessionId, err: String(err) });
+            return [];
+        }
+        const findings = [];
+        for (const r of results) {
+            if (r.ran && r.exitCode === 0) {
+                this.deps.state.audit("loop.convention_check_ran", { sessionId, cycle, script: r.script, exitCode: r.exitCode }, sessionId);
+                this.deps.interactionLog?.log(sessionId, { event: "convention_check_ran", phase: "review", cycle, script: r.script, exitCode: r.exitCode });
+            }
+            else if (r.ran && r.exitCode !== 0) {
+                this.deps.state.audit("loop.convention_check_ran", { sessionId, cycle, script: r.script, exitCode: r.exitCode }, sessionId);
+                this.deps.state.audit("loop.convention_check_failed", { sessionId, cycle, script: r.script, exitCode: r.exitCode, outputTail: r.outputTail }, sessionId);
+                this.deps.interactionLog?.log(sessionId, { event: "convention_check_failed", phase: "review", cycle, script: r.script, exitCode: r.exitCode });
+                findings.push({
+                    dimension: "fit",
+                    severity: "medium",
+                    title: `Repo check script '${r.script}' failed (exit ${r.exitCode})`,
+                    detail: `The repo declares '${r.script}' as a convention check but it exited non-zero in the final-verify sweep. ` +
+                        `CI may not run it. Fix the violation (e.g. regenerate a stale bundle) or justify it. Output tail:\n${r.outputTail}`,
+                });
+            }
+            else {
+                // Not run: either not on the allowlist, or unrunnable/timed-out.
+                this.deps.state.audit("loop.convention_check_skipped", { sessionId, cycle, script: r.script, unrunnable: !!r.unrunnable, reason: r.skippedReason ?? "skipped" }, sessionId);
+                this.deps.interactionLog?.log(sessionId, { event: "convention_check_skipped", phase: "review", cycle, script: r.script, unrunnable: !!r.unrunnable, reason: r.skippedReason });
+            }
+        }
+        return findings;
+    }
     finaliseAbort(sessionId, reason, cycles, totalCostUsd) {
         this.setStatus(sessionId, "aborted");
         this.deps.state.audit("loop.aborted", { sessionId, reason }, sessionId);
@@ -1452,7 +1655,217 @@ export class OrchestratorLoop {
     finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd) {
         this.setStatus(sessionId, "failed");
         this.deps.state.audit("loop.failed_worktree_preserved", { sessionId, reason, cycles }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "failed_worktree_preserved", phase: "finalize", reason });
         return { status: "failed", sessionId, reason, cycles, totalCostUsd };
+    }
+    /**
+     * beta.63 (Part A): the LATE-STAGE STALL WATCHDOG.
+     *
+     * Origin: the b60 record-depth run got ~7 sub-tasks deep, hit a live
+     * env-wait-retry, then the loop STOPPED EMITTING with the session still
+     * `executing` and no terminal event -- for ~2 days -- until a container
+     * restart cleared it. beta.42 bound the re-entrancy guard, beta.60 bound the
+     * whole `runOne`; this binds the SESSION as a whole (and the finalize phase
+     * specifically), which those two do not cover.
+     *
+     * For every non-terminal executing/reviewing session whose last_progress_at
+     * froze past `loop.session_stall_seconds`, it:
+     *   1. emits a LOUD `loop.session_stalled {phase, msSinceProgress}` (logger +
+     *      audit + interaction log);
+     *   2. attempts bounded self-recovery -- if NO live loop-runner owns the
+     *      session (dead executor), re-tick the loop-runner (reuse resume
+     *      machinery: re-drive `run()` from the crystallised brief); if a live
+     *      runner IS present the session is genuinely busy -> leave it alone;
+     *   3. if unrecoverable AND `stall_auto_terminal` is on, transition to a
+     *      terminal `failed`(reason=stalled_no_progress) PRESERVING the worktree,
+     *      and -- when the branch already has commits and `stall_graceful_pr` is
+     *      on -- attempt a graceful push+PR flagged needs_human_review (beta.62
+     *      pattern) so a 95%-done deliverable is not evaporated the way b60 was.
+     *
+     * Idempotent + never throws. Safe to call from a gateway tick / maintenance
+     * cycle / interval. Returns the list of stalls handled (for tests + telemetry).
+     */
+    async checkStalls(now = Date.now()) {
+        const stallSeconds = this.deps.config.loop.session_stall_seconds ?? 1800;
+        const thresholdMs = Math.max(300, stallSeconds) * 1000;
+        const handled = [];
+        // Only NON-TERMINAL, actively-working phases can stall. `planning` is
+        // bounded by lead_timeout; `crystallising` happens pre-loop;
+        // `awaiting_clarification` is a resting pause (must NOT be reaped).
+        let rows;
+        try {
+            rows = this.deps.state.db
+                .prepare(`SELECT id, status, last_progress_at, updated_at, crystallised_prompt, repo, branch,
+                  worktree_path, requester, cycles_ran, cost_usd
+             FROM sessions
+            WHERE status IN ('executing', 'reviewing')`)
+                .all();
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] checkStalls query failed", { err: String(err) });
+            return handled;
+        }
+        for (const row of rows) {
+            const lastProgress = Math.max(row.last_progress_at ?? 0, row.updated_at ?? 0);
+            if (lastProgress <= 0)
+                continue; // never made progress -- not our case
+            const msSinceProgress = now - lastProgress;
+            if (msSinceProgress <= thresholdMs)
+                continue; // still within a legit phase
+            const phase = row.status;
+            // 1. LOUD stall event (logger + audit + interaction log).
+            this.deps.logger.error("[loop] SESSION STALLED (no forward progress)", {
+                sessionId: row.id, phase, msSinceProgress, stallSeconds,
+            });
+            this.deps.state.audit("loop.session_stalled", { sessionId: row.id, phase, msSinceProgress }, row.id);
+            this.deps.interactionLog?.log(row.id, { event: "session_stalled", phase: mapPhase(row.status), status: phase, msSinceProgress });
+            // 2. Bounded self-recovery: only if NO live loop-runner owns the session
+            //    (a live runner means it is genuinely busy, not wedged).
+            const liveRunners = runningSessionIds();
+            if (liveRunners.includes(row.id)) {
+                this.deps.state.audit("loop.session_stall_live_runner", { sessionId: row.id, phase, msSinceProgress }, row.id);
+                this.deps.interactionLog?.log(row.id, { event: "stall_live_runner", phase: mapPhase(row.status), msSinceProgress });
+                handled.push({ sessionId: row.id, phase, msSinceProgress, action: "skipped_live_runner" });
+                continue;
+            }
+            // Dead executor. Re-tick the loop-runner (reuse resume machinery) IF we
+            // have a crystallised brief to drive from.
+            if (row.crystallised_prompt) {
+                try {
+                    const brief = JSON.parse(row.crystallised_prompt);
+                    this.deps.state.audit("loop.session_stall_recovery", { sessionId: row.id, phase, action: "re_tick_loop_runner" }, row.id);
+                    this.deps.interactionLog?.log(row.id, { event: "stall_recovery", phase: mapPhase(row.status), action: "re_tick_loop_runner" });
+                    // Reset to planning so run() re-drives the phase (same as harness_
+                    // resume force). Bump last_progress_at so a second watchdog tick in
+                    // the recovery window does not double-fire.
+                    this.setStatus(row.id, "planning");
+                    void this.run(row.id, brief).catch((err) => {
+                        this.deps.logger.error("[loop] stall self-recovery re-tick failed", { sessionId: row.id, err: String(err) });
+                    });
+                    handled.push({ sessionId: row.id, phase, msSinceProgress, action: "re_ticked" });
+                    continue;
+                }
+                catch (err) {
+                    this.deps.logger.warn("[loop] stall recovery could not parse brief; falling through to terminal", { sessionId: row.id, err: String(err) });
+                }
+            }
+            // 3. Unrecoverable. Auto-terminal transition is behind its own sub-flag
+            //    so detection+logging can stay ON while auto-transition is toggled
+            //    OFF separately (per Carel).
+            if (this.deps.config.loop.stall_auto_terminal === false) {
+                this.deps.state.audit("loop.session_stall_no_auto_terminal", { sessionId: row.id, phase, msSinceProgress }, row.id);
+                this.deps.interactionLog?.log(row.id, { event: "stall_no_auto_terminal", phase: mapPhase(row.status), msSinceProgress });
+                handled.push({ sessionId: row.id, phase, msSinceProgress, action: "detected_only" });
+                continue;
+            }
+            const outcome = await this.finaliseStalled(row);
+            handled.push({ sessionId: row.id, phase, msSinceProgress, action: outcome });
+        }
+        return handled;
+    }
+    /**
+     * beta.63 (Part A): terminal handling of an UNRECOVERABLE stall. Never
+     * evaporate a near-done deliverable: if the branch has commits and
+     * `stall_graceful_pr` is on, attempt a graceful push+PR flagged
+     * needs_human_review (beta.62 pattern); otherwise fail terminally PRESERVING
+     * the worktree so the commit chain stays inspectable on disk. Never throws.
+     * Returns a short action string for telemetry.
+     */
+    async finaliseStalled(row) {
+        const sessionId = row.id;
+        const cycles = row.cycles_ran ?? 0;
+        const totalCost = row.cost_usd ?? 0;
+        const gracefulEnabled = this.deps.config.loop.stall_graceful_pr !== false;
+        // Does the branch have commits worth salvaging? Use the commit probe from
+        // buildVerifyProbes (commitMadeSince against an empty base = "any commit").
+        let hasCommits = false;
+        if (gracefulEnabled && row.repo && row.branch && row.worktree_path && this.deps.buildVerifyProbes && this.deps.worktreeHeadSha) {
+            try {
+                const head = await this.deps.worktreeHeadSha(row.worktree_path).catch(() => "");
+                const plan = JSON.parse(this.getPlanJson(sessionId) ?? "{}");
+                const probes = this.deps.buildVerifyProbes({ plan, requester: row.requester, worktreePath: row.worktree_path, baseSha: "" });
+                const made = await probes.commitMadeSince("").catch(() => ({ made: false, detail: "" }));
+                hasCommits = !!made.made && !!head;
+            }
+            catch (err) {
+                this.deps.logger.warn("[loop] stall commit probe failed", { sessionId, err: String(err) });
+            }
+        }
+        if (gracefulEnabled && hasCommits) {
+            const planJson = this.getPlanJson(sessionId);
+            if (planJson) {
+                try {
+                    const plan = JSON.parse(planJson);
+                    // Prefer the crystallised brief; synthesise a minimal one from the
+                    // plan when it is missing so a near-done deliverable is still salvaged
+                    // into a PR rather than evaporated.
+                    const brief = row.crystallised_prompt
+                        ? JSON.parse(row.crystallised_prompt)
+                        : { title: `stalled session ${sessionId}`, motivation: "Recovered from a stalled harness session.", acceptanceCriteria: ["(recovered)"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+                    const lastReview = this.getLastReview(sessionId);
+                    const reviewReport = lastReview ?? {
+                        verdict: "revise",
+                        findings: [],
+                        summary: "Session stalled before a final adversary verdict; opened for manual human review.",
+                        costUsd: 0,
+                        tokensIn: 0,
+                        tokensOut: 0,
+                    };
+                    const prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester: row.requester });
+                    const recReason = `The session STALLED (no forward progress past the watchdog window) before a final verdict, but the branch has commits. ` +
+                        `Opened for MANUAL human review -- there is no machine sign-off, so this is NOT auto-mergeable.`;
+                    const prNumber = parsePrNumber(prUrl);
+                    this.setStatus(sessionId, "done");
+                    this.deps.state.db
+                        .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
+                        .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
+                    this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaStallRecovery: true }, sessionId);
+                    this.deps.interactionLog?.log(sessionId, { event: "stall_graceful_pr", phase: "finalize", prUrl, prNumber });
+                    await this.tryReleaseWorktree(sessionId, row.repo, row.worktree_path, "shipped");
+                    return "graceful_pr";
+                }
+                catch (pushErr) {
+                    this.deps.state.audit("loop.stall_graceful_pr_failed", { sessionId, error: String(pushErr?.message ?? pushErr) }, sessionId);
+                    this.deps.interactionLog?.log(sessionId, { event: "stall_graceful_pr_failed", phase: "finalize", error: String(pushErr) });
+                    // fall through to preserve-worktree fail
+                }
+            }
+        }
+        // Not salvageable into a PR -- fail terminally but PRESERVE the worktree.
+        this.finaliseFailedPreserveWorktree(sessionId, "stalled_no_progress", cycles, totalCost);
+        return "failed_preserved";
+    }
+    /** beta.63: read the persisted lead plan JSON for a session (or null). */
+    getPlanJson(sessionId) {
+        try {
+            const r = this.deps.state.db.prepare(`SELECT lead_plan_json FROM sessions WHERE id = ?`).get(sessionId);
+            return r?.lead_plan_json ?? null;
+        }
+        catch {
+            return null;
+        }
+    }
+    /** beta.63: read the most recent completed review for a session (or undefined). */
+    getLastReview(sessionId) {
+        try {
+            const r = this.deps.state.db
+                .prepare(`SELECT verdict, findings, summary, cost_usd AS costUsd, sdk_session_id AS sdkSessionId FROM reviews WHERE session_id = ? ORDER BY cycle DESC LIMIT 1`)
+                .get(sessionId);
+            if (!r)
+                return undefined;
+            return {
+                verdict: r.verdict,
+                findings: JSON.parse(r.findings ?? "[]"),
+                summary: r.summary ?? "",
+                costUsd: r.costUsd ?? 0,
+                tokensIn: 0,
+                tokensOut: 0,
+                sdkSessionId: r.sdkSessionId ?? undefined,
+            };
+        }
+        catch {
+            return undefined;
+        }
     }
     /**
      * beta.62 (fix #2/#3): handle an adversary-review CRASH. The completed,
@@ -1539,6 +1952,22 @@ export class OrchestratorLoop {
         // Deliberately NO scheduleWorktreeReleaseForSession -- the worktree must
         // survive so the answered resume continues in place.
         return { status: "awaiting_clarification", sessionId, question, seq, cycles, totalCostUsd };
+    }
+}
+/**
+ * beta.63 (Part A/B): map a loop status to the interaction-log phase
+ * classification. Kept a free function so it is importable by tests.
+ */
+export function mapPhase(status) {
+    switch (status) {
+        case "crystallising": return "classify";
+        case "planning": return "plan";
+        case "executing": return "worker";
+        case "reviewing": return "review";
+        case "done":
+        case "failed":
+        case "aborted": return "finalize";
+        default: return "unknown";
     }
 }
 /** Median of a non-empty numeric array. */
