@@ -71,38 +71,91 @@ async function loadSdk() {
     return sdkCache;
 }
 /**
- * beta.64 (P0-1): consume a worker SDK message stream, applying the FIRST-TOKEN
- * WATCHDOG. Extracted from {@link runWorkerSdk} as an exported pure-ish helper
- * so the watchdog is directly testable with a fake async-iterable (no real SDK).
+ * beta.64 (P0-1) / beta.65 (P0): consume a worker SDK message stream, applying
+ * a SPLIT-PHASE watchdog. Extracted from {@link runWorkerSdk} as an exported
+ * pure-ish helper so the watchdog is directly testable with a fake
+ * async-iterable (no real SDK).
  *
  * `stream` is any async-iterable of SDK messages. `abort` is the shared
  * AbortController the caller passes to the SDK (so aborting here cancels the
- * real stream). When no first assistant content block (text/tool_use) arrives
- * within `firstTokenTimeoutSeconds` of stream open (system/init), the watchdog
- * fires, calls `abort.abort()`, and the returned stopReason is the DISTINCT
- * `first_token_timeout`. `now` is injectable for deterministic tests.
+ * real stream).
+ *
+ * beta.65 SPLIT-PHASE design (from live smoke #3 durable-log evidence: the hang
+ * has two distinct phases, and phase 1 is highly variable even on SUCCESS, so a
+ * single call-initiation timer would false-positive-abort a legit slow open):
+ *   - PHASE 1 (call-init -> stream-open): a timer ARMED AT CALL INITIATION (the
+ *     top of this function, BEFORE the `for await` yields anything), disarmed
+ *     when the stream opens (system/init). Bound by `streamOpenTimeoutSeconds`.
+ *     This is the beta.64 gap -- a PRE-STREAM POST hang (system/init NEVER
+ *     arrives; smoke #3) that beta.64's stream-open-armed watchdog never saw.
+ *   - PHASE 2 (stream-open -> first-token): a timer ARMED on system/init and
+ *     disarmed on the first assistant content block (text/tool_use). Bound by
+ *     `firstTokenTimeoutSeconds`. This is the beta.63 smoke #2 case beta.64
+ *     already covered -- preserved unchanged.
+ *
+ * EITHER timer firing => `abort.abort()` + the returned stopReason is the SAME
+ * DISTINCT `first_token_timeout`, so both route into the caller's existing
+ * fresh-session retry path. A phase-1 breach of a legit-but-slow open is thus a
+ * benign abort-and-retry-fresh, never a terminal fail on first breach.
+ * `now` is injectable for deterministic tests.
  */
 export async function consumeWorkerStream(stream, abort, opts) {
     const now = opts.now ?? Date.now;
+    // beta.65 (P0): CALL INITIATION timestamp. The PHASE-1 watchdog is armed
+    // relative to THIS moment (before the stream is even opened), and
+    // msToFirstToken is measured from here so the number stays meaningful even
+    // when the pre-stream POST is what hung.
+    const callStartedAt = now();
     let stopReason = "end_turn";
     let sdkSessionId = "";
     let costUsd = 0;
     let tokensIn = 0;
     let tokensOut = 0;
     const logLines = [];
-    // beta.64 (P0-1): first-token watchdog bookkeeping.
+    // beta.64 (P0-1) / beta.65 (P0): split-phase watchdog bookkeeping.
     let streamOpened = false;
-    let streamOpenedAt = 0;
     let msToFirstToken;
     let firstTokenSeen = false;
+    // Either phase firing sets this; both map to the SAME distinct stopReason so
+    // the caller's fresh-session retry path handles them identically.
     let firstTokenTimedOut = false;
     const firstTokenWindowMs = typeof opts.firstTokenTimeoutSeconds === "number" && opts.firstTokenTimeoutSeconds > 0
         ? opts.firstTokenTimeoutSeconds * 1000
         : 0;
-    // A SEPARATE watchdog timer, armed when the stream OPENS (system/init) and
-    // disarmed on the first assistant content block. Firing => abort with a
-    // distinct reason so the caller retries rather than blaming the outer
-    // worker timeout.
+    const streamOpenWindowMs = typeof opts.streamOpenTimeoutSeconds === "number" && opts.streamOpenTimeoutSeconds > 0
+        ? opts.streamOpenTimeoutSeconds * 1000
+        : 0;
+    // beta.65 (P0): PHASE-1 watchdog -- CALL INITIATION -> STREAM OPEN. Armed
+    // below at the top of the function (before the `for await`) and disarmed when
+    // system/init arrives. Fires when the stream never opens within the window --
+    // the pre-stream POST hang beta.64 could not see (it armed only on
+    // system/init). Firing => abort with the distinct first_token_timeout so a
+    // legit-but-slow open (smoke #3 seq-2: 422s) becomes a benign fresh-session
+    // retry, not a terminal fail.
+    let streamOpenTimer;
+    const armStreamOpenWatchdog = () => {
+        if (streamOpenWindowMs <= 0 || streamOpenTimer)
+            return;
+        streamOpenTimer = setTimeout(() => {
+            if (!streamOpened) {
+                firstTokenTimedOut = true;
+                abort.abort();
+            }
+        }, streamOpenWindowMs);
+        if (typeof streamOpenTimer.unref === "function") {
+            streamOpenTimer.unref();
+        }
+    };
+    const clearStreamOpenWatchdog = () => {
+        if (streamOpenTimer) {
+            clearTimeout(streamOpenTimer);
+            streamOpenTimer = undefined;
+        }
+    };
+    // beta.64 (P0-1) / beta.65 (P0): PHASE-2 watchdog -- STREAM OPEN -> FIRST
+    // TOKEN. Armed on system/init and disarmed on the first assistant content
+    // block. This is the beta.63 smoke #2 case beta.64 already covered; kept.
+    // Firing => abort with the same distinct first_token_timeout.
     let firstTokenTimer;
     const armFirstTokenWatchdog = () => {
         if (firstTokenWindowMs <= 0 || firstTokenTimer)
@@ -127,17 +180,26 @@ export async function consumeWorkerStream(stream, abort, opts) {
     // final message. Reset on each assistant message so we keep only the LAST
     // turn's text (the concluding statement / refusal), not the whole stream.
     let finalMessage = "";
+    // beta.65 (P0): ARM THE PHASE-1 (stream-open) WATCHDOG AT CALL INITIATION --
+    // before the `for await` yields anything. This is the core beta.65 fix: the
+    // phase-1 timer fires if the stream never OPENS (no system/init) within its
+    // window, covering the pre-stream POST hang that beta.64 could not detect (it
+    // armed only the phase-2 timer, inside the system/init branch below).
+    armStreamOpenWatchdog();
     try {
         for await (const message of stream) {
             logLines.push(JSON.stringify(message).slice(0, 300));
             if (message.type === "system" && message.subtype === "init") {
                 sdkSessionId = message.session_id;
-                // beta.64 (P0-1): stream OPENED. Record the open time and ARM the
-                // first-token watchdog -- the interval between open and the first
-                // assistant content block is exactly where beta.63 smoke #2 hung.
+                // beta.64 (P0-1) / beta.65 (P0): stream OPENED. This is the phase-1 ->
+                // phase-2 boundary: DISARM the phase-1 (stream-open) watchdog and ARM
+                // the phase-2 (first-token) watchdog. `streamOpened` also drives the
+                // sdk_stream_opened diagnostic event and lets operators tell a
+                // POST-hang (streamOpened=false) from a stream-stall (streamOpened=true)
+                // apart in the durable log.
                 if (!streamOpened) {
                     streamOpened = true;
-                    streamOpenedAt = now();
+                    clearStreamOpenWatchdog();
                     armFirstTokenWatchdog();
                 }
             }
@@ -149,7 +211,12 @@ export async function consumeWorkerStream(stream, abort, opts) {
                     const hasContentBlock = Array.isArray(c) && c.some((b) => b?.type === "text" || b?.type === "tool_use");
                     if (hasContentBlock) {
                         firstTokenSeen = true;
-                        msToFirstToken = streamOpenedAt > 0 ? now() - streamOpenedAt : undefined;
+                        // beta.65 (P0): measure from CALL INITIATION, not stream open, so
+                        // the value spans BOTH phases and stays defined even for a stream
+                        // whose system/init we never observed (a well-behaved stream always
+                        // opens first, but a fake/edge stream might yield a block directly).
+                        msToFirstToken = now() - callStartedAt;
+                        clearStreamOpenWatchdog();
                         clearFirstTokenWatchdog();
                     }
                 }
@@ -173,15 +240,16 @@ export async function consumeWorkerStream(stream, abort, opts) {
                 tokensOut = message.usage?.output_tokens ?? 0;
             }
         }
-        // beta.64 (P0-1): the stream ENDED. If the watchdog already fired (a fake
-        // stream that yields no assistant message and then completes), classify it.
+        // beta.64 (P0-1) / beta.65 (P0): the stream ENDED. If EITHER phase watchdog
+        // already fired (a fake stream that yields nothing and then completes),
+        // classify it as the distinct first_token_timeout.
         if (firstTokenTimedOut)
             stopReason = "first_token_timeout";
     }
     catch (err) {
-        // beta.64 (P0-1): a first-token-watchdog abort is a DISTINCT class from the
-        // outer worker timeout -- it means the stream opened (or was opening) but
-        // produced no first token, which the caller retries on a fresh session.
+        // beta.64 (P0-1) / beta.65 (P0): a phase-1 (stream never opened) OR phase-2
+        // (opened, no first token) watchdog abort is a DISTINCT class from the outer
+        // worker timeout -- the caller retries it on a fresh session.
         if (firstTokenTimedOut)
             stopReason = "first_token_timeout";
         else if (abort.signal.aborted)
@@ -191,6 +259,7 @@ export async function consumeWorkerStream(stream, abort, opts) {
         logLines.push(`ERROR: ${String(err)}`);
     }
     finally {
+        clearStreamOpenWatchdog();
         clearFirstTokenWatchdog();
     }
     return {
@@ -233,6 +302,7 @@ export async function runWorkerSdk(params) {
         });
         return await consumeWorkerStream(stream, abort, {
             firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
+            streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
         });
     }
     finally {

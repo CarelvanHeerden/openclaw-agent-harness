@@ -101,7 +101,8 @@ test("beta64/P0-1: disabled watchdog (window<=0) never fires first_token_timeout
 test("beta64/P0-1: sdk_first_token_timeout_seconds in config.ts + default 90 + clamp (source)", () => {
   const src = S("src/config.ts");
   assert.match(src, /sdk_first_token_timeout_seconds\?: number/);
-  assert.match(src, /sdk_first_token_timeout_seconds: 90/);
+  // beta.65: phase-2 default lowered 90 -> 30 in the split-phase redesign.
+  assert.match(src, /sdk_first_token_timeout_seconds: 30/);
   assert.match(src, /merged\.loop\.sdk_first_token_timeout_seconds < 10/);
   assert.match(src, /merged\.loop\.sdk_first_token_timeout_seconds > 1800/);
 });
@@ -111,7 +112,7 @@ test("beta64/P0-1: sdk_first_token_timeout_seconds declared in manifest configSc
   const loop = m.configSchema.properties.loop.properties;
   assert.ok(loop.sdk_first_token_timeout_seconds, "must be declared or additionalProperties:false rejects the config");
   assert.equal(loop.sdk_first_token_timeout_seconds.type, "integer");
-  assert.equal(loop.sdk_first_token_timeout_seconds.default, 90);
+  assert.equal(loop.sdk_first_token_timeout_seconds.default, 30); // beta.65: lowered 90 -> 30
   assert.equal(loop.sdk_first_token_timeout_seconds.minimum, 10);
   assert.equal(loop.sdk_first_token_timeout_seconds.maximum, 1800);
 });
@@ -135,7 +136,8 @@ test("beta64/P0-1: runWorkerSdk threads firstTokenTimeoutSeconds into consumeWor
 test("beta64/P0-1: sonnet-worker maps first_token_timeout status + carries streamOpened/msToFirstToken (source)", () => {
   const src = S("src/orchestrator/sonnet-worker.ts");
   assert.match(src, /"first_token_timeout"/);
-  assert.match(src, /firstTokenTimeoutSeconds: deps\.config\.loop\.sdk_first_token_timeout_seconds \?\? 90/);
+  // beta.65: phase-2 default lowered 90 -> 30 in the split-phase redesign.
+  assert.match(src, /firstTokenTimeoutSeconds: deps\.config\.loop\.sdk_first_token_timeout_seconds \?\? 30/);
   assert.match(src, /streamOpened: sdkResult\.streamOpened/);
   assert.match(src, /msToFirstToken: sdkResult\.msToFirstToken/);
 });

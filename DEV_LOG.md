@@ -168,3 +168,40 @@ Built in dependency order (log first — later parts write events into it).
 ## Verification
 - `npx tsc --noEmit`: clean. `npm run build`: exit 0. Full suite: **699 → 724 tests (+25), all pass**. Smoke: `Smoke OK: 15 tools` (no new tool this beta).
 - Conservative fail-safe choices: prefer retry → scripted fallback → best-effort reviewable PR over discarding work; a scripted-fallback failure with best_effort_verify off falls through to terminal (does not silently ship); best-effort verify requires BOTH prior-green AND clean in-scope diff (declines conservatively when the diff can't be computed).
+
+# beta.65 — fix beta.64 first-token watchdog with a SPLIT-PHASE design (cover pre-stream POST hang without false-aborting a legit slow open)
+
+**Author:** Clark (subagent for Carel) · 2026-07-23 · builds on beta.64 (0ba84e4)
+**Design revision:** Original task said "arm a single watchdog at call-initiation." Live smoke #3 durable-log evidence (surfaced by beta.64's own sdk_stream_opened/sdk_first_token events) revised the fix shape: the hang has TWO phases and phase 1 is highly variable even on SUCCESS, so a single call-init timer would false-positive-abort a legit slow open. Switched to a SPLIT-PHASE watchdog.
+
+## Evidence (smoke #3 durable log)
+- Phase 1 (sdk_request → sdk_stream_opened, pre-stream/connection): seq-1 47s, **seq-2 422s AND SUCCEEDED**, seq-3 hung >1800s (the failure). Highly variable.
+- Phase 2 (sdk_stream_opened → sdk_first_token): 4ms / 5ms — always near-instant.
+- beta.64 armed its watchdog only on stream-open, so phase 1 was uncovered → seq-3's pre-stream POST hang sat the full 1800s with no sdk_stream_opened, no abort, no retry.
+
+## P0 — split-phase watchdog (src/adapters/claude-sdk.ts `consumeWorkerStream`)
+- **Phase-1 timer** `armStreamOpenWatchdog()`: armed at CALL INITIATION, at the TOP of the function BEFORE the `for await` (the key moved line: `armStreamOpenWatchdog();` immediately before `try { for await (const message of stream) {`). Fires when `!streamOpened` within the window. Disarmed on system/init. Bound by NEW `loop.sdk_stream_open_timeout_seconds` (default 120, clamp [10,600]).
+- **Phase-2 timer** `armFirstTokenWatchdog()`: unchanged beta.64 behaviour — armed on system/init (phase-1→phase-2 boundary), disarmed on first assistant content block, fires when `!firstTokenSeen`. Bound by EXISTING `loop.sdk_first_token_timeout_seconds`, default LOWERED 90 → 30.
+- Both set the SAME `firstTokenTimedOut` flag → stopReason `first_token_timeout` + `abort.abort()` → the UNCHANGED downstream chain (`runWorkerCallWithRetry` → one fresh-session retry → `tryScriptedVerifyFallback` → `tryBestEffortVerify` → `needs_human_review` PR).
+- False-positive-by-design is CORRECT: a phase-1 breach of a legit slow open (seq-2's 422s) aborts + retries fresh; a cold/unpooled open is fast on retry; a one-retry cost beats hanging. Never terminal on first breach.
+- `msToFirstToken` now spans both phases (measured from call initiation); removed the dead `streamOpenedAt` local.
+- Diagnostics kept: sdk_stream_opened (system/init), sdk_first_token (first block). `loop.worker_first_token_timeout` audit now carries `phase` (phase1_stream_open | phase2_first_token) + both window values.
+
+## Config (BOTH src/config.ts + manifest configSchema — additionalProperties:false)
+- NEW `loop.sdk_stream_open_timeout_seconds` (default 120, clamp [10,600]) — phase-1 window.
+- CHANGED default of existing `loop.sdk_first_token_timeout_seconds` 90 → 30 — phase-2 window (clamp unchanged).
+- Threaded: sonnet-worker → runWorkerModel → runWorkerSdk (spread) → consumeWorkerStream.
+
+## Out of scope (per Carel)
+- HTTP connection-pooling/keepalive changes — separate P1 investigation Carel handles. This beta is ONLY the split-phase watchdog + the two config knobs.
+- (Original-task P1 costZeroStallSuspected action also deferred: redundant with the phase-1 fix and would risk the loop hot path; no new config key.)
+
+## Tests (tests/beta65-first-token-arming.test.mjs, 13 tests)
+- KEY: stream that NEVER opens within phase-1 window → first_token_timeout + abort (smoke #3) + proof beta.64's phase-1-disabled shape does NOT catch it.
+- Regression guard: stream opens but no first token within phase-2 window → first_token_timeout.
+- NO false abort: legit slow open WITHIN phase-1 window then instant first-token → clean end_turn, msToFirstToken ≥ open delay.
+- Source: BOTH timers exist; phase-1 armed BEFORE the for-await, phase-2 inside it; correct fire predicates; config/manifest/threading/split-phase-audit.
+- Also updated three beta.64 source-assertions that hard-pinned the old 90 default (now 30).
+
+## Verification
+- `npx tsc --noEmit`: clean. `npm run build`: exit 0 (dist landed). Full suite: **724 → 737 tests (+13), all pass**. Smoke: `Smoke OK: 15 tools` (no new tool).

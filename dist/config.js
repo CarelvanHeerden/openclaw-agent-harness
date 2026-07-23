@@ -64,7 +64,8 @@ const DEFAULTS = {
         session_stall_seconds: 1800,
         stall_auto_terminal: true,
         stall_graceful_pr: true,
-        sdk_first_token_timeout_seconds: 90,
+        sdk_first_token_timeout_seconds: 30,
+        sdk_stream_open_timeout_seconds: 120,
         worker_timeout_retry_enabled: true,
         best_effort_verify: true,
         scripted_verify_fallback: true,
@@ -256,15 +257,24 @@ export function parseHarnessConfig(input) {
     if (typeof merged.verify.check_script_timeout_seconds === "number" && merged.verify.check_script_timeout_seconds < 10) {
         merged.verify.check_script_timeout_seconds = 10;
     }
-    // beta.64 (P0-1): clamp the first-token watchdog window. Must be long enough
-    // that a healthy but slow stream open (cold model, long context) is not
-    // mis-detected, but far shorter than the outer worker timeout so a genuine
-    // no-first-token hang is caught in seconds, not the full 1800s. Clamp [10, 1800].
+    // beta.64 (P0-1) / beta.65 (P0): clamp the PHASE-2 first-token watchdog window
+    // (stream-open -> first-token). Phase 2 is always <10ms on success, so 30s is
+    // generous; kept clamp [10, 1800] for operator flexibility.
     if (typeof merged.loop.sdk_first_token_timeout_seconds === "number") {
         if (merged.loop.sdk_first_token_timeout_seconds < 10)
             merged.loop.sdk_first_token_timeout_seconds = 10;
         if (merged.loop.sdk_first_token_timeout_seconds > 1800)
             merged.loop.sdk_first_token_timeout_seconds = 1800;
+    }
+    // beta.65 (P0): clamp the PHASE-1 stream-open watchdog window (call-init ->
+    // stream-open). Phase 1 is highly variable even on success (seq-2 legit 422s),
+    // so the window is longer than phase 2, but a breach is a benign fresh-session
+    // retry, not a terminal fail. Clamp [10, 600].
+    if (typeof merged.loop.sdk_stream_open_timeout_seconds === "number") {
+        if (merged.loop.sdk_stream_open_timeout_seconds < 10)
+            merged.loop.sdk_stream_open_timeout_seconds = 10;
+        if (merged.loop.sdk_stream_open_timeout_seconds > 600)
+            merged.loop.sdk_stream_open_timeout_seconds = 600;
     }
     if (merged.vercel.enabled) {
         if (!merged.vercel.credential_service)

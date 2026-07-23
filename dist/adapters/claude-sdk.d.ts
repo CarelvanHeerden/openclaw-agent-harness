@@ -34,18 +34,34 @@ export interface RunWorkerParams {
     /** Anthropic API key. Injected into the SDK subprocess env as ANTHROPIC_API_KEY so it never falls back to `/login`. */
     apiKey?: string;
     /**
-     * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer
-     * from `timeoutSeconds`: if the SDK stream is opened (system/init arrives)
-     * but NO first assistant content block (text or tool_use) is delivered
-     * within this window, the stream is aborted with the DISTINCT stopReason
-     * `first_token_timeout` so the caller can RETRY on a fresh session. This is
-     * the exact beta.63 smoke #2 hang: the streaming call was initiated but the
-     * model never produced a first token, and the harness sat for the full
-     * `worker_timeout_seconds` (1800s) with no inner-turn stall detection.
-     * Undefined/<=0 disables the first-token watchdog (falls back to pre-beta.64
-     * behaviour: only the outer timeout). Default supplied by the loop (90s).
+     * beta.64 (P0-1) / beta.65 (P0): PHASE-2 watchdog window (seconds). A SEPARATE
+     * timer from `timeoutSeconds`, armed when the SDK stream OPENS (system/init)
+     * and disarmed on the first assistant content block (text/tool_use). No first
+     * content block within this window => abort with the DISTINCT stopReason
+     * `first_token_timeout` so the caller RETRIES on a fresh session. This is the
+     * beta.63 smoke #2 case beta.64 already covered. beta.65 lowered the loop
+     * default 90 -> 30 (phase 2 is always <10ms on success). Undefined/<=0
+     * disables the phase-2 watchdog. Default supplied by the loop (30s).
      */
     firstTokenTimeoutSeconds?: number;
+    /**
+     * beta.65 (P0): PHASE-1 watchdog window (seconds). A SEPARATE timer from
+     * `timeoutSeconds`, armed from CALL INITIATION (the moment consumeWorkerStream
+     * begins, BEFORE the stream is even opened) and disarmed when the stream opens
+     * (system/init). If the stream NEVER opens within this window, the call is
+     * aborted with the same DISTINCT stopReason `first_token_timeout`.
+     *
+     * This closes the beta.64 gap: beta.64 armed the first-token watchdog only on
+     * stream-open, so a PRE-STREAM POST hang (the SDK streaming POST never returns
+     * its first byte -- smoke #3: 28+min silence, no sdk_stream_opened, no abort)
+     * was NEVER covered and sat for the full `worker_timeout_seconds` (1800s).
+     * Phase 1 is highly variable even on SUCCESS (smoke #3: 47s / 422s-succeeded /
+     * >1800s-hung), so a legit-but-slow open WILL breach this window -- CORRECT:
+     * the abort routes into the SAME first_token_timeout -> one-fresh-session
+     * retry path (a cold/unpooled open is fast on retry). Undefined/<=0 disables
+     * the phase-1 watchdog. Default supplied by the loop (120s).
+     */
+    streamOpenTimeoutSeconds?: number;
 }
 export interface RunWorkerResult {
     sdkSessionId: string;
@@ -70,26 +86,48 @@ export interface RunWorkerResult {
      */
     streamOpened: boolean;
     /**
-     * beta.64 (P0-1): ms from stream open (system/init) to the FIRST assistant
-     * content block (text or tool_use). Undefined when no first token ever
-     * arrived (the first_token_timeout hang) or when the stream never opened.
+     * beta.64 (P0-1) / beta.65 (P0): ms from CALL INITIATION (the top of
+     * consumeWorkerStream) to the FIRST assistant content block (text or
+     * tool_use) -- i.e. spanning BOTH phase 1 (call-init -> stream-open) and
+     * phase 2 (stream-open -> first-token). beta.64 measured only phase 2 (from
+     * stream open); beta.65 measures from call initiation so the value stays
+     * meaningful even when the pre-stream POST is what hung. Undefined when no
+     * first token ever arrived (the first_token_timeout hang).
      */
     msToFirstToken?: number;
 }
 /**
- * beta.64 (P0-1): consume a worker SDK message stream, applying the FIRST-TOKEN
- * WATCHDOG. Extracted from {@link runWorkerSdk} as an exported pure-ish helper
- * so the watchdog is directly testable with a fake async-iterable (no real SDK).
+ * beta.64 (P0-1) / beta.65 (P0): consume a worker SDK message stream, applying
+ * a SPLIT-PHASE watchdog. Extracted from {@link runWorkerSdk} as an exported
+ * pure-ish helper so the watchdog is directly testable with a fake
+ * async-iterable (no real SDK).
  *
  * `stream` is any async-iterable of SDK messages. `abort` is the shared
  * AbortController the caller passes to the SDK (so aborting here cancels the
- * real stream). When no first assistant content block (text/tool_use) arrives
- * within `firstTokenTimeoutSeconds` of stream open (system/init), the watchdog
- * fires, calls `abort.abort()`, and the returned stopReason is the DISTINCT
- * `first_token_timeout`. `now` is injectable for deterministic tests.
+ * real stream).
+ *
+ * beta.65 SPLIT-PHASE design (from live smoke #3 durable-log evidence: the hang
+ * has two distinct phases, and phase 1 is highly variable even on SUCCESS, so a
+ * single call-initiation timer would false-positive-abort a legit slow open):
+ *   - PHASE 1 (call-init -> stream-open): a timer ARMED AT CALL INITIATION (the
+ *     top of this function, BEFORE the `for await` yields anything), disarmed
+ *     when the stream opens (system/init). Bound by `streamOpenTimeoutSeconds`.
+ *     This is the beta.64 gap -- a PRE-STREAM POST hang (system/init NEVER
+ *     arrives; smoke #3) that beta.64's stream-open-armed watchdog never saw.
+ *   - PHASE 2 (stream-open -> first-token): a timer ARMED on system/init and
+ *     disarmed on the first assistant content block (text/tool_use). Bound by
+ *     `firstTokenTimeoutSeconds`. This is the beta.63 smoke #2 case beta.64
+ *     already covered -- preserved unchanged.
+ *
+ * EITHER timer firing => `abort.abort()` + the returned stopReason is the SAME
+ * DISTINCT `first_token_timeout`, so both route into the caller's existing
+ * fresh-session retry path. A phase-1 breach of a legit-but-slow open is thus a
+ * benign abort-and-retry-fresh, never a terminal fail on first breach.
+ * `now` is injectable for deterministic tests.
  */
 export declare function consumeWorkerStream(stream: AsyncIterable<any>, abort: AbortController, opts: {
     firstTokenTimeoutSeconds?: number;
+    streamOpenTimeoutSeconds?: number;
     now?: () => number;
 }): Promise<Omit<RunWorkerResult, never>>;
 export declare function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult>;
