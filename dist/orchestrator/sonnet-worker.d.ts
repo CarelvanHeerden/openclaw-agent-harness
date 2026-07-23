@@ -16,7 +16,7 @@
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./fable5-lead.js";
 export interface WorkerResult {
-    status: "completed" | "failed" | "timeout";
+    status: "completed" | "failed" | "timeout" | "first_token_timeout";
     filesChanged: string[];
     commitSha?: string;
     sdkSessionId?: string;
@@ -40,6 +40,17 @@ export interface WorkerResult {
      * The retry-with-context logic (P1b) branches on whether this is non-empty.
      */
     uncommittedFiles?: string[];
+    /**
+     * beta.64 (P0-1): true once the SDK stream opened (system/init arrived).
+     * Threaded up so the loop can emit `sdk_stream_opened` and distinguish a
+     * POST-that-never-opened from a stream-opened-but-no-tokens hang.
+     */
+    streamOpened?: boolean;
+    /**
+     * beta.64 (P0-1): ms from stream open to first assistant content block.
+     * Undefined when no first token ever arrived (the first_token_timeout hang).
+     */
+    msToFirstToken?: number;
 }
 export interface WorkerDeps {
     config: HarnessConfig;
@@ -61,18 +72,22 @@ export interface WorkerDeps {
         permissionMode: HarnessConfig["safety"]["worker_permission_mode"];
         resumeSessionId?: string;
         timeoutSeconds: number;
+        /** beta.64 (P0-1): first-token watchdog window; threaded to runWorkerSdk. */
+        firstTokenTimeoutSeconds?: number;
         canUseTool: (toolName: string, toolInput: unknown) => Promise<{
             allow: boolean;
             reason?: string;
         }>;
     }) => Promise<{
         sdkSessionId: string;
-        stopReason: "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled";
+        stopReason: "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled" | "first_token_timeout";
         costUsd: number;
         tokensIn: number;
         tokensOut: number;
         logsExcerpt: string;
         finalMessage?: string;
+        streamOpened?: boolean;
+        msToFirstToken?: number;
     }>;
     /**
      * Injected git operations. Wraps `git -C <worktree>` calls.

@@ -33,10 +33,23 @@ export interface RunWorkerParams {
     }>;
     /** Anthropic API key. Injected into the SDK subprocess env as ANTHROPIC_API_KEY so it never falls back to `/login`. */
     apiKey?: string;
+    /**
+     * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer
+     * from `timeoutSeconds`: if the SDK stream is opened (system/init arrives)
+     * but NO first assistant content block (text or tool_use) is delivered
+     * within this window, the stream is aborted with the DISTINCT stopReason
+     * `first_token_timeout` so the caller can RETRY on a fresh session. This is
+     * the exact beta.63 smoke #2 hang: the streaming call was initiated but the
+     * model never produced a first token, and the harness sat for the full
+     * `worker_timeout_seconds` (1800s) with no inner-turn stall detection.
+     * Undefined/<=0 disables the first-token watchdog (falls back to pre-beta.64
+     * behaviour: only the outer timeout). Default supplied by the loop (90s).
+     */
+    firstTokenTimeoutSeconds?: number;
 }
 export interface RunWorkerResult {
     sdkSessionId: string;
-    stopReason: "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled";
+    stopReason: "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled" | "first_token_timeout";
     costUsd: number;
     tokensIn: number;
     tokensOut: number;
@@ -48,7 +61,37 @@ export interface RunWorkerResult {
      * string when the worker produced no text (pure tool turn).
      */
     finalMessage: string;
+    /**
+     * beta.64 (P0-1): true once the SDK stream opened (a system/init message
+     * carrying session_id arrived). Lets the caller distinguish "the POST hung
+     * before the stream ever opened" (streamOpened=false) from "the stream
+     * opened but no tokens were produced" (streamOpened=true, msToFirstToken
+     * undefined) -- the two failure modes beta.63 smoke #2 could not tell apart.
+     */
+    streamOpened: boolean;
+    /**
+     * beta.64 (P0-1): ms from stream open (system/init) to the FIRST assistant
+     * content block (text or tool_use). Undefined when no first token ever
+     * arrived (the first_token_timeout hang) or when the stream never opened.
+     */
+    msToFirstToken?: number;
 }
+/**
+ * beta.64 (P0-1): consume a worker SDK message stream, applying the FIRST-TOKEN
+ * WATCHDOG. Extracted from {@link runWorkerSdk} as an exported pure-ish helper
+ * so the watchdog is directly testable with a fake async-iterable (no real SDK).
+ *
+ * `stream` is any async-iterable of SDK messages. `abort` is the shared
+ * AbortController the caller passes to the SDK (so aborting here cancels the
+ * real stream). When no first assistant content block (text/tool_use) arrives
+ * within `firstTokenTimeoutSeconds` of stream open (system/init), the watchdog
+ * fires, calls `abort.abort()`, and the returned stopReason is the DISTINCT
+ * `first_token_timeout`. `now` is injectable for deterministic tests.
+ */
+export declare function consumeWorkerStream(stream: AsyncIterable<any>, abort: AbortController, opts: {
+    firstTokenTimeoutSeconds?: number;
+    now?: () => number;
+}): Promise<Omit<RunWorkerResult, never>>;
 export declare function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult>;
 /**
  * Extract the JSON contract from a model's raw output.

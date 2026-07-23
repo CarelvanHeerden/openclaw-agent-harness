@@ -25,6 +25,18 @@ import type { LeadPlan, LeadPlanSubTask } from "./fable5-lead.js";
 import type { ReviewReport } from "./fable5-adversary.js";
 import type { WorkerResult } from "./sonnet-worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
+/**
+ * beta.64 (P0-3): parse the file paths out of a `git diff --stat base..HEAD`
+ * output. Each stat line looks like ` path/to/file.ts | 12 ++--`. The trailing
+ * ` N files changed, ...` summary line is skipped. Pure/deterministic.
+ */
+export declare function parseDiffStatPaths(diffStat: string): string[];
+/**
+ * beta.64 (P0-3): collect the union of `filesLikelyTouched` across all of a
+ * plan's sub-tasks -- the "expected files" set for the best-effort clean-diff
+ * check. Pure/deterministic.
+ */
+export declare function collectExpectedFiles(plan: LeadPlan): string[];
 import { type VerifyProbes } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 export type LoopStatus = "crystallising" | "planning" | "executing" | "reviewing" | "done" | "failed" | "aborted" | "awaiting_clarification";
@@ -197,6 +209,24 @@ export interface OrchestratorDeps {
     /** Read the current HEAD sha of a worktree (for commit_made verification). */
     worktreeHeadSha?: (worktreePath: string) => Promise<string>;
     /**
+     * beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree, for the
+     * best-effort-verify clean-diff check and the scripted-verifier fallback's
+     * informational diff. Optional; when absent the clean-diff check treats the
+     * diff as unavailable (best-effort verify then declines, conservatively).
+     */
+    gitDiffStat?: (worktreePath: string, base: string) => Promise<string>;
+    /**
+     * beta.64 (P0-4): run `npx tsc --noEmit` in the worktree for the scripted
+     * verifier fallback. Returns `{ ok, output }` (ok=true means exit 0). Optional;
+     * when absent (or the repo has no tsconfig), the tsc step is skipped and the
+     * fallback verdict rests on the allowlisted repo check scripts alone. Injected
+     * in tests so no real tsc process spawns.
+     */
+    runScriptedTsc?: (worktreePath: string, timeoutMs: number) => Promise<{
+        ok: boolean;
+        output: string;
+    }>;
+    /**
      * beta.16 fix #3 + beta.17 correctness: release the per-session git
      * worktree on terminal transitions (`loop.shipped`, `loop.aborted`, hard
      * failure). Prior to beta.16 the worktree stayed live until the PR
@@ -344,6 +374,46 @@ export declare class OrchestratorLoop {
      * cost as a proxy, with a conservative floor.
      */
     private estimateReviewCost;
+    /**
+     * beta.64 (P0-1 + P0-2): run ONE worker sub-task call bounded by
+     * worker_timeout_seconds, emit the sdk_stream_opened / sdk_first_token /
+     * sdk_response interaction-log events (P0-1), and RETRY ONCE on a FRESH SDK
+     * session when the attempt times out (P0-2). A timeout is either:
+     *   - the outer withTimeout throwing WorkerTimeoutError (full-turn worker
+     *     timeout), OR
+     *   - the inner first-token watchdog returning result.status ===
+     *     'first_token_timeout' (stream opened, ZERO tokens -- beta.63 smoke #2).
+     * Returns `{outcome:'ok', result}` on a usable turn (even a non-completed
+     * end_turn -- the caller's verification handles that), or `{outcome:'timeout',
+     * summary, failErr}` when the (possibly retried) call still timed out.
+     * `worker_timeout_retry_enabled: false` disables the retry (still audits the
+     * timeout). Max 1 retry per sub-task, mirroring the beta.53 env-wait pattern.
+     */
+    private runWorkerCallWithRetry;
+    /**
+     * beta.64 (P0-4): SCRIPTED VERIFIER FALLBACK for an observe-mode VERIFY
+     * sub-task whose LLM turn timed out. A "run tsc, diff, check scripts" verify
+     * step needs no model: run `npx tsc --noEmit`, `git diff --stat <base>..HEAD`,
+     * and the allowlisted repo check scripts (reusing the beta.63 discover/run
+     * plumbing) deterministically, and report pass/fail as if the sub-task ran.
+     * Returns 'pass' (all deterministic checks green), 'fail' (a check failed), or
+     * 'unavailable' (feature disabled, or nothing runnable -> caller escalates to
+     * best-effort verify). Never throws. Gated by loop.scripted_verify_fallback.
+     */
+    private tryScriptedVerifyFallback;
+    /**
+     * beta.64 (P0-3): BEST-EFFORT VERIFY. Honors the beta.60 "Carel must get a
+     * reviewable PR" rule. When an observe-mode VERIFY sub-task times out (after
+     * the P0-2 retry AND the P0-4 scripted fallback declined/was unavailable),
+     * AND the prior mutate sub-task's verify_probe is GREEN, AND git diff-stat
+     * shows only expected files touched, do NOT discard the work: push the branch
+     * and open the PR flagged merge_recommendation=needs_human_review (reusing the
+     * beta.62 graceful-PR machinery), marking the run verify_skipped. Returns true
+     * when a graceful PR was opened (run is terminal `done`), false otherwise (the
+     * caller falls through to terminal fail). Gated by loop.best_effort_verify.
+     * Never throws.
+     */
+    private tryBestEffortVerify;
     /**
      * beta.63 (convention-awareness Fix 2): run the repo's DECLARED check scripts
      * (from package.json#scripts, gated by verify.check_script_allowlist) inline +

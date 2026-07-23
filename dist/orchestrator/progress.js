@@ -53,7 +53,23 @@ function round(n, dp = 4) {
  * Build a progress snapshot for a session. Pure read; never mutates state.
  * `limit` bounds the recent-event tail (default 12).
  */
-export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 1800) {
+/**
+ * beta.64 (P1-5): audit event names that count as SDK/worker ACTIVITY -- the
+ * last one's timestamp seeds msSinceLastSdkActivity. subtask_start (a
+ * loop.progress marker) is the anchor at the START of a worker turn, so during
+ * an inner-turn hang this timestamp freezes and the derived age keeps growing.
+ */
+const SDK_ACTIVITY_EVENTS = new Set([
+    "loop.progress",
+    "loop.worker_end_turn",
+    "loop.subtask_verification",
+    "loop.subtask_observe_completed",
+    "loop.worker_timeout_retry",
+    "loop.worker_timeout",
+    "loop.worker_first_token_timeout",
+    "loop.review",
+]);
+export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 1800, sdkActivityStallSeconds = 90) {
     const empty = (found) => ({
         ok: true,
         found,
@@ -73,6 +89,8 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         lastEventAt: null,
         msSinceProgress: null,
         stalled: false,
+        msSinceLastSdkActivity: null,
+        costZeroStallSuspected: false,
         recentEvents: [],
         headline: found ? "" : `No harness session with id ${sessionId}.`,
         needsClarification: false,
@@ -144,9 +162,33 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     const lastProgressAt = row.last_progress_at ?? null;
     const msSinceProgress = lastProgressAt != null ? Date.now() - lastProgressAt : null;
     const ACTIVE_PHASES = new Set(["executing", "reviewing"]);
+    // beta.64 (P1-5): derive ms since the last SDK/worker ACTIVITY event from the
+    // audit tail. This grows DURING an inner-turn hang (the last activity was the
+    // subtask_start marker) whereas msSinceProgress is bumped only on boundaries.
+    let lastSdkActivityAt = null;
+    for (let i = recentEvents.length - 1; i >= 0; i--) {
+        if (SDK_ACTIVITY_EVENTS.has(recentEvents[i].event)) {
+            lastSdkActivityAt = recentEvents[i].at;
+            break;
+        }
+    }
+    const msSinceLastSdkActivity = lastSdkActivityAt != null ? Date.now() - lastSdkActivityAt : null;
+    // beta.64 (P1-6): a worker running > the sdk-activity window with cost still
+    // $0 has produced no billable token -- a leading indicator of a pre-first-
+    // token hang. Scoped to an executing turn with a running, zero-cost current
+    // sub-task whose start is older than the window.
+    const activityWindowMs = Math.max(30, sdkActivityStallSeconds) * 1000;
+    const costZeroStallSuspected = status === "executing" &&
+        !!current &&
+        current.status === "running" &&
+        (current.costUsd ?? 0) === 0 &&
+        current.startedAt != null &&
+        Date.now() - current.startedAt > activityWindowMs;
     const stalled = ACTIVE_PHASES.has(status) &&
-        msSinceProgress != null &&
-        msSinceProgress > Math.max(300, stallSeconds) * 1000;
+        ((msSinceProgress != null && msSinceProgress > Math.max(300, stallSeconds) * 1000) ||
+            // beta.64 (P1-5): INNER-TURN stall -- an executing worker turn with no SDK
+            // activity past the ~90s window is a mid-turn hang (beta.63 smoke #2).
+            (status === "executing" && msSinceLastSdkActivity != null && msSinceLastSdkActivity > Math.max(30, sdkActivityStallSeconds) * 1000));
     const budgetUsd = row.budget_usd ?? 0;
     const spentUsd = row.cost_usd ?? 0;
     const ratio = budgetUsd > 0 ? round(spentUsd / budgetUsd, 4) : 0;
@@ -211,6 +253,8 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         lastEventAt,
         msSinceProgress,
         stalled,
+        msSinceLastSdkActivity,
+        costZeroStallSuspected,
         recentEvents,
         headline,
         needsClarification,

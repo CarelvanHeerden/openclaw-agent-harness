@@ -19,7 +19,7 @@ import type { LeadPlanSubTask } from "./fable5-lead.js";
 import { renderConventionsForPrompt } from "./repo-conventions.js";
 
 export interface WorkerResult {
-  status: "completed" | "failed" | "timeout";
+  status: "completed" | "failed" | "timeout" | "first_token_timeout";
   filesChanged: string[];
   commitSha?: string;
   sdkSessionId?: string;
@@ -43,6 +43,17 @@ export interface WorkerResult {
    * The retry-with-context logic (P1b) branches on whether this is non-empty.
    */
   uncommittedFiles?: string[];
+  /**
+   * beta.64 (P0-1): true once the SDK stream opened (system/init arrived).
+   * Threaded up so the loop can emit `sdk_stream_opened` and distinguish a
+   * POST-that-never-opened from a stream-opened-but-no-tokens hang.
+   */
+  streamOpened?: boolean;
+  /**
+   * beta.64 (P0-1): ms from stream open to first assistant content block.
+   * Undefined when no first token ever arrived (the first_token_timeout hang).
+   */
+  msToFirstToken?: number;
 }
 
 export interface WorkerDeps {
@@ -62,15 +73,19 @@ export interface WorkerDeps {
     permissionMode: HarnessConfig["safety"]["worker_permission_mode"];
     resumeSessionId?: string;
     timeoutSeconds: number;
+    /** beta.64 (P0-1): first-token watchdog window; threaded to runWorkerSdk. */
+    firstTokenTimeoutSeconds?: number;
     canUseTool: (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }>;
   }) => Promise<{
     sdkSessionId: string;
-    stopReason: "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled";
+    stopReason: "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled" | "first_token_timeout";
     costUsd: number;
     tokensIn: number;
     tokensOut: number;
     logsExcerpt: string;
     finalMessage?: string;
+    streamOpened?: boolean;
+    msToFirstToken?: number;
   }>;
 
   /**
@@ -277,6 +292,8 @@ export async function runWorker(
       permissionMode: deps.config.safety.worker_permission_mode,
       resumeSessionId,
       timeoutSeconds: deps.config.loop.worker_timeout_seconds,
+      // beta.64 (P0-1): arm the inner first-token watchdog on every worker call.
+      firstTokenTimeoutSeconds: deps.config.loop.sdk_first_token_timeout_seconds ?? 90,
       canUseTool,
     });
   } catch (err) {
@@ -353,11 +370,13 @@ export async function runWorker(
   //      the entire beta.53/54/55 retry / refusal / clarification machinery.
   // The loop is now the single verification site.
   const status: WorkerResult["status"] =
-    sdkResult.stopReason === "timeout"
-      ? "timeout"
-      : sdkResult.stopReason === "end_turn"
-        ? "completed"
-        : "failed";
+    sdkResult.stopReason === "first_token_timeout"
+      ? "first_token_timeout"
+      : sdkResult.stopReason === "timeout"
+        ? "timeout"
+        : sdkResult.stopReason === "end_turn"
+          ? "completed"
+          : "failed";
 
   return {
     status,
@@ -371,5 +390,7 @@ export async function runWorker(
     logsExcerpt: sdkResult.logsExcerpt,
     finalMessage: sdkResult.finalMessage,
     uncommittedFiles,
+    streamOpened: sdkResult.streamOpened,
+    msToFirstToken: sdkResult.msToFirstToken,
   };
 }

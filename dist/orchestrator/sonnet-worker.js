@@ -103,6 +103,8 @@ dispatchHint) {
             permissionMode: deps.config.safety.worker_permission_mode,
             resumeSessionId,
             timeoutSeconds: deps.config.loop.worker_timeout_seconds,
+            // beta.64 (P0-1): arm the inner first-token watchdog on every worker call.
+            firstTokenTimeoutSeconds: deps.config.loop.sdk_first_token_timeout_seconds ?? 90,
             canUseTool,
         });
     }
@@ -176,11 +178,13 @@ dispatchHint) {
     //      loop.ts's `result.status !== "completed"` early-exit and BYPASSED
     //      the entire beta.53/54/55 retry / refusal / clarification machinery.
     // The loop is now the single verification site.
-    const status = sdkResult.stopReason === "timeout"
-        ? "timeout"
-        : sdkResult.stopReason === "end_turn"
-            ? "completed"
-            : "failed";
+    const status = sdkResult.stopReason === "first_token_timeout"
+        ? "first_token_timeout"
+        : sdkResult.stopReason === "timeout"
+            ? "timeout"
+            : sdkResult.stopReason === "end_turn"
+                ? "completed"
+                : "failed";
     return {
         status,
         filesChanged: changed,
@@ -193,6 +197,8 @@ dispatchHint) {
         logsExcerpt: sdkResult.logsExcerpt,
         finalMessage: sdkResult.finalMessage,
         uncommittedFiles,
+        streamOpened: sdkResult.streamOpened,
+        msToFirstToken: sdkResult.msToFirstToken,
     };
 }
 //# sourceMappingURL=sonnet-worker.js.map

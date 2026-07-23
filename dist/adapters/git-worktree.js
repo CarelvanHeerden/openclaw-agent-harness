@@ -656,6 +656,10 @@ esac
     async diff(worktreePath, base) {
         return this.run(["-C", worktreePath, "diff", base, "HEAD"]);
     }
+    /** beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree. */
+    async diffStat(worktreePath, base) {
+        return this.run(["-C", worktreePath, "diff", "--stat", base, "HEAD"]);
+    }
     /**
      * beta.34: install a persistent credential helper into the bare repo
      * config (Staging's recommended hardening, option 1). The helper script

@@ -18,6 +18,42 @@
  */
 import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+/**
+ * beta.64 (P0-3): parse the file paths out of a `git diff --stat base..HEAD`
+ * output. Each stat line looks like ` path/to/file.ts | 12 ++--`. The trailing
+ * ` N files changed, ...` summary line is skipped. Pure/deterministic.
+ */
+export function parseDiffStatPaths(diffStat) {
+    const out = [];
+    for (const raw of (diffStat ?? "").split("\n")) {
+        const line = raw.trim();
+        if (!line || !line.includes("|"))
+            continue;
+        const path = line.split("|")[0].trim();
+        if (!path || /\bfiles?\s+changed\b/.test(path))
+            continue;
+        // Handle rename form `old => new` -> keep the new path.
+        const renamed = /=>\s*(.+?)\}?$/.exec(path);
+        out.push(renamed ? renamed[1].replace(/[{}]/g, "").trim() : path);
+    }
+    return out;
+}
+/**
+ * beta.64 (P0-3): collect the union of `filesLikelyTouched` across all of a
+ * plan's sub-tasks -- the "expected files" set for the best-effort clean-diff
+ * check. Pure/deterministic.
+ */
+export function collectExpectedFiles(plan) {
+    const set = new Set();
+    for (const st of plan.subTasks ?? []) {
+        for (const f of st.filesLikelyTouched ?? [])
+            if (f)
+                set.add(f);
+    }
+    return [...set];
+}
 /** beta.34: extract the PR number from a GitHub PR URL (.../pull/846). */
 function parsePrNumber(prUrl) {
     const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
@@ -695,35 +731,47 @@ export class OrchestratorLoop {
                     role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
                     prompt: `subtask ${st.seq}: ${st.title}\nintent: ${st.intent ?? ""}\n${reviseHint ?? ""}`,
                 });
-                try {
-                    // beta.42: bound the worker SDK call by worker_timeout_seconds. Without
-                    // this, a hung worker await never resolves and wedges the whole loop
-                    // silently (no timeout fires -- the hard-deadline check only runs
-                    // between sub-tasks). A timeout here rejects, and the existing catch
-                    // marks the sub_task failed + fails the run cleanly.
-                    result = await withTimeout(this.deps.runWorker({ brief, subTask: st, plan, requester: row.requester, dispatchHint: reviseHint }), this.deps.config.loop.worker_timeout_seconds);
-                    this.deps.interactionLog?.logSdkResponse(sessionId, {
-                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
-                        finishReason: result.reason ?? "end_turn", costUsd: result.costUsd,
-                        outputChars: result.finalMessage ? result.finalMessage.length : undefined,
-                        durationMs: Date.now() - workerStart, sdkSessionId: result.sdkSessionId,
-                        finalMessageTail: result.finalMessage ? result.finalMessage.slice(-500) : undefined,
-                    });
-                }
-                catch (err) {
-                    const isTimeout = err instanceof WorkerTimeoutError;
-                    this.deps.interactionLog?.logSdkResponse(sessionId, {
-                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
-                        finishReason: isTimeout ? "timeout" : "error", durationMs: Date.now() - workerStart,
-                    });
-                    this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`).run(`worker threw: ${String(err)}`, Date.now(), subTaskId);
-                    if (isTimeout) {
-                        this.deps.state.audit("loop.worker_timeout", { sessionId, seq: st.seq, worker_timeout_seconds: this.deps.config.loop.worker_timeout_seconds }, sessionId);
+                // beta.64 (P0-2): the worker call is now wrapped so a first_token_timeout
+                // (returned by the inner watchdog) OR a worker timeout (thrown by the
+                // outer withTimeout) is RETRIED ONCE on a fresh SDK session before we
+                // flip the run terminal. beta.63's watchdogs were blind to a hang INSIDE
+                // a single worker turn; beta.63 smoke #2's verify sub-task streamed zero
+                // tokens and sat the full 1800s. runWorkerCallWithRetry emits the P0-1
+                // sdk_stream_opened/sdk_first_token events + owns the retry.
+                const call = await this.runWorkerCallWithRetry({
+                    sessionId, st, cycle, brief, plan, requester: row.requester,
+                    dispatchHint: reviseHint, workerStart, subTaskId,
+                });
+                if (call.outcome === "timeout") {
+                    // beta.64 (P0-2): retry (if any) is exhausted and the worker still
+                    // timed out with no usable result. For an observe-mode VERIFY sub-task
+                    // we do NOT hard-fail: attempt P0-4 (scripted verifier fallback), then
+                    // P0-3 (best-effort verify => graceful reviewable PR). Only if BOTH
+                    // decline do we fall through to terminal.
+                    const isVerifySubTask = st.taskMode === "observe";
+                    if (isVerifySubTask) {
+                        const scripted = await this.tryScriptedVerifyFallback(sessionId, plan, st, cycle, subTaskBaseSha);
+                        if (scripted === "pass") {
+                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`).run(`scripted verifier fallback PASS (LLM verify sub-task timed out)`, Date.now(), subTaskId);
+                            done.add(st.seq);
+                            return;
+                        }
+                        if (scripted !== "fail") {
+                            // scripted fallback disabled or unrunnable -> try best-effort verify.
+                            const shipped = await this.tryBestEffortVerify(sessionId, plan, brief, st, cycle, totalCost, row.requester, subTaskBaseSha);
+                            if (shipped) {
+                                failed.err = "__best_effort_shipped__";
+                                failed.seq = st.seq;
+                                return;
+                            }
+                        }
                     }
-                    failed.err = isTimeout ? `worker_timeout: ${String(err)}` : `worker_error: ${String(err)}`;
+                    this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`).run(call.summary, Date.now(), subTaskId);
+                    failed.err = call.failErr;
                     failed.seq = st.seq;
                     return;
                 }
+                result = call.result;
                 totalCost += result.costUsd;
                 if (result.costUsd > 0)
                     subTaskCosts.push(result.costUsd);
@@ -1212,6 +1260,13 @@ export class OrchestratorLoop {
                 if (clarify.question) {
                     return this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
                 }
+                // beta.64 (P0-3): best-effort verify already pushed a graceful reviewable
+                // PR (verify sub-task timed out but the prior probe was green + clean
+                // diff). The session row is already terminal `done`; return shipped.
+                if (failed.err === "__best_effort_shipped__") {
+                    const bePr = this.deps.state.db.prepare(`SELECT final_pr_url FROM sessions WHERE id = ?`).get(sessionId);
+                    return { status: "shipped", sessionId, prUrl: bePr?.final_pr_url ?? "", cycles: cycle, totalCostUsd: totalCost };
+                }
                 if (failed.err === "user_abort_reaction")
                     return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
                 if (failed.err === "hard_timeout")
@@ -1527,6 +1582,271 @@ export class OrchestratorLoop {
         if (observed.length === 0)
             return floor;
         return Math.max(floor, Math.max(...observed));
+    }
+    /**
+     * beta.64 (P0-1 + P0-2): run ONE worker sub-task call bounded by
+     * worker_timeout_seconds, emit the sdk_stream_opened / sdk_first_token /
+     * sdk_response interaction-log events (P0-1), and RETRY ONCE on a FRESH SDK
+     * session when the attempt times out (P0-2). A timeout is either:
+     *   - the outer withTimeout throwing WorkerTimeoutError (full-turn worker
+     *     timeout), OR
+     *   - the inner first-token watchdog returning result.status ===
+     *     'first_token_timeout' (stream opened, ZERO tokens -- beta.63 smoke #2).
+     * Returns `{outcome:'ok', result}` on a usable turn (even a non-completed
+     * end_turn -- the caller's verification handles that), or `{outcome:'timeout',
+     * summary, failErr}` when the (possibly retried) call still timed out.
+     * `worker_timeout_retry_enabled: false` disables the retry (still audits the
+     * timeout). Max 1 retry per sub-task, mirroring the beta.53 env-wait pattern.
+     */
+    async runWorkerCallWithRetry(p) {
+        const { sessionId, st, cycle, brief, plan, requester, dispatchHint } = p;
+        const retryEnabled = this.deps.config.loop.worker_timeout_retry_enabled !== false;
+        const maxAttempts = retryEnabled ? 2 : 1;
+        let lastFirstToken = false;
+        let lastSummary = "";
+        let lastFailErr = "";
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            if (attempt > 1) {
+                // beta.64 (P0-2): audit the retry BEFORE it runs, so a durable trail
+                // shows we re-invoked on a fresh session (no resumeSessionId is passed
+                // at this callsite, so the SDK opens a brand-new stream).
+                this.deps.state.audit("loop.worker_timeout_retry", { sessionId, seq: st.seq, attempt, priorKind: lastFirstToken ? "first_token_timeout" : "worker_timeout" }, sessionId);
+                this.deps.interactionLog?.log(sessionId, {
+                    event: "worker_timeout_retry", phase: "worker", seq: st.seq, cycle, attempt,
+                    priorKind: lastFirstToken ? "first_token_timeout" : "worker_timeout",
+                });
+                this.deps.logger.warn("[loop] worker timed out; retrying once on a FRESH SDK session", {
+                    sessionId, seq: st.seq, attempt, priorKind: lastFirstToken ? "first_token_timeout" : "worker_timeout",
+                });
+            }
+            const attemptStart = Date.now();
+            let result = null;
+            let threwTimeout = false;
+            try {
+                result = await withTimeout(this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint }), this.deps.config.loop.worker_timeout_seconds);
+            }
+            catch (err) {
+                if (err instanceof WorkerTimeoutError) {
+                    threwTimeout = true;
+                }
+                else {
+                    // A non-timeout throw is NOT retried here -- surface it immediately as
+                    // the pre-beta.64 worker_error terminal (the caller marks it failed).
+                    this.deps.interactionLog?.logSdkResponse(sessionId, {
+                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        finishReason: "error", durationMs: Date.now() - attemptStart,
+                    });
+                    return { outcome: "timeout", summary: `worker threw: ${String(err)}`, failErr: `worker_error: ${String(err)}` };
+                }
+            }
+            const firstTokenTimeout = !threwTimeout && result?.status === "first_token_timeout";
+            if (!threwTimeout && result && !firstTokenTimeout) {
+                // Usable turn. Emit P0-1 stream events + the sdk_response boundary.
+                if (result.streamOpened) {
+                    this.deps.interactionLog?.logSdkStreamOpened(sessionId, {
+                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        sdkSessionId: result.sdkSessionId,
+                    });
+                }
+                if (typeof result.msToFirstToken === "number") {
+                    this.deps.interactionLog?.logSdkFirstToken(sessionId, {
+                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        msToFirstToken: result.msToFirstToken, sdkSessionId: result.sdkSessionId,
+                    });
+                }
+                this.deps.interactionLog?.logSdkResponse(sessionId, {
+                    role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                    finishReason: result.reason ?? "end_turn", costUsd: result.costUsd,
+                    outputChars: result.finalMessage ? result.finalMessage.length : undefined,
+                    durationMs: Date.now() - attemptStart, sdkSessionId: result.sdkSessionId,
+                    finalMessageTail: result.finalMessage ? result.finalMessage.slice(-500) : undefined,
+                });
+                // A timed-out earlier attempt still cost tokens; account for the
+                // retry's spend by returning the result (the caller adds result.costUsd).
+                return { outcome: "ok", result };
+            }
+            // Timeout-class outcome for THIS attempt. Emit the boundary + audit.
+            lastFirstToken = !!firstTokenTimeout;
+            if (firstTokenTimeout && result?.streamOpened) {
+                // The stream DID open; record that so the trail distinguishes
+                // "POST hung before open" from "opened, no tokens".
+                this.deps.interactionLog?.logSdkStreamOpened(sessionId, {
+                    role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                    sdkSessionId: result.sdkSessionId,
+                });
+            }
+            this.deps.interactionLog?.logSdkResponse(sessionId, {
+                role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                finishReason: firstTokenTimeout ? "first_token_timeout" : "timeout", durationMs: Date.now() - attemptStart,
+                sdkSessionId: result?.sdkSessionId,
+            });
+            if (firstTokenTimeout) {
+                this.deps.state.audit("loop.worker_first_token_timeout", { sessionId, seq: st.seq, attempt, sdk_first_token_timeout_seconds: this.deps.config.loop.sdk_first_token_timeout_seconds ?? 90, streamOpened: !!result?.streamOpened }, sessionId);
+                lastSummary = `worker first_token_timeout (stream opened, zero tokens) attempt ${attempt}`;
+                lastFailErr = `worker_first_token_timeout: seq ${st.seq}`;
+            }
+            else {
+                this.deps.state.audit("loop.worker_timeout", { sessionId, seq: st.seq, attempt, worker_timeout_seconds: this.deps.config.loop.worker_timeout_seconds }, sessionId);
+                lastSummary = `worker_timeout attempt ${attempt}`;
+                lastFailErr = `worker_timeout: seq ${st.seq}`;
+            }
+            // Loop continues to the retry attempt (if any); otherwise falls through.
+        }
+        return { outcome: "timeout", summary: lastSummary, failErr: lastFailErr };
+    }
+    /**
+     * beta.64 (P0-4): SCRIPTED VERIFIER FALLBACK for an observe-mode VERIFY
+     * sub-task whose LLM turn timed out. A "run tsc, diff, check scripts" verify
+     * step needs no model: run `npx tsc --noEmit`, `git diff --stat <base>..HEAD`,
+     * and the allowlisted repo check scripts (reusing the beta.63 discover/run
+     * plumbing) deterministically, and report pass/fail as if the sub-task ran.
+     * Returns 'pass' (all deterministic checks green), 'fail' (a check failed), or
+     * 'unavailable' (feature disabled, or nothing runnable -> caller escalates to
+     * best-effort verify). Never throws. Gated by loop.scripted_verify_fallback.
+     */
+    async tryScriptedVerifyFallback(sessionId, plan, st, cycle, baseSha) {
+        if (this.deps.config.loop.scripted_verify_fallback === false)
+            return "unavailable";
+        const worktree = plan.worktreePath;
+        if (!worktree)
+            return "unavailable";
+        let tscOk = null;
+        let diffStat = "";
+        let scriptFailures = 0;
+        let scriptsRan = 0;
+        // 1. tsc --noEmit (only if the repo has a tsconfig AND a runner is wired).
+        try {
+            const runTsc = this.deps.runScriptedTsc;
+            if (runTsc && existsSync(join(worktree, "tsconfig.json"))) {
+                const timeoutMs = Math.max(10, this.deps.config.verify?.check_script_timeout_seconds ?? 600) * 1000;
+                const out = await runTsc(worktree, timeoutMs).catch(() => null);
+                if (out)
+                    tscOk = out.ok;
+            }
+        }
+        catch { /* best-effort */ }
+        // 2. git diff --stat base..HEAD (informational + folded into the log).
+        try {
+            if (this.deps.gitDiffStat && baseSha) {
+                diffStat = (await this.deps.gitDiffStat(worktree, baseSha).catch(() => "")) ?? "";
+            }
+        }
+        catch { /* best-effort */ }
+        // 3. Allowlisted repo check scripts (reuse beta.63 plumbing).
+        try {
+            const vcfg = this.deps.config.verify;
+            if (!vcfg || vcfg.run_repo_check_scripts !== false) {
+                const discovered = discoverCheckScripts(worktree);
+                if (discovered.length > 0) {
+                    const results = runCheckScripts({
+                        repoRoot: worktree,
+                        discovered,
+                        allowlist: vcfg?.check_script_allowlist ?? ["okf:check", "lint", "typecheck", "test"],
+                        timeoutSeconds: vcfg?.check_script_timeout_seconds ?? 600,
+                        runScript: this.deps.runCheckScript,
+                    });
+                    for (const r of results) {
+                        if (r.ran) {
+                            scriptsRan++;
+                            if (r.exitCode !== 0)
+                                scriptFailures++;
+                        }
+                    }
+                }
+            }
+        }
+        catch { /* best-effort */ }
+        const ranAnything = tscOk !== null || scriptsRan > 0;
+        if (!ranAnything) {
+            this.deps.state.audit("loop.scripted_verify_fallback", { sessionId, seq: st.seq, cycle, result: "unavailable", tscOk, scriptsRan, scriptFailures, diffStat: diffStat.slice(0, 500) }, sessionId);
+            this.deps.interactionLog?.log(sessionId, { event: "scripted_verify_fallback", phase: "worker", seq: st.seq, cycle, result: "unavailable" });
+            return "unavailable";
+        }
+        const passed = (tscOk === null || tscOk === true) && scriptFailures === 0;
+        const result = passed ? "pass" : "fail";
+        this.deps.state.audit("loop.scripted_verify_fallback", { sessionId, seq: st.seq, cycle, result, tscOk, scriptsRan, scriptFailures, diffStat: diffStat.slice(0, 500) }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "scripted_verify_fallback", phase: "worker", seq: st.seq, cycle, result, tscOk, scriptsRan, scriptFailures });
+        this.deps.logger.warn("[loop] scripted verifier fallback ran (LLM verify sub-task timed out)", { sessionId, seq: st.seq, result, tscOk, scriptFailures });
+        return result;
+    }
+    /**
+     * beta.64 (P0-3): BEST-EFFORT VERIFY. Honors the beta.60 "Carel must get a
+     * reviewable PR" rule. When an observe-mode VERIFY sub-task times out (after
+     * the P0-2 retry AND the P0-4 scripted fallback declined/was unavailable),
+     * AND the prior mutate sub-task's verify_probe is GREEN, AND git diff-stat
+     * shows only expected files touched, do NOT discard the work: push the branch
+     * and open the PR flagged merge_recommendation=needs_human_review (reusing the
+     * beta.62 graceful-PR machinery), marking the run verify_skipped. Returns true
+     * when a graceful PR was opened (run is terminal `done`), false otherwise (the
+     * caller falls through to terminal fail). Gated by loop.best_effort_verify.
+     * Never throws.
+     */
+    async tryBestEffortVerify(sessionId, plan, brief, st, cycle, totalCost, requester, baseSha) {
+        if (this.deps.config.loop.best_effort_verify === false)
+            return false;
+        // Precondition 1: the PRIOR mutate sub-task's verify_probe was GREEN. Read
+        // the latest per-sub-task verification (green means the code is shippable).
+        const localVerify = this.readLocalVerification(sessionId);
+        const priorGreen = localVerify.length > 0 && localVerify.every((v) => v.ok);
+        // Precondition 2: git diff-stat shows only expected files touched (a clean,
+        // in-scope diff). Best-effort -- if we can't compute it, treat as unclean.
+        let cleanDiff = false;
+        let diffStat = "";
+        try {
+            if (this.deps.gitDiffStat && baseSha) {
+                diffStat = (await this.deps.gitDiffStat(plan.worktreePath, baseSha).catch(() => "")) ?? "";
+                // "Clean" = there IS a diff (work was done) and every changed path is
+                // within the plan's expected files (or the plan declared none, in which
+                // case any diff is accepted since the mutate probe already vouched).
+                const changedPaths = parseDiffStatPaths(diffStat);
+                const expected = new Set(collectExpectedFiles(plan));
+                cleanDiff = changedPaths.length > 0 && (expected.size === 0 || changedPaths.every((f) => expected.has(f) || [...expected].some((e) => f === e || f.startsWith(e))));
+            }
+        }
+        catch {
+            cleanDiff = false;
+        }
+        const eligible = priorGreen && cleanDiff;
+        this.deps.state.audit("loop.verify_skipped_best_effort", { sessionId, seq: st.seq, cycle, eligible, priorGreen, cleanDiff, reason: "worker_timeout", diffStat: diffStat.slice(0, 800), changedFiles: parseDiffStatPaths(diffStat) }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "verify_skipped_best_effort", phase: "finalize", seq: st.seq, cycle, eligible, priorGreen, cleanDiff, reason: "worker_timeout" });
+        if (!eligible) {
+            this.deps.logger.warn("[loop] best-effort verify NOT eligible (prior probe not green or diff not clean); falling through to terminal", { sessionId, seq: st.seq, priorGreen, cleanDiff });
+            return false;
+        }
+        // Open the graceful PR flagged needs_human_review (beta.62 pattern).
+        this.markProgress(sessionId, "finalize_start", "finalize", { cycle, viaBestEffortVerify: true });
+        const priorReview = this.getLastReview(sessionId);
+        const reviewReport = priorReview ?? {
+            verdict: "revise",
+            findings: [],
+            summary: "The LLM VERIFY sub-task timed out; the prior mutate sub-task self-verified GREEN with a clean, in-scope diff. Opened for MANUAL human review (best-effort verify).",
+            costUsd: 0, tokensIn: 0, tokensOut: 0,
+        };
+        let prUrl;
+        try {
+            prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester });
+        }
+        catch (pushErr) {
+            this.deps.state.audit("loop.best_effort_verify_pr_failed", { sessionId, seq: st.seq, error: String(pushErr?.message ?? pushErr) }, sessionId);
+            this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr_failed", phase: "finalize", seq: st.seq, error: String(pushErr) });
+            // Push failed -- preserve the worktree so the branch is still inspectable.
+            this.finaliseFailedPreserveWorktree(sessionId, `verify_timeout_best_effort_pr_failed: ${String(pushErr)}`, cycle, totalCost);
+            // Signal to the caller that we ALREADY handled the terminal transition
+            // (returning true short-circuits the caller's own terminal fail path).
+            return true;
+        }
+        const recReason = `The final VERIFY sub-task's LLM turn TIMED OUT (no first token / worker timeout) even after a fresh-session retry, but the prior mutate sub-task self-verified GREEN and the diff is clean + in-scope. ` +
+            `Opened for MANUAL human review (best-effort verify) -- there is no machine verify sign-off, so this is NOT auto-mergeable.`;
+        const prNumber = parsePrNumber(prUrl);
+        this.markProgress(sessionId, "pr_opened", "finalize", { cycle, viaBestEffortVerify: true });
+        this.setStatus(sessionId, "done");
+        this.deps.state.db
+            .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
+            .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
+        this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaBestEffortVerify: true }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr", phase: "finalize", seq: st.seq, prUrl, prNumber });
+        await this.tryReleaseWorktree(sessionId, plan.repo, plan.worktreePath, "shipped");
+        return true;
     }
     /**
      * beta.63 (convention-awareness Fix 2): run the repo's DECLARED check scripts
