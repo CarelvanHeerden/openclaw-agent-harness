@@ -293,3 +293,6 @@ bugs, all small and confirmed real. Fixes only — no over-build/rebuild.
 - Full suite: **747 → 766 tests (+19), all pass**.
 - Smoke: `Smoke OK: 15 tools, 2 hooks, 3 services` — services now
   pr-watcher + retention-nightly + stall-sweep (was 2, now 3).
+
+## beta.68 (2026-07-23) — adaptive decomposition
+Lead planner prompt (claude-sdk.ts): replaced flat "Prefer 3-8 sub-tasks" with complexity-tiered guidance. TRIVIAL single-file (pre-investigated) -> exactly ONE mutate sub-task (no ceremony probe/verify — harness convention-checks + adversary review are the post-exec net); MODERATE -> 2-4; LARGE -> 3-8, hard cap 20; bias toward fewer, tie-break to 1 on small changes. Cuts cold worker round-trips on small changes (the main "10x slower than Cursor" lever). Prompt-only; taskMode/verify machinery already supports a lone mutate sub-task. Tests 787->793 (+6 beta68-adaptive-decomposition). tsc clean, build 0, smoke 15 tools/3 services.
