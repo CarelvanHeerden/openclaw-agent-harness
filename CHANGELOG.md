@@ -1,5 +1,116 @@
 # Changelog
 
+## [0.1.0-beta.67] -- 2026-07-23
+
+Four P0 fixes. Three (A/B/C) exposed by beta.66 smoke #4 -- the furthest-ever
+run (the SDK-hang class was FIXED; all 8 SDK calls opened streams, and it was
+the first smoke to reach adversary review + cycle 2). The fourth (D) is the
+architecturally significant one: the founding orchestrator-split goal was only
+half-wired -- beta.66 built the workerContext PIPE but Fable wasn't filling it,
+and the revise path handed workers raw adversary findings.
+
+### Bug D (P0) -- Fable-in-the-loop (workerContext enforcement + revise-spec turn)
+
+beta.66 added the `WorkerContext` handover (type + `renderWorkerContextBlock`
+injection) but the live smoke showed workers still receiving BARE intents:
+Fable returned empty/undefined `workerContext`, so the cheap-worker split never
+actually kicked in. Two coordinated changes, both reusing beta.66's render path
+(the adversary stays COLD + untouched -- `fable5-adversary.ts` unchanged, a
+test asserts it never references `workerContext`):
+
+- **P0a -- validator-enforced workerContext.** `validatePlan` now requires every
+  `mutate`/`mixed` sub-task to carry SUBSTANTIVE `workerContext`: a non-empty
+  `rationale` AND concrete file-anchored guidance (a `changeSpec` >=40 chars
+  that references a real path, OR a `codeExcerpts` entry with a real snippet +
+  path). Mere field presence is not enough -- an all-empty object is rejected;
+  the path-token check kills the length-only hole where filler prose passes.
+  `mixed` is gated identically to `mutate` (a mixed sub-task that mutates
+  without context is the same failure wearing a hat); `observe` is exempt.
+  Enforcement posture mirrors `sanitizeRemoteSubTasks` (prompt asks, validator
+  enforces): ONE bounded lead re-ask with a corrective note naming the
+  offending seqs, then hard-throw (`LeadPlanValidationError`) -- a loud fail at
+  planning beats a silent workers-no-op'd cycle downstream. `callLeadModel` now
+  genuinely re-invokes the SDK so the re-ask re-plans (was a fixed pre-fetched
+  result). Gated by `loop.enforce_worker_context` (default true; false = WARN
+  only).
+- **P0b -- Fable revise-spec turn.** On an adversary `revise` verdict the loop
+  used to hand cycle-2 workers the RAW findings (`buildReviseDispatchHint`) and
+  reuse plan-time sub-tasks verbatim -- workers no-op'd on findings they
+  couldn't parse (the beta.63/64 revise-cycle regression). A new
+  `runLeadReviseSpec` Fable turn now runs ONCE at the top of a revise cycle,
+  reads the findings, investigates, and REFRESHES each affected sub-task's
+  `workerContext` with a resolved changeSpec. Workers get warm context via the
+  beta.66 render path and never see raw findings. On any failure (unwired /
+  throw / empty) it falls back to `buildReviseDispatchHint`, so it is never
+  worse than beta.66. Gated by `loop.revise_spec_turn_enabled` (default true).
+
+Three P0 fixes exposed by beta.66 smoke #4 -- the furthest-ever run (the
+SDK-hang class was FIXED; all 8 SDK calls opened streams, and it was the first
+smoke to reach adversary review + cycle 2). Reaching that depth surfaced three
+distinct bugs, all confirmed real and small.
+
+### Bug A (P0) -- EXTERNAL stall-sweep (dead-executor + cancel-on-dead)
+
+The loop-runner PROCESS died between a worker's `sdk_response` and the next
+handler step. The session record stayed `status=executing` forever; `ps` showed
+no live process. beta.63's `checkStalls` watchdog exists and its DETECTION
+logic is correct, but it runs IN-PROCESS -- a dead process cannot watchdog its
+own death. Also `harness_cancel` set a `reactions_json.abort` flag that the
+dead loop never consumed, so the session never reached a terminal state.
+
+- New EXTERNAL periodic `stall-sweep` service (`src/index.ts`, registered with
+  the same `api.registerService` lifecycle + `setInterval` fallback as
+  `pr-watcher` / `retention-nightly`) that drives the new `loop.sweepStalls()`
+  independent of any loop-runner process. Each tick: (1) runs the EXISTING
+  `checkStalls` fast path (detection + bounded re-tick recovery + auto-terminal
+  transition); (2) reaps sessions with a pending cancel flag whose loop is dead
+  (no live runner) -> terminal `failed` (reason `cancelled_dead_loop`),
+  PRESERVING the worktree (beta.62 pattern). Covers `executing`/`planning`/
+  `reviewing`.
+- The in-process `checkStalls` is kept as the fast path; the external sweep is
+  the safety net for process-death.
+- New config key `loop.stall_sweep_interval_seconds` (default 60, clamp
+  [15,600]) in BOTH `config.ts` and the manifest configSchema.
+- Audit: `loop.stall_sweep_ran`, `loop.stall_sweep_recovered`,
+  `loop.stall_sweep_terminated`.
+
+### Bug B (P0, highest value) -- adversary diffed against the WRONG base
+
+The adversary reviewed against main-at-review-time (which carries accumulated
+prior-PR/prior-smoke work), NOT the branch's fork-point, so it hallucinated
+"unrelated commits / files" that do NOT exist on the branch (which had exactly
+ONE clean commit). Result: a false-positive `revise` with 19 findings -> a
+wasted full cycle-2 re-execution (~68% of the run spend).
+
+- Capture the branch FORK-POINT sha once at `plan_ready`
+  (`git merge-base origin/<default base> HEAD` in the worktree, when it
+  exists), persist it on the session (new column `sessions.plan_base_sha`,
+  schema CREATE + additive migration), and generate the adversary's diff as
+  `git diff <plan_base_sha>..HEAD` instead of against the default base branch.
+  The adversary now sees ONLY this branch's own commits.
+- Cheap sanity log `loop.adversary_diff_base {baseSha, headSha, commitCount,
+  subTaskCount, suspicious}`; warns when the branch commit count is
+  suspiciously high vs the sub-task count (the smoke #4 signature).
+- New git helpers `GitWorktreeManager.mergeBase()` + `.commitCount()`.
+
+### Bug C (P0, smallest) -- verifier false-fail on a legit revise no-op
+
+On a revise cycle, a plan-time `mutate` sub-task that correctly makes NO change
+(the worker follows "if none apply, make no changes and end turn") was FAILED
+by the verifier's `commit_made` / `file_committed` contract because HEAD didn't
+move. beta.66 already computed the demotion (`loop.subtask_revise_no_change`,
+`effectiveTaskMode: observe`), but the contract selection still keyed off the
+plan-time `taskMode`.
+
+- `inferVerifyContract(subTask, effectiveTaskMode?)` now filters mutation-scope
+  kinds (`commit_made`, `file_committed`, `file_written`, ...) when the caller
+  EXPLICITLY demotes to `observe` -- even in the explicit-verify path.
+- The loop computes `effectiveTaskMode = (cycle>1 && plan-time mutate && no
+  commit) ? observe : taskMode` before building the contract, so the revise
+  no-op verifies as a PASS. A real cycle-1 mutate still requires `commit_made`,
+  and beta.15's "explicit verify wins with plan-time observe" contract is
+  preserved unchanged (the demotion is keyed on the argument, not plan-time).
+
 ## [0.1.0-beta.65] -- 2026-07-23
 
 Fix beta.64 first-token watchdog with a SPLIT-PHASE design -- cover the

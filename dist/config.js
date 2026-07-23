@@ -64,6 +64,9 @@ const DEFAULTS = {
         session_stall_seconds: 1800,
         stall_auto_terminal: true,
         stall_graceful_pr: true,
+        stall_sweep_interval_seconds: 60,
+        enforce_worker_context: true,
+        revise_spec_turn_enabled: true,
         sdk_first_token_timeout_seconds: 30,
         sdk_stream_open_timeout_seconds: 120,
         worker_timeout_retry_enabled: true,
@@ -252,6 +255,11 @@ export function parseHarnessConfig(input) {
     // healthy long run is never mis-detected as a stall. Clamp to >= 300s.
     if (typeof merged.loop.session_stall_seconds === "number" && merged.loop.session_stall_seconds < 300) {
         merged.loop.session_stall_seconds = 300;
+    }
+    // beta.67 (Bug A): clamp the EXTERNAL stall-sweep cadence to [15, 600]s.
+    // Too fast wastes wakeups; too slow lets a dead-loop session linger.
+    if (typeof merged.loop.stall_sweep_interval_seconds === "number") {
+        merged.loop.stall_sweep_interval_seconds = Math.max(15, Math.min(600, merged.loop.stall_sweep_interval_seconds));
     }
     // beta.63 (Fix 2): clamp the per-check-script timeout to a sane floor.
     if (typeof merged.verify.check_script_timeout_seconds === "number" && merged.verify.check_script_timeout_seconds < 10) {

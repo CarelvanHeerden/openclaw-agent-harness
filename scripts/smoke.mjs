@@ -146,7 +146,11 @@ if (registeredHooks.has("message.received")) {
   failed++;
 }
 
-for (const s of ["retention-nightly"]) {
+// beta.67 (Bug A): the EXTERNAL stall-sweep service must be registered
+// alongside retention-nightly. It runs loop.sweepStalls() independent of any
+// loop-runner process so a dead executor (beta.66 smoke #4) is still reaped.
+// (pr-watcher is conditional on config and is not asserted here.)
+for (const s of ["retention-nightly", "stall-sweep"]) {
   const full = `openclaw-agent-harness:${s}`;
   if (!registeredServices.has(full)) {
     console.error(`FAIL: service "${full}" was not registered`);

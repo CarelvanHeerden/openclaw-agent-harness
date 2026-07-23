@@ -183,10 +183,19 @@
             "additionalProperties": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["input", "output"],
+              "required": [
+                "input",
+                "output"
+              ],
               "properties": {
-                "input": { "type": "number", "minimum": 0 },
-                "output": { "type": "number", "minimum": 0 }
+                "input": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "output": {
+                  "type": "number",
+                  "minimum": 0
+                }
               }
             }
           },
@@ -195,8 +204,13 @@
             "additionalProperties": false,
             "description": "Anthropic auth for the embedded Claude Agent SDK. Vault-first (credential_service), env fallback (api_key_env, default ANTHROPIC_API_KEY).",
             "properties": {
-              "credential_service": { "type": "string" },
-              "api_key_env": { "type": "string", "default": "ANTHROPIC_API_KEY" }
+              "credential_service": {
+                "type": "string"
+              },
+              "api_key_env": {
+                "type": "string",
+                "default": "ANTHROPIC_API_KEY"
+              }
             }
           }
         }
@@ -313,6 +327,23 @@
             "default": true,
             "description": "beta.63 (Part A): on an UNRECOVERABLE stall with commits on the branch, attempt a graceful push + PR flagged needs_human_review (beta.62 pattern) so a near-done deliverable is not evaporated. Set false to fail-and-preserve-worktree only."
           },
+          "stall_sweep_interval_seconds": {
+            "type": "integer",
+            "minimum": 15,
+            "maximum": 600,
+            "default": 60,
+            "description": "beta.67 (Bug A): EXTERNAL stall-sweep cadence (seconds). beta.63's checkStalls runs IN-PROCESS, so a dead loop-runner process cannot watchdog its own death (beta.66 smoke #4). This is the tick interval for the EXTERNAL stall-sweep service (registered like pr-watcher / retention-nightly) that runs loop.sweepStalls() independent of any loop process: it runs the existing checkStalls fast path AND reaps sessions with a pending cancel flag whose loop is dead (terminal failed reason=cancelled_dead_loop, worktree preserved). Default 60; clamped [15,600]."
+          },
+          "enforce_worker_context": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.67 (P0a): enforce SUBSTANTIVE workerContext (rationale + file-anchored changeSpec/excerpt) on mutate/mixed sub-tasks at validatePlan. true (default) -> one bounded lead re-ask then hard-throw; false -> WARN-only escape hatch. Enforces the founding orchestrator-split goal (cheap workers implement from Fable's investigation instead of re-scanning)."
+          },
+          "revise_spec_turn_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.67 (P0b): run ONE Fable revise-spec turn between the adversary and cycle-2 workers to refresh workerContext with a resolved changeSpec, so workers never see the raw adversary findings (the beta.63/64 no-op regression). false -> beta.66 raw-findings behaviour; a revise-spec failure also falls back. Default true."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,
@@ -377,9 +408,23 @@
             "additionalProperties": false,
             "description": "beta.36: post-merge deploy-repair loop. On a merged PR whose Vercel deploy ERRORs, auto-attempt fixes (up to max_attempts new PRs) from the build logs; if still failing, revert all merges and leave the last attempt open for review.",
             "properties": {
-              "enabled": { "type": "boolean", "default": true },
-              "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
-              "budget_ratio": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.25, "description": "Repair budget as a fraction of budgets.daily_max_usd, shared across all attempts." }
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "max_attempts": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "default": 3
+              },
+              "budget_ratio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.25,
+                "description": "Repair budget as a fraction of budgets.daily_max_usd, shared across all attempts."
+              }
             }
           }
         }
@@ -462,7 +507,9 @@
             "description": "Hierarchical GitHub routing: org -> person -> {token:{value|env|vault}, name, email, slack_user_id}.",
             "additionalProperties": {
               "type": "object",
-              "additionalProperties": { "type": "object" }
+              "additionalProperties": {
+                "type": "object"
+              }
             }
           },
           "gitlab": {
@@ -470,7 +517,9 @@
             "description": "Hierarchical GitLab routing: org -> person -> {token:{value|env|vault}, name, email, slack_user_id}.",
             "additionalProperties": {
               "type": "object",
-              "additionalProperties": { "type": "object" }
+              "additionalProperties": {
+                "type": "object"
+              }
             }
           },
           "overrides": {
@@ -505,16 +554,32 @@
           },
           "user_identities": {
             "type": "object",
-            "additionalProperties": { "type": "object" }
+            "additionalProperties": {
+              "type": "object"
+            }
           },
-          "default_provider": { "type": "string", "enum": ["github", "gitlab"] },
+          "default_provider": {
+            "type": "string",
+            "enum": [
+              "github",
+              "gitlab"
+            ]
+          },
           "provider_by_owner": {
             "type": "object",
-            "additionalProperties": { "type": "string", "enum": ["github", "gitlab"] }
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "github",
+                "gitlab"
+              ]
+            }
           },
           "providers": {
             "type": "object",
-            "additionalProperties": { "type": "object" }
+            "additionalProperties": {
+              "type": "object"
+            }
           },
           "auth": {
             "type": "object",
@@ -533,7 +598,12 @@
         "properties": {
           "level": {
             "type": "string",
-            "enum": ["debug", "info", "warn", "error"],
+            "enum": [
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ],
             "default": "info"
           }
         }
@@ -569,8 +639,15 @@
           },
           "check_script_allowlist": {
             "type": "array",
-            "items": { "type": "string" },
-            "default": ["okf:check", "lint", "typecheck", "test"],
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "okf:check",
+              "lint",
+              "typecheck",
+              "test"
+            ],
             "description": "beta.63 (Fix 2): allowlist of package.json script names the harness may run in final-verify. A discovered script NOT on this list is NEVER run."
           },
           "check_script_timeout_seconds": {
@@ -599,7 +676,7 @@
           "full_prompts": {
             "type": "boolean",
             "default": false,
-            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
+            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction \u2014 redaction on write is always applied."
           },
           "retention_days": {
             "type": "integer",

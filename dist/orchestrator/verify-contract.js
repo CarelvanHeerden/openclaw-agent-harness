@@ -256,10 +256,35 @@ function isMutationScopeKind(kind) {
  * Returns [] when the sub-task has no inferable observable output (pure
  * reasoning / analysis), in which case the SDK signal is trusted.
  */
-export function inferVerifyContract(subTask) {
+export function inferVerifyContract(subTask, 
+// beta.67 (Bug C): the EFFECTIVE task-mode for THIS pass, which may differ
+// from the plan-time `subTask.taskMode`. On a revise cycle (cycle > 1) a
+// plan-time `mutate` sub-task that correctly makes NO change (the worker
+// follows "if none apply, make no changes and end turn") is demoted to an
+// effective `observe` -- beta.66 already detects this (loop.subtask_revise_
+// no_change, effectiveTaskMode:"observe") but the verifier still keyed the
+// contract off the plan-time `mutate`, so it FAILED the commit_made/
+// file_committed contract because HEAD didn't move. When this is set to
+// "observe" the mutation-scope kinds are filtered out EVEN in the explicit-
+// verify path (a lead-declared `verify: [commit_made]` would otherwise
+// bypass the taskMode filter entirely). Defaults to `subTask.taskMode` so
+// existing callers are unchanged.
+effectiveTaskMode) {
+    const effMode = effectiveTaskMode ?? subTask.taskMode;
+    // beta.67 (Bug C): the caller EXPLICITLY DEMOTED the mode to `observe` for
+    // this pass (a revise-no-change: plan-time `mutate` that made no commit).
+    // Only in THAT case do we drop mutation-scope kinds from an explicit
+    // lead-declared verify -- otherwise beta.15's "explicit verify wins even with
+    // taskMode='observe'" contract (plan-time observe + explicit commit_made) is
+    // preserved unchanged. i.e. the demotion is keyed on the ARGUMENT, not on
+    // the plan-time taskMode.
+    const demotedToObserve = effectiveTaskMode === "observe" && subTask.taskMode !== "observe";
     // Precedence 1: explicit verify wins.
-    if (subTask.verify && subTask.verify.length > 0)
+    if (subTask.verify && subTask.verify.length > 0) {
+        if (demotedToObserve)
+            return subTask.verify.filter((c) => !isMutationScopeKind(c.kind));
         return subTask.verify;
+    }
     const haystack = [
         subTask.title,
         subTask.intent,
@@ -352,7 +377,11 @@ export function inferVerifyContract(subTask) {
     if (subTask.contractScope === "local") {
         filtered = filtered.filter((c) => !isRemoteScopeKind(c.kind));
     }
-    if (subTask.taskMode === "observe") {
+    // beta.15: plan-time taskMode='observe' filters mutation-scope kinds.
+    // beta.67 (Bug C): a caller-supplied DEMOTED observe mode (revise-no-change
+    // of a plan-time `mutate`) filters them too, so commit_made/file_committed
+    // are dropped and the no-op verifies as a PASS instead of a false-fail.
+    if (effMode === "observe") {
         filtered = filtered.filter((c) => !isMutationScopeKind(c.kind));
     }
     return filtered;

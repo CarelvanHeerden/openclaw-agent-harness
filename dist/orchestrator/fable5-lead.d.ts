@@ -219,10 +219,30 @@ export interface LeadDeps {
     config: HarnessConfig;
     logger: {
         info: (m: string, meta?: unknown) => void;
+        warn?: (m: string, meta?: unknown) => void;
     };
-    callLeadModel: (brief: CrystallisedBrief, repos: string[]) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
+    callLeadModel: (brief: CrystallisedBrief, repos: string[], correctiveNote?: string) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
     allocateWorktree: (repo: string, branch: string) => Promise<string>;
     estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
 }
+/**
+ * beta.67 (P0a): raised when a plan fails workerContext enforcement AFTER the
+ * one bounded lead re-ask. Surfaced as a plan failure -- a loud fail at
+ * planning beats another silent workers-no-op'd revise cycle downstream.
+ */
+export declare class LeadPlanValidationError extends Error {
+    constructor(message: string);
+}
+/**
+ * beta.67 (P0a): SUBSTANCE check for a sub-task's workerContext -- not mere
+ * field presence. rationale non-empty AND (file-anchored changeSpec >=40 chars
+ * OR a codeExcerpts entry with a real snippet + path). gotchas/relatedSymbols
+ * are optional garnish and do NOT satisfy the gate.
+ */
+export declare function hasSubstantiveWorkerContext(wc?: WorkerContext): boolean;
+/** beta.67 (P0a): seqs of mutate/mixed sub-tasks lacking substantive context. */
+export declare function subTasksMissingWorkerContext(plan: {
+    subTasks: LeadPlanSubTask[];
+}): number[];
 export declare function runLeadPlanner(brief: CrystallisedBrief, deps: LeadDeps): Promise<LeadPlan>;
 //# sourceMappingURL=fable5-lead.d.ts.map

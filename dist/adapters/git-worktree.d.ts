@@ -244,6 +244,18 @@ export declare class GitAdapter {
     }>;
     formatPatch(worktreePath: string, base: string, outFile: string): Promise<void>;
     diff(worktreePath: string, base: string): Promise<string>;
+    /**
+     * beta.67 (Bug B): the fork-point sha -- the merge-base of `ref` (the default
+     * base branch, resolved to its remote-tracking ref) and HEAD in the
+     * worktree. This is the stable base the branch was created from. Diffing the
+     * adversary review against THIS (`git diff <fork-point>..HEAD`) shows ONLY
+     * the branch's own commits, not accumulated main history (which caused
+     * beta.66 smoke #4's false-positive revise). Returns "" if the merge-base
+     * cannot be resolved (caller falls back to the base-branch name).
+     */
+    mergeBase(worktreePath: string, ref: string): Promise<string>;
+    /** beta.67 (Bug B): count commits in `<base>..HEAD` (the branch's own commits). */
+    commitCount(worktreePath: string, base: string): Promise<number>;
     /** beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree. */
     diffStat(worktreePath: string, base: string): Promise<string>;
     /**

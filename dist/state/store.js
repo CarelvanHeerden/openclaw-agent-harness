@@ -84,6 +84,11 @@ export function openStateStoreSync(pathHint) {
         // Written on EVERY state transition; the watchdog fails/recovers a session
         // whose last_progress_at froze past loop.session_stall_seconds.
         { table: "sessions", column: "last_progress_at", type: "INTEGER" }, // epoch ms of last forward progress
+        // beta.67 (Bug B): the branch fork-point sha, captured at plan_ready. The
+        // adversary review diffs `git diff <plan_base_sha>..HEAD` against this so
+        // it sees ONLY the branch's own commits (beta.66 smoke #4 diffed against
+        // main-at-review-time and hallucinated unrelated commits => false revise).
+        { table: "sessions", column: "plan_base_sha", type: "TEXT" }, // fork-point sha for adversary diff base
     ];
     for (const m of additiveMigrations) {
         try {

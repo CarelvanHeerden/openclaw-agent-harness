@@ -52,6 +52,7 @@ import {
   runClassifierSdk,
   runCrystalliserSdk,
   runLeadSdk,
+  runLeadReviseSpecSdk,
   runWorkerSdk,
   fetchLiveModelIds,
   assessModelPricingHealth,
@@ -559,18 +560,21 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
 
     runLead: async (brief, ctx) => {
       const requester = ctx?.requester ?? config.slack.authorised_users[0]!;
-      const raw = await runLeadSdk({
-        model: config.models.lead,
-        brief,
-        reposAllowed: config.repos.allowed,
-        timeoutSeconds: config.loop.worker_timeout_seconds,
-        apiKey: await anthropicApiKey(),
-        logger: api.logger,
-      });
       return runLeadPlanner(brief, {
         config,
         logger: api.logger,
-        callLeadModel: async () => raw,
+        // beta.67 (P0a): callLeadModel genuinely (re-)invokes the lead SDK so
+        // the ONE bounded re-ask actually re-plans with the corrective note.
+        callLeadModel: async (b, _repos, correctiveNote) =>
+          runLeadSdk({
+            model: config.models.lead,
+            brief: b,
+            reposAllowed: config.repos.allowed,
+            timeoutSeconds: config.loop.worker_timeout_seconds,
+            apiKey: await anthropicApiKey(),
+            logger: api.logger,
+            correctiveNote,
+          }),
         allocateWorktree: async (repo, branch) => {
           const [owner] = repo.split("/");
           // Determine PAT + identity for the ACTUAL requester (multi-user).
@@ -599,6 +603,23 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         estimateCost: (p) => p.subTasks.reduce((acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens), 0),
       });
     },
+
+    // beta.67 (P0b): Fable revise-spec turn. Runs the lead model on findings +
+    // current plan to refresh workerContext for cycle-2 workers. Best-effort:
+    // a throw here falls back to buildReviseDispatchHint in the loop.
+    runLeadReviseSpec: async ({ brief, plan, review }) => {
+      const r = await runLeadReviseSpecSdk({
+        model: config.models.lead,
+        brief,
+        subTasks: plan.subTasks,
+        review,
+        timeoutSeconds: config.loop.worker_timeout_seconds,
+        apiKey: await anthropicApiKey(),
+        logger: api.logger,
+      });
+      return { subTasks: r.subTasks };
+    },
+
 
     runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint }) => {
       const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
@@ -633,8 +654,17 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       );
     },
 
-    runAdversary: async ({ brief, plan, runtime }) => {
-      const diffText = await git.diff(plan.worktreePath, config.repos.default_base_branch);
+    runAdversary: async ({ brief, plan, runtime, baseSha }) => {
+      // beta.67 (Bug B): diff against the branch's persisted FORK-POINT sha
+      // (captured at plan_ready) so the adversary sees ONLY this branch's own
+      // commits. beta.66 smoke #4 diffed against config.repos.default_base_branch
+      // (main-at-review-time), which carried accumulated prior-PR/prior-smoke
+      // history the branch never contained -- the adversary hallucinated "5
+      // unrelated commits" and false-positive-revised a 1-commit branch,
+      // wasting a full cycle. Fall back to the base-branch name only when no
+      // fork-point was captured (probe unwired / pre-beta.67 session).
+      const diffBase = baseSha && baseSha.length > 0 ? baseSha : config.repos.default_base_branch;
+      const diffText = await git.diff(plan.worktreePath, diffBase);
       const diffFile = resolve(config.storage.worktree_root.replace(/^~/, process.env.HOME ?? ""), `${Date.now()}.diff`);
       await mkdir(dirname(diffFile), { recursive: true });
       await writeFile(diffFile, diffText, "utf8");
@@ -786,6 +816,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     // git / the provider REST API / disk directly so a confabulated
     // "I pushed" / "I opened a PR" is caught deterministically.
     worktreeHeadSha: async (worktreePath: string) => git.baseSha(worktreePath).catch(() => ""),
+    // beta.67 (Bug B): fork-point + branch commit-count probes for the
+    // plan_base_sha capture (at plan_ready) and the adversary diff-base sanity
+    // log. The adversary review then diffs against the branch's own
+    // fork-point, not against main-at-review-time.
+    worktreeMergeBase: async (worktreePath: string, baseBranch: string) => git.mergeBase(worktreePath, baseBranch).catch(() => ""),
+    worktreeCommitCount: async (worktreePath: string, base: string) => git.commitCount(worktreePath, base).catch(() => -1),
     // beta.64 (P0-3/P0-4): diff-stat + scripted tsc for the best-effort-verify
     // clean-diff gate and the scripted verifier fallback of a timed-out LLM
     // VERIFY sub-task. A "run tsc/diff/check-scripts" verify step needs no model.
@@ -1617,6 +1653,54 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       });
     } else {
       timer = setInterval(tick, dayMs);
+      runtime.disposers.push(() => { if (timer) clearInterval(timer); timer = undefined; });
+    }
+  }
+
+  // beta.67 (Bug A): EXTERNAL stall-sweep service. beta.66 smoke #4 died
+  // between a worker sdk_response and the next handler step -- the loop-runner
+  // PROCESS was gone, so beta.63's in-process checkStalls could never fire (a
+  // dead process cannot watchdog its own death) and a pending harness_cancel
+  // was never consumed. This periodic service runs INDEPENDENT of any
+  // loop-runner process and drives loop.sweepStalls() (which runs the existing
+  // checkStalls fast path + reaps pending-cancel dead-loop sessions). Uses the
+  // same api.registerService lifecycle as pr-watcher / retention-nightly, with
+  // an in-process setInterval fallback when the runtime has no service hook.
+  {
+    const sweepSeconds = config.loop.stall_sweep_interval_seconds ?? 60;
+    const sweepMs = Math.max(15, Math.min(600, sweepSeconds)) * 1000;
+    let timer: NodeJS.Timeout | undefined;
+    let inFlight = false;
+    const tick = () => {
+      if (inFlight) return; // never overlap sweeps
+      inFlight = true;
+      void loop
+        .sweepStalls()
+        .then((r) => {
+          if (r.recovered.length > 0 || r.terminated.length > 0) {
+            api.logger.info("[harness] stall-sweep acted", {
+              recovered: r.recovered.length,
+              terminated: r.terminated.length,
+            });
+          }
+        })
+        .catch((err) => api.logger.warn("[harness] stall-sweep tick failed", { err: String(err) }))
+        .finally(() => { inFlight = false; });
+    };
+    if (api.registerService) {
+      const dispose = api.registerService({
+        id: `${PLUGIN_ID}:stall-sweep`,
+        start: () => { timer = setInterval(tick, sweepMs); },
+        stop: () => { if (timer) clearInterval(timer); timer = undefined; },
+      });
+      runtime.disposers.push(async () => {
+        if (timer) clearInterval(timer);
+        timer = undefined;
+        if (typeof dispose === "function") dispose();
+        else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
+      });
+    } else {
+      timer = setInterval(tick, sweepMs);
       runtime.disposers.push(() => { if (timer) clearInterval(timer); timer = undefined; });
     }
   }

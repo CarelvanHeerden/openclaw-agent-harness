@@ -205,3 +205,91 @@ Built in dependency order (log first — later parts write events into it).
 
 ## Verification
 - `npx tsc --noEmit`: clean. `npm run build`: exit 0 (dist landed). Full suite: **724 → 737 tests (+13), all pass**. Smoke: `Smoke OK: 15 tools` (no new tool).
+
+---
+
+# beta.67 — three P0 fixes from beta.66 smoke #4 (Bugs A / B / C)
+
+**Author:** Clark (subagent for Carel van Heerden)
+**Context:** beta.66 smoke #4 was the furthest-ever run — the SDK-hang class was
+fixed (all 8 SDK calls opened streams), and it was the first smoke to reach
+adversary review + cycle 2. Reaching that depth surfaced three distinct P0
+bugs, all small and confirmed real. Fixes only — no over-build/rebuild.
+
+## Bug A — EXTERNAL stall-sweep (dead-executor + cancel-on-dead)
+- Root cause: the loop-runner PROCESS died between a worker sdk_response and
+  the next handler step. Session stayed `executing` forever; `ps` showed no
+  live process. beta.63 `checkStalls` detection is correct but runs IN-PROCESS
+  — a dead process cannot watchdog its own death. `harness_cancel` set
+  `reactions_json.abort` which the dead loop never consumed → never terminal.
+- Gateway tick investigation: the plugin has NO gateway-provided periodic tick
+  hook. It uses `api.registerService({ id, start, stop })` with a
+  `setInterval` fallback (see pr-watcher + retention-nightly in src/index.ts).
+  So I registered a NEW `${PLUGIN_ID}:stall-sweep` service using that exact
+  pattern (bootstrap-owned `setInterval`, overlap-guarded, disposed on
+  teardown), NOT a gateway hook — because none exists.
+- New `OrchestratorLoop.sweepStalls()`: (1) runs the EXISTING `checkStalls`
+  fast path (safety net for a dead executor); (2) reaps sessions with a pending
+  `reactions_json.abort` whose loop is dead (no live runner) → terminal
+  `failed` (reason `cancelled_dead_loop`) PRESERVING the worktree (beta.62).
+  Covers executing/planning/reviewing. Never throws.
+- checkStalls kept intact as the in-process fast path.
+- Config: NEW `loop.stall_sweep_interval_seconds` (default 60, clamp [15,600])
+  in BOTH src/config.ts (type + default + clamp) and manifest configSchema.
+- Audit: loop.stall_sweep_ran / loop.stall_sweep_recovered /
+  loop.stall_sweep_terminated.
+
+## Bug B — adversary diff against the branch FORK-POINT, not main-at-review-time
+- Root cause: `runAdversary` in src/index.ts called
+  `git.diff(worktreePath, config.repos.default_base_branch)` → diffed against
+  main-at-review-time (accumulated prior work), so the adversary hallucinated
+  unrelated commits/files → false-positive revise + wasted cycle-2 (~68% spend).
+- Fix: capture the fork-point sha ONCE at `plan_ready` (after the worktree
+  exists) via `git merge-base origin/<default base> HEAD`, persist as new
+  `sessions.plan_base_sha` (schema.sql CREATE + additive migration in
+  store.ts). Thread it through the review phase: the loop reads plan_base_sha,
+  passes it as `baseSha` to `runAdversary`, which now diffs
+  `git diff <plan_base_sha>..HEAD` (fallback to base-branch name only when no
+  fork-point was captured). Where the diff base is now chosen (index.ts):
+  `const diffBase = baseSha && baseSha.length > 0 ? baseSha : config.repos.default_base_branch;`
+- Sanity log: loop.adversary_diff_base {baseSha, headSha, commitCount,
+  subTaskCount, suspicious}; warns when commitCount is suspiciously high vs
+  sub-task count. New git helpers mergeBase() + commitCount().
+
+## Bug C — verifier false-fail on a legit revise no-op
+- Root cause: on cycle>1 a plan-time `mutate` sub-task that correctly makes no
+  change was failed by commit_made/file_committed because HEAD didn't move.
+  The contract was selected off plan-time `taskMode`; an explicit lead-declared
+  `verify: [commit_made]` also bypassed the taskMode filter entirely.
+- Fix: `inferVerifyContract(subTask, effectiveTaskMode?)` — when the caller
+  EXPLICITLY demotes to `observe`, mutation-scope kinds are filtered out even
+  in the explicit-verify path. Contract-selection conditional (loop.ts):
+  `const effectiveTaskMode = cycle > 1 && st.taskMode === "mutate" && !result.commitSha ? "observe" : st.taskMode;`
+  then `const contract = inferVerifyContract(st, effectiveTaskMode);`
+  The demotion is keyed on the ARGUMENT (`demotedToObserve = effectiveTaskMode
+  === "observe" && subTask.taskMode !== "observe"`), NOT plan-time taskMode, so
+  beta.15's "explicit verify wins with plan-time observe" contract is preserved.
+
+## Files changed
+- src/orchestrator/loop.ts — sweepStalls(); plan_base_sha capture at plan_ready;
+  adversary baseSha thread + loop.adversary_diff_base; effectiveTaskMode gate;
+  runAdversary dep param; worktreeMergeBase/worktreeCommitCount deps.
+- src/index.ts — stall-sweep service registration; runAdversary diffBase from
+  baseSha; worktreeMergeBase/worktreeCommitCount deps wired.
+- src/orchestrator/verify-contract.ts — inferVerifyContract effectiveTaskMode.
+- src/adapters/git-worktree.ts — mergeBase() + commitCount().
+- src/config.ts — loop.stall_sweep_interval_seconds (type/default/clamp).
+- openclaw.plugin.json — loop.stall_sweep_interval_seconds configSchema.
+- src/state/schema.sql — sessions.plan_base_sha column.
+- src/state/store.ts — plan_base_sha additive migration.
+- scripts/smoke.mjs — assert stall-sweep service registered.
+- tests/beta67-p0-fixes.test.mjs — NEW (19 tests, A/B/C).
+- tests/beta56-p0-fixes.test.mjs — updated the inferVerifyContract(st) source
+  assertion to inferVerifyContract(st, effectiveTaskMode).
+- src/version.ts + package.json — 0.1.0-beta.67.
+
+## Verification
+- `npx tsc --noEmit`: clean. `npm run build`: exit 0 (dist landed).
+- Full suite: **747 → 766 tests (+19), all pass**.
+- Smoke: `Smoke OK: 15 tools, 2 hooks, 3 services` — services now
+  pr-watcher + retention-nightly + stall-sweep (was 2, now 3).

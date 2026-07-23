@@ -833,16 +833,64 @@ export async function runLeadSdk(params) {
         // lead gets NO OpenClaw context injection, so this must be explicit.
         renderConventionsForPrompt(params.brief.repoConventions, "lead"),
     ].join("\n");
+    const userMessage = params.correctiveNote
+        ? `${JSON.stringify(params.brief)}\n\nCORRECTION (your previous plan was rejected):\n${params.correctiveNote}`
+        : JSON.stringify(params.brief);
     const r = await structuredCall({
         model: params.model,
         systemPrompt,
-        userMessage: JSON.stringify(params.brief),
+        userMessage,
         timeoutSeconds: params.timeoutSeconds,
         apiKey: params.apiKey,
         logger: params.logger,
         validation: { requiredKeys: ["repo", "branch", "subTasks", "reviewChecklist", "riskLevel"], label: "lead" },
     });
     return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+}
+/**
+ * beta.67 (P0b): FABLE-IN-THE-LOOP revise-spec turn. Reads the adversary
+ * findings + current plan, RE-INVESTIGATES, and returns the SAME sub-tasks
+ * (same seqs) with each affected mutate/mixed sub-task's workerContext
+ * REFRESHED to a resolved changeSpec. Fed to cycle-2 workers via the beta.66
+ * warm-context render path -- workers never see the raw findings. HARD
+ * BOUNDARY: reads the adversary OUTPUT only; nothing flows back INTO it.
+ */
+export async function runLeadReviseSpecSdk(params) {
+    const systemPrompt = [
+        "You are the lead planner running a REVISION SPEC turn. An adversarial reviewer examined the previous cycle's diff and returned findings. Your job is NOT to re-plan from scratch: KEEP the existing sub-task list (same seq numbers, same titles/intents) and REFRESH each affected mutate/mixed sub-task's `workerContext` so a CHEAP worker can apply the fix WITHOUT re-investigating the repo.",
+        "Return STRICT JSON: { subTasks: SubTask[] } -- the FULL sub-task list, same seqs as the input, each with its refreshed workerContext.",
+        "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope: 'local', taskMode: 'observe'|'mutate'|'mixed', verify: VerifyCheck[], workerContext?: WorkerContext }",
+        "WorkerContext: { rationale: string, codeExcerpts?: {path: string, startLine?: number, snippet: string, note?: string}[], changeSpec?: string, gotchas?: string[], relatedSymbols?: string[] }",
+        "- For EACH finding, map it to the sub-task(s) whose files it touches, and REFRESH that sub-task's workerContext with: (a) rationale -- what the reviewer found and HOW to fix it; (b) changeSpec -- the precise, file-anchored edit that resolves the finding (name the exact file+location); (c) codeExcerpts -- the ACTUAL current code you read around the fix site so the worker does not re-open files; (d) gotchas/relatedSymbols as needed. The worker must be able to implement the fix from workerContext ALONE.",
+        "- A sub-task that NO finding touches keeps its existing workerContext (or a rationale saying no findings apply; make no changes). Do NOT invent new work the findings did not ask for.",
+        "- Every mutate/mixed sub-task's workerContext MUST have a non-empty rationale AND a concrete file-anchored changeSpec (>=40 chars naming a real path) OR a codeExcerpts entry with real code. This is enforced downstream; a bare ticket will be rejected.",
+        "- Keep contractScope 'local' and the same taskMode/verify contract. Do NOT add push/PR sub-tasks (the harness pushes after review).",
+        "- workerContext is for DEV WORKERS ONLY. Investigate the repo yourself; do not cite the reviewer's reasoning as authority.",
+        "CRITICAL OUTPUT RULE: Return the JSON object DIRECTLY as your reply text. No file, no code fence, no narration. Your ENTIRE reply is the raw JSON object { subTasks: [...] } and nothing else.",
+    ].join("\n");
+    const findingLines = (params.review.findings ?? [])
+        .slice(0, 30)
+        .map((f) => {
+        const loc = f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : "";
+        return `- [${f.severity}/${f.dimension}] ${f.title}${loc}: ${f.detail}`;
+    })
+        .join("\n");
+    const userMessage = JSON.stringify({
+        verdict: params.review.verdict,
+        reviewerSummary: params.review.summary,
+        findings: findingLines,
+        currentSubTasks: params.subTasks,
+    });
+    const r = await structuredCall({
+        model: params.model,
+        systemPrompt,
+        userMessage,
+        timeoutSeconds: params.timeoutSeconds,
+        apiKey: params.apiKey,
+        logger: params.logger,
+        validation: { requiredKeys: ["subTasks"], label: "lead-revise-spec" },
+    });
+    return { subTasks: r.parsed.subTasks, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
 }
 /**
  * Adversary SDK call.

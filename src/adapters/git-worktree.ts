@@ -712,6 +712,37 @@ esac
     return this.run(["-C", worktreePath, "diff", base, "HEAD"]);
   }
 
+  /**
+   * beta.67 (Bug B): the fork-point sha -- the merge-base of `ref` (the default
+   * base branch, resolved to its remote-tracking ref) and HEAD in the
+   * worktree. This is the stable base the branch was created from. Diffing the
+   * adversary review against THIS (`git diff <fork-point>..HEAD`) shows ONLY
+   * the branch's own commits, not accumulated main history (which caused
+   * beta.66 smoke #4's false-positive revise). Returns "" if the merge-base
+   * cannot be resolved (caller falls back to the base-branch name).
+   */
+  async mergeBase(worktreePath: string, ref: string): Promise<string> {
+    // Prefer the remote-tracking ref (origin/<ref>) since the worktree was
+    // branched from origin/<base> (see allocateInner); fall back to the bare
+    // ref name.
+    for (const candidate of [`origin/${ref}`, ref]) {
+      try {
+        const out = (await this.run(["-C", worktreePath, "merge-base", candidate, "HEAD"])).trim();
+        if (out) return out;
+      } catch { /* try next candidate */ }
+    }
+    return "";
+  }
+
+  /** beta.67 (Bug B): count commits in `<base>..HEAD` (the branch's own commits). */
+  async commitCount(worktreePath: string, base: string): Promise<number> {
+    try {
+      const out = (await this.run(["-C", worktreePath, "rev-list", "--count", `${base}..HEAD`])).trim();
+      const n = parseInt(out, 10);
+      return Number.isFinite(n) ? n : 0;
+    } catch { return 0; }
+  }
+
   /** beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree. */
   async diffStat(worktreePath: string, base: string): Promise<string> {
     return this.run(["-C", worktreePath, "diff", "--stat", base, "HEAD"]);
