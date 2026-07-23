@@ -860,7 +860,16 @@ export async function runLeadSdk(params: {
     "- WARM WORKER CONTEXT (CRITICAL for cost + quality). You are the ORCHESTRATOR: you investigate deeply, your workers are CHEAPER models that will NOT re-explore the repo. For EVERY mutate sub-task, populate `workerContext` with everything a worker needs to implement it CORRECTLY WITHOUT re-reading the codebase: (a) `rationale` -- WHY this change is needed and HOW you decided to shape it; (b) `codeExcerpts` -- the ACTUAL code you read, verbatim, with `path` and `startLine`, so the worker does not re-open files to re-find them; (c) `changeSpec` -- the precise, low-ambiguity edit ('in useTaxonomy() at src/hooks/useTaxonomy.ts:41, replace the hardcoded LABELS map with getTaxonomyOptions() from src/lib/taxonomy-options.ts'); (d) `gotchas` -- traps specific to this sub-task (e.g. 'React 19.2.7 has no React.act; use renderToStaticMarkup for component tests here'); (e) `relatedSymbols` -- exports/functions the worker will need and where they live. If a worker would have to re-derive something you already know, it belongs in workerContext. This is not optional polish -- it is why the harness exists (smart planner + cheap executors). Keep excerpts focused (only lines that matter); do not paste whole files.",
     "- workerContext is for DEV WORKERS ONLY. The adversary reviewer never sees it and must stay independent. Observe/probe sub-tasks may omit workerContext (they investigate, they don't implement).",
     "Rules:",
-    "- Prefer 3-8 sub-tasks. Hard cap 20.",
+    // beta.68 (adaptive decomposition): scale the sub-task COUNT to the actual
+    // complexity of the change. Each sub-task is a separate COLD worker SDK call
+    // (planner already investigated), so needless probe/verify sub-tasks on a
+    // trivial change just add cold round-trips + latency for no benefit. Match
+    // Cursor's speed on small changes; keep the fan-out for genuinely large ones.
+    "- ADAPTIVE DECOMPOSITION: scale the NUMBER of sub-tasks to the change's real complexity. Do NOT pad a small change with ceremony. Guidance by size:",
+    "    * TRIVIAL / single-file, localized edit you have already fully investigated (you can write a complete `workerContext.changeSpec`): emit EXACTLY ONE `mutate` sub-task. Do NOT add a separate observe/probe sub-task (your investigation already covered it) and do NOT add a separate observe/verify sub-task (the harness runs its own convention-checks + the adversary review after execution). One clean commit is enough.",
+    "    * MODERATE / a few files or one non-trivial change needing a look-before-edit: 2-4 sub-tasks (e.g. one probe if you genuinely still need to confirm repo shape, then the mutate(s)).",
+    "    * LARGE / multi-file, multiple independent units of work: 3-8 sub-tasks, one per independently-reviewable unit. Hard cap 20.",
+    "- Bias toward FEWER sub-tasks. A sub-task earns its place only if it is independently reviewable AND not already covered by your own investigation or the harness's post-execution review. When in doubt between 1 and 3 for a small change, choose 1.",
     "- Each sub-task must be independently reviewable.",
     "- reviewChecklist has one item per acceptance criterion + one for tests + one for docs.",
     // beta.33: CRITICAL ARCHITECTURE RULE. Push + PR are NOT sub-tasks.

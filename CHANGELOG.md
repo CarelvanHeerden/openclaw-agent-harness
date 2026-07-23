@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.0-beta.68] -- 2026-07-23
+
+### Adaptive decomposition (lead planner)
+
+Replaced the flat "Prefer 3-8 sub-tasks" planner rule with complexity-tiered
+guidance so the sub-task COUNT scales to the change's real size. Each sub-task
+is a separate cold worker SDK call, so a trivial single-file change no longer
+pays for a redundant observe-probe + observe-verify around the one real edit
+(smoke #4: a 30-line single-file change had become 3 sub-tasks = 3 cold
+round-trips). Tiers: TRIVIAL single-file (fully pre-investigated) -> exactly
+ONE mutate sub-task; MODERATE -> 2-4; LARGE multi-file -> 3-8, hard cap 20.
+Bias toward fewer; tie-break to 1 on small changes. The harness's own
+convention-checks + adversary review remain the post-execution safety net, so
+dropping the ceremony verify sub-task loses no correctness coverage. Prompt-only
+change in `src/adapters/claude-sdk.ts`; the `taskMode`/`verify` machinery
+already supports a lone mutate sub-task.
+
 ## [0.1.0-beta.67] -- 2026-07-23
 
 Four P0 fixes. Three (A/B/C) exposed by beta.66 smoke #4 -- the furthest-ever
