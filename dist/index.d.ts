@@ -14,6 +14,7 @@
  */
 import type { HarnessConfig, TokenPointer } from "./config.js";
 import { openStateStore } from "./state/store.js";
+import { InteractionLog } from "./state/interaction-log.js";
 import { OrchestratorLoop } from "./orchestrator/loop.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
@@ -104,6 +105,13 @@ export interface HarnessRuntime {
     budget: BudgetEnforcer;
     pat: PatRouter;
     loop: OrchestratorLoop;
+    /**
+     * beta.63 (Part B): durable, structured interaction log written OUTSIDE the
+     * worktree. Threaded into the loop + SDK adapters so every LLM call, state
+     * transition, verify probe, and stall/recovery event lands in a JSONL trail
+     * that survives worktree release + container restart. Read via harness_logs.
+     */
+    interactionLog: InteractionLog;
     listener: SlackChannelListener;
     dispatcher: Dispatcher;
     slack: SlackAdapter;

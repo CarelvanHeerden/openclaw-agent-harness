@@ -62,3 +62,70 @@ Used `node:fs`, `node:child_process` (already used), native `fetch`. No new deps
 
 - The fallback from `fileExistsOnDisk` to `fileWrittenSince` could be removed (breaking change) once all real probe factories are updated.
 - `branch_pushed` inference could be replaced with `remote_branch_exists` + `commit_sha_matches`; I kept `branch_pushed` for backward compat. If Carel wants cleaner semantics, update `inferVerifyContract` and update the "push branch infers branch_pushed" test.
+
+---
+
+# beta.63 — stall watchdog + interaction log + repo-convention awareness
+
+**Author:** Clark (subagent for Carel) · 2026-07-23 · builds on beta.62 (86b7511)
+
+Three-feature release (all config-gated, default-ON). New config keys are in BOTH
+`src/config.ts` AND `openclaw.plugin.json` `configSchema` (`additionalProperties:false`).
+Built in dependency order (log first — later parts write events into it).
+
+## Part B — durable interaction log (built first)
+
+- New `src/state/interaction-log.ts`: `InteractionLog` class + pure helpers
+  (`redactValue`, `redactTokenShapes`, `summarisePrompt`, `resolveInteractionLogConfig`).
+  Append-only JSONL written to `<dataDir>/logs` (dir = `dirname(state_db_path)`),
+  **OUTSIDE the worktree**. Per-session file + rolling global tail.
+- Redaction is applied unconditionally on write (reuses `redactSecrets` from
+  git-worktree.ts + standalone token-shape regexes). `full_prompts` only gates the
+  prompt BODY, never redaction.
+- Threaded into the loop: `setStatus` mirrors `state_transition`; SDK call sites
+  (lead/worker/adversary) log `sdk_request`/`sdk_response`; verify probes, env-wait
+  retries, refusals, review crashes mirrored too.
+- New `harness_logs` tool (registration.ts) tails a session's JSONL. Registered in
+  manifest contracts.tools + sdk-compliance EXPECTED_TOOLS + tools.test deepEqual +
+  smoke expectTools.
+- Config: `log.interaction_log_enabled` (true), `log.dir` (""→`<dataDir>/logs`),
+  `log.full_prompts` (false), `log.retention_days` (14).
+
+## Part A — stall watchdog (built second)
+
+- Additive `session.last_progress_at` (schema CREATE + store.ts migration list),
+  written on every setStatus + checkpoint + sub-task start + finalize/push via a new
+  `markProgress` helper.
+- `OrchestratorLoop.checkStalls(now?)`: scans executing/reviewing sessions past the
+  window; loud `loop.session_stalled`; re-tick recovery when no live runner + brief
+  present; else — gated by `stall_auto_terminal` — terminal `failed`
+  (`stalled_no_progress`) via `finaliseStalled`, which preserves the worktree and, when
+  commits exist + `stall_graceful_pr`, opens a `needs_human_review` PR (synthesises a
+  minimal brief if the crystallised one is gone).
+- `progress.ts` snapshot gains `stalled` + `msSinceProgress`; `harness_progress` passes
+  the configured window; `harness_resume` force description extended.
+- Config: `loop.session_stall_seconds` (1800, clamped ≥300), `loop.stall_auto_terminal`
+  (true), `loop.stall_graceful_pr` (true).
+
+## Convention-awareness (built third)
+
+- New `src/orchestrator/repo-conventions.ts`: `ingestRepoConventions` (Fix 1),
+  `discoverCheckScripts` + `runCheckScripts` (Fix 2), `applyCharBudget` (longest-first
+  truncation + note), `renderConventionsForPrompt` (per-role guidance).
+- Fix 1: ingest at plan-ready (repo checked out at `plan.worktreePath`) → `brief.repoConventions`;
+  threaded into lead (claude-sdk.ts), worker (sonnet-worker.ts), adversary (fable5-adversary.ts).
+- Fix 2: `runFinalVerifyChecks` runs allowlisted check scripts inline+blocking before review;
+  non-zero exit → REVISE-worthy `loop.convention_check_failed` finding that downgrades a `pass`
+  to `revise` (never `block`/hard-fail); unrunnable/timeout → non-fatal skip note. Injectable
+  `runCheckScript` dep for tests.
+- Config: `brief.ingest_repo_conventions` (true), `brief.convention_char_budget` (10000),
+  `verify.run_repo_check_scripts` (true), `verify.check_script_allowlist`
+  (`["okf:check","lint","typecheck","test"]`), `verify.check_script_timeout_seconds` (600).
+
+## Verification
+
+- `npx tsc --noEmit`: clean. `npm run build`: exit 0. Full suite: **661 → 699 tests (+38), all pass**.
+  Smoke: `Smoke OK: 15 tools` (harness_logs added).
+- Conservative choices noted: convention-check failures are findings, never hard-fails; stall
+  auto-terminal is separately gated; recovery re-tick is preferred over terminal when a brief exists;
+  graceful stall-PR synthesises a minimal brief rather than evaporating commits.

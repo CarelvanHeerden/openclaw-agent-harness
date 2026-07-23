@@ -108,6 +108,7 @@ const expectTools = [
   "harness_run",
   "harness_status",
   "harness_progress",
+  "harness_logs",
   "harness_health",
   "harness_start_session",
   "harness_session_get",

@@ -26,6 +26,7 @@ import type { ReviewReport } from "./fable5-adversary.js";
 import type { WorkerResult } from "./sonnet-worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 import { type VerifyProbes } from "./verify.js";
+import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 export type LoopStatus = "crystallising" | "planning" | "executing" | "reviewing" | "done" | "failed" | "aborted" | "awaiting_clarification";
 export type LoopOutcome = {
     status: "shipped";
@@ -113,6 +114,14 @@ export interface OrchestratorDeps {
         error: (m: string, meta?: unknown) => void;
     };
     /**
+     * beta.63 (Part B): durable interaction log. Optional for back-compat with
+     * test doubles that don't exercise it; when present, EVERY state transition,
+     * verify probe, refusal/env-wait/deviation, and stall/recovery event is
+     * mirrored into a JSONL file OUTSIDE the worktree (the SDK adapters log their
+     * own sdk_request/sdk_response events via the same instance). Never throws.
+     */
+    interactionLog?: InteractionLog;
+    /**
      * Injected work-doers. Real impls in src/adapters + src/vercel.
      *
      * `requester` is the session's Slack user id, threaded through so PAT
@@ -172,6 +181,19 @@ export interface OrchestratorDeps {
         worktreePath: string;
         baseSha: string;
     }) => VerifyProbes;
+    /**
+     * beta.63 (convention-awareness Fix 2): injectable check-script runner used by
+     * the final-verify convention-check pass. Defaults to `npm run <name>`
+     * (spawnSync) inside the worktree. Injected in tests so no real npm process
+     * spawns. When absent, {@link runCheckScripts}'s built-in runner is used.
+     */
+    runCheckScript?: (name: string, cwd: string, timeoutMs: number) => {
+        status: number | null;
+        stdout: string;
+        stderr: string;
+        error?: unknown;
+        timedOut?: boolean;
+    };
     /** Read the current HEAD sha of a worktree (for commit_made verification). */
     worktreeHeadSha?: (worktreePath: string) => Promise<string>;
     /**
@@ -223,6 +245,13 @@ export declare class OrchestratorLoop {
         reason: string;
     };
     private setStatus;
+    /**
+     * beta.63 (Part A): mark forward progress WITHOUT a status change (e.g. a
+     * sub-task started/completed, review started, push done). Bumps
+     * last_progress_at so the watchdog sees liveness inside a long phase, and
+     * logs a progress breadcrumb to the interaction log.
+     */
+    private markProgress;
     private checkpoint;
     private addCost;
     private saveReview;
@@ -315,6 +344,16 @@ export declare class OrchestratorLoop {
      * cost as a proxy, with a conservative floor.
      */
     private estimateReviewCost;
+    /**
+     * beta.63 (convention-awareness Fix 2): run the repo's DECLARED check scripts
+     * (from package.json#scripts, gated by verify.check_script_allowlist) inline +
+     * blocking in the worktree at the end of a cycle's execution. Returns
+     * REVISE-worthy `ReviewFinding[]` for scripts that exited non-zero; unrunnable/
+     * timed-out scripts produce a NON-FATAL note (no finding). Never throws.
+     * Emits `loop.convention_check_ran` per run and `loop.convention_check_failed`
+     * per non-zero exit.
+     */
+    private runFinalVerifyChecks;
     private finaliseAbort;
     /**
      * beta.16 fix #3 + beta.17 correctness: schedule a best-effort worktree
@@ -340,6 +379,52 @@ export declare class OrchestratorLoop {
      * can `git log`/push the branch manually even when the harness couldn't.
      */
     private finaliseFailedPreserveWorktree;
+    /**
+     * beta.63 (Part A): the LATE-STAGE STALL WATCHDOG.
+     *
+     * Origin: the b60 record-depth run got ~7 sub-tasks deep, hit a live
+     * env-wait-retry, then the loop STOPPED EMITTING with the session still
+     * `executing` and no terminal event -- for ~2 days -- until a container
+     * restart cleared it. beta.42 bound the re-entrancy guard, beta.60 bound the
+     * whole `runOne`; this binds the SESSION as a whole (and the finalize phase
+     * specifically), which those two do not cover.
+     *
+     * For every non-terminal executing/reviewing session whose last_progress_at
+     * froze past `loop.session_stall_seconds`, it:
+     *   1. emits a LOUD `loop.session_stalled {phase, msSinceProgress}` (logger +
+     *      audit + interaction log);
+     *   2. attempts bounded self-recovery -- if NO live loop-runner owns the
+     *      session (dead executor), re-tick the loop-runner (reuse resume
+     *      machinery: re-drive `run()` from the crystallised brief); if a live
+     *      runner IS present the session is genuinely busy -> leave it alone;
+     *   3. if unrecoverable AND `stall_auto_terminal` is on, transition to a
+     *      terminal `failed`(reason=stalled_no_progress) PRESERVING the worktree,
+     *      and -- when the branch already has commits and `stall_graceful_pr` is
+     *      on -- attempt a graceful push+PR flagged needs_human_review (beta.62
+     *      pattern) so a 95%-done deliverable is not evaporated the way b60 was.
+     *
+     * Idempotent + never throws. Safe to call from a gateway tick / maintenance
+     * cycle / interval. Returns the list of stalls handled (for tests + telemetry).
+     */
+    checkStalls(now?: number): Promise<Array<{
+        sessionId: string;
+        phase: string;
+        msSinceProgress: number;
+        action: string;
+    }>>;
+    /**
+     * beta.63 (Part A): terminal handling of an UNRECOVERABLE stall. Never
+     * evaporate a near-done deliverable: if the branch has commits and
+     * `stall_graceful_pr` is on, attempt a graceful push+PR flagged
+     * needs_human_review (beta.62 pattern); otherwise fail terminally PRESERVING
+     * the worktree so the commit chain stays inspectable on disk. Never throws.
+     * Returns a short action string for telemetry.
+     */
+    private finaliseStalled;
+    /** beta.63: read the persisted lead plan JSON for a session (or null). */
+    private getPlanJson;
+    /** beta.63: read the most recent completed review for a session (or undefined). */
+    private getLastReview;
     /**
      * beta.62 (fix #2/#3): handle an adversary-review CRASH. The completed,
      * self-verified sub-task work must not be silently discarded (the
@@ -368,6 +453,11 @@ export declare class OrchestratorLoop {
      */
     private finaliseAwaitingClarification;
 }
+/**
+ * beta.63 (Part A/B): map a loop status to the interaction-log phase
+ * classification. Kept a free function so it is importable by tests.
+ */
+export declare function mapPhase(status: LoopStatus): InteractionPhase;
 /**
  * Kahn's-algorithm topological sort of sub-tasks by `dependsOn`.
  * Stable: preserves original seq order among independent tasks.

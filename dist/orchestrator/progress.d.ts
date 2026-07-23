@@ -79,6 +79,15 @@ export interface ProgressSnapshot {
     /** Wall-clock ms since the most recent audit event on this session. */
     msSinceLastEvent: number | null;
     lastEventAt: number | null;
+    /**
+     * beta.63 (Part A): stall surfacing so a poller can SEE a wedge instead of
+     * it looking identical to legit long work. `msSinceProgress` is ms since the
+     * session's last_progress_at heartbeat; `stalled` is true when the session is
+     * non-terminal in an active phase and msSinceProgress exceeds the watchdog
+     * window (`stallSeconds`).
+     */
+    msSinceProgress: number | null;
+    stalled: boolean;
     /** Tail of recent lifecycle events (newest last), for the agent to narrate. */
     recentEvents: ProgressEvent[];
     /**
@@ -99,7 +108,7 @@ export interface ProgressSnapshot {
  * Build a progress snapshot for a session. Pure read; never mutates state.
  * `limit` bounds the recent-event tail (default 12).
  */
-export declare function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit?: number): ProgressSnapshot;
+export declare function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit?: number, stallSeconds?: number): ProgressSnapshot;
 /** One-line Slack-mrkdwn-safe summary. No tables, no headings. */
 export declare function buildHeadline(input: {
     phase: string;

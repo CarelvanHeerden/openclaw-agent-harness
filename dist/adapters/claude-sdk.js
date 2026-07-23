@@ -16,6 +16,7 @@
  * without the real SDK installed. Production code will error clearly if
  * the SDK is missing.
  */
+import { renderConventionsForPrompt } from "../orchestrator/repo-conventions.js";
 /**
  * Build the `env` passed to the SDK subprocess.
  *
@@ -663,6 +664,10 @@ export async function runLeadSdk(params) {
         // mis-parsed. Tell the lead to return the JSON DIRECTLY as its message.
         "CRITICAL OUTPUT RULE: Return the JSON object DIRECTLY as your reply text. Do NOT write it to a file, do NOT wrap it in a code fence, do NOT describe it, do NOT narrate a plan. Your ENTIRE reply must be the raw JSON object and nothing else.",
         "Output the JSON and nothing else.",
+        // beta.63 (Fix 1): carry the repo's declared conventions (when present on
+        // the brief) so the plan respects file-placement + regeneration rules. The
+        // lead gets NO OpenClaw context injection, so this must be explicit.
+        renderConventionsForPrompt(params.brief.repoConventions, "lead"),
     ].join("\n");
     const r = await structuredCall({
         model: params.model,

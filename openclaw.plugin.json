@@ -13,6 +13,7 @@
       "harness_run",
       "harness_status",
       "harness_progress",
+      "harness_logs",
       "harness_health",
       "harness_start_session",
       "harness_session_get",
@@ -294,6 +295,23 @@
             "type": "boolean",
             "default": true,
             "description": "beta.62 (fix #2/#3): when a cycle-N adversary review CRASHES (SDK/parse/persist error) instead of returning a verdict, and a PRIOR cycle already produced a completed review AND this cycle's own sub-task self-verification was fully green, open the PR anyway with merge_recommendation='needs_human_review' rather than discarding the adversary-motivated commits (the b60-attempt-2 silent-review-crash failure: 8 good commits, seq-6 self-verify green, cycle-2 review crashed, work thrown away). When the graceful path is NOT taken, the worktree is preserved (not released) so the commit chain stays inspectable. Set false to keep the hard-fail-and-release behaviour."
+          },
+          "session_stall_seconds": {
+            "type": "integer",
+            "minimum": 300,
+            "maximum": 86400,
+            "default": 1800,
+            "description": "beta.63 (Part A): session-level stall watchdog window. A session writes session.last_progress_at on EVERY state transition; the watchdog checks non-terminal executing/reviewing/finalising sessions where now-last_progress_at exceeds this and emits a loud loop.session_stalled, attempts bounded self-recovery (re-tick the loop-runner), and if unrecoverable transitions to a terminal failed(reason=stalled_no_progress) PRESERVING the worktree and, if the branch has commits, opening a graceful push+PR flagged needs_human_review. Must exceed the longest legit phase (adversary review + push); clamped to >=300."
+          },
+          "stall_auto_terminal": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.63 (Part A): sub-flag gating the AUTO-TERMINAL transition of a stalled session. When false, the watchdog still DETECTS + LOGS + attempts recovery, but never forces the terminal failed transition (detection/observability on, auto-transition off, kept separately toggleable per Carel)."
+          },
+          "stall_graceful_pr": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.63 (Part A): on an UNRECOVERABLE stall with commits on the branch, attempt a graceful push + PR flagged needs_human_review (beta.62 pattern) so a near-done deliverable is not evaporated. Set false to fail-and-preserve-worktree only."
           }
         }
       },
@@ -488,6 +506,78 @@
             "type": "string",
             "enum": ["debug", "info", "warn", "error"],
             "default": "info"
+          }
+        }
+      },
+      "brief": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "beta.63 (convention-awareness Fix 1): brief construction / repo-convention ingest tuning.",
+        "properties": {
+          "ingest_repo_conventions": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.63 (Fix 1): at brief build, ingest the checked-out repo's declared convention files (.cursor/rules/**, .cursorrules, CONTRIBUTING.md, CONVENTIONS.md, AGENTS.md, .github/CONTRIBUTING.md) into the optional brief field repoConventions[] so the lead + worker + adversary SDK prompts (which get NO OpenClaw context injection) explicitly carry them."
+          },
+          "convention_char_budget": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 200000,
+            "default": 10000,
+            "description": "beta.63 (Fix 1): total char budget for the ingested conventions block. Over budget, the LONGEST sources are truncated first with a note, rather than dropping sources silently."
+          }
+        }
+      },
+      "verify": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "beta.63 (convention-awareness Fix 2): final-verify repo-check-script runner.",
+        "properties": {
+          "run_repo_check_scripts": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.63 (Fix 2): the final-verify sub-task runs repo-declared check scripts (from package.json#scripts) inline + blocking in the worktree. A non-zero exit becomes a REVISE-worthy loop.convention_check_failed finding, NOT a hard run-fail (the code may be correct and only a bundle stale). An unrunnable / network-needing script is logged non-fatal + noted."
+          },
+          "check_script_allowlist": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["okf:check", "lint", "typecheck", "test"],
+            "description": "beta.63 (Fix 2): allowlist of package.json script names the harness may run in final-verify. A discovered script NOT on this list is NEVER run."
+          },
+          "check_script_timeout_seconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 7200,
+            "default": 600,
+            "description": "beta.63 (Fix 2): per-check-script wall-clock timeout (seconds). A timed-out script is treated as unrunnable (non-fatal log + note), not a hard fail."
+          }
+        }
+      },
+      "log": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "beta.63 (Part B): durable, structured, append-only interaction log written OUTSIDE the git worktree (in the harness data dir). Captures every SDK/LLM call, state transition, verify probe, and stall/recovery event so a near-completion failure leaves a complete, greppable trail that survives a worktree release + container restart. Secret redaction on write is mandatory and NOT disableable.",
+        "properties": {
+          "interaction_log_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.63 (Part B): master switch for the interaction log."
+          },
+          "dir": {
+            "type": "string",
+            "description": "beta.63 (Part B): directory for the JSONL logs. Default <dataDir>/logs where dataDir is the directory holding the state DB. Leave empty for the default."
+          },
+          "full_prompts": {
+            "type": "boolean",
+            "default": false,
+            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
+          },
+          "retention_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3650,
+            "default": 14,
+            "description": "beta.63 (Part B): prune per-session log files older than this many days."
           }
         }
       }
