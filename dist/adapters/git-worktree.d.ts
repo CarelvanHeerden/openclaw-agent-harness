@@ -244,6 +244,8 @@ export declare class GitAdapter {
     }>;
     formatPatch(worktreePath: string, base: string, outFile: string): Promise<void>;
     diff(worktreePath: string, base: string): Promise<string>;
+    /** beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree. */
+    diffStat(worktreePath: string, base: string): Promise<string>;
     /**
      * beta.34: install a persistent credential helper into the bare repo
      * config (Staging's recommended hardening, option 1). The helper script

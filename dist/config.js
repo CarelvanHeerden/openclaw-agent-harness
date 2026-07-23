@@ -64,6 +64,10 @@ const DEFAULTS = {
         session_stall_seconds: 1800,
         stall_auto_terminal: true,
         stall_graceful_pr: true,
+        sdk_first_token_timeout_seconds: 90,
+        worker_timeout_retry_enabled: true,
+        best_effort_verify: true,
+        scripted_verify_fallback: true,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",
@@ -251,6 +255,16 @@ export function parseHarnessConfig(input) {
     // beta.63 (Fix 2): clamp the per-check-script timeout to a sane floor.
     if (typeof merged.verify.check_script_timeout_seconds === "number" && merged.verify.check_script_timeout_seconds < 10) {
         merged.verify.check_script_timeout_seconds = 10;
+    }
+    // beta.64 (P0-1): clamp the first-token watchdog window. Must be long enough
+    // that a healthy but slow stream open (cold model, long context) is not
+    // mis-detected, but far shorter than the outer worker timeout so a genuine
+    // no-first-token hang is caught in seconds, not the full 1800s. Clamp [10, 1800].
+    if (typeof merged.loop.sdk_first_token_timeout_seconds === "number") {
+        if (merged.loop.sdk_first_token_timeout_seconds < 10)
+            merged.loop.sdk_first_token_timeout_seconds = 10;
+        if (merged.loop.sdk_first_token_timeout_seconds > 1800)
+            merged.loop.sdk_first_token_timeout_seconds = 1800;
     }
     if (merged.vercel.enabled) {
         if (!merged.vercel.credential_service)

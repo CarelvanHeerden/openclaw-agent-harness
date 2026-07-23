@@ -129,3 +129,42 @@ Built in dependency order (log first — later parts write events into it).
 - Conservative choices noted: convention-check failures are findings, never hard-fails; stall
   auto-terminal is separately gated; recovery re-tick is preferred over terminal when a brief exists;
   graceful stall-PR synthesises a minimal brief rather than evaporating commits.
+
+# beta.64 — inner-turn hang resilience (first-token watchdog, retry, best-effort verify, scripted fallback)
+
+**Author:** Clark (subagent for Carel)
+**Goal:** Fix beta.63 smoke #2 — a VERIFY sub-task worker SDK call hung (stream opened, ZERO first token, zero cost, no sdkSessionId) and sat the full 1800s worker_timeout → terminal failed, NO PR, despite the prior sub-task having committed a clean shippable diff with a GREEN verify_probe. beta.63's watchdog only covers between-transition stalls; it was blind to a hang INSIDE a single worker turn.
+
+## P0-1 — first-token watchdog + SDK stream events
+- Extracted the SDK stream-consumption loop into an exported `consumeWorkerStream(stream, abort, {firstTokenTimeoutSeconds, now})` helper in `src/adapters/claude-sdk.ts` so the watchdog is directly testable with a fake async-iterable (no real SDK). `runWorkerSdk` now just builds the SDK stream + AbortController and delegates.
+- SEPARATE watchdog timer armed on system/init (stream open), disarmed on the first assistant content block (text/tool_use). Fires → `abort.abort()` → distinct stopReason `first_token_timeout`.
+- New interaction-log emitters `logSdkStreamOpened` (event `sdk_stream_opened`, carries sdkSessionId) + `logSdkFirstToken` (event `sdk_first_token`, carries msToFirstToken).
+- **Wiring choice (documented in CHANGELOG): return-value-then-log.** `runWorkerSdk` RETURNS `streamOpened` + `msToFirstToken` + the distinct stopReason in `RunWorkerResult`; threaded through `WorkerResult`; the loop logs the two events from the returned values inside `runWorkerCallWithRetry`. Chosen over passing the InteractionLog handle down into the SDK adapter (keeps the adapter free of DB/state deps; matches how the loop already owns all interaction-log SDK boundary logging).
+
+## P0-2 — retry on timeout
+- New `loop.runWorkerCallWithRetry(...)` wraps the worker call: emits P0-1 stream events + the sdk_response boundary, and RETRIES once on a fresh session when the attempt times out (thrown WorkerTimeoutError OR returned `first_token_timeout` status). Max 1 retry (local loop counter, like beta.53). Audit `loop.worker_timeout_retry {seq, attempt, priorKind}`. Also emits `loop.worker_first_token_timeout` for the distinct class.
+
+## P0-3 — best-effort verify
+- `loop.tryBestEffortVerify(...)`: on a timed-out observe-mode VERIFY sub-task, if the prior mutate probe was GREEN (readLocalVerification all ok) AND the diff is clean+in-scope (`gitDiffStat` + `parseDiffStatPaths`/`collectExpectedFiles`), push + open PR flagged needs_human_review (reuses `getLastReview` + `pushBranchAndOpenPr`). Audit `loop.verify_skipped_best_effort` + `loop.shipped{viaBestEffortVerify:true}`. On push failure: `finaliseFailedPreserveWorktree`.
+
+## P0-4 — scripted verifier fallback
+- `loop.tryScriptedVerifyFallback(...)`: runs `npx tsc --noEmit` (via new injectable dep `runScriptedTsc`, gated on tsconfig.json existing) + `git diff --stat` + the allowlisted repo check scripts (reuses beta.63 `discoverCheckScripts`/`runCheckScripts`). Returns pass|fail|unavailable. Audit `loop.scripted_verify_fallback {result, tscOk, scriptsRan, scriptFailures}`. `unavailable` escalates to P0-3.
+
+## P1 — mid-turn stall observability
+- P1-5: `buildProgressSnapshot` now derives `msSinceLastSdkActivity` from the last SDK-activity audit event (subtask_start marker, worker_end_turn, subtask_verification, ...) and flips `stalled:true` during an executing turn when it crosses the first-token window (default 90s). registration.ts passes `sdk_first_token_timeout_seconds` as the inner-turn window.
+- P1-6: `costZeroStallSuspected` — a running sub-task older than the window with cost still $0.
+- P1-7: `recovery.auto_resuming` now carries `cause: "interrupted_non_terminal_agent_orchestrated"`.
+
+## Config (BOTH src/config.ts + manifest configSchema)
+- `loop.sdk_first_token_timeout_seconds` (default 90, clamp [10,1800])
+- `loop.worker_timeout_retry_enabled` (default true)
+- `loop.best_effort_verify` (default true)
+- `loop.scripted_verify_fallback` (default true)
+
+## New injectable loop deps
+- `gitDiffStat(worktreePath, base)` → wired to `git.diffStat` (new `git diff --stat` method)
+- `runScriptedTsc(worktreePath, timeoutMs)` → wired to spawnSync `npx tsc --noEmit`
+
+## Verification
+- `npx tsc --noEmit`: clean. `npm run build`: exit 0. Full suite: **699 → 724 tests (+25), all pass**. Smoke: `Smoke OK: 15 tools` (no new tool this beta).
+- Conservative fail-safe choices: prefer retry → scripted fallback → best-effort reviewable PR over discarding work; a scripted-fallback failure with best_effort_verify off falls through to terminal (does not silently ship); best-effort verify requires BOTH prior-green AND clean in-scope diff (declines conservatively when the diff can't be computed).

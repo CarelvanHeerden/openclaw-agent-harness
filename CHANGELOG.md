@@ -1,5 +1,82 @@
 # Changelog
 
+## [0.1.0-beta.64] -- 2026-07-23
+
+Inner-turn hang resilience release. Fixes beta.63 smoke #2: a VERIFY sub-task's
+worker SDK call HUNG -- the stream opened but NO first assistant token ever
+arrived (zero tool calls / zero output / zero cost / no sdkSessionId), and the
+harness sat for the FULL `worker_timeout_seconds` (1800s) before the outer
+timeout killed it -> terminal failed, NO PR, despite the prior sub-task having
+already committed a clean, shippable diff with a GREEN verify_probe. beta.63's
+stall watchdog only covers BETWEEN-transition stalls; it was structurally blind
+to a hang INSIDE a single worker turn. All four new keys are declared in BOTH
+`src/config.ts` AND the manifest `configSchema` (`additionalProperties:false`).
+
+### P0-1 -- FIRST-TOKEN WATCHDOG + SDK stream events (`loop.sdk_first_token_timeout_seconds`, default 90)
+
+- A SEPARATE watchdog timer inside `runWorkerSdk` (extracted into the testable
+  `consumeWorkerStream` helper), armed when the SDK stream OPENS (system/init)
+  and disarmed on the first assistant content block (text/tool_use). No first
+  token within the window => abort with the DISTINCT stopReason
+  `first_token_timeout` (vs the outer `timeout`) so the caller can retry.
+- New durable interaction-log events `sdk_stream_opened` (carries sdkSessionId)
+  and `sdk_first_token` (carries msToFirstToken) let the next smoke distinguish
+  "POST hung before the stream opened" from "stream opened, no tokens".
+- **Wiring choice:** `runWorkerSdk` RETURNS `streamOpened` + `msToFirstToken` and
+  the distinct stopReason in `RunWorkerResult`; the loop logs the two events from
+  the returned values (return-value-then-log), avoiding threading the
+  InteractionLog handle down into the SDK adapter -- cleaner and keeps the
+  adapter free of state/DB deps.
+
+### P0-2 -- RETRY ON TIMEOUT (`loop.worker_timeout_retry_enabled`, default true)
+
+- When a worker sub-task fails with a `first_token_timeout` OR a worker timeout,
+  RETRY once on a FRESH SDK session (no resumeSessionId) before flipping terminal
+  (max 1 retry per sub-task, mirroring the beta.53 env-wait pattern). Audit
+  `loop.worker_timeout_retry {seq, attempt}`. Pass => done; fail => fall through
+  to the existing terminal path using the retry's result.
+
+### P0-3 -- BEST-EFFORT VERIFY (`loop.best_effort_verify`, default true)
+
+- Honors the beta.60 "Carel must get a reviewable PR" rule. If a VERIFY sub-task
+  (observe-mode) times out even after the P0-2 retry, AND the prior mutate
+  sub-task's verify_probe is GREEN, AND `git diff --stat` shows only expected
+  files touched, mark the run `verify_skipped` (reason worker_timeout), push the
+  branch, and open the PR flagged `merge_recommendation=needs_human_review`
+  (reusing the beta.62 graceful-PR machinery). Audit
+  `loop.verify_skipped_best_effort` + `loop.shipped{viaBestEffortVerify:true}`.
+  This is what SHOULD have happened in beta.63 smoke #2.
+
+### P0-4 -- SCRIPTED VERIFIER FALLBACK (`loop.scripted_verify_fallback`, default true)
+
+- A "run tsc / checks / diff" verify sub-task needs no LLM. When an observe-mode
+  VERIFY sub-task times out (before giving up to P0-3), run a DETERMINISTIC
+  fallback -- `npx tsc --noEmit` + `git diff --stat <base>..HEAD` + the
+  allowlisted repo check scripts (reusing the beta.63
+  `discoverCheckScripts`/`runCheckScripts` plumbing) -- and report pass/fail as
+  if the sub-task ran. Audit `loop.scripted_verify_fallback {result}`.
+
+### P1 -- mid-turn stall observability
+
+- **P1-5:** `harness_progress` now derives `msSinceLastSdkActivity` from the last
+  SDK/worker activity audit event and marks `stalled:true` when it crosses the
+  first-token window during an executing worker turn -- so `stalled` is no longer
+  false during an inner-turn hang.
+- **P1-6:** leading `costZeroStallSuspected` flag -- a worker running past the
+  window with cost still $0 (no billable token) is surfaced as a pre-first-token
+  hang indicator.
+- **P1-7:** `recovery.auto_resuming` now carries a visible `cause`.
+
+### Tests
+
+- 25 new cases (`tests/beta64-*.test.mjs`): first-token watchdog abort +
+  distinct reason via a fake stream; healthy stream => streamOpened +
+  msToFirstToken; retry-on-timeout re-invokes once then terminal; best-effort
+  verify => needs_human_review PR when prior probe green + clean diff (and NOT
+  when red); scripted fallback runs tsc + checks and reports pass/fail on a real
+  temp worktree; mid-turn stalled signal crosses at ~90s; $0-cost indicator;
+  config defaults + clamps + manifest source-asserts for all four new keys.
+
 ## [0.1.0-beta.63] -- 2026-07-23
 
 Three-feature observability + resilience + convention release. All three are

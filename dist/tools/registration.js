@@ -207,7 +207,11 @@ export function registerHarnessTools(api, runtime) {
             // can flag `stalled: true` + `msSinceProgress` -- a poller SEES a
             // wedge instead of it looking identical to legit long work.
             const stallSeconds = liveConfig().loop.session_stall_seconds ?? 1800;
-            const snapshot = buildProgressSnapshot(liveDb(), sessionId, opts.eventLimit ?? 12, stallSeconds);
+            // beta.64 (P1-5): pass the first-token watchdog window as the inner-turn
+            // SDK-activity stall threshold so harness_progress.stalled flips true
+            // during a mid-turn hang (not just between transitions).
+            const sdkActivityStallSeconds = liveConfig().loop.sdk_first_token_timeout_seconds ?? 90;
+            const snapshot = buildProgressSnapshot(liveDb(), sessionId, opts.eventLimit ?? 12, stallSeconds, sdkActivityStallSeconds);
             return {
                 content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }],
                 details: {
@@ -218,6 +222,7 @@ export function registerHarnessTools(api, runtime) {
                     headline: snapshot.headline,
                     stalled: snapshot.stalled,
                     msSinceProgress: snapshot.msSinceProgress,
+                    msSinceLastSdkActivity: snapshot.msSinceLastSdkActivity,
                 },
             };
         },

@@ -272,6 +272,60 @@ export class InteractionLog {
   }
 
   /**
+   * beta.64 (P0-1): log `sdk_stream_opened` -- the SDK stream OPENED (system/init
+   * arrived carrying sdkSessionId). Emitted BEFORE any token; a stream_opened
+   * with no following `sdk_first_token` is the exact beta.63 smoke #2 hang shape
+   * (stream opened, model never produced a first token).
+   */
+  logSdkStreamOpened(sessionId: string, params: {
+    role: SdkRole;
+    model: string;
+    phase?: InteractionPhase;
+    seq?: number;
+    cycle?: number;
+    sdkSessionId?: string;
+  }): void {
+    if (!this.cfg.enabled) return;
+    this.log(sessionId, {
+      event: "sdk_stream_opened",
+      phase: params.phase,
+      seq: params.seq,
+      cycle: params.cycle,
+      role: params.role,
+      model: params.model,
+      sdkSessionId: params.sdkSessionId,
+    });
+  }
+
+  /**
+   * beta.64 (P0-1): log `sdk_first_token` -- the first assistant content block
+   * arrived, carrying `msToFirstToken` (ms from stream open to first token).
+   * The presence of this event after `sdk_stream_opened` means the stream was
+   * healthy; its ABSENCE means the first-token watchdog fired.
+   */
+  logSdkFirstToken(sessionId: string, params: {
+    role: SdkRole;
+    model: string;
+    phase?: InteractionPhase;
+    seq?: number;
+    cycle?: number;
+    msToFirstToken?: number;
+    sdkSessionId?: string;
+  }): void {
+    if (!this.cfg.enabled) return;
+    this.log(sessionId, {
+      event: "sdk_first_token",
+      phase: params.phase,
+      seq: params.seq,
+      cycle: params.cycle,
+      role: params.role,
+      model: params.model,
+      msToFirstToken: params.msToFirstToken,
+      sdkSessionId: params.sdkSessionId,
+    });
+  }
+
+  /**
    * Read the tail of a session's JSONL as parsed events (newest last). Used by
    * the `harness_logs` tool so operators can read the trail without shell /
    * container access. Returns `{ found:false }` when the file does not exist.
