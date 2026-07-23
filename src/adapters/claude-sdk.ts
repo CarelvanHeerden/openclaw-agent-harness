@@ -88,11 +88,24 @@ export interface RunWorkerParams {
   canUseTool: (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }>;
   /** Anthropic API key. Injected into the SDK subprocess env as ANTHROPIC_API_KEY so it never falls back to `/login`. */
   apiKey?: string;
+  /**
+   * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer
+   * from `timeoutSeconds`: if the SDK stream is opened (system/init arrives)
+   * but NO first assistant content block (text or tool_use) is delivered
+   * within this window, the stream is aborted with the DISTINCT stopReason
+   * `first_token_timeout` so the caller can RETRY on a fresh session. This is
+   * the exact beta.63 smoke #2 hang: the streaming call was initiated but the
+   * model never produced a first token, and the harness sat for the full
+   * `worker_timeout_seconds` (1800s) with no inner-turn stall detection.
+   * Undefined/<=0 disables the first-token watchdog (falls back to pre-beta.64
+   * behaviour: only the outer timeout). Default supplied by the loop (90s).
+   */
+  firstTokenTimeoutSeconds?: number;
 }
 
 export interface RunWorkerResult {
   sdkSessionId: string;
-  stopReason: "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled";
+  stopReason: "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled" | "first_token_timeout";
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
@@ -104,23 +117,158 @@ export interface RunWorkerResult {
    * string when the worker produced no text (pure tool turn).
    */
   finalMessage: string;
+  /**
+   * beta.64 (P0-1): true once the SDK stream opened (a system/init message
+   * carrying session_id arrived). Lets the caller distinguish "the POST hung
+   * before the stream ever opened" (streamOpened=false) from "the stream
+   * opened but no tokens were produced" (streamOpened=true, msToFirstToken
+   * undefined) -- the two failure modes beta.63 smoke #2 could not tell apart.
+   */
+  streamOpened: boolean;
+  /**
+   * beta.64 (P0-1): ms from stream open (system/init) to the FIRST assistant
+   * content block (text or tool_use). Undefined when no first token ever
+   * arrived (the first_token_timeout hang) or when the stream never opened.
+   */
+  msToFirstToken?: number;
 }
 
-export async function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult> {
-  const sdk = await loadSdk();
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), params.timeoutSeconds * 1000);
-
+/**
+ * beta.64 (P0-1): consume a worker SDK message stream, applying the FIRST-TOKEN
+ * WATCHDOG. Extracted from {@link runWorkerSdk} as an exported pure-ish helper
+ * so the watchdog is directly testable with a fake async-iterable (no real SDK).
+ *
+ * `stream` is any async-iterable of SDK messages. `abort` is the shared
+ * AbortController the caller passes to the SDK (so aborting here cancels the
+ * real stream). When no first assistant content block (text/tool_use) arrives
+ * within `firstTokenTimeoutSeconds` of stream open (system/init), the watchdog
+ * fires, calls `abort.abort()`, and the returned stopReason is the DISTINCT
+ * `first_token_timeout`. `now` is injectable for deterministic tests.
+ */
+export async function consumeWorkerStream(
+  stream: AsyncIterable<any>,
+  abort: AbortController,
+  opts: { firstTokenTimeoutSeconds?: number; now?: () => number },
+): Promise<Omit<RunWorkerResult, never>> {
+  const now = opts.now ?? Date.now;
   let stopReason: RunWorkerResult["stopReason"] = "end_turn";
   let sdkSessionId = "";
   let costUsd = 0;
   let tokensIn = 0;
   let tokensOut = 0;
   const logLines: string[] = [];
+  // beta.64 (P0-1): first-token watchdog bookkeeping.
+  let streamOpened = false;
+  let streamOpenedAt = 0;
+  let msToFirstToken: number | undefined;
+  let firstTokenSeen = false;
+  let firstTokenTimedOut = false;
+  const firstTokenWindowMs =
+    typeof opts.firstTokenTimeoutSeconds === "number" && opts.firstTokenTimeoutSeconds > 0
+      ? opts.firstTokenTimeoutSeconds * 1000
+      : 0;
+  // A SEPARATE watchdog timer, armed when the stream OPENS (system/init) and
+  // disarmed on the first assistant content block. Firing => abort with a
+  // distinct reason so the caller retries rather than blaming the outer
+  // worker timeout.
+  let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
+  const armFirstTokenWatchdog = () => {
+    if (firstTokenWindowMs <= 0 || firstTokenTimer) return;
+    firstTokenTimer = setTimeout(() => {
+      if (!firstTokenSeen) {
+        firstTokenTimedOut = true;
+        abort.abort();
+      }
+    }, firstTokenWindowMs);
+    if (typeof (firstTokenTimer as { unref?: () => void }).unref === "function") {
+      (firstTokenTimer as { unref: () => void }).unref();
+    }
+  };
+  const clearFirstTokenWatchdog = () => {
+    if (firstTokenTimer) { clearTimeout(firstTokenTimer); firstTokenTimer = undefined; }
+  };
   // beta.48: track the most recent assistant text block(s) as the worker's
   // final message. Reset on each assistant message so we keep only the LAST
   // turn's text (the concluding statement / refusal), not the whole stream.
   let finalMessage = "";
+
+  try {
+    for await (const message of stream) {
+      logLines.push(JSON.stringify(message).slice(0, 300));
+      if (message.type === "system" && message.subtype === "init") {
+        sdkSessionId = message.session_id;
+        // beta.64 (P0-1): stream OPENED. Record the open time and ARM the
+        // first-token watchdog -- the interval between open and the first
+        // assistant content block is exactly where beta.63 smoke #2 hung.
+        if (!streamOpened) {
+          streamOpened = true;
+          streamOpenedAt = now();
+          armFirstTokenWatchdog();
+        }
+      }
+      if (message.type === "assistant") {
+        // beta.64 (P0-1): the FIRST assistant content block (text or tool_use)
+        // = first token. Disarm the watchdog and record time-to-first-token.
+        if (!firstTokenSeen) {
+          const c = (message as { message?: { content?: Array<{ type?: string }> } }).message?.content;
+          const hasContentBlock = Array.isArray(c) && c.some((b) => b?.type === "text" || b?.type === "tool_use");
+          if (hasContentBlock) {
+            firstTokenSeen = true;
+            msToFirstToken = streamOpenedAt > 0 ? now() - streamOpenedAt : undefined;
+            clearFirstTokenWatchdog();
+          }
+        }
+        // Collect this assistant message's text blocks. A message may mix
+        // text + tool_use; we keep only the text. Overwriting per assistant
+        // message means finalMessage ends as the LAST turn's text.
+        const content = (message as { message?: { content?: Array<{ type?: string; text?: string }> } }).message?.content;
+        if (Array.isArray(content)) {
+          const text = content
+            .filter((c) => c?.type === "text" && typeof c.text === "string")
+            .map((c) => c.text)
+            .join("");
+          if (text.trim()) finalMessage = text;
+        }
+      }
+      if (message.type === "result") {
+        stopReason = message.subtype === "success" ? "end_turn" : "tool_error";
+        costUsd = message.total_cost_usd ?? 0;
+        tokensIn = message.usage?.input_tokens ?? 0;
+        tokensOut = message.usage?.output_tokens ?? 0;
+      }
+    }
+    // beta.64 (P0-1): the stream ENDED. If the watchdog already fired (a fake
+    // stream that yields no assistant message and then completes), classify it.
+    if (firstTokenTimedOut) stopReason = "first_token_timeout";
+  } catch (err) {
+    // beta.64 (P0-1): a first-token-watchdog abort is a DISTINCT class from the
+    // outer worker timeout -- it means the stream opened (or was opening) but
+    // produced no first token, which the caller retries on a fresh session.
+    if (firstTokenTimedOut) stopReason = "first_token_timeout";
+    else if (abort.signal.aborted) stopReason = "timeout";
+    else stopReason = "tool_error";
+    logLines.push(`ERROR: ${String(err)}`);
+  } finally {
+    clearFirstTokenWatchdog();
+  }
+
+  return {
+    sdkSessionId,
+    stopReason,
+    costUsd,
+    tokensIn,
+    tokensOut,
+    logsExcerpt: logLines.slice(-25).join("\n"),
+    finalMessage,
+    streamOpened,
+    msToFirstToken,
+  };
+}
+
+export async function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult> {
+  const sdk = await loadSdk();
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), params.timeoutSeconds * 1000);
 
   try {
     const stream = sdk.query({
@@ -143,49 +291,12 @@ export async function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerRe
         abortSignal: abort.signal,
       },
     });
-
-    for await (const message of stream) {
-      logLines.push(JSON.stringify(message).slice(0, 300));
-      if (message.type === "system" && message.subtype === "init") {
-        sdkSessionId = message.session_id;
-      }
-      if (message.type === "assistant") {
-        // Collect this assistant message's text blocks. A message may mix
-        // text + tool_use; we keep only the text. Overwriting per assistant
-        // message means finalMessage ends as the LAST turn's text.
-        const content = (message as { message?: { content?: Array<{ type?: string; text?: string }> } }).message?.content;
-        if (Array.isArray(content)) {
-          const text = content
-            .filter((c) => c?.type === "text" && typeof c.text === "string")
-            .map((c) => c.text)
-            .join("");
-          if (text.trim()) finalMessage = text;
-        }
-      }
-      if (message.type === "result") {
-        stopReason = message.subtype === "success" ? "end_turn" : "tool_error";
-        costUsd = message.total_cost_usd ?? 0;
-        tokensIn = message.usage?.input_tokens ?? 0;
-        tokensOut = message.usage?.output_tokens ?? 0;
-      }
-    }
-  } catch (err) {
-    if (abort.signal.aborted) stopReason = "timeout";
-    else stopReason = "tool_error";
-    logLines.push(`ERROR: ${String(err)}`);
+    return await consumeWorkerStream(stream, abort, {
+      firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
+    });
   } finally {
     clearTimeout(timer);
   }
-
-  return {
-    sdkSessionId,
-    stopReason,
-    costUsd,
-    tokensIn,
-    tokensOut,
-    logsExcerpt: logLines.slice(-25).join("\n"),
-    finalMessage,
-  };
 }
 
 // ---- Structured-output helpers (classifier, crystalliser, lead, adversary) ----

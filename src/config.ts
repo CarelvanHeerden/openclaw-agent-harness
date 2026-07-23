@@ -330,6 +330,47 @@ export interface LoopConfig {
    * a near-done deliverable is not evaporated. Default true.
    */
   stall_graceful_pr?: boolean;
+  /**
+   * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
+   * worker_timeout_seconds, armed inside runWorkerSdk when the SDK stream opens
+   * (system/init). If no first assistant content block (text/tool_use) arrives
+   * within this window, the stream is aborted with the distinct stopReason
+   * `first_token_timeout` so the loop retries on a fresh session. This is the
+   * exact beta.63 smoke #2 hang -- the streaming call opened but produced ZERO
+   * tokens and sat for the full 1800s worker timeout with no inner-turn stall
+   * detection. Clamped to [10, 1800]. Default 90.
+   */
+  sdk_first_token_timeout_seconds?: number;
+  /**
+   * beta.64 (P0-2): when a worker sub-task fails with a first_token_timeout OR a
+   * worker timeout, RETRY it ONCE on a FRESH SDK session (no resumeSessionId)
+   * before flipping the run terminal. The retry re-verifies; a pass completes
+   * the sub-task, a fail falls through to the existing terminal path using the
+   * retry's result. Max 1 retry per sub-task. Default true.
+   */
+  worker_timeout_retry_enabled?: boolean;
+  /**
+   * beta.64 (P0-3): BEST-EFFORT VERIFY. If a VERIFY sub-task (observe-mode, the
+   * last/verify sub-task) times out even after the P0-2 retry, AND the prior
+   * mutate sub-task's verify_probe was GREEN, AND git diff-stat shows only
+   * expected files touched, mark the run verify_skipped (reason worker_timeout),
+   * push the branch, and open the PR flagged merge_recommendation=needs_human_review
+   * (reusing the beta.62 graceful-PR machinery) rather than discarding shippable
+   * work. This is what SHOULD have happened in beta.63 smoke #2 -- the code was
+   * shippable, only the verifier hung. Default true.
+   */
+  best_effort_verify?: boolean;
+  /**
+   * beta.64 (P0-4): SCRIPTED VERIFIER FALLBACK. When an observe-mode VERIFY
+   * sub-task times out (before giving up to best-effort verify), run a
+   * DETERMINISTIC fallback -- `npx tsc --noEmit` + `git diff --stat <base>..HEAD`
+   * + the allowlisted repo check scripts (reusing the beta.63 runFinalVerifyChecks
+   * / discoverCheckScripts / runCheckScripts plumbing) -- and report pass/fail to
+   * the loop as if the sub-task ran. A "run tsc/lint/diff/grep" verify sub-task
+   * needs no LLM, so a hung verifier should not block a shippable change.
+   * Default true.
+   */
+  scripted_verify_fallback?: boolean;
 }
 
 export interface VercelConfig {
@@ -547,6 +588,10 @@ const DEFAULTS: HarnessConfig = {
     session_stall_seconds: 1800,
     stall_auto_terminal: true,
     stall_graceful_pr: true,
+    sdk_first_token_timeout_seconds: 90,
+    worker_timeout_retry_enabled: true,
+    best_effort_verify: true,
+    scripted_verify_fallback: true,
   },
   vercel: {
     api_key_env: "VERCEL_TOKEN",
@@ -729,6 +774,14 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   // beta.63 (Fix 2): clamp the per-check-script timeout to a sane floor.
   if (typeof merged.verify.check_script_timeout_seconds === "number" && merged.verify.check_script_timeout_seconds < 10) {
     merged.verify.check_script_timeout_seconds = 10;
+  }
+  // beta.64 (P0-1): clamp the first-token watchdog window. Must be long enough
+  // that a healthy but slow stream open (cold model, long context) is not
+  // mis-detected, but far shorter than the outer worker timeout so a genuine
+  // no-first-token hang is caught in seconds, not the full 1800s. Clamp [10, 1800].
+  if (typeof merged.loop.sdk_first_token_timeout_seconds === "number") {
+    if (merged.loop.sdk_first_token_timeout_seconds < 10) merged.loop.sdk_first_token_timeout_seconds = 10;
+    if (merged.loop.sdk_first_token_timeout_seconds > 1800) merged.loop.sdk_first_token_timeout_seconds = 1800;
   }
   if (merged.vercel.enabled) {
     if (!merged.vercel.credential_service) throw new Error("harness.vercel.credential_service required when vercel.enabled");

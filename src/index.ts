@@ -17,6 +17,7 @@ import { readFile, writeFile, stat, rm } from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import type { HarnessConfig, TokenPointer } from "./config.js";
 import { parseHarnessConfig } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
@@ -785,6 +786,15 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     // git / the provider REST API / disk directly so a confabulated
     // "I pushed" / "I opened a PR" is caught deterministically.
     worktreeHeadSha: async (worktreePath: string) => git.baseSha(worktreePath).catch(() => ""),
+    // beta.64 (P0-3/P0-4): diff-stat + scripted tsc for the best-effort-verify
+    // clean-diff gate and the scripted verifier fallback of a timed-out LLM
+    // VERIFY sub-task. A "run tsc/diff/check-scripts" verify step needs no model.
+    gitDiffStat: async (worktreePath: string, base: string) => git.diffStat(worktreePath, base).catch(() => ""),
+    runScriptedTsc: async (worktreePath: string, timeoutMs: number) => {
+      const res = spawnSync("npx", ["tsc", "--noEmit"], { cwd: worktreePath, timeout: timeoutMs, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+      const output = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+      return { ok: !res.error && (res.status ?? 1) === 0, output: output.slice(-4000) };
+    },
 
     // beta.16 fix #3 + beta.17 correctness: release the per-session
     // worktree on terminal transitions (loop.shipped / loop.aborted /

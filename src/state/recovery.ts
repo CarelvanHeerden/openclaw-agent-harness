@@ -98,7 +98,16 @@ export async function recoverSessions(state: StateStore, opts: RecoveryOptions):
         opts.logger.warn("[recovery] agentOrchestrated set but no autoResume provided; session will strand", { sessionId: s.id });
         state.audit("recovery.autoresume_unavailable", { sessionId: s.id, wasStatus: s.status }, s.id);
       } else {
-        state.audit("recovery.auto_resuming", { sessionId: s.id, wasStatus: s.status }, s.id);
+        // beta.64 (P1-7): carry a visible `cause` so the audit trail explains
+        // WHY the session is being auto-resumed (previously it fired with no
+        // reason). An agent-orchestrated harness has no reaction poller/listener,
+        // so a non-terminal session left by a restart/crash would strand -- the
+        // recovery re-drives it. `wasStatus` is the phase it was interrupted in.
+        state.audit(
+          "recovery.auto_resuming",
+          { sessionId: s.id, wasStatus: s.status, cause: "interrupted_non_terminal_agent_orchestrated" },
+          s.id,
+        );
         try {
           await opts.autoResume(s);
         } catch (err) {

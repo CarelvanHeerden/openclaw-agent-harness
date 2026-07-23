@@ -88,6 +88,25 @@ export interface ProgressSnapshot {
      */
     msSinceProgress: number | null;
     stalled: boolean;
+    /**
+     * beta.64 (P1-5): ms since the last SDK/worker ACTIVITY audit event
+     * (subtask_start progress marker, worker_end_turn, subtask_verification,
+     * timeout/retry). Unlike msSinceProgress (bumped only on sub-task BOUNDARIES),
+     * this is the signal that keeps growing DURING an inner-turn hang -- the exact
+     * blind spot of beta.63's between-transition watchdog. When it crosses the
+     * sdk-activity window during an executing worker turn, `stalled` flips true so
+     * harness_progress.stalled is no longer false during an inner-turn hang. Null
+     * when no such event exists.
+     */
+    msSinceLastSdkActivity: number | null;
+    /**
+     * beta.64 (P1-6): leading stall indicator -- true when the current sub-task
+     * has been `running` longer than the sdk-activity window with cost still $0
+     * (no billable token produced). A worker that has burned wall-clock but $0 is
+     * almost certainly hung before its first token (beta.63 smoke #2), which a
+     * poller can surface BEFORE the full watchdog window elapses.
+     */
+    costZeroStallSuspected: boolean;
     /** Tail of recent lifecycle events (newest last), for the agent to narrate. */
     recentEvents: ProgressEvent[];
     /**
@@ -104,11 +123,7 @@ export interface ProgressSnapshot {
     clarificationQuestion: string | null;
     clarificationSeq: number | null;
 }
-/**
- * Build a progress snapshot for a session. Pure read; never mutates state.
- * `limit` bounds the recent-event tail (default 12).
- */
-export declare function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit?: number, stallSeconds?: number): ProgressSnapshot;
+export declare function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit?: number, stallSeconds?: number, sdkActivityStallSeconds?: number): ProgressSnapshot;
 /** One-line Slack-mrkdwn-safe summary. No tables, no headings. */
 export declare function buildHeadline(input: {
     phase: string;
