@@ -61,6 +61,9 @@ const DEFAULTS = {
         env_wait_retry_enabled: true,
         clarification_escalation_enabled: true,
         graceful_pr_on_review_crash: true,
+        session_stall_seconds: 1800,
+        stall_auto_terminal: true,
+        stall_graceful_pr: true,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",
@@ -122,8 +125,23 @@ const DEFAULTS = {
             gitlab: { api_base: "https://gitlab.com/api/v4", api_key_env: "GITLAB_TOKEN" },
         },
     },
+    brief: {
+        ingest_repo_conventions: true,
+        convention_char_budget: 10000,
+    },
+    verify: {
+        run_repo_check_scripts: true,
+        check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
+        check_script_timeout_seconds: 600,
+    },
     logging: {
         level: "info",
+    },
+    log: {
+        interaction_log_enabled: true,
+        dir: "",
+        full_prompts: false,
+        retention_days: 14,
     },
 };
 /**
@@ -223,6 +241,16 @@ export function parseHarnessConfig(input) {
     }
     if (merged.repos.allowed.length === 0) {
         throw new Error("harness.repos.allowed must list at least one owner or owner/repo glob");
+    }
+    // beta.63 (Part A): clamp the stall watchdog window to a sane range. It must
+    // be larger than the longest legit phase (adversary review + push) so a
+    // healthy long run is never mis-detected as a stall. Clamp to >= 300s.
+    if (typeof merged.loop.session_stall_seconds === "number" && merged.loop.session_stall_seconds < 300) {
+        merged.loop.session_stall_seconds = 300;
+    }
+    // beta.63 (Fix 2): clamp the per-check-script timeout to a sane floor.
+    if (typeof merged.verify.check_script_timeout_seconds === "number" && merged.verify.check_script_timeout_seconds < 10) {
+        merged.verify.check_script_timeout_seconds = 10;
     }
     if (merged.vercel.enabled) {
         if (!merged.vercel.credential_service)

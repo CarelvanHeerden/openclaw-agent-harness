@@ -20,6 +20,7 @@
  * `no_deploy_yet`/`build_failed`/`unavailable`, the adversary gets an
  * explicit banner and MUST refuse to sign off on the runtime dimension.
  */
+import { renderConventionsForPrompt } from "./repo-conventions.js";
 /**
  * Adversary prompt-preamble helper. Injected verbatim into the adversary's
  * system prompt so runtime dimension is never silently skipped.
@@ -99,6 +100,10 @@ export function buildAdversarySystemPrompt(input) {
         "",
         "## Review checklist (from the lead planner)",
         ...input.reviewChecklist.map((c) => `- ${c}`),
+        // beta.63 (Fix 1): carry the repo's declared conventions so the adversary
+        // flags a change that violates them even when CI is green (the PR #859
+        // okf:check-drift-with-green-CI class).
+        renderConventionsForPrompt(input.repoConventions, "adversary"),
         "",
         "## Verdict rules",
         "- `pass`: no findings above `medium`, AND every checklist item is verifiably met.",

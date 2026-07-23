@@ -13,6 +13,7 @@
  * The worker COMMITS but does not PUSH. Push happens once, at the end,
  * by the orchestrator after adversarial review passes.
  */
+import { renderConventionsForPrompt } from "./repo-conventions.js";
 /**
  * Beta.21: hard cap on injected concept content. A worker system prompt is
  * loaded on every SDK turn, so pulling in an entire long-form knowledge
@@ -57,6 +58,11 @@ export function buildWorkerSystemPrompt(brief, subTask) {
         }
     }
     lines.push(``, `## Your sub-task`, `Title: ${subTask.title}`, `Intent: ${subTask.intent}`, `Files likely touched: ${subTask.filesLikelyTouched.join(", ") || "(unspecified)"}`, `Success criteria for THIS sub-task:`, ...subTask.successCriteria.map((c) => `  - ${c}`), ``, `## Rules`, `- Work only inside the worktree; never touch other paths.`, `- Do not run 'git push'. The orchestrator handles pushes.`, `- Do not install global packages, disable safeguards, or exfiltrate anything.`, `- If a bash command is refused, explain in prose and continue with an alternative approach.`, `- End your turn once the sub-task's success criteria are met.`, ``, `## Execution protocol (CRITICAL)`, `- You have EXACTLY ONE turn to complete this sub-task. Dispatch is one-shot.`, `- There is NO event stream from the harness back to you mid-turn. There is`, `  NO "Monitor event", no "ready signal", no background callback. NOTHING will`, `  ever notify you or resume you. If you end your turn waiting for such an`, `  event, the work simply does not get done and the sub-task FAILS.`, `- NEVER 'await', 'wait for', or 'poll for' a harness/monitor/install event.`, `  These mechanisms do not exist in this harness.`, `- If you need a long-running process (npm install / npm ci, tsc, a build, a`, `  test run), run it INLINE in a single Bash tool call that BLOCKS until the`, `  process exits (e.g. \`npm ci && npx tsc --noEmit\`), read its result, then`, `  continue working in the SAME turn. Do not background it and wait.`, `- To RUN TESTS, a BUILD, or LINT: execute the command yourself, directly, in`, `  a single blocking Bash call in THIS turn (e.g. \`npm test\`, \`npx vitest run\`,`, `  \`npm run build\`, \`npx eslint .\`) and read its output. There is NO async`, `  test runner, NO "background watcher", NO "completion notification", and NO`, `  "test-run event". Nobody runs your tests for you and nobody messages you`, `  when they finish. YOU run them, inline, and read the result.`, `- HARD STOP RULE: if you are about to write "I'll wait for", "waiting for the`, `  notification/event/signal", "the monitor/watcher/observer/background process`, `  will notify me", or any phrase implying something will resume you -- STOP.`, `  That mechanism does not exist. Run the command inline instead and continue.`, `  Ending your turn on such a phrase = the sub-task FAILS with zero work done.`, `- Only run verification (typecheck/tests) if THIS sub-task's success criteria`, `  require it. Do not go off-plan to self-verify; make the required edit and`, `  commit. Committing the correct change is what completes the sub-task.`);
+    // beta.63 (Fix 1): the worker gets NO OpenClaw context injection, so the
+    // repo's declared conventions must be carried in the prompt explicitly.
+    const conventionBlock = renderConventionsForPrompt(brief.repoConventions, "worker");
+    if (conventionBlock)
+        lines.push(conventionBlock);
     return lines.join("\n");
 }
 /**

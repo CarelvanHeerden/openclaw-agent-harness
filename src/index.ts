@@ -20,6 +20,7 @@ import { mkdir } from "node:fs/promises";
 import type { HarnessConfig, TokenPointer } from "./config.js";
 import { parseHarnessConfig } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
+import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { resolveContractPath } from "./orchestrator/path-match.js";
 import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-listener.js";
@@ -137,6 +138,13 @@ export interface HarnessRuntime {
   budget: BudgetEnforcer;
   pat: PatRouter;
   loop: OrchestratorLoop;
+  /**
+   * beta.63 (Part B): durable, structured interaction log written OUTSIDE the
+   * worktree. Threaded into the loop + SDK adapters so every LLM call, state
+   * transition, verify probe, and stall/recovery event lands in a JSONL trail
+   * that survives worktree release + container restart. Read via harness_logs.
+   */
+  interactionLog: InteractionLog;
   listener: SlackChannelListener;
   dispatcher: Dispatcher;
   slack: SlackAdapter;
@@ -297,6 +305,15 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
   mkdirSync(dirname(dbPath), { recursive: true });
   const state = openStateStoreSync(dbPath);
+
+  // beta.63 (Part B): the harness data dir is the directory holding the state
+  // DB. The interaction log lives in `<dataDir>/logs` by default -- crucially
+  // OUTSIDE the ephemeral git worktree so it survives teardown + restart.
+  const dataDir = dirname(dbPath);
+  const interactionLog = new InteractionLog({
+    config: resolveInteractionLogConfig(config.log, dataDir),
+    logger: api.logger,
+  });
 
   const budget = new BudgetEnforcer(config.budgets, state);
   const pat = new PatRouter(config.pat_routing);
@@ -537,6 +554,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     budget,
     pat,
     logger: api.logger,
+    interactionLog,
 
     runLead: async (brief, ctx) => {
       const requester = ctx?.requester ?? config.slack.authorised_users[0]!;
@@ -641,6 +659,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           reviewChecklist: plan.reviewChecklist,
           model: config.models.adversary,
           timeoutSeconds: config.loop.adversary_timeout_seconds,
+          // beta.63 (Fix 1): carry the repo conventions ingested at brief build
+          // so the adversary flags convention violations even when CI is green.
+          repoConventions: brief.repoConventions,
         },
         {
           logger: api.logger,
@@ -1123,7 +1144,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   });
 
   const runtime: HarnessRuntime = {
-    config, state, budget, pat, loop, listener, dispatcher, slack, git, creds,
+    config, state, budget, pat, loop, interactionLog, listener, dispatcher, slack, git, creds,
     crystallise,
     anthropicApiKey,
     githubToken: resolveGithubToken,

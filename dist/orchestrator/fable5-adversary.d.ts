@@ -42,6 +42,8 @@ export interface AdversaryInput {
     reviewChecklist: string[];
     model: string;
     timeoutSeconds: number;
+    /** beta.63 (Fix 1): repo conventions ingested at brief build. Optional. */
+    repoConventions?: import("./repo-conventions.js").RepoConvention[];
 }
 export interface ReviewFinding {
     dimension: "spec" | "fit" | "quality" | "security" | "runtime";

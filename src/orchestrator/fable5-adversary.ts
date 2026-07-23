@@ -21,6 +21,8 @@
  * explicit banner and MUST refuse to sign off on the runtime dimension.
  */
 
+import { renderConventionsForPrompt } from "./repo-conventions.js";
+
 export interface AdversaryInput {
   crystallisedPrompt: string;
   diffPath: string;
@@ -41,6 +43,8 @@ export interface AdversaryInput {
   reviewChecklist: string[];      // from the lead plan
   model: string;
   timeoutSeconds: number;
+  /** beta.63 (Fix 1): repo conventions ingested at brief build. Optional. */
+  repoConventions?: import("./repo-conventions.js").RepoConvention[];
 }
 
 export interface ReviewFinding {
@@ -145,6 +149,10 @@ export function buildAdversarySystemPrompt(input: AdversaryInput): string {
     "",
     "## Review checklist (from the lead planner)",
     ...input.reviewChecklist.map((c) => `- ${c}`),
+    // beta.63 (Fix 1): carry the repo's declared conventions so the adversary
+    // flags a change that violates them even when CI is green (the PR #859
+    // okf:check-drift-with-green-CI class).
+    renderConventionsForPrompt(input.repoConventions, "adversary"),
     "",
     "## Verdict rules",
     "- `pass`: no findings above `medium`, AND every checklist item is verifiably met.",

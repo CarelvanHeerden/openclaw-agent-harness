@@ -16,6 +16,7 @@
 
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./fable5-lead.js";
+import { renderConventionsForPrompt } from "./repo-conventions.js";
 
 export interface WorkerResult {
   status: "completed" | "failed" | "timeout";
@@ -137,6 +138,8 @@ export function buildWorkerSystemPrompt(
     acceptanceCriteria: string[];
     /** Beta.21: OKF concept refs from the crystallised brief. Optional. */
     relevantConcepts?: WorkerConceptRef[];
+    /** beta.63 (Fix 1): repo conventions ingested at brief build. Optional. */
+    repoConventions?: import("./repo-conventions.js").RepoConvention[];
   },
   subTask: LeadPlanSubTask,
 ): string {
@@ -217,6 +220,10 @@ export function buildWorkerSystemPrompt(
     `  require it. Do not go off-plan to self-verify; make the required edit and`,
     `  commit. Committing the correct change is what completes the sub-task.`,
   );
+  // beta.63 (Fix 1): the worker gets NO OpenClaw context injection, so the
+  // repo's declared conventions must be carried in the prompt explicitly.
+  const conventionBlock = renderConventionsForPrompt(brief.repoConventions, "worker");
+  if (conventionBlock) lines.push(conventionBlock);
   return lines.join("\n");
 }
 

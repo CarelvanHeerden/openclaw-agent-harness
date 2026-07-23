@@ -15,6 +15,10 @@ export interface HarnessConfig {
     vercel: VercelConfig;
     storage: StorageConfig;
     safety: SafetyConfig;
+    /** beta.63 (convention-awareness Fix 1): brief construction / ingest tuning. */
+    brief: BriefConfig;
+    /** beta.63 (convention-awareness Fix 2): final-verify repo-check-script runner. */
+    verify: VerifyConfig;
     pat_routing: PatRoutingConfig;
     /**
      * beta.24: harness log verbosity. When `level: 'debug'`, error log sites
@@ -23,9 +27,70 @@ export interface HarnessConfig {
      * Defaults to 'info' (pre-beta.24 behaviour).
      */
     logging: LoggingConfig;
+    /**
+     * beta.63 (Part B): durable, structured, append-only interaction log
+     * written OUTSIDE the git worktree (in the harness data dir). Captures every
+     * SDK/LLM call, state transition, verify probe, and stall/recovery event so a
+     * near-completion failure leaves a complete, greppable trail that survives a
+     * worktree release + container restart. Default ON.
+     */
+    log: LogConfig;
 }
 export interface LoggingConfig {
     level: "debug" | "info" | "warn" | "error";
+}
+export interface BriefConfig {
+    /**
+     * beta.63 (Fix 1): at brief build, ingest the checked-out repo's declared
+     * convention files (.cursor/rules/**, .cursorrules, CONTRIBUTING.md,
+     * CONVENTIONS.md, AGENTS.md, .github/CONTRIBUTING.md) into the optional brief
+     * field `repoConventions[]` so the lead + worker + adversary SDK prompts
+     * (which get NO OpenClaw context injection) explicitly carry them. Default true.
+     */
+    ingest_repo_conventions: boolean;
+    /**
+     * Total char budget for the ingested conventions block. When over budget, the
+     * LONGEST sources are truncated first, with a note appended, rather than
+     * dropping sources silently. Default 10000.
+     */
+    convention_char_budget: number;
+}
+export interface VerifyConfig {
+    /**
+     * beta.63 (Fix 2): the final-verify sub-task runs repo-declared check scripts
+     * (from package.json#scripts) inline + blocking in the worktree. A non-zero
+     * exit becomes a REVISE-worthy `loop.convention_check_failed` finding, NOT a
+     * hard run-fail (the code may be correct and only a bundle stale). An
+     * unrunnable / network-needing script is logged non-fatal + noted. Default true.
+     */
+    run_repo_check_scripts: boolean;
+    /**
+     * Allowlist of package.json script names the harness may run in final-verify.
+     * A discovered script NOT on this list is NEVER run. Default
+     * ["okf:check","lint","typecheck","test"].
+     */
+    check_script_allowlist: string[];
+    /** Per-script wall-clock timeout (seconds). Default 600. */
+    check_script_timeout_seconds: number;
+}
+export interface LogConfig {
+    /** Master switch for the interaction log. Default true. */
+    interaction_log_enabled: boolean;
+    /**
+     * Directory for the JSONL logs. Default `<dataDir>/logs` where dataDir is the
+     * directory holding the state DB (resolved at bootstrap; empty here means the
+     * default is derived from storage.state_db_path).
+     */
+    dir: string;
+    /**
+     * When false (DEFAULT), only prompt SIZES + TAILS are logged, not full prompt
+     * bodies (transcripts can be huge + sensitive). Set true for deep-debug.
+     * NOTE: this does NOT disable secret redaction — redaction on write is
+     * mandatory and always applied regardless of this flag.
+     */
+    full_prompts: boolean;
+    /** Prune per-session log files older than this many days. Default 14. */
+    retention_days: number;
 }
 export interface SlackConfig {
     /**
@@ -231,6 +296,32 @@ export interface LoopConfig {
      * the old hard-fail-and-release behaviour on a review crash.
      */
     graceful_pr_on_review_crash?: boolean;
+    /**
+     * beta.63 (Part A): session-level stall watchdog. A session writes
+     * `session.last_progress_at` on EVERY state transition; the watchdog checks
+     * non-terminal executing/reviewing/finalising sessions where
+     * `now - last_progress_at > session_stall_seconds` and (a) emits a loud
+     * `loop.session_stalled`, (b) attempts bounded self-recovery (re-tick the
+     * loop-runner), and (c) if unrecoverable transitions to a terminal `failed`
+     * (reason=stalled_no_progress) PRESERVING the worktree and, if the branch has
+     * commits, opening a graceful push+PR flagged needs_human_review. Must be
+     * larger than the longest legit phase (adversary review + push). Default 1800.
+     */
+    session_stall_seconds?: number;
+    /**
+     * beta.63 (Part A): sub-flag gating the AUTO-TERMINAL transition of a stalled
+     * session. When false, the watchdog still DETECTS + LOGS + attempts recovery,
+     * but never forces the terminal `failed` transition (detection/observability
+     * on, auto-transition off). Per Carel: keep these separately toggleable.
+     * Default true.
+     */
+    stall_auto_terminal?: boolean;
+    /**
+     * beta.63 (Part A): on an UNRECOVERABLE stall with commits on the branch,
+     * attempt a graceful push + PR flagged needs_human_review (beta.62 pattern) so
+     * a near-done deliverable is not evaporated. Default true.
+     */
+    stall_graceful_pr?: boolean;
 }
 export interface VercelConfig {
     enabled: boolean;
