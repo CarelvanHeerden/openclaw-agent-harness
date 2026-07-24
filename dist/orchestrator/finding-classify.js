@@ -29,6 +29,21 @@ const UNPROVEN_RUNTIME_RE = /\b(no runtime data|no runtime verification|runtime 
 const TEST_WIRING_RE = /\b(no (automated |unit |integration )?tests?|test(s)? (are|were)? ?(not|n't)|zero test|without tests?|test script|tests? (are )?not (executed|run|wired|declared)|not (executed|run|wired) by (any )?(declared )?(check )?script)\b/i;
 const ENV_RE = /\b(exit(ed)? (code )?127|command not found|: not found|eslint: not found|tsx: not found|npm ci|node_modules|cannot find module|MODULE_NOT_FOUND|sh: \w+:)\b/i;
 const ARCHITECTURAL_RE = /\b(platform (response |payload |body )?(size )?limit|response (body )?too large|max(imum)? (payload|response|body) size|serverless (function )?limit|edge runtime limit|4\.5\s?mb|deploy(ment)? (architecture|target)|infrastructure|out of scope of a (single )?diff)\b/i;
+// beta.70 (F2): generated-artifact / convention-check findings. The harness
+// runs the repo's declared check scripts (okf regen, okf:check, lint) in the
+// POST-WORKER convention-check phase (repo-conventions.ts runCheckScripts) —
+// that phase is the authoritative enforcer. An adversary finding that merely
+// restates "you didn't regenerate the OKF bundle / the bundle is stale / run
+// keep-okf-current" double-counts a check the pipeline already owns, and in
+// PR #870 it was the SOLE medium that sustained a `revise` (a 19-min cycle-2
+// worker re-ran `npm run okf` across 1436 files to produce a ZERO diff). The
+// generated bundle is not the DIFF the worker should be hand-editing; it is a
+// derived artifact the convention phase regenerates deterministically. So a
+// bundle-drift/regeneration finding is `process` (NON-blocking) — it ships on
+// the PR body and is enforced by the convention check, but it does not force
+// another expensive code cycle. A genuine code defect (wrong logic, wrong
+// placement) still classifies `diff_addressable`.
+const GENERATED_ARTIFACT_RE = /\b(okf[- ]?bundle|okf[:-]?check|keep[- ]?okf[- ]?current|regenerate|regenerat(e|ed|ion)|re-?generate|bundle (is )?(stale|out ?of ?date|not (regenerated|current|up[- ]?to[- ]?date))|stale (generated|okf)|generated (bundle|artifact|file)s? (are |is )?(stale|out of date)|run (npm run )?okf)\b/i;
 /**
  * Classify a single finding. Pure. Order matters: the most "structurally
  * unfixable in a diff" buckets win over the generic diff_addressable default.
@@ -42,8 +57,19 @@ export function classifyFinding(f, ctx = {}) {
     }
     // Env/tooling breakage (exit 127, missing binary). Not a diff defect — the
     // worktree bootstrap owns this (F4). Distinct from a real convention failure.
+    // Checked BEFORE the generated-artifact bucket so "okf:check exited 127"
+    // classifies as `env` (bootstrap's job), not `process`.
     if (ENV_RE.test(text)) {
         return "env";
+    }
+    // beta.70 (F2): generated-artifact / OKF-bundle regeneration findings. The
+    // convention-check phase (post-worker) runs the repo's declared regen + check
+    // scripts and is the authoritative enforcer. Flagging "bundle not
+    // regenerated" is redundant with that phase and must not sustain a revise
+    // (PR #870 root cause). Checked AFTER runtime/env so a real env-127 still
+    // wins; both `process` and `env` are non-blocking so gating is unaffected.
+    if (GENERATED_ARTIFACT_RE.test(text)) {
+        return "process";
     }
     // Test-wiring findings when the repo has no test script by design: adding a
     // test script / wiring tests into package.json is a PROCESS change the

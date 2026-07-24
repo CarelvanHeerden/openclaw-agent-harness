@@ -172,6 +172,8 @@ export function discoverCheckScripts(repoRoot) {
     }
     return out;
 }
+/** beta.70 (F4): V8 heap-OOM signature. exit 134 = SIGABRT; the message is the tell. */
+export const HEAP_OOM_RE = /\b(ineffective mark-?compacts near heap limit|javascript heap out of memory|fatal error:.*heap|allocation failed - javascript heap)\b/i;
 /** Bound the captured output tail so a noisy script can't blow up the audit/log. */
 const OUTPUT_TAIL_CHARS = 4000;
 /**
@@ -193,6 +195,7 @@ export function runCheckScripts(params) {
     const results = [];
     const run = params.runScript ?? defaultRunScript;
     const timeoutMs = Math.max(10, params.timeoutSeconds) * 1000;
+    const heapRetryMb = params.heapRetryMb ?? 8192;
     for (const s of params.discovered) {
         if (!allow.has(s.name)) {
             // Never run a non-allowlisted script; do not even record it as ran.
@@ -207,7 +210,32 @@ export function runCheckScripts(params) {
             results.push({ script: s.name, ran: false, exitCode: null, outputTail: "", unrunnable: true, skippedReason: `spawn error: ${String(err)}` });
             continue;
         }
-        const combined = `${out.stdout ?? ""}${out.stderr ?? ""}`;
+        let combined = `${out.stdout ?? ""}${out.stderr ?? ""}`;
+        // beta.70 (F4): heap OOM (exit 134 + mark-compacts message). Retry ONCE
+        // with a larger heap before treating it as a failure. On Thanos-scale
+        // repos `tsc --noEmit` deterministically OOMs at the 4 GB default; the
+        // retry with 8 GB clears it. If the retry ALSO OOMs, surface as BLOCKING
+        // (oom:true) -- do NOT swallow it as a soft skip (PR #870 shipped a
+        // false-green while typecheck had OOM'd).
+        let heapRetried = false;
+        if ((out.status === 134 || HEAP_OOM_RE.test(combined))) {
+            heapRetried = true;
+            let retry;
+            try {
+                retry = run(s.name, params.repoRoot, timeoutMs, heapRetryMb);
+            }
+            catch (err) {
+                results.push({ script: s.name, ran: false, exitCode: out.status ?? 134, outputTail: combined.slice(-OUTPUT_TAIL_CHARS), oom: true, heapRetried: true, skippedReason: `heap-retry spawn error: ${String(err)}` });
+                continue;
+            }
+            out = retry;
+            combined = `${out.stdout ?? ""}${out.stderr ?? ""}`;
+            // Still OOM after the larger heap? BLOCKING failure, not a skip.
+            if (out.status === 134 || HEAP_OOM_RE.test(combined)) {
+                results.push({ script: s.name, ran: true, exitCode: out.status ?? 134, outputTail: combined.slice(-OUTPUT_TAIL_CHARS), oom: true, heapRetried: true });
+                continue;
+            }
+        }
         const outputTail = combined.length > OUTPUT_TAIL_CHARS ? combined.slice(-OUTPUT_TAIL_CHARS) : combined;
         if (out.timedOut) {
             results.push({ script: s.name, ran: false, exitCode: null, outputTail, unrunnable: true, skippedReason: `timed out after ${params.timeoutSeconds}s` });
@@ -229,17 +257,29 @@ export function runCheckScripts(params) {
             results.push({ script: s.name, ran: false, exitCode: out.status ?? 127, outputTail, unrunnable: true, skippedReason: `env_unavailable: check-script binary missing (exit 127 / command not found)` });
             continue;
         }
-        results.push({ script: s.name, ran: true, exitCode: out.status ?? null, outputTail });
+        results.push({ script: s.name, ran: true, exitCode: out.status ?? null, outputTail, heapRetried: heapRetried || undefined });
     }
     return results;
 }
-/** Default script runner: `npm run <name>` in cwd, bounded by timeout. */
-function defaultRunScript(name, cwd, timeoutMs) {
+/**
+ * Default script runner: `npm run <name>` in cwd, bounded by timeout.
+ * beta.70 (F4): when `heapMb` is provided (the retry after a heap OOM), inject
+ * `--max-old-space-size=<heapMb>` into NODE_OPTIONS for the child so the
+ * repo's `tsc`/build gets a larger V8 heap. Merges with any existing
+ * NODE_OPTIONS rather than clobbering it.
+ */
+function defaultRunScript(name, cwd, timeoutMs, heapMb) {
+    const env = { ...process.env };
+    if (heapMb && heapMb > 0) {
+        const existing = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : "";
+        env.NODE_OPTIONS = `${existing}--max-old-space-size=${heapMb}`;
+    }
     const res = spawnSync("npm", ["run", "--silent", name], {
         cwd,
         timeout: timeoutMs,
         encoding: "utf8",
         maxBuffer: 8 * 1024 * 1024,
+        env,
     });
     const timedOut = res.signal === "SIGTERM" && !!res.error;
     return {
@@ -261,8 +301,8 @@ export function renderConventionsForPrompt(conventions, role) {
     const guidance = role === "lead"
         ? "Respect these repo conventions when planning file placement and sub-tasks. If a convention conflicts with the brief, surface it as a finding — do NOT silently violate it."
         : role === "worker"
-            ? "Respect these repo conventions for any file you touch (placement, regeneration steps, formatting). Do NOT silently violate them."
-            : "Flag any change that violates a stated repo convention, even if CI is green (e.g. an OKF bundle not regenerated, a file placed in the wrong directory).";
+            ? "Respect these repo conventions for any file you touch (placement, formatting, naming). NOTE: any bundle/artifact REGENERATION step (e.g. running `npm run okf`) is handled by the harness AFTER your turn in its convention-check phase -- do NOT run regenerators yourself; just place/edit source correctly and the harness regenerates derived artifacts for you."
+            : "Flag any change that violates a stated repo convention, even if CI is green (e.g. a file placed in the wrong directory, a naming convention broken). EXCEPTION: do NOT raise a finding merely because a generated bundle/artifact was not regenerated (e.g. the OKF bundle) -- the harness regenerates derived artifacts in its own post-worker convention-check phase, so bundle-regeneration is enforced there, not something the code diff must carry. Review the SOURCE change on its merits.";
     const body = conventions
         .map((c) => `--- ${c.source}${c.truncated ? " (truncated)" : ""} ---\n${c.text}`)
         .join("\n\n");

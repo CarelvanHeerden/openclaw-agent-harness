@@ -298,6 +298,26 @@ export function buildWorkerSystemPrompt(
     `- Only run verification (typecheck/tests) if THIS sub-task's success criteria`,
     `  require it. Do not go off-plan to self-verify; make the required edit and`,
     `  commit. Committing the correct change is what completes the sub-task.`,
+    // beta.70 (F1): worker-turn slimming. The harness runs the repo's declared
+    // check scripts (typecheck, lint, and any generator like `npm run okf`) in
+    // a POST-WORKER convention-check phase -- see repo-conventions.ts. In
+    // PR #870 the cycle-2 worker burned 19 min running `npm run okf` (a
+    // 1436-file regenerator) + a repo-wide `tsc` inside its own turn to land a
+    // 3-line diff, duplicating work the pipeline does downstream. Keep heavy
+    // repo-wide tooling OUT of the worker turn.
+    `- DO NOT run repo-wide generators, full-repo builds, or whole-project`,
+    `  typechecks inside your turn. Specifically: do NOT run bundle/artifact`,
+    `  regenerators (e.g. \`npm run okf\`, codegen, "regenerate the bundle"),`,
+    `  do NOT run a repo-wide \`tsc --noEmit\` / full \`npm run build\`, and do NOT`,
+    `  run a whole-repo lint. The harness runs the repo's declared check scripts`,
+    `  (typecheck, lint, okf:check, and any regenerator) AFTER your turn, once,`,
+    `  in its convention-check phase. Running them yourself duplicates minutes of`,
+    `  work and often produces a zero diff. If a repo convention says "regenerate`,
+    `  the bundle", the harness does that for you post-turn -- you do NOT.`,
+    `- For your OWN correctness feedback you MAY read the specific files you`,
+    `  changed and reason about them, or run a check scoped to ONLY the file(s)`,
+    `  you touched if the tooling supports it cheaply. Never expand a scoped`,
+    `  check into a whole-repo run. When in doubt, make the edit, commit, stop.`,
   );
   // beta.63 (Fix 1): the worker gets NO OpenClaw context injection, so the
   // repo's declared conventions must be carried in the prompt explicitly.

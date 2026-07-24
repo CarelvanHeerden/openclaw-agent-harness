@@ -67,6 +67,7 @@ const DEFAULTS = {
         stall_sweep_interval_seconds: 60,
         enforce_worker_context: true,
         revise_spec_turn_enabled: true,
+        skip_observe_reprobe_on_revise: true,
         sdk_first_token_timeout_seconds: 30,
         sdk_stream_open_timeout_seconds: 120,
         worker_timeout_retry_enabled: true,
@@ -141,6 +142,7 @@ const DEFAULTS = {
         run_repo_check_scripts: true,
         check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
         check_script_timeout_seconds: 600,
+        check_script_heap_retry_mb: 8192,
     },
     logging: {
         level: "info",

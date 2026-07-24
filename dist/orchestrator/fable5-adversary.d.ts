@@ -103,5 +103,22 @@ export interface AdversaryDeps {
     }>;
     readDiff: (diffPath: string) => Promise<string>;
 }
+/**
+ * beta.70 (F3): the adversary's response was not the verdict JSON. In PR #870
+ * the cycle-2 adversary emitted a bash pre-flight discovery step as its ENTIRE
+ * final message ({command, description}) instead of {verdict, findings,
+ * summary}, so the parser threw "JSON missing required keys" and the run
+ * crash-recovered to `needs_human_review` -- producing NO real verdict after
+ * 4 min of adversary tokens. This detects that class from the thrown error so
+ * `runAdversary` can retry ONCE with a hardened "verdict JSON only" nudge
+ * before giving up.
+ */
+export declare function isAdversaryFormatError(err: unknown): boolean;
+/**
+ * beta.70 (F3): appended to the system prompt on the format-retry. Hammers the
+ * ONE thing that failed: return the verdict object, do not call a tool, do not
+ * explore -- you already have the full diff.
+ */
+export declare const ADVERSARY_FORMAT_RETRY_NUDGE: string;
 export declare function runAdversary(input: AdversaryInput, deps: AdversaryDeps): Promise<ReviewReport>;
 //# sourceMappingURL=fable5-adversary.d.ts.map

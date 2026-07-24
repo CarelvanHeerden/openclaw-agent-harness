@@ -125,15 +125,62 @@ export function buildAdversarySystemPrompt(input) {
         "Return a strict JSON object matching the ReviewReport schema. No prose outside the JSON.",
     ].join("\n");
 }
+/**
+ * beta.70 (F3): the adversary's response was not the verdict JSON. In PR #870
+ * the cycle-2 adversary emitted a bash pre-flight discovery step as its ENTIRE
+ * final message ({command, description}) instead of {verdict, findings,
+ * summary}, so the parser threw "JSON missing required keys" and the run
+ * crash-recovered to `needs_human_review` -- producing NO real verdict after
+ * 4 min of adversary tokens. This detects that class from the thrown error so
+ * `runAdversary` can retry ONCE with a hardened "verdict JSON only" nudge
+ * before giving up.
+ */
+export function isAdversaryFormatError(err) {
+    const msg = String(err?.message ?? err);
+    return /JSON missing required keys|JSON\.parse failed|extractJson failed|parsed to non-object|failed typeCheck/i.test(msg);
+}
+/**
+ * beta.70 (F3): appended to the system prompt on the format-retry. Hammers the
+ * ONE thing that failed: return the verdict object, do not call a tool, do not
+ * explore -- you already have the full diff.
+ */
+export const ADVERSARY_FORMAT_RETRY_NUDGE = [
+    "",
+    "## RESPONSE FORMAT (RETRY -- your previous response was rejected)",
+    "Your previous response was NOT a valid ReviewReport. You likely emitted a tool/bash call (e.g. {\"command\": ..., \"description\": ...}) or prose instead of the verdict object.",
+    "You ALREADY HAVE the full diff below and the brief above. Do NOT explore the filesystem, do NOT run any command, do NOT call any tool.",
+    "Respond with EXACTLY ONE JSON object and NOTHING else: { \"verdict\": \"pass\"|\"revise\"|\"block\", \"findings\": [...], \"summary\": \"...\" }.",
+    "If you cannot find a blocking defect in the diff, the correct answer is verdict \"pass\" with your notes as info/low findings.",
+].join("\n");
 export async function runAdversary(input, deps) {
     const systemPrompt = buildAdversarySystemPrompt(input);
     const diffText = await deps.readDiff(input.diffPath);
-    const result = await deps.callAdversaryModel({
-        systemPrompt,
-        diffText,
-        model: input.model,
-        timeoutSeconds: input.timeoutSeconds,
-    });
+    let result;
+    try {
+        result = await deps.callAdversaryModel({
+            systemPrompt,
+            diffText,
+            model: input.model,
+            timeoutSeconds: input.timeoutSeconds,
+        });
+    }
+    catch (err) {
+        // beta.70 (F3): retry ONCE on a format error with a hardened nudge. Any
+        // other error (timeout, SDK failure) propagates unchanged to the loop's
+        // review-crash handler.
+        if (!isAdversaryFormatError(err))
+            throw err;
+        deps.logger.warn("[adversary] response was not a verdict JSON (likely a tool-call); retrying once with a format nudge", {
+            error: String(err?.message ?? err).slice(0, 300),
+        });
+        result = await deps.callAdversaryModel({
+            systemPrompt: systemPrompt + ADVERSARY_FORMAT_RETRY_NUDGE,
+            diffText,
+            model: input.model,
+            timeoutSeconds: input.timeoutSeconds,
+        });
+        deps.logger.info("[adversary] format-retry succeeded", { verdict: result.parsed.verdict });
+    }
     // beta.69 (F1/F4): runtime evidence is genuinely absent ONLY when there is no
     // runtime snapshot at all, OR a non-local snapshot in no_deploy_yet/unavailable.
     // A GREEN local-verification snapshot (provider=local, status=ok) COUNTS as

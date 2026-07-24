@@ -76,6 +76,15 @@ export interface VerifyConfig {
   check_script_allowlist: string[];
   /** Per-script wall-clock timeout (seconds). Default 600. */
   check_script_timeout_seconds: number;
+  /**
+   * beta.70 (F4): V8 heap ceiling (MB) applied via NODE_OPTIONS on the RETRY
+   * after a check script dies of a heap OOM (exit 134 / "Ineffective
+   * mark-compacts near heap limit"). On Thanos-scale repos `tsc --noEmit`
+   * deterministically OOMs at the 4 GB default; 8 GB clears it. A persisted
+   * OOM after the retry becomes a BLOCKING finding (was a silent false-green).
+   * Default 8192.
+   */
+  check_script_heap_retry_mb?: number;
 }
 
 export interface LogConfig {
@@ -355,6 +364,14 @@ export interface LoopConfig {
    * false -> beta.66 behaviour. Failure also falls back. Default true.
    */
   revise_spec_turn_enabled?: boolean;
+  /**
+   * beta.70 (F5): skip an observe-only sub-task's RE-PROBE on a revise cycle
+   * when the SAME seq already completed cleanly in a prior cycle. In PR #870
+   * the cycle-2 plan re-listed the seq-1 probe ("already completed, no
+   * changes") and the loop re-ran it for 58s + $0.29. true (default) skips it;
+   * false restores the always-re-run behaviour.
+   */
+  skip_observe_reprobe_on_revise?: boolean;
   /**
    * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
    * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
@@ -639,6 +656,7 @@ const DEFAULTS: HarnessConfig = {
     stall_sweep_interval_seconds: 60,
     enforce_worker_context: true,
     revise_spec_turn_enabled: true,
+    skip_observe_reprobe_on_revise: true,
     sdk_first_token_timeout_seconds: 30,
     sdk_stream_open_timeout_seconds: 120,
     worker_timeout_retry_enabled: true,
@@ -713,6 +731,7 @@ const DEFAULTS: HarnessConfig = {
     run_repo_check_scripts: true,
     check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
     check_script_timeout_seconds: 600,
+    check_script_heap_retry_mb: 8192,
   },
   logging: {
     level: "info",

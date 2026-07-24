@@ -374,6 +374,15 @@ export declare class OrchestratorLoop {
     private armStallWatchdog;
     private runInner;
     /**
+     * beta.70 (F5): did THIS observe sub-task already complete cleanly in a
+     * PRIOR cycle? Used to skip a redundant observe re-probe on a revise cycle.
+     * Returns the prior cycle + status when a `sub_tasks` row exists at the same
+     * seq, in an earlier cycle, with a completed/no-change status. Conservative:
+     * a prior FAILED observe returns null (we re-run it). Best-effort; on any DB
+     * error returns null (never blocks the run).
+     */
+    private priorObserveCompleted;
+    /**
      * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
      * audit breadcrumb. Fires exactly once per observe-mode sub-task terminal
      * success. Payload is intentionally similar to `loop.subtask_verification`

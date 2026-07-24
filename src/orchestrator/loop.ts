@@ -72,6 +72,7 @@ import { inferVerifyContract } from "./verify-contract.js";
 import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult } from "./repo-conventions.js";
+import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
 
 export type LoopStatus =
   | "crystallising"
@@ -987,6 +988,41 @@ export class OrchestratorLoop {
         // instead of raw findings. Fallback keeps the beta.56 raw hint.
         const reviseHint =
           cycle > 1 && lastReview && !reviseSpecApplied ? buildReviseDispatchHint(lastReview) : undefined;
+        // beta.70 (F5): skip observe-only RE-PROBE on a revise cycle. In
+        // PR #870 the cycle-2 plan re-listed seq-1 as taskMode:'observe'
+        // ("already completed and requires no changes; do not modify any
+        // files") yet the loop re-ran it -- 58s + $0.29 to re-emit the same
+        // probe report. On a revise cycle (cycle > 1), when THIS observe
+        // sub-task already completed cleanly in a PRIOR cycle, mark it done and
+        // skip the SDK call. Guard is conservative on THREE axes:
+        //   (1) observe-only (never a mutate);
+        //   (2) the prior-cycle row for this seq is a completed/no-change observe;
+        //   (3) reviseSpecApplied -- the Fable revise-spec turn ran and
+        //       re-listed this observe as an unchanged probe. We ONLY skip in
+        //       that case, because without a revise-spec the observe sub-task is
+        //       carrying the raw revise hint and IS meant to re-run (an observe
+        //       step can apply a fix and the beta.56 hint targets it). This
+        //       matches PR #870 exactly (it had a revise-spec) without breaking
+        //       the raw-findings fallback path.
+        // Config-gated (default on).
+        if (
+          cycle > 1 &&
+          st.taskMode === "observe" &&
+          reviseSpecApplied &&
+          this.deps.config.loop.skip_observe_reprobe_on_revise !== false
+        ) {
+          const prior = this.priorObserveCompleted(sessionId, cycle, st.seq);
+          if (prior) {
+            this.deps.state.audit(
+              "loop.observe_reprobe_skipped",
+              { sessionId, cycle, seq: st.seq, priorCycle: prior.cycle, priorStatus: prior.status },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, { event: "observe_reprobe_skipped", phase: "worker", seq: st.seq, cycle });
+            done.add(st.seq);
+            return;
+          }
+        }
         const reactions = await this.deps.readReactions(sessionId);
         if (reactions.abort) { failed.err = "user_abort_reaction"; failed.seq = st.seq; return; }
         if (Date.now() > hardDeadlineMs) { failed.err = "hard_timeout"; failed.seq = st.seq; return; }
@@ -1880,12 +1916,32 @@ export class OrchestratorLoop {
       // check script failed, downgrade to `revise` so the worker gets another
       // cycle to fix the convention violation (e.g. regenerate the OKF bundle).
       // Never escalates to `block` (not a hard fail) -- max-cycles still ships.
+      //
+      // beta.70 (F2): only force `pass`->`revise` when a convention finding is
+      // actually BLOCKING (diff_addressable + medium+). A `process`-class
+      // convention finding -- e.g. "OKF bundle not regenerated" -- is enforced
+      // by the convention-check phase itself (it re-runs the regenerator) and
+      // must NOT force another expensive code cycle. In PR #870 this exact
+      // force-upgrade turned a clean `pass` into a 19-min cycle-2 that re-ran
+      // `npm run okf` over 1436 files for a zero diff. All findings still
+      // attach to the report (they ship on the PR body); only the verdict is
+      // gated. A real typecheck/lint failure or a persisted heap OOM stays
+      // blocking and still triggers the revise.
       if (conventionFindings.length > 0) {
+        const blockingConvention = conventionFindings.filter((f) =>
+          isBlockingFinding(f, classifyFinding(f, { repoHasTestScript: true })),
+        );
         report = {
           ...report,
           findings: [...report.findings, ...conventionFindings],
-          verdict: report.verdict === "pass" ? "revise" : report.verdict,
+          verdict:
+            report.verdict === "pass" && blockingConvention.length > 0
+              ? "revise"
+              : report.verdict,
         };
+        if (report.verdict === "pass" && blockingConvention.length === 0 && conventionFindings.length > 0) {
+          this.deps.state.audit("loop.convention_findings_nonblocking", { sessionId, cycle, total: conventionFindings.length }, sessionId);
+        }
       }
       lastReview = report;
       // beta.69 (F1): visibility for the convergence gate. When the adversary's
@@ -1966,6 +2022,34 @@ export class OrchestratorLoop {
     // sessions row into the release call.
     await this.tryReleaseWorktree(sessionId, plan.repo, plan.worktreePath, "shipped");
     return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
+  }
+
+  /**
+   * beta.70 (F5): did THIS observe sub-task already complete cleanly in a
+   * PRIOR cycle? Used to skip a redundant observe re-probe on a revise cycle.
+   * Returns the prior cycle + status when a `sub_tasks` row exists at the same
+   * seq, in an earlier cycle, with a completed/no-change status. Conservative:
+   * a prior FAILED observe returns null (we re-run it). Best-effort; on any DB
+   * error returns null (never blocks the run).
+   */
+  private priorObserveCompleted(
+    sessionId: string,
+    cycle: number,
+    seq: number,
+  ): { cycle: number; status: string } | null {
+    try {
+      const row = this.deps.state.db
+        .prepare(
+          `SELECT cycle, status FROM sub_tasks
+           WHERE session_id = ? AND seq = ? AND cycle < ?
+             AND status IN ('completed', 'completed_no_change')
+           ORDER BY cycle DESC LIMIT 1`,
+        )
+        .get(sessionId, seq, cycle) as { cycle: number; status: string } | undefined;
+      return row ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2447,6 +2531,8 @@ export class OrchestratorLoop {
         allowlist: vcfg.check_script_allowlist ?? ["okf:check", "lint", "typecheck", "test"],
         timeoutSeconds: vcfg.check_script_timeout_seconds ?? 600,
         runScript: this.deps.runCheckScript,
+        // beta.70 (F4): larger heap for the OOM retry on Thanos-scale typechecks.
+        heapRetryMb: vcfg.check_script_heap_retry_mb ?? 8192,
       });
     } catch (err) {
       this.deps.logger.warn("[loop] convention check run failed (non-fatal)", { sessionId, err: String(err) });
@@ -2455,8 +2541,26 @@ export class OrchestratorLoop {
 
     const findings: ReviewFinding[] = [];
     for (const r of results) {
+      // beta.70 (F4): a heap OOM that PERSISTED after the larger-heap retry is a
+      // genuine blocking failure -- surface it distinctly (was a silent skip
+      // that shipped a false green in PR #870). It stays `fit`/`medium` so it
+      // folds into the review as revise-worthy, but with an explicit oom flag.
+      if (r.oom) {
+        this.deps.state.audit("loop.convention_check_oom", { sessionId, cycle, script: r.script, exitCode: r.exitCode, heapRetried: !!r.heapRetried }, sessionId);
+        this.deps.state.audit("loop.convention_check_failed", { sessionId, cycle, script: r.script, exitCode: r.exitCode, oom: true, outputTail: r.outputTail }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "convention_check_failed", phase: "review", cycle, script: r.script, exitCode: r.exitCode, oom: true });
+        findings.push({
+          dimension: "quality",
+          severity: "high",
+          title: `Repo check script '${r.script}' ran out of memory (heap OOM, exit ${r.exitCode})`,
+          detail:
+            `'${r.script}' died of a V8 heap OOM even after a retry with a larger heap. Types/checks are UNVERIFIED -- do NOT treat this as green. ` +
+            `Consider raising verify.check_script_heap_retry_mb or splitting the project. Output tail:\n${r.outputTail}`,
+        });
+        continue;
+      }
       if (r.ran && r.exitCode === 0) {
-        this.deps.state.audit("loop.convention_check_ran", { sessionId, cycle, script: r.script, exitCode: r.exitCode }, sessionId);
+        this.deps.state.audit("loop.convention_check_ran", { sessionId, cycle, script: r.script, exitCode: r.exitCode, heapRetried: !!r.heapRetried }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "convention_check_ran", phase: "review", cycle, script: r.script, exitCode: r.exitCode });
       } else if (r.ran && r.exitCode !== 0) {
         this.deps.state.audit("loop.convention_check_ran", { sessionId, cycle, script: r.script, exitCode: r.exitCode }, sessionId);
