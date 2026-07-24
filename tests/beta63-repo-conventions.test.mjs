@@ -209,8 +209,11 @@ test("beta63: loop ingests conventions at plan-ready + runs final-verify checks 
   assert.match(src, /runFinalVerifyChecks\(sessionId, plan, cycle\)/);
   assert.match(src, /loop\.convention_check_ran/);
   assert.match(src, /loop\.convention_check_failed/);
-  // convention findings downgrade a pass to revise (NOT block/hard-fail)
-  assert.match(src, /verdict: report\.verdict === "pass" \? "revise" : report\.verdict/);
+  // beta.70 (F2): convention findings downgrade a pass to revise ONLY when a
+  // convention finding is BLOCKING (diff_addressable + medium+). A process-
+  // class finding (e.g. OKF bundle regen) no longer force-revises.
+  assert.match(src, /blockingConvention\.length > 0/);
+  assert.match(src, /report\.verdict === "pass" && blockingConvention\.length > 0/);
 });
 
 test("beta63: lead/worker/adversary prompts thread renderConventionsForPrompt (source)", () => {

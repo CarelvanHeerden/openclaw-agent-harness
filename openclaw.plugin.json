@@ -344,6 +344,11 @@
             "default": true,
             "description": "beta.67 (P0b): run ONE Fable revise-spec turn between the adversary and cycle-2 workers to refresh workerContext with a resolved changeSpec, so workers never see the raw adversary findings (the beta.63/64 no-op regression). false -> beta.66 raw-findings behaviour; a revise-spec failure also falls back. Default true."
           },
+          "skip_observe_reprobe_on_revise": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.70 (F5): skip an observe-only sub-task's re-probe on a revise cycle when the same seq already completed cleanly in a prior cycle (PR #870 re-ran the seq-1 probe for 58s/$0.29 despite the revise-spec saying 'no changes'). Default true."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,
@@ -656,6 +661,13 @@
             "maximum": 7200,
             "default": 600,
             "description": "beta.63 (Fix 2): per-check-script wall-clock timeout (seconds). A timed-out script is treated as unrunnable (non-fatal log + note), not a hard fail."
+          },
+          "check_script_heap_retry_mb": {
+            "type": "integer",
+            "minimum": 512,
+            "maximum": 65536,
+            "default": 8192,
+            "description": "beta.70 (F4): V8 heap ceiling (MB) applied via NODE_OPTIONS on the retry after a check script dies of a heap OOM (exit 134 / 'Ineffective mark-compacts near heap limit'). On Thanos-scale repos tsc --noEmit OOMs at the 4 GB default; 8 GB clears it. A persisted OOM after the retry becomes a BLOCKING finding. Default 8192."
           }
         }
       },

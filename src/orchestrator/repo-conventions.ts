@@ -191,7 +191,22 @@ export interface CheckScriptResult {
   skippedReason?: string;
   /** True when the failure is a network/build limitation (non-fatal note, not a finding). */
   unrunnable?: boolean;
+  /**
+   * beta.70 (F4): true when the script died of a V8 heap OOM (exit 134 +
+   * "Ineffective mark-compacts near heap limit"). Distinct from a real check
+   * failure: on Thanos-scale repos `tsc --noEmit` OOMs at the default 4 GB
+   * heap (PR #870 burned ~3.5 min crashing). The runner RETRIES ONCE with a
+   * larger heap; if it still OOMs this stays true and the caller surfaces it
+   * as a BLOCKING failure (a false-green shipped before this fix).
+   */
+  oom?: boolean;
+  /** beta.70 (F4): true when the larger-heap retry was attempted for this script. */
+  heapRetried?: boolean;
 }
+
+/** beta.70 (F4): V8 heap-OOM signature. exit 134 = SIGABRT; the message is the tell. */
+export const HEAP_OOM_RE =
+  /\b(ineffective mark-?compacts near heap limit|javascript heap out of memory|fatal error:.*heap|allocation failed - javascript heap)\b/i;
 
 /** Bound the captured output tail so a noisy script can't blow up the audit/log. */
 const OUTPUT_TAIL_CHARS = 4000;
@@ -215,12 +230,19 @@ export function runCheckScripts(params: {
   discovered: CheckScript[];
   allowlist: string[];
   timeoutSeconds: number;
-  runScript?: (name: string, cwd: string, timeoutMs: number) => { status: number | null; stdout: string; stderr: string; error?: unknown; timedOut?: boolean };
+  runScript?: (name: string, cwd: string, timeoutMs: number, heapMb?: number) => { status: number | null; stdout: string; stderr: string; error?: unknown; timedOut?: boolean };
+  /**
+   * beta.70 (F4): heap ceiling (MB) applied to the check-script child via
+   * NODE_OPTIONS on the RETRY after a heap OOM. Default 8192. The first run
+   * uses the repo's own NODE_OPTIONS; the retry forces this.
+   */
+  heapRetryMb?: number;
 }): CheckScriptResult[] {
   const allow = new Set(params.allowlist);
   const results: CheckScriptResult[] = [];
   const run = params.runScript ?? defaultRunScript;
   const timeoutMs = Math.max(10, params.timeoutSeconds) * 1000;
+  const heapRetryMb = params.heapRetryMb ?? 8192;
 
   for (const s of params.discovered) {
     if (!allow.has(s.name)) {
@@ -235,7 +257,31 @@ export function runCheckScripts(params: {
       results.push({ script: s.name, ran: false, exitCode: null, outputTail: "", unrunnable: true, skippedReason: `spawn error: ${String(err)}` });
       continue;
     }
-    const combined = `${out.stdout ?? ""}${out.stderr ?? ""}`;
+    let combined = `${out.stdout ?? ""}${out.stderr ?? ""}`;
+    // beta.70 (F4): heap OOM (exit 134 + mark-compacts message). Retry ONCE
+    // with a larger heap before treating it as a failure. On Thanos-scale
+    // repos `tsc --noEmit` deterministically OOMs at the 4 GB default; the
+    // retry with 8 GB clears it. If the retry ALSO OOMs, surface as BLOCKING
+    // (oom:true) -- do NOT swallow it as a soft skip (PR #870 shipped a
+    // false-green while typecheck had OOM'd).
+    let heapRetried = false;
+    if ((out.status === 134 || HEAP_OOM_RE.test(combined))) {
+      heapRetried = true;
+      let retry;
+      try {
+        retry = run(s.name, params.repoRoot, timeoutMs, heapRetryMb);
+      } catch (err) {
+        results.push({ script: s.name, ran: false, exitCode: out.status ?? 134, outputTail: combined.slice(-OUTPUT_TAIL_CHARS), oom: true, heapRetried: true, skippedReason: `heap-retry spawn error: ${String(err)}` });
+        continue;
+      }
+      out = retry;
+      combined = `${out.stdout ?? ""}${out.stderr ?? ""}`;
+      // Still OOM after the larger heap? BLOCKING failure, not a skip.
+      if (out.status === 134 || HEAP_OOM_RE.test(combined)) {
+        results.push({ script: s.name, ran: true, exitCode: out.status ?? 134, outputTail: combined.slice(-OUTPUT_TAIL_CHARS), oom: true, heapRetried: true });
+        continue;
+      }
+    }
     const outputTail = combined.length > OUTPUT_TAIL_CHARS ? combined.slice(-OUTPUT_TAIL_CHARS) : combined;
     if (out.timedOut) {
       results.push({ script: s.name, ran: false, exitCode: null, outputTail, unrunnable: true, skippedReason: `timed out after ${params.timeoutSeconds}s` });
@@ -257,18 +303,30 @@ export function runCheckScripts(params: {
       results.push({ script: s.name, ran: false, exitCode: out.status ?? 127, outputTail, unrunnable: true, skippedReason: `env_unavailable: check-script binary missing (exit 127 / command not found)` });
       continue;
     }
-    results.push({ script: s.name, ran: true, exitCode: out.status ?? null, outputTail });
+    results.push({ script: s.name, ran: true, exitCode: out.status ?? null, outputTail, heapRetried: heapRetried || undefined });
   }
   return results;
 }
 
-/** Default script runner: `npm run <name>` in cwd, bounded by timeout. */
-function defaultRunScript(name: string, cwd: string, timeoutMs: number): { status: number | null; stdout: string; stderr: string; error?: unknown; timedOut?: boolean } {
+/**
+ * Default script runner: `npm run <name>` in cwd, bounded by timeout.
+ * beta.70 (F4): when `heapMb` is provided (the retry after a heap OOM), inject
+ * `--max-old-space-size=<heapMb>` into NODE_OPTIONS for the child so the
+ * repo's `tsc`/build gets a larger V8 heap. Merges with any existing
+ * NODE_OPTIONS rather than clobbering it.
+ */
+function defaultRunScript(name: string, cwd: string, timeoutMs: number, heapMb?: number): { status: number | null; stdout: string; stderr: string; error?: unknown; timedOut?: boolean } {
+  const env = { ...process.env };
+  if (heapMb && heapMb > 0) {
+    const existing = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ` : "";
+    env.NODE_OPTIONS = `${existing}--max-old-space-size=${heapMb}`;
+  }
   const res = spawnSync("npm", ["run", "--silent", name], {
     cwd,
     timeout: timeoutMs,
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
+    env,
   });
   const timedOut = (res as { signal?: string | null }).signal === "SIGTERM" && !!res.error;
   return {
@@ -291,8 +349,8 @@ export function renderConventionsForPrompt(conventions: RepoConvention[] | undef
     role === "lead"
       ? "Respect these repo conventions when planning file placement and sub-tasks. If a convention conflicts with the brief, surface it as a finding — do NOT silently violate it."
       : role === "worker"
-        ? "Respect these repo conventions for any file you touch (placement, regeneration steps, formatting). Do NOT silently violate them."
-        : "Flag any change that violates a stated repo convention, even if CI is green (e.g. an OKF bundle not regenerated, a file placed in the wrong directory).";
+        ? "Respect these repo conventions for any file you touch (placement, formatting, naming). NOTE: any bundle/artifact REGENERATION step (e.g. running `npm run okf`) is handled by the harness AFTER your turn in its convention-check phase -- do NOT run regenerators yourself; just place/edit source correctly and the harness regenerates derived artifacts for you."
+        : "Flag any change that violates a stated repo convention, even if CI is green (e.g. a file placed in the wrong directory, a naming convention broken). EXCEPTION: do NOT raise a finding merely because a generated bundle/artifact was not regenerated (e.g. the OKF bundle) -- the harness regenerates derived artifacts in its own post-worker convention-check phase, so bundle-regeneration is enforced there, not something the code diff must carry. Review the SOURCE change on its merits.";
   const body = conventions
     .map((c) => `--- ${c.source}${c.truncated ? " (truncated)" : ""} ---\n${c.text}`)
     .join("\n\n");
