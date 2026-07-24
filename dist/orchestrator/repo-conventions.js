@@ -218,6 +218,17 @@ export function runCheckScripts(params) {
             results.push({ script: s.name, ran: false, exitCode: out.status ?? null, outputTail, unrunnable: true, skippedReason: `unrunnable: ${String(out.error)}` });
             continue;
         }
+        // beta.69 (F4): exit 127 / "command not found" means the check-script binary
+        // (eslint, tsx, ...) is ABSENT from node_modules -- an ENVIRONMENT gap, not a
+        // convention failure. In forensic 1f2e6642 the worktree had a partial
+        // node_modules so lint/okf:check exited 127 and were scored as blocking
+        // convention failures, poisoning cycle-1's review tone. Classify these as
+        // `unrunnable` (non-fatal note) so they never become a revise-worthy finding.
+        // The worktree bootstrap (git-worktree.ts) owns repairing the env.
+        if (out.status === 127 || /\b(command not found|: not found|MODULE_NOT_FOUND|cannot find module)\b/i.test(combined)) {
+            results.push({ script: s.name, ran: false, exitCode: out.status ?? 127, outputTail, unrunnable: true, skippedReason: `env_unavailable: check-script binary missing (exit 127 / command not found)` });
+            continue;
+        }
         results.push({ script: s.name, ran: true, exitCode: out.status ?? null, outputTail });
     }
     return results;

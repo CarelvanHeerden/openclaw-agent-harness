@@ -22,7 +22,7 @@ import type { PatRouter } from "../auth/pat-router.js";
 import type { StateStore } from "../state/store.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask } from "./fable5-lead.js";
-import type { ReviewReport } from "./fable5-adversary.js";
+import type { ReviewReport, ReviewFinding } from "./fable5-adversary.js";
 import type { WorkerResult } from "./sonnet-worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 /**
@@ -182,6 +182,12 @@ export interface OrchestratorDeps {
          * the default base branch name (prior behaviour).
          */
         baseSha?: string;
+        /**
+         * beta.69 (F3): the prior cycle's review, so the adversary is told which
+         * findings the worker already attempted (prompt) and the verdict gate can
+         * treat recycled findings as non-new (they cannot sustain a `revise`).
+         */
+        priorFindings?: ReviewFinding[];
     }) => Promise<ReviewReport>;
     fetchRuntime?: (params: {
         plan: LeadPlan;

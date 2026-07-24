@@ -113,6 +113,15 @@ export declare class GitAdapter {
      */
     private bootstrapWorktreeDeps;
     /**
+     * beta.69 (F4): do the declared check-script binaries (eslint / tsx / tsc /
+     * the tools behind lint|typecheck|okf:check|test scripts) resolve in
+     * node_modules/.bin? A partial node_modules (deps present, dev tools absent)
+     * otherwise slips past the "non-empty" skip and makes the check scripts exit
+     * 127. Best-effort + conservative: unknown/unreadable => treat as present so
+     * we never loop-install. Only the common dev-tool bins are probed.
+     */
+    private declaredCheckBinsPresent;
+    /**
      * Release (remove) a session's worktree.
      *
      * beta.17 fix: previously reconstructed the worktree path from `sessionId`
