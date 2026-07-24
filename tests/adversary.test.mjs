@@ -42,8 +42,12 @@ test("system prompt: includes runtime banner + checklist",
     assert.match(p, /- b/);
   });
 
-test("runAdversary: silent pass without runtime data becomes revise + injected finding",
+test("beta69: no runtime data injects a NON-blocking info finding and does NOT force-upgrade pass->revise",
   { skip: runtimeBanner === null }, async () => {
+    // beta.69 (F1): the old force-upgrade of pass->revise on missing runtime is
+    // DELETED (it made every un-pushed diff structurally unable to converge --
+    // forensic 1f2e6642 revised 3x on this alone). The concern is now surfaced
+    // as an `info` finding for the PR body, and the verdict is left alone.
     const report = await runAdversary(
       { ...inputBase, runtime: { provider: "vercel", status: "no_deploy_yet" } },
       {
@@ -58,8 +62,10 @@ test("runAdversary: silent pass without runtime data becomes revise + injected f
         }),
       },
     );
-    assert.equal(report.verdict, "revise");
-    assert.ok(report.findings.find((f) => f.dimension === "runtime" && f.severity === "medium"));
+    assert.equal(report.verdict, "pass");
+    const rf = report.findings.find((f) => f.dimension === "runtime");
+    assert.ok(rf, "a runtime note is injected");
+    assert.equal(rf.severity, "info", "the runtime note is non-blocking info, not medium");
   });
 
 test("runAdversary: pass when runtime data is ok is preserved",

@@ -22,6 +22,7 @@
  */
 
 import { renderConventionsForPrompt } from "./repo-conventions.js";
+import { gateVerdict, type ClassifyCtx } from "./finding-classify.js";
 
 export interface AdversaryInput {
   crystallisedPrompt: string;
@@ -45,6 +46,18 @@ export interface AdversaryInput {
   timeoutSeconds: number;
   /** beta.63 (Fix 1): repo conventions ingested at brief build. Optional. */
   repoConventions?: import("./repo-conventions.js").RepoConvention[];
+  /**
+   * beta.69 (F3): findings the adversary raised in a PRIOR cycle. Fed into the
+   * prompt ("do not repeat unless you can state why the fix is insufficient")
+   * and into the verdict gate (recycled findings cannot sustain a `revise`).
+   */
+  priorFindings?: ReviewFinding[];
+  /**
+   * beta.69 (F1): true when the target repo has NO declared test script, so a
+   * "no tests" finding is a process concern the worker cannot fix (it must not
+   * add a test script). Derived from repoConventions / discovered scripts.
+   */
+  repoHasTestScript?: boolean;
 }
 
 export interface ReviewFinding {
@@ -127,7 +140,7 @@ export function buildAdversarySystemPrompt(input: AdversaryInput): string {
     "2. Codebase fit: does it match existing patterns/conventions?",
     "3. Quality: types, tests, lint, `any` leaks, TODOs, dead code.",
     "4. Security: secrets in code, injection, XSS, dangerous deps.",
-    "5. Runtime: see runtime banner. If banner says NO RUNTIME DATA, you MUST NOT sign off on runtime.",
+    "5. Runtime: see runtime banner. If the banner says NO RUNTIME DATA AVAILABLE, do NOT sign off on runtime — but this alone is NOT a reason to `revise`: the harness decides whether to push for a preview deploy, and the missing-runtime concern is surfaced on the PR for human review. If the banner shows LOCAL VERIFICATION passed (0 failures), treat the runtime dimension as SATISFIED for a change with no user-facing/deploy-observable surface (API logic, internal query, config): do NOT emit a 'no runtime data' finding in that case.",
     "",
     // beta.48 (C3): the ROOT cause of the #858 revise dead-end. In session
     // 21da9f9c the adversary emitted finding 10 with an UNVERIFIED
@@ -153,10 +166,21 @@ export function buildAdversarySystemPrompt(input: AdversaryInput): string {
     // flags a change that violates them even when CI is green (the PR #859
     // okf:check-drift-with-green-CI class).
     renderConventionsForPrompt(input.repoConventions, "adversary"),
+    // beta.69 (F3): cross-cycle finding provenance. Without this the adversary
+    // re-emits the same findings every cycle (the D1/D3 churn spiral of
+    // session 1f2e6642: cycle 2 had 0 convention findings and still revised).
+    ...(input.priorFindings && input.priorFindings.length > 0
+      ? [
+          "",
+          "## Findings from the PRIOR cycle (the worker already attempted to address these)",
+          ...input.priorFindings.map((f) => `- [${f.severity}/${f.dimension}] ${f.title}`),
+          "Do NOT repeat any of the above findings unless you can state SPECIFICALLY why the worker's attempted fix is insufficient. Re-raising an already-addressed finding without that justification just churns the loop.",
+        ]
+      : []),
     "",
     "## Verdict rules",
-    "- `pass`: no findings above `medium`, AND every checklist item is verifiably met.",
-    "- `revise`: findings the worker can fix in another cycle.",
+    "- `pass`: no NEW, diff-addressable finding above `low`. Missing runtime data (when local verification is green), absence of a test script the repo does not declare, and platform/deploy limits are NOT reasons to withhold `pass` — surface them as `info`/`low` notes.",
+    "- `revise`: at least one NEW finding, at `medium`+ severity, that a worker can fix by editing THIS diff in another cycle. Do not `revise` solely on recycled or non-diff-addressable concerns.",
     "- `block`: findings that require a redesign, a scope change, or human intervention.",
     "",
     "Return a strict JSON object matching the ReviewReport schema. No prose outside the JSON.",
@@ -193,25 +217,52 @@ export async function runAdversary(
     timeoutSeconds: input.timeoutSeconds,
   });
 
-  // Force runtime-dimension safety net: if no runtime data, upgrade any
-  // silent "pass" to at least "revise" and inject a MEDIUM finding.
-  const wantsRuntimeGuard =
-    input.runtime && ["no_deploy_yet", "unavailable"].includes(input.runtime.status);
-  let verdict = result.parsed.verdict;
+  // beta.69 (F1/F4): runtime evidence is genuinely absent ONLY when there is no
+  // runtime snapshot at all, OR a non-local snapshot in no_deploy_yet/unavailable.
+  // A GREEN local-verification snapshot (provider=local, status=ok) COUNTS as
+  // runtime evidence for logic-only changes and must NOT trigger the guard.
+  const runtimeUnavailable =
+    !input.runtime ||
+    (input.runtime.provider !== "local" &&
+      ["no_deploy_yet", "unavailable"].includes(input.runtime.status));
+
   const findings = [...result.parsed.findings];
-  if (wantsRuntimeGuard) {
-    const hasRuntimeFinding = findings.some((f) => f.dimension === "runtime");
-    if (!hasRuntimeFinding) {
-      findings.push({
-        dimension: "runtime",
-        severity: "medium",
-        title: "No runtime data",
-        detail:
-          "Adversary did not have preview-deploy logs at review time. Runtime dimension is unproven.",
-      });
-    }
-    if (verdict === "pass") verdict = "revise";
+
+  // beta.69: surface the missing-runtime concern as a NON-blocking `info` note
+  // (not a MEDIUM that forces revise). The old force-upgrade of `pass`->`revise`
+  // is DELETED: it made every un-pushed diff structurally unable to converge
+  // (forensic 1f2e6642 revised 3x on this alone). The concern still reaches the
+  // PR body, and reachedCleanPass=false / do_not_merge still forces human merge
+  // approval, so nothing is lost.
+  if (runtimeUnavailable && !findings.some((f) => f.dimension === "runtime")) {
+    findings.push({
+      dimension: "runtime",
+      severity: "info",
+      title: "No runtime data",
+      detail:
+        "Adversary did not have preview-deploy logs at review time. Runtime dimension is unproven — surfaced for human review, non-blocking.",
+    });
   }
+
+  // beta.69 (F1): the verdict gate. A `revise` survives only on >= 1 NEW,
+  // diff-addressable, medium+ finding; otherwise it is a converged `pass`.
+  const classifyCtx: ClassifyCtx = {
+    repoHasTestScript: input.repoHasTestScript === true,
+    runtimeUnavailable,
+  };
+  const gated = gateVerdict({
+    verdict: result.parsed.verdict,
+    findings,
+    ctx: classifyCtx,
+    priorFindings: input.priorFindings,
+  });
+  if (gated.downgraded) {
+    deps.logger.info("[adversary] verdict downgraded revise->pass (no new diff-addressable medium+ finding)", {
+      findings: findings.length,
+      newBlocking: gated.newBlocking.length,
+    });
+  }
+  const verdict = gated.verdict;
 
   return {
     verdict,

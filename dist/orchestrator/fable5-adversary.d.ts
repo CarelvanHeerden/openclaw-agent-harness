@@ -44,6 +44,18 @@ export interface AdversaryInput {
     timeoutSeconds: number;
     /** beta.63 (Fix 1): repo conventions ingested at brief build. Optional. */
     repoConventions?: import("./repo-conventions.js").RepoConvention[];
+    /**
+     * beta.69 (F3): findings the adversary raised in a PRIOR cycle. Fed into the
+     * prompt ("do not repeat unless you can state why the fix is insufficient")
+     * and into the verdict gate (recycled findings cannot sustain a `revise`).
+     */
+    priorFindings?: ReviewFinding[];
+    /**
+     * beta.69 (F1): true when the target repo has NO declared test script, so a
+     * "no tests" finding is a process concern the worker cannot fix (it must not
+     * add a test script). Derived from repoConventions / discovered scripts.
+     */
+    repoHasTestScript?: boolean;
 }
 export interface ReviewFinding {
     dimension: "spec" | "fit" | "quality" | "security" | "runtime";
