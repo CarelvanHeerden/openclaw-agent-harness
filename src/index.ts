@@ -63,6 +63,7 @@ import { crystallisePrompt, type CrystallisedBrief } from "./crystallise/prompt-
 import { runLeadPlanner } from "./orchestrator/fable5-lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/sonnet-worker.js";
 import { runAdversary as runAdversaryCore } from "./orchestrator/fable5-adversary.js";
+import { discoverCheckScripts } from "./orchestrator/repo-conventions.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
 
@@ -654,7 +655,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       );
     },
 
-    runAdversary: async ({ brief, plan, runtime, baseSha }) => {
+    runAdversary: async ({ brief, plan, runtime, baseSha, priorFindings }) => {
       // beta.67 (Bug B): diff against the branch's persisted FORK-POINT sha
       // (captured at plan_ready) so the adversary sees ONLY this branch's own
       // commits. beta.66 smoke #4 diffed against config.repos.default_base_branch
@@ -693,6 +694,19 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           // beta.63 (Fix 1): carry the repo conventions ingested at brief build
           // so the adversary flags convention violations even when CI is green.
           repoConventions: brief.repoConventions,
+          // beta.69 (F3): prior-cycle findings for provenance + the verdict gate.
+          priorFindings,
+          // beta.69 (F1): a "no tests" finding is only diff-addressable when the
+          // repo actually declares a `test` script. Detect it from the worktree
+          // package.json so the classifier treats its absence as a process
+          // concern (the repo has no test script by design), not a diff defect.
+          repoHasTestScript: (() => {
+            try {
+              return discoverCheckScripts(plan.worktreePath).some((s) => s.name === "test");
+            } catch {
+              return false;
+            }
+          })(),
         },
         {
           logger: api.logger,

@@ -1461,7 +1461,7 @@ export class OrchestratorLoop {
                 catch (err) {
                     this.deps.logger.warn("[loop] adversary_diff_base sanity log failed (non-fatal)", { sessionId, err: String(err) });
                 }
-                report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha }), this.deps.config.loop.adversary_timeout_seconds);
+                report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings }), this.deps.config.loop.adversary_timeout_seconds);
                 this.deps.interactionLog?.logSdkResponse(sessionId, {
                     role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
                     finishReason: report.verdict, costUsd: report.costUsd, durationMs: Date.now() - reviewStart,
@@ -1480,6 +1480,17 @@ export class OrchestratorLoop {
                 this.addCost(sessionId, report.costUsd);
                 await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
                 this.saveReview(sessionId, cycle, report);
+                // beta.69 (F5): if the user cancelled while the adversary SDK call was
+                // in flight (forensic 1f2e6642: cycle-3 review landed 2s AFTER the
+                // cancel and was persisted + transitioned on), discard this review and
+                // abort cleanly. We still record the spend already incurred (honest
+                // accounting) but do NOT let a post-cancel verdict drive a transition.
+                const postReviewReactions = await this.deps.readReactions(sessionId);
+                if (postReviewReactions.abort) {
+                    this.deps.state.audit("loop.review_discarded_post_cancel", { sessionId, cycle, verdict: report.verdict }, sessionId);
+                    this.deps.logger.info("[loop] adversary review completed after user cancel; discarding verdict and aborting", { sessionId, cycle });
+                    return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
+                }
             }
             catch (err) {
                 // beta.43: a hung reviewer is a distinct, already-audited class.
@@ -1515,6 +1526,16 @@ export class OrchestratorLoop {
                 };
             }
             lastReview = report;
+            // beta.69 (F1): visibility for the convergence gate. When the adversary's
+            // raw verdict was `revise` but the final verdict is `pass` AND there were
+            // no real convention failures, the run converged on a green cycle whose
+            // only remaining findings were non-blocking (process/env/architectural/
+            // unproven-runtime). This is the fix for forensic 1f2e6642's cycle-2
+            // all-green revise. (The downgrade itself happens in runAdversary; here
+            // we just record that the loop is now shipping instead of churning.)
+            if (report.verdict === "pass" && conventionFindings.length === 0 && (report.findings?.length ?? 0) > 0) {
+                this.deps.state.audit("loop.converged_on_green", { sessionId, cycle, findings: report.findings.length }, sessionId);
+            }
             this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length, conventionFindings: conventionFindings.length }, sessionId);
             const reactions = await this.deps.readReactions(sessionId);
             const decision = OrchestratorLoop.advance({

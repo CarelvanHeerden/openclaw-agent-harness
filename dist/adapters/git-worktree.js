@@ -28,7 +28,7 @@
  * which is unavoidable for the private-repo 404-vs-401 workaround.
  */
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -289,17 +289,25 @@ esac
             if (!hasPkg)
                 return;
             const nm = join(worktreePath, "node_modules");
-            // If node_modules already has content, assume it's usable (checked-in or
-            // from a prior allocation) and skip -- avoids a slow redundant install.
+            // If node_modules already has content, it MIGHT be usable (checked-in or
+            // from a prior allocation). beta.69 (F4): but a PARTIAL/stale node_modules
+            // (non-empty yet missing the declared check-script binaries) caused
+            // forensic 1f2e6642's cycle-1 lint/okf:check to exit 127, which the loop
+            // scored as convention failures. So: skip only when node_modules is
+            // non-empty AND every declared check-script binary resolves in
+            // node_modules/.bin. Otherwise fall through and (re)install.
             if (existsSync(nm)) {
                 try {
-                    if (readdirSync(nm).length > 0)
+                    if (readdirSync(nm).length > 0 && this.declaredCheckBinsPresent(worktreePath))
                         return;
                 }
                 catch { /* fall through to install */ }
             }
             const hasLock = existsSync(join(worktreePath, "package-lock.json")) || existsSync(join(worktreePath, "npm-shrinkwrap.json"));
-            const args = hasLock ? ["ci"] : ["install"];
+            // beta.69 (F4): `--ignore-scripts` avoids the puppeteer/native postinstall
+            // crash the 1f2e6642 cycle-2 worker had to work around manually, while
+            // still installing the missing check-script binaries.
+            const args = hasLock ? ["ci", "--ignore-scripts"] : ["install", "--include=dev", "--ignore-scripts"];
             this.opts.logger?.info?.(`[git-worktree] bootstrapping deps (npm ${args[0]}) in ${worktreePath}`);
             await this.runCmd("npm", args, worktreePath, this.opts.bootstrapTimeoutMs ?? 600_000);
             this.opts.logger?.info?.(`[git-worktree] deps bootstrap complete in ${worktreePath}`);
@@ -307,6 +315,50 @@ esac
         catch (err) {
             // Best-effort: log and continue. Worker can still self-install inline.
             this.opts.logger?.warn?.(`[git-worktree] deps bootstrap failed (non-fatal): ${String(err)}`);
+        }
+    }
+    /**
+     * beta.69 (F4): do the declared check-script binaries (eslint / tsx / tsc /
+     * the tools behind lint|typecheck|okf:check|test scripts) resolve in
+     * node_modules/.bin? A partial node_modules (deps present, dev tools absent)
+     * otherwise slips past the "non-empty" skip and makes the check scripts exit
+     * 127. Best-effort + conservative: unknown/unreadable => treat as present so
+     * we never loop-install. Only the common dev-tool bins are probed.
+     */
+    declaredCheckBinsPresent(worktreePath) {
+        try {
+            const pkgPath = join(worktreePath, "package.json");
+            if (!existsSync(pkgPath))
+                return true;
+            const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+            const scripts = pkg.scripts ?? {};
+            const binDir = join(worktreePath, "node_modules", ".bin");
+            const wanted = new Set();
+            for (const [name, cmd] of Object.entries(scripts)) {
+                if (!/^(lint|typecheck|type-check|tsc|test|okf:check)$/i.test(name))
+                    continue;
+                const c = String(cmd);
+                if (/\beslint\b/.test(c))
+                    wanted.add("eslint");
+                if (/\btsx\b/.test(c))
+                    wanted.add("tsx");
+                if (/\btsc\b/.test(c))
+                    wanted.add("tsc");
+                if (/\bvitest\b/.test(c))
+                    wanted.add("vitest");
+                if (/\bjest\b/.test(c))
+                    wanted.add("jest");
+            }
+            if (wanted.size === 0)
+                return true;
+            for (const bin of wanted) {
+                if (!existsSync(join(binDir, bin)))
+                    return false;
+            }
+            return true;
+        }
+        catch {
+            return true;
         }
     }
     /**
