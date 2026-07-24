@@ -54,7 +54,20 @@ export interface CheckScriptResult {
     skippedReason?: string;
     /** True when the failure is a network/build limitation (non-fatal note, not a finding). */
     unrunnable?: boolean;
+    /**
+     * beta.70 (F4): true when the script died of a V8 heap OOM (exit 134 +
+     * "Ineffective mark-compacts near heap limit"). Distinct from a real check
+     * failure: on Thanos-scale repos `tsc --noEmit` OOMs at the default 4 GB
+     * heap (PR #870 burned ~3.5 min crashing). The runner RETRIES ONCE with a
+     * larger heap; if it still OOMs this stays true and the caller surfaces it
+     * as a BLOCKING failure (a false-green shipped before this fix).
+     */
+    oom?: boolean;
+    /** beta.70 (F4): true when the larger-heap retry was attempted for this script. */
+    heapRetried?: boolean;
 }
+/** beta.70 (F4): V8 heap-OOM signature. exit 134 = SIGABRT; the message is the tell. */
+export declare const HEAP_OOM_RE: RegExp;
 /**
  * Fix 2: run the repo-declared check scripts, INLINE + BLOCKING, in the
  * worktree. Only scripts whose name is on `allowlist` are run (a discovered
@@ -74,13 +87,19 @@ export declare function runCheckScripts(params: {
     discovered: CheckScript[];
     allowlist: string[];
     timeoutSeconds: number;
-    runScript?: (name: string, cwd: string, timeoutMs: number) => {
+    runScript?: (name: string, cwd: string, timeoutMs: number, heapMb?: number) => {
         status: number | null;
         stdout: string;
         stderr: string;
         error?: unknown;
         timedOut?: boolean;
     };
+    /**
+     * beta.70 (F4): heap ceiling (MB) applied to the check-script child via
+     * NODE_OPTIONS on the RETRY after a heap OOM. Default 8192. The first run
+     * uses the repo's own NODE_OPTIONS; the retry forces this.
+     */
+    heapRetryMb?: number;
 }): CheckScriptResult[];
 /**
  * Render the repoConventions block for an SDK system prompt. Shared by the
