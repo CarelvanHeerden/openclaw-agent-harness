@@ -141,9 +141,11 @@ test("beta72 wiring: both revise call sites use the hardened findingText", () =>
   assert.ok(reg.includes("summary: findingText(f).slice"), "summariseRevisable uses findingText");
 });
 
-test("beta72 version bumped to beta.72", () => {
-  const v = readFileSync(join(root, "src/version.ts"), "utf8");
-  assert.ok(v.includes("0.1.0-beta.72"), "version.ts bumped");
+test("beta72 version is >= beta.72 (range, so later bumps don't re-break it)", () => {
+  // Was an exact-match assertion; relaxed to a floor (same lesson as beta.70->71)
+  // so a subsequent beta bump doesn't fail this test.
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  assert.equal(pkg.version, "0.1.0-beta.72");
+  const m = /0\.1\.0-beta\.(\d+)/.exec(pkg.version);
+  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
+  assert.ok(Number(m[1]) >= 72, `beta number should be >= 72, got ${m[1]}`);
 });

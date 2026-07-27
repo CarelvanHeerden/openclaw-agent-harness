@@ -224,6 +224,14 @@ export interface LeadDeps {
     callLeadModel: (brief: CrystallisedBrief, repos: string[], correctiveNote?: string) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
     allocateWorktree: (repo: string, branch: string) => Promise<string>;
     estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
+    /**
+     * beta.73 (D2): best-effort check whether `branch` already exists on origin
+     * for `repoFullName`. Used to promote a `branchHint` that names an existing
+     * open-PR branch into pinned/reuse behaviour so the worktree checks out that
+     * branch's HEAD (not main). Optional; when absent the promotion is skipped
+     * (behaviour reverts to pre-beta.73 -- branchHint is a name hint only).
+     */
+    remoteBranchExists?: (repoFullName: string, branch: string) => Promise<boolean>;
 }
 /**
  * beta.67 (P0a): raised when a plan fails workerContext enforcement AFTER the
