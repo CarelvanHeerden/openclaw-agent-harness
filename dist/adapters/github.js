@@ -77,6 +77,45 @@ export async function createPullRequest(input) {
     };
 }
 /**
+ * beta.75 (#1): post a comment on a PR (issue-comments endpoint).
+ *
+ * WHY: `createPullRequest` writes the review verdict/findings into the PR
+ * BODY only at CREATE time. On a re-push to an EXISTING PR (a revise, or a
+ * harness_run that D2 promoted onto an open-PR branch), the commits update the
+ * PR diff but nothing surfaces the NEW review outcome -- so a `do_not_merge`
+ * verdict + its findings were invisible on the PR itself (Carel on #876: "the
+ * new test file is there but the PR comments didn't update"). Posting a fresh
+ * comment on every review makes each review's verdict/findings visible on the
+ * PR timeline, not just in the harness DB. Best-effort: a failed comment must
+ * NEVER fail the run (the code + PR already landed), so callers swallow errors.
+ */
+export async function postPrComment(input) {
+    const apiBase = input.apiBase ?? "https://api.github.com";
+    const url = `${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/comments`;
+    try {
+        const res = await fetch(url, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${input.ghToken}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+                "User-Agent": "openclaw-agent-harness/0.1",
+            },
+            body: JSON.stringify({ body: input.body }),
+        });
+        if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            return { ok: false, status: res.status, error: text.slice(0, 300) };
+        }
+        const json = (await res.json().catch(() => ({})));
+        return { ok: true, status: res.status, htmlUrl: json.html_url };
+    }
+    catch (err) {
+        return { ok: false, status: 0, error: String(err) };
+    }
+}
+/**
  * Sanity-check that a PAT can see a repo. Used at session-start so we
  * fail fast with a clear Slack error instead of dying mid-worker.
  */

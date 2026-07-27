@@ -109,6 +109,21 @@ AUTO-ACTIONABLE when ALL hold:
   human's review used the phrase "the author flagged this themselves" / "trivial
   here" / "should ship with tests".
 
+**OUT-OF-SCOPE / STRAY CHANGE = ALWAYS AUTO-ACTIONABLE (do not sit on it).**
+A `do_not_merge`/`block` finding of the form "out-of-scope modification to
+<file>", "touched <file> despite the brief forbidding it", "stray change to
+<X>", or "change outside the stated scope" is the CLEAREST auto-fix there is:
+the fix is deterministic — **revert that file/hunk to its pre-PR state**, keeping
+only the in-scope work. Do NOT surface a scope-violation `do_not_merge` to the
+human as a decision; fire a scoped `harness_revise` that says exactly "revert
+all changes to <file> (out of scope per the original brief); keep only <the
+in-scope work>; do NOT touch <file> again", then loop to a clean pass. The
+harness sitting on a `do_not_merge` for a stray change is the exact anti-pattern
+this skill exists to kill (Carel, #876: "why are we sitting on a do_not_merge?
+if something is out of scope, OpenClaw should fix it"). Only escalate to the
+human if the revert itself keeps failing (the 2–3 pass budget) OR reverting the
+file would break the in-scope work (scopes entangled = a genuine judgment call).
+
 HUMAN-JUDGMENT (note, never auto-fire) when ANY holds:
 - it starts with "consider" / "might" / "worth being aware" / "as it grows";
 - it proposes a new subsystem, schema change, or audit/telemetry design;

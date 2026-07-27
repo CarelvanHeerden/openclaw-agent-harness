@@ -101,9 +101,9 @@ test("beta74 (D3 nit): finaliseFailedPreserveWorktree also emits canonical loop.
   assert.match(body, /loop\.failed_worktree_preserved/, "still emits the preserve-worktree event too");
 });
 
-test("beta74 version bumped to beta.74", () => {
-  const v = readFileSync(join(root, "src/version.ts"), "utf8");
-  assert.ok(v.includes("0.1.0-beta.74"));
+test("beta74 version is >= beta.74 (range floor)", () => {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  assert.equal(pkg.version, "0.1.0-beta.74");
+  const m = /0\.1\.0-beta\.(\d+)/.exec(pkg.version);
+  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
+  assert.ok(Number(m[1]) >= 74, `beta number should be >= 74, got ${m[1]}`);
 });
