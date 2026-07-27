@@ -217,6 +217,15 @@ export declare class GitAdapter {
      * Used by the `remote_branch_exists` / `commit_sha_matches` verify probes.
      */
     remoteBranchSha(worktreePath: string, remote: string, branch: string, ghToken?: string): Promise<string | undefined>;
+    /**
+     * beta.73 (D2): does `branch` exist on origin for `repoFullName`? Unlike
+     * {@link remoteBranchSha} this does NOT need a local worktree -- it runs
+     * `git ls-remote <authed-url> refs/heads/<branch>` directly, so it can be
+     * called at LEAD-PLAN time (before any worktree is allocated) to decide
+     * whether a `branchHint` names an existing open-PR branch (-> pinned/reuse)
+     * or a new one (-> create fresh). Best-effort: returns false on any error.
+     */
+    remoteBranchExistsByUrl(repoFullName: string, branch: string, ghToken: string): Promise<boolean>;
     commit(worktreePath: string, message: string, identity: {
         name: string;
         email: string;

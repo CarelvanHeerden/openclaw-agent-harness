@@ -602,6 +602,20 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           });
         },
         estimateCost: (p) => p.subTasks.reduce((acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens), 0),
+        // beta.73 (D2): resolve whether a branchHint already exists on origin so
+        // the lead can promote it to a pinned/reuse branch (checkout its HEAD
+        // instead of resetting to main). Best-effort; a null/throw skips the
+        // promotion. Uses the requester's PAT for the repo, same as allocate.
+        remoteBranchExists: async (repoFullName: string, branch: string) => {
+          try {
+            const [owner] = repoFullName.split("/");
+            const resolution = pat.resolve({ slackUserId: requester, gitHubUser: owner!, repoFullName });
+            const ghToken = await resolveGitToken(resolution);
+            return await git.remoteBranchExistsByUrl(repoFullName, branch, ghToken);
+          } catch {
+            return false;
+          }
+        },
       });
     },
 

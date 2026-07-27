@@ -6,7 +6,8 @@
     "onStartup": true
   },
   "skills": [
-    "skills/harness-credentials"
+    "skills/harness-credentials",
+    "skills/harness-pr-steward"
   ],
   "contracts": {
     "tools": [
