@@ -585,6 +585,25 @@ esac
             await ask?.cleanup();
         }
     }
+    /**
+     * beta.73 (D2): does `branch` exist on origin for `repoFullName`? Unlike
+     * {@link remoteBranchSha} this does NOT need a local worktree -- it runs
+     * `git ls-remote <authed-url> refs/heads/<branch>` directly, so it can be
+     * called at LEAD-PLAN time (before any worktree is allocated) to decide
+     * whether a `branchHint` names an existing open-PR branch (-> pinned/reuse)
+     * or a new one (-> create fresh). Best-effort: returns false on any error.
+     */
+    async remoteBranchExistsByUrl(repoFullName, branch, ghToken) {
+        const url = buildAuthedCloneUrl(repoFullName, ghToken);
+        const ask = await this.makeAskpass(ghToken);
+        try {
+            const out = await this.run(["ls-remote", "--heads", url, `refs/heads/${branch}`], undefined, ask.path, ghToken).catch(() => "");
+            return out.split("\n").map((l) => l.trim()).some((l) => l.endsWith(`refs/heads/${branch}`));
+        }
+        finally {
+            await ask.cleanup();
+        }
+    }
     async commit(worktreePath, message, identity) {
         await this.run(["-C", worktreePath, "add", "-A"]);
         const status = await this.run(["-C", worktreePath, "status", "--porcelain"]);

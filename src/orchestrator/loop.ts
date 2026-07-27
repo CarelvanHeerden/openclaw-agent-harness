@@ -1987,9 +1987,17 @@ export class OrchestratorLoop {
     // phase as live (this is exactly the b60 gap: quiet AFTER the last sub-task
     // deadline but BEFORE/at finalize, with no watchdog covering it).
     this.markProgress(sessionId, "finalize_start", "finalize", { cycle });
+    // beta.73 (D3): instrument the push/PR-open step. Pre-beta.73 there was NO
+    // audit event between the transition->done and the terminal worktree
+    // release, so a push/PR failure (422 branch collision, missing GH token, a
+    // bare exception) was completely invisible (session 70341bc3). Emit an
+    // explicit start + failure event carrying the underlying error.
+    this.deps.state.audit("loop.pr_open_started", { sessionId, cycle, branch: plan.branch }, sessionId);
     try {
       prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
     } catch (err) {
+      this.deps.state.audit("loop.pr_open_failed", { sessionId, cycle, branch: plan.branch, error: String(err) }, sessionId);
+      this.deps.interactionLog?.log(sessionId, { event: "pr_open_failed", phase: "finalize", cycle, error: String(err) });
       return this.finaliseFailed(sessionId, `pr_error: ${String(err)}`, cycle, totalCost);
     }
     // beta.63 (Part A): PR opened -- mark progress before the terminal write.
@@ -2636,6 +2644,15 @@ export class OrchestratorLoop {
    */
   private finaliseFailed(sessionId: string, reason: string, cycles: number, totalCostUsd: number): LoopOutcome {
     this.setStatus(sessionId, "failed");
+    // beta.73 (D3): ALWAYS audit the failure reason. Pre-beta.73 finaliseFailed
+    // wrote only the status column (setStatus emits no audit) and then the
+    // worktree release emitted a bare `loop.worktree_released reason:failed` with
+    // NO reason -- so a `pr_error:`/`no_review_produced`/`plan_failed:` terminal
+    // was INVISIBLE in the audit log (session 70341bc3: 2-min gap between
+    // transition->done and worktree_released, zero events explaining the fail).
+    // Emit the reason so every terminal-fail is greppable from harness_progress.
+    this.deps.state.audit("loop.failed", { sessionId, reason, cycles }, sessionId);
+    this.deps.interactionLog?.log(sessionId, { event: "failed", phase: "finalize", reason });
     this.scheduleWorktreeReleaseForSession(sessionId, "failed");
     return { status: "failed", sessionId, reason, cycles, totalCostUsd };
   }

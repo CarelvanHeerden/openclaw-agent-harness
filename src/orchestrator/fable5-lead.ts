@@ -208,6 +208,14 @@ export interface LeadDeps {
   ) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
   allocateWorktree: (repo: string, branch: string) => Promise<string>;
   estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
+  /**
+   * beta.73 (D2): best-effort check whether `branch` already exists on origin
+   * for `repoFullName`. Used to promote a `branchHint` that names an existing
+   * open-PR branch into pinned/reuse behaviour so the worktree checks out that
+   * branch's HEAD (not main). Optional; when absent the promotion is skipped
+   * (behaviour reverts to pre-beta.73 -- branchHint is a name hint only).
+   */
+  remoteBranchExists?: (repoFullName: string, branch: string) => Promise<boolean>;
 }
 
 /**
@@ -287,6 +295,35 @@ export async function runLeadPlanner(
   const maxAttempts = enforceContext ? 2 : 1;
   let raw: Omit<LeadPlan, "worktreePath" | "approxCostUsd"> | undefined;
   let correctiveNote: string | undefined;
+
+  // beta.73 (D2): when the brief carries a `branchHint` that names an EXISTING
+  // remote branch (e.g. an open PR's branch) and it is NOT already a pinned
+  // revise, promote it to `pinnedBranch`. This is the fix for session
+  // 70341bc3: a harness_run brief said `branchHint:
+  // harness/grc-changes-export-mode` + "build on the existing branch (PR #876),
+  // do not open a new PR", but branchHint is only a NAME hint -- reuse
+  // (checkout the branch HEAD) was gated on `pinnedBranch`, which was unset. So
+  // the worktree reset to main (whose route.ts lacked the export handler) and
+  // the worker had to reconstruct-then-revert it just to verify. Promoting the
+  // hint to pinned makes index.ts's `reuseExistingBranch: !!brief.pinnedBranch`
+  // check out the branch's own head. Guarded by an existence check so a hint
+  // for a NEW branch still creates it fresh (unchanged behaviour). Best-effort:
+  // if the check dep is absent or throws, we skip the promotion.
+  if (!brief.pinnedBranch && brief.branchHint && deps.remoteBranchExists) {
+    try {
+      const repoForCheck = brief.repoHint && brief.repoHint.includes("/") ? brief.repoHint : undefined;
+      if (repoForCheck && (await deps.remoteBranchExists(repoForCheck, brief.branchHint))) {
+        brief.pinnedBranch = brief.branchHint;
+        deps.logger.info("[lead] branchHint names an existing remote branch -> promoting to pinned/reuse", {
+          branch: brief.branchHint,
+          repo: repoForCheck,
+        });
+      }
+    } catch (err) {
+      deps.logger.warn?.("[lead] branchHint existence check failed (non-fatal; treating as new branch)", { err: String(err) });
+    }
+  }
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     raw = await deps.callLeadModel(brief, deps.config.repos.allowed, correctiveNote);
     // beta.44: revise flow. Override the lead branch/repo BEFORE validation.

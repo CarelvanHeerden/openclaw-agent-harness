@@ -303,6 +303,20 @@ export function runCheckScripts(params: {
       results.push({ script: s.name, ran: false, exitCode: out.status ?? 127, outputTail, unrunnable: true, skippedReason: `env_unavailable: check-script binary missing (exit 127 / command not found)` });
       continue;
     }
+    // beta.73 (fix 1): exit 126 / "Permission denied" / "cannot execute" means the
+    // binary exists but the ENVIRONMENT refused to execute it -- classically a
+    // `noexec` mount (session 70341bc3: the worktrees tmpfs was mounted `noexec`,
+    // so `node_modules/.bin/tsc` + `.bin/tsx` 126'd with `sh: tsc: Permission
+    // denied`, and the run was discarded `failed` with NO PR even though the
+    // adversary had PASSED). That is a SANDBOX/env restriction, not a code-quality
+    // failure, so -- exactly like exit-127 -- it must be `unrunnable` (non-fatal),
+    // never a blocking convention failure that discards a passing run. The fix at
+    // the container layer is mounting the tmpfs with `exec`; the harness surfaces
+    // it as an env note and lets the adversary verdict stand.
+    if (out.status === 126 || /\b(permission denied|cannot execute|exec format error|operation not permitted)\b/i.test(combined)) {
+      results.push({ script: s.name, ran: false, exitCode: out.status ?? 126, outputTail, unrunnable: true, skippedReason: `env_unavailable: check-script not executable (exit 126 / permission denied -- likely a noexec mount)` });
+      continue;
+    }
     results.push({ script: s.name, ran: true, exitCode: out.status ?? null, outputTail, heapRetried: heapRetried || undefined });
   }
   return results;

@@ -27,7 +27,7 @@
  */
 const UNPROVEN_RUNTIME_RE = /\b(no runtime data|no runtime verification|runtime is unproven|preview deploy|not been (deployed|verified at runtime)|without a (preview |)deploy|no deploy(ed| evidence)?)\b/i;
 const TEST_WIRING_RE = /\b(no (automated |unit |integration )?tests?|test(s)? (are|were)? ?(not|n't)|zero test|without tests?|test script|tests? (are )?not (executed|run|wired|declared)|not (executed|run|wired) by (any )?(declared )?(check )?script)\b/i;
-const ENV_RE = /\b(exit(ed)? (code )?127|command not found|: not found|eslint: not found|tsx: not found|npm ci|node_modules|cannot find module|MODULE_NOT_FOUND|sh: \w+:)\b/i;
+const ENV_RE = /\b(exit(ed)? (code )?12[67]|command not found|: not found|eslint: not found|tsx: not found|npm ci|node_modules|cannot find module|MODULE_NOT_FOUND|sh: \w+:|permission denied|cannot execute|exec format error|noexec)\b/i;
 const ARCHITECTURAL_RE = /\b(platform (response |payload |body )?(size )?limit|response (body )?too large|max(imum)? (payload|response|body) size|serverless (function )?limit|edge runtime limit|4\.5\s?mb|deploy(ment)? (architecture|target)|infrastructure|out of scope of a (single )?diff)\b/i;
 // beta.70 (F2): generated-artifact / convention-check findings. The harness
 // runs the repo's declared check scripts (okf regen, okf:check, lint) in the
