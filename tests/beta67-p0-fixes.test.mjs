@@ -252,7 +252,9 @@ test("beta67-B: adversary diff is generated from the session's plan_base_sha, no
   // The diff base is the passed baseSha (persisted fork-point), falling back
   // to the default base branch only when no fork-point was captured.
   assert.match(src, /const diffBase = baseSha && baseSha\.length > 0 \? baseSha : config\.repos\.default_base_branch;/);
-  assert.match(src, /const diffText = await git\.diff\(plan\.worktreePath, diffBase\);/);
+  // beta.74: git.diff now also takes the resolved adversary GitHub token so the
+  // promisor base-sha fetch can authenticate.
+  assert.match(src, /const diffText = await git\.diff\(plan\.worktreePath, diffBase, adversaryGhToken\);/);
   // the loop threads the persisted plan_base_sha as baseSha
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /SELECT plan_base_sha FROM sessions WHERE id = \?/);

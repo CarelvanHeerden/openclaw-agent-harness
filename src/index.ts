@@ -669,7 +669,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       );
     },
 
-    runAdversary: async ({ brief, plan, runtime, baseSha, priorFindings }) => {
+    runAdversary: async ({ brief, plan, runtime, requester, baseSha, priorFindings }) => {
       // beta.67 (Bug B): diff against the branch's persisted FORK-POINT sha
       // (captured at plan_ready) so the adversary sees ONLY this branch's own
       // commits. beta.66 smoke #4 diffed against config.repos.default_base_branch
@@ -679,7 +679,19 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       // wasting a full cycle. Fall back to the base-branch name only when no
       // fork-point was captured (probe unwired / pre-beta.67 session).
       const diffBase = baseSha && baseSha.length > 0 ? baseSha : config.repos.default_base_branch;
-      const diffText = await git.diff(plan.worktreePath, diffBase);
+      // beta.74: resolve the requester's GitHub token for this repo so the diff's
+      // promisor base-sha fetch authenticates (same pat.resolve path as
+      // allocateWorktree). Best-effort -- if it can't resolve, fall back to a
+      // token-less diff (prior behaviour; fine for public repos / local base).
+      let adversaryGhToken: string | undefined;
+      try {
+        const [owner] = plan.repo.split("/");
+        const resolution = pat.resolve({ slackUserId: requester ?? "", gitHubUser: owner!, repoFullName: plan.repo });
+        adversaryGhToken = await resolveGitToken(resolution);
+      } catch (err) {
+        api.logger.warn("[harness] adversary diff: could not resolve GitHub token (promisor fetch may fail on a private repo)", { repo: plan.repo, err: String(err) });
+      }
+      const diffText = await git.diff(plan.worktreePath, diffBase, adversaryGhToken);
       const diffFile = resolve(config.storage.worktree_root.replace(/^~/, process.env.HOME ?? ""), `${Date.now()}.diff`);
       await mkdir(dirname(diffFile), { recursive: true });
       await writeFile(diffFile, diffText, "utf8");

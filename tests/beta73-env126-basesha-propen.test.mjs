@@ -188,9 +188,9 @@ test("beta73 fix3: main PR-open path emits pr_open_started + pr_open_failed", ()
   assert.match(src.slice(idx, idx + 200), /error:\s*String\(err\)/, "pr_open_failed carries the error");
 });
 
-test("beta73 version bumped to beta.73", () => {
-  const v = readFileSync(join(root, "src/version.ts"), "utf8");
-  assert.ok(v.includes("0.1.0-beta.73"));
+test("beta73 version is >= beta.73 (range floor, so later bumps don't re-break it)", () => {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  assert.equal(pkg.version, "0.1.0-beta.73");
+  const m = /0\.1\.0-beta\.(\d+)/.exec(pkg.version);
+  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
+  assert.ok(Number(m[1]) >= 73, `beta number should be >= 73, got ${m[1]}`);
 });

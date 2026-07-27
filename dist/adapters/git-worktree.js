@@ -724,8 +724,33 @@ esac
         await mkdir(dirname(outFile), { recursive: true });
         await writeFile(outFile, patch, "utf8");
     }
-    async diff(worktreePath, base) {
-        return this.run(["-C", worktreePath, "diff", base, "HEAD"]);
+    /**
+     * beta.74: thread an optional GitHub token so a `git diff <base> HEAD` that
+     * must fetch a PROMISOR object (the base-sha) from origin can authenticate.
+     *
+     * The worktree is a `--filter=blob:none` partial clone (git-worktree
+     * allocate). When the adversary review diffs `<baseSha> HEAD` and the
+     * base-sha's tree/blobs are not local, git lazily fetches them from origin
+     * over HTTPS. Pre-beta.74 `diff()` passed NO token, so on a private repo the
+     * fetch hit `Authentication failed ... (128)` and the adversary review
+     * crashed BEFORE it could open the PR (session 666fc103: the commit + tests
+     * were fine, but review died on the promisor fetch). This was masked until
+     * beta.73's D2 fix put the worker on the real branch HEAD -- before that the
+     * worker sat on main, whose base needed no promisor fetch.
+     *
+     * Passing the token routes through `run()`, which sets `OAH_GH_TOKEN` in the
+     * child env + wires GIT_ASKPASS -- the beta.34 persistent cred-helper on the
+     * bare repo then authenticates the promisor fetch automatically. Omitting the
+     * token preserves prior behaviour (public repos / already-local base).
+     */
+    async diff(worktreePath, base, ghToken) {
+        const ask = ghToken ? await this.makeAskpass(ghToken) : undefined;
+        try {
+            return await this.run(["-C", worktreePath, "diff", base, "HEAD"], undefined, ask?.path, ghToken);
+        }
+        finally {
+            await ask?.cleanup();
+        }
     }
     /**
      * beta.67 (Bug B): the fork-point sha -- the merge-base of `ref` (the default
