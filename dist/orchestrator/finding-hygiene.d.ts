@@ -25,7 +25,21 @@
  * "assuming Z", "if ... exist(s)", "provided that", "only if", etc.
  */
 export declare const CONDITIONAL_FINDING_RE: RegExp;
-/** Extract the human-readable text of a stored finding (schema is loose). */
+/**
+ * Extract the human-readable text of a stored finding (schema is loose).
+ *
+ * beta.72 (D-B): the adversary's `ReviewFinding` puts its substance in `title`
+ * + `detail` (fable5-adversary.ts), but the pre-beta.72 extractor only looked
+ * at `message/finding/detail/description` and used `??` -- which does NOT fall
+ * through an EMPTY string. A finding whose text lived in `title` (with an empty
+ * `detail`) therefore rendered as an empty brief line: Staging's #876 revise
+ * auto-brief came through as `"1. [medium] "` x4 (severity present, body empty),
+ * producing a garbage, non-actionable revise. Fix: (1) read `title` too, (2)
+ * coalesce empty/whitespace strings (not just null/undefined), and (3) as a
+ * last resort fall back to a JSON dump so a brief line is NEVER empty. Prefer
+ * the richest combination: if BOTH `title` and `detail` carry text, join them
+ * so no substance is dropped.
+ */
 export declare function findingText(f: unknown): string;
 /** True when the finding's action depends on an unresolved repo-state premise. */
 export declare function isConditionalFinding(f: unknown): boolean;
