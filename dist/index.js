@@ -35,7 +35,7 @@ import { parseOkfBlocksFromContext, OkfConceptCache, decideAutoForward, buildRew
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
-import { createPullRequest, getPullRequest, getCombinedStatus, mergePullRequest } from "./adapters/github.js";
+import { createPullRequest, getPullRequest, getCombinedStatus, mergePullRequest, postPrComment } from "./adapters/github.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, } from "./adapters/claude-sdk.js";
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
@@ -594,6 +594,24 @@ export function bootstrapHarnessSync(api) {
                 // the PR body regardless.
                 draft: (config.repos.draft_pr_on_nonpass ?? false) && reviewReport.verdict !== "pass",
             });
+            // beta.75 (#1): post the review verdict + findings as a PR COMMENT on
+            // EVERY review -- not just at PR creation. createPullRequest writes the
+            // review into the PR body only on the first open; when the PR already
+            // exists (updatedExisting: a revise, or a harness_run D2-promoted onto an
+            // open-PR branch) the body is NOT rewritten, so the new verdict/findings
+            // were invisible on the PR (Carel on #876). A fresh comment per review
+            // surfaces the current verdict/findings on the PR timeline. Best-effort:
+            // NEVER fail the run on a comment error -- the code + PR already landed.
+            try {
+                const commentBody = renderReviewComment(reviewReport, { updatedExisting: !!pr.updatedExisting });
+                const c = await postPrComment({ repoFullName: plan.repo, prNumber: pr.number, body: commentBody, ghToken, apiBase: resolution.apiBase });
+                if (!c.ok) {
+                    api.logger.warn("[harness] PR review comment post failed (non-fatal)", { repo: plan.repo, prNumber: pr.number, status: c.status, error: c.error });
+                }
+            }
+            catch (err) {
+                api.logger.warn("[harness] PR review comment post threw (non-fatal)", { repo: plan.repo, prNumber: pr.number, err: String(err) });
+            }
             return pr.htmlUrl;
         },
         // beta.8 fix #1: HARNESS-SIDE observable-side-effect probes. The loop
@@ -2051,6 +2069,33 @@ function buildDeployRepairDeps(ctx) {
             }
         },
     };
+}
+// beta.75 (#1): compact review comment posted on the PR after EVERY review.
+// Distinct from renderPrBody (the one-time PR description): this is a timeline
+// comment carrying THIS review's verdict + findings, so a re-push to an
+// existing PR surfaces the current outcome (e.g. a `revise`/`block` verdict or
+// a specific out-of-scope finding) instead of it living only in the harness DB.
+function renderReviewComment(review, opts = { updatedExisting: false }) {
+    const verdict = String(review.verdict ?? "").toLowerCase();
+    const emoji = verdict === "pass" ? "\u2705" : verdict === "block" ? "\u26d4" : "\u{1f501}";
+    const gate = verdict === "pass"
+        ? "No blocking findings from this review. The `harness_merge_pr` gate still applies."
+        : "This review did NOT sign off (`" + verdict + "`). Address the findings below; `harness_merge_pr` will refuse a non-pass verdict.";
+    const findings = review.findings ?? [];
+    const lines = [
+        `## ${emoji} Harness adversarial review \u2014 verdict: \`${review.verdict}\`${opts.updatedExisting ? " (updated PR)" : ""}`,
+        ``,
+        gate,
+        ``,
+        review.summary ? review.summary : "",
+        ``,
+        findings.length ? `### Findings (${findings.length})` : "_No findings._",
+        ...findings.map((f) => `- **${String(f.severity ?? "info").toUpperCase()}** [${f.dimension ?? "?"}] ${f.title ?? ""}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}${f.detail ? `\n  ${f.detail}` : ""}`),
+        ``,
+        `---`,
+        `_Posted by openclaw-agent-harness${typeof review.costUsd === "number" ? ` \u2014 review cost $${review.costUsd.toFixed(2)}` : ""}. This comment is auto-generated on every review._`,
+    ];
+    return lines.filter((l) => l !== "" || true).join("\n");
 }
 function renderPrBody(brief, review) {
     // beta.35 fix #3: when the run ships WITHOUT a clean adversary pass

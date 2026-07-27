@@ -30,6 +30,31 @@ export interface CreatePrOutput {
 }
 export declare function createPullRequest(input: CreatePrInput): Promise<CreatePrOutput>;
 /**
+ * beta.75 (#1): post a comment on a PR (issue-comments endpoint).
+ *
+ * WHY: `createPullRequest` writes the review verdict/findings into the PR
+ * BODY only at CREATE time. On a re-push to an EXISTING PR (a revise, or a
+ * harness_run that D2 promoted onto an open-PR branch), the commits update the
+ * PR diff but nothing surfaces the NEW review outcome -- so a `do_not_merge`
+ * verdict + its findings were invisible on the PR itself (Carel on #876: "the
+ * new test file is there but the PR comments didn't update"). Posting a fresh
+ * comment on every review makes each review's verdict/findings visible on the
+ * PR timeline, not just in the harness DB. Best-effort: a failed comment must
+ * NEVER fail the run (the code + PR already landed), so callers swallow errors.
+ */
+export declare function postPrComment(input: {
+    repoFullName: string;
+    prNumber: number;
+    body: string;
+    ghToken: string;
+    apiBase?: string;
+}): Promise<{
+    ok: boolean;
+    status: number;
+    htmlUrl?: string;
+    error?: string;
+}>;
+/**
  * Sanity-check that a PAT can see a repo. Used at session-start so we
  * fail fast with a clear Slack error instead of dying mid-worker.
  */

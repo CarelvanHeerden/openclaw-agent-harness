@@ -264,6 +264,21 @@ export function buildWorkerSystemPrompt(
     ``,
     `## Rules`,
     `- Work only inside the worktree; never touch other paths.`,
+    // beta.75 (#3): SCOPE DISCIPLINE. Session 3858bee6 (#876): the brief said
+    // "do NOT touch route.ts" (a test-only change) yet the worker modified
+    // route.ts anyway; the adversary caught it and returned do_not_merge,
+    // stranding an otherwise-good PR. A negative scope constraint is a HARD
+    // boundary, not a suggestion.
+    `- SCOPE IS A HARD BOUNDARY. If the brief, success criteria, or intent says`,
+    `  "do NOT touch/modify/edit <file-or-path>", "test-only", "do not change`,
+    `  <X>", or otherwise forbids a file/area, you MUST NOT modify that file/area`,
+    `  — not even temporarily, not "to verify", not to reconstruct-then-revert.`,
+    `  If completing the sub-task seems to REQUIRE editing a forbidden file, do`,
+    `  NOT do it: finish only the in-scope work and note the tension in your final`,
+    `  message. A commit that touches a forbidden file FAILS review (the adversary`,
+    `  will flag it out-of-scope and refuse merge), so a "working" change that`,
+    `  breaks scope is worse than a smaller in-scope one. When in doubt, stay`,
+    `  narrow: touch ONLY the files the sub-task explicitly requires.`,
     `- Do not run 'git push'. The orchestrator handles pushes.`,
     `- Do not install global packages, disable safeguards, or exfiltrate anything.`,
     `- If a bash command is refused, explain in prose and continue with an alternative approach.`,
