@@ -222,7 +222,9 @@ test("P0-5: loop still verifies every sub-task via inferVerifyContract (beta.67:
   const src = S("src/orchestrator/loop.ts");
   // beta.67 (Bug C): the call now passes the EFFECTIVE task-mode as a second
   // arg so a revise-no-change mutate sub-task drops commit_made/file_committed.
-  assert.match(src, /const contract = inferVerifyContract\(st, effectiveTaskMode\)/);
+  // beta.76 renamed `const contract` -> `const rawContract` (re-derivation maps
+  // rawContract -> contract before verify).
+  assert.match(src, /const rawContract = inferVerifyContract\(st, effectiveTaskMode\)/);
   assert.match(src, /verifySubTaskOutput\(/);
 });
 

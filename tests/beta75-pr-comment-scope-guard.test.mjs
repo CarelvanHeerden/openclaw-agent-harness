@@ -119,9 +119,11 @@ test("beta75 #2: harness-pr-steward skill treats an out-of-scope/stray change as
   assert.match(skill, /do NOT surface a scope-violation `do_not_merge` to the\s*\n?\s*human/i, "does not sit on do_not_merge for scope violations");
 });
 
-test("beta75 version bumped to beta.75", () => {
-  const v = readFileSync(join(root, "src/version.ts"), "utf8");
-  assert.ok(v.includes("0.1.0-beta.75"));
+test("beta75 version is >= beta.75 (range floor)", () => {
+  // Relaxed from an exact match to a floor so later betas (beta.76+) that
+  // build on top of beta.75 don't false-fail this suite.
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  assert.equal(pkg.version, "0.1.0-beta.75");
+  const m = /^0\.1\.0-beta\.(\d+)$/.exec(pkg.version);
+  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
+  assert.ok(Number(m[1]) >= 75, `expected beta >= 75, got ${pkg.version}`);
 });

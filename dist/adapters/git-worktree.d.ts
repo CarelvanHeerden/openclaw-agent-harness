@@ -27,6 +27,18 @@
  * does have the token in its argv for the duration of that one process,
  * which is unavoidable for the private-repo 404-vs-401 workaround.
  */
+/**
+ * beta.76 (Defect B): does a string look like a disk-exhaustion / corrupted-
+ * install failure? The Opus-5/Sonnet-5 smoke (session 73e7451f seq-3) had the
+ * worktree's `npm ci` half-run under a full sandbox disk (`ENOSPC`), which
+ * CORRUPTED node_modules -- so the worker could not RUN the test it wrote. A
+ * silently-swallowed bootstrap install then let the run continue toward a
+ * false-green (committed-but-unrun test). We classify these so the harness can
+ * surface a BLOCKING env diagnostic instead of pretending the worktree is
+ * healthy.
+ */
+export declare const DISK_EXHAUSTION_RE: RegExp;
+export declare function looksLikeDiskExhaustion(text: string): boolean;
 export interface GitAdapterOptions {
     worktreesRoot: string;
     logger: {
@@ -43,6 +55,14 @@ export interface GitAdapterOptions {
     bootstrapDeps?: boolean;
     /** beta.53: max ms for the bootstrap install before it is abandoned. Default 600000. */
     bootstrapTimeoutMs?: number;
+    /**
+     * beta.76 (Defect B): minimum free bytes on the worktrees filesystem BEFORE a
+     * dep bootstrap install is attempted. If the free space is below this, we do
+     * NOT run the install (a half-run install under a full disk corrupts
+     * node_modules) and instead surface a blocking `harness.worktree_disk_low`
+     * diagnostic. Default 1 GiB. Set 0 to disable the preflight.
+     */
+    minFreeDiskBytes?: number;
 }
 /**
  * beta.24: build a token-embedded HTTPS URL for the initial private-repo
@@ -111,7 +131,14 @@ export declare class GitAdapter {
      * clean `npm ci` (respects the lockfile) and falls back to `npm install`
      * when there is no lockfile. Bounded + best-effort: never throws.
      */
+    /**
+     * beta.76 (Defect B): free bytes on the filesystem backing `p`, or null when
+     * unknowable. Best-effort (`statfsSync`); never throws.
+     */
+    private freeDiskBytes;
     private bootstrapWorktreeDeps;
+    /** beta.76: redact a token from a bootstrap error string before logging. */
+    private redactSafe;
     /**
      * beta.69 (F4): do the declared check-script binaries (eslint / tsx / tsc /
      * the tools behind lint|typecheck|okf:check|test scripts) resolve in

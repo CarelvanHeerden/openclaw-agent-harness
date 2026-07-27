@@ -460,6 +460,11 @@
             "minimum": 30,
             "maximum": 3650,
             "default": 365
+          },
+          "min_free_disk_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 1073741824
           }
         }
       },

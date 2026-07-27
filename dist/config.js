@@ -92,6 +92,7 @@ const DEFAULTS = {
         audit_retention_days: 90,
         prune_terminal_sessions: false,
         prune_terminal_sessions_days: 365,
+        min_free_disk_bytes: 1024 * 1024 * 1024,
     },
     safety: {
         worker_permission_mode: "acceptEdits",

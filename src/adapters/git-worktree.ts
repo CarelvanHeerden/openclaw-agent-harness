@@ -29,10 +29,26 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statfsSync } from "node:fs";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+
+/**
+ * beta.76 (Defect B): does a string look like a disk-exhaustion / corrupted-
+ * install failure? The Opus-5/Sonnet-5 smoke (session 73e7451f seq-3) had the
+ * worktree's `npm ci` half-run under a full sandbox disk (`ENOSPC`), which
+ * CORRUPTED node_modules -- so the worker could not RUN the test it wrote. A
+ * silently-swallowed bootstrap install then let the run continue toward a
+ * false-green (committed-but-unrun test). We classify these so the harness can
+ * surface a BLOCKING env diagnostic instead of pretending the worktree is
+ * healthy.
+ */
+export const DISK_EXHAUSTION_RE =
+  /\bENOSPC\b|no space left on device|disk quota exceeded|cannot allocate memory|\bENOMEM\b|\bEIO\b/i;
+export function looksLikeDiskExhaustion(text: string): boolean {
+  return DISK_EXHAUSTION_RE.test(text ?? "");
+}
 
 export interface GitAdapterOptions {
   worktreesRoot: string;
@@ -46,6 +62,14 @@ export interface GitAdapterOptions {
   bootstrapDeps?: boolean;
   /** beta.53: max ms for the bootstrap install before it is abandoned. Default 600000. */
   bootstrapTimeoutMs?: number;
+  /**
+   * beta.76 (Defect B): minimum free bytes on the worktrees filesystem BEFORE a
+   * dep bootstrap install is attempted. If the free space is below this, we do
+   * NOT run the install (a half-run install under a full disk corrupts
+   * node_modules) and instead surface a blocking `harness.worktree_disk_low`
+   * diagnostic. Default 1 GiB. Set 0 to disable the preflight.
+   */
+  minFreeDiskBytes?: number;
 }
 
 /**
@@ -323,10 +347,45 @@ esac
    * clean `npm ci` (respects the lockfile) and falls back to `npm install`
    * when there is no lockfile. Bounded + best-effort: never throws.
    */
+  /**
+   * beta.76 (Defect B): free bytes on the filesystem backing `p`, or null when
+   * unknowable. Best-effort (`statfsSync`); never throws.
+   */
+  private freeDiskBytes(p: string): number | null {
+    try {
+      const st = statfsSync(p);
+      // bavail = blocks available to an unprivileged process.
+      return Number(st.bsize) * Number(st.bavail);
+    } catch {
+      return null;
+    }
+  }
+
   private async bootstrapWorktreeDeps(worktreePath: string): Promise<void> {
     try {
       const hasPkg = existsSync(join(worktreePath, "package.json"));
       if (!hasPkg) return;
+
+      // beta.76 (Defect B): DISK PREFLIGHT. A dep install under a nearly-full
+      // disk half-writes node_modules then ENOSPC-fails, leaving a CORRUPT tree
+      // the worker cannot run tests against (Opus-5 smoke seq-3). Refuse to
+      // start the install when free space is below the floor, and surface a
+      // LOUD, actionable diagnostic instead of a silently-corrupt worktree.
+      const floor = this.opts.minFreeDiskBytes ?? 1024 * 1024 * 1024; // 1 GiB
+      if (floor > 0) {
+        const free = this.freeDiskBytes(worktreePath);
+        if (free !== null && free < floor) {
+          this.opts.logger.error(
+            `[git-worktree] BLOCKING: only ${(free / 1e6).toFixed(0)}MB free on the worktrees filesystem ` +
+              `(floor ${(floor / 1e6).toFixed(0)}MB); SKIPPING dep bootstrap to avoid a half-written, ` +
+              `corrupted node_modules. Free disk on the harness host (docker/tmpfs/volume) and re-run. ` +
+              `A test-authoring sub-task cannot execute its tests without a healthy node_modules.`,
+            { worktreePath, freeBytes: free, floorBytes: floor, event: "harness.worktree_disk_low" },
+          );
+          return;
+        }
+      }
+
       const nm = join(worktreePath, "node_modules");
       // If node_modules already has content, it MIGHT be usable (checked-in or
       // from a prior allocation). beta.69 (F4): but a PARTIAL/stale node_modules
@@ -349,9 +408,30 @@ esac
       await this.runCmd("npm", args, worktreePath, this.opts.bootstrapTimeoutMs ?? 600_000);
       this.opts.logger?.info?.(`[git-worktree] deps bootstrap complete in ${worktreePath}`);
     } catch (err) {
-      // Best-effort: log and continue. Worker can still self-install inline.
-      this.opts.logger?.warn?.(`[git-worktree] deps bootstrap failed (non-fatal): ${String(err)}`);
+      const msg = String(err);
+      // beta.76 (Defect B): a DISK-EXHAUSTION install failure is NOT a benign
+      // "worker can self-install inline" case -- it leaves node_modules corrupt
+      // and every subsequent inline install fails too, so a test-authoring
+      // sub-task commits a test it never ran. Escalate to a LOUD, actionable
+      // ERROR diagnostic (was a swallowed warn). Other install failures stay
+      // best-effort warnings (the worker genuinely can retry those inline).
+      if (looksLikeDiskExhaustion(msg)) {
+        this.opts.logger.error(
+          `[git-worktree] BLOCKING: dep bootstrap hit DISK EXHAUSTION and node_modules may be CORRUPT ` +
+            `in ${worktreePath}. Free disk on the harness host and re-run; a corrupt node_modules makes ` +
+            `every inline install fail too, so a test sub-task will commit an UNRUN test. ${this.redactSafe(msg)}`,
+          { worktreePath, event: "harness.worktree_bootstrap_disk_exhaustion" },
+        );
+      } else {
+        // Best-effort: log and continue. Worker can still self-install inline.
+        this.opts.logger?.warn?.(`[git-worktree] deps bootstrap failed (non-fatal): ${this.redactSafe(msg)}`);
+      }
     }
+  }
+
+  /** beta.76: redact a token from a bootstrap error string before logging. */
+  private redactSafe(text: string): string {
+    return redactSecrets(text);
   }
 
   /**

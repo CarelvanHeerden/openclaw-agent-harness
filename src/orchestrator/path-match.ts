@@ -135,11 +135,45 @@ const RULE_RANK: Record<string, number> = {
   "basename-dir": 3,
   basename: 4,
   "basename-unique": 5,
+  "test-file-unique": 6,
 };
+
+/**
+ * beta.76 (Defect A): is `p` a TEST/SPEC file, by any common convention?
+ *   - `*.test.ts` / `*.spec.tsx` / `*.test.js` ...       (JS/TS Jest/Vitest)
+ *   - `*_test.go` / `*_test.py`                          (Go / pytest)
+ *   - `test_*.py`                                        (pytest)
+ *   - a path segment named `__tests__`, `tests`, `test`, or `spec`
+ *     (Jest `__tests__/`, Vitest/Node `test/`, RSpec `spec/`)
+ *
+ * Deliberately broad + repo-agnostic: the whole point of beta.76 is that a
+ * test file's exact NAME and DIRECTORY are repo-convention details the lead
+ * cannot reliably predict pre-probe (`tests/api/x.test.ts` guessed vs
+ * `src/__tests__/api/x-feature.test.ts` real). What we CAN assert is "the
+ * worker committed a test file, and there is exactly one in this sub-task's
+ * scoped diff, so it is the test the sub-task asked for."
+ */
+export function isTestFilePath(p: string): boolean {
+  const n = normalisePath(p).toLowerCase();
+  if (!n) return false;
+  const bn = baseName(n);
+  // Name-based conventions.
+  if (/\.(test|spec)\.[a-z0-9]+$/.test(bn)) return true; // foo.test.ts / foo.spec.tsx
+  if (/(^|[._-])test\.[a-z0-9]+$/.test(bn)) return true; // foo_test.go / foo-test.js
+  if (/^test_.+\.[a-z0-9]+$/.test(bn)) return true; // test_foo.py (pytest)
+  // Directory-based conventions (any segment).
+  const segs = n.split("/").slice(0, -1);
+  if (segs.some((s) => s === "__tests__" || s === "tests" || s === "test" || s === "spec" || s === "__test__")) {
+    // Require the basename to still look like source (not a fixture/readme).
+    return /\.[a-z0-9]+$/.test(bn);
+  }
+  return false;
+}
+
 export function resolveContractPath(
   realFiles: string[],
   contract: string,
-  opts: { allowBasenameFallback?: boolean } = {},
+  opts: { allowBasenameFallback?: boolean; allowTestFileFallback?: boolean } = {},
 ): { file: string; rule: string } | null {
   let best: { file: string; rule: string } | null = null;
   for (const f of realFiles) {
@@ -182,6 +216,39 @@ export function resolveContractPath(
       const hits = realFiles.filter((f) => baseName(f) === bn);
       if (hits.length === 1) return { file: hits[0]!, rule: "basename-unique" };
     }
+  }
+
+  // beta.76 (Defect A): last-resort TEST-FILE-UNIQUE fallback.
+  //
+  // ROOT CAUSE (Opus-5/Sonnet-5 smoke, session 73e7451f, seq 3): the lead's
+  // contract path `tests/api/grc/evidence.test.ts` drifted from the worker's
+  // committed `src/__tests__/api/grc/evidence-fileurl-validation.test.ts` on
+  // BOTH axes at once -- directory topology (`tests/` vs the repo's real Jest
+  // `src/__tests__/` convention) AND basename (generic `evidence.test.ts` vs
+  // the descriptive `evidence-fileurl-validation.test.ts` the worker chose).
+  // Because the BASENAMES differ, even the beta.59 basename-unique fallback
+  // misses -- there is no shared trailing path and no shared filename. But the
+  // worker did exactly what the sub-task asked ("add a test for the fileUrl
+  // rejection"); the name+dir it picked are repo-convention details the lead
+  // cannot predict pre-probe.
+  //
+  // Fallback: when the CONTRACT path is itself a test/spec file AND exactly ONE
+  // test/spec file appears in `realFiles`, accept it. SAFETY: identical to
+  // basename-unique -- sound ONLY because callers pass a PER-SUB-TASK-scoped
+  // file list (`git log/diff base..HEAD` since the sub-task's own
+  // worker-session-start SHA), so a lone test file in that tiny set is
+  // demonstrably the test THIS sub-task just wrote. The uniqueness guard means
+  // a sub-task that committed 2+ test files falls through to a real failure
+  // rather than guessing which one the contract meant. Opt-in
+  // (`allowTestFileFallback`) so repo-wide callers (file_in_pr over the whole
+  // PR file list) never enable it. `commit_made` still independently proves a
+  // real commit landed. NOTE: this asserts the test file was WRITTEN, not that
+  // it PASSES -- an execution (`tests_pass`) contract kind stays authoritative
+  // (see loop.ts beta.76 Defect B: a committed-but-unrun test must not be
+  // silently green-lit).
+  if (opts.allowTestFileFallback && isTestFilePath(contract)) {
+    const testHits = realFiles.filter((f) => isTestFilePath(f));
+    if (testHits.length === 1) return { file: testHits[0]!, rule: "test-file-unique" };
   }
   return null;
 }
