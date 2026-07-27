@@ -1190,6 +1190,16 @@ export const PRICES: Record<string, { input: number; output: number }> = {
   "claude-opus-4-8": { input: 15, output: 75 },
   "claude-opus-4-6": { input: 15, output: 75 },
   opus: { input: 15, output: 75 },
+  // beta.71: Opus 5 (launched 2026-07-24, API id "claude-opus-5"). Priced at
+  // $5 in / $25 out per Mtok -- HALF of Fable 5's 10/50 and half of Opus 4.8's
+  // 15/75. Without this entry a config that swaps models.lead Fable->opus-5
+  // would hit the beta.61 unknown-model fail-safe and be priced at the
+  // most-expensive tier (Fable's 50 output), over-reserving budget ~2x and
+  // firing a spurious drift warning on run 1. Opus 5's lower output price also
+  // does NOT change mostExpensivePrice() -- Fable's 50 stays the fail-safe top.
+  "claude-opus-5": { input: 5, output: 25 },
+  "opus-5": { input: 5, output: 25 },
+  "opus5": { input: 5, output: 25 },
   // sonnet-tier
   "claude-sonnet-5": { input: 3, output: 15 },
   "claude-sonnet-4-6": { input: 3, output: 15 },

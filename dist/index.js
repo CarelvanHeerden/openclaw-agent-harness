@@ -1555,6 +1555,52 @@ export async function bootstrapHarnessAsync(runtime, api) {
     catch (err) {
         api.logger.warn("[harness] model pricing health check failed (non-fatal)", { err: String(err) });
     }
+    // beta.72 (D-A): worktrees-root ownership preflight. Runs BEFORE the
+    // self-heal so we surface a root-owned worktrees dir (the recurring
+    // EACCES-at-planning-$0.00 footgun) with an actionable chown command at
+    // boot, and create the root node-owned on a fresh install so no manual
+    // chown is ever needed. See src/state/worktrees-preflight.ts.
+    try {
+        const { ensureWorktreesRootWritable } = await import("./state/worktrees-preflight.js");
+        const { existsSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const worktreesRoot = config.storage.worktree_root.replace(/^~/, process.env.HOME ?? "");
+        const pf = ensureWorktreesRootWritable({
+            worktreesRoot,
+            exists: (p) => existsSync(p),
+            mkdirp: (p) => mkdirSync(p, { recursive: true }),
+            probeWritable: (p) => {
+                const probe = join(p, `.oah-write-probe-${process.pid}-${Date.now()}`);
+                try {
+                    writeFileSync(probe, "");
+                    rmSync(probe, { force: true });
+                    return true;
+                }
+                catch {
+                    return false;
+                }
+            },
+            getuid: () => (typeof process.getuid === "function" ? process.getuid() : null),
+        });
+        if (pf.ok) {
+            if (pf.created) {
+                api.logger.info("[harness] worktrees root created (node-owned)", { worktreesRoot: pf.worktreesRoot });
+            }
+            state.audit("harness.worktrees_preflight", { ok: true, created: pf.created, worktreesRoot: pf.worktreesRoot });
+        }
+        else {
+            // BLOCKING diagnostic: a run WILL die with EACCES until this is fixed.
+            api.logger.error(`[harness] ${pf.message}`, { worktreesRoot: pf.worktreesRoot, uid: pf.uid, chownCommand: pf.chownCommand });
+            state.audit("harness.worktrees_root_not_writable", {
+                worktreesRoot: pf.worktreesRoot,
+                uid: pf.uid,
+                chownCommand: pf.chownCommand,
+            });
+        }
+    }
+    catch (err) {
+        api.logger.warn("[harness] worktrees-root preflight failed (non-fatal)", { err: String(err) });
+    }
     // beta.17: startup worktree self-heal. Scan the worktrees root for
     // leftover `pending-<ts>` dirs (or UUID dirs) and reap any that
     // correspond to terminal or unknown sessions. Belt-and-suspenders on

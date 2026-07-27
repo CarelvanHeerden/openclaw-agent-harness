@@ -142,7 +142,12 @@ test("beta65/P0: legit slow open WITHIN the phase-1 window then instant first-to
     assert.equal(res.stopReason, "end_turn", "opened within the phase-1 window => no false abort");
     assert.equal(res.streamOpened, true);
     assert.equal(typeof res.msToFirstToken, "number", "msToFirstToken recorded (spans both phases)");
-    assert.ok(res.msToFirstToken >= 40, "msToFirstToken measured from call initiation, includes the slow open");
+    // Node's setTimeout can fire fractionally early (timer rounding/coalescing
+    // under load), so a strict `>= 40` boundary flakes on busy CI runners
+    // (measured ~39.x). Allow ~2ms slack: the point is that msToFirstToken is
+    // measured from call initiation and therefore SPANS the ~40ms slow open,
+    // not that it lands on an exact tick.
+    assert.ok(res.msToFirstToken >= 38, `msToFirstToken (${res.msToFirstToken}) measured from call initiation, includes the ~40ms slow open`);
     assert.equal(res.costUsd, 0.02);
     assert.equal(abort.signal.aborted, false, "legit slow open is never aborted");
   });
