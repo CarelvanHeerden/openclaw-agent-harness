@@ -136,7 +136,8 @@ test("beta50/56/59: the (single) fileCommittedSince factory resolves structurall
   // with fileWrittenSince) instead of a hand-rolled pathMatchRule loop, and the
   // import no longer pulls pathMatchRule directly.
   assert.match(indexSrc, /import \{ resolveContractPath \} from "\.\/orchestrator\/path-match\.js"/);
-  assert.match(indexSrc, /resolveContractPath\(files, path, \{ allowBasenameFallback: true \}\)/);
+  // beta.76 added allowTestFileFallback alongside allowBasenameFallback.
+  assert.match(indexSrc, /resolveContractPath\(files, path, \{ allowBasenameFallback: true, allowTestFileFallback: true \}\)/);
   // the old exact-resolve equality match must be gone from fileCommittedSince
   assert.doesNotMatch(indexSrc, /resolve\(worktreePath, f\) === absTarget \|\| f === path/);
 });

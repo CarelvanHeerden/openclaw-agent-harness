@@ -53,8 +53,25 @@ export declare function pathMatchRule(committed: string, contract: string): stri
 export declare function pathMatches(committed: string, contract: string): boolean;
 /** True if ANY committed file satisfies the contract path. */
 export declare function anyPathMatches(committedFiles: string[], contract: string): boolean;
+/**
+ * beta.76 (Defect A): is `p` a TEST/SPEC file, by any common convention?
+ *   - `*.test.ts` / `*.spec.tsx` / `*.test.js` ...       (JS/TS Jest/Vitest)
+ *   - `*_test.go` / `*_test.py`                          (Go / pytest)
+ *   - `test_*.py`                                        (pytest)
+ *   - a path segment named `__tests__`, `tests`, `test`, or `spec`
+ *     (Jest `__tests__/`, Vitest/Node `test/`, RSpec `spec/`)
+ *
+ * Deliberately broad + repo-agnostic: the whole point of beta.76 is that a
+ * test file's exact NAME and DIRECTORY are repo-convention details the lead
+ * cannot reliably predict pre-probe (`tests/api/x.test.ts` guessed vs
+ * `src/__tests__/api/x-feature.test.ts` real). What we CAN assert is "the
+ * worker committed a test file, and there is exactly one in this sub-task's
+ * scoped diff, so it is the test the sub-task asked for."
+ */
+export declare function isTestFilePath(p: string): boolean;
 export declare function resolveContractPath(realFiles: string[], contract: string, opts?: {
     allowBasenameFallback?: boolean;
+    allowTestFileFallback?: boolean;
 }): {
     file: string;
     rule: string;

@@ -472,6 +472,14 @@ export interface StorageConfig {
     audit_retention_days: number;
     prune_terminal_sessions: boolean;
     prune_terminal_sessions_days: number;
+    /**
+     * beta.76 (Defect B): minimum free bytes on the worktrees filesystem before a
+     * dep-bootstrap install is attempted. Below this, the install is skipped and
+     * a blocking `harness.worktree_disk_low` diagnostic is surfaced (an install
+     * under a full disk corrupts node_modules -> a test sub-task commits an unrun
+     * test). Default 1073741824 (1 GiB). Set 0 to disable the preflight.
+     */
+    min_free_disk_bytes: number;
 }
 export interface SafetyConfig {
     worker_permission_mode: "acceptEdits" | "bypassPermissions" | "plan";

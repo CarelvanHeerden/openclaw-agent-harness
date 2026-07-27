@@ -102,7 +102,8 @@ test("beta.59 wiring: the three per-sub-task probes opt into the fallback", () =
   const n = (idx.match(/allowBasenameFallback:\s*true/g) ?? []).length;
   assert.ok(n >= 3, `expected >=3 opt-in call sites, found ${n}`);
   // fileCommittedSince now routes through resolveContractPath (no hand-rolled loop)
-  assert.match(idx, /resolveContractPath\(files, path, \{ allowBasenameFallback: true \}\)/);
+  // beta.76 added allowTestFileFallback alongside.
+  assert.match(idx, /resolveContractPath\(files, path, \{ allowBasenameFallback: true, allowTestFileFallback: true \}\)/);
 });
 
 test("beta.59 safety: file_in_pr uses repo-wide anyPathMatches, which NEVER enables the fallback", () => {
