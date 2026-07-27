@@ -210,7 +210,9 @@ test("beta69: force-upgrade pass->revise is DELETED from runAdversary (source)",
 
 test("beta69: index.ts wires priorFindings + repoHasTestScript into runAdversaryCore (source)", () => {
   const src = S("src/index.ts");
-  assert.match(src, /runAdversary: async \(\{ brief, plan, runtime, baseSha, priorFindings \}\)/);
+  // beta.74: runAdversary destructuring also includes `requester` (used to
+  // resolve the GitHub token for the diff's promisor fetch).
+  assert.match(src, /runAdversary: async \(\{ brief, plan, runtime, requester, baseSha, priorFindings \}\)/);
   assert.match(src, /priorFindings,/);
   assert.match(src, /repoHasTestScript:/);
   assert.match(src, /discoverCheckScripts\(plan\.worktreePath\)\.some\(\(s\) => s\.name === "test"\)/);

@@ -2230,6 +2230,14 @@ export class OrchestratorLoop {
      */
     finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd) {
         this.setStatus(sessionId, "failed");
+        // beta.74 (D3 nit): also emit the canonical `loop.failed{reason}` event so
+        // there is ONE terminal-fail event across BOTH terminal paths (this
+        // preserve-worktree variant AND finaliseFailed). Pre-beta.74 a review crash
+        // routed through here and emitted ONLY `loop.failed_worktree_preserved`, so
+        // a `harness_progress` consumer greppping for `loop.failed` missed the
+        // review-crash terminals (session 666fc103). The reason string is preserved
+        // on both events; this just unifies the event name.
+        this.deps.state.audit("loop.failed", { sessionId, reason, cycles, worktreePreserved: true }, sessionId);
         this.deps.state.audit("loop.failed_worktree_preserved", { sessionId, reason, cycles }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "failed_worktree_preserved", phase: "finalize", reason });
         return { status: "failed", sessionId, reason, cycles, totalCostUsd };
