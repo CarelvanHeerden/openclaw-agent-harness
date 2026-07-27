@@ -60,6 +60,7 @@ function parsePrNumber(prUrl) {
     return m ? Number(m[1]) : undefined;
 }
 import { inferVerifyContract } from "./verify-contract.js";
+import { rederiveContractPath } from "./contract-rederive.js";
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
@@ -662,6 +663,14 @@ export class OrchestratorLoop {
         // beta.7 fix #2: running record of actual sub-task costs, used to project
         // the cost of upcoming sub-tasks for pre-execution budget gating.
         const subTaskCosts = [];
+        // beta.76 (Option 1 -- contract re-derivation): the set of REAL file paths
+        // the run's workers have actually touched/committed so far. This is GROUND
+        // TRUTH for the repo's real directory conventions (discovered by the
+        // observe probe + every mutate that lands a file), and is used to correct a
+        // downstream sub-task's STALE, lead-guessed contract path BEFORE it is
+        // verified -- killing the path-drift class at the source instead of adding
+        // one more tolerant match rule. Accumulated across sub-tasks within the run.
+        const discoveredRealPaths = new Set();
         // 2. Execute/review cycles
         while (cycle < this.deps.config.loop.max_cycles) {
             cycle += 1;
@@ -907,6 +916,15 @@ export class OrchestratorLoop {
                     failed.seq = st.seq;
                     return;
                 }
+                // beta.76 (Option 1): record the REAL paths this sub-task touched into
+                // the run-level ground-truth set. These correct downstream (and this
+                // sub-task's own) stale contract paths via rederiveContractPath. Both
+                // committed and uncommitted-but-written files count as evidence of the
+                // repo's real layout.
+                for (const f of [...(result.filesChanged ?? []), ...(result.uncommittedFiles ?? [])]) {
+                    if (typeof f === "string" && f.trim())
+                        discoveredRealPaths.add(f.trim());
+                }
                 // ---- beta.8 fix #1: HARNESS-SIDE verification ----
                 // Regardless of the worker's `end_turn: completed`, the harness
                 // independently verifies any observable side-effect the sub-task
@@ -929,7 +947,27 @@ export class OrchestratorLoop {
                     this.deps.state.audit("loop.subtask_revise_no_change", { sessionId, seq: st.seq, cycle, taskMode: st.taskMode ?? "unspecified", effectiveTaskMode: "observe", trigger: "contract_selection" }, sessionId);
                     this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_no_change", phase: "worker", seq: st.seq, cycle, effectiveTaskMode: "observe" });
                 }
-                const contract = inferVerifyContract(st, effectiveTaskMode);
+                const rawContract = inferVerifyContract(st, effectiveTaskMode);
+                // beta.76 (Option 1): RE-DERIVE each path-bearing contract kind against
+                // the real paths this run has already touched, so a stale lead-guessed
+                // directory prefix (e.g. `tests/api/grc` when the repo really uses
+                // `src/__tests__/api/grc`) is corrected BEFORE verification -- the
+                // structural cure for the drift class. No-op when no evidence-backed
+                // remap applies (returns the path unchanged), so this never makes
+                // verification stricter. Skips file_in_pr (repo-wide, not scoped).
+                const contract = rawContract.map((v) => {
+                    if (!("path" in v) || !v.path || v.kind === "file_in_pr")
+                        return v;
+                    const rd = rederiveContractPath(v.path, [...discoveredRealPaths]);
+                    if (!rd.remapped)
+                        return v;
+                    this.deps.state.audit("loop.contract_path_rederived", { sessionId, seq: st.seq, cycle, kind: v.kind, from: v.path, to: rd.path, via: rd.via }, sessionId);
+                    this.deps.interactionLog?.log(sessionId, {
+                        event: "contract_path_rederived", phase: "worker", seq: st.seq, cycle,
+                        kind: v.kind, from: v.path, to: rd.path,
+                    });
+                    return { ...v, path: rd.path };
+                });
                 if (contract.length > 0 && this.deps.buildVerifyProbes) {
                     const probes = this.deps.buildVerifyProbes({
                         plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,

@@ -310,6 +310,8 @@ export function bootstrapHarnessSync(api) {
     const git = new GitAdapter({
         worktreesRoot: config.storage.worktree_root,
         logger: api.logger,
+        // beta.76 (Defect B): disk preflight floor before dep bootstrap.
+        minFreeDiskBytes: config.storage.min_free_disk_bytes,
     });
     const slack = new SlackAdapter({
         logger: api.logger,
@@ -718,7 +720,7 @@ export function bootstrapHarnessSync(api) {
                         // beta.59: per-sub-task-scoped diff (base = worker-session-start SHA),
                         // so a basename-unique fallback is safe here (a lone same-basename
                         // file in this tiny diff is the file this sub-task just wrote).
-                        const match = resolveContractPath(changed, path, { allowBasenameFallback: true });
+                        const match = resolveContractPath(changed, path, { allowBasenameFallback: true, allowTestFileFallback: true });
                         if (!match) {
                             return { written: false, detail: `file not in diff vs base (${changed.length} changed: ${changed.slice(0, 8).join(", ")})` };
                         }
@@ -777,7 +779,8 @@ export function bootstrapHarnessSync(api) {
                         try {
                             const committed = await git.listCommittedFiles(worktreePath, baseSha).catch(() => []);
                             // beta.59: per-sub-task-scoped commit list -> basename-unique fallback safe.
-                            const match = resolveContractPath(committed, path, { allowBasenameFallback: true });
+                            // beta.76: + test-file-unique for a descriptively-named test file.
+                            const match = resolveContractPath(committed, path, { allowBasenameFallback: true, allowTestFileFallback: true });
                             if (match) {
                                 const s = await tryStat(match.file);
                                 return {
@@ -808,7 +811,7 @@ export function bootstrapHarnessSync(api) {
                         // is the file the worker just committed (fixes seq-4 topology drift:
                         // contract `components/governance-risk/risks/...` vs committed
                         // `src/components/grc/...`).
-                        const match = resolveContractPath(files, path, { allowBasenameFallback: true });
+                        const match = resolveContractPath(files, path, { allowBasenameFallback: true, allowTestFileFallback: true });
                         const matchedFile = match?.file;
                         const matchedRule = match?.rule ?? null;
                         const committed = matchedRule !== null;

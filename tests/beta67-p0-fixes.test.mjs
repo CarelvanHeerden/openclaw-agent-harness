@@ -363,7 +363,9 @@ test("beta67-C: contract selection consults effectiveTaskMode (loop.ts + verify-
   const loop = S("src/orchestrator/loop.ts");
   // effectiveTaskMode computed from the revise-no-change condition
   assert.match(loop, /cycle > 1 && st\.taskMode === "mutate" && !result\.commitSha \? "observe" : st\.taskMode/);
-  assert.match(loop, /const contract = inferVerifyContract\(st, effectiveTaskMode\)/);
+  // beta.76 renamed `const contract` -> `const rawContract` (re-derivation now
+  // maps rawContract -> contract). Assert against the current variable name.
+  assert.match(loop, /const rawContract = inferVerifyContract\(st, effectiveTaskMode\)/);
   const vc = S("src/orchestrator/verify-contract.ts");
   // the demotion is keyed on the explicit argument, not plan-time taskMode
   assert.match(vc, /effectiveTaskMode\?: LeadPlanSubTask\["taskMode"\]/);
