@@ -1,0 +1,62 @@
+/**
+ * beta.72 (D-A): worktrees-root ownership/writability preflight.
+ *
+ * THE BUG: the harness process runs as uid `node` inside the container, but
+ * `worktrees/` (and its `.repos/` child) kept coming back `root:root` after a
+ * beta.70 install/restart. When the root is root-owned, the harness's first
+ * `mkdir(dirname(bare), {recursive:true})` in git-worktree.ts throws
+ *   `EACCES: permission denied, mkdir '.../worktrees/.repos'`
+ * DURING PLANNING -- so a run dies at $0.00 before any harness logic executes,
+ * with a raw, un-actionable stack. Staging hit this three times on 2026-07-27;
+ * each needed a manual host `chown -R node:node .../worktrees`.
+ *
+ * ROOT CAUSE is an install/host action creating the dir as root (the `cp -a` /
+ * `mkdir` steps run as root), NOT the harness runtime (which is `node`). The
+ * harness cannot `chown` a root-owned dir (that needs root). What it CAN do:
+ *   1. If the root is MISSING, create it as the current (node) uid so a fresh
+ *      install is correct from byte one -- no manual chown needed.
+ *   2. If the root EXISTS but is NOT WRITABLE by the current process, detect it
+ *      at bootstrap and emit a precise, actionable diagnostic (the exact chown
+ *      command) instead of letting it explode as a raw EACCES mid-planning.
+ *
+ * This is a pure, side-effect-injected function so it is unit-testable without
+ * touching the real filesystem.
+ */
+/**
+ * Ensure the worktrees root is present and writable by this process.
+ *
+ * - Missing  -> create it (node-owned) and return {ok:true, created:true}.
+ * - Present + writable -> {ok:true, created:false}.
+ * - Present + NOT writable -> {ok:false, reason:"not_writable", chownCommand}.
+ *   (We cannot chown from an unprivileged process; surface the fix instead.)
+ */
+export function ensureWorktreesRootWritable(deps) {
+    const root = deps.worktreesRoot;
+    if (!deps.exists(root)) {
+        // Fresh install / first boot: create it as the current uid so it is
+        // node-owned from the start and no manual chown is ever needed.
+        deps.mkdirp(root);
+        return { ok: true, created: true, worktreesRoot: root };
+    }
+    if (deps.probeWritable(root)) {
+        return { ok: true, created: false, worktreesRoot: root };
+    }
+    // Exists but this (unprivileged) process cannot write -- almost always the
+    // root-owned-after-install case. Emit the exact remediation.
+    const uid = deps.getuid();
+    const chownCommand = `chown -R node:node ${root}`;
+    return {
+        ok: false,
+        created: false,
+        worktreesRoot: root,
+        reason: "not_writable",
+        uid,
+        chownCommand,
+        message: `worktrees root ${root} exists but is NOT writable by this process` +
+            (uid !== null ? ` (uid ${uid})` : "") +
+            `. This is the root-owned-after-install case: the harness runs as 'node' and cannot mkdir under a root-owned dir, ` +
+            `so a run would die with EACCES during planning at $0.00. Fix on the host, then restart is NOT required ` +
+            `(the harness reads the fs live): docker exec -u root <container> bash -lc '${chownCommand}'`,
+    };
+}
+//# sourceMappingURL=worktrees-preflight.js.map

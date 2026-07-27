@@ -11,7 +11,7 @@ import type { HarnessPluginApi, HarnessRuntime } from "../index.js";
 import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
-import { isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
+import { findingText, isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
 
 type ToolDisposer = (() => void) | { dispose?: () => void; unregister?: () => void };
 
@@ -1286,7 +1286,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         return {
           index: i + 1,
           severity: String(o.severity ?? o.level ?? ""),
-          summary: String(o.message ?? o.finding ?? o.detail ?? o.description ?? "").slice(0, 200),
+          // beta.72 (D-B): use the hardened extractor so a finding whose text
+          // lives in `title` (empty `detail`) is not shown as a blank summary.
+          summary: findingText(f).slice(0, 200),
           conditional: isConditionalFinding(f),
         };
       }),
@@ -1345,9 +1347,19 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       }
       const o = (f ?? {}) as Record<string, unknown>;
       const sev = o.severity ?? o.level ?? "";
-      const msg = o.message ?? o.finding ?? o.detail ?? o.description ?? JSON.stringify(o);
+      // beta.72 (D-B): the pre-beta.72 inline extraction read
+      // `message ?? finding ?? detail ?? description` and used `??`, which does
+      // NOT fall through an EMPTY string. The adversary's ReviewFinding carries
+      // its text in `title`+`detail`; a finding with text in `title` and an
+      // empty `detail` produced an empty body -> `"1. [medium] "` (Staging #876
+      // revise auto-brief, all 4 findings blank). `findingText` reads `title`,
+      // coalesces empties, and dumps JSON as a last resort so the line is never
+      // empty.
+      const msg = findingText(f) || JSON.stringify(o);
       const loc = o.location ?? o.file ?? o.path ?? "";
-      const base = `${displayIdx}. [${String(sev)}] ${String(msg)}${loc ? ` (${String(loc)})` : ""}`;
+      const line = o.line ?? "";
+      const locStr = loc ? `${String(loc)}${line ? `:${String(line)}` : ""}` : "";
+      const base = `${displayIdx}. [${String(sev)}] ${msg}${locStr ? ` (${locStr})` : ""}`;
       if (isConditionalFinding(f)) {
         demotedIdx.push(displayIdx);
         findingLines.push(

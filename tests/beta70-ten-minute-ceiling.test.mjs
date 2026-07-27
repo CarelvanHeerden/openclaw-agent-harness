@@ -252,7 +252,9 @@ test("beta70: config defaults + manifest declare the new keys", () => {
   assert.equal(verify.check_script_heap_retry_mb.default, 8192);
 });
 
-test("beta70: version bumped to beta.70", () => {
-  assert.match(S("package.json"), /"version": "0\.1\.0-beta\.70"/);
-  assert.match(S("src/version.ts"), /0\.1\.0-beta\.70/);
+test("beta70: version is at least beta.70 (superseded by beta.71 bump)", () => {
+  // beta.71 bumped the version; assert >= beta.70 rather than an exact string
+  // so future bumps don't re-break this.
+  assert.match(S("package.json"), /"version": "0\.1\.0-beta\.(7[0-9]|[89][0-9])"/);
+  assert.match(S("src/version.ts"), /0\.1\.0-beta\.(7[0-9]|[89][0-9])/);
 });

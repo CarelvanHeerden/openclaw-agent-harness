@@ -25,10 +25,51 @@
  * "assuming Z", "if ... exist(s)", "provided that", "only if", etc.
  */
 export const CONDITIONAL_FINDING_RE = /\b(if\s+no\b|if\s+there\s+(is|are)\s+no\b|if\s+.*\bdoes\s+not\s+exist|assuming\b|unless\b|provided\s+that\b|so\s+long\s+as\b|only\s+if\b|when\s+no\b|if\s+.*\bexist)/i;
-/** Extract the human-readable text of a stored finding (schema is loose). */
+/**
+ * Extract the human-readable text of a stored finding (schema is loose).
+ *
+ * beta.72 (D-B): the adversary's `ReviewFinding` puts its substance in `title`
+ * + `detail` (fable5-adversary.ts), but the pre-beta.72 extractor only looked
+ * at `message/finding/detail/description` and used `??` -- which does NOT fall
+ * through an EMPTY string. A finding whose text lived in `title` (with an empty
+ * `detail`) therefore rendered as an empty brief line: Staging's #876 revise
+ * auto-brief came through as `"1. [medium] "` x4 (severity present, body empty),
+ * producing a garbage, non-actionable revise. Fix: (1) read `title` too, (2)
+ * coalesce empty/whitespace strings (not just null/undefined), and (3) as a
+ * last resort fall back to a JSON dump so a brief line is NEVER empty. Prefer
+ * the richest combination: if BOTH `title` and `detail` carry text, join them
+ * so no substance is dropped.
+ */
 export function findingText(f) {
     const o = (f ?? {});
-    return String(o.message ?? o.finding ?? o.detail ?? o.description ?? "");
+    const pick = (...keys) => {
+        for (const k of keys) {
+            const v = o[k];
+            if (typeof v === "string" && v.trim().length > 0)
+                return v.trim();
+        }
+        return "";
+    };
+    // `title` is the adversary's primary summary; `detail` is the elaboration.
+    const title = pick("title", "message", "finding", "summary");
+    const detail = pick("detail", "description", "explanation", "body", "note");
+    if (title && detail && title !== detail)
+        return `${title} -- ${detail}`;
+    const primary = title || detail;
+    if (primary)
+        return primary;
+    // Nothing recognisable but the object isn't empty -> dump it rather than
+    // emit a blank line (a blank finding is worse than a verbose one).
+    const keys = Object.keys(o);
+    if (keys.length > 0) {
+        try {
+            return JSON.stringify(o);
+        }
+        catch {
+            /* fall through */
+        }
+    }
+    return "";
 }
 /** True when the finding's action depends on an unresolved repo-state premise. */
 export function isConditionalFinding(f) {
