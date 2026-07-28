@@ -10,6 +10,7 @@ import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
 import { findingText, isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
+import { OnboardingSlack, resolveOnboardVaultService, validateGitToken } from "../slack/onboarding.js";
 function toDispose(x) {
     return () => {
         if (typeof x === "function")
@@ -80,6 +81,16 @@ export function registerHarnessTools(api, runtime) {
         if (effectiveBudget < requestedBudget) {
             liveState().audit("tool.run.budget_clamped", { requester: params.requester, requested: requestedBudget, clamped: effectiveBudget, ceiling });
         }
+        // beta.78 (Feature 1): daily-aware budget RECOMMENDATION. Soft default --
+        // the run proceeds at `effectiveBudget`; this note nudges the user if the
+        // recommended/default budget looks low against remaining daily headroom.
+        const rec = recommendBudget(params.requester, params.budgetUsd);
+        if (rec.note) {
+            liveState().audit("tool.run.budget_recommendation", {
+                requester: params.requester, effectiveBudget, recommended: rec.recommended,
+                dailySoFar: rec.dailySoFar, dailyMax: rec.dailyMax, remainingDaily: rec.remainingDaily,
+            });
+        }
         const sessionId = globalThis.crypto?.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const slackChannel = params.slackChannel ?? "";
         // Synthesise a unique thread key when the agent supplies none.
@@ -136,7 +147,48 @@ export function registerHarnessTools(api, runtime) {
         void liveRuntime().loop.run(sessionId, params.brief).catch((err) => {
             api.logger.error(`[${params.auditEvent}] loop crashed`, { sessionId, err: String(err) });
         });
-        return { ok: true, sessionId };
+        return { ok: true, sessionId, budgetNote: rec.note, effectiveBudget, recommendedBudget: rec.recommended };
+    }
+    /**
+     * beta.78 (Feature 1): compute a daily-aware budget recommendation. Pure-ish
+     * (reads config + the persistent daily ledger). `requested` is the user's
+     * explicit budgetUsd (undefined = use the session default). Returns the
+     * recommended budget and an optional human note when remaining daily is low.
+     */
+    function recommendBudget(user, requested) {
+        const cfg = liveConfig().budgets;
+        const sessionDefault = cfg?.session_default_usd ?? 50;
+        const ceiling = cfg?.session_hard_ceiling_usd;
+        const dailyMax = cfg?.daily_max_usd ?? 0;
+        let dailySoFar = 0;
+        try {
+            dailySoFar = liveRuntime().budget.getDailySpend(user);
+        }
+        catch { /* ledger unavailable -> treat as 0 */ }
+        const remainingDaily = dailyMax > 0 ? Math.max(0, dailyMax - dailySoFar) : Number.POSITIVE_INFINITY;
+        // Recommend the requested amount, else the session default, capped by the
+        // session hard ceiling AND by remaining daily headroom.
+        let recommended = requested ?? sessionDefault;
+        if (typeof ceiling === "number" && ceiling > 0)
+            recommended = Math.min(recommended, ceiling);
+        if (Number.isFinite(remainingDaily))
+            recommended = Math.min(recommended, remainingDaily);
+        let note;
+        if (dailyMax > 0) {
+            const pct = Math.min(100, Math.round((dailySoFar / dailyMax) * 100));
+            if (remainingDaily <= 0) {
+                note =
+                    `You've used 100% of today's budget ($${dailySoFar.toFixed(2)} / $${dailyMax.toFixed(2)}). ` +
+                        `This run may stop almost immediately — drop :moneybag: to override the daily cap, or wait for the UTC reset.`;
+            }
+            else if (remainingDaily < (requested ?? sessionDefault)) {
+                note =
+                    `Heads up: you've used ${pct}% of today's budget ` +
+                        `($${dailySoFar.toFixed(2)} / $${dailyMax.toFixed(2)}), only ~$${remainingDaily.toFixed(2)} left today. ` +
+                        `Recommended budget for this run capped at $${recommended.toFixed(2)}. If that's low, reply with a higher budget or drop :moneybag: to override the cap.`;
+            }
+        }
+        return { recommended, note, dailySoFar, dailyMax, remainingDaily };
     }
     disposers.push(toDispose(api.registerTool({
         name: "harness_status",
@@ -631,9 +683,13 @@ export function registerHarnessTools(api, runtime) {
                 until: "terminal",
                 instruction: "Poll harness_progress with this sessionId every ~45s and relay its `headline` (or a rephrase) to the user until `terminal` is true. Prefer scheduling a 45s cron so progress surfaces across turns. Do not fire-and-forget -- the harness does NOT post to Slack itself.",
             };
+            // beta.78 (Feature 1): prepend the daily-aware budget note (if any)
+            // so the agent relays the recommendation/low-headroom nudge to the
+            // user. Soft default -- the run already started at effectiveBudget.
+            const budgetLine = res.budgetNote ? `${res.budgetNote}\n\n` : "";
             return {
-                content: [{ type: "text", text: `Session ${res.sessionId} started for "${cResult.brief.title}". Surface progress automatically: poll harness_progress (sessionId ${res.sessionId}) every ~45s and relay \`headline\` until terminal. The harness will not post to Slack itself.` }],
-                details: { ok: true, sessionId: res.sessionId, brief: cResult.brief, feedback },
+                content: [{ type: "text", text: `${budgetLine}Session ${res.sessionId} started for "${cResult.brief.title}" (budget $${res.effectiveBudget.toFixed(2)}). Surface progress automatically: poll harness_progress (sessionId ${res.sessionId}) every ~45s and relay \`headline\` until terminal. The harness will not post to Slack itself.` }],
+                details: { ok: true, sessionId: res.sessionId, brief: cResult.brief, feedback, budgetNote: res.budgetNote ?? null, effectiveBudget: res.effectiveBudget, recommendedBudget: res.recommendedBudget },
             };
         },
     })));
@@ -1015,6 +1071,118 @@ export function registerHarnessTools(api, runtime) {
             return {
                 content: [{ type: "text", text: `Answer recorded for session ${sessionId}; resuming. Poll harness_progress for status.` }],
                 details: { ok: true, sessionId, resumed: true, seq },
+            };
+        },
+    })));
+    // ---- beta.78 (Feature 4): per-user credential onboarding (DM flow) ----
+    //
+    // Authorised users onboard their OWN git token privately. Two actions:
+    //   - action:"start": open a DM to the user with paste instructions (keeps
+    //     the token request out of any public channel). Returns the DM channel.
+    //   - action:"submit": store a pasted token in the vault as git-pat:<userid>
+    //     (validated via GET /user first), then delete the bot's own prompt and
+    //     confirm in DM (asking the user to delete their token message -- a bot
+    //     token cannot delete a user's message).
+    //
+    // SLACK-APP CAVEAT: the `/harness-onboard` slash command must be added to
+    // the Slack app manifest and reinstalled before Slack routes it; the command
+    // handler then calls this tool. Documented in the README.
+    disposers.push(toDispose(api.registerTool({
+        name: "harness_onboard",
+        description: "Per-user git credential onboarding (DM flow). action:'start' opens a private DM to the requester asking them to paste their git token (keeps it out of public channels). action:'submit' validates a pasted token (GET /user) and stores it in the vault as the requester's per-user service, then deletes the bot's own prompt and confirms in DM. ONLY users in slack.authorised_users may onboard. The raw token must NEVER be posted to a public channel.",
+        parameters: {
+            type: "object",
+            properties: {
+                requester: { type: "string", minLength: 1, description: "Slack user id being onboarded. Must be in slack.authorised_users." },
+                action: { type: "string", enum: ["start", "submit"], description: "'start' opens the DM prompt; 'submit' stores a pasted token." },
+                token: { type: "string", description: "For action:'submit' ONLY: the git token to validate + store. Never pass this in a public channel." },
+                provider: { type: "string", description: "Git provider (default 'github'). Selects the validation API base." },
+                promptTs: { type: "string", description: "For action:'submit': the ts of the bot's DM prompt to delete after storing." },
+                dmChannel: { type: "string", description: "For action:'submit': the DM channel id (from action:'start') to post confirmation + delete the prompt in." },
+            },
+            required: ["requester", "action"],
+            additionalProperties: false,
+        },
+        execute: async (_callId, input) => {
+            const { requester, action, token, provider, promptTs, dmChannel } = input;
+            if (!liveConfig().slack.authorised_users.includes(requester)) {
+                liveState().audit("tool.onboard.unauthorised", { requester });
+                return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users; onboarding refused.` }], details: { ok: false, unauthorised: true } };
+            }
+            const credService = liveConfig().slack.credential_service;
+            if (!credService) {
+                return { content: [{ type: "text", text: "Onboarding needs slack.credential_service (a bot token) configured to open a DM." }], details: { ok: false, noSlackToken: true } };
+            }
+            let slackToken;
+            try {
+                slackToken = await liveRuntime().creds.getToken(credService);
+            }
+            catch (err) {
+                return { content: [{ type: "text", text: `Could not resolve the Slack bot token from vault (${String(err)}).` }], details: { ok: false, slackTokenError: true } };
+            }
+            const onboard = new OnboardingSlack({ slackToken, logger: api.logger });
+            const vaultService = resolveOnboardVaultService(requester, {
+                pattern: liveConfig().pat_routing?.onboard_service_pattern,
+                provider: provider ?? "github",
+            });
+            if (action === "start") {
+                const dm = await onboard.openDm(requester);
+                if (!dm.ok || !dm.value) {
+                    return { content: [{ type: "text", text: `Could not open a DM with <@${requester}> (${dm.error ?? "unknown"}).` }], details: { ok: false, dmError: dm.error } };
+                }
+                const prompt = await onboard.postDm(dm.value, `:wave: Let's onboard your git token so the harness can act as you.\n\n` +
+                    `Reply in THIS DM with your token (it stays private; the operator never sees it). ` +
+                    `Once stored, I'll delete my prompt and confirm. It will be saved in the vault as \`${vaultService}\`.\n\n` +
+                    `:lock: Never paste your token in a public channel.`);
+                liveState().audit("tool.onboard.started", { requester, dmChannel: dm.value, vaultService });
+                return {
+                    content: [{ type: "text", text: `Opened an onboarding DM with <@${requester}>. Ask them to paste their token in that DM, then submit it via harness_onboard action:'submit'.` }],
+                    details: { ok: true, dmChannel: dm.value, promptTs: prompt.value ?? null, vaultService },
+                };
+            }
+            // action === "submit"
+            if (!token || token.trim().length < 8) {
+                return { content: [{ type: "text", text: "No valid token supplied for submit." }], details: { ok: false, badToken: true } };
+            }
+            const gitRes = liveRuntime().gitResolutionFor?.(undefined);
+            const apiBase = gitRes?.apiBase ?? (provider === "gitlab" ? "https://gitlab.com/api/v4" : "https://api.github.com");
+            const valid = await validateGitToken(token.trim(), apiBase);
+            if (!valid.ok) {
+                liveState().audit("tool.onboard.token_invalid", { requester, error: valid.error });
+                if (dmChannel)
+                    await onboard.postDm(dmChannel, `:x: That token didn't validate (${valid.error ?? "unknown"}). Please try again with a valid token.`);
+                return { content: [{ type: "text", text: `Token failed validation (${valid.error ?? "unknown"}); NOT stored.` }], details: { ok: false, invalidToken: true, error: valid.error } };
+            }
+            if (!api.callTool) {
+                return { content: [{ type: "text", text: "credential vault not available (api.callTool missing); cannot store token." }], details: { ok: false, noVault: true } };
+            }
+            try {
+                const stored = (await api.callTool("credential_store", {
+                    service: vaultService,
+                    type: "token",
+                    value: token.trim(),
+                    notes: `git token for Slack user ${requester}; onboarded via harness_onboard`,
+                }));
+                if (stored && stored.ok === false) {
+                    return { content: [{ type: "text", text: `Vault store failed (${stored.error ?? "unknown"}).` }], details: { ok: false, vaultError: stored.error } };
+                }
+            }
+            catch (err) {
+                return { content: [{ type: "text", text: `Vault store threw (${String(err)}).` }], details: { ok: false, vaultThrew: String(err) } };
+            }
+            // Best-effort: delete our own prompt + confirm. The bot CANNOT delete
+            // the user's token message, so ask them to remove it themselves.
+            if (dmChannel && promptTs)
+                await onboard.deleteOwnMessage(dmChannel, promptTs);
+            if (dmChannel) {
+                await onboard.postDm(dmChannel, `:white_check_mark: Stored your ${provider ?? "github"} token as \`${vaultService}\`` +
+                    (valid.login ? ` (validated as \`${valid.login}\`)` : "") +
+                    `. :warning: Please DELETE your message above that contains the raw token — I can't delete your messages, only my own.`);
+            }
+            liveState().audit("tool.onboard.stored", { requester, vaultService, login: valid.login ?? null });
+            return {
+                content: [{ type: "text", text: `Onboarded <@${requester}>: token validated${valid.login ? ` as ${valid.login}` : ""} and stored as ${vaultService}. Asked them to delete their token message.` }],
+                details: { ok: true, vaultService, login: valid.login ?? null },
             };
         },
     })));

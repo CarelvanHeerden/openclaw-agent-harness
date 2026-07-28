@@ -80,13 +80,16 @@ test("beta61: budget_reserve_ratio config default present and clamped in source"
   assert.match(src, /"maximum":\s*0\.9/);
 });
 
-test("beta61: projection gate adds the review reserve (aborts before a sub-task that leaves no room for the review)", () => {
+test("beta61: projection gate adds the review reserve (superseded by beta.78 -> now on the DAILY gate)", () => {
   const src = S("src/orchestrator/loop.ts");
+  // beta.78 (Feature 2): the SESSION budget is now soft; the projected-cost
+  // reserve moved onto the per-user DAILY cap gate. The reserve ratio +
+  // clamp are unchanged; the comparison is now against daily_max.
   assert.match(src, /budget_reserve_ratio \?\? 0\.15/);
   assert.match(src, /const reserve = row\.budget_usd \* Math\.max\(0, Math\.min\(0\.9, reserveRatio\)\)/);
-  assert.match(src, /if \(projected \+ reserve > row\.budget_usd\)/);
-  // the abort audit now carries the reserve
-  assert.match(src, /"loop\.budget_projection_abort"[\s\S]*?reserve/);
+  assert.match(src, /if \(dailyProjected \+ reserve > dailyMax\)/);
+  // the abort audit now carries the reserve + daily context
+  assert.match(src, /"loop\.daily_max_abort"[\s\S]*?reserve/);
 });
 
 // ---- Fix 4: Anthropic /v1/models health check ----

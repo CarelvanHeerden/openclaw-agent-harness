@@ -256,7 +256,8 @@
           "type": "object",
           "properties": { "api_key_env": { "type": "string" } }
         },
-        "default_service_pattern": { "type": "string", "default": "github-{owner}" }
+        "default_service_pattern": { "type": "string", "default": "github-{owner}" },
+        "onboard_service_pattern": { "type": "string", "description": "beta.78: vault service-name pattern for harness_onboard token storage. Placeholders {userid} {provider}. Default git-pat:{userid}." }
       }
     }
   }
