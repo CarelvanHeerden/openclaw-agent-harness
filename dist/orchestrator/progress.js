@@ -96,6 +96,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         needsClarification: false,
         clarificationQuestion: null,
         clarificationSeq: null,
+        reviseSpecFellBack: false,
     });
     const row = db
         .prepare(`SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
@@ -215,6 +216,36 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
             }
         }
     }
+    // beta.83 (#1): surface the revise-spec raw-findings fallback for the CURRENT
+    // cycle so the reduced-fidelity degradation is no longer silent. The
+    // fallback fires when `loop.revise_spec_failed` or `loop.revise_spec_empty`
+    // is audited for this cycle AND no later `loop.revise_spec_applied` for the
+    // same cycle superseded it. Scoped to the latest cycle (a cycle-2 fallback
+    // must not haunt a later cycle that recovered).
+    let reviseSpecFellBack = false;
+    if (latestCycle > 1) {
+        const rsRows = db
+            .prepare(`SELECT event, payload FROM audit_log
+           WHERE session_id = ?
+             AND event IN ('loop.revise_spec_failed','loop.revise_spec_empty','loop.revise_spec_applied')
+           ORDER BY created_at DESC, id DESC LIMIT 20`)
+            .all(sessionId);
+        for (const e of rsRows) {
+            let cyc;
+            try {
+                cyc = JSON.parse(e.payload || "{}").cycle;
+            }
+            catch {
+                cyc = undefined;
+            }
+            if (cyc !== latestCycle)
+                continue;
+            // First (most recent) event for THIS cycle wins: applied => recovered,
+            // failed/empty => fell back.
+            reviseSpecFellBack = e.event !== "loop.revise_spec_applied";
+            break;
+        }
+    }
     // beta.55 (B2): a clarification pause overrides the normal headline so the
     // polling agent sees the question directly and relays it.
     const needsClarification = status === "awaiting_clarification";
@@ -236,6 +267,12 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
             failureDetail,
             estimatedUsd: typeof row.estimated_usd === "number" ? row.estimated_usd : null,
         });
+    // beta.83 (#1): append a visible warning to the headline when the current
+    // cycle degraded to raw findings, unless a clarification pause already owns
+    // the headline.
+    const headlineWithWarnings = reviseSpecFellBack && !needsClarification
+        ? `${headline}  ⚠️ cycle ${latestCycle} is running on RAW adversary findings (revise-spec turn fell back — reduced fidelity).`
+        : headline;
     return {
         ok: true,
         found: true,
@@ -265,10 +302,11 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         msSinceLastSdkActivity,
         costZeroStallSuspected,
         recentEvents,
-        headline,
+        headline: headlineWithWarnings,
         needsClarification,
         clarificationQuestion,
         clarificationSeq,
+        reviseSpecFellBack,
     };
 }
 function fmtUsd(n) {

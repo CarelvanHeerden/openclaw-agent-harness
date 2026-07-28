@@ -2005,6 +2005,23 @@ export class OrchestratorLoop {
         this.addCost(sessionId, report.costUsd);
         await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
         this.saveReview(sessionId, cycle, report);
+        // beta.83 (#2): the session-budget SOFT warn also fires here, after the
+        // adversary review's cost lands. Pre-beta.83 the ONLY soft-warn check
+        // was inside runOne (the sub-task loop), so a run that crossed its
+        // session budget DURING the review (the DR/BCP run, session 37b01e86:
+        // $11.62 -> $12.27 = 123% across the review) never warned -- the warn
+        // path was simply never reached. Now the review path re-checks the
+        // LIVE total and warns once if it just crossed. `sessionBudgetWarned`
+        // is the same runInner-scoped latch, so we still warn at most once.
+        if (totalCost > row.budget_usd && !sessionBudgetWarned) {
+          sessionBudgetWarned = true;
+          this.deps.state.audit(
+            "loop.session_budget_warn",
+            { sessionId, phase: "review", cycle, totalCost, sessionBudget: row.budget_usd },
+            sessionId,
+          );
+          this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
+        }
         // beta.69 (F5): if the user cancelled while the adversary SDK call was
         // in flight (forensic 1f2e6642: cycle-3 review landed 2s AFTER the
         // cancel and was persisted + transitioned on), discard this review and
