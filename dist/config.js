@@ -139,6 +139,9 @@ const DEFAULTS = {
     brief: {
         ingest_repo_conventions: true,
         convention_char_budget: 10000,
+        api_execution_detection: true,
+        api_execution_min_criteria: 2,
+        api_execution_min_ratio: 0.4,
     },
     verify: {
         run_repo_check_scripts: true,

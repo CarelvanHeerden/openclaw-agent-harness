@@ -189,8 +189,15 @@ export function gateVerdict(params: {
   verdict: "pass" | "revise" | "block";
   downgraded: boolean;
   newBlocking: ReviewFinding[];
+  /**
+   * beta.79 (F2): the findings that WERE recycled from a prior cycle, so a
+   * `loop.gate_decision` audit event can report `{newBlocking, recycled,
+   * downgraded}` per cycle. Additive — pre-beta.79 callers ignore it.
+   */
+  recycled: ReviewFinding[];
 } {
   const { verdict, findings, ctx, priorFindings } = params;
+  const recycled = findings.filter((f) => isRecycledFinding(f, priorFindings));
   const newBlocking = findings.filter((f) => {
     const cls = classifyFinding(f, ctx);
     if (!isBlockingFinding(f, cls)) return false;
@@ -198,10 +205,10 @@ export function gateVerdict(params: {
     return true;
   });
   if (verdict === "block") {
-    return { verdict, downgraded: false, newBlocking };
+    return { verdict, downgraded: false, newBlocking, recycled };
   }
   if (verdict === "revise" && newBlocking.length === 0) {
-    return { verdict: "pass", downgraded: true, newBlocking };
+    return { verdict: "pass", downgraded: true, newBlocking, recycled };
   }
-  return { verdict, downgraded: false, newBlocking };
+  return { verdict, downgraded: false, newBlocking, recycled };
 }
