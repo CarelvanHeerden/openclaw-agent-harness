@@ -130,6 +130,17 @@ export interface ProgressSnapshot {
   needsClarification: boolean;
   clarificationQuestion: string | null;
   clarificationSeq: number | null;
+  /**
+   * beta.83 (#1): true when the Fable revise-spec turn FELL BACK to the raw
+   * findings hint for the current (latest) cycle -- i.e. cycle N>1 workers got
+   * the raw adversary findings instead of a resolved changeSpec because the
+   * revise-spec turn failed (e.g. lane-cap timeout, beta.73 signature) or
+   * returned no sub-tasks. Previously this degradation was silent (only an
+   * audit line); the DR/BCP run (session 37b01e86) fell back at 14:21 and
+   * nobody knew cycle 2 was running on raw findings. Now it is surfaced in the
+   * snapshot + headline so a human/poller sees the reduced-fidelity cycle.
+   */
+  reviseSpecFellBack: boolean;
 }
 
 const PHASE_BY_STATUS: Record<string, string> = {
@@ -214,6 +225,7 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     needsClarification: false,
     clarificationQuestion: null,
     clarificationSeq: null,
+    reviseSpecFellBack: false,
   });
 
   const row = db
@@ -361,6 +373,37 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     }
   }
 
+  // beta.83 (#1): surface the revise-spec raw-findings fallback for the CURRENT
+  // cycle so the reduced-fidelity degradation is no longer silent. The
+  // fallback fires when `loop.revise_spec_failed` or `loop.revise_spec_empty`
+  // is audited for this cycle AND no later `loop.revise_spec_applied` for the
+  // same cycle superseded it. Scoped to the latest cycle (a cycle-2 fallback
+  // must not haunt a later cycle that recovered).
+  let reviseSpecFellBack = false;
+  if (latestCycle > 1) {
+    const rsRows = db
+      .prepare(
+        `SELECT event, payload FROM audit_log
+           WHERE session_id = ?
+             AND event IN ('loop.revise_spec_failed','loop.revise_spec_empty','loop.revise_spec_applied')
+           ORDER BY created_at DESC, id DESC LIMIT 20`,
+      )
+      .all(sessionId) as Array<{ event: string; payload: string }>;
+    for (const e of rsRows) {
+      let cyc: number | undefined;
+      try {
+        cyc = (JSON.parse(e.payload || "{}") as { cycle?: number }).cycle;
+      } catch {
+        cyc = undefined;
+      }
+      if (cyc !== latestCycle) continue;
+      // First (most recent) event for THIS cycle wins: applied => recovered,
+      // failed/empty => fell back.
+      reviseSpecFellBack = e.event !== "loop.revise_spec_applied";
+      break;
+    }
+  }
+
   // beta.55 (B2): a clarification pause overrides the normal headline so the
   // polling agent sees the question directly and relays it.
   const needsClarification = status === "awaiting_clarification";
@@ -383,6 +426,14 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
         failureDetail,
         estimatedUsd: typeof row.estimated_usd === "number" ? row.estimated_usd : null,
       });
+
+  // beta.83 (#1): append a visible warning to the headline when the current
+  // cycle degraded to raw findings, unless a clarification pause already owns
+  // the headline.
+  const headlineWithWarnings =
+    reviseSpecFellBack && !needsClarification
+      ? `${headline}  ⚠️ cycle ${latestCycle} is running on RAW adversary findings (revise-spec turn fell back — reduced fidelity).`
+      : headline;
 
   return {
     ok: true,
@@ -413,10 +464,11 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     msSinceLastSdkActivity,
     costZeroStallSuspected,
     recentEvents,
-    headline,
+    headline: headlineWithWarnings,
     needsClarification,
     clarificationQuestion,
     clarificationSeq,
+    reviseSpecFellBack,
   };
 }
 

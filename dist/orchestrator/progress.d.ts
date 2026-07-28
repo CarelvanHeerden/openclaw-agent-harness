@@ -131,6 +131,17 @@ export interface ProgressSnapshot {
     needsClarification: boolean;
     clarificationQuestion: string | null;
     clarificationSeq: number | null;
+    /**
+     * beta.83 (#1): true when the Fable revise-spec turn FELL BACK to the raw
+     * findings hint for the current (latest) cycle -- i.e. cycle N>1 workers got
+     * the raw adversary findings instead of a resolved changeSpec because the
+     * revise-spec turn failed (e.g. lane-cap timeout, beta.73 signature) or
+     * returned no sub-tasks. Previously this degradation was silent (only an
+     * audit line); the DR/BCP run (session 37b01e86) fell back at 14:21 and
+     * nobody knew cycle 2 was running on raw findings. Now it is surfaced in the
+     * snapshot + headline so a human/poller sees the reduced-fidelity cycle.
+     */
+    reviseSpecFellBack: boolean;
 }
 export declare function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit?: number, stallSeconds?: number, sdkActivityStallSeconds?: number): ProgressSnapshot;
 /** One-line Slack-mrkdwn-safe summary. No tables, no headings. */
