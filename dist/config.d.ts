@@ -21,6 +21,12 @@ export interface HarnessConfig {
     verify: VerifyConfig;
     pat_routing: PatRoutingConfig;
     /**
+     * beta.81 (Track B): CI-verification shift. After a branch is pushed, the
+     * harness polls the commit's combined GitHub status/check-runs and treats
+     * CI as the verification spine (the local check-script runner is retired).
+     */
+    ci: CiConfig;
+    /**
      * beta.24: harness log verbosity. When `level: 'debug'`, error log sites
      * (crystallise, lead SDK, worker SDK, adversary SDK, git vault lookup,
      * pr-watcher) log full error objects instead of one-line summaries.
@@ -38,6 +44,23 @@ export interface HarnessConfig {
 }
 export interface LoggingConfig {
     level: "debug" | "info" | "warn" | "error";
+}
+export interface CiConfig {
+    /**
+     * beta.81 (Track B / B2): max wall-clock seconds the harness waits for CI to
+     * finish after pushing a branch before it treats the wait as a SOFT
+     * checkpoint. On timeout the harness does NOT hard-fail -- it surfaces
+     * "CI still running after N min on <sha>" and offers a resumable
+     * continue-watching. Default 900 (15 min). Clamped to [30, 7200].
+     */
+    wait_timeout_seconds: number;
+    /**
+     * beta.81 (Track B / B2): poll interval (seconds) for the post-push CI wait.
+     * The harness re-queries getCombinedStatus(headSha) every this-many seconds
+     * until it is not `pending` (or the wait_timeout_seconds elapses).
+     * Default 20. Clamped to [5, 300].
+     */
+    poll_interval_seconds: number;
 }
 export interface BriefConfig {
     /**
@@ -458,6 +481,40 @@ export interface LoopConfig {
      * Default true.
      */
     scripted_verify_fallback?: boolean;
+    /**
+     * beta.81 (Track C / C4): recovery-resume circuit breaker. Forensic
+     * d01a7484 showed `recovery.auto_resuming` firing 4x in ~40s on a
+     * `planning`-phase session (interrupted -> re-resumed before it could
+     * finish -> bounce loop, actively re-burning budget). When MORE than
+     * `recovery_max_resumes` auto-resumes fire for the SAME session within
+     * `recovery_resume_window_seconds`, the harness HARD-STOPS that session
+     * (marks it `failed`, reason `recovery_bounce_loop`) and surfaces it to a
+     * human instead of resuming again. Default 3 resumes in 60s.
+     */
+    recovery_max_resumes?: number;
+    /**
+     * beta.81 (Track C / C4): window (seconds) over which `recovery_max_resumes`
+     * auto-resumes for a single session trip the circuit breaker. Default 60.
+     */
+    recovery_resume_window_seconds?: number;
+    /**
+     * beta.81 (Track C / C3): when a session left mid-`executing` is recovered,
+     * RESUME AT the failed/incomplete sub-task (mark the orphaned running
+     * sub-task `failed`, preserve completed sub-task commits) instead of
+     * re-planning the whole session from scratch (which re-burns completed
+     * sub-tasks -- forensic d01a7484 re-ran 10 completed sub-tasks + crashed on
+     * an extractJson re-plan). Default true. Set false to restore the pre-beta.81
+     * full-restart recovery behaviour.
+     */
+    recovery_resume_at_subtask?: boolean;
+    /**
+     * beta.81 (Track C): give the LEAD re-plan SDK call the same "retry once on
+     * extractJson failure" guard the classifier has (runClassifierSdk), so a
+     * transient prose-drift (the lead returns prose instead of the JSON plan
+     * contract -- the beta.40 anti-persona-drift class, which crashed the
+     * d01a7484 re-plan) does not hard-crash the plan. Default true.
+     */
+    lead_json_retry_enabled?: boolean;
 }
 export interface VercelConfig {
     enabled: boolean;

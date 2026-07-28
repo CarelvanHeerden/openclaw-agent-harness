@@ -38,6 +38,53 @@ export interface RecoveryOptions {
    */
   agentOrchestrated?: boolean;
   autoResume?: (session: RecoveredSession) => Promise<void>;
+  /**
+   * beta.81 (Track C / C4): recovery-resume circuit breaker. When MORE than
+   * `maxResumes` auto-resumes fire for the SAME session within
+   * `resumeWindowSeconds`, the session is HARD-STOPPED (marked `failed`,
+   * reason `recovery_bounce_loop`) instead of resumed again. Forensic
+   * d01a7484: 4x `recovery.auto_resuming` in ~40s on a `planning` session
+   * bounce-looped and actively re-burned budget. Defaults (3 / 60) applied by
+   * the caller. When either is <= 0 the breaker is disabled.
+   */
+  maxResumes?: number;
+  resumeWindowSeconds?: number;
+}
+
+/**
+ * beta.81 (Track C / C4): module-scoped resume-timestamp ledger, keyed by
+ * sessionId. Survives across `recoverSessions` calls (recovery runs on every
+ * bootstrap / plugin re-register). Each auto-resume attempt pushes `now`; the
+ * breaker trips when the count within the window exceeds `maxResumes`.
+ */
+const resumeLedger = new Map<string, number[]>();
+
+/** Test-only: reset the circuit-breaker ledger. */
+export function __resetRecoveryResumeLedger(): void {
+  resumeLedger.clear();
+}
+
+/**
+ * Record an auto-resume attempt for `sessionId` and report whether the
+ * circuit breaker has now tripped (strictly MORE than `maxResumes` within
+ * `windowSeconds`). Prunes entries outside the window. Disabled (never trips)
+ * when maxResumes <= 0 or windowSeconds <= 0.
+ */
+export function recordResumeAndCheckBreaker(
+  sessionId: string,
+  maxResumes: number,
+  windowSeconds: number,
+  now = Date.now(),
+): { tripped: boolean; countInWindow: number } {
+  if (!(maxResumes > 0) || !(windowSeconds > 0)) {
+    return { tripped: false, countInWindow: 0 };
+  }
+  const windowMs = windowSeconds * 1000;
+  const prev = resumeLedger.get(sessionId) ?? [];
+  const kept = prev.filter((t) => now - t <= windowMs);
+  kept.push(now);
+  resumeLedger.set(sessionId, kept);
+  return { tripped: kept.length > maxResumes, countInWindow: kept.length };
 }
 
 export interface RecoveredSession {
@@ -94,6 +141,38 @@ export async function recoverSessions(state: StateStore, opts: RecoveryOptions):
       // No reaction poller / listener in this mode -> a 'resumable' session
       // would strand forever. Auto-resume by re-driving the loop.
       resumable++;
+      // beta.81 (Track C / C4): circuit breaker. Count this resume attempt; if
+      // the session has bounced too many times in the window, HARD-STOP it
+      // (mark failed) and surface to a human instead of resuming again.
+      const breaker = recordResumeAndCheckBreaker(
+        s.id,
+        opts.maxResumes ?? 3,
+        opts.resumeWindowSeconds ?? 60,
+      );
+      if (breaker.tripped) {
+        state.db.prepare(`UPDATE sessions SET status = 'failed', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
+        state.audit(
+          "recovery.circuit_breaker_tripped",
+          {
+            sessionId: s.id,
+            wasStatus: s.status,
+            resumesInWindow: breaker.countInWindow,
+            maxResumes: opts.maxResumes ?? 3,
+            windowSeconds: opts.resumeWindowSeconds ?? 60,
+            reason: "recovery_bounce_loop",
+          },
+          s.id,
+        );
+        opts.logger.warn("[recovery] circuit breaker tripped -- too many auto-resumes; hard-stopping session", {
+          sessionId: s.id, resumesInWindow: breaker.countInWindow,
+        });
+        try {
+          await opts.notify?.(s);
+        } catch (err) {
+          opts.logger.warn("[recovery] circuit-breaker notify failed", { err: String(err), sessionId: s.id });
+        }
+        continue;
+      }
       if (!opts.autoResume) {
         opts.logger.warn("[recovery] agentOrchestrated set but no autoResume provided; session will strand", { sessionId: s.id });
         state.audit("recovery.autoresume_unavailable", { sessionId: s.id, wasStatus: s.status }, s.id);

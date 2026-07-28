@@ -197,7 +197,10 @@ test("beta63: brief + verify blocks declared in manifest configSchema (additiona
   assert.equal(brief.properties.ingest_repo_conventions.default, true);
   assert.equal(brief.properties.convention_char_budget.default, 10000);
   assert.equal(verify.additionalProperties, false);
-  assert.equal(verify.properties.run_repo_check_scripts.default, true);
+  // beta.81 (Track B / B4) SUPERSEDES the beta.63 default: the local
+  // check-script runner is retired from the verify spine (CI-only), so
+  // run_repo_check_scripts now defaults to FALSE.
+  assert.equal(verify.properties.run_repo_check_scripts.default, false);
   assert.deepEqual(verify.properties.check_script_allowlist.default, ["okf:check", "lint", "typecheck", "test"]);
   assert.equal(verify.properties.check_script_timeout_seconds.default, 600);
 });

@@ -89,6 +89,18 @@ export declare function getCombinedStatus(input: {
     sha: string;
     ghToken: string;
 }): Promise<"success" | "failure" | "pending" | "none">;
+/**
+ * beta.81 (Track B / B2): fetch a short excerpt of the FAILING check-runs for a
+ * commit SHA -- each failed run's name, conclusion, and output title/summary --
+ * so the harness can surface WHY CI is red as the revise finding source. Never
+ * throws; returns "" on any error or when nothing failed.
+ */
+export declare function getFailingCheckLogs(input: {
+    repoFullName: string;
+    sha: string;
+    ghToken: string;
+    apiBase?: string;
+}): Promise<string>;
 /** beta.34: merge a PR (squash by default). Returns the merge commit SHA. */
 export declare function mergePullRequest(input: {
     repoFullName: string;

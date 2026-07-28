@@ -80,7 +80,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         repo: "",
         branch: "",
         cycle: 0,
-        cost: { spentUsd: 0, budgetUsd: 0, ratio: 0 },
+        cost: { spentUsd: 0, budgetUsd: 0, ratio: 0, estimatedUsd: null, pctOfCap: 0 },
         subTasks: { total: 0, done: 0, running: 0, failed: 0, current: null, all: [] },
         prNumber: null,
         prUrl: null,
@@ -100,7 +100,8 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     const row = db
         .prepare(`SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
               pr_number, final_pr_url, deploy_status,
-              clarification_question, clarification_seq, last_progress_at
+              clarification_question, clarification_seq, last_progress_at,
+              estimated_usd
          FROM sessions WHERE id = ?`)
         .get(sessionId);
     if (!row)
@@ -233,6 +234,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
             prNumber: row.pr_number ?? null,
             deployStatus: row.deploy_status ?? null,
             failureDetail,
+            estimatedUsd: typeof row.estimated_usd === "number" ? row.estimated_usd : null,
         });
     return {
         ok: true,
@@ -244,7 +246,14 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         repo: row.repo,
         branch: row.branch,
         cycle: latestCycle,
-        cost: { spentUsd: round(spentUsd), budgetUsd: round(budgetUsd), ratio },
+        cost: {
+            spentUsd: round(spentUsd),
+            budgetUsd: round(budgetUsd),
+            ratio,
+            // beta.81 (Track A / A2): surface the up-front estimate + % of cap.
+            estimatedUsd: typeof row.estimated_usd === "number" ? round(row.estimated_usd) : null,
+            pctOfCap: budgetUsd > 0 ? Math.min(999, Math.round((spentUsd / budgetUsd) * 100)) : 0,
+        },
         subTasks: { total: all.length, done, running, failed, current, all },
         prNumber: row.pr_number ?? null,
         prUrl: row.final_pr_url ?? null,
@@ -267,17 +276,32 @@ function fmtUsd(n) {
 }
 /** One-line Slack-mrkdwn-safe summary. No tables, no headings. */
 export function buildHeadline(input) {
-    const cost = input.budgetUsd > 0 ? ` (${fmtUsd(input.spentUsd)}/${fmtUsd(input.budgetUsd)})` : ` (${fmtUsd(input.spentUsd)})`;
+    // beta.81 (Track A / A2): cost fragment now carries an explicit "% of cap"
+    // (not just $X/$Y) so usage-vs-limit is unambiguous. Live + terminal.
+    const pct = input.budgetUsd > 0 ? Math.min(999, Math.round((input.spentUsd / input.budgetUsd) * 100)) : 0;
+    const cost = input.budgetUsd > 0
+        ? ` (${fmtUsd(input.spentUsd)}/${fmtUsd(input.budgetUsd)}, ${pct}% of cap)`
+        : ` (${fmtUsd(input.spentUsd)})`;
     if (input.status === "done") {
         const pr = input.prNumber ? ` — PR #${input.prNumber}` : "";
+        // beta.81 (A2): terminal totals -- final spend vs cap + % of cap.
         return `Done${pr}${cost}.`;
     }
     if (input.status === "failed" || input.status === "failed_verification") {
         const why = input.failureDetail ? ` — ${input.failureDetail}` : "";
-        return `Failed during ${input.phase.toLowerCase()}${why}${cost}.`;
+        // beta.81 (A2): when the beta.61 budget reserve/abort fired, the terminal
+        // message must be ACTIONABLE -- say used/cap and offer a higher-cap re-run.
+        const reserveHint = input.failureDetail && /budget|reserve|would exceed|projection|daily_max|exhaust/i.test(input.failureDetail)
+            ? ` Re-run at a higher cap to finish.`
+            : "";
+        return `Failed during ${input.phase.toLowerCase()}${why}${cost}.${reserveHint}`;
     }
-    if (input.status === "aborted")
-        return `Aborted${cost}.`;
+    if (input.status === "aborted") {
+        const reserveHint = input.failureDetail && /budget|reserve|would exceed|projection|daily_max|exhaust/i.test(input.failureDetail)
+            ? ` Re-run at a higher cap to finish.`
+            : "";
+        return `Aborted${cost}.${reserveHint}`;
+    }
     if (input.status === "executing" && input.total > 0) {
         const n = Math.min(input.done + 1, input.total);
         const title = input.current?.title ? ` — ${truncate(input.current.title, 80)}` : "";

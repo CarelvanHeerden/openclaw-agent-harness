@@ -866,6 +866,12 @@ export async function runLeadSdk(params: {
   logger?: { warn: (m: string, meta?: unknown) => void };
   /** beta.67 (P0a): corrective note for the ONE bounded workerContext re-ask. */
   correctiveNote?: string;
+  /**
+   * beta.81 (Track C): when true (default), retry the lead plan call ONCE on an
+   * extractJson/validation failure (prose-drift). Threaded from
+   * loop.lead_json_retry_enabled. Set false to disable.
+   */
+  jsonRetryEnabled?: boolean;
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & { costUsd: number; tokensIn: number; tokensOut: number }> {
   const systemPrompt = [
     "You are the lead planner. Decompose a brief into ATOMIC sub-tasks a Sonnet worker can complete in one turn.",
@@ -1005,16 +1011,43 @@ export async function runLeadSdk(params: {
   const userMessage = params.correctiveNote
     ? `${JSON.stringify(params.brief)}\n\nCORRECTION (your previous plan was rejected):\n${params.correctiveNote}`
     : JSON.stringify(params.brief);
-  const r = await structuredCall<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>({
-    model: params.model,
-    systemPrompt,
-    userMessage,
-    timeoutSeconds: params.timeoutSeconds,
-    apiKey: params.apiKey,
-    logger: params.logger,
-    validation: { requiredKeys: ["repo", "branch", "subTasks", "reviewChecklist", "riskLevel"], label: "lead" },
-  });
-  return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+  const call = (msg: string) =>
+    structuredCall<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>({
+      model: params.model,
+      systemPrompt,
+      userMessage: msg,
+      timeoutSeconds: params.timeoutSeconds,
+      apiKey: params.apiKey,
+      logger: params.logger,
+      validation: { requiredKeys: ["repo", "branch", "subTasks", "reviewChecklist", "riskLevel"], label: "lead" },
+    });
+  // beta.81 (Track C): give the LEAD SDK call the SAME "retry once on
+  // extractJson/validation failure" guard the classifier has (runClassifierSdk).
+  // Forensic d01a7484: the recovery re-plan crashed with `extractJson failed:
+  // no JSON in output` -- the lead returned PROSE instead of the JSON plan
+  // contract (the beta.40 anti-persona-drift class, resurfacing on the re-plan
+  // path). One retry with a terse re-assertion of the output contract clears a
+  // transient prose-drift so a single bad turn does not hard-crash a plan.
+  // Cheap defense-in-depth (C3's resume-at-subtask should mean a re-plan rarely
+  // happens at all). Gated by loop.lead_json_retry_enabled (default on).
+  try {
+    const r = await call(userMessage);
+    return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+  } catch (err) {
+    if (params.jsonRetryEnabled === false) throw err;
+    const msg = String((err as Error)?.message ?? err);
+    // Only retry the prose-drift / JSON-parse class, not a real SDK/transport
+    // error (which a re-ask would not fix and which is already retried at the
+    // stream level). extractAndValidateJson labels these `[lead] extractJson
+    // failed` / `[lead] validation failed`.
+    if (!/extractJson failed|no JSON in output|validation failed|JSON\.parse/i.test(msg)) throw err;
+    params.logger?.warn?.("[lead] plan JSON parse/validation failed; retrying ONCE with a terse output-contract re-assertion (beta.81 anti-prose-drift)", { error: msg.slice(0, 300) });
+    const retryMsg =
+      `${userMessage}\n\nYOUR PREVIOUS REPLY WAS NOT VALID JSON (you returned prose or an incomplete object). ` +
+      `Return the plan as a SINGLE raw JSON object and NOTHING else -- no prose, no code fence, no narration. Begin your reply with '{'.`;
+    const r2 = await call(retryMsg);
+    return { ...r2.parsed, costUsd: r2.costUsd, tokensIn: r2.tokensIn, tokensOut: r2.tokensOut };
+  }
 }
 
 /**

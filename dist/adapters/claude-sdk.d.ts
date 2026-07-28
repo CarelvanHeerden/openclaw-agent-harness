@@ -238,6 +238,12 @@ export declare function runLeadSdk(params: {
     };
     /** beta.67 (P0a): corrective note for the ONE bounded workerContext re-ask. */
     correctiveNote?: string;
+    /**
+     * beta.81 (Track C): when true (default), retry the lead plan call ONCE on an
+     * extractJson/validation failure (prose-drift). Threaded from
+     * loop.lead_json_retry_enabled. Set false to disable.
+     */
+    jsonRetryEnabled?: boolean;
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
     costUsd: number;
     tokensIn: number;

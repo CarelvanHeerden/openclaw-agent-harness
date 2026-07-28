@@ -45,7 +45,8 @@ import {
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
-import { createPullRequest, getPullRequest, getCombinedStatus, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { createPullRequest, getPullRequest, getCombinedStatus, getFailingCheckLogs, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import {
   estimateSubTaskCost,
@@ -591,6 +592,8 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             apiKey: await anthropicApiKey(),
             logger: api.logger,
             correctiveNote,
+            // beta.81 (Track C): retry-once-on-prose-drift guard for the lead.
+            jsonRetryEnabled: config.loop.lead_json_retry_enabled !== false,
           }),
         allocateWorktree: async (repo, branch) => {
           const [owner] = repo.split("/");
@@ -903,6 +906,41 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const res = spawnSync("npx", ["tsc", "--noEmit"], { cwd: worktreePath, timeout: timeoutMs, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
       const output = `${res.stdout ?? ""}${res.stderr ?? ""}`;
       return { ok: !res.error && (res.status ?? 1) === 0, output: output.slice(-4000) };
+    },
+
+    // beta.81 (Track B / B2): post-push CI verification. Poll the combined
+    // GitHub status/check-runs for the pushed head SHA (getCombinedStatus is
+    // the existing beta.34 primitive). Token resolved via the same pat.resolve
+    // path as the push; a token-less read still works for public repos.
+    ciCombinedStatus: async ({ repoFullName, sha, requester }) => {
+      const [owner] = repoFullName.split("/");
+      const resolution = pat.resolve({ slackUserId: requester ?? "", gitHubUser: owner!, repoFullName });
+      const ghToken = await resolveGitToken(resolution).catch(() => "");
+      return getCombinedStatus({ repoFullName, sha, ghToken });
+    },
+    // beta.81 (Track B / B2): on CI failure, fetch the failing check-run logs
+    // (names + output summaries) as the revise finding source. Best-effort.
+    ciFailingLogs: async ({ repoFullName, sha, requester }) => {
+      const [owner] = repoFullName.split("/");
+      const resolution = pat.resolve({ slackUserId: requester ?? "", gitHubUser: owner!, repoFullName });
+      const ghToken = await resolveGitToken(resolution).catch(() => "");
+      return getFailingCheckLogs({ repoFullName, sha, ghToken, apiBase: resolution.apiBase });
+    },
+    // beta.81 (Track B / B3): when a repo has no CI, author + commit a GitHub
+    // Actions workflow running its declared check scripts so CI runs on GitHub
+    // (never a local fallback). Committed with the harness commit identity.
+    ciAuthorWorkflow: async ({ worktreePath }) => {
+      // The commit is a CI-config file; identity is cosmetic. Use the first
+      // configured commit identity when present, else a stable harness default.
+      const anyIdentity = Object.values(config.pat_routing.commit_identity ?? {})[0];
+      return authorCiWorkflow({
+        worktreePath,
+        gitCommit: (wt, msg) =>
+          git.commit(wt, msg, {
+            name: anyIdentity?.name || "openclaw-agent-harness",
+            email: anyIdentity?.email || "harness@openclaw.local",
+          }),
+      });
     },
 
     // beta.16 fix #3 + beta.17 correctness: release the per-session
@@ -2108,6 +2146,9 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
       staleAfterSeconds: config.loop.session_hard_timeout_seconds,
       logger: api.logger,
       agentOrchestrated,
+      // beta.81 (Track C / C4): recovery-resume circuit breaker thresholds.
+      maxResumes: config.loop.recovery_max_resumes ?? 3,
+      resumeWindowSeconds: config.loop.recovery_resume_window_seconds ?? 60,
       autoResume: async (s) => {
         // beta.47: recovery runs on every bootstrap (incl. plugin re-register
         // churn while a session is still mid-flight). If a loop for this
@@ -2121,11 +2162,48 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
           return;
         }
         const row = state.db
-          .prepare(`SELECT crystallised_prompt FROM sessions WHERE id = ?`)
-          .get(s.id) as { crystallised_prompt?: string } | undefined;
+          .prepare(`SELECT crystallised_prompt, lead_plan_json, repo, branch, worktree_path FROM sessions WHERE id = ?`)
+          .get(s.id) as { crystallised_prompt?: string; lead_plan_json?: string; repo?: string; branch?: string; worktree_path?: string } | undefined;
         if (!row?.crystallised_prompt) {
           api.logger.warn("[harness] recovery auto-resume: no crystallised brief, marking interrupted", { sessionId: s.id });
           state.db.prepare(`UPDATE sessions SET status = 'interrupted', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
+          return;
+        }
+        // beta.81 (Track C / C3): resume-AT-failed-sub-task instead of a FULL
+        // SESSION RESTART. A session interrupted mid-`executing` (forensic
+        // d01a7484) has a persisted plan + completed sub-task COMMITS on the
+        // worktree. The pre-beta.81 path re-drove `loop.run`, which re-planned
+        // from scratch AND re-executed the already-completed sub-tasks
+        // (re-burning ~$5) -- and the re-plan itself crashed on an extractJson
+        // prose-drift. Instead: mark the orphaned `running` sub-task row(s)
+        // `failed`, emit `recovery.resume_at_subtask`, and FAIL the session
+        // cleanly, PRESERVING the worktree so the completed commits stay
+        // reviewable. This removes the re-burn + the re-plan crash trigger
+        // entirely (per the beta.81 spec's terminal datapoint). Gated by
+        // loop.recovery_resume_at_subtask (default on) and only for a session
+        // that was actually mid-execution with a persisted plan.
+        const resumeAtSubtask = config.loop.recovery_resume_at_subtask !== false;
+        if (resumeAtSubtask && s.status === "executing" && row.lead_plan_json) {
+          const orphaned = state.db
+            .prepare(`SELECT id, seq FROM sub_tasks WHERE session_id = ? AND status = 'running'`)
+            .all(s.id) as Array<{ id: string; seq: number }>;
+          for (const o of orphaned) {
+            state.db
+              .prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`)
+              .run("orphaned by restart; failed on recovery (resume-at-subtask, no full re-plan)", Date.now(), o.id);
+          }
+          state.db.prepare(`UPDATE sessions SET status = 'failed', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
+          state.audit(
+            "recovery.resume_at_subtask",
+            { sessionId: s.id, wasStatus: s.status, orphanedSubTasks: orphaned.map((o) => o.seq), reason: "resume_at_failed_subtask_no_replan" },
+            s.id,
+          );
+          api.logger.warn("[harness] recovery: resume-at-subtask -- marked orphaned sub-task(s) failed, session failed cleanly (worktree preserved, no re-plan/re-burn)", { sessionId: s.id, orphaned: orphaned.map((o) => o.seq) });
+          if (s.slack_channel && s.slack_thread) {
+            await slack
+              .replyInThread(s.slack_channel, s.slack_thread, `:warning: Harness restarted mid-execution; the interrupted sub-task was failed and the run stopped (completed sub-task commits are preserved on branch \`${row.branch ?? "?"}\` for review). Re-run to continue -- prior work will not be re-burned.`)
+              .catch(() => undefined);
+          }
           return;
         }
         const brief = JSON.parse(row.crystallised_prompt);

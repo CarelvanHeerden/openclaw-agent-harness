@@ -153,9 +153,14 @@ test("beta.54: loop.ts wires matchesAsyncCoordConfabulation into retry gate AND 
   );
 });
 
-test("beta.54: worker prompt has inline-test clause + hard-stop rule", () => {
+test("beta.54: worker prompt has CI-shift verification clause + hard-stop rule", () => {
+  // beta.81 (Track B / B1) SUPERSEDES the beta.54 "RUN TESTS/BUILD/LINT
+  // yourself" clause: the worker no longer runs the suite/build/lint as a
+  // verification gate -- GitHub CI does. The hard-stop rule + the
+  // no-async-test-runner denial are UNCHANGED (they prevent confabulation).
   const src = readFileSync(join(root, "src/orchestrator/sonnet-worker.ts"), "utf8");
-  assert.match(src, /To RUN TESTS, a BUILD, or LINT: execute the command yourself/i, "inline-run clause present");
+  assert.match(src, /DO NOT run the test suite, a build, or lint "to green"/i, "CI-shift verification clause present");
+  assert.match(src, /GitHub CI runs the repo's declared checks AFTER the/i, "CI is the verification spine");
   assert.match(src, /HARD STOP RULE/, "hard-stop rule present");
-  assert.match(src, /No async|NO async test runner/i, "denies async test runner");
+  assert.match(src, /async test runner \/ background watcher/i, "denies async test runner");
 });

@@ -60,10 +60,19 @@ export interface ProgressSnapshot {
     repo: string;
     branch: string;
     cycle: number;
+    /**
+     * beta.81 (Track A / A2): `estimatedUsd` is the harness-owned up-front
+     * session cost estimate (persisted at start); `pctOfCap` is spend as a
+     * whole-number percentage of the session cap (0 when the cap is 0). These
+     * make usage-vs-limit surface as an explicit "% of cap" (not just $X/$Y) and
+     * the estimate answerable from the poll snapshot.
+     */
     cost: {
         spentUsd: number;
         budgetUsd: number;
         ratio: number;
+        estimatedUsd: number | null;
+        pctOfCap: number;
     };
     subTasks: {
         total: number;
@@ -137,5 +146,7 @@ export declare function buildHeadline(input: {
     prNumber: number | null;
     deployStatus: string | null;
     failureDetail?: string;
+    /** beta.81 (Track A / A2): up-front session estimate, for the terminal line. */
+    estimatedUsd?: number | null;
 }): string;
 //# sourceMappingURL=progress.d.ts.map
