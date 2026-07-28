@@ -54,6 +54,26 @@ export interface BriefConfig {
      * dropping sources silently. Default 10000.
      */
     convention_char_budget: number;
+    /**
+     * beta.80 (F1): when true (default), the crystalliser is told the harness is
+     * a REPO tool -- external-API side-effect acceptance criteria are reframed
+     * into "build the code + a test", never "perform the live call". Live calls
+     * are legitimate only as test/verify steps against code just written. Set
+     * false to restore the pre-beta.80 crystalliser prompt.
+     */
+    repo_only_invariant: boolean;
+    /**
+     * beta.80 (F2): when true (default), the crystalliser self-reports competing
+     * readings of a brief and, when >= bimodal_min_interpretations distinct
+     * readings (or an explicit clarificationNeeded) exist, the run PAUSES for a
+     * hard clarify instead of guessing one reading. Set false to always proceed.
+     */
+    bimodal_clarify: boolean;
+    /**
+     * beta.80 (F2): how many distinct crystalliser interpretations force a
+     * clarify pause. Default 2.
+     */
+    bimodal_min_interpretations: number;
 }
 export interface VerifyConfig {
     /**

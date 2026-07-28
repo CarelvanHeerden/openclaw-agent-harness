@@ -139,6 +139,9 @@ const DEFAULTS = {
     brief: {
         ingest_repo_conventions: true,
         convention_char_budget: 10000,
+        repo_only_invariant: true,
+        bimodal_clarify: true,
+        bimodal_min_interpretations: 2,
     },
     verify: {
         run_repo_check_scripts: true,
