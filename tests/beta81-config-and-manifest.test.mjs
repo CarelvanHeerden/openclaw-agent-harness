@@ -29,11 +29,18 @@ const NEW_LOOP_KEYS = [
 const NEW_CI_KEYS = ["wait_timeout_seconds", "poll_interval_seconds"];
 
 // ---- version bump ----
-test("beta81: version bumped to 0.1.0-beta.81 in BOTH package.json and version.ts", () => {
+test("beta81: version is at least 0.1.0-beta.81 in BOTH package.json and version.ts", () => {
+  // beta.82+: relaxed from an exact pin to a floor so later betas don't have to
+  // touch this assertion (same pattern beta.70->.73 applied).
+  const betaNum = (s) => {
+    const m = /0\.1\.0-beta\.(\d+)/.exec(s);
+    return m ? Number(m[1]) : -1;
+  };
   const pkg = JSON.parse(S("package.json"));
-  assert.equal(pkg.version, "0.1.0-beta.81");
+  assert.ok(betaNum(pkg.version) >= 81, `package.json version must be >= beta.81, got ${pkg.version}`);
   const ver = S("src/version.ts");
-  assert.match(ver, /pluginVersion:\s*"0\.1\.0-beta\.81"/);
+  const m = /pluginVersion:\s*"([^"]+)"/.exec(ver);
+  assert.ok(m && betaNum(m[1]) >= 81, `version.ts pluginVersion must be >= beta.81, got ${m && m[1]}`);
 });
 
 // ---- DEFAULTS carry every new key ----
