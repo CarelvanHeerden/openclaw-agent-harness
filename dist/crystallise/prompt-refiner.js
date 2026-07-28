@@ -18,7 +18,6 @@
  * starts. Users see it as a Slack thread reply and can react with a
  * confirming emoji before execution begins.
  */
-import { detectApiExecutionBrief, buildApiExecutionClarification } from "./api-execution-detect.js";
 /**
  * The pure orchestration -- takes injected callables so unit tests never
  * hit the network.
@@ -43,34 +42,6 @@ concepts) {
     // The caller's concept list is authoritative when the SDK produces none.
     if (concepts && concepts.length > 0 && (!brief.relevantConcepts || brief.relevantConcepts.length === 0)) {
         brief.relevantConcepts = concepts;
-    }
-    // beta.79 (F1): API-execution detection. The DR/BCP smoke (session 95b341cb)
-    // proved the lead silently pivots an API-EXECUTION task (every AC a live-
-    // system side-effect) into markdown docs, because it has no execute-against-
-    // external-API mode. Detect that class on the CRYSTALLISED brief (ACs are
-    // structured here) and return a `clarify` (reusing the existing human-in-loop
-    // entry) rather than proceeding to plan docs-about-the-procedure. Master
-    // switch + thresholds are config-tunable; detection biases false-NEGATIVE so
-    // a normal repo task that merely mentions an endpoint is not blocked.
-    // Defensive: a partial test config (or a pre-beta.79 config object) may omit
-    // the `brief` block entirely. Treat a missing block as "detection on with
-    // defaults" only when the block exists; when the whole config.brief is absent
-    // (unit tests passing `config: {}`), fall back to the module defaults inside
-    // detectApiExecutionBrief by passing undefined thresholds (enabled defaults
-    // true). This never throws on a missing field.
-    const apiCfg = (deps.config?.brief ?? {});
-    const apiDetection = detectApiExecutionBrief(brief, {
-        enabled: apiCfg.api_execution_detection,
-        minCriteria: apiCfg.api_execution_min_criteria,
-        minRatio: apiCfg.api_execution_min_ratio,
-    });
-    if (apiDetection.isApiExecution) {
-        deps.logger.info("[crystalliser] api-execution brief detected -> clarify", {
-            matched: apiDetection.matchedCriteria.length,
-            ratio: apiDetection.ratio,
-            reason: apiDetection.reason,
-        });
-        return { kind: "clarify", question: buildApiExecutionClarification(apiDetection) };
     }
     validateBrief(brief);
     return { kind: "brief", brief, classification: cls };

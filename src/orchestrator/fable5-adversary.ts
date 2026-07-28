@@ -77,15 +77,6 @@ export interface ReviewReport {
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
-  /**
-   * beta.79 (F2): the convergence-gate breakdown for THIS review, threaded out
-   * so the loop can emit a `loop.gate_decision` audit event per cycle without
-   * re-implementing the classifier. Optional/additive — absent on an injected
-   * test double, which makes the loop's audit emission a no-op.
-   */
-  gateNewBlocking?: number;
-  gateRecycled?: number;
-  gateDowngraded?: boolean;
 }
 
 /**
@@ -328,9 +319,5 @@ export async function runAdversary(
     costUsd: result.costUsd,
     tokensIn: result.tokensIn,
     tokensOut: result.tokensOut,
-    // beta.79 (F2): gate breakdown for the loop.gate_decision audit event.
-    gateNewBlocking: gated.newBlocking.length,
-    gateRecycled: gated.recycled.length,
-    gateDowngraded: gated.downgraded,
   };
 }
