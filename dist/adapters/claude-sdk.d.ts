@@ -201,6 +201,19 @@ export declare function runCrystalliserSdk(params: {
      * identical to pre-beta.21).
      */
     concepts?: OkfConceptRef[];
+    /**
+     * beta.80 (F1): when true (default), the crystalliser is told the harness is
+     * a REPO tool -- reframe live-external-API side-effect ACs into "build the
+     * code + a test", never "perform the call". Off restores the pre-beta.80
+     * prompt.
+     */
+    repoOnlyInvariant?: boolean;
+    /**
+     * beta.80 (F2): when true (default), the crystalliser is told to SELF-REPORT
+     * competing readings (interpretations) and, when >=2 buildable readings
+     * exist, populate clarificationNeeded instead of guessing one.
+     */
+    bimodalClarify?: boolean;
 }): Promise<CrystallisedBrief & {
     costUsd: number;
     tokensIn: number;

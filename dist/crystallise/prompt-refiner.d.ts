@@ -84,6 +84,26 @@ export interface CrystallisedBrief {
      * absent when the repo declares none or ingest is disabled.
      */
     repoConventions?: RepoConvention[];
+    /**
+     * beta.80 (F2): the crystalliser's self-reported DISTINCT readings of the
+     * brief that would produce MATERIALLY DIFFERENT diffs. When >= 2, the brief
+     * is bimodal and the run must PAUSE for clarification rather than the
+     * crystalliser guessing one reading. Absent/empty when unambiguous.
+     */
+    interpretations?: {
+        reading: string;
+        whatDiffers: string;
+    }[];
+    /**
+     * beta.80 (F2): when the crystalliser found competing readings (or made an
+     * assumption that changes WHAT is built), it populates this with the fork as
+     * an explicit multiple-choice question INSTEAD of picking one. prompt-refiner
+     * routes this into a hard `clarify` pause-and-wait (no session started).
+     */
+    clarificationNeeded?: {
+        question: string;
+        options: string[];
+    };
 }
 export interface RepoConvention {
     /** Source label, e.g. ".cursor/rules/keep-okf-current.mdc", "CONTRIBUTING.md", or "package.json#scripts". */
