@@ -641,6 +641,25 @@
             "maximum": 200000,
             "default": 10000,
             "description": "beta.63 (Fix 1): total char budget for the ingested conventions block. Over budget, the LONGEST sources are truncated first with a note, rather than dropping sources silently."
+          },
+          "api_execution_detection": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.79 (F1): master switch for API-execution brief detection. When a crystallised brief's acceptance criteria are DOMINATED by external-API side-effect signals (live URLs, POST/DELETE verbs, HTTP status/return contracts against a live system), the crystalliser returns a clarify instead of a brief — the harness generates repo code + opens a PR, it does not execute calls against a live API. Set false to restore pre-beta.79 behaviour."
+          },
+          "api_execution_min_criteria": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 2,
+            "description": "beta.79 (F1): minimum number of acceptance criteria that must carry an execution signal before the brief is flagged as API-execution. Default 2 (a single incidental endpoint mention does not trip it)."
+          },
+          "api_execution_min_ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.4,
+            "description": "beta.79 (F1): minimum matched/total acceptance-criteria ratio (dominance) to flag a brief as API-execution. Default 0.4 — the execution side-effects must dominate the brief, not be a stray note in an otherwise code-shaped task."
           }
         }
       },

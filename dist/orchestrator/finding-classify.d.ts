@@ -80,5 +80,11 @@ export declare function gateVerdict(params: {
     verdict: "pass" | "revise" | "block";
     downgraded: boolean;
     newBlocking: ReviewFinding[];
+    /**
+     * beta.79 (F2): the findings that WERE recycled from a prior cycle, so a
+     * `loop.gate_decision` audit event can report `{newBlocking, recycled,
+     * downgraded}` per cycle. Additive — pre-beta.79 callers ignore it.
+     */
+    recycled: ReviewFinding[];
 };
 //# sourceMappingURL=finding-classify.d.ts.map
