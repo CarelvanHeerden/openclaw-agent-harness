@@ -17,7 +17,7 @@ import { mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { parseHarnessConfig } from "./config.js";
+import { parseHarnessConfig, assessBudgetCoherence } from "./config.js";
 import { openStateStoreSync } from "./state/store.js";
 import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
@@ -1022,6 +1022,34 @@ export function bootstrapHarnessSync(api) {
             // Fire-and-forget; poster.post is best-effort and never throws.
             void poster.post(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
         },
+        // beta.78 (Feature 1+2): ad-hoc warning delivery over the SAME independent
+        // direct-post channel as deliverProgress. Same gating (poster present +
+        // native_progress_delivery not disabled + real Slack binding). No-op for
+        // agent-orchestrated runs (they get the warning via the poll model /
+        // harness_progress). Best-effort; never throws.
+        postWarning: (sessionId, text) => {
+            const poster = runtime.progressPoster;
+            if (!poster)
+                return;
+            if (config.slack.native_progress_delivery === false)
+                return;
+            let bind;
+            try {
+                bind = state.db
+                    .prepare(`SELECT slack_channel, slack_thread FROM sessions WHERE id = ?`)
+                    .get(sessionId);
+            }
+            catch {
+                return;
+            }
+            const channel = bind?.slack_channel ?? "";
+            const thread = bind?.slack_thread ?? "";
+            if (!hasRealSlackBinding(channel, thread))
+                return;
+            if (!text)
+                return;
+            void poster.post(channel, thread, text).catch(() => undefined);
+        },
     });
     const dispatcher = new Dispatcher({
         config,
@@ -1579,6 +1607,21 @@ export function bootstrapHarnessSync(api) {
  */
 export async function bootstrapHarnessAsync(runtime, api) {
     const { config, state, creds, slack, git } = runtime;
+    // beta.78 (Feature 3): loudly surface incoherent budget configs at startup.
+    // Non-fatal (the truly nonsensical cases already throw in normaliseConfig);
+    // this warns on soft incoherence like daily_max > monthly_per_user.
+    try {
+        const budgetWarnings = assessBudgetCoherence(config.budgets);
+        for (const w of budgetWarnings) {
+            api.logger.warn(`[harness] budget config INCOHERENT: ${w}`);
+        }
+        if (budgetWarnings.length > 0) {
+            state.audit("harness.budget_incoherent", { warnings: budgetWarnings, budgets: config.budgets });
+        }
+    }
+    catch (err) {
+        api.logger.warn("[harness] budget coherence check threw (non-fatal)", { err: String(err) });
+    }
     // Reactions poller (only if slack.credential_service is set so we have a bot token).
     if (config.slack.credential_service) {
         try {

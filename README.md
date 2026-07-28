@@ -238,6 +238,26 @@ Only from `slack.authorised_users`:
 - `:pause_button:` -> (planned) pause the session
 - `:moneybag:` -> allow session to blow past its per-session budget cap
 
+## Per-user credential onboarding (`harness_onboard`, beta.78)
+
+For multi-user production (hybrid-memory vault), each authorised user onboards their own git token so runs use that user's own token for PR ops (the pat-router already resolves a per-user vault service via `default_service_pattern` / `{requester}`).
+
+The `harness_onboard` tool implements the **DM flow**, gated on `slack.authorised_users`:
+
+- `action:"start"` — opens a **DM** (`conversations.open`) to the requester with paste instructions (keeps the token out of any public channel).
+- `action:"submit"` — validates the pasted token (`GET /user`), stores it in the vault via `credential_store` as `git-pat:<userid>` (configurable via `pat_routing.onboard_service_pattern`), then deletes the bot's own prompt and confirms in DM.
+
+> **Slack setup caveat:** to expose this as a `/harness-onboard` slash command, the command must be added to the Slack **app manifest** (`slash_commands[]`) and the app reinstalled before Slack will route it. In HTTP mode each command also needs a `url` pointing at the single `/slack/events` webhook (Socket Mode delivers it over WS and ignores `url`). This is a one-time host/admin step. The slash-command handler then simply calls `harness_onboard`.
+
+DM-flow privacy note: the harness deletes **its own** onboarding prompt after storing the token, but a bot token cannot delete the *user's* message containing the raw token — the confirmation asks the user to delete it themselves. (A Slack modal would avoid the token ever becoming a chat message, but raw modal submission is not currently exposed to plugins.)
+
+### Budgets (beta.78)
+
+- The **session budget** is a SOFT limit: crossing it posts a daily-aware Slack warning and the run CONTINUES.
+- The per-user **`daily_max_usd`** is the HARD stop (persistent `budgets_daily` ledger, UTC day, survives restarts). Drop :moneybag: to override.
+- On a new run, the harness RECOMMENDS a budget (soft default) and nudges if remaining daily headroom is low.
+- Incoherent budget configs (e.g. `daily_max_usd` > `monthly_per_user_usd`) raise a loud startup warning (`assessBudgetCoherence`).
+
 ## Quick start
 
 ```bash

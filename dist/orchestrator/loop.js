@@ -673,6 +673,11 @@ export class OrchestratorLoop {
         // beta.7 fix #2: running record of actual sub-task costs, used to project
         // the cost of upcoming sub-tasks for pre-execution budget gating.
         const subTaskCosts = [];
+        // beta.78 (Feature 2): the SESSION budget is now a SOFT limit -- crossing
+        // it WARNS (once) and the run continues. The true HARD stop is the
+        // per-user daily_max_usd. This flag de-dupes the one-time soft warning so
+        // we don't spam a warning on every sub-task once over the session budget.
+        let sessionBudgetWarned = false;
         // beta.76 (Option 1 -- contract re-derivation): the set of REAL file paths
         // the run's workers have actually touched/committed so far. This is GROUND
         // TRUTH for the repo's real directory conventions (discovered by the
@@ -785,36 +790,42 @@ export class OrchestratorLoop {
                     failed.seq = st.seq;
                     return;
                 }
-                if (totalCost > row.budget_usd && !reactions.budgetBump) {
-                    failed.err = "budget_exhausted";
-                    failed.seq = st.seq;
-                    return;
+                // beta.78 (Feature 2): the SESSION budget is now SOFT. Crossing it
+                // WARNS once and the run CONTINUES (was a hard abort). The true HARD
+                // stop is the per-user daily_max_usd, checked below. This matches
+                // Carel's spec: "When hitting the budget limit, the harness should
+                // warn, but not stop, unless it crosses the max daily for the user."
+                if (totalCost > row.budget_usd && !sessionBudgetWarned) {
+                    sessionBudgetWarned = true;
+                    this.deps.state.audit("loop.session_budget_warn", { sessionId, seq: st.seq, totalCost, sessionBudget: row.budget_usd }, sessionId);
+                    // Surface a daily-aware Slack warning (Feature 1 + 2 fused).
+                    this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
                 }
-                // beta.7 fix #2: PROJECTED-cost gating. Don't start a sub-task we
-                // can't afford. Project = running total + estimated cost of THIS
-                // sub-task (from the plan's token estimate, or the running median of
-                // actual sub-task costs so far). Abort before burning spend instead
-                // of the old post-hoc check that let a $1 budget balloon to $2.10.
-                if (!reactions.budgetBump) {
+                // beta.78 (Feature 2): HARD daily stop. Aborts when the user's total
+                // spend TODAY (persistent budgets_daily ledger + the next sub-task's
+                // estimate + the beta.61 review/push reserve) would cross daily_max.
+                // budgets_daily already includes this session's recorded spend, so we
+                // must NOT add totalCost again (avoid double-count). budgetBump lets a
+                // user blow past caps deliberately (:moneybag: reaction).
+                {
                     const subEst = this.estimateSubTaskCost(st, subTaskCosts);
-                    // beta.61: reserve headroom for the pending adversary review + push
-                    // that must run AFTER the last sub-task of the cycle. The b60 smoke
-                    // died at cycle-2 seq-4 completion with 0 budget left for the
-                    // cycle-2 review -- so all findings were addressed but NO PR opened,
-                    // one review short of the deliverable. Reserving up front makes the
-                    // guard abort EARLY and cleanly (before starting a sub-task whose
-                    // completion would leave no room to finish the cycle) instead of
-                    // stranding committed work with no PR. Reserve = a fraction of the
-                    // TOTAL budget (covers review + packaging/push), applied only while
-                    // the review has not yet run this cycle.
-                    const reserveRatio = this.deps.config.loop.budget_reserve_ratio ?? 0.15;
-                    const reserve = row.budget_usd * Math.max(0, Math.min(0.9, reserveRatio));
-                    const projected = totalCost + subEst;
-                    if (projected + reserve > row.budget_usd) {
-                        this.deps.state.audit("loop.budget_projection_abort", { sessionId, seq: st.seq, totalCost, projected, reserve, budget: row.budget_usd }, sessionId);
-                        failed.err = "budget_exhausted";
-                        failed.seq = st.seq;
-                        return;
+                    const dailyMax = this.dailyMaxUsd();
+                    if (!reactions.budgetBump && dailyMax > 0) {
+                        const dailySoFar = this.safeDailySpend(row.requester);
+                        // beta.61 reserve: keep headroom for the pending adversary review +
+                        // push so a daily-cap abort doesn't strand committed work one
+                        // review short of a PR. Reserve is a fraction of the SESSION budget
+                        // (covers the same review/push tail as before).
+                        const reserveRatio = this.deps.config.loop.budget_reserve_ratio ?? 0.15;
+                        const reserve = row.budget_usd * Math.max(0, Math.min(0.9, reserveRatio));
+                        const dailyProjected = dailySoFar + subEst;
+                        if (dailyProjected + reserve > dailyMax) {
+                            this.deps.state.audit("loop.daily_max_abort", { sessionId, seq: st.seq, user: row.requester, dailySoFar, subEst, reserve, dailyMax }, sessionId);
+                            this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
+                            failed.err = "daily_max_exhausted";
+                            failed.seq = st.seq;
+                            return;
+                        }
                     }
                 }
                 const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
@@ -1438,6 +1449,9 @@ export class OrchestratorLoop {
                     return this.finaliseAbort(sessionId, "hard_timeout", cycle, totalCost);
                 if (failed.err === "budget_exhausted")
                     return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
+                // beta.78 (Feature 2): per-user daily hard-cap abort.
+                if (failed.err === "daily_max_exhausted")
+                    return this.finaliseAbort(sessionId, "daily_max_exhausted", cycle, totalCost);
                 return this.finaliseFailed(sessionId, String(failed.err), cycle, totalCost);
             }
             // 2b. Reviewing
@@ -1449,7 +1463,15 @@ export class OrchestratorLoop {
             {
                 const reactions = await this.deps.readReactions(sessionId);
                 const reviewEstimate = this.estimateReviewCost(subTaskCosts);
-                if (!reactions.budgetBump && totalCost + reviewEstimate > row.budget_usd) {
+                // beta.78 (Feature 2): the review-gate hard abort now keys off the
+                // per-user DAILY cap, not the (soft) session budget. Crossing the
+                // session budget only WARNS; a review is only skipped/aborted when
+                // paying for it would blow the user's daily_max_usd. budgetBump
+                // (:moneybag:) still overrides.
+                const dailyMax = this.dailyMaxUsd();
+                const dailySoFar = this.safeDailySpend(row.requester);
+                const dailyWouldExceed = dailyMax > 0 && dailySoFar + reviewEstimate > dailyMax;
+                if (!reactions.budgetBump && dailyWouldExceed) {
                     // beta.8 (adversary point): the adversary was the only actor that
                     // caught the beta.6 confabulation, and beta.7's review-budget abort
                     // HID that failure by skipping review on cost. The observable-side-
@@ -1457,8 +1479,9 @@ export class OrchestratorLoop {
                     // aborting. This is the harness's own trust-but-verify guardrail;
                     // it must never be bypassed purely on token budget.
                     await this.runCheapObservableCheck(sessionId, plan, row.requester);
-                    this.deps.state.audit("loop.review_budget_abort", { sessionId, cycle, totalCost, reviewEstimate, budget: row.budget_usd }, sessionId);
-                    return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
+                    this.deps.state.audit("loop.review_budget_abort", { sessionId, cycle, totalCost, reviewEstimate, dailySoFar, dailyMax, reason: "daily_max" }, sessionId);
+                    this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
+                    return this.finaliseAbort(sessionId, "daily_max_exhausted", cycle, totalCost);
                 }
             }
             // beta.63 (convention-awareness Fix 2): FINAL-VERIFY check-script run.
@@ -1639,7 +1662,13 @@ export class OrchestratorLoop {
                 cyclesRan: cycle,
                 maxCycles: this.deps.config.loop.max_cycles,
                 reactions,
-                budgetExhausted: totalCost > row.budget_usd && !reactions.budgetBump,
+                // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
+                // per-user DAILY cap, not the (now-soft) session budget. Crossing the
+                // session budget warns but does not stop; only the daily hard-cap
+                // (or :moneybag: override) blocks a further cycle.
+                budgetExhausted: !reactions.budgetBump &&
+                    this.dailyMaxUsd() > 0 &&
+                    this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
                 hardTimeout: Date.now() > hardDeadlineMs,
             });
             this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
@@ -2208,6 +2237,76 @@ export class OrchestratorLoop {
             }
         }
         return findings;
+    }
+    /**
+     * beta.78 (Feature 2): the configured per-user daily hard cap, or 0 when
+     * unset/misconfigured. 0 => no daily gate (back-compat: pre-beta.78 configs
+     * and test doubles without a `budgets` block behave as before). Defensive.
+     */
+    dailyMaxUsd() {
+        const dm = this.deps.config.budgets?.daily_max_usd;
+        return typeof dm === "number" && dm > 0 ? dm : 0;
+    }
+    /**
+     * beta.78 (Feature 2): a user's spend TODAY from the persistent ledger, or 0
+     * if the budget enforcer double doesn't expose getDailySpend (test doubles).
+     * Never throws.
+     */
+    safeDailySpend(user) {
+        try {
+            const fn = this.deps.budget.getDailySpend;
+            return typeof fn === "function" ? fn.call(this.deps.budget, user) : 0;
+        }
+        catch {
+            return 0;
+        }
+    }
+    /**
+     * beta.78 (Feature 1+2): daily-AWARE soft session-budget warning. When a
+     * run crosses its SOFT session budget, warn the user via Slack (best-effort,
+     * direct-post) and FACTOR IN remaining daily headroom -- Carel's ask: "If
+     * the user has used 80% of their daily, the soft limit should be aware that
+     * there is only 20% left for the day, and notify the user if this might be a
+     * bit low and ask for a budget increase." Never throws.
+     */
+    warnSessionBudgetSoft(sessionId, user, totalCost, sessionBudget) {
+        try {
+            const dailyMax = this.dailyMaxUsd();
+            const dailySoFar = this.safeDailySpend(user);
+            let text = `:warning: This run passed its session budget ` +
+                `($${totalCost.toFixed(2)} / $${sessionBudget.toFixed(2)}). It will keep going ` +
+                `— the hard stop is your daily cap.`;
+            if (typeof dailyMax === "number" && dailyMax > 0) {
+                const remaining = Math.max(0, dailyMax - dailySoFar);
+                const pct = Math.min(100, Math.round((dailySoFar / dailyMax) * 100));
+                text +=
+                    ` You've used ${pct}% of today's budget ` +
+                        `($${dailySoFar.toFixed(2)} / $${dailyMax.toFixed(2)}), ~$${remaining.toFixed(2)} left.`;
+                // Nudge for a budget increase when the remaining daily headroom looks
+                // low relative to what this run has already spent.
+                if (remaining < totalCost) {
+                    text += ` That may be low to finish this — reply with a higher budget or drop :moneybag: to override the cap.`;
+                }
+            }
+            this.deps.postWarning?.(sessionId, text);
+        }
+        catch {
+            /* best-effort; a warning must never fail the run */
+        }
+    }
+    /**
+     * beta.78 (Feature 2): hard daily-cap notification. Posted when the run is
+     * aborted because the user's daily_max_usd would be exceeded. Never throws.
+     */
+    warnDailyMaxHit(sessionId, user, dailySoFar, dailyMax) {
+        try {
+            this.deps.postWarning?.(sessionId, `:octagonal_sign: Daily budget reached for <@${user}> ` +
+                `($${dailySoFar.toFixed(2)} / $${dailyMax.toFixed(2)}). This run is stopping. ` +
+                `Drop :moneybag: to override the cap, or resume tomorrow when the daily budget resets (UTC).`);
+        }
+        catch {
+            /* best-effort */
+        }
     }
     finaliseAbort(sessionId, reason, cycles, totalCostUsd) {
         this.setStatus(sessionId, "aborted");

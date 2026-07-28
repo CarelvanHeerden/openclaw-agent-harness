@@ -30,6 +30,7 @@ const EXPECTED_TOOLS = [
   "harness_merge_pr",
   "harness_list_revisable",
   "harness_revise",
+  "harness_onboard",
 ];
 
 test("sdk: openclaw.plugin.json exists", () => {

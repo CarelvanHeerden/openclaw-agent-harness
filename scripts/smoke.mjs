@@ -120,6 +120,7 @@ const expectTools = [
   "harness_retention_prune",
   "harness_list_revisable",
   "harness_revise",
+  "harness_onboard",
 ];
 
 let failed = 0;

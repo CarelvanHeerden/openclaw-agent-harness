@@ -575,6 +575,14 @@ export interface PatRoutingConfig {
      */
     default_service_pattern: string;
     /**
+     * beta.78 (Feature 4): vault service-name pattern used by `harness_onboard`
+     * to store a user's git token. Placeholders: {userid} (Slack user id),
+     * {provider}. Default "git-pat:{userid}". Keep this consistent with
+     * `default_service_pattern` so an onboarded token is actually resolved for
+     * that user's runs.
+     */
+    onboard_service_pattern?: string;
+    /**
      * Legacy single-provider GitHub auth fallback. Superseded by
      * `providers.github.api_key_env` but kept for back-compat; if set it wins
      * for GitHub.
@@ -603,4 +611,24 @@ export interface PatAuthConfig {
  */
 export declare function validatePatHierarchy(pr: PatRoutingConfig): void;
 export declare function parseHarnessConfig(input: unknown): HarnessConfig;
+/**
+ * beta.78 (Feature 3): pure budget-coherence assessment.
+ *
+ * Carel's ask: "If the budgets do not match up the harness should raise
+ * this. Max daily is 200 but max monthly is 100?" This surfaces INCOHERENT
+ * budget configs as loud warnings at startup instead of silently letting a
+ * daily cap exceed the monthly cap (which makes the monthly cap unreachable
+ * as a per-day limiter and vice-versa).
+ *
+ * SIDE-EFFECT FREE + pure so it is trivially unit-testable and safe to call
+ * from bootstrap. Returns a list of human-readable warning strings; an empty
+ * list means the budgets are coherent. The HARD/fatal invariants
+ * (session_default <= hard_ceiling, monthly > 0, daily_max >= daily_warn)
+ * are enforced as throws in normaliseConfig(); this covers the softer
+ * ordering/coherence relationships that should WARN, not brick the boot.
+ *
+ * Expected sane ordering: session_default <= session_hard_ceiling <=
+ * daily_max <= monthly_per_user.
+ */
+export declare function assessBudgetCoherence(b: BudgetsConfig): string[];
 //# sourceMappingURL=config.d.ts.map
