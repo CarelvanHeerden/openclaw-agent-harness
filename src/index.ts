@@ -302,6 +302,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           timeoutSeconds: 120,
           apiKey: await anthropicApiKey(),
           concepts: ctxConcepts,
+          // beta.80: repo-only invariant + bimodality self-report prompt gates.
+          repoOnlyInvariant: config.brief.repo_only_invariant,
+          bimodalClarify: config.brief.bimodal_clarify,
         }),
       },
       concepts,

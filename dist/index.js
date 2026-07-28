@@ -88,6 +88,9 @@ export function bootstrapHarnessSync(api) {
                 timeoutSeconds: 120,
                 apiKey: await anthropicApiKey(),
                 concepts: ctxConcepts,
+                // beta.80: repo-only invariant + bimodality self-report prompt gates.
+                repoOnlyInvariant: config.brief.repo_only_invariant,
+                bimodalClarify: config.brief.bimodal_clarify,
             }),
         }, concepts);
         // crystallisePrompt returns a discriminated union; add cost=0 for now

@@ -43,8 +43,51 @@ concepts) {
     if (concepts && concepts.length > 0 && (!brief.relevantConcepts || brief.relevantConcepts.length === 0)) {
         brief.relevantConcepts = concepts;
     }
+    // beta.80 (F2): planning-time bimodality gate. The crystalliser self-reports
+    // competing readings that would produce materially different diffs. When it
+    // does (or explicitly asks), PAUSE-AND-WAIT: return a `clarify` (which starts
+    // NO session) instead of guessing one reading. Carel's rule: assumptions
+    // cause delays -- ask up front. This is the 77-beta gap (nothing ever routed
+    // into clarify on a bimodal brief); the crystalliser previously invented one
+    // reading and committed to it.
+    const briefCfg = (deps.config?.brief ?? {});
+    if (briefCfg.bimodal_clarify !== false) {
+        const minInterp = typeof briefCfg.bimodal_min_interpretations === "number" ? briefCfg.bimodal_min_interpretations : 2;
+        const interpretations = Array.isArray(brief.interpretations) ? brief.interpretations : [];
+        const explicit = brief.clarificationNeeded?.question?.trim();
+        if (explicit || interpretations.length >= minInterp) {
+            const question = renderBimodalClarification(brief, interpretations);
+            deps.logger.info("[crystalliser] bimodal brief -> clarify (pause-and-wait)", {
+                interpretations: interpretations.length,
+                explicit: Boolean(explicit),
+                question,
+            });
+            return { kind: "clarify", question };
+        }
+    }
     validateBrief(brief);
     return { kind: "brief", brief, classification: cls };
+}
+/**
+ * beta.80 (F2): render the fork the crystalliser found into a single
+ * pause-and-wait question. Prefers the crystalliser's own explicit
+ * clarificationNeeded (question + options); falls back to enumerating the
+ * distinct interpretations.
+ */
+function renderBimodalClarification(brief, interpretations) {
+    const cn = brief.clarificationNeeded;
+    if (cn?.question?.trim()) {
+        const opts = (cn.options ?? []).filter((o) => typeof o === "string" && o.trim().length > 0);
+        if (opts.length > 0) {
+            const lettered = opts.map((o, i) => `(${String.fromCharCode(97 + i)}) ${o}`).join("  ");
+            return `${cn.question.trim()}  Options: ${lettered}`;
+        }
+        return cn.question.trim();
+    }
+    const lines = interpretations
+        .map((it, i) => `(${String.fromCharCode(97 + i)}) ${it.reading}${it.whatDiffers ? ` — ${it.whatDiffers}` : ""}`)
+        .join("  ");
+    return `This request has more than one valid interpretation that would produce different changes. Which do you want?  ${lines}`;
 }
 function validateBrief(brief) {
     if (!brief.title || brief.title.length < 3)

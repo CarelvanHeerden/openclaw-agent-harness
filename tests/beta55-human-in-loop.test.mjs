@@ -107,9 +107,13 @@ test("beta.55 B2: awaiting_clarification is NOT in recovery NON_TERMINAL (stays 
   assert.doesNotMatch(rec, /"awaiting_clarification"/, "recovery must not auto-resume a human-pause");
 });
 
-test("beta.55 B1: classifier prompt nudges clarify on action-changing ambiguity", () => {
+test("beta.55 B1: classifier prompt nudges clarify on action-changing ambiguity (beta.80: wording strengthened to first-class)", () => {
   const sdk = S("src/adapters/claude-sdk.ts");
-  assert.match(sdk, /genuinely ambiguous on a decision that would change WHICH files or WHAT behaviour/i);
+  // beta.80 superseded the beta.55 wording -- clarify is now first-class, and
+  // the trigger is a wrong reading changing WHAT gets built. The INTENT (nudge
+  // clarify on action-changing ambiguity) is preserved + strengthened.
+  assert.match(sdk, /a wrong reading would change WHAT gets built or waste a run/i);
+  assert.match(sdk, /clarify is a normal, expected outcome, not a last resort/i);
 });
 
 test("beta.55: config + manifest carry clarification_escalation_enabled", () => {
