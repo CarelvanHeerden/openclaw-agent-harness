@@ -27,7 +27,10 @@ test("beta41: teardown imports and consults runningSessionIds", () => {
   // beta.57 (P1): the drain now checks the OWNED session list (falling back to
   // the global registry), so a doomed runtime no longer waits on loops owned
   // by the freshly re-registered runtime.
-  assert.ok(indexSrc.includes("ownedRunning().length > 0"), "teardown must check for running loops it owns");
+  // beta.82: the drain loop is now a progress-aware `for(;;)` driven by
+  // decideDrainAction rather than a bare `while (ownedRunning().length > 0)`,
+  // but it still consults the owned-session list via ownedRunning()/sampleProgress().
+  assert.ok(indexSrc.includes("ownedRunning()"), "teardown must check for running loops it owns");
   assert.ok(indexSrc.includes("ownedRunningSessionIds"), "teardown must prefer the per-instance owned-session list");
 });
 
@@ -44,9 +47,12 @@ test("beta41: the drain is bounded by loop.teardown_drain_seconds with a default
     indexSrc.includes("runtime.config?.loop?.teardown_drain_seconds ?? 3600"),
     "drain must read teardown_drain_seconds with a 3600 fallback",
   );
+  // beta.82: past the deadline the harness only FORCE-tears-down a WEDGED loop;
+  // a still-progressing loop is held past the deadline. The loud log line now
+  // includes the wedged qualifier.
   assert.ok(
-    indexSrc.includes("teardown drain deadline exceeded"),
-    "must log loudly and proceed if the drain deadline is exceeded (bounded, not infinite)",
+    indexSrc.includes("teardown drain deadline exceeded AND owned loop(s) wedged"),
+    "must log loudly and proceed only when the drain deadline is exceeded AND the loop is wedged",
   );
 });
 

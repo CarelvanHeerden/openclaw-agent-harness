@@ -19,6 +19,7 @@ import { mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { parseHarnessConfig, assessBudgetCoherence } from "./config.js";
 import { openStateStoreSync } from "./state/store.js";
+import { decideDrainAction } from "./state/teardown-drain.js";
 import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { resolveContractPath } from "./orchestrator/path-match.js";
@@ -2344,6 +2345,7 @@ async function teardown(runtime, api) {
     // loop keeps ownership until it finishes; we just hold its DB open for it.
     const drainSeconds = runtime.config?.loop?.teardown_drain_seconds ?? 3600;
     const drainDeadline = Date.now() + drainSeconds * 1000;
+    const stuckThresholdMs = (runtime.config?.loop?.stuck_loop_seconds ?? 2700) * 1000;
     // beta.57 (P1): drain only on sessions THIS runtime's loop instance owns.
     // `runningSessionIds()` is the module-scoped registry shared across runtimes
     // (it deliberately survives a re-register), so draining on it made the
@@ -2352,24 +2354,89 @@ async function teardown(runtime, api) {
     const ownedRunning = () => typeof runtime.loop?.ownedRunningSessionIds === "function"
         ? runtime.loop.ownedRunningSessionIds()
         : runningSessionIds();
+    // beta.82: read the freshest progress marker across the owned running
+    // sessions so we can tell a LIVE-but-long loop from a WEDGED one. Best-effort
+    // -- if the DB is already closed or the query throws, treat progress as
+    // unknown (0), which errs toward the wedged classification (safe: a truly
+    // live loop keeps advancing `updated_at`, so it will read fresh).
+    const sampleProgress = () => {
+        const running = ownedRunning();
+        if (running.length === 0 || !runtime.state.isOpen())
+            return { running, lastProgressMs: 0 };
+        let lastProgressMs = 0;
+        try {
+            const placeholders = running.map(() => "?").join(",");
+            const rows = runtime.state.db
+                .prepare(`SELECT last_checkpoint_at, updated_at FROM sessions WHERE id IN (${placeholders})`)
+                .all(...running);
+            for (const r of rows) {
+                lastProgressMs = Math.max(lastProgressMs, r.last_checkpoint_at ?? 0, r.updated_at ?? 0);
+            }
+        }
+        catch {
+            /* DB closed/racy: unknown progress */
+        }
+        return { running, lastProgressMs };
+    };
+    // beta.82: progress-aware drain. A HARD deadline used to guillotine the DB
+    // out from under a still-live loop at exactly teardown_drain_seconds (this
+    // orphaned b54/b60/b80/b81 feature runs). Now, past the deadline we ONLY
+    // force-teardown if the owned loop has gone stale (wedged); a loop that is
+    // still making progress keeps its DB held indefinitely.
     let waited = false;
-    while (ownedRunning().length > 0 && Date.now() < drainDeadline) {
+    let prevProgressMs = 0;
+    let forcedWedged = false;
+    for (;;) {
+        const sample = sampleProgress();
+        const action = decideDrainAction({
+            nowMs: Date.now(),
+            deadlineMs: drainDeadline,
+            sample,
+            prevProgressMs,
+            stuckThresholdMs,
+        });
+        if (action.kind === "drain-complete")
+            break;
+        if (action.kind === "force-teardown") {
+            forcedWedged = true;
+            api.logger.warn("[harness] teardown drain deadline exceeded AND owned loop(s) wedged (no progress past stuck_loop_seconds); proceeding with teardown", { running: sample.running, drainSeconds, stuckThresholdMs, lastProgressMs: sample.lastProgressMs });
+            // Observability: a wedged loop is about to have its DB closed out from
+            // under it; emit a clean terminal audit per session so it does not just
+            // hang in `executing` with no terminal event. Best-effort (DB may race).
+            for (const sid of sample.running) {
+                try {
+                    runtime.state.audit("loop.torn_down_while_running", {
+                        sessionId: sid,
+                        reason: "runtime torn down (re-register churn) while loop was wedged past stuck_loop_seconds",
+                        drainSeconds,
+                        stuckThresholdMs,
+                    }, sid);
+                }
+                catch {
+                    /* audit best-effort */
+                }
+            }
+            break;
+        }
         if (!waited) {
             api.logger.info("[harness] teardown deferred: waiting for running loop(s) to drain before closing runtime", {
-                running: ownedRunning(),
+                running: sample.running,
                 drainSeconds,
             });
             waited = true;
         }
+        else if (action.reason === "loop-still-progressing") {
+            // Past the deadline but the loop is alive and advancing -- hold the DB
+            // open for it rather than orphaning a good run. Log sparingly.
+            api.logger.info("[harness] teardown drain past deadline but owned loop still progressing; continuing to hold DB open", {
+                running: sample.running,
+                lastProgressMs: sample.lastProgressMs,
+            });
+        }
+        prevProgressMs = Math.max(prevProgressMs, sample.lastProgressMs);
         await new Promise((r) => setTimeout(r, 1000));
     }
-    if (ownedRunning().length > 0) {
-        api.logger.warn("[harness] teardown drain deadline exceeded; proceeding with teardown despite running loop(s)", {
-            running: ownedRunning(),
-            drainSeconds,
-        });
-    }
-    else if (waited) {
+    if (!forcedWedged && waited) {
         api.logger.info("[harness] teardown drain complete; running loop(s) finished, proceeding to close runtime");
     }
     for (const d of runtime.disposers.reverse()) {
