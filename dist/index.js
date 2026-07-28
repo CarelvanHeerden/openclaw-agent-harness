@@ -22,10 +22,12 @@ import { openStateStoreSync } from "./state/store.js";
 import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { resolveContractPath } from "./orchestrator/path-match.js";
+import { buildProgressSnapshot } from "./orchestrator/progress.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
 import { SlackReactionsReader } from "./slack/reactions.js";
 import { ReactionsPoller } from "./slack/reactions-poller.js";
+import { SlackProgressPoster, hasRealSlackBinding } from "./slack/progress-poster.js";
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
@@ -979,6 +981,47 @@ export function bootstrapHarnessSync(api) {
                 api.logger.warn("[harness] reportProgress audit failed", { sessionId, status, err: String(err) });
             }
         },
+        // beta.77: harness-native OUTBOUND progress/terminal delivery. Fired from
+        // the loop's `setStatus` on EVERY phase + terminal transition. Best-effort
+        // direct `chat.postMessage` to Slack via the vault bot token -- an
+        // INDEPENDENT path from the wedge-prone agent `api.sendMessage` turn, so a
+        // wedged channel-agent poller can no longer blind a run's progress/terminal.
+        // Gated: (1) a poster was built (credential_service resolved a token), (2)
+        // native_progress_delivery not disabled, (3) the session has a REAL Slack
+        // binding (channel + non-synthetic thread passed on harness_run). Otherwise
+        // no-op -> graceful fallback to the poll model (unchanged behaviour).
+        // Clarifications/inbound stay agent-mediated (harness_answer) -- untouched.
+        deliverProgress: (sessionId, _status) => {
+            const poster = runtime.progressPoster;
+            if (!poster)
+                return; // no token -> poll-model fallback
+            if (config.slack.native_progress_delivery === false)
+                return;
+            let bind;
+            try {
+                bind = state.db
+                    .prepare(`SELECT slack_channel, slack_thread FROM sessions WHERE id = ?`)
+                    .get(sessionId);
+            }
+            catch {
+                return;
+            }
+            const channel = bind?.slack_channel ?? "";
+            const thread = bind?.slack_thread ?? "";
+            if (!hasRealSlackBinding(channel, thread))
+                return; // agent-orchestrated run -> poll model
+            let headline = "";
+            try {
+                headline = buildProgressSnapshot(state.db, sessionId).headline;
+            }
+            catch {
+                return;
+            }
+            if (!headline)
+                return;
+            // Fire-and-forget; poster.post is best-effort and never throws.
+            void poster.post(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
+        },
     });
     const dispatcher = new Dispatcher({
         config,
@@ -997,6 +1040,9 @@ export function bootstrapHarnessSync(api) {
     });
     const runtime = {
         config, state, budget, pat, loop, interactionLog, listener, dispatcher, slack, git, creds,
+        // beta.77: built during async bootstrap when slack.credential_service
+        // resolves a token; null until then (and forever without one).
+        progressPoster: null,
         crystallise,
         anthropicApiKey,
         githubToken: resolveGithubToken,
@@ -1537,6 +1583,13 @@ export async function bootstrapHarnessAsync(runtime, api) {
     if (config.slack.credential_service) {
         try {
             const slackToken = await creds.getToken(config.slack.credential_service);
+            // beta.77: build the harness-native progress poster from the SAME token.
+            // Enables direct chat.postMessage for progress/terminal (bypassing the
+            // wedge-prone agent api.sendMessage turn) when a session is really bound.
+            if (config.slack.native_progress_delivery !== false) {
+                runtime.progressPoster = new SlackProgressPoster({ slackToken, logger: api.logger });
+                api.logger.info("[harness] native progress poster armed (direct chat.postMessage on real Slack bindings)");
+            }
             const reader = new SlackReactionsReader({
                 config,
                 state,

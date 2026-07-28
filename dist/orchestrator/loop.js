@@ -379,6 +379,16 @@ export class OrchestratorLoop {
             phase: mapPhase(status),
             status,
         });
+        // beta.77: harness-native outbound progress/terminal delivery. Fired on
+        // every phase + terminal transition through this single choke point.
+        // Fire-and-forget + guarded so it can never throw out of the sync hot path
+        // (a failed/absent progress post must never disturb the loop).
+        try {
+            this.deps.deliverProgress?.(sessionId, status);
+        }
+        catch {
+            /* best-effort: progress delivery never affects loop control flow */
+        }
     }
     /**
      * beta.63 (Part A): mark forward progress WITHOUT a status change (e.g. a

@@ -426,6 +426,17 @@ export interface OrchestratorDeps {
   /** Signal source: user Slack reactions on our messages. */
   readReactions: (sessionId: string) => Promise<{ shipIt: boolean; abort: boolean; pause: boolean; budgetBump: boolean }>;
   reportProgress?: (sessionId: string, status: LoopStatus, meta?: unknown) => Promise<void>;
+  /**
+   * beta.77: harness-native OUTBOUND progress/terminal delivery. Fired from
+   * `setStatus` on EVERY phase + terminal transition (the single choke point).
+   * The implementation (index.ts) best-effort direct-posts the current
+   * `harness_progress` headline to Slack via a vault-resolved bot token WHEN the
+   * session has a real Slack binding -- an INDEPENDENT path from the wedge-prone
+   * agent `api.sendMessage` turn. Fire-and-forget; the loop stays Slack-agnostic
+   * (no Slack import here) and a throw here can NEVER escape `setStatus`.
+   * Clarifications/inbound stay agent-mediated (`harness_answer`) -- unchanged.
+   */
+  deliverProgress?: (sessionId: string, status: LoopStatus) => void;
 
   /**
    * beta.8 fix #1 (done right): HARNESS-SIDE observable-side-effect probes.
@@ -589,6 +600,15 @@ export class OrchestratorLoop {
       phase: mapPhase(status),
       status,
     });
+    // beta.77: harness-native outbound progress/terminal delivery. Fired on
+    // every phase + terminal transition through this single choke point.
+    // Fire-and-forget + guarded so it can never throw out of the sync hot path
+    // (a failed/absent progress post must never disturb the loop).
+    try {
+      this.deps.deliverProgress?.(sessionId, status);
+    } catch {
+      /* best-effort: progress delivery never affects loop control flow */
+    }
   }
 
   /**
