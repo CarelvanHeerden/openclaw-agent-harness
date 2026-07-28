@@ -18,6 +18,7 @@ import { InteractionLog } from "./state/interaction-log.js";
 import { OrchestratorLoop } from "./orchestrator/loop.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
+import { SlackProgressPoster } from "./slack/progress-poster.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
@@ -211,6 +212,15 @@ export interface HarnessRuntime {
      * notifications have flushed before closing the state DB.
      */
     asyncBootstrap?: Promise<void>;
+    /**
+     * beta.77: harness-native OUTBOUND progress/terminal poster. Built during
+     * async bootstrap ONLY when `slack.credential_service` resolves a bot token
+     * (same token as the reactions poller). Null until then (and forever if no
+     * credential_service) -- `deliverProgress` reads this slot lazily and falls
+     * back to the poll model when it's null. Direct `chat.postMessage`, bypassing
+     * the wedge-prone agent `api.sendMessage` turn.
+     */
+    progressPoster?: SlackProgressPoster | null;
 }
 export interface PreflightResult {
     ok: boolean;

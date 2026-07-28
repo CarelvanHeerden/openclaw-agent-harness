@@ -69,6 +69,11 @@
             "maximum": 300000,
             "default": 15000
           },
+          "native_progress_delivery": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.77: harness direct-posts progress/terminal headlines to Slack via the vault bot token when credential_service is set and a session has a real Slack binding (channel + non-synthetic thread). Independent of the wedge-prone agent api.sendMessage turn. Set false to force poll-only. Does not affect clarifications/inbound."
+          },
           "reactions": {
             "type": "object",
             "additionalProperties": false,

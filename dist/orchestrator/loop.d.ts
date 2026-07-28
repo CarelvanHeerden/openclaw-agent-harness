@@ -208,6 +208,17 @@ export interface OrchestratorDeps {
     }>;
     reportProgress?: (sessionId: string, status: LoopStatus, meta?: unknown) => Promise<void>;
     /**
+     * beta.77: harness-native OUTBOUND progress/terminal delivery. Fired from
+     * `setStatus` on EVERY phase + terminal transition (the single choke point).
+     * The implementation (index.ts) best-effort direct-posts the current
+     * `harness_progress` headline to Slack via a vault-resolved bot token WHEN the
+     * session has a real Slack binding -- an INDEPENDENT path from the wedge-prone
+     * agent `api.sendMessage` turn. Fire-and-forget; the loop stays Slack-agnostic
+     * (no Slack import here) and a throw here can NEVER escape `setStatus`.
+     * Clarifications/inbound stay agent-mediated (`harness_answer`) -- unchanged.
+     */
+    deliverProgress?: (sessionId: string, status: LoopStatus) => void;
+    /**
      * beta.8 fix #1 (done right): HARNESS-SIDE observable-side-effect probes.
      * The loop builds a VerifyProbes for a given plan/branch/worktree and runs
      * the inferred contract AFTER each sub-task, independent of the worker's
