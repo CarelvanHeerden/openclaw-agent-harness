@@ -111,7 +111,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     budgetUsd?: number;
     auditEvent: string;
   }):
-    | { ok: true; sessionId: string; budgetNote?: string; effectiveBudget: number; recommendedBudget: number }
+    | { ok: true; sessionId: string; budgetNote?: string; effectiveBudget: number; recommendedBudget: number; estimatedUsd: number }
     | { ok: false; reason: string; unauthorised?: boolean; duplicateThread?: boolean } {
     if (!liveConfig().slack.authorised_users.includes(params.requester)) {
       return { ok: false, unauthorised: true, reason: `Requester ${params.requester} is not in slack.authorised_users` };
@@ -130,6 +130,21 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     // the run proceeds at `effectiveBudget`; this note nudges the user if the
     // recommended/default budget looks low against remaining daily headroom.
     const rec = recommendBudget(params.requester, params.budgetUsd);
+    // beta.81 (Track A / A3): emit an UNCONDITIONAL `tool.run.budget_estimate`
+    // audit on EVERY run. The beta.78 `tool.run.budget_recommendation` was
+    // `if(rec.note)`-gated on DAILY-cap pressure only, so with a generous (or
+    // unset) daily cap it NEVER fired -- Staging proved zero hits ever, and
+    // "was budget surfaced?" was unanswerable from the log. This always fires
+    // with the session ESTIMATE + cap + daily context. `estimated` is the
+    // harness-owned session cost estimate (= recommendBudget's `recommended`,
+    // the daily-aware capped session estimate).
+    liveState().audit("tool.run.budget_estimate", {
+      requester: params.requester,
+      estimated: rec.recommended,
+      cap: effectiveBudget,
+      dailySoFar: rec.dailySoFar,
+      dailyMax: rec.dailyMax,
+    });
     if (rec.note) {
       liveState().audit("tool.run.budget_recommendation", {
         requester: params.requester, effectiveBudget, recommended: rec.recommended,
@@ -181,13 +196,16 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         .prepare(
           `INSERT INTO sessions (
              id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
-             status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran
-           ) VALUES (?, ?, ?, ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0)`,
+             status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran, estimated_usd
+           ) VALUES (?, ?, ?, ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0, ?)`,
         )
         .run(
           sessionId, slackThread, slackChannel, params.requester, params.requester,
           JSON.stringify(params.brief), Date.now(), Date.now(),
           effectiveBudget,
+          // beta.81 (Track A / A1): persist the harness-owned session estimate
+          // so harness_progress / terminal / loop.start surface it reliably.
+          rec.recommended,
         );
     } catch (err) {
       if (String(err).includes("UNIQUE") || String(err).includes("SQLITE_CONSTRAINT")) {
@@ -199,7 +217,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     void liveRuntime().loop.run(sessionId, params.brief).catch((err) => {
       api.logger.error(`[${params.auditEvent}] loop crashed`, { sessionId, err: String(err) });
     });
-    return { ok: true, sessionId, budgetNote: rec.note, effectiveBudget, recommendedBudget: rec.recommended };
+    return { ok: true, sessionId, budgetNote: rec.note, effectiveBudget, recommendedBudget: rec.recommended, estimatedUsd: rec.recommended };
   }
 
   /**
@@ -830,10 +848,18 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // beta.78 (Feature 1): prepend the daily-aware budget note (if any)
           // so the agent relays the recommendation/low-headroom nudge to the
           // user. Soft default -- the run already started at effectiveBudget.
+          // beta.81 (Track A / A1): ALSO surface the harness-owned SESSION
+          // ESTIMATE up front, UNCONDITIONALLY (independent of the daily-cap
+          // note, which only fires under daily-cap pressure). This is the
+          // "Estimated ~$X for this change; session cap $Y" line Carel asked
+          // for -- persisted on the session row + echoed here so it surfaces
+          // even if the agent never relays the note. Soft: the run already
+          // started at effectiveBudget.
+          const estimateLine = `Estimated ~$${res.estimatedUsd.toFixed(2)} for this change; session cap $${res.effectiveBudget.toFixed(2)}.`;
           const budgetLine = res.budgetNote ? `${res.budgetNote}\n\n` : "";
           return {
-            content: [{ type: "text", text: `${budgetLine}Session ${res.sessionId} started for "${cResult.brief.title}" (budget $${res.effectiveBudget.toFixed(2)}). Surface progress automatically: poll harness_progress (sessionId ${res.sessionId}) every ~45s and relay \`headline\` until terminal. The harness will not post to Slack itself.` }],
-            details: { ok: true, sessionId: res.sessionId, brief: cResult.brief, feedback, budgetNote: res.budgetNote ?? null, effectiveBudget: res.effectiveBudget, recommendedBudget: res.recommendedBudget },
+            content: [{ type: "text", text: `${budgetLine}${estimateLine} Session ${res.sessionId} started for "${cResult.brief.title}". Surface progress automatically: poll harness_progress (sessionId ${res.sessionId}) every ~45s and relay \`headline\` until terminal. The harness will not post to Slack itself.` }],
+            details: { ok: true, sessionId: res.sessionId, brief: cResult.brief, feedback, budgetNote: res.budgetNote ?? null, effectiveBudget: res.effectiveBudget, recommendedBudget: res.recommendedBudget, estimatedUsd: res.estimatedUsd },
           };
         },
       }),

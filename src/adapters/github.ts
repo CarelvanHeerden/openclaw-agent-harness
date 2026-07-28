@@ -243,6 +243,44 @@ export async function getCombinedStatus(input: {
   return "success";
 }
 
+/**
+ * beta.81 (Track B / B2): fetch a short excerpt of the FAILING check-runs for a
+ * commit SHA -- each failed run's name, conclusion, and output title/summary --
+ * so the harness can surface WHY CI is red as the revise finding source. Never
+ * throws; returns "" on any error or when nothing failed.
+ */
+export async function getFailingCheckLogs(input: {
+  repoFullName: string;
+  sha: string;
+  ghToken: string;
+  apiBase?: string;
+}): Promise<string> {
+  const base = input.apiBase ?? "https://api.github.com";
+  try {
+    const cRes = await fetch(`${base}/repos/${input.repoFullName}/commits/${input.sha}/check-runs`, {
+      headers: GH_HEADERS(input.ghToken),
+    });
+    if (!cRes.ok) return "";
+    const cj = (await cRes.json()) as {
+      check_runs: Array<{ name: string; conclusion: string | null; output?: { title?: string; summary?: string } }>;
+    };
+    const failed = (cj.check_runs ?? []).filter((r) =>
+      ["failure", "timed_out", "cancelled", "action_required"].includes(r.conclusion ?? ""),
+    );
+    if (failed.length === 0) return "";
+    return failed
+      .map((r) => {
+        const title = r.output?.title ? `: ${r.output.title}` : "";
+        const summary = r.output?.summary ? `\n  ${r.output.summary.slice(0, 500)}` : "";
+        return `- ${r.name} [${r.conclusion}]${title}${summary}`;
+      })
+      .join("\n")
+      .slice(0, 2000);
+  } catch {
+    return "";
+  }
+}
+
 /** beta.34: merge a PR (squash by default). Returns the merge commit SHA. */
 export async function mergePullRequest(input: {
   repoFullName: string;

@@ -39,7 +39,30 @@ export interface RecoveryOptions {
      */
     agentOrchestrated?: boolean;
     autoResume?: (session: RecoveredSession) => Promise<void>;
+    /**
+     * beta.81 (Track C / C4): recovery-resume circuit breaker. When MORE than
+     * `maxResumes` auto-resumes fire for the SAME session within
+     * `resumeWindowSeconds`, the session is HARD-STOPPED (marked `failed`,
+     * reason `recovery_bounce_loop`) instead of resumed again. Forensic
+     * d01a7484: 4x `recovery.auto_resuming` in ~40s on a `planning` session
+     * bounce-looped and actively re-burned budget. Defaults (3 / 60) applied by
+     * the caller. When either is <= 0 the breaker is disabled.
+     */
+    maxResumes?: number;
+    resumeWindowSeconds?: number;
 }
+/** Test-only: reset the circuit-breaker ledger. */
+export declare function __resetRecoveryResumeLedger(): void;
+/**
+ * Record an auto-resume attempt for `sessionId` and report whether the
+ * circuit breaker has now tripped (strictly MORE than `maxResumes` within
+ * `windowSeconds`). Prunes entries outside the window. Disabled (never trips)
+ * when maxResumes <= 0 or windowSeconds <= 0.
+ */
+export declare function recordResumeAndCheckBreaker(sessionId: string, maxResumes: number, windowSeconds: number, now?: number): {
+    tripped: boolean;
+    countInWindow: number;
+};
 export interface RecoveredSession {
     id: string;
     requester: string;

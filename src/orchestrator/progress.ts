@@ -65,7 +65,14 @@ export interface ProgressSnapshot {
   repo: string;
   branch: string;
   cycle: number;
-  cost: { spentUsd: number; budgetUsd: number; ratio: number };
+  /**
+   * beta.81 (Track A / A2): `estimatedUsd` is the harness-owned up-front
+   * session cost estimate (persisted at start); `pctOfCap` is spend as a
+   * whole-number percentage of the session cap (0 when the cap is 0). These
+   * make usage-vs-limit surface as an explicit "% of cap" (not just $X/$Y) and
+   * the estimate answerable from the poll snapshot.
+   */
+  cost: { spentUsd: number; budgetUsd: number; ratio: number; estimatedUsd: number | null; pctOfCap: number };
   subTasks: {
     total: number;
     done: number;
@@ -151,6 +158,7 @@ interface SessionRow {
   clarification_question: string | null;
   clarification_seq: number | null;
   last_progress_at: number | null;
+  estimated_usd: number | null;
 }
 
 function round(n: number, dp = 4): number {
@@ -190,7 +198,7 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     repo: "",
     branch: "",
     cycle: 0,
-    cost: { spentUsd: 0, budgetUsd: 0, ratio: 0 },
+    cost: { spentUsd: 0, budgetUsd: 0, ratio: 0, estimatedUsd: null, pctOfCap: 0 },
     subTasks: { total: 0, done: 0, running: 0, failed: 0, current: null, all: [] },
     prNumber: null,
     prUrl: null,
@@ -212,7 +220,8 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     .prepare(
       `SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
               pr_number, final_pr_url, deploy_status,
-              clarification_question, clarification_seq, last_progress_at
+              clarification_question, clarification_seq, last_progress_at,
+              estimated_usd
          FROM sessions WHERE id = ?`,
     )
     .get(sessionId) as SessionRow | undefined;
@@ -372,6 +381,7 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
         prNumber: row.pr_number ?? null,
         deployStatus: row.deploy_status ?? null,
         failureDetail,
+        estimatedUsd: typeof row.estimated_usd === "number" ? row.estimated_usd : null,
       });
 
   return {
@@ -384,7 +394,14 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     repo: row.repo,
     branch: row.branch,
     cycle: latestCycle,
-    cost: { spentUsd: round(spentUsd), budgetUsd: round(budgetUsd), ratio },
+    cost: {
+      spentUsd: round(spentUsd),
+      budgetUsd: round(budgetUsd),
+      ratio,
+      // beta.81 (Track A / A2): surface the up-front estimate + % of cap.
+      estimatedUsd: typeof row.estimated_usd === "number" ? round(row.estimated_usd) : null,
+      pctOfCap: budgetUsd > 0 ? Math.min(999, Math.round((spentUsd / budgetUsd) * 100)) : 0,
+    },
     subTasks: { total: all.length, done, running, failed, current, all },
     prNumber: row.pr_number ?? null,
     prUrl: row.final_pr_url ?? null,
@@ -420,18 +437,39 @@ export function buildHeadline(input: {
   prNumber: number | null;
   deployStatus: string | null;
   failureDetail?: string;
+  /** beta.81 (Track A / A2): up-front session estimate, for the terminal line. */
+  estimatedUsd?: number | null;
 }): string {
-  const cost = input.budgetUsd > 0 ? ` (${fmtUsd(input.spentUsd)}/${fmtUsd(input.budgetUsd)})` : ` (${fmtUsd(input.spentUsd)})`;
+  // beta.81 (Track A / A2): cost fragment now carries an explicit "% of cap"
+  // (not just $X/$Y) so usage-vs-limit is unambiguous. Live + terminal.
+  const pct = input.budgetUsd > 0 ? Math.min(999, Math.round((input.spentUsd / input.budgetUsd) * 100)) : 0;
+  const cost =
+    input.budgetUsd > 0
+      ? ` (${fmtUsd(input.spentUsd)}/${fmtUsd(input.budgetUsd)}, ${pct}% of cap)`
+      : ` (${fmtUsd(input.spentUsd)})`;
 
   if (input.status === "done") {
     const pr = input.prNumber ? ` — PR #${input.prNumber}` : "";
+    // beta.81 (A2): terminal totals -- final spend vs cap + % of cap.
     return `Done${pr}${cost}.`;
   }
   if (input.status === "failed" || input.status === "failed_verification") {
     const why = input.failureDetail ? ` — ${input.failureDetail}` : "";
-    return `Failed during ${input.phase.toLowerCase()}${why}${cost}.`;
+    // beta.81 (A2): when the beta.61 budget reserve/abort fired, the terminal
+    // message must be ACTIONABLE -- say used/cap and offer a higher-cap re-run.
+    const reserveHint =
+      input.failureDetail && /budget|reserve|would exceed|projection|daily_max|exhaust/i.test(input.failureDetail)
+        ? ` Re-run at a higher cap to finish.`
+        : "";
+    return `Failed during ${input.phase.toLowerCase()}${why}${cost}.${reserveHint}`;
   }
-  if (input.status === "aborted") return `Aborted${cost}.`;
+  if (input.status === "aborted") {
+    const reserveHint =
+      input.failureDetail && /budget|reserve|would exceed|projection|daily_max|exhaust/i.test(input.failureDetail)
+        ? ` Re-run at a higher cap to finish.`
+        : "";
+    return `Aborted${cost}.${reserveHint}`;
+  }
 
   if (input.status === "executing" && input.total > 0) {
     const n = Math.min(input.done + 1, input.total);

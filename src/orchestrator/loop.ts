@@ -508,6 +508,34 @@ export interface OrchestratorDeps {
   runScriptedTsc?: (worktreePath: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
 
   /**
+   * beta.81 (Track B / B2): read the COMBINED GitHub CI status for a pushed
+   * commit SHA -- "success" | "failure" | "pending" | "none" (no checks). Wraps
+   * getCombinedStatus (github.ts). The post-push CI wait-state polls this until
+   * it is not `pending` (or ci.wait_timeout_seconds elapses). Optional; when
+   * absent the CI wait is SKIPPED (pre-beta.81 behaviour) and the run ships on
+   * the review verdict alone. Injected in tests with a fake status sequence.
+   */
+  ciCombinedStatus?: (input: { repoFullName: string; sha: string; requester: string }) => Promise<"success" | "failure" | "pending" | "none">;
+
+  /**
+   * beta.81 (Track B / B2): on CI `failure`, fetch a short excerpt of the
+   * failing check-run logs so they can be surfaced as the revise finding
+   * source. Optional; when absent the failure is surfaced without log detail.
+   */
+  ciFailingLogs?: (input: { repoFullName: string; sha: string; requester: string }) => Promise<string>;
+
+  /**
+   * beta.81 (Track B / B3): when a repo has NO CI (`ciCombinedStatus === "none"`),
+   * AUTHOR a `.github/workflows/*.yml` running the repo's declared check
+   * scripts (detected from package.json: typecheck/lint/test/build) in the
+   * worktree so CI runs on GitHub. Returns the workflow path written (relative)
+   * or null if nothing to author (no package.json / no runnable scripts).
+   * Carel: no local fallback ever -- build the CI instead. Optional; when
+   * absent B3 is skipped. Injected in tests (no real fs write).
+   */
+  ciAuthorWorkflow?: (input: { worktreePath: string }) => Promise<{ path: string; scripts: string[] } | null>;
+
+  /**
    * beta.16 fix #3 + beta.17 correctness: release the per-session git
    * worktree on terminal transitions (`loop.shipped`, `loop.aborted`, hard
    * failure). Prior to beta.16 the worktree stayed live until the PR
@@ -1876,14 +1904,17 @@ export class OrchestratorLoop {
           return this.finaliseAbort(sessionId, "daily_max_exhausted", cycle, totalCost);
         }
       }
-      // beta.63 (convention-awareness Fix 2): FINAL-VERIFY check-script run.
-      // After the cycle's sub-tasks complete, run the repo's DECLARED check
-      // scripts (okf:check / lint / typecheck / test, gated by the allowlist)
-      // inline + blocking in the worktree. A non-zero exit is a REVISE-worthy
-      // finding (folds into this cycle's review as a convention finding), NOT a
-      // hard run-fail -- the code may be correct and only a bundle stale (PR
-      // #859). An unrunnable / network-needing / timed-out script is a non-fatal
-      // note. This catches conventions CI does not gate.
+      // beta.81 (Track B / B4): the beta.63 LOCAL check-script runner is RETIRED
+      // from the verification spine. Carel: "the harness should code, not try and
+      // run it locally ... I do not want it to run locally, ever." Verification
+      // is CI-only now (the post-push getCombinedStatus poll, B2). The runner is
+      // fully off by default (verify.run_repo_check_scripts defaults to false in
+      // beta.81); runFinalVerifyChecks early-returns [] in that case, so no local
+      // typecheck/lint/test/build runs here. The runCheckScripts plumbing is
+      // kept ONLY for the tryScriptedVerifyFallback rescue of a timed-out
+      // observe VERIFY sub-task (a deterministic diff/tsc rescue), NOT as a
+      // verify gate. An operator can still opt back in by setting
+      // verify.run_repo_check_scripts:true, but the default path is CI-only.
       const conventionFindings = await this.runFinalVerifyChecks(sessionId, plan, cycle);
 
       this.setStatus(sessionId, "reviewing");
@@ -2099,6 +2130,24 @@ export class OrchestratorLoop {
     // bare exception) was completely invisible (session 70341bc3). Emit an
     // explicit start + failure event carrying the underlying error.
     this.deps.state.audit("loop.pr_open_started", { sessionId, cycle, branch: plan.branch }, sessionId);
+    // beta.81 (Track B / B3): if the repo has NO CI, AUTHOR a GitHub Actions
+    // workflow running the repo's declared check scripts and COMMIT it into the
+    // worktree BEFORE the push, so verification runs on GitHub (Carel: build the
+    // CI, never run locally). ciAuthorWorkflow returns null when a workflow
+    // already exists or nothing is runnable. Best-effort: a failure here must
+    // not block the push (the PR + review already stand); it just means no CI.
+    if (this.deps.ciAuthorWorkflow) {
+      try {
+        const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
+        if (authored) {
+          this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts }, sessionId);
+          this.deps.interactionLog?.log(sessionId, { event: "ci_workflow_authored", phase: "finalize", cycle, path: authored.path, scripts: authored.scripts });
+          this.deps.logger.info("[loop] authored a GitHub Actions workflow for a no-CI repo (beta.81 B3)", { sessionId, path: authored.path, scripts: authored.scripts });
+        }
+      } catch (err) {
+        this.deps.logger.warn("[loop] CI workflow authoring failed (non-fatal; repo will simply have no CI)", { sessionId, err: String(err) });
+      }
+    }
     try {
       prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
     } catch (err) {
@@ -2108,6 +2157,42 @@ export class OrchestratorLoop {
     }
     // beta.63 (Part A): PR opened -- mark progress before the terminal write.
     this.markProgress(sessionId, "pr_opened", "finalize", { cycle });
+    // beta.81 (Track B / B2): POST-PUSH CI VERIFICATION WAIT-STATE. Now that the
+    // branch is on GitHub, poll CI and fold the result into the terminal
+    // recommendation. success -> ship as normal (review verdict drives the
+    // merge rec below). failure -> flag needs_human_review with the failing CI
+    // logs as the recorded reason (the revise finding source). timeout ->
+    // SOFT checkpoint: keep the PR open, needs_human_review, offer a resumable
+    // continue-watch (never a hard fail). none/skipped -> ship on the review
+    // verdict (a no-CI repo just got a workflow authored above but its FIRST
+    // status may not exist yet on this SHA; do not block the deliverable).
+    let ciOverride: { recommendation: "needs_human_review"; reason: string } | null = null;
+    {
+      let headSha = "";
+      try {
+        headSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+      } catch { headSha = ""; }
+      if (headSha && this.deps.ciCombinedStatus) {
+        this.setStatus(sessionId, "reviewing");
+        this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
+        const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester });
+        if (ci.outcome === "failure") {
+          ciOverride = {
+            recommendation: "needs_human_review",
+            reason:
+              `GitHub CI FAILED on ${headSha}. Do NOT merge until CI is green. Failing check logs (excerpt):\n` +
+              `${(ci.logs || "(no log excerpt available)").slice(0, 1500)}`,
+          };
+        } else if (ci.outcome === "timeout") {
+          ciOverride = {
+            recommendation: "needs_human_review",
+            reason:
+              `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
+              `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via harness_progress -- this is a soft checkpoint, not a failure.`,
+          };
+        }
+      }
+    }
     // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
     // the final review + whether we reached a clean pass. Persist it + the PR
     // number for the harness_merge_pr hard gate.
@@ -2117,15 +2202,20 @@ export class OrchestratorLoop {
       reachedCleanPass,
       ciStatus: undefined, // the merge tool re-checks CI at merge time
     });
+    // beta.81 (Track B / B2): a CI failure/timeout OVERRIDES the review-derived
+    // recommendation to needs_human_review -- CI is the verification spine, so
+    // a red or still-running CI must never be recommended for merge.
+    const finalRecommendation = ciOverride?.recommendation ?? rec.recommendation;
+    const finalReason = ciOverride ? `${ciOverride.reason}\n\n(review verdict: ${lastReview.verdict}; ${rec.reason})` : rec.reason;
     const prNumber = parsePrNumber(prUrl);
     this.deps.state.db
       .prepare(
         `UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`,
       )
-      .run(prUrl, prNumber ?? null, rec.recommendation, rec.reason, Date.now(), sessionId);
+      .run(prUrl, prNumber ?? null, finalRecommendation, finalReason, Date.now(), sessionId);
     this.deps.state.audit(
       "loop.shipped",
-      { sessionId, prUrl, prNumber, mergeRecommendation: rec.recommendation, reason: rec.reason },
+      { sessionId, prUrl, prNumber, mergeRecommendation: finalRecommendation, reason: finalReason, ciOverride: !!ciOverride },
       sessionId,
     );
     // beta.16 fix #3 + beta.17 correctness: prune the worktree on
@@ -2365,6 +2455,22 @@ export class OrchestratorLoop {
       const attemptStart = Date.now();
       let result: WorkerResult | null = null;
       let threwTimeout = false;
+      // beta.81 (Track C / C1): PROVE the SDK re-entry actually happens on a
+      // retry. Forensic d01a7484 logged `worker_timeout_retry attempt:2` but
+      // then fired ZERO sdk_request/sdk_stream_opened for ~65 min -- the retry
+      // executor died BETWEEN the audit log line and the runWorker call, so the
+      // retry "log-then-noop"'d into silence with the sub-task row untouched.
+      // This audit fires IMMEDIATELY before the (re-)invocation, so a retry that
+      // never reaches runWorker is now distinguishable in the trail, and the
+      // loop still cannot fall out of this method without a terminal outcome
+      // (see the guaranteed `{outcome:'timeout'}` return below).
+      if (attempt > 1) {
+        this.deps.state.audit(
+          "loop.worker_retry_reinvoked",
+          { sessionId, seq: st.seq, attempt, worker_timeout_seconds: this.deps.config.loop.worker_timeout_seconds },
+          sessionId,
+        );
+      }
       try {
         result = await withTimeout(
           this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint }),
@@ -2457,7 +2563,15 @@ export class OrchestratorLoop {
       }
       // Loop continues to the retry attempt (if any); otherwise falls through.
     }
-    return { outcome: "timeout", summary: lastSummary, failErr: lastFailErr };
+    // beta.81 (Track C / C1): a retried-but-still-timed-out sub-task MUST return
+    // a terminal timeout outcome (the caller marks the row failed) -- NEVER a
+    // no-op that leaves the sub-task row `running` forever. Guarantee a
+    // non-empty summary/failErr so the terminal fail is always attributable.
+    return {
+      outcome: "timeout",
+      summary: lastSummary || `worker_timeout (exhausted ${maxAttempts} attempt(s)) seq ${st.seq}`,
+      failErr: lastFailErr || `worker_timeout: seq ${st.seq}`,
+    };
   }
 
   /**
@@ -2612,6 +2726,96 @@ export class OrchestratorLoop {
     this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr", phase: "finalize", seq: st.seq, prUrl, prNumber });
     await this.tryReleaseWorktree(sessionId, plan.repo, plan.worktreePath, "shipped");
     return true;
+  }
+
+  /**
+   * beta.81 (Track B / B2 + B3): POST-PUSH CI VERIFICATION WAIT-STATE. After a
+   * branch is pushed + the PR opened, CI is the verification spine (Carel:
+   * "the harness should just monitor the CI and check for errors"). This polls
+   * getCombinedStatus(headSha) every `ci.poll_interval_seconds` until it is not
+   * `pending`, up to `ci.wait_timeout_seconds`, and returns one of:
+   *   - {outcome:'success'}  -> proceed to ship (caller keeps the PR).
+   *   - {outcome:'failure', logs} -> CI red; caller drives a revise / flags the
+   *       PR needs_human_review with the failing logs as the finding source.
+   *   - {outcome:'timeout'} -> SOFT checkpoint (Carel: not a hard fail): surface
+   *       "CI still running after N min on <sha>" + offer a resumable
+   *       continue-watching. Caller keeps the PR open (needs_human_review).
+   *   - {outcome:'none'} -> repo has NO CI. Caller authors a workflow (B3) --
+   *       NEVER a local fallback (Carel: "I do not want it to run locally, ever").
+   *   - {outcome:'skipped'} -> ciCombinedStatus dep absent (pre-beta.81 test
+   *       doubles / unwired deployments); caller ships on the review verdict.
+   * Injected `sleep` (default real setTimeout) keeps tests instant. Never throws
+   * -- a status-fetch error is treated as a transient `pending` and re-polled.
+   */
+  async pollCiStatus(input: {
+    sessionId: string;
+    repoFullName: string;
+    sha: string;
+    requester: string;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  }): Promise<
+    | { outcome: "success" }
+    | { outcome: "failure"; logs: string }
+    | { outcome: "timeout"; sha: string; waitedSeconds: number }
+    | { outcome: "none" }
+    | { outcome: "skipped" }
+  > {
+    const { sessionId, repoFullName, sha, requester } = input;
+    if (!this.deps.ciCombinedStatus) return { outcome: "skipped" };
+    const cfg = this.deps.config.ci ?? { wait_timeout_seconds: 900, poll_interval_seconds: 20 };
+    const waitMs = Math.max(30, cfg.wait_timeout_seconds ?? 900) * 1000;
+    const pollMs = Math.max(5, cfg.poll_interval_seconds ?? 20) * 1000;
+    const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const now = input.now ?? (() => Date.now());
+    const started = now();
+    this.deps.state.audit("loop.ci_poll_started", { sessionId, sha, waitTimeoutSeconds: cfg.wait_timeout_seconds, pollIntervalSeconds: cfg.poll_interval_seconds }, sessionId);
+    this.deps.interactionLog?.log(sessionId, { event: "ci_poll_started", phase: "finalize", sha });
+    let polls = 0;
+    // First read is immediate (no leading sleep) so a repo with no CI resolves
+    // fast and a fast CI is not needlessly waited on.
+    for (;;) {
+      let status: "success" | "failure" | "pending" | "none";
+      try {
+        status = await this.deps.ciCombinedStatus({ repoFullName, sha, requester });
+      } catch (err) {
+        // Transient fetch error -> treat as pending + re-poll (never throw).
+        this.deps.logger.warn("[loop] CI status fetch failed (treating as pending)", { sessionId, sha, err: String(err) });
+        status = "pending";
+      }
+      polls++;
+      if (status === "success") {
+        this.deps.state.audit("loop.ci_success", { sessionId, sha, polls }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "ci_success", phase: "finalize", sha, polls });
+        return { outcome: "success" };
+      }
+      if (status === "failure") {
+        let logs = "";
+        try {
+          logs = this.deps.ciFailingLogs ? await this.deps.ciFailingLogs({ repoFullName, sha, requester }) : "";
+        } catch (err) {
+          this.deps.logger.warn("[loop] CI failing-log fetch failed (non-fatal)", { sessionId, sha, err: String(err) });
+        }
+        this.deps.state.audit("loop.ci_failure", { sessionId, sha, polls, logsExcerpt: (logs ?? "").slice(0, 800) }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "ci_failure", phase: "finalize", sha, polls });
+        return { outcome: "failure", logs: logs ?? "" };
+      }
+      if (status === "none") {
+        this.deps.state.audit("loop.ci_none", { sessionId, sha, polls }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "ci_none", phase: "finalize", sha });
+        return { outcome: "none" };
+      }
+      // pending: check the deadline, then sleep + re-poll.
+      const elapsed = now() - started;
+      if (elapsed + pollMs > waitMs) {
+        const waitedSeconds = Math.round(elapsed / 1000);
+        this.deps.state.audit("loop.ci_wait_timeout", { sessionId, sha, polls, waitedSeconds, waitTimeoutSeconds: cfg.wait_timeout_seconds }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "ci_wait_timeout", phase: "finalize", sha, waitedSeconds });
+        this.deps.logger.warn("[loop] CI still running after the wait timeout; surfacing a resumable checkpoint (NOT a hard fail)", { sessionId, sha, waitedSeconds });
+        return { outcome: "timeout", sha, waitedSeconds };
+      }
+      await sleep(pollMs);
+    }
   }
 
   /**

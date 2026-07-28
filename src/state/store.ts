@@ -103,6 +103,9 @@ export function openStateStoreSync(pathHint: string): StateStore {
     // it sees ONLY the branch's own commits (beta.66 smoke #4 diffed against
     // main-at-review-time and hallucinated unrelated commits => false revise).
     { table: "sessions", column: "plan_base_sha",                type: "TEXT" },    // fork-point sha for adversary diff base
+    // beta.81 (Track A / A1): harness-owned session cost estimate (USD) surfaced
+    // up front. Persisted so progress/terminal/loop.start echo it reliably.
+    { table: "sessions", column: "estimated_usd",                type: "REAL" },    // session cost estimate at start
   ];
   for (const m of additiveMigrations) {
     try {

@@ -74,6 +74,14 @@ const DEFAULTS = {
         worker_timeout_retry_enabled: true,
         best_effort_verify: true,
         scripted_verify_fallback: true,
+        recovery_max_resumes: 3,
+        recovery_resume_window_seconds: 60,
+        recovery_resume_at_subtask: true,
+        lead_json_retry_enabled: true,
+    },
+    ci: {
+        wait_timeout_seconds: 900,
+        poll_interval_seconds: 20,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",
@@ -144,7 +152,12 @@ const DEFAULTS = {
         bimodal_min_interpretations: 2,
     },
     verify: {
-        run_repo_check_scripts: true,
+        // beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the
+        // verification spine -- verification is CI-only now (Carel: "I do not want
+        // it to run locally, ever"). Default false. The runner code is kept only
+        // for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task
+        // (a deterministic diff/tsc rescue), NOT as a verify gate.
+        run_repo_check_scripts: false,
         check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
         check_script_timeout_seconds: 600,
         check_script_heap_retry_mb: 8192,
@@ -295,6 +308,16 @@ export function parseHarnessConfig(input) {
             merged.loop.sdk_stream_open_timeout_seconds = 10;
         if (merged.loop.sdk_stream_open_timeout_seconds > 600)
             merged.loop.sdk_stream_open_timeout_seconds = 600;
+    }
+    // beta.81 (Track B / B2): clamp the CI-wait window + poll cadence. The wait
+    // is a SOFT checkpoint (surfaces + offers resume on timeout, never a hard
+    // fail), so the range is generous; the poll interval floors at 5s so a fast
+    // CI is not hammered and ceilings at 300s so a slow CI is not missed.
+    if (typeof merged.ci?.wait_timeout_seconds === "number") {
+        merged.ci.wait_timeout_seconds = Math.max(30, Math.min(7200, merged.ci.wait_timeout_seconds));
+    }
+    if (typeof merged.ci?.poll_interval_seconds === "number") {
+        merged.ci.poll_interval_seconds = Math.max(5, Math.min(300, merged.ci.poll_interval_seconds));
     }
     if (merged.vercel.enabled) {
         if (!merged.vercel.credential_service)

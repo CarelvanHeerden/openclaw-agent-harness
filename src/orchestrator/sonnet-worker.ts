@@ -295,24 +295,36 @@ export function buildWorkerSystemPrompt(
     `  event, the work simply does not get done and the sub-task FAILS.`,
     `- NEVER 'await', 'wait for', or 'poll for' a harness/monitor/install event.`,
     `  These mechanisms do not exist in this harness.`,
-    `- If you need a long-running process (npm install / npm ci, tsc, a build, a`,
-    `  test run), run it INLINE in a single Bash tool call that BLOCKS until the`,
-    `  process exits (e.g. \`npm ci && npx tsc --noEmit\`), read its result, then`,
-    `  continue working in the SAME turn. Do not background it and wait.`,
-    `- To RUN TESTS, a BUILD, or LINT: execute the command yourself, directly, in`,
-    `  a single blocking Bash call in THIS turn (e.g. \`npm test\`, \`npx vitest run\`,`,
-    `  \`npm run build\`, \`npx eslint .\`) and read its output. There is NO async`,
-    `  test runner, NO "background watcher", NO "completion notification", and NO`,
-    `  "test-run event". Nobody runs your tests for you and nobody messages you`,
-    `  when they finish. YOU run them, inline, and read the result.`,
+    `- If you TRULY need a one-off install to make an edit possible (rare -- e.g.`,
+    `  \`npm ci\` so an import resolves for a scoped read), run it INLINE in a`,
+    `  single Bash tool call that BLOCKS until the process exits, read its`,
+    `  result, then continue in the SAME turn. Do not background it and wait.`,
+    // beta.81 (Track B / B1): CI-VERIFICATION SHIFT. The worker WRITES + COMMITS
+    // code; GitHub CI verifies it. The pre-beta.81 prompt told the worker to run
+    // \`npm test\` / \`npx vitest run\` / \`npm run build\` / \`npx eslint .\` in-turn
+    // "to green" -- that is what let sub-task 11 (the oversized test sub-task) sit
+    // in an until-green loop. Verification is now CI-only: after the branch is
+    // pushed the harness polls GitHub's combined status/check-runs. Do NOT run
+    // the suite/build/lint locally as a verification gate.
+    `- DO NOT run the test suite, a build, or lint "to green" in your turn. That`,
+    `  means: do NOT run \`npm test\`, \`npx vitest run\`, \`npm run build\`, \`tsc\`,`,
+    `  \`npx eslint .\`, or any whole-project check as a VERIFICATION step. GitHub`,
+    `  CI runs those AFTER the harness pushes your branch, and the harness reads`,
+    `  the CI result. Nobody needs you to prove green locally, and there is NO`,
+    `  async test runner / background watcher / "test-run event" in this harness.`,
+    `  Your job is to WRITE the correct code and COMMIT it. Committing the correct`,
+    `  change is what completes the sub-task; CI does the verifying.`,
     `- HARD STOP RULE: if you are about to write "I'll wait for", "waiting for the`,
     `  notification/event/signal", "the monitor/watcher/observer/background process`,
     `  will notify me", or any phrase implying something will resume you -- STOP.`,
     `  That mechanism does not exist. Run the command inline instead and continue.`,
     `  Ending your turn on such a phrase = the sub-task FAILS with zero work done.`,
-    `- Only run verification (typecheck/tests) if THIS sub-task's success criteria`,
-    `  require it. Do not go off-plan to self-verify; make the required edit and`,
-    `  commit. Committing the correct change is what completes the sub-task.`,
+    `- Do not go off-plan to self-verify by running the suite/build/lint. Make`,
+    `  the required edit and commit. Committing the correct change is what`,
+    `  completes the sub-task; GitHub CI verifies it after the push. (If THIS`,
+    `  sub-task's success criteria are literally "a test asserts X", WRITE that`,
+    `  test file and commit it -- authoring a test is code; RUNNING the suite to`,
+    `  green is not your job.)`,
     // beta.70 (F1): worker-turn slimming. The harness runs the repo's declared
     // check scripts (typecheck, lint, and any generator like `npm run okf`) in
     // a POST-WORKER convention-check phase -- see repo-conventions.ts. In
@@ -320,19 +332,20 @@ export function buildWorkerSystemPrompt(
     // 1436-file regenerator) + a repo-wide `tsc` inside its own turn to land a
     // 3-line diff, duplicating work the pipeline does downstream. Keep heavy
     // repo-wide tooling OUT of the worker turn.
-    `- DO NOT run repo-wide generators, full-repo builds, or whole-project`,
-    `  typechecks inside your turn. Specifically: do NOT run bundle/artifact`,
-    `  regenerators (e.g. \`npm run okf\`, codegen, "regenerate the bundle"),`,
-    `  do NOT run a repo-wide \`tsc --noEmit\` / full \`npm run build\`, and do NOT`,
-    `  run a whole-repo lint. The harness runs the repo's declared check scripts`,
-    `  (typecheck, lint, okf:check, and any regenerator) AFTER your turn, once,`,
-    `  in its convention-check phase. Running them yourself duplicates minutes of`,
-    `  work and often produces a zero diff. If a repo convention says "regenerate`,
-    `  the bundle", the harness does that for you post-turn -- you do NOT.`,
-    `- For your OWN correctness feedback you MAY read the specific files you`,
-    `  changed and reason about them, or run a check scoped to ONLY the file(s)`,
-    `  you touched if the tooling supports it cheaply. Never expand a scoped`,
-    `  check into a whole-repo run. When in doubt, make the edit, commit, stop.`,
+    // beta.81 (Track B / B1) EXTENDS this beta.70 guard: not only "no repo-wide
+    // generators/builds/typechecks in-turn" but "no local verification runs at
+    // all" -- CI is the verification spine now.
+    `- DO NOT run repo-wide generators, full-repo builds, whole-project`,
+    `  typechecks, or the test suite/lint inside your turn. Specifically: do NOT`,
+    `  run bundle/artifact regenerators (e.g. \`npm run okf\`, codegen,`,
+    `  "regenerate the bundle"), do NOT run a repo-wide \`tsc --noEmit\` / full`,
+    `  \`npm run build\`, do NOT run \`npm test\` / \`npx vitest run\`, and do NOT`,
+    `  run a whole-repo lint. GitHub CI runs the repo's declared checks AFTER the`,
+    `  harness pushes your branch. Running them yourself duplicates minutes of`,
+    `  work, often produces a zero diff, and is NOT how this sub-task is verified.`,
+    `- For your OWN reasoning you MAY read the specific files you changed and`,
+    `  reason about them. Do NOT turn that into a suite/build/lint run. When in`,
+    `  doubt, make the edit, commit, stop -- CI verifies.`,
   );
   // beta.63 (Fix 1): the worker gets NO OpenClaw context injection, so the
   // repo's declared conventions must be carried in the prompt explicitly.

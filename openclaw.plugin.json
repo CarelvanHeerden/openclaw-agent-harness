@@ -384,6 +384,43 @@
             "type": "boolean",
             "default": true,
             "description": "beta.64 (P0-4): SCRIPTED VERIFIER FALLBACK. When an observe-mode VERIFY sub-task times out (before giving up to best-effort verify), run a DETERMINISTIC fallback -- npx tsc --noEmit + git diff --stat <base>..HEAD + the allowlisted repo check scripts (reusing beta.63 runFinalVerifyChecks/discoverCheckScripts/runCheckScripts) -- and report pass/fail to the loop as if the sub-task ran. A run-tsc/lint/diff/grep verify sub-task needs no LLM, so a hung verifier should not block a shippable change."
+          },
+          "recovery_max_resumes": {
+            "type": "number",
+            "default": 3,
+            "description": "beta.81 (Track C / C4): recovery-resume circuit breaker. When MORE than this many recovery.auto_resuming events fire for the SAME session within recovery_resume_window_seconds, the harness HARD-STOPS that session (marks it failed, reason recovery_bounce_loop) and surfaces it to a human instead of resuming again (forensic d01a7484 bounce loop)."
+          },
+          "recovery_resume_window_seconds": {
+            "type": "number",
+            "default": 60,
+            "description": "beta.81 (Track C / C4): window (seconds) over which recovery_max_resumes auto-resumes for a single session trip the circuit breaker."
+          },
+          "recovery_resume_at_subtask": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.81 (Track C / C3): when a session left mid-executing is recovered, RESUME AT the failed/incomplete sub-task (mark the orphaned running sub-task failed, preserve completed sub-task commits) instead of re-planning the whole session from scratch (which re-burns completed sub-tasks). Set false to restore the pre-beta.81 full-restart recovery behaviour."
+          },
+          "lead_json_retry_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.81 (Track C): give the LEAD re-plan SDK call the same retry-once-on-extractJson-failure guard the classifier has, so a transient prose-drift (lead returns prose instead of the JSON plan contract) does not hard-crash the plan."
+          }
+        }
+      },
+      "ci": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness polls the commit's combined GitHub status/check-runs and treats CI as the verification spine.",
+        "properties": {
+          "wait_timeout_seconds": {
+            "type": "number",
+            "default": 900,
+            "description": "beta.81 (B2): max wall-clock seconds the harness waits for CI to finish after pushing a branch before it treats the wait as a SOFT checkpoint (surfaces 'CI still running after N min on <sha>' and offers a resumable continue-watching -- never a hard fail). Clamped [30, 7200]."
+          },
+          "poll_interval_seconds": {
+            "type": "number",
+            "default": 20,
+            "description": "beta.81 (B2): poll interval (seconds) for the post-push CI wait; the harness re-queries getCombinedStatus(headSha) every this-many seconds until it is not pending or the wait_timeout_seconds elapses. Clamped [5, 300]."
           }
         }
       },
@@ -668,8 +705,8 @@
         "properties": {
           "run_repo_check_scripts": {
             "type": "boolean",
-            "default": true,
-            "description": "beta.63 (Fix 2): the final-verify sub-task runs repo-declared check scripts (from package.json#scripts) inline + blocking in the worktree. A non-zero exit becomes a REVISE-worthy loop.convention_check_failed finding, NOT a hard run-fail (the code may be correct and only a bundle stale). An unrunnable / network-needing script is logged non-fatal + noted."
+            "default": false,
+            "description": "beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the verification spine -- verification is CI-only now (Carel: 'I do not want it to run locally, ever'). Default false. When true (opt-in), the final-verify sub-task runs repo-declared check scripts inline in the worktree (beta.63 behaviour) as REVISE-worthy findings. The runner plumbing is otherwise kept only for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task, NOT as a verify gate."
           },
           "check_script_allowlist": {
             "type": "array",

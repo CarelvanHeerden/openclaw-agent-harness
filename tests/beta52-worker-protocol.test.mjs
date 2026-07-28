@@ -47,17 +47,24 @@ test("beta52: worker prompt forbids awaiting/waiting/polling for harness events"
   assert.match(p, /NEVER 'await', 'wait for', or 'poll for'/);
 });
 
-test("beta52: worker prompt tells it to run long processes inline + blocking", () => {
+test("beta52: worker prompt tells it to run a rare one-off install inline + blocking", () => {
+  // beta.81 (Track B / B1) SUPERSEDES the beta.52 wording: the worker no longer
+  // runs "long processes" (tests/build/lint) to green at all -- CI does that.
+  // A rare one-off install (e.g. `npm ci` so an import resolves) is still run
+  // INLINE + BLOCKING, so this clause survives, re-scoped to that case.
   const p = buildWorkerSystemPrompt(brief, subTask);
-  assert.match(p, /INLINE in a single Bash tool call that BLOCKS/);
+  assert.match(p, /single Bash tool call that BLOCKS until the process/);
   assert.match(p, /npm ci/);
   assert.match(p, /Do not background it and wait/);
 });
 
-test("beta52: worker prompt discourages off-plan self-verification", () => {
+test("beta52: worker prompt discourages off-plan self-verification (beta.81: CI verifies, not the worker)", () => {
+  // beta.81 (Track B / B1) SUPERSEDES the beta.52 "Only run verification if
+  // success criteria require it" clause: the worker never runs the suite/build/
+  // lint as a verification gate now -- GitHub CI is the verification spine.
   const p = buildWorkerSystemPrompt(brief, subTask);
-  assert.match(p, /Only run verification .* if THIS sub-task's success criteria/);
-  assert.match(p, /Do not go off-plan to self-verify/);
+  assert.match(p, /Do not go off-plan to self-verify by running the suite\/build\/lint/);
+  assert.match(p, /GitHub CI verifies it after the push/);
 });
 
 // ---------------------------------------------------------------------------

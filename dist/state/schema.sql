@@ -55,7 +55,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- so it sees ONLY the branch's own commits, not accumulated main history
   -- (beta.66 smoke #4 diffed against main-at-review-time and hallucinated
   -- unrelated commits => false-positive revise + a wasted cycle).
-  plan_base_sha            TEXT               -- fork-point sha for the adversary diff base
+  plan_base_sha            TEXT,              -- fork-point sha for the adversary diff base
+  -- beta.81 (Track A / A1): the harness-owned SESSION cost ESTIMATE surfaced up
+  -- front (from recommendBudget). Persisted so harness_progress / terminal /
+  -- the loop.start audit echo "Estimated ~$X; cap $Y" independent of whether
+  -- the agent relays the harness_run note.
+  estimated_usd            REAL               -- session cost estimate (USD) at start
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

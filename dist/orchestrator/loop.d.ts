@@ -294,6 +294,44 @@ export interface OrchestratorDeps {
         output: string;
     }>;
     /**
+     * beta.81 (Track B / B2): read the COMBINED GitHub CI status for a pushed
+     * commit SHA -- "success" | "failure" | "pending" | "none" (no checks). Wraps
+     * getCombinedStatus (github.ts). The post-push CI wait-state polls this until
+     * it is not `pending` (or ci.wait_timeout_seconds elapses). Optional; when
+     * absent the CI wait is SKIPPED (pre-beta.81 behaviour) and the run ships on
+     * the review verdict alone. Injected in tests with a fake status sequence.
+     */
+    ciCombinedStatus?: (input: {
+        repoFullName: string;
+        sha: string;
+        requester: string;
+    }) => Promise<"success" | "failure" | "pending" | "none">;
+    /**
+     * beta.81 (Track B / B2): on CI `failure`, fetch a short excerpt of the
+     * failing check-run logs so they can be surfaced as the revise finding
+     * source. Optional; when absent the failure is surfaced without log detail.
+     */
+    ciFailingLogs?: (input: {
+        repoFullName: string;
+        sha: string;
+        requester: string;
+    }) => Promise<string>;
+    /**
+     * beta.81 (Track B / B3): when a repo has NO CI (`ciCombinedStatus === "none"`),
+     * AUTHOR a `.github/workflows/*.yml` running the repo's declared check
+     * scripts (detected from package.json: typecheck/lint/test/build) in the
+     * worktree so CI runs on GitHub. Returns the workflow path written (relative)
+     * or null if nothing to author (no package.json / no runnable scripts).
+     * Carel: no local fallback ever -- build the CI instead. Optional; when
+     * absent B3 is skipped. Injected in tests (no real fs write).
+     */
+    ciAuthorWorkflow?: (input: {
+        worktreePath: string;
+    }) => Promise<{
+        path: string;
+        scripts: string[];
+    } | null>;
+    /**
      * beta.16 fix #3 + beta.17 correctness: release the per-session git
      * worktree on terminal transitions (`loop.shipped`, `loop.aborted`, hard
      * failure). Prior to beta.16 the worktree stayed live until the PR
@@ -490,6 +528,46 @@ export declare class OrchestratorLoop {
      * Never throws.
      */
     private tryBestEffortVerify;
+    /**
+     * beta.81 (Track B / B2 + B3): POST-PUSH CI VERIFICATION WAIT-STATE. After a
+     * branch is pushed + the PR opened, CI is the verification spine (Carel:
+     * "the harness should just monitor the CI and check for errors"). This polls
+     * getCombinedStatus(headSha) every `ci.poll_interval_seconds` until it is not
+     * `pending`, up to `ci.wait_timeout_seconds`, and returns one of:
+     *   - {outcome:'success'}  -> proceed to ship (caller keeps the PR).
+     *   - {outcome:'failure', logs} -> CI red; caller drives a revise / flags the
+     *       PR needs_human_review with the failing logs as the finding source.
+     *   - {outcome:'timeout'} -> SOFT checkpoint (Carel: not a hard fail): surface
+     *       "CI still running after N min on <sha>" + offer a resumable
+     *       continue-watching. Caller keeps the PR open (needs_human_review).
+     *   - {outcome:'none'} -> repo has NO CI. Caller authors a workflow (B3) --
+     *       NEVER a local fallback (Carel: "I do not want it to run locally, ever").
+     *   - {outcome:'skipped'} -> ciCombinedStatus dep absent (pre-beta.81 test
+     *       doubles / unwired deployments); caller ships on the review verdict.
+     * Injected `sleep` (default real setTimeout) keeps tests instant. Never throws
+     * -- a status-fetch error is treated as a transient `pending` and re-polled.
+     */
+    pollCiStatus(input: {
+        sessionId: string;
+        repoFullName: string;
+        sha: string;
+        requester: string;
+        sleep?: (ms: number) => Promise<void>;
+        now?: () => number;
+    }): Promise<{
+        outcome: "success";
+    } | {
+        outcome: "failure";
+        logs: string;
+    } | {
+        outcome: "timeout";
+        sha: string;
+        waitedSeconds: number;
+    } | {
+        outcome: "none";
+    } | {
+        outcome: "skipped";
+    }>;
     /**
      * beta.63 (convention-awareness Fix 2): run the repo's DECLARED check scripts
      * (from package.json#scripts, gated by verify.check_script_allowlist) inline +
