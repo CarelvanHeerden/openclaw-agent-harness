@@ -57,6 +57,28 @@ export interface BriefConfig {
    * dropping sources silently. Default 10000.
    */
   convention_char_budget: number;
+  /**
+   * beta.79 (F1): master switch for API-execution brief detection. When a
+   * crystallised brief's acceptance criteria are DOMINATED by external-API
+   * side-effect signals (live URLs, POST/DELETE verbs, HTTP status/return
+   * contracts against a live system), the crystalliser returns a `clarify`
+   * instead of a brief — the harness generates repo code + opens a PR, it does
+   * not execute calls against a live API. Default true. Set false to restore
+   * pre-beta.79 behaviour (always plan the brief).
+   */
+  api_execution_detection: boolean;
+  /**
+   * beta.79 (F1): minimum number of acceptance criteria that must carry an
+   * execution signal before the brief is flagged. Default 2 (a single
+   * incidental endpoint mention does not trip it).
+   */
+  api_execution_min_criteria: number;
+  /**
+   * beta.79 (F1): minimum matched/total AC ratio (dominance) to flag. Default
+   * 0.4 — the execution side-effects must dominate the brief, not be a stray
+   * note in an otherwise code-shaped task.
+   */
+  api_execution_min_ratio: number;
 }
 
 export interface VerifyConfig {
@@ -754,6 +776,9 @@ const DEFAULTS: HarnessConfig = {
   brief: {
     ingest_repo_conventions: true,
     convention_char_budget: 10000,
+    api_execution_detection: true,
+    api_execution_min_criteria: 2,
+    api_execution_min_ratio: 0.4,
   },
   verify: {
     run_repo_check_scripts: true,
