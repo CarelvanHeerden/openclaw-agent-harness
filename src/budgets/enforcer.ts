@@ -74,4 +74,23 @@ export class BudgetEnforcer {
       .get(month, user) as { spent_usd?: number } | undefined;
     return row?.spent_usd ?? 0;
   }
+
+  /**
+   * beta.78 (Feature 2): total USD a user has spent TODAY (UTC day). Reads
+   * the persistent `budgets_daily` ledger, so it survives OpenClaw restarts
+   * and resets only on UTC date rollover (a new day = a fresh row). This is
+   * the basis for the hard daily-cap stop and the daily-aware soft warning.
+   */
+  getDailySpend(user: string): number {
+    const day = new Date().toISOString().slice(0, 10);
+    const row = this.state.db
+      .prepare(`SELECT spent_usd FROM budgets_daily WHERE day = ? AND user = ?`)
+      .get(day, user) as { spent_usd?: number } | undefined;
+    return row?.spent_usd ?? 0;
+  }
+
+  /** beta.78: public read of a user's monthly spend (UTC month). */
+  getMonthlySpendPublic(user: string): number {
+    return this.getMonthlySpend(user);
+  }
 }

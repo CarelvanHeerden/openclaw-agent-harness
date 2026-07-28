@@ -233,6 +233,11 @@ export function parseHarnessConfig(input) {
     if (merged.slack.authorised_users.length === 0) {
         throw new Error("harness.slack.authorised_users must contain at least one Slack user id");
     }
+    // beta.78 (Feature 3): budget coherence. The HARD (fatal) invariants stay
+    // throws because a run built on them would be nonsensical. The SOFTER
+    // incoherences (e.g. daily_max > monthly_per_user) are surfaced as loud
+    // startup WARNINGS via assessBudgetCoherence() -> bootstrapHarnessAsync,
+    // not boot-fails, so an operator mis-ordering doesn't brick the harness.
     if (merged.budgets.session_default_usd > merged.budgets.session_hard_ceiling_usd) {
         throw new Error("harness.budgets.session_default_usd must be <= session_hard_ceiling_usd");
     }
@@ -298,5 +303,52 @@ export function parseHarnessConfig(input) {
     // operators find misconfig at config-load / reload, not mid-run.
     validatePatHierarchy(merged.pat_routing);
     return merged;
+}
+/**
+ * beta.78 (Feature 3): pure budget-coherence assessment.
+ *
+ * Carel's ask: "If the budgets do not match up the harness should raise
+ * this. Max daily is 200 but max monthly is 100?" This surfaces INCOHERENT
+ * budget configs as loud warnings at startup instead of silently letting a
+ * daily cap exceed the monthly cap (which makes the monthly cap unreachable
+ * as a per-day limiter and vice-versa).
+ *
+ * SIDE-EFFECT FREE + pure so it is trivially unit-testable and safe to call
+ * from bootstrap. Returns a list of human-readable warning strings; an empty
+ * list means the budgets are coherent. The HARD/fatal invariants
+ * (session_default <= hard_ceiling, monthly > 0, daily_max >= daily_warn)
+ * are enforced as throws in normaliseConfig(); this covers the softer
+ * ordering/coherence relationships that should WARN, not brick the boot.
+ *
+ * Expected sane ordering: session_default <= session_hard_ceiling <=
+ * daily_max <= monthly_per_user.
+ */
+export function assessBudgetCoherence(b) {
+    const warnings = [];
+    const { session_default_usd: sd, session_hard_ceiling_usd: hc, daily_max_usd: dm, daily_warn_usd: dw, monthly_per_user_usd: mo, } = b;
+    // The headline case from Carel: daily cap exceeds monthly cap.
+    if (dm > mo) {
+        warnings.push(`daily_max_usd ($${dm}) exceeds monthly_per_user_usd ($${mo}) -- a user could never actually reach the daily cap before the monthly cap stops them; the daily limit is effectively dead.`);
+    }
+    // A single session should not be allowed to blow the whole day.
+    if (hc > dm) {
+        warnings.push(`session_hard_ceiling_usd ($${hc}) exceeds daily_max_usd ($${dm}) -- one session can exhaust or overshoot a user's entire daily budget in a single run.`);
+    }
+    // A single session should not be allowed to blow the whole month.
+    if (hc > mo) {
+        warnings.push(`session_hard_ceiling_usd ($${hc}) exceeds monthly_per_user_usd ($${mo}) -- one session can exhaust a user's entire monthly budget.`);
+    }
+    // Warn threshold above hard cap is pointless (never fires).
+    if (dw > dm) {
+        warnings.push(`daily_warn_usd ($${dw}) exceeds daily_max_usd ($${dm}) -- the daily warning would never fire before the hard stop.`);
+    }
+    // Non-positive values that are not caught by the fatal checks.
+    if (sd <= 0)
+        warnings.push(`session_default_usd ($${sd}) should be > 0.`);
+    if (hc <= 0)
+        warnings.push(`session_hard_ceiling_usd ($${hc}) should be > 0.`);
+    if (dm <= 0)
+        warnings.push(`daily_max_usd ($${dm}) should be > 0 to act as a real hard stop.`);
+    return warnings;
 }
 //# sourceMappingURL=config.js.map

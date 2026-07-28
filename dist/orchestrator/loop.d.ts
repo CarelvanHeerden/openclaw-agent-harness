@@ -219,6 +219,15 @@ export interface OrchestratorDeps {
      */
     deliverProgress?: (sessionId: string, status: LoopStatus) => void;
     /**
+     * beta.78 (Feature 1+2): harness-native OUTBOUND ad-hoc warning delivery.
+     * Same independent direct-post channel as `deliverProgress` (vault bot token,
+     * gated on a real Slack binding), but for an arbitrary one-line warning
+     * (soft session-budget breach; daily-cap hit). Fire-and-forget, best-effort,
+     * never throws. Loop stays Slack-agnostic (no Slack import); a no-op when
+     * there is no poster or no real binding (agent-orchestrated runs).
+     */
+    postWarning?: (sessionId: string, text: string) => void;
+    /**
      * beta.8 fix #1 (done right): HARNESS-SIDE observable-side-effect probes.
      * The loop builds a VerifyProbes for a given plan/branch/worktree and runs
      * the inferred contract AFTER each sub-task, independent of the worker's
@@ -491,6 +500,32 @@ export declare class OrchestratorLoop {
      * per non-zero exit.
      */
     private runFinalVerifyChecks;
+    /**
+     * beta.78 (Feature 2): the configured per-user daily hard cap, or 0 when
+     * unset/misconfigured. 0 => no daily gate (back-compat: pre-beta.78 configs
+     * and test doubles without a `budgets` block behave as before). Defensive.
+     */
+    private dailyMaxUsd;
+    /**
+     * beta.78 (Feature 2): a user's spend TODAY from the persistent ledger, or 0
+     * if the budget enforcer double doesn't expose getDailySpend (test doubles).
+     * Never throws.
+     */
+    private safeDailySpend;
+    /**
+     * beta.78 (Feature 1+2): daily-AWARE soft session-budget warning. When a
+     * run crosses its SOFT session budget, warn the user via Slack (best-effort,
+     * direct-post) and FACTOR IN remaining daily headroom -- Carel's ask: "If
+     * the user has used 80% of their daily, the soft limit should be aware that
+     * there is only 20% left for the day, and notify the user if this might be a
+     * bit low and ask for a budget increase." Never throws.
+     */
+    private warnSessionBudgetSoft;
+    /**
+     * beta.78 (Feature 2): hard daily-cap notification. Posted when the run is
+     * aborted because the user's daily_max_usd would be exceeded. Never throws.
+     */
+    private warnDailyMaxHit;
     private finaliseAbort;
     /**
      * beta.16 fix #3 + beta.17 correctness: schedule a best-effort worktree

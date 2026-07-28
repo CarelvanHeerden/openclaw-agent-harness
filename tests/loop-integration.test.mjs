@@ -161,6 +161,10 @@ test("loop: budget exhaustion aborts unless budget_bump",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "S4", 0.01);
+    // beta.78 (Feature 2): the SESSION budget is now SOFT (warns, keeps going);
+    // the HARD stop is the per-user daily_max_usd. Set a tiny daily cap so the
+    // daily gate fires at the same point the old session-budget abort did.
+    const cfg = config({ budgets: { ...config().budgets, daily_max_usd: 0.01, daily_warn_usd: 0.005 } });
     const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
     const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/wt", subTasks: [
       { seq:1, title:"a", intent:"a", filesLikelyTouched:[], successCriteria:["a"], estimatedTokens:100 },
@@ -168,10 +172,10 @@ test("loop: budget exhaustion aborts unless budget_bump",
     ], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
     let workerCalls = 0;
     const loop = new OrchestratorLoop({
-      config: config(),
+      config: cfg,
       state,
-      budget: new BudgetEnforcer(config().budgets, state),
-      pat: new PatRouter(config().pat_routing),
+      budget: new BudgetEnforcer(cfg.budgets, state),
+      pat: new PatRouter(cfg.pat_routing),
       logger: { info() {}, warn() {}, error() {} },
       runLead: async () => plan,
       runWorker: async () => { workerCalls++; return { status: "completed", filesChanged: [], costUsd: 0.10, tokensIn:1, tokensOut:1, reason: "end_turn" }; },
@@ -181,8 +185,8 @@ test("loop: budget exhaustion aborts unless budget_bump",
     });
     const outcome = await loop.run("S4", brief);
     assert.equal(outcome.status, "aborted");
-    assert.equal(outcome.reason, "budget_exhausted");
-    // Should have run the first sub-task, then noticed budget over on the second check
+    assert.equal(outcome.reason, "daily_max_exhausted");
+    // Should have run the first sub-task, then noticed daily-cap over on the second check
     assert.equal(workerCalls, 1);
   });
 
@@ -343,7 +347,11 @@ test("loop: real push (branch on remote) passes harness verification and ships (
 test("loop: projected-cost gating aborts BEFORE starting an unaffordable sub-task (beta.7 fix #2)",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
-    insertSession(state.db, "SB1", 0.15); // tiny budget
+    insertSession(state.db, "SB1", 0.15); // tiny SESSION budget (now soft)
+    // beta.78 (Feature 2): projected-cost gating now keys off the per-user
+    // DAILY cap. daily_max 0.15 + reserve makes sub-task 2's projection
+    // (dailySoFar 0.10 + est 0.10 + reserve) exceed the cap -> gated out.
+    const cfg = config({ budgets: { ...config().budgets, daily_max_usd: 0.15, daily_warn_usd: 0.05 } });
     const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
     // Two sub-tasks; first is cheap, second should be gated out before running.
     const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/wt", subTasks: [
@@ -352,10 +360,10 @@ test("loop: projected-cost gating aborts BEFORE starting an unaffordable sub-tas
     ], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
     const workerSeqs = [];
     const loop = new OrchestratorLoop({
-      config: config(),
+      config: cfg,
       state,
-      budget: new BudgetEnforcer(config().budgets, state),
-      pat: new PatRouter(config().pat_routing),
+      budget: new BudgetEnforcer(cfg.budgets, state),
+      pat: new PatRouter(cfg.pat_routing),
       logger: { info() {}, warn() {}, error() {} },
       runLead: async () => plan,
       runWorker: async ({ subTask }) => { workerSeqs.push(subTask.seq); return { status: "completed", filesChanged: ["a"], commitSha: "s", costUsd: 0.10, tokensIn: 1, tokensOut: 1, reason: "end_turn" }; },
@@ -365,11 +373,11 @@ test("loop: projected-cost gating aborts BEFORE starting an unaffordable sub-tas
     });
     const outcome = await loop.run("SB1", brief);
     assert.equal(outcome.status, "aborted");
-    assert.equal(outcome.reason, "budget_exhausted");
-    // Sub-task 1 ran (0.10), sub-task 2 was projected 0.10 more -> 0.20 > 0.15 -> gated before running.
+    assert.equal(outcome.reason, "daily_max_exhausted");
+    // Sub-task 1 ran (0.10), sub-task 2 projected daily 0.20+ > 0.15 -> gated.
     assert.deepEqual(workerSeqs, [1], "second sub-task must be gated out before execution");
-    const gate = state.audits.find((a) => a.event === "loop.budget_projection_abort");
-    assert.ok(gate, "projection abort should be audited");
+    const gate = state.audits.find((a) => a.event === "loop.daily_max_abort");
+    assert.ok(gate, "daily-cap abort should be audited");
   });
 
 // --- beta.7 fix #2: hard cap before review ---
@@ -378,18 +386,22 @@ test("loop: review is skipped + cycle aborts when remaining budget < review esti
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "SB2", 0.55);
+    // beta.78 (Feature 2): the review-gate hard abort keys off the per-user
+    // DAILY cap. daily_max 0.55: after the 0.50 sub-task, dailySoFar 0.50 +
+    // review estimate 0.50 = 1.00 > 0.55 -> review must be skipped + aborted.
+    const cfg = config({ budgets: { ...config().budgets, daily_max_usd: 0.55, daily_warn_usd: 0.1 } });
     const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
     const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/wt", subTasks: [{ seq:1, title:"a", intent:"a", filesLikelyTouched:[], successCriteria:["a"], estimatedTokens:100 }], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
     let adversaryCalled = false;
     const loop = new OrchestratorLoop({
-      config: config(),
+      config: cfg,
       state,
-      budget: new BudgetEnforcer(config().budgets, state),
-      pat: new PatRouter(config().pat_routing),
+      budget: new BudgetEnforcer(cfg.budgets, state),
+      pat: new PatRouter(cfg.pat_routing),
       logger: { info() {}, warn() {}, error() {} },
       runLead: async () => plan,
       // Sub-task costs 0.50; review estimate = max observed (0.50) with 0.5 floor.
-      // remaining after sub-task = 0.05, < 0.50 -> review must not run.
+      // dailySoFar 0.50 + 0.50 review = 1.00 > daily_max 0.55 -> review skipped.
       runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "s", costUsd: 0.50, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
       runAdversary: async () => { adversaryCalled = true; return { verdict: "pass", findings: [], summary: "ok", costUsd: 0.50, tokensIn: 1, tokensOut: 1 }; },
       pushBranchAndOpenPr: async () => "https://x/pr/1",
@@ -397,8 +409,8 @@ test("loop: review is skipped + cycle aborts when remaining budget < review esti
     });
     const outcome = await loop.run("SB2", brief);
     assert.equal(outcome.status, "aborted");
-    assert.equal(outcome.reason, "budget_exhausted");
-    assert.equal(adversaryCalled, false, "adversary must not run when we cannot afford it");
+    assert.equal(outcome.reason, "daily_max_exhausted");
+    assert.equal(adversaryCalled, false, "adversary must not run when the daily cap can't afford it");
     const gate = state.audits.find((a) => a.event === "loop.review_budget_abort");
     assert.ok(gate, "review budget abort should be audited");
   });
