@@ -118,6 +118,16 @@ export interface SlackConfig {
     credential_service?: string;
     /** Interval for reactions poller in ms. Default 15000. */
     reactions_poll_ms?: number;
+    /**
+     * beta.77: harness-native OUTBOUND progress/terminal delivery. When true
+     * (DEFAULT) and `credential_service` is set AND a session has a REAL Slack
+     * binding (channel + non-synthetic thread passed on `harness_run`), the
+     * harness direct-posts progress/terminal headlines to Slack via the vault bot
+     * token -- an independent path from the wedge-prone agent `api.sendMessage`
+     * turn. Set false to force the poll-only model. Auto-noop (graceful fallback)
+     * when the token or binding is absent. Does NOT affect clarifications/inbound.
+     */
+    native_progress_delivery?: boolean;
     reactions: {
         ship_it: string;
         abort: string;

@@ -12,6 +12,7 @@ const DEFAULTS = {
         listener_enabled: false,
         channel: "",
         authorised_users: [],
+        native_progress_delivery: true,
         reactions: {
             ship_it: "rocket",
             abort: "x",
