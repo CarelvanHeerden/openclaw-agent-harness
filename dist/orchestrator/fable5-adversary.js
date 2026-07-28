@@ -230,10 +230,6 @@ export async function runAdversary(input, deps) {
         costUsd: result.costUsd,
         tokensIn: result.tokensIn,
         tokensOut: result.tokensOut,
-        // beta.79 (F2): gate breakdown for the loop.gate_decision audit event.
-        gateNewBlocking: gated.newBlocking.length,
-        gateRecycled: gated.recycled.length,
-        gateDowngraded: gated.downgraded,
     };
 }
 //# sourceMappingURL=fable5-adversary.js.map

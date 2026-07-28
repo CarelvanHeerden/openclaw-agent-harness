@@ -138,7 +138,6 @@ export function isRecycledFinding(f, priorFindings, minShared = 2) {
  */
 export function gateVerdict(params) {
     const { verdict, findings, ctx, priorFindings } = params;
-    const recycled = findings.filter((f) => isRecycledFinding(f, priorFindings));
     const newBlocking = findings.filter((f) => {
         const cls = classifyFinding(f, ctx);
         if (!isBlockingFinding(f, cls))
@@ -148,11 +147,11 @@ export function gateVerdict(params) {
         return true;
     });
     if (verdict === "block") {
-        return { verdict, downgraded: false, newBlocking, recycled };
+        return { verdict, downgraded: false, newBlocking };
     }
     if (verdict === "revise" && newBlocking.length === 0) {
-        return { verdict: "pass", downgraded: true, newBlocking, recycled };
+        return { verdict: "pass", downgraded: true, newBlocking };
     }
-    return { verdict, downgraded: false, newBlocking, recycled };
+    return { verdict, downgraded: false, newBlocking };
 }
 //# sourceMappingURL=finding-classify.js.map

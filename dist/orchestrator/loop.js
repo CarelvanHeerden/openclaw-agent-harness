@@ -1655,22 +1655,6 @@ export class OrchestratorLoop {
                 this.deps.state.audit("loop.converged_on_green", { sessionId, cycle, findings: report.findings.length }, sessionId);
             }
             this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length, conventionFindings: conventionFindings.length }, sessionId);
-            // beta.79 (F2): per-cycle convergence-gate telemetry. Makes the
-            // "was this churn or a legit new finding?" question a one-query answer
-            // instead of a re-implementation of finding-classify against state.db
-            // (the exact analysis Staging had to do by hand on the beta.77 DR/BCP
-            // smoke). Guarded on the optional gate fields so an injected review
-            // double without them is a no-op.
-            if (typeof report.gateNewBlocking === "number") {
-                this.deps.state.audit("loop.gate_decision", {
-                    sessionId,
-                    cycle,
-                    verdict: report.verdict,
-                    newBlocking: report.gateNewBlocking,
-                    recycled: report.gateRecycled ?? 0,
-                    downgraded: report.gateDowngraded === true,
-                }, sessionId);
-            }
             const reactions = await this.deps.readReactions(sessionId);
             const decision = OrchestratorLoop.advance({
                 currentStatus: "reviewing",
