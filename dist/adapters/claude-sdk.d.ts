@@ -63,6 +63,24 @@ export interface RunWorkerParams {
      * the phase-1 watchdog. Default supplied by the loop (120s).
      */
     streamOpenTimeoutSeconds?: number;
+    /**
+     * beta.90 (Feature 2): STREAM-SLOW liveness callback + threshold. When the
+     * worker SDK stream opens then goes idle (no token/activity delta) for
+     * `streamIdleWarnSeconds`, onStreamSlow is invoked. OBSERVABILITY ONLY (never
+     * aborts). Threaded straight through to consumeWorkerStream.
+     */
+    onStreamSlow?: (info: {
+        idleMs: number;
+        elapsedMs: number;
+        tokensOut: number;
+        label: string;
+    }) => void;
+    /** beta.90: idle-warn threshold (seconds). Default 90; <=0 disables. */
+    streamIdleWarnSeconds?: number;
+    /** beta.90: optional logger for the periodic stream tick. */
+    logger?: {
+        warn: (m: string, meta?: unknown) => void;
+    };
 }
 export interface RunWorkerResult {
     sdkSessionId: string;
@@ -130,7 +148,58 @@ export declare function consumeWorkerStream(stream: AsyncIterable<any>, abort: A
     firstTokenTimeoutSeconds?: number;
     streamOpenTimeoutSeconds?: number;
     now?: () => number;
+    /**
+     * beta.90 (Feature 2): STREAM-SLOW liveness callback. When the worker SDK
+     * stream opens but then goes IDLE (no token/activity delta) for
+     * `streamIdleWarnSeconds`, this is invoked so the caller can surface a
+     * `worker_stream_slow` audit + bump the session liveness heartbeat.
+     * OBSERVABILITY ONLY -- it never aborts (a slow stream recovered on b89;
+     * a blunt abort would have wrongly killed it). Best-effort; may fire more
+     * than once while idle (once per tick past the threshold).
+     */
+    onStreamSlow?: (info: {
+        idleMs: number;
+        elapsedMs: number;
+        tokensOut: number;
+        label: string;
+    }) => void;
+    /**
+     * beta.90 (Feature 2): idle-warn threshold in SECONDS. Default 90; <=0
+     * disables the stream-slow detector entirely. The detector re-uses the
+     * existing 30s tick cadence (it only fires onStreamSlow once idleMs crosses
+     * this threshold), so the effective granularity is one tick (30s).
+     */
+    streamIdleWarnSeconds?: number;
+    /** beta.90: label for the stream-slow info (e.g. "worker"); default "worker". */
+    streamSlowLabel?: string;
+    /** beta.90: optional logger for the periodic tick (mirrors structuredCall). */
+    logger?: {
+        warn: (m: string, meta?: unknown) => void;
+    };
 }): Promise<Omit<RunWorkerResult, never>>;
+/**
+ * beta.90 (Feature 2): PURE tick-decision helper for the worker stream-slow
+ * detector. Extracted so the idle logic is unit-testable without a real SDK or
+ * timers. Given the current activity `marker` (max of tokensOut + message
+ * count), the `lastMarker`/`lastActivityAtMs` from the previous advance, `nowMs`,
+ * and the `idleWarnMs` threshold, returns whether activity advanced (reset the
+ * idle clock), the current idle duration, and whether onStreamSlow should fire.
+ *
+ * `idleWarnMs <= 0` disables (never fires). `fire` is true only when the stream
+ * did NOT advance AND has been idle for >= idleWarnMs.
+ */
+export declare function evaluateStreamSlowTick(input: {
+    marker: number;
+    lastMarker: number;
+    nowMs: number;
+    lastActivityAtMs: number;
+    idleWarnMs: number;
+}): {
+    advanced: boolean;
+    idleMs: number;
+    fire: boolean;
+    nowMs: number;
+};
 export declare function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult>;
 /**
  * Extract the JSON contract from a model's raw output.

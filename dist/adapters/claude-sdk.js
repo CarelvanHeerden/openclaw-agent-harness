@@ -180,6 +180,54 @@ export async function consumeWorkerStream(stream, abort, opts) {
     // final message. Reset on each assistant message so we keep only the LAST
     // turn's text (the concluding statement / refusal), not the whole stream.
     let finalMessage = "";
+    // beta.90 (Feature 2): STREAM-SLOW liveness detector. A 30s tick (mirroring
+    // structuredCall's tick) that fires `onStreamSlow` when the stream has been
+    // idle -- no token/activity delta -- for >= streamIdleWarnSeconds. Observability
+    // ONLY: it NEVER aborts (a slow stream recovered on b89; a blunt abort would
+    // have wrongly killed it). `streamActivity` is bumped on every message and
+    // `tokensOut` advances at the result; either resets the idle clock.
+    const streamIdleWarnMs = typeof opts.streamIdleWarnSeconds === "number" && opts.streamIdleWarnSeconds > 0
+        ? opts.streamIdleWarnSeconds * 1000
+        : 0;
+    const streamSlowLabel = opts.streamSlowLabel ?? "worker";
+    let streamActivity = 0;
+    let lastActivityMarker = 0; // = max(tokensOut, streamActivity) at last tick advance
+    let lastTokenActivityAt = callStartedAt;
+    let slowTicks = 0;
+    const streamSlowTimer = streamIdleWarnMs > 0
+        ? setInterval(() => {
+            const marker = Math.max(tokensOut, streamActivity);
+            const decision = evaluateStreamSlowTick({
+                marker,
+                lastMarker: lastActivityMarker,
+                nowMs: now(),
+                lastActivityAtMs: lastTokenActivityAt,
+                idleWarnMs: streamIdleWarnMs,
+            });
+            if (decision.advanced) {
+                lastActivityMarker = marker;
+                lastTokenActivityAt = decision.nowMs;
+            }
+            slowTicks += 1;
+            opts.logger?.warn?.(`[${streamSlowLabel}] stream tick +${slowTicks * 30}s`, { elapsedMs: decision.nowMs - callStartedAt, tokensOut, streamActivity, idleMs: decision.idleMs });
+            if (decision.fire) {
+                try {
+                    opts.onStreamSlow?.({
+                        idleMs: decision.idleMs,
+                        elapsedMs: decision.nowMs - callStartedAt,
+                        tokensOut,
+                        label: streamSlowLabel,
+                    });
+                }
+                catch {
+                    /* observability callback must never disturb the stream */
+                }
+            }
+        }, 30_000)
+        : undefined;
+    if (streamSlowTimer && typeof streamSlowTimer.unref === "function") {
+        streamSlowTimer.unref();
+    }
     // beta.65 (P0): ARM THE PHASE-1 (stream-open) WATCHDOG AT CALL INITIATION --
     // before the `for await` yields anything. This is the core beta.65 fix: the
     // phase-1 timer fires if the stream never OPENS (no system/init) within its
@@ -188,6 +236,10 @@ export async function consumeWorkerStream(stream, abort, opts) {
     armStreamOpenWatchdog();
     try {
         for await (const message of stream) {
+            // beta.90 (Feature 2): every message is stream ACTIVITY -- resets the
+            // idle clock so the stream-slow detector only fires on a genuinely idle
+            // (no-delta) stream, not a busy one whose token usage lands at the result.
+            streamActivity += 1;
             logLines.push(JSON.stringify(message).slice(0, 300));
             if (message.type === "system" && message.subtype === "init") {
                 sdkSessionId = message.session_id;
@@ -261,6 +313,8 @@ export async function consumeWorkerStream(stream, abort, opts) {
     finally {
         clearStreamOpenWatchdog();
         clearFirstTokenWatchdog();
+        if (streamSlowTimer)
+            clearInterval(streamSlowTimer);
     }
     return {
         sdkSessionId,
@@ -273,6 +327,23 @@ export async function consumeWorkerStream(stream, abort, opts) {
         streamOpened,
         msToFirstToken,
     };
+}
+/**
+ * beta.90 (Feature 2): PURE tick-decision helper for the worker stream-slow
+ * detector. Extracted so the idle logic is unit-testable without a real SDK or
+ * timers. Given the current activity `marker` (max of tokensOut + message
+ * count), the `lastMarker`/`lastActivityAtMs` from the previous advance, `nowMs`,
+ * and the `idleWarnMs` threshold, returns whether activity advanced (reset the
+ * idle clock), the current idle duration, and whether onStreamSlow should fire.
+ *
+ * `idleWarnMs <= 0` disables (never fires). `fire` is true only when the stream
+ * did NOT advance AND has been idle for >= idleWarnMs.
+ */
+export function evaluateStreamSlowTick(input) {
+    const advanced = input.marker > input.lastMarker;
+    const idleMs = advanced ? 0 : input.nowMs - input.lastActivityAtMs;
+    const fire = !advanced && input.idleWarnMs > 0 && idleMs >= input.idleWarnMs;
+    return { advanced, idleMs, fire, nowMs: input.nowMs };
 }
 export async function runWorkerSdk(params) {
     const sdk = await loadSdk();
@@ -303,6 +374,10 @@ export async function runWorkerSdk(params) {
         return await consumeWorkerStream(stream, abort, {
             firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
             streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
+            onStreamSlow: params.onStreamSlow,
+            streamIdleWarnSeconds: params.streamIdleWarnSeconds,
+            streamSlowLabel: "worker",
+            logger: params.logger,
         });
     }
     finally {

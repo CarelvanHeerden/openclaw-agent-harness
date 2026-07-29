@@ -168,7 +168,14 @@ export async function runWorker(worktreePath, brief, subTask, commitIdentity, de
  * retry (e.g. "your prior turn wrote X but never committed -- just commit
  * it; there is no Monitor event"). Undefined on the first attempt.
  */
-dispatchHint) {
+dispatchHint, 
+/**
+ * beta.90 (Feature 2): stream-slow liveness callback. Invoked when the worker
+ * SDK stream opens then goes idle (no token/activity delta) past the
+ * configured threshold. OBSERVABILITY ONLY -- never aborts. Undefined => no
+ * stream-slow surfacing (the detector still ticks but has nowhere to report).
+ */
+onStreamSlow) {
     const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
     const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
         (dispatchHint ? `\n\n${dispatchHint}` : "");
@@ -189,6 +196,11 @@ dispatchHint) {
             // phase 1 (call-init -> stream-open) is the new beta.65 pre-stream cover.
             firstTokenTimeoutSeconds: deps.config.loop.sdk_first_token_timeout_seconds ?? 30,
             streamOpenTimeoutSeconds: deps.config.loop.sdk_stream_open_timeout_seconds ?? 120,
+            // beta.90 (Feature 2): stream-slow liveness. Threshold from config; the
+            // callback (when supplied by the loop) surfaces loop.worker_stream_slow +
+            // bumps the session heartbeat. Never aborts.
+            onStreamSlow,
+            streamIdleWarnSeconds: deps.config.loop.worker_stream_idle_warn_seconds ?? 90,
             canUseTool,
         });
     }

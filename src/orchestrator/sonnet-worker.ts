@@ -77,6 +77,10 @@ export interface WorkerDeps {
     firstTokenTimeoutSeconds?: number;
     /** beta.65 (P0): phase-1 (call-init -> stream-open) watchdog window; threaded to runWorkerSdk. */
     streamOpenTimeoutSeconds?: number;
+    /** beta.90 (Feature 2): stream-slow liveness callback; threaded to runWorkerSdk. Observability only. */
+    onStreamSlow?: (info: { idleMs: number; elapsedMs: number; tokensOut: number; label: string }) => void;
+    /** beta.90 (Feature 2): stream-slow idle-warn threshold (seconds); threaded to runWorkerSdk. */
+    streamIdleWarnSeconds?: number;
     canUseTool: (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }>;
   }) => Promise<{
     sdkSessionId: string;
@@ -385,6 +389,13 @@ export async function runWorker(
    * it; there is no Monitor event"). Undefined on the first attempt.
    */
   dispatchHint?: string,
+  /**
+   * beta.90 (Feature 2): stream-slow liveness callback. Invoked when the worker
+   * SDK stream opens then goes idle (no token/activity delta) past the
+   * configured threshold. OBSERVABILITY ONLY -- never aborts. Undefined => no
+   * stream-slow surfacing (the detector still ticks but has nowhere to report).
+   */
+  onStreamSlow?: (info: { idleMs: number; elapsedMs: number; tokensOut: number; label: string }) => void,
 ): Promise<WorkerResult> {
   const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
   const userMessage =
@@ -409,6 +420,11 @@ export async function runWorker(
       // phase 1 (call-init -> stream-open) is the new beta.65 pre-stream cover.
       firstTokenTimeoutSeconds: deps.config.loop.sdk_first_token_timeout_seconds ?? 30,
       streamOpenTimeoutSeconds: deps.config.loop.sdk_stream_open_timeout_seconds ?? 120,
+      // beta.90 (Feature 2): stream-slow liveness. Threshold from config; the
+      // callback (when supplied by the loop) surfaces loop.worker_stream_slow +
+      // bumps the session heartbeat. Never aborts.
+      onStreamSlow,
+      streamIdleWarnSeconds: deps.config.loop.worker_stream_idle_warn_seconds ?? 90,
       canUseTool,
     });
   } catch (err) {

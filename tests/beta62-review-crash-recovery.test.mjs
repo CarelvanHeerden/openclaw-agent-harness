@@ -280,10 +280,12 @@ test("beta62: loop wires review_failed telemetry + folds post-review persist int
   assert.match(src, /return await this\.finaliseReviewCrash\(/);
 });
 
-test("beta62: finaliseReviewCrash gate = graceful && cycle>=2 && priorReview && green self-verify (source)", () => {
+test("beta62: finaliseReviewCrash gate = graceful && green self-verify && (infra || cycle>=2 && priorReview) (source)", () => {
   const src = S("src/orchestrator/loop.ts");
   assert.match(src, /graceful_pr_on_review_crash !== false/);
-  assert.match(src, /const eligible = gracefulEnabled && cycle >= 2 && !!priorReview && selfVerifyGreen/);
+  // beta.90 (Feature 1): eligibility widened to admit an INFRA crash without
+  // requiring cycle>=2 or a prior review (the non-infra path is unchanged).
+  assert.match(src, /const eligible = gracefulEnabled && selfVerifyGreen && \(infra \|\| \(cycle >= 2 && !!priorReview\)\)/);
   assert.match(src, /merge_recommendation = \?[\s\S]*?\.run\(prUrl, prNumber \?\? null, "needs_human_review"/);
 });
 

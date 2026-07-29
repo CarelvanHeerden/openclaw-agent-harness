@@ -76,6 +76,15 @@ export interface WorkerDeps {
         firstTokenTimeoutSeconds?: number;
         /** beta.65 (P0): phase-1 (call-init -> stream-open) watchdog window; threaded to runWorkerSdk. */
         streamOpenTimeoutSeconds?: number;
+        /** beta.90 (Feature 2): stream-slow liveness callback; threaded to runWorkerSdk. Observability only. */
+        onStreamSlow?: (info: {
+            idleMs: number;
+            elapsedMs: number;
+            tokensOut: number;
+            label: string;
+        }) => void;
+        /** beta.90 (Feature 2): stream-slow idle-warn threshold (seconds); threaded to runWorkerSdk. */
+        streamIdleWarnSeconds?: number;
         canUseTool: (toolName: string, toolInput: unknown) => Promise<{
             allow: boolean;
             reason?: string;
@@ -177,6 +186,18 @@ export declare function runWorker(worktreePath: string, brief: {
  * retry (e.g. "your prior turn wrote X but never committed -- just commit
  * it; there is no Monitor event"). Undefined on the first attempt.
  */
-dispatchHint?: string): Promise<WorkerResult>;
+dispatchHint?: string, 
+/**
+ * beta.90 (Feature 2): stream-slow liveness callback. Invoked when the worker
+ * SDK stream opens then goes idle (no token/activity delta) past the
+ * configured threshold. OBSERVABILITY ONLY -- never aborts. Undefined => no
+ * stream-slow surfacing (the detector still ticks but has nowhere to report).
+ */
+onStreamSlow?: (info: {
+    idleMs: number;
+    elapsedMs: number;
+    tokensOut: number;
+    label: string;
+}) => void): Promise<WorkerResult>;
 export {};
 //# sourceMappingURL=sonnet-worker.d.ts.map

@@ -477,6 +477,19 @@ export interface LoopConfig {
    */
   sdk_stream_open_timeout_seconds?: number;
   /**
+   * beta.90 (Feature 2): STREAM-SLOW idle-warn window (seconds). Inside
+   * consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick
+   * watches for token/message activity; if the stream goes IDLE (no delta) for
+   * this many seconds it emits `loop.worker_stream_slow` and bumps the session
+   * liveness heartbeat (so harness_progress surfaces "worker stream idle Ns"
+   * instead of the phase looking wedged). OBSERVABILITY ONLY -- it NEVER aborts
+   * (a slow stream recovered on b89; a blunt abort would have wrongly killed
+   * it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went
+   * idle ~15 min with no signal in harness_progress. Default 90; 0 disables;
+   * clamped [30, 600].
+   */
+  worker_stream_idle_warn_seconds?: number;
+  /**
    * beta.64 (P0-2): when a worker sub-task fails with a first_token_timeout OR a
    * worker timeout, RETRY it ONCE on a FRESH SDK session (no resumeSessionId)
    * before flipping the run terminal. The retry re-verifies; a pass completes
@@ -781,6 +794,7 @@ const DEFAULTS: HarnessConfig = {
     skip_observe_reprobe_on_revise: true,
     sdk_first_token_timeout_seconds: 30,
     sdk_stream_open_timeout_seconds: 120,
+    worker_stream_idle_warn_seconds: 90,
     worker_timeout_retry_enabled: true,
     best_effort_verify: true,
     // beta.85: DEFAULT OFF. This fallback ran `tsc` + repo check-scripts LOCALLY
@@ -1014,6 +1028,14 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   if (typeof merged.loop.sdk_stream_open_timeout_seconds === "number") {
     if (merged.loop.sdk_stream_open_timeout_seconds < 10) merged.loop.sdk_stream_open_timeout_seconds = 10;
     if (merged.loop.sdk_stream_open_timeout_seconds > 600) merged.loop.sdk_stream_open_timeout_seconds = 600;
+  }
+  // beta.90 (Feature 2): clamp the worker STREAM-SLOW idle-warn window. Floor 30
+  // (one tick cadence; anything lower is noise), ceiling 600 (10 min -- past
+  // that a stall watchdog / worker timeout owns the outcome). This is
+  // observability, never a hard fail, so the range is generous.
+  if (typeof merged.loop.worker_stream_idle_warn_seconds === "number") {
+    if (merged.loop.worker_stream_idle_warn_seconds < 30) merged.loop.worker_stream_idle_warn_seconds = 30;
+    if (merged.loop.worker_stream_idle_warn_seconds > 600) merged.loop.worker_stream_idle_warn_seconds = 600;
   }
   // beta.81 (Track B / B2): clamp the CI-wait window + poll cadence. The wait
   // is a SOFT checkpoint (surfaces + offers resume on timeout, never a hard
