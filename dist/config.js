@@ -68,6 +68,7 @@ const DEFAULTS = {
         stall_sweep_interval_seconds: 60,
         enforce_worker_context: true,
         revise_spec_turn_enabled: true,
+        revise_spec_timeout_seconds: 180,
         skip_observe_reprobe_on_revise: true,
         sdk_first_token_timeout_seconds: 30,
         sdk_stream_open_timeout_seconds: 120,

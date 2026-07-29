@@ -31,6 +31,14 @@ export interface VerifyProbeResult {
   kind: SubTaskVerify["kind"];
   passed: boolean;
   detail: string;
+  /**
+   * beta.84 (#1, Staging QoL nit): the CONTRACT path this result corresponds
+   * to, echoed back on path-bearing kinds so a post-mortem can map each result
+   * to its contract entry directly instead of reconstructing from row order
+   * (the `file_committed` results previously carried no path at all). Optional
+   * -- non-path kinds (commit_made, branch_pushed, ...) omit it.
+   */
+  path?: string;
 }
 
 export interface VerifyOutcome {
@@ -89,8 +97,16 @@ export interface VerifyProbes {
   /**
    * Does `path` appear in `git log <baseSha>..HEAD --name-only`?
    * Used by the `file_committed` contract kind.
+   *
+   * beta.84 (#1): this probe now enforces GROUND TRUTH -- the resolved match
+   * must be a STRUCTURAL (non-fuzzy) path match AND the EXACT contract path
+   * must have a non-zero `git diff --numstat` in the range. It returns
+   * `diffLines` so the loop can surface "contract file had 0 diff lines" as
+   * the failure reason (the cyc2-seq7 false-positive class). Back-compat:
+   * `diffLines` is optional; older test doubles that omit it still satisfy
+   * the `committed` boolean.
    */
-  fileCommittedSince?: (path: string, baseSha: string) => Promise<{ committed: boolean; detail: string }>;
+  fileCommittedSince?: (path: string, baseSha: string) => Promise<{ committed: boolean; detail: string; diffLines?: number }>;
 
   /**
    * What is the tip SHA of `branch` on the remote?
@@ -191,11 +207,11 @@ export async function verifySubTaskOutput(
           // reject a stale pre-existing file (freshness enforced probe-side).
           const r = await probes.fileExistsOnDisk(v.path, ctx.subTaskStartMs);
           const passed = r.exists && r.nonEmpty;
-          results.push({ kind: v.kind, passed, detail: r.detail });
+          results.push({ kind: v.kind, passed, detail: r.detail, path: v.path });
         } else {
           // Backward compat: beta.8 behaviour (git diff, excludes untracked)
           const r = await probes.fileWrittenSince(v.path, ctx.subTaskStartMs);
-          results.push({ kind: v.kind, passed: r.written, detail: r.detail });
+          results.push({ kind: v.kind, passed: r.written, detail: r.detail, path: v.path });
         }
         break;
       }
@@ -209,7 +225,10 @@ export async function verifySubTaskOutput(
       case "file_committed": {
         if (probes.fileCommittedSince) {
           const r = await probes.fileCommittedSince(v.path, ctx.baseSha);
-          results.push({ kind: v.kind, passed: r.committed, detail: r.detail });
+          // beta.84 (#1): carry the exact contract path on the result so a
+          // post-mortem no longer has to reconstruct the mapping from row
+          // order (Staging's QoL nit -- `path` was merged/empty before).
+          results.push({ kind: v.kind, passed: r.committed, detail: r.detail, path: v.path });
         } else {
           // beta.57 (P1): FAIL CLOSED. A missing probe used to skip-pass,
           // which meant a mis-wired caller silently green-lit every contract

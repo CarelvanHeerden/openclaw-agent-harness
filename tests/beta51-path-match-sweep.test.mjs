@@ -102,7 +102,8 @@ test("beta51/56/59: the (single) fileExistsOnDisk factory has a structural commi
 
 test("beta51/56/59: fileCommittedSince resolves via resolveContractPath (no longer a hand-rolled pathMatchRule loop)", () => {
   const src = S("src/index.ts");
-  assert.match(src, /resolveContractPath\(files, path, \{ allowBasenameFallback: true, allowTestFileFallback: true \}\)/);
+  // beta.84 (#1): fileCommittedSince resolves with strictContract:true now.
+  assert.match(src, /resolveContractPath\(files, path, \{ strictContract: true \}\)/);
   // the old hand-rolled loop must be gone
   assert.doesNotMatch(src, /const rule = pathMatchRule\(f, path\)/);
 });

@@ -351,6 +351,11 @@
             "default": true,
             "description": "beta.67 (P0b): run ONE Fable revise-spec turn between the adversary and cycle-2 workers to refresh workerContext with a resolved changeSpec, so workers never see the raw adversary findings (the beta.63/64 no-op regression). false -> beta.66 raw-findings behaviour; a revise-spec failure also falls back. Default true."
           },
+          "revise_spec_timeout_seconds": {
+            "type": "integer",
+            "default": 180,
+            "description": "beta.84 (#2): hard timeout (seconds) on the Fable revise-spec turn. The turn is an unbounded lead-model call that has spun ~570s then failed on the ambient cron lane cap (beta.73 signature, session 1c744d70) -- ~10 min burned before falling back to raw findings. Bounding it makes the raw-findings fallback FAST (audited loop.revise_spec_timeout) instead of eating the lane cap. 0 disables the bound. Default 180."
+          },
           "skip_observe_reprobe_on_revise": {
             "type": "boolean",
             "default": true,

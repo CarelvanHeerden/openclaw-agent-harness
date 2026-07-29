@@ -155,10 +155,14 @@ test("Defect B: looksLikeDiskExhaustion catches the real signatures", () => {
 // ─────────────────────────────────────────────────────────────────────────
 // Wiring source-assertions.
 // ─────────────────────────────────────────────────────────────────────────
-test("wiring: index.ts enables allowTestFileFallback at the 3 scoped call sites", () => {
+test("wiring: index.ts enables allowTestFileFallback at the scoped call sites", () => {
   const idx = src("index.ts");
   const hits = idx.match(/allowTestFileFallback:\s*true/g) ?? [];
-  assert.ok(hits.length >= 3, `expected >=3 allowTestFileFallback:true, found ${hits.length}`);
+  // beta.84 (#1): fileCommittedSince MOVED to strictContract:true (no fuzzy
+  // fallback) to kill the cyc2-seq7 sibling false-positive, so the count
+  // dropped 3 -> 2 (fileWrittenSince + the fileExistsOnDisk committed-fallback
+  // still use the fallback; the contract check no longer does).
+  assert.ok(hits.length >= 2, `expected >=2 allowTestFileFallback:true, found ${hits.length}`);
 });
 
 test("wiring: loop.ts re-derives contract paths + accumulates discovered paths", () => {

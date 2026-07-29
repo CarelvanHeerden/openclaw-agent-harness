@@ -839,33 +839,51 @@ export function bootstrapHarnessSync(api) {
                         }
                     }
                 },
-                /** file_committed kind: file appears in `git log base..HEAD --name-only`. */
+                /**
+                 * file_committed kind: file appears in `git log base..HEAD --name-only`.
+                 *
+                 * beta.84 (#1): GROUND-TRUTH hardening. Two changes that together kill
+                 * the cyc2-seq7 false-positive (a `route.ts` contract that basename-
+                 * unique-matched its `download/route.ts` sibling and reported PASS):
+                 *   1. STRICT-CONTRACT resolution -- only structural matches (exact /
+                 *      route-group / suffix / basename-dir, all of which require real
+                 *      directory context); the fuzzy `basename-unique` / `test-file-
+                 *      unique` fallbacks are DISABLED here. Topology drift is now cured
+                 *      structurally by the beta.76 contract-rederive pass that runs
+                 *      BEFORE verification, so file_committed no longer needs the nets.
+                 *   2. NON-ZERO DIFF gate -- once a structural match is found, the
+                 *      EXACT resolved path must have >=1 line changed in base..HEAD
+                 *      (`git diff --numstat`). A commit that renames/touches a sibling
+                 *      but leaves the contract file untouched no longer passes.
+                 */
                 fileCommittedSince: async (path, base) => {
                     try {
                         const files = await git.listCommittedFiles(worktreePath, base);
-                        // beta.50: structural path matching (see path-match.ts) so a
-                        // route-group / monorepo-prefixed committed path still satisfies a
-                        // route-semantics contract path.
-                        // beta.59: route through resolveContractPath (shared logic) WITH the
-                        // basename-unique fallback -- `files` is `git log base..HEAD` where
-                        // base = the sub-task's worker-session-start SHA, so this list is
-                        // scoped to THIS sub-task's own commit(s); a lone same-basename file
-                        // is the file the worker just committed (fixes seq-4 topology drift:
-                        // contract `components/governance-risk/risks/...` vs committed
-                        // `src/components/grc/...`).
-                        const match = resolveContractPath(files, path, { allowBasenameFallback: true, allowTestFileFallback: true });
+                        const match = resolveContractPath(files, path, { strictContract: true });
                         const matchedFile = match?.file;
                         const matchedRule = match?.rule ?? null;
-                        const committed = matchedRule !== null;
+                        if (matchedRule === null || !matchedFile) {
+                            return {
+                                committed: false,
+                                diffLines: 0,
+                                detail: `contract path not committed via a structural (non-fuzzy) match (${files.length} file(s) in ${base ? base.slice(0, 7) : "base"}..HEAD: ${files.slice(0, 8).join(", ")})`,
+                            };
+                        }
+                        // beta.84 (#1): the file is in the commit range structurally -- now
+                        // require it to actually have a non-empty diff for the EXACT matched
+                        // path. This is the un-fuzzable predicate.
+                        const diffLines = await git.fileDiffLineCount(worktreePath, base, matchedFile).catch(() => 0);
+                        const committed = diffLines > 0;
                         return {
                             committed,
+                            diffLines,
                             detail: committed
-                                ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD via ${matchedRule} match (${matchedFile}; ${files.length} file(s) total)`
-                                : `file not in commits since base (${files.length} file(s) checked: ${files.slice(0, 8).join(", ")})`,
+                                ? `file appears in ${base ? base.slice(0, 7) : "base"}..HEAD via ${matchedRule} match (${matchedFile}; +/-${diffLines} lines; ${files.length} file(s) total)`
+                                : `contract file matched ${matchedFile} via ${matchedRule} but its diff in ${base ? base.slice(0, 7) : "base"}..HEAD is EMPTY (0 lines changed) -- the commit did not modify this file`,
                         };
                     }
                     catch (err) {
-                        return { committed: false, detail: `git log error: ${String(err)}` };
+                        return { committed: false, diffLines: 0, detail: `git log error: ${String(err)}` };
                     }
                 },
                 /** remote_branch_exists / commit_sha_matches: tip SHA of `branch` on origin via git ls-remote. */

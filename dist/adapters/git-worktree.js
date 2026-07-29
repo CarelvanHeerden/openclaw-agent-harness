@@ -853,6 +853,42 @@ esac
         return this.run(["-C", worktreePath, "diff", "--stat", base, "HEAD"]);
     }
     /**
+     * beta.84 (#1): GROUND-TRUTH per-file change count for an EXACT path in
+     * `<base>..HEAD`. Runs `git diff --numstat <base> HEAD -- <path>` and sums
+     * additions + deletions. Returns 0 when the exact path was not modified in
+     * the range (or the range is empty / the command errors).
+     *
+     * WHY THIS EXISTS (session 1c744d70, cyc2 seq7): the `file_committed` check
+     * resolved its contract path (`.../files/[fileId]/route.ts`) via the
+     * basename-unique fallback to a SIBLING file (`.../download/route.ts`) that
+     * another contract entry already legitimately claimed, and reported PASS --
+     * a false-positive. The worker never touched `route.ts`; only the `file_
+     * written` mtime probe caught it. numstat on the EXACT contract path is the
+     * un-fuzzable predicate: it is non-zero iff the commit range actually
+     * modified THAT path. No basename fuzzing, no mtime shenanigans.
+     *
+     * `--numstat` prints `<added>\t<deleted>\t<path>` per changed file (binary
+     * files print `-\t-\t<path>`, which we treat as a real change -> 1).
+     */
+    async fileDiffLineCount(worktreePath, base, exactPath) {
+        if (!base || !exactPath)
+            return 0;
+        const out = await this.run([
+            "-C", worktreePath, "diff", "--numstat", base, "HEAD", "--", exactPath,
+        ]).catch(() => "");
+        let total = 0;
+        for (const line of out.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed)
+                continue;
+            const parts = trimmed.split(/\s+/);
+            const added = parts[0] === "-" ? 1 : parseInt(parts[0] ?? "0", 10);
+            const deleted = parts[1] === "-" ? 0 : parseInt(parts[1] ?? "0", 10);
+            total += (Number.isFinite(added) ? added : 0) + (Number.isFinite(deleted) ? deleted : 0);
+        }
+        return total;
+    }
+    /**
      * beta.34: install a persistent credential helper into the bare repo
      * config (Staging's recommended hardening, option 1). The helper script
      * contains NO token — it reads `$OAH_GH_TOKEN` from the process env at
