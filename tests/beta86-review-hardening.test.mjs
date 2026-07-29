@@ -33,18 +33,22 @@ test("beta.86 #1: empty targetedFiles keeps STRICT (relaxation gated on non-empt
   const src = readSrc("src/orchestrator/loop.ts");
   // The relaxation loop must be gated on targetedFiles.length > 0.
   assert.ok(
-    /if \(targetedFiles\.length > 0\)/.test(src),
-    "relaxation must only run when targetedFiles is non-empty",
+    // beta.88: the gate tightened from `targetedFiles.length > 0` to
+    // `anyTargetResolvable` (non-empty AND at least one target structurally
+    // resolves to a contract path) -- so a fileless OR unresolvable target set
+    // keeps everything strict.
+    /if \(anyTargetResolvable\) \{/.test(src),
+    "relaxation must only run when a target actually resolves to a contract path",
   );
   // The else branch keeps strict + audits the distinct reason.
   assert.ok(
     src.includes("loop.revise_contract_strict_no_targets"),
     "fileless-findings case must audit revise_contract_strict_no_targets (keep strict)",
   );
-  // reviseRelaxed still only set inside the guarded block.
+  // reviseRelaxed still only set inside the guarded (resolvable) block.
   const relaxedIdx = src.indexOf("reviseRelaxed: true");
-  const guardIdx = src.indexOf("if (targetedFiles.length > 0)");
-  assert.ok(relaxedIdx > guardIdx && guardIdx > 0, "reviseRelaxed must be set inside the non-empty guard");
+  const guardIdx = src.indexOf("if (anyTargetResolvable) {");
+  assert.ok(relaxedIdx > guardIdx && guardIdx > 0, "reviseRelaxed must be set inside the resolvable guard");
 });
 
 test("beta.86 #1(a): revise_contract_relaxed audit + log echo the targeted set", () => {

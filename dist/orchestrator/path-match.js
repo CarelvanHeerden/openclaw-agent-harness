@@ -192,6 +192,12 @@ export function resolveContractPath(realFiles, contract, opts = {}) {
     }
     if (best)
         return best;
+    // beta.88 [E3] (doc): `strictContract` WINS over both fuzzy flags. This
+    // early-return fires BEFORE the basename-unique and test-file-unique branches
+    // below, so `{ strictContract: true, allowBasenameFallback: true }` (or
+    // allowTestFileFallback) resolves STRUCTURAL-ONLY -- the fuzzy flags are
+    // ignored. Intentional: a strict-contract caller must never be silently
+    // downgraded to a fuzzy match by a stray flag.
     // beta.84 (#1): strict-contract callers (file_committed) stop here -- the
     // fuzzy `*-unique` fallbacks below are what let cyc2 seq7's `route.ts`
     // contract false-match its `download/route.ts` sibling. A genuine topology

@@ -1087,7 +1087,14 @@ export function bootstrapHarnessSync(api) {
         // binding (channel + non-synthetic thread passed on harness_run). Otherwise
         // no-op -> graceful fallback to the poll model (unchanged behaviour).
         // Clarifications/inbound stay agent-mediated (harness_answer) -- untouched.
-        deliverProgress: (sessionId, _status) => {
+        deliverProgress: (sessionId, status) => {
+            // beta.88 [E4]: evict this session's de-dup entry on a terminal transition
+            // so `lastProgressHeadline` doesn't grow one entry per session for the
+            // life of the process. Done before the poster gate so it evicts even when
+            // native delivery is off.
+            if (status === "done" || status === "failed" || status === "aborted") {
+                runtime.lastProgressHeadline?.delete(sessionId);
+            }
             const poster = runtime.progressPoster;
             if (!poster)
                 return; // no token -> poll-model fallback
