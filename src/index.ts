@@ -1169,7 +1169,15 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         fileCommittedInBranch: async (path: string, branchBaseSha: string) => {
           try {
             const files = await git.listCommittedFiles(worktreePath, branchBaseSha);
-            const match = resolveContractPath(files, path, { allowBasenameFallback: true, allowTestFileFallback: true });
+            // beta.87 (Staging deep-dive [3]): STRICT structural match only. The
+            // relaxed path must NOT accept the fuzzy basename-unique fallback --
+            // that is the exact matcher that produced the 1c744d70 sibling
+            // false-positive and that beta.84 hardened `fileCommittedSince` away
+            // from. A not-targeted revise file must be matched by real directory
+            // context (exact/route-group/suffix/basename-dir), never by a lone
+            // same-basename sibling. Route-group/prefix drift is still covered
+            // by the structural rules.
+            const match = resolveContractPath(files, path, { strictContract: true });
             if (!match) {
               return { present: false, detail: `not committed in branch ${branchBaseSha ? branchBaseSha.slice(0, 7) : "base"}..HEAD (${files.length} file(s))` };
             }
