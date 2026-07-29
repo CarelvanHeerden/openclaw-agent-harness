@@ -109,6 +109,18 @@ export interface VerifyProbes {
   fileCommittedSince?: (path: string, baseSha: string) => Promise<{ committed: boolean; detail: string; diffLines?: number }>;
 
   /**
+   * beta.85: is `path` present on disk AND committed ANYWHERE in the branch
+   * range `branchBaseSha..HEAD` (the whole branch, not just this sub-task)?
+   * Used by the REVISE-RELAXED acceptance of `file_written`/`file_committed`
+   * for a contract file the current revise did NOT target: it was already
+   * shipped correctly in a PRIOR cycle and the worker correctly left it alone,
+   * so demanding a FRESH mtime/diff this sub-task is a false-positive (the
+   * `1c744d70` / `696226e4` verifier-false-positive class). Optional; when
+   * absent the relaxed path falls back to the strict probe (back-compat).
+   */
+  fileCommittedInBranch?: (path: string, branchBaseSha: string) => Promise<{ present: boolean; detail: string }>;
+
+  /**
    * What is the tip SHA of `branch` on the remote?
    * Used by `remote_branch_exists` (SHA field) and `commit_sha_matches`.
    */
@@ -171,7 +183,7 @@ export function evaluateVerification(results: VerifyProbeResult[]): VerifyOutcom
  */
 export async function verifySubTaskOutput(
   verify: SubTaskVerify[] | undefined,
-  ctx: { defaultBranch: string; subTaskStartMs: number; baseSha: string },
+  ctx: { defaultBranch: string; subTaskStartMs: number; baseSha: string; branchBaseSha?: string },
   probes: VerifyProbes,
 ): Promise<VerifyOutcome> {
   if (!verify || verify.length === 0) return evaluateVerification([]);
@@ -200,6 +212,17 @@ export async function verifySubTaskOutput(
         break;
       }
       case "file_written": {
+        // beta.85: REVISE-RELAXED. On a revise cycle, a contract file the review
+        // did NOT target was already shipped correctly in a prior cycle; the
+        // worker correctly left it untouched. Requiring a fresh mtime this
+        // sub-task false-fails it (the 1c744d70/696226e4 class). Accept it when
+        // it is present + committed anywhere in the branch range. A TARGETED
+        // file keeps the strict fresh-write requirement below.
+        if (v.reviseRelaxed && probes.fileCommittedInBranch) {
+          const r = await probes.fileCommittedInBranch(v.path, ctx.branchBaseSha ?? ctx.baseSha);
+          results.push({ kind: v.kind, passed: r.present, detail: `revise-relaxed (not targeted this cycle): ${r.detail}`, path: v.path });
+          break;
+        }
         // beta.9 FIX: use fs.stat (includes untracked files) when probe available.
         // Falls back to git-diff-based probe for backward compat with beta.8 test doubles.
         if (probes.fileExistsOnDisk) {
@@ -223,6 +246,13 @@ export async function verifySubTaskOutput(
 
       // ---- beta.9 kinds ----
       case "file_committed": {
+        // beta.85: REVISE-RELAXED (same rationale as file_written above): a
+        // not-targeted revise file passes on present+committed-in-branch.
+        if (v.reviseRelaxed && probes.fileCommittedInBranch) {
+          const r = await probes.fileCommittedInBranch(v.path, ctx.branchBaseSha ?? ctx.baseSha);
+          results.push({ kind: v.kind, passed: r.present, detail: `revise-relaxed (not targeted this cycle): ${r.detail}`, path: v.path });
+          break;
+        }
         if (probes.fileCommittedSince) {
           const r = await probes.fileCommittedSince(v.path, ctx.baseSha);
           // beta.84 (#1): carry the exact contract path on the result so a

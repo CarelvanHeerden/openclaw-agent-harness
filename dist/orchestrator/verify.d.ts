@@ -118,6 +118,20 @@ export interface VerifyProbes {
         diffLines?: number;
     }>;
     /**
+     * beta.85: is `path` present on disk AND committed ANYWHERE in the branch
+     * range `branchBaseSha..HEAD` (the whole branch, not just this sub-task)?
+     * Used by the REVISE-RELAXED acceptance of `file_written`/`file_committed`
+     * for a contract file the current revise did NOT target: it was already
+     * shipped correctly in a PRIOR cycle and the worker correctly left it alone,
+     * so demanding a FRESH mtime/diff this sub-task is a false-positive (the
+     * `1c744d70` / `696226e4` verifier-false-positive class). Optional; when
+     * absent the relaxed path falls back to the strict probe (back-compat).
+     */
+    fileCommittedInBranch?: (path: string, branchBaseSha: string) => Promise<{
+        present: boolean;
+        detail: string;
+    }>;
+    /**
      * What is the tip SHA of `branch` on the remote?
      * Used by `remote_branch_exists` (SHA field) and `commit_sha_matches`.
      */
@@ -184,5 +198,6 @@ export declare function verifySubTaskOutput(verify: SubTaskVerify[] | undefined,
     defaultBranch: string;
     subTaskStartMs: number;
     baseSha: string;
+    branchBaseSha?: string;
 }, probes: VerifyProbes): Promise<VerifyOutcome>;
 //# sourceMappingURL=verify.d.ts.map

@@ -317,8 +317,13 @@ test("beta64: worker_timeout_retry_enabled/best_effort_verify/scripted_verify_fa
   const src = S("src/config.ts");
   for (const k of ["worker_timeout_retry_enabled", "best_effort_verify", "scripted_verify_fallback"]) {
     assert.match(src, new RegExp(`${k}\\?: boolean`), `${k} interface`);
+  }
+  // beta.64 defaults: retry + best-effort stay ON.
+  for (const k of ["worker_timeout_retry_enabled", "best_effort_verify"]) {
     assert.match(src, new RegExp(`${k}: true`), `${k} default true`);
   }
+  // beta.85: scripted_verify_fallback flipped to default OFF (no local suite runs, ever).
+  assert.match(src, /scripted_verify_fallback: false/, "scripted_verify_fallback default false (beta.85)");
 });
 
 test("beta64: all four new loop keys declared in manifest configSchema (additionalProperties:false)", () => {
@@ -329,7 +334,7 @@ test("beta64: all four new loop keys declared in manifest configSchema (addition
   }
   assert.equal(loop.worker_timeout_retry_enabled.default, true);
   assert.equal(loop.best_effort_verify.default, true);
-  assert.equal(loop.scripted_verify_fallback.default, true);
+  assert.equal(loop.scripted_verify_fallback.default, false); // beta.85: default OFF (no local suite runs)
 });
 
 test("beta64: loop wires retry + best-effort verify + scripted fallback audits (source)", () => {

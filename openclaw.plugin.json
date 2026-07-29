@@ -387,8 +387,8 @@
           },
           "scripted_verify_fallback": {
             "type": "boolean",
-            "default": true,
-            "description": "beta.64 (P0-4): SCRIPTED VERIFIER FALLBACK. When an observe-mode VERIFY sub-task times out (before giving up to best-effort verify), run a DETERMINISTIC fallback -- npx tsc --noEmit + git diff --stat <base>..HEAD + the allowlisted repo check scripts (reusing beta.63 runFinalVerifyChecks/discoverCheckScripts/runCheckScripts) -- and report pass/fail to the loop as if the sub-task ran. A run-tsc/lint/diff/grep verify sub-task needs no LLM, so a hung verifier should not block a shippable change."
+            "default": false,
+            "description": "beta.64 (P0-4): SCRIPTED VERIFIER FALLBACK. When an observe-mode VERIFY sub-task times out, run a DETERMINISTIC fallback -- npx tsc --noEmit + git diff --stat + the allowlisted repo check scripts -- LOCALLY in the worktree. beta.85: DEFAULT FALSE. This was the last remaining local-execution path, against the hard 'never run the repo suite locally, ever' rule (verification is CI-only since beta.81). Opt in explicitly if you want the local deterministic rescue; the default no longer runs anything locally."
           },
           "recovery_max_resumes": {
             "type": "number",
