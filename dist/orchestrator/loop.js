@@ -1078,6 +1078,20 @@ export class OrchestratorLoop {
                         .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
                         .filter(Boolean);
                     const targetedFiles = perSubTaskFiles.length > 0 ? perSubTaskFiles : reviewFindingFiles;
+                    // beta.89 [F3] (Staging 3rd deep-dive): name WHICH target source drove
+                    // this sub-task's strict/relaxed decision. The revise-spec path uses
+                    // deterministic full-path workerContext (clean targeting); the raw-
+                    // findings fallback uses LLM `finding.file` (partial-path shorthand ->
+                    // likely `targets_unresolved` -> strict-everywhere -> a possible
+                    // false-fail of correct work). This one audit lets a post-mortem tell
+                    // from a single query which path a cycle-2 sub-task ran under, so the
+                    // one remaining semantic asymmetry is diagnosable instead of silent.
+                    this.deps.state.audit("loop.revise_target_source", {
+                        sessionId, seq: st.seq, cycle,
+                        source: perSubTaskFiles.length > 0 ? "revise_spec_worker_context" : "raw_findings",
+                        reviseSpecApplied,
+                        targetCount: targetedFiles.length,
+                    }, sessionId);
                     // beta.88 [E1] (Staging 2nd deep-dive): a NON-EMPTY targeted set that
                     // structurally resolves to ZERO contract paths is functionally
                     // IDENTICAL to an empty set -- e.g. the adversary wrote a PARTIAL
