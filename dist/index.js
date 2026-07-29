@@ -1107,6 +1107,13 @@ export function bootstrapHarnessSync(api) {
             }
             if (!headline)
                 return;
+            // beta.86: skip an IDENTICAL consecutive headline for this session (nit:
+            // per-sub-task fire could double-post the same "Executing sub-task N/M"
+            // line for two back-to-back sub-tasks before the ledger differs).
+            const dedup = (runtime.lastProgressHeadline ??= new Map());
+            if (dedup.get(sessionId) === headline)
+                return;
+            dedup.set(sessionId, headline);
             // Fire-and-forget; poster.post is best-effort and never throws.
             void poster.post(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
         },

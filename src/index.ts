@@ -235,6 +235,15 @@ export interface HarnessRuntime {
    * the wedge-prone agent `api.sendMessage` turn.
    */
   progressPoster?: SlackProgressPoster | null;
+  /**
+   * beta.86 (Staging review nit): last progress headline posted per session, so
+   * `deliverProgress` skips an IDENTICAL consecutive post. beta.85 #4 fires
+   * deliverProgress per `loop.worker_end_turn`; two back-to-back sub-tasks whose
+   * snapshot headline is byte-identical (e.g. same "Executing sub-task N/M"
+   * before the ledger updates) would otherwise double-post. Correctness-neutral,
+   * a UX de-dup only.
+   */
+  lastProgressHeadline?: Map<string, string>;
 }
 
 export interface PreflightResult {
@@ -1362,6 +1371,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         return;
       }
       if (!headline) return;
+      // beta.86: skip an IDENTICAL consecutive headline for this session (nit:
+      // per-sub-task fire could double-post the same "Executing sub-task N/M"
+      // line for two back-to-back sub-tasks before the ledger differs).
+      const dedup = (runtime.lastProgressHeadline ??= new Map<string, string>());
+      if (dedup.get(sessionId) === headline) return;
+      dedup.set(sessionId, headline);
       // Fire-and-forget; poster.post is best-effort and never throws.
       void poster.post(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
     },
