@@ -70,7 +70,7 @@ function parsePrNumber(prUrl: string): number | undefined {
 }
 import { inferVerifyContract } from "./verify-contract.js";
 import { rederiveContractPath } from "./contract-rederive.js";
-import { pathMatches } from "./path-match.js";
+import { pathMatches, resolveContractPath } from "./path-match.js";
 import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult } from "./repo-conventions.js";
@@ -1399,21 +1399,43 @@ export class OrchestratorLoop {
         // Targeted set = files named by this cycle's review findings (file/line),
         // structurally matched against the contract path.
         if (cycle > 1 && lastReview?.findings?.length) {
-          const targetedFiles = lastReview.findings
+          // beta.87 (Staging deep-dive [1]+[2]): build the TARGETED file set --
+          // the files THIS revise sub-task is expected to change. A contract
+          // file that is targeted keeps the STRICT fresh-write requirement; a
+          // not-targeted file (already correct from a prior cycle) is relaxed.
+          //
+          // [2] PER-SUB-TASK SCOPE: when the revise-spec turn refreshed the
+          // plan (reviseSpecApplied), this sub-task's OWN workerContext names
+          // the files it should touch (filesLikelyTouched + codeExcerpts[].path)
+          // -- use THAT, not the review-wide findings, so seq-4 doesn't inherit
+          // strict mode from a finding about seq-7's file. Fall back to the
+          // review-wide findings' `.file` only when there's no per-sub-task
+          // signal (raw-findings path).
+          const perSubTaskFiles = reviseSpecApplied
+            ? [
+                ...(st.filesLikelyTouched ?? []),
+                ...((st.workerContext?.codeExcerpts ?? []).map((e) => e.path)),
+              ].map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean)
+            : [];
+          const reviewFindingFiles = lastReview.findings
             .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
             .filter(Boolean);
-          // beta.86 (Staging review nit #1): if the review produced findings but
-          // NONE carries a `.file` (fileless findings), `targetedFiles` is empty
-          // and every entry would be relaxed -- a NEW false-pass vector (the
-          // whole cycle-2 contract accepts already-committed state uncritically).
-          // Safer default: with no file-level targeting info, keep EVERYTHING
-          // STRICT (a revise cannot relax the whole contract on fileless
-          // findings). Only relax when we have a concrete targeted set to
-          // exclude against. `revise_contract_relaxed` echoes the targeted set
-          // (nit (a)) so a post-mortem sees WHY a file was relaxed.
+          const targetedFiles = perSubTaskFiles.length > 0 ? perSubTaskFiles : reviewFindingFiles;
           if (targetedFiles.length > 0) {
+            // [1] STRUCTURAL targeting only. A finding/spec path targets a
+            // contract path ONLY via a real directory-context match
+            // (exact/route-group/suffix/basename-dir), resolved through
+            // resolveContractPath's strictContract mode. This kills the
+            // beta.86 bidirectional bare-basename fuzzy match: an adversary
+            // `file:"route.ts"` (bare) no longer force-strictens EVERY
+            // `route.ts` sibling (which re-created the 696226e4 false-fail).
+            // A bare-basename target that structurally resolves to >1 contract
+            // file is genuinely ambiguous -> it targets NONE specifically
+            // (resolveContractPath's strict mode returns no structural match
+            // for a bare basename vs a dir'd path), so those siblings relax
+            // rather than false-fail.
             const isTargeted = (p: string): boolean =>
-              targetedFiles.some((tf) => pathMatches(tf, p) || pathMatches(p, tf));
+              !!resolveContractPath(targetedFiles, p, { strictContract: true });
             for (let i = 0; i < contract.length; i++) {
               const v = contract[i]!;
               if ((v.kind === "file_written" || v.kind === "file_committed") && v.path && !isTargeted(v.path)) {
