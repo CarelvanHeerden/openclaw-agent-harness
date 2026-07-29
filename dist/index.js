@@ -409,7 +409,7 @@ export function bootstrapHarnessSync(api) {
             });
             return { subTasks: r.subTasks };
         },
-        runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint }) => {
+        runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint, onStreamSlow }) => {
             const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
             const canUseTool = buildBashGuard(config.safety);
             const resolution = pat.resolve({
@@ -431,7 +431,7 @@ export function bootstrapHarnessSync(api) {
                 // beta.53 (P2): capture uncommitted working-tree changes for the audit
                 // + retry logic (wrote-but-didn't-commit vs zero-work).
                 gitStatusPorcelain: (wt) => git.statusPorcelain(wt),
-            }, resumeSessionId, dispatchHint);
+            }, resumeSessionId, dispatchHint, onStreamSlow);
         },
         runAdversary: async ({ brief, plan, runtime, requester, baseSha, priorFindings }) => {
             // beta.67 (Bug B): diff against the branch's persisted FORK-POINT sha

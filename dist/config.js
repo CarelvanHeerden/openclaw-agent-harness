@@ -72,6 +72,7 @@ const DEFAULTS = {
         skip_observe_reprobe_on_revise: true,
         sdk_first_token_timeout_seconds: 30,
         sdk_stream_open_timeout_seconds: 120,
+        worker_stream_idle_warn_seconds: 90,
         worker_timeout_retry_enabled: true,
         best_effort_verify: true,
         // beta.85: DEFAULT OFF. This fallback ran `tsc` + repo check-scripts LOCALLY
@@ -314,6 +315,16 @@ export function parseHarnessConfig(input) {
             merged.loop.sdk_stream_open_timeout_seconds = 10;
         if (merged.loop.sdk_stream_open_timeout_seconds > 600)
             merged.loop.sdk_stream_open_timeout_seconds = 600;
+    }
+    // beta.90 (Feature 2): clamp the worker STREAM-SLOW idle-warn window. Floor 30
+    // (one tick cadence; anything lower is noise), ceiling 600 (10 min -- past
+    // that a stall watchdog / worker timeout owns the outcome). This is
+    // observability, never a hard fail, so the range is generous.
+    if (typeof merged.loop.worker_stream_idle_warn_seconds === "number") {
+        if (merged.loop.worker_stream_idle_warn_seconds < 30)
+            merged.loop.worker_stream_idle_warn_seconds = 30;
+        if (merged.loop.worker_stream_idle_warn_seconds > 600)
+            merged.loop.worker_stream_idle_warn_seconds = 600;
     }
     // beta.81 (Track B / B2): clamp the CI-wait window + poll cadence. The wait
     // is a SOFT checkpoint (surfaces + offers resume on timeout, never a hard

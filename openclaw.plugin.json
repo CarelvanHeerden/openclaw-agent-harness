@@ -375,6 +375,13 @@
             "default": 120,
             "description": "beta.65 (P0): PHASE-1 stream-open watchdog window (seconds). A SEPARATE timer armed at CALL INITIATION (top of consumeWorkerStream, BEFORE the stream opens) and disarmed when the stream opens (system/init). If the stream never opens within this window, the call is aborted with the same distinct stopReason first_token_timeout so the loop retries on a FRESH SDK session. Covers the beta.64 gap: a PRE-STREAM POST hang (SDK streaming POST never returns its first byte -- smoke #3: 28+min silence, no sdk_stream_opened, no abort) that beta.64's stream-open-armed watchdog never saw. Phase 1 is highly variable even on success (smoke #3: 47s / 422s-succeeded / >1800s-hung), so a legit-but-slow open like 422s WILL be aborted -- CORRECT, because the abort routes into the same first_token_timeout -> one-fresh-session retry path (a cold/unpooled open is fast on retry). Clamped [10,600]."
           },
+          "worker_stream_idle_warn_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 600,
+            "default": 90,
+            "description": "beta.90 (Feature 2): worker STREAM-SLOW idle-warn window (seconds). Inside consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick watches for token/message activity; if the stream goes IDLE (no delta) for this many seconds it emits loop.worker_stream_slow and bumps the session liveness heartbeat (last_progress_at) so harness_progress surfaces 'worker stream idle Ns' instead of the phase looking wedged. OBSERVABILITY ONLY -- it NEVER aborts (a slow stream recovered on b89; a blunt abort would have wrongly killed it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went idle ~15 min with no signal in harness_progress. Default 90; clamped [30,600]."
+          },
           "worker_timeout_retry_enabled": {
             "type": "boolean",
             "default": true,

@@ -169,6 +169,17 @@ export interface OrchestratorDeps {
         requester?: string;
         /** beta.53 (P1b): corrective dispatch context appended on a retry. */
         dispatchHint?: string;
+        /**
+         * beta.90 (Feature 2): stream-slow liveness callback. Invoked when the
+         * worker SDK stream opens then goes idle (no token/activity delta) past
+         * the configured threshold. OBSERVABILITY ONLY -- never aborts.
+         */
+        onStreamSlow?: (info: {
+            idleMs: number;
+            elapsedMs: number;
+            tokensOut: number;
+            label: string;
+        }) => void;
     }) => Promise<WorkerResult>;
     runAdversary: (params: {
         brief: CrystallisedBrief;
@@ -387,6 +398,16 @@ export declare class OrchestratorLoop {
      * logs a progress breadcrumb to the interaction log.
      */
     private markProgress;
+    /**
+     * beta.90 (Feature 2): build the stream-slow liveness callback for a worker
+     * dispatch. When the SDK stream opens then goes idle past the threshold, this
+     * (1) emits `loop.worker_stream_slow` for the audit trail and (2) bumps the
+     * session liveness heartbeat (last_progress_at, the beta.63 column the stall
+     * watchdog reads) so harness_progress surfaces "worker stream idle Ns" rather
+     * than the phase looking wedged. Best-effort + throw-guarded: this is pure
+     * observability and must NEVER disturb the worker call.
+     */
+    private makeStreamSlowCallback;
     private checkpoint;
     private addCost;
     private saveReview;
@@ -733,6 +754,13 @@ export declare class OrchestratorLoop {
      * cannot silently ship unverified code -- it just preserves the deliverable.
      * OTHERWISE fail terminally but PRESERVE the worktree (fix #3) so the branch
      * remains inspectable on disk. Never throws.
+     *
+     * beta.90 (Feature 1): an INFRASTRUCTURE crash (out of disk / memory / IO /
+     * transport -- see infra-crash.ts) with GREEN self-verify is ALSO eligible,
+     * WITHOUT requiring cycle>=2 or a prior review, because it is an environment
+     * failure that says nothing about the code. When there is no prior review to
+     * ship, a minimal `revise` review is synthesized so the graceful PR still
+     * opens flagged needs_human_review.
      */
     private finaliseReviewCrash;
     /**
