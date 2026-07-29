@@ -28,6 +28,14 @@ export interface VerifyProbeResult {
     kind: SubTaskVerify["kind"];
     passed: boolean;
     detail: string;
+    /**
+     * beta.84 (#1, Staging QoL nit): the CONTRACT path this result corresponds
+     * to, echoed back on path-bearing kinds so a post-mortem can map each result
+     * to its contract entry directly instead of reconstructing from row order
+     * (the `file_committed` results previously carried no path at all). Optional
+     * -- non-path kinds (commit_made, branch_pushed, ...) omit it.
+     */
+    path?: string;
 }
 export interface VerifyOutcome {
     /** True only if every requested check passed. */
@@ -95,10 +103,19 @@ export interface VerifyProbes {
     /**
      * Does `path` appear in `git log <baseSha>..HEAD --name-only`?
      * Used by the `file_committed` contract kind.
+     *
+     * beta.84 (#1): this probe now enforces GROUND TRUTH -- the resolved match
+     * must be a STRUCTURAL (non-fuzzy) path match AND the EXACT contract path
+     * must have a non-zero `git diff --numstat` in the range. It returns
+     * `diffLines` so the loop can surface "contract file had 0 diff lines" as
+     * the failure reason (the cyc2-seq7 false-positive class). Back-compat:
+     * `diffLines` is optional; older test doubles that omit it still satisfy
+     * the `committed` boolean.
      */
     fileCommittedSince?: (path: string, baseSha: string) => Promise<{
         committed: boolean;
         detail: string;
+        diffLines?: number;
     }>;
     /**
      * What is the tip SHA of `branch` on the remote?

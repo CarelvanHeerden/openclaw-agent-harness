@@ -69,9 +69,20 @@ export declare function anyPathMatches(committedFiles: string[], contract: strin
  * scoped diff, so it is the test the sub-task asked for."
  */
 export declare function isTestFilePath(p: string): boolean;
+/**
+ * beta.84 (#1): a STRUCTURAL match is one of the four un-fuzzy rules that
+ * require real directory context (`exact`, `route-group`, `suffix`,
+ * `basename-dir`). The two `*-unique` fallbacks (`basename-unique`,
+ * `test-file-unique`) are the FUZZY ones -- they match on filename/type alone
+ * and are the source of the cyc2-seq7 false-positive (a lone same-basename
+ * SIBLING satisfied the wrong contract entry). A caller that must not accept a
+ * fuzzy match passes `strictContract: true`.
+ */
+export declare function isStructuralRule(rule: string | null): boolean;
 export declare function resolveContractPath(realFiles: string[], contract: string, opts?: {
     allowBasenameFallback?: boolean;
     allowTestFileFallback?: boolean;
+    strictContract?: boolean;
 }): {
     file: string;
     rule: string;

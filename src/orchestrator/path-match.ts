@@ -170,10 +170,23 @@ export function isTestFilePath(p: string): boolean {
   return false;
 }
 
+/**
+ * beta.84 (#1): a STRUCTURAL match is one of the four un-fuzzy rules that
+ * require real directory context (`exact`, `route-group`, `suffix`,
+ * `basename-dir`). The two `*-unique` fallbacks (`basename-unique`,
+ * `test-file-unique`) are the FUZZY ones -- they match on filename/type alone
+ * and are the source of the cyc2-seq7 false-positive (a lone same-basename
+ * SIBLING satisfied the wrong contract entry). A caller that must not accept a
+ * fuzzy match passes `strictContract: true`.
+ */
+export function isStructuralRule(rule: string | null): boolean {
+  return rule === "exact" || rule === "route-group" || rule === "suffix" || rule === "basename-dir";
+}
+
 export function resolveContractPath(
   realFiles: string[],
   contract: string,
-  opts: { allowBasenameFallback?: boolean; allowTestFileFallback?: boolean } = {},
+  opts: { allowBasenameFallback?: boolean; allowTestFileFallback?: boolean; strictContract?: boolean } = {},
 ): { file: string; rule: string } | null {
   let best: { file: string; rule: string } | null = null;
   for (const f of realFiles) {
@@ -185,6 +198,14 @@ export function resolveContractPath(
     }
   }
   if (best) return best;
+
+  // beta.84 (#1): strict-contract callers (file_committed) stop here -- the
+  // fuzzy `*-unique` fallbacks below are what let cyc2 seq7's `route.ts`
+  // contract false-match its `download/route.ts` sibling. A genuine topology
+  // drift is now handled structurally by the beta.76 contract-rederive pass
+  // BEFORE verification, and `file_written`+mtime still catches a fresh write
+  // under a drifted path, so file_committed no longer needs the fuzzy nets.
+  if (opts.strictContract) return null;
 
   // beta.59 (D-path-drift): last-resort BASENAME-UNIQUE fallback.
   //

@@ -410,6 +410,22 @@ export interface LoopConfig {
      */
     revise_spec_turn_enabled?: boolean;
     /**
+     * beta.84 (#2): HARD timeout (seconds) on the Fable revise-spec turn.
+     *
+     * WHY (beta.73 signature, session 1c744d70): the revise-spec turn is an
+     * UNBOUNDED lead-model call. On a busy/cron-nested run it has spun ~570s
+     * (9.5 min) and then failed on the ambient ~218s cron lane cap -- burning
+     * ~10 minutes before it fell back to the raw-findings hint (which beta.83
+     * only made VISIBLE, not faster). Bounding it here makes the fallback FAST:
+     * if the distillation can't produce a refreshed plan within the budget, we
+     * stop waiting and drop to the raw-findings hint immediately (audited as
+     * loop.revise_spec_timeout) instead of eating the whole lane cap. The
+     * fallback path is identical to a throw/empty -- never worse than beta.66.
+     * 0 disables the bound (restores the pre-beta.84 unbounded behaviour).
+     * Default 180s (< a typical cron lane cap, generous for a single distill).
+     */
+    revise_spec_timeout_seconds?: number;
+    /**
      * beta.70 (F5): skip an observe-only sub-task's RE-PROBE on a revise cycle
      * when the SAME seq already completed cleanly in a prior cycle. In PR #870
      * the cycle-2 plan re-listed the seq-1 probe ("already completed, no

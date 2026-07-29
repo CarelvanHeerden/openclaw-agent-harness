@@ -83,12 +83,12 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     // reject a stale pre-existing file (freshness enforced probe-side).
                     const r = await probes.fileExistsOnDisk(v.path, ctx.subTaskStartMs);
                     const passed = r.exists && r.nonEmpty;
-                    results.push({ kind: v.kind, passed, detail: r.detail });
+                    results.push({ kind: v.kind, passed, detail: r.detail, path: v.path });
                 }
                 else {
                     // Backward compat: beta.8 behaviour (git diff, excludes untracked)
                     const r = await probes.fileWrittenSince(v.path, ctx.subTaskStartMs);
-                    results.push({ kind: v.kind, passed: r.written, detail: r.detail });
+                    results.push({ kind: v.kind, passed: r.written, detail: r.detail, path: v.path });
                 }
                 break;
             }
@@ -101,7 +101,10 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
             case "file_committed": {
                 if (probes.fileCommittedSince) {
                     const r = await probes.fileCommittedSince(v.path, ctx.baseSha);
-                    results.push({ kind: v.kind, passed: r.committed, detail: r.detail });
+                    // beta.84 (#1): carry the exact contract path on the result so a
+                    // post-mortem no longer has to reconstruct the mapping from row
+                    // order (Staging's QoL nit -- `path` was merged/empty before).
+                    results.push({ kind: v.kind, passed: r.committed, detail: r.detail, path: v.path });
                 }
                 else {
                     // beta.57 (P1): FAIL CLOSED. A missing probe used to skip-pass,

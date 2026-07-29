@@ -323,6 +323,25 @@ export declare class GitAdapter {
     /** beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree. */
     diffStat(worktreePath: string, base: string): Promise<string>;
     /**
+     * beta.84 (#1): GROUND-TRUTH per-file change count for an EXACT path in
+     * `<base>..HEAD`. Runs `git diff --numstat <base> HEAD -- <path>` and sums
+     * additions + deletions. Returns 0 when the exact path was not modified in
+     * the range (or the range is empty / the command errors).
+     *
+     * WHY THIS EXISTS (session 1c744d70, cyc2 seq7): the `file_committed` check
+     * resolved its contract path (`.../files/[fileId]/route.ts`) via the
+     * basename-unique fallback to a SIBLING file (`.../download/route.ts`) that
+     * another contract entry already legitimately claimed, and reported PASS --
+     * a false-positive. The worker never touched `route.ts`; only the `file_
+     * written` mtime probe caught it. numstat on the EXACT contract path is the
+     * un-fuzzable predicate: it is non-zero iff the commit range actually
+     * modified THAT path. No basename fuzzing, no mtime shenanigans.
+     *
+     * `--numstat` prints `<added>\t<deleted>\t<path>` per changed file (binary
+     * files print `-\t-\t<path>`, which we treat as a real change -> 1).
+     */
+    fileDiffLineCount(worktreePath: string, base: string, exactPath: string): Promise<number>;
+    /**
      * beta.34: install a persistent credential helper into the bare repo
      * config (Staging's recommended hardening, option 1). The helper script
      * contains NO token — it reads `$OAH_GH_TOKEN` from the process env at

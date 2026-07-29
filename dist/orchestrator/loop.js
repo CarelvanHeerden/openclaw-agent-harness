@@ -707,9 +707,17 @@ export class OrchestratorLoop {
                 this.deps.config.loop.revise_spec_turn_enabled !== false &&
                 this.deps.runLeadReviseSpec) {
                 try {
-                    const refreshed = await this.deps.runLeadReviseSpec({
+                    // beta.84 (#2): bound the revise-spec turn. It is an unbounded lead
+                    // call that has spun ~570s then died on the ambient cron lane cap
+                    // (beta.73 signature) -- ~10 min burned before falling back. With a
+                    // bound we drop to the raw-findings hint FAST. 0 disables the bound.
+                    const reviseSpecTimeout = this.deps.config.loop.revise_spec_timeout_seconds;
+                    const reviseSpecCall = this.deps.runLeadReviseSpec({
                         brief, plan, review: lastReview, requester: row.requester,
                     });
+                    const refreshed = reviseSpecTimeout && reviseSpecTimeout > 0
+                        ? await withTimeout(reviseSpecCall, reviseSpecTimeout)
+                        : await reviseSpecCall;
                     if (refreshed?.subTasks && refreshed.subTasks.length > 0) {
                         plan.subTasks = refreshed.subTasks;
                         this.deps.state.db
@@ -728,8 +736,18 @@ export class OrchestratorLoop {
                     }
                 }
                 catch (err) {
-                    this.deps.state.audit("loop.revise_spec_failed", { sessionId, cycle, error: String(err?.message ?? err) }, sessionId);
-                    this.deps.logger.warn("[loop] revise-spec turn failed; falling back to raw findings hint (never worse than beta.66)", { sessionId, cycle, err: String(err) });
+                    // beta.84 (#2): distinguish a TIMEOUT (bounded fast-fail) from a
+                    // generic revise-spec failure so the fast-fallback is greppable. Both
+                    // fall back to the raw-findings hint identically (never worse than
+                    // beta.66); the timeout just means we stopped waiting on the lane cap.
+                    if (err instanceof WorkerTimeoutError) {
+                        this.deps.state.audit("loop.revise_spec_timeout", { sessionId, cycle, seconds: this.deps.config.loop.revise_spec_timeout_seconds }, sessionId);
+                        this.deps.logger.warn("[loop] revise-spec turn exceeded revise_spec_timeout_seconds; falling back to raw findings hint FAST (never worse than beta.66)", { sessionId, cycle, seconds: this.deps.config.loop.revise_spec_timeout_seconds });
+                    }
+                    else {
+                        this.deps.state.audit("loop.revise_spec_failed", { sessionId, cycle, error: String(err?.message ?? err) }, sessionId);
+                        this.deps.logger.warn("[loop] revise-spec turn failed; falling back to raw findings hint (never worse than beta.66)", { sessionId, cycle, err: String(err) });
+                    }
                 }
             }
             const ordered = topoSortSubTasks(plan.subTasks);

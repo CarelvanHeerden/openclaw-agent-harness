@@ -375,17 +375,18 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
 
   // beta.83 (#1): surface the revise-spec raw-findings fallback for the CURRENT
   // cycle so the reduced-fidelity degradation is no longer silent. The
-  // fallback fires when `loop.revise_spec_failed` or `loop.revise_spec_empty`
-  // is audited for this cycle AND no later `loop.revise_spec_applied` for the
-  // same cycle superseded it. Scoped to the latest cycle (a cycle-2 fallback
-  // must not haunt a later cycle that recovered).
+  // fallback fires when `loop.revise_spec_failed`, `loop.revise_spec_empty`, or
+  // (beta.84 #2) `loop.revise_spec_timeout` is audited for this cycle AND no
+  // later `loop.revise_spec_applied` for the same cycle superseded it. Scoped
+  // to the latest cycle (a cycle-2 fallback must not haunt a later cycle that
+  // recovered).
   let reviseSpecFellBack = false;
   if (latestCycle > 1) {
     const rsRows = db
       .prepare(
         `SELECT event, payload FROM audit_log
            WHERE session_id = ?
-             AND event IN ('loop.revise_spec_failed','loop.revise_spec_empty','loop.revise_spec_applied')
+             AND event IN ('loop.revise_spec_failed','loop.revise_spec_empty','loop.revise_spec_timeout','loop.revise_spec_applied')
            ORDER BY created_at DESC, id DESC LIMIT 20`,
       )
       .all(sessionId) as Array<{ event: string; payload: string }>;
