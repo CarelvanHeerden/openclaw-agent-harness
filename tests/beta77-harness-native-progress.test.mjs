@@ -174,7 +174,7 @@ test("index.ts gates deliverProgress on poster + native_progress_delivery + hasR
   const idx = src("index.ts");
   assert.match(idx, /import \{ SlackProgressPoster, hasRealSlackBinding \} from "\.\/slack\/progress-poster\.js"/);
   // deliverProgress closure: all three gates present
-  const dp = idx.slice(idx.indexOf("deliverProgress: (sessionId"), idx.indexOf("deliverProgress: (sessionId") + 1800); // beta.86: widened for the de-dup guard insert
+  const dp = idx.slice(idx.indexOf("deliverProgress: (sessionId"), idx.indexOf("deliverProgress: (sessionId") + 2200); // beta.86/.88: widened for de-dup guard + terminal-eviction inserts
   assert.match(dp, /runtime\.progressPoster/);
   assert.match(dp, /native_progress_delivery === false/);
   assert.match(dp, /hasRealSlackBinding\(channel, thread\)/);

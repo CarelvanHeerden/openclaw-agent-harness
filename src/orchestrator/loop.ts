@@ -1421,7 +1421,27 @@ export class OrchestratorLoop {
             .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
             .filter(Boolean);
           const targetedFiles = perSubTaskFiles.length > 0 ? perSubTaskFiles : reviewFindingFiles;
-          if (targetedFiles.length > 0) {
+          // beta.88 [E1] (Staging 2nd deep-dive): a NON-EMPTY targeted set that
+          // structurally resolves to ZERO contract paths is functionally
+          // IDENTICAL to an empty set -- e.g. the adversary wrote a PARTIAL
+          // path (`download/route.ts`) that is shorter than the full contract
+          // path, so no structural rule matches (suffix needs the real/committed
+          // side to be the LONGER one). Without this guard `isTargeted` returns
+          // false for EVERY entry -> everything relaxes -> the same false-pass
+          // the beta.86 empty-targets fix closed, re-entered through a different
+          // LLM output shape. So: only enter the relaxation path when at least
+          // one target actually resolves to a contract path in THIS sub-task;
+          // otherwise fall through to the strict-no-targets branch (keep
+          // everything strict, a revise can't relax on unresolvable targets).
+          const anyTargetResolvable =
+            targetedFiles.length > 0 &&
+            contract.some(
+              (v) =>
+                (v.kind === "file_written" || v.kind === "file_committed") &&
+                !!v.path &&
+                !!resolveContractPath(targetedFiles, v.path, { strictContract: true }),
+            );
+          if (anyTargetResolvable) {
             // [1] STRUCTURAL targeting only. A finding/spec path targets a
             // contract path ONLY via a real directory-context match
             // (exact/route-group/suffix/basename-dir), resolved through
@@ -1450,6 +1470,14 @@ export class OrchestratorLoop {
                 });
               }
             }
+          } else if (targetedFiles.length > 0) {
+            // [E1] Non-empty targets that resolve to NOTHING -> keep strict.
+            // Distinct audit so a partial-path adversary shorthand is visible.
+            this.deps.state.audit(
+              "loop.revise_contract_targets_unresolved",
+              { sessionId, seq: st.seq, cycle, targetedFiles, contractPaths: contract.filter((v) => "path" in v && v.path).map((v) => (v as { path: string }).path) },
+              sessionId,
+            );
           } else {
             // Findings exist but none names a file -> keep strict, record why.
             this.deps.state.audit(
