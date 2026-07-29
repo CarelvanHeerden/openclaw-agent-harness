@@ -1059,16 +1059,31 @@ export class OrchestratorLoop {
                     const targetedFiles = lastReview.findings
                         .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
                         .filter(Boolean);
-                    const isTargeted = (p) => targetedFiles.some((tf) => pathMatches(tf, p) || pathMatches(p, tf));
-                    for (let i = 0; i < contract.length; i++) {
-                        const v = contract[i];
-                        if ((v.kind === "file_written" || v.kind === "file_committed") && v.path && !isTargeted(v.path)) {
-                            contract[i] = { ...v, reviseRelaxed: true };
-                            this.deps.state.audit("loop.revise_contract_relaxed", { sessionId, seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles }, sessionId);
-                            this.deps.interactionLog?.log(sessionId, {
-                                event: "revise_contract_relaxed", phase: "worker", seq: st.seq, cycle, kind: v.kind, path: v.path,
-                            });
+                    // beta.86 (Staging review nit #1): if the review produced findings but
+                    // NONE carries a `.file` (fileless findings), `targetedFiles` is empty
+                    // and every entry would be relaxed -- a NEW false-pass vector (the
+                    // whole cycle-2 contract accepts already-committed state uncritically).
+                    // Safer default: with no file-level targeting info, keep EVERYTHING
+                    // STRICT (a revise cannot relax the whole contract on fileless
+                    // findings). Only relax when we have a concrete targeted set to
+                    // exclude against. `revise_contract_relaxed` echoes the targeted set
+                    // (nit (a)) so a post-mortem sees WHY a file was relaxed.
+                    if (targetedFiles.length > 0) {
+                        const isTargeted = (p) => targetedFiles.some((tf) => pathMatches(tf, p) || pathMatches(p, tf));
+                        for (let i = 0; i < contract.length; i++) {
+                            const v = contract[i];
+                            if ((v.kind === "file_written" || v.kind === "file_committed") && v.path && !isTargeted(v.path)) {
+                                contract[i] = { ...v, reviseRelaxed: true };
+                                this.deps.state.audit("loop.revise_contract_relaxed", { sessionId, seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles }, sessionId);
+                                this.deps.interactionLog?.log(sessionId, {
+                                    event: "revise_contract_relaxed", phase: "worker", seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles,
+                                });
+                            }
                         }
+                    }
+                    else {
+                        // Findings exist but none names a file -> keep strict, record why.
+                        this.deps.state.audit("loop.revise_contract_strict_no_targets", { sessionId, seq: st.seq, cycle, findingCount: lastReview.findings.length }, sessionId);
                     }
                 }
                 if (contract.length > 0 && this.deps.buildVerifyProbes) {

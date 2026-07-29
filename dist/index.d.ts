@@ -221,6 +221,15 @@ export interface HarnessRuntime {
      * the wedge-prone agent `api.sendMessage` turn.
      */
     progressPoster?: SlackProgressPoster | null;
+    /**
+     * beta.86 (Staging review nit): last progress headline posted per session, so
+     * `deliverProgress` skips an IDENTICAL consecutive post. beta.85 #4 fires
+     * deliverProgress per `loop.worker_end_turn`; two back-to-back sub-tasks whose
+     * snapshot headline is byte-identical (e.g. same "Executing sub-task N/M"
+     * before the ledger updates) would otherwise double-post. Correctness-neutral,
+     * a UX de-dup only.
+     */
+    lastProgressHeadline?: Map<string, string>;
 }
 export interface PreflightResult {
     ok: boolean;
