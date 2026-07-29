@@ -76,6 +76,17 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                 break;
             }
             case "file_written": {
+                // beta.85: REVISE-RELAXED. On a revise cycle, a contract file the review
+                // did NOT target was already shipped correctly in a prior cycle; the
+                // worker correctly left it untouched. Requiring a fresh mtime this
+                // sub-task false-fails it (the 1c744d70/696226e4 class). Accept it when
+                // it is present + committed anywhere in the branch range. A TARGETED
+                // file keeps the strict fresh-write requirement below.
+                if (v.reviseRelaxed && probes.fileCommittedInBranch) {
+                    const r = await probes.fileCommittedInBranch(v.path, ctx.branchBaseSha ?? ctx.baseSha);
+                    results.push({ kind: v.kind, passed: r.present, detail: `revise-relaxed (not targeted this cycle): ${r.detail}`, path: v.path });
+                    break;
+                }
                 // beta.9 FIX: use fs.stat (includes untracked files) when probe available.
                 // Falls back to git-diff-based probe for backward compat with beta.8 test doubles.
                 if (probes.fileExistsOnDisk) {
@@ -99,6 +110,13 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
             }
             // ---- beta.9 kinds ----
             case "file_committed": {
+                // beta.85: REVISE-RELAXED (same rationale as file_written above): a
+                // not-targeted revise file passes on present+committed-in-branch.
+                if (v.reviseRelaxed && probes.fileCommittedInBranch) {
+                    const r = await probes.fileCommittedInBranch(v.path, ctx.branchBaseSha ?? ctx.baseSha);
+                    results.push({ kind: v.kind, passed: r.present, detail: `revise-relaxed (not targeted this cycle): ${r.detail}`, path: v.path });
+                    break;
+                }
                 if (probes.fileCommittedSince) {
                     const r = await probes.fileCommittedSince(v.path, ctx.baseSha);
                     // beta.84 (#1): carry the exact contract path on the result so a

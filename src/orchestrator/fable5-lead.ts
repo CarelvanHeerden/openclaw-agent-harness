@@ -31,10 +31,10 @@ export type SubTaskVerify =
   // --- beta.8 kinds (kept for backward compat) ---
   | { kind: "branch_pushed"; branch?: string }              // ref exists on origin
   | { kind: "pr_opened"; draft?: boolean }                  // a PR URL was captured
-  | { kind: "file_written"; path: string; expectedContent?: string }  // file on disk, non-empty (beta.9: fs.stat, not git diff)
+  | { kind: "file_written"; path: string; expectedContent?: string; reviseRelaxed?: boolean }  // file on disk, non-empty (beta.9: fs.stat, not git diff). beta.85: reviseRelaxed => accept present+committed-in-branch (see verify.ts).
   | { kind: "commit_made" }                                 // a new commit exists vs base
   // --- beta.9 additions ---
-  | { kind: "file_committed"; path: string }                // path appears in git log <base>..HEAD
+  | { kind: "file_committed"; path: string; reviseRelaxed?: boolean }                // path appears in git log <base>..HEAD. beta.85: reviseRelaxed => a not-targeted revise file passes on present+committed-in-branch.
   | { kind: "remote_branch_exists"; branch?: string }      // GET /git/refs/heads/{branch} == 200
   | { kind: "file_pushed"; path: string; branch?: string } // GET /contents/{path}?ref={branch} == 200
   | { kind: "pr_state"; state: "open" | "draft" | "merged" }  // PR exists AND is in given state

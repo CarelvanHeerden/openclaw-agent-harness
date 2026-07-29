@@ -351,7 +351,17 @@ esac
             // beta.69 (F4): `--ignore-scripts` avoids the puppeteer/native postinstall
             // crash the 1f2e6642 cycle-2 worker had to work around manually, while
             // still installing the missing check-script binaries.
-            const args = hasLock ? ["ci", "--ignore-scripts"] : ["install", "--include=dev", "--ignore-scripts"];
+            // beta.85: hardening. Session 696226e4's bootstrap FAILED on an ERESOLVE
+            // peer-dependency conflict (`@react-pdf/renderer` vs React 19), leaving
+            // no node_modules. Add `--legacy-peer-deps` so a peer-dep conflict no
+            // longer aborts the install (verification is CI-only now, so a strict
+            // peer-tree isn't needed locally -- the worker just needs importable
+            // modules for reads), plus `--no-audit --no-fund` to speed it up. `npm
+            // ci` respects the lockfile so the tree is still deterministic.
+            const speed = ["--no-audit", "--no-fund", "--legacy-peer-deps"];
+            const args = hasLock
+                ? ["ci", "--ignore-scripts", ...speed]
+                : ["install", "--include=dev", "--ignore-scripts", ...speed];
             this.opts.logger?.info?.(`[git-worktree] bootstrapping deps (npm ${args[0]}) in ${worktreePath}`);
             await this.runCmd("npm", args, worktreePath, this.opts.bootstrapTimeoutMs ?? 600_000);
             this.opts.logger?.info?.(`[git-worktree] deps bootstrap complete in ${worktreePath}`);

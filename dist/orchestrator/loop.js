@@ -61,6 +61,7 @@ function parsePrNumber(prUrl) {
 }
 import { inferVerifyContract } from "./verify-contract.js";
 import { rederiveContractPath } from "./contract-rederive.js";
+import { pathMatches } from "./path-match.js";
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
@@ -866,6 +867,20 @@ export class OrchestratorLoop {
                 // Capture the worktree HEAD BEFORE the worker runs, so commit_made
                 // verification (HEAD != base) is meaningful.
                 const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+                // beta.85: the BRANCH fork-point (plan_base_sha, persisted at plan time)
+                // -- the base for "committed anywhere in this branch" used by the
+                // revise-relaxed acceptance. Falls back to subTaskBaseSha when unset.
+                const planBaseShaForVerify = (() => {
+                    try {
+                        const r = this.deps.state.db
+                            .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+                            .get(sessionId);
+                        return r?.plan_base_sha || subTaskBaseSha;
+                    }
+                    catch {
+                        return subTaskBaseSha;
+                    }
+                })();
                 // beta.57 (P1): capture the sub-task start time so file_written can
                 // reject a file that merely pre-existed (mtime/diff freshness check).
                 // Previously hard-coded to 0, which disabled the freshness check and
@@ -948,6 +963,22 @@ export class OrchestratorLoop {
                         hasFinalMessage: fm.length > 0,
                         finalMessage: fm.slice(0, 4000),
                     }, sessionId);
+                    // beta.85: PER-SUB-TASK native progress. Pre-beta.85, native
+                    // deliverProgress fired ONLY from setStatus = phase transitions
+                    // (planning/executing/reviewing/done), so a long `executing` phase
+                    // with N sequential sub-tasks went SILENT between phase changes
+                    // (session 696226e4: 16 min, 4 sub-tasks, zero in-thread updates --
+                    // exactly what makes a team think it's hung). buildProgressSnapshot's
+                    // headline is already sub-task-granular ("Executing sub-task N/M --
+                    // title"), so firing deliverProgress on each worker_end_turn emits a
+                    // per-sub-task headline directly from the harness, with NO dependency
+                    // on the poll relay / a wake cron (both of which broke on 696226e4).
+                    // Best-effort + throw-guarded (same contract as the setStatus fire);
+                    // a no-op for agent-orchestrated runs (no real Slack binding).
+                    try {
+                        this.deps.deliverProgress?.(sessionId, "executing");
+                    }
+                    catch { /* best-effort: a progress post must never fail the run */ }
                 }
                 // If the worker itself failed/timed out, halt now.
                 if (result.status !== "completed") {
@@ -1007,6 +1038,39 @@ export class OrchestratorLoop {
                     });
                     return { ...v, path: rd.path };
                 });
+                // beta.85: REVISE-CYCLE-AWARE CONTRACT RELAXATION -- the fix for the
+                // revise verifier false-positive (session 696226e4 cyc2 seq7, and the
+                // inverse-but-same-signature 1c744d70). On a revise cycle (cycle > 1)
+                // the sub-task's contract still carries its CYCLE-1 shape (e.g. BOTH
+                // route.ts AND download/route.ts), but a revise only needs to change
+                // the file(s) the review actually FLAGGED. A contract file the current
+                // review did NOT target was already shipped correctly in a prior cycle;
+                // the worker correctly leaves it untouched (buildReviseDispatchHint even
+                // TELLS it to: "if none apply, make NO changes"). Demanding a fresh
+                // mtime/diff this sub-task then false-fails correct work. So: for a
+                // NOT-TARGETED file_written/file_committed entry we set reviseRelaxed,
+                // which makes verify.ts accept "present + committed anywhere in the
+                // branch range" instead of a fresh write. A TARGETED file keeps the
+                // strict fresh requirement -> 1c744d70 (worker skipped a TARGETED file)
+                // still FAILS; 696226e4 (worker left a NOT-targeted correct file) PASSES.
+                // Targeted set = files named by this cycle's review findings (file/line),
+                // structurally matched against the contract path.
+                if (cycle > 1 && lastReview?.findings?.length) {
+                    const targetedFiles = lastReview.findings
+                        .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
+                        .filter(Boolean);
+                    const isTargeted = (p) => targetedFiles.some((tf) => pathMatches(tf, p) || pathMatches(p, tf));
+                    for (let i = 0; i < contract.length; i++) {
+                        const v = contract[i];
+                        if ((v.kind === "file_written" || v.kind === "file_committed") && v.path && !isTargeted(v.path)) {
+                            contract[i] = { ...v, reviseRelaxed: true };
+                            this.deps.state.audit("loop.revise_contract_relaxed", { sessionId, seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles }, sessionId);
+                            this.deps.interactionLog?.log(sessionId, {
+                                event: "revise_contract_relaxed", phase: "worker", seq: st.seq, cycle, kind: v.kind, path: v.path,
+                            });
+                        }
+                    }
+                }
                 if (contract.length > 0 && this.deps.buildVerifyProbes) {
                     const probes = this.deps.buildVerifyProbes({
                         plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
@@ -1014,7 +1078,7 @@ export class OrchestratorLoop {
                     const branchHint = contract.reduce((acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc), plan.branch);
                     let verification;
                     try {
-                        verification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs, baseSha: subTaskBaseSha }, probes);
+                        verification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs, baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify }, probes);
                     }
                     catch (err) {
                         // A probe error is a verification FAILURE, not a pass. Never let

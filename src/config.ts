@@ -783,7 +783,12 @@ const DEFAULTS: HarnessConfig = {
     sdk_stream_open_timeout_seconds: 120,
     worker_timeout_retry_enabled: true,
     best_effort_verify: true,
-    scripted_verify_fallback: true,
+    // beta.85: DEFAULT OFF. This fallback ran `tsc` + repo check-scripts LOCALLY
+    // in the worktree when an observe VERIFY sub-task timed out -- the last
+    // remaining local-execution path, against Carel's hard "never run locally,
+    // ever" rule (verification is CI-only since beta.81). The runner code is
+    // kept for opt-in, but the default no longer runs the repo's suite locally.
+    scripted_verify_fallback: false,
     recovery_max_resumes: 3,
     recovery_resume_window_seconds: 60,
     recovery_resume_at_subtask: true,

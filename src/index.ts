@@ -1149,6 +1149,35 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           }
         },
 
+        /**
+         * beta.85: file present on disk AND committed anywhere in the BRANCH
+         * range `branchBaseSha..HEAD`. Powers the revise-relaxed acceptance of
+         * a not-targeted contract file (already shipped in a prior cycle, the
+         * worker correctly left it alone). Structural match (route-group/prefix
+         * drift ok) + a disk-presence check so an accidentally-deleted file
+         * still fails.
+         */
+        fileCommittedInBranch: async (path: string, branchBaseSha: string) => {
+          try {
+            const files = await git.listCommittedFiles(worktreePath, branchBaseSha);
+            const match = resolveContractPath(files, path, { allowBasenameFallback: true, allowTestFileFallback: true });
+            if (!match) {
+              return { present: false, detail: `not committed in branch ${branchBaseSha ? branchBaseSha.slice(0, 7) : "base"}..HEAD (${files.length} file(s))` };
+            }
+            try {
+              const st = await stat(resolve(worktreePath, match.file));
+              if (!st.isFile() || st.size === 0) {
+                return { present: false, detail: `committed in branch via ${match.rule} (${match.file}) but not present/non-empty on disk now` };
+              }
+            } catch {
+              return { present: false, detail: `committed in branch via ${match.rule} (${match.file}) but missing on disk now` };
+            }
+            return { present: true, detail: `present + committed in branch via ${match.rule} match (${match.file})` };
+          } catch (err) {
+            return { present: false, detail: `git log error: ${String(err)}` };
+          }
+        },
+
         /** remote_branch_exists / commit_sha_matches: tip SHA of `branch` on origin via git ls-remote. */
         remoteBranchSha: async (branch: string) => {
           try {

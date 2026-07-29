@@ -35,11 +35,13 @@ export type SubTaskVerify = {
     kind: "file_written";
     path: string;
     expectedContent?: string;
+    reviseRelaxed?: boolean;
 } | {
     kind: "commit_made";
 } | {
     kind: "file_committed";
     path: string;
+    reviseRelaxed?: boolean;
 } | {
     kind: "remote_branch_exists";
     branch?: string;
