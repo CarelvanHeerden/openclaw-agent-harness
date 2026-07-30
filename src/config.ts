@@ -440,10 +440,17 @@ export interface LoopConfig {
    * the cycle-2 workers to refresh workerContext (resolved changeSpec) instead
    * of handing workers the raw findings (the beta.63/64 no-op regression).
    * false -> beta.66 behaviour. Failure also falls back. Default true.
+   *
+   * beta.92 DEPRECATED: the LLM revise-spec turn was DELETED and replaced by a
+   * deterministic finding->sub-task mapping (see `deterministic_revise_mapping`).
+   * This key is retained (declared, no effect) so pre-b92 configs that set it
+   * still validate under the manifest's additionalProperties:false.
    */
   revise_spec_turn_enabled?: boolean;
   /**
    * beta.84 (#2): HARD timeout (seconds) on the Fable revise-spec turn.
+   * beta.92 DEPRECATED (no effect): the timed turn was removed; kept for config
+   * back-compat only.
    *
    * WHY (beta.73 signature, session 1c744d70): the revise-spec turn is an
    * UNBOUNDED lead-model call. On a busy/cron-nested run it has spun ~570s
@@ -485,6 +492,25 @@ export interface LoopConfig {
    * subtask_concurrency > 1; set true AND subtask_concurrency > 1 to parallelise.
    */
   parallel_independent_subtasks?: boolean;
+  /**
+   * beta.92: use the DETERMINISTIC finding->sub-task mapping (revise-mapping.ts)
+   * on a revise cycle instead of the deleted LLM revise-spec turn. Maps each
+   * diff-addressable finding (spec|quality|security, `.file` required) to the
+   * sub-task(s) that own its file via strict resolveContractPath; broadcasts
+   * meta (fit|runtime) findings + mapping-misses to all sub-tasks (never
+   * dropped). No LLM turn => no timeout => no raw-dump => no confab. true
+   * (default) enables; false disables mapping (workers get the beta.56 whole-
+   * review raw hint -- the old fallback, retained as an escape hatch).
+   */
+  deterministic_revise_mapping?: boolean;
+  /**
+   * beta.92 (charter #3): LOG-ONLY worker self-contradiction detector. Emits
+   * loop.worker_confab_suspected when the worker's final message lexically
+   * claims it left a contract-REQUIRED (non-relaxed) file untouched. No
+   * behaviour change -- verification still decides pass/fail. true (default)
+   * emits the audit; false disables the detector.
+   */
+  worker_confab_detect?: boolean;
   /**
    * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
    * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
@@ -837,6 +863,8 @@ const DEFAULTS: HarnessConfig = {
     skip_observe_reprobe_on_revise: true,
     revise_scoping_enabled: true,
     parallel_independent_subtasks: false,
+    deterministic_revise_mapping: true,
+    worker_confab_detect: true,
     sdk_first_token_timeout_seconds: 30,
     sdk_stream_open_timeout_seconds: 120,
     worker_stream_idle_warn_seconds: 90,

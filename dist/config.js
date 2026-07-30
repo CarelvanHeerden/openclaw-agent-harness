@@ -72,6 +72,8 @@ const DEFAULTS = {
         skip_observe_reprobe_on_revise: true,
         revise_scoping_enabled: true,
         parallel_independent_subtasks: false,
+        deterministic_revise_mapping: true,
+        worker_confab_detect: true,
         sdk_first_token_timeout_seconds: 30,
         sdk_stream_open_timeout_seconds: 120,
         worker_stream_idle_warn_seconds: 90,

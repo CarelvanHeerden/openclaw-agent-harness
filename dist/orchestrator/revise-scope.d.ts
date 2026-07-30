@@ -51,6 +51,8 @@ export interface ScopeSubTask {
 /** Minimal shape we read off a review finding. */
 export interface ScopeFinding {
     file?: string | null;
+    /** beta.92: dimension drives the unscopable-gate exemption for meta findings. */
+    dimension?: string | null;
 }
 export interface ReviseScopeResult {
     /** true when the optimisation applied (some sub-tasks were skipped). */

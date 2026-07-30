@@ -375,6 +375,16 @@
             "default": false,
             "description": "beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no dependency) to run concurrently up to subtask_concurrency, with a file-overlap guard so two workers never write the same file in the shared worktree. Default false (serial, beta.90). Set true AND subtask_concurrency > 1 to parallelise."
           },
+          "deterministic_revise_mapping": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.92: use the DETERMINISTIC finding->sub-task mapping on a revise cycle instead of the deleted LLM revise-spec turn (which kept timing out on the cron lane cap across b89/b90/b91 and falling back to a raw finding-dump that induced worker confabs). Maps each diff-addressable finding (spec|quality|security, .file required) to the sub-task(s) owning its file via strict resolveContractPath; broadcasts meta (fit|runtime) findings + mapping-misses to all sub-tasks (never dropped). Default true; false restores the beta.56 whole-review raw hint fallback."
+          },
+          "worker_confab_detect": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.92 (log-only): emit loop.worker_confab_suspected when the worker's final message lexically claims it left a contract-REQUIRED (non-relaxed) file untouched (the b91 seq-6 confab). No behaviour change -- verification still decides pass/fail. Default true; false disables the detector."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,
