@@ -222,6 +222,16 @@ export interface ModelsConfig {
   worker: string;
   adversary: string;
   classifier: string;
+  /**
+   * beta.91 (Fix 3): optional cheaper/faster model for MECHANICAL sub-tasks
+   * (Prisma models, migration, sidebar entry, barrel exports -- pattern-follow
+   * scaffolding with no cross-file judgment). When set, such sub-tasks dispatch
+   * on this model; everything else (and the lead + adversary) stays on the
+   * strong models. Absent = every sub-task uses `worker` (beta.90 behaviour).
+   * The verify + adversary safety net is unchanged, so a weaker model that gets
+   * a mechanical task wrong is caught by review, not shipped.
+   */
+  worker_mechanical?: string;
   /** Optional per-model price overrides for cost estimation. Set when Anthropic ships new pricing before we release. Keys are model ids (e.g. 'claude-fable-5'). Values are USD per million tokens. */
   price_overrides?: Record<string, { input: number; output: number }>;
   /**
@@ -442,6 +452,25 @@ export interface LoopConfig {
    * false restores the always-re-run behaviour.
    */
   skip_observe_reprobe_on_revise?: boolean;
+  /**
+   * beta.91 (Fix 1): on a revise cycle (cycle > 1), skip sub-tasks whose file
+   * scope does not intersect ANY review finding's file -- they are
+   * already-correct from a prior cycle and re-running them is pure overhead (the
+   * DR/BCP smoke re-ran 8 of 12 no-change sub-tasks). A finding with no
+   * resolvable file makes the cycle unscopable -> the optimisation is skipped
+   * and every sub-task runs (conservative). Never skips a sub-task a KEPT one
+   * depends on. true (default) enables; false restores beta.90 (run-all).
+   */
+  revise_scoping_enabled?: boolean;
+  /**
+   * beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no
+   * dependency) to run concurrently up to subtask_concurrency. The dispatcher
+   * already honours subtask_concurrency + dependsOn; this flag additionally
+   * enforces a file-overlap guard so two workers never write the same file in
+   * the shared worktree. false (default) keeps beta.90 serial behaviour even if
+   * subtask_concurrency > 1; set true AND subtask_concurrency > 1 to parallelise.
+   */
+  parallel_independent_subtasks?: boolean;
   /**
    * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
    * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
@@ -792,6 +821,8 @@ const DEFAULTS: HarnessConfig = {
     revise_spec_turn_enabled: true,
     revise_spec_timeout_seconds: 180,
     skip_observe_reprobe_on_revise: true,
+    revise_scoping_enabled: true,
+    parallel_independent_subtasks: false,
     sdk_first_token_timeout_seconds: 30,
     sdk_stream_open_timeout_seconds: 120,
     worker_stream_idle_warn_seconds: 90,

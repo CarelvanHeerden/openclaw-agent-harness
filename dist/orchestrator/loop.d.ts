@@ -170,6 +170,12 @@ export interface OrchestratorDeps {
         /** beta.53 (P1b): corrective dispatch context appended on a retry. */
         dispatchHint?: string;
         /**
+         * beta.91 (Fix 3): per-sub-task worker model override. When set, the SDK
+         * call uses this model instead of config.models.worker (mechanical
+         * scaffolding sub-tasks -> cheaper/faster model). Absent = config.models.worker.
+         */
+        modelOverride?: string;
+        /**
          * beta.90 (Feature 2): stream-slow liveness callback. Invoked when the
          * worker SDK stream opens then goes idle (no token/activity delta) past
          * the configured threshold. OBSERVABILITY ONLY -- never aborts.

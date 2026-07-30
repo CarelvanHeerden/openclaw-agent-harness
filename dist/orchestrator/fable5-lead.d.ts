@@ -207,6 +207,15 @@ export interface LeadPlanSubTask {
      * adversary. See WorkerContext.
      */
     workerContext?: WorkerContext;
+    /**
+     * beta.91 (Fix 3): optional lead hint that this sub-task is mechanical
+     * scaffolding (prisma model, migration, sidebar entry, barrel export) vs
+     * standard/complex judgment work. When `mechanical` AND models.worker_mechanical
+     * is configured, the sub-task dispatches on the cheaper/faster model. Absent =
+     * a conservative heuristic decides (defaults to the strong worker model when
+     * in doubt). Never affects the lead or adversary.
+     */
+    complexity?: "mechanical" | "standard" | "complex";
 }
 export interface LeadPlan {
     repo: string;

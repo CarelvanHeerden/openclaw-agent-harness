@@ -70,6 +70,8 @@ const DEFAULTS = {
         revise_spec_turn_enabled: true,
         revise_spec_timeout_seconds: 180,
         skip_observe_reprobe_on_revise: true,
+        revise_scoping_enabled: true,
+        parallel_independent_subtasks: false,
         sdk_first_token_timeout_seconds: 30,
         sdk_stream_open_timeout_seconds: 120,
         worker_stream_idle_warn_seconds: 90,

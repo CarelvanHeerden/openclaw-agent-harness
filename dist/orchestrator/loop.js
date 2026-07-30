@@ -66,6 +66,9 @@ import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
 import { isInfraCrash } from "./infra-crash.js";
+import { computeReviseScope } from "./revise-scope.js";
+import { selectWorkerModel } from "./worker-model-select.js";
+import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
 /**
  * beta.38: module-level set of session ids whose loop is CURRENTLY running in
  * THIS process. The single source of truth for "is this session's loop alive?"
@@ -787,8 +790,34 @@ export class OrchestratorLoop {
                 }
             }
             const ordered = topoSortSubTasks(plan.subTasks);
-            const concurrency = Math.max(1, this.deps.config.loop.subtask_concurrency ?? 1);
+            // beta.91 (Fix 1): revise-cycle scoping. On cycle > 1, skip sub-tasks whose
+            // file scope does not intersect any finding -- they are already-correct
+            // from a prior cycle (the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks).
+            // Conservative: any unfiled finding => run everything; never skip a dep of
+            // a kept sub-task. Feature-gated (default on). Cycle 1 is never scoped.
+            const reviseScopeSkip = new Set();
+            if (cycle > 1 && this.deps.config.loop.revise_scoping_enabled !== false && lastReview?.findings) {
+                const scope = computeReviseScope(plan.subTasks, lastReview.findings, cycle);
+                if (scope.scoped) {
+                    for (const s of scope.skipSeqs)
+                        reviseScopeSkip.add(s);
+                    this.deps.state.audit("loop.revise_scoped", { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length, skipSeqs: scope.skipSeqs, findingFiles: scope.findingFiles }, sessionId);
+                    this.deps.logger.info("[loop] revise-scoping: skipping sub-tasks not targeted by any finding (already correct from a prior cycle)", { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
+                    this.deps.interactionLog?.log(sessionId, { event: "revise_scoped", phase: "plan", cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
+                }
+                else {
+                    this.deps.state.audit("loop.revise_scope_skipped", { sessionId, cycle, reason: scope.reason }, sessionId);
+                }
+            }
+            // beta.91 (Fix 2): effective concurrency. Serial (1) unless the feature is
+            // on AND subtask_concurrency > 1. The dispatcher additionally enforces a
+            // file-overlap guard (canDispatchConcurrently) below.
+            const concurrency = resolveEffectiveConcurrency({
+                subtaskConcurrency: this.deps.config.loop.subtask_concurrency ?? 1,
+                parallelEnabled: this.deps.config.loop.parallel_independent_subtasks === true,
+            });
             const inFlight = [];
+            const inFlightSubTasks = new Map();
             const done = new Set();
             const failed = { seq: -1, err: null };
             // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
@@ -796,6 +825,18 @@ export class OrchestratorLoop {
             // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
             const clarify = { question: null, seq: -1, subtask: null };
             const runOne = async (st) => {
+                // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
+                // intersect any finding -> its prior-cycle commit is already correct and
+                // part of the branch. Mark completed_no_change without a worker turn.
+                if (reviseScopeSkip.has(st.seq)) {
+                    this.deps.state.db
+                        .prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
+                        .run("revise-scoped: not targeted by any review finding (unchanged from prior cycle)", Date.now(), sessionId, cycle, st.seq);
+                    this.deps.state.audit("loop.subtask_revise_scoped_skip", { sessionId, cycle, seq: st.seq }, sessionId);
+                    this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_scoped_skip", phase: "worker", seq: st.seq, cycle });
+                    done.add(st.seq);
+                    return;
+                }
                 // beta.53 (P1b): at most ONE env-wait retry per sub-task.
                 let envWaitRetried = false;
                 // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
@@ -1265,6 +1306,8 @@ export class OrchestratorLoop {
                                     brief, subTask: st, plan, requester: row.requester,
                                     // Compose the revise context (if any) with the corrective hint.
                                     dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
+                                    // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
+                                    modelOverride: selectWorkerModel(st, this.deps.config.models),
                                     onStreamSlow: onRetryStreamSlow,
                                 }), this.deps.config.loop.worker_timeout_seconds);
                                 this.addCost(sessionId, retry.costUsd);
@@ -1567,7 +1610,11 @@ export class OrchestratorLoop {
                 // Fill
                 while (idx < ordered.length &&
                     inFlight.length < concurrency &&
-                    (ordered[idx].dependsOn ?? []).every((d) => done.has(d))) {
+                    (ordered[idx].dependsOn ?? []).every((d) => done.has(d)) &&
+                    // beta.91 (Fix 2): only start a second worker when its file scope is
+                    // known-disjoint from every in-flight worker (shared worktree write
+                    // safety). With concurrency=1 this is always true (inFlight empty).
+                    canDispatchConcurrently(ordered[idx], [...inFlightSubTasks.values()])) {
                     const st = ordered[idx];
                     // beta.60: bound the ENTIRE runOne, not just the worker SDK call.
                     // beta.42 wrapped runWorker in withTimeout, but runOne ALSO awaits
@@ -1605,8 +1652,10 @@ export class OrchestratorLoop {
                         const i = inFlight.indexOf(p);
                         if (i >= 0)
                             inFlight.splice(i, 1);
+                        inFlightSubTasks.delete(p);
                     });
                     inFlight.push(p);
+                    inFlightSubTasks.set(p, st);
                     idx++;
                 }
                 if (inFlight.length === 0 && idx < ordered.length) {
@@ -2201,7 +2250,9 @@ export class OrchestratorLoop {
                 // beta.90 (Feature 2): surface a worker stream that opens then goes idle
                 // (no token delta) as loop.worker_stream_slow + a heartbeat bump.
                 const onStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
-                result = await withTimeout(this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint, onStreamSlow }), this.deps.config.loop.worker_timeout_seconds);
+                result = await withTimeout(
+                // beta.91 (Fix 3): mechanical sub-tasks -> cheaper worker model.
+                this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint, modelOverride: selectWorkerModel(st, this.deps.config.models), onStreamSlow }), this.deps.config.loop.worker_timeout_seconds);
             }
             catch (err) {
                 if (err instanceof WorkerTimeoutError) {

@@ -53,9 +53,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const loopSrc = readFileSync(join(here, "..", "src", "orchestrator", "loop.ts"), "utf8");
 
 test("beta42: the worker call site is wrapped in withTimeout(worker_timeout_seconds)", () => {
+  // beta.91: the call now spans a comment + a nested selectWorkerModel(...) arg,
+  // so match the withTimeout(...runWorker(...), worker_timeout_seconds) shape
+  // loosely (runWorker present, then worker_timeout_seconds as the bound).
   assert.match(
     loopSrc,
-    /withTimeout\(\s*this\.deps\.runWorker\([^)]*\}\),\s*this\.deps\.config\.loop\.worker_timeout_seconds/s,
+    /withTimeout\(\s*(\/\/[^\n]*\n\s*)?this\.deps\.runWorker\([\s\S]*?\}\),\s*this\.deps\.config\.loop\.worker_timeout_seconds/,
     "runWorker must be raced against worker_timeout_seconds",
   );
   assert.ok(loopSrc.includes('"loop.worker_timeout"'), "a worker timeout must emit loop.worker_timeout audit");
