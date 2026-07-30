@@ -18,6 +18,7 @@ const betaNum = (v) => Number(/0\.1\.0-beta\.(\d+)/.exec(v)?.[1] ?? -1);
 const { computeReviseScope, subTaskIntersectsFindings } = await import("../dist/orchestrator/revise-scope.js");
 const { selectWorkerModel, isMechanicalSubTask } = await import("../dist/orchestrator/worker-model-select.js");
 const { canDispatchConcurrently, fileScopesOverlap, resolveEffectiveConcurrency } = await import("../dist/orchestrator/parallel-safety.js");
+const { requiresFile, isUnfiledDiffAddressable, findingsMissingFile, buildFileAttributionRetryNudge } = await import("../dist/orchestrator/adversary-file-attribution.js");
 
 // ---------------------------------------------------------------------------
 // Fix 1: revise-cycle scoping
@@ -100,6 +101,52 @@ test("Fix1: path-structural match; full-path finding does NOT over-match a same-
   assert.equal(subTaskIntersectsFindings(["src/app/api/grc/continuity-exercises/[id]/route.ts"], norm, noBare), false);
   // a BARE-filename finding (route.ts) DOES contribute a basename match (adversary gave only a name)
   assert.equal(subTaskIntersectsFindings(["src/app/api/grc/continuity-exercises/[id]/route.ts"], ["route.ts"], new Set(["route.ts"])), true);
+});
+
+// ---------------------------------------------------------------------------
+// F1 companion: adversary file attribution (makes F1 non-inert)
+// ---------------------------------------------------------------------------
+
+test("F1c: diff-addressable dimensions at >=medium require a file", () => {
+  assert.equal(requiresFile({ dimension: "quality", severity: "medium" }), true);
+  assert.equal(requiresFile({ dimension: "security", severity: "high" }), true);
+  assert.equal(requiresFile({ dimension: "spec", severity: "critical" }), true);
+  // low severity -> not required
+  assert.equal(requiresFile({ dimension: "quality", severity: "low" }), false);
+  // meta dimensions -> not required even at high
+  assert.equal(requiresFile({ dimension: "fit", severity: "high" }), false);
+  assert.equal(requiresFile({ dimension: "runtime", severity: "high" }), false);
+});
+
+test("F1c: isUnfiledDiffAddressable flags only the offenders", () => {
+  assert.equal(isUnfiledDiffAddressable({ dimension: "quality", severity: "medium", file: "" }), true);
+  assert.equal(isUnfiledDiffAddressable({ dimension: "quality", severity: "medium", file: null }), true);
+  assert.equal(isUnfiledDiffAddressable({ dimension: "quality", severity: "medium", file: "src/x.ts" }), false);
+  // meta finding without a file is fine
+  assert.equal(isUnfiledDiffAddressable({ dimension: "runtime", severity: "high", file: null }), false);
+});
+
+test("F1c: findingsMissingFile + retry nudge names offenders", () => {
+  const findings = [
+    { dimension: "quality", severity: "medium", title: "typecheck error", file: null },
+    { dimension: "security", severity: "high", title: "missing tenant scope", file: "ok.ts" },
+    { dimension: "fit", severity: "medium", title: "convention", file: null }, // meta -> ok
+  ];
+  const missing = findingsMissingFile(findings);
+  assert.equal(missing.length, 1);
+  assert.equal(missing[0].title, "typecheck error");
+  const nudge = buildFileAttributionRetryNudge(missing);
+  assert.match(nudge, /FILE ATTRIBUTION \(RETRY/);
+  assert.match(nudge, /typecheck error/);
+});
+
+test("F1c: adversary prompt REQUIRES file + runAdversary re-prompts once + ReviewFinding.file allows null", () => {
+  const adv = S("src/orchestrator/fable5-adversary.ts");
+  assert.match(adv, /File attribution \(REQUIRED for diff-addressable findings\)/);
+  assert.match(adv, /from "\.\/adversary-file-attribution\.js"/);
+  assert.match(adv, /findingsMissingFile\(result\.parsed\.findings\)/);
+  assert.match(adv, /buildFileAttributionRetryNudge\(missing\)/);
+  assert.match(adv, /file\?: string \| null/);
 });
 
 // ---------------------------------------------------------------------------

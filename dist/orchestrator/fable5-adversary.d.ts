@@ -62,7 +62,9 @@ export interface ReviewFinding {
     severity: "info" | "low" | "medium" | "high" | "critical";
     title: string;
     detail: string;
-    file?: string;
+    /** beta.91: repo-relative path. REQUIRED for diff-addressable findings
+     * (medium+ spec/quality/security); meta findings set null explicitly. */
+    file?: string | null;
     line?: number;
 }
 export interface ReviewReport {
