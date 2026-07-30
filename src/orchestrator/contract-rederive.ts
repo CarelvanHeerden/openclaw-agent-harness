@@ -47,6 +47,44 @@
  * This module is PURE (no fs/git) so it is unit-testable and cannot itself
  * false-green anything: it only produces a corrected candidate path that the
  * real probes still have to satisfy.
+ *
+ * beta.93 (false-positive cure -- session de0cba9f)
+ * -------------------------------------------------
+ * beta.76's aggressive prefix-remapper mis-fired: it learned a
+ * `src/components -> src/lib` remap from ONE sub-task's touched file
+ * (`src/lib/grc/continuity-exercises.ts`) and applied it to a DIFFERENT,
+ * already-correct contract (`src/components/grc/poi-attachment-upload.tsx`)
+ * purely because both share the trailing dir `grc`. The worker had committed
+ * that file at EXACTLY its declared path, yet re-derivation moved the goalpost
+ * to a non-existent `src/lib/...` path and the strict file_committed check then
+ * false-failed a correct commit as "confabulation". Two generic (repo-agnostic)
+ * invariants close this whole class:
+ *
+ *   GUARD (a) -- exact-match short-circuit. If the contract path is ALREADY one
+ *     of the real touched files, the worker put the file exactly where the plan
+ *     said. A byte-exact-present path needs no correction; return it unchanged.
+ *     This demotes re-derivation to what it was always meant to be: a LAST
+ *     RESORT that only fires when the declared path is genuinely absent from
+ *     what the run actually touched.
+ *
+ * GUARD (a) is the true, minimal cure for the de0cba9f class: the worker had
+ * committed `src/components/grc/poi-attachment-upload.tsx` at EXACTLY its
+ * declared path (so it was in the run's real-touched set at re-derive time),
+ * yet beta.92 re-derived it anyway (learning `src/components -> src/lib` from
+ * an UNRELATED sub-task's `src/lib/grc/continuity-exercises.ts` on the shared
+ * `grc` tail) and moved the goalpost off a correct commit. Short-circuiting on
+ * an exact touched-path match closes that class outright AND demotes
+ * re-derivation to a last-resort. GUARD (a) is a universal truth (a file that
+ * exists exactly where the plan said needs no correction, in ANY repo), so it
+ * ends the false-positive class without adding a per-repo edge-case rule.
+ *
+ * NOTE we deliberately do NOT add a same-basename requirement: the beta.76 cure
+ * legitimately relies on a DIFFERENT-basename sibling in the real target dir as
+ * evidence of a prefix drift (e.g. real `src/components/grc/widget.tsx` proves
+ * a stale `components/grc/other.tsx` should be `src/components/grc/other.tsx`).
+ * Guard (a) alone is sufficient because the de0cba9f file was committed at its
+ * exact declared path -- a genuinely-drifted path (absent from the touched set)
+ * still gets the beta.76 correction.
  */
 
 import { normalisePath } from "./path-match.js";
@@ -126,6 +164,17 @@ export function learnRemapsForDir(staleDir: string, realFiles: string[]): Prefix
 export function rederiveContractPath(contract: string, realFiles: string[]): { path: string; remapped: boolean; via?: PrefixRemap } {
   const c = normalisePath(contract);
   if (!c || !c.includes("/")) return { path: contract, remapped: false };
+
+  // beta.93 GUARD (a): exact-match short-circuit. If the worker actually touched
+  // the contract path VERBATIM, the file is exactly where the plan declared --
+  // there is nothing to correct, and re-deriving it can only MOVE the goalpost
+  // off a correct commit (the session de0cba9f false-positive). This also
+  // demotes re-derivation to a genuine last-resort: it now fires ONLY when the
+  // declared path is absent from what the run touched.
+  for (const f of realFiles) {
+    if (normalisePath(f) === c) return { path: contract, remapped: false };
+  }
+
   const segs = c.split("/");
   const dir = segs.slice(0, -1);
   const base = segs[segs.length - 1]!;

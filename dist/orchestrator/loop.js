@@ -1108,7 +1108,10 @@ export class OrchestratorLoop {
                 // structural cure for the drift class. No-op when no evidence-backed
                 // remap applies (returns the path unchanged), so this never makes
                 // verification stricter. Skips file_in_pr (repo-wide, not scoped).
+                const rederiveEnabled = this.deps.config.loop.contract_rederive_enabled !== false;
                 const contract = rawContract.map((v) => {
+                    if (!rederiveEnabled)
+                        return v;
                     if (!("path" in v) || !v.path || v.kind === "file_in_pr")
                         return v;
                     const rd = rederiveContractPath(v.path, [...discoveredRealPaths]);

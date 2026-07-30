@@ -385,6 +385,11 @@
             "default": true,
             "description": "beta.92 (log-only): emit loop.worker_confab_suspected when the worker's final message lexically claims it left a contract-REQUIRED (non-relaxed) file untouched (the b91 seq-6 confab). No behaviour change -- verification still decides pass/fail. Default true; false disables the detector."
           },
+          "contract_rederive_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.76 + beta.93 kill-switch: correct a stale lead-guessed contract path against the repo's real touched layout BEFORE verification (with the beta.93 exact-match short-circuit + same-basename evidence guards, so a correctly-committed path is never rewritten -- the session de0cba9f false-positive). Default true; false disables re-derivation entirely (verify against the declared path verbatim, relying on the beta.50+ tolerant match rules)."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,
