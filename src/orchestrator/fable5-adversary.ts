@@ -214,6 +214,14 @@ export interface AdversaryDeps {
     tokensOut: number;
   }>;
   readDiff: (diffPath: string) => Promise<string>;
+  /**
+   * beta.91 (Staging pass-2 nit): observability hook for the file-attribution
+   * retry. Fired once when a retry runs, carrying before/after unfiled counts
+   * and whether the call already carried priorFindings (the conflation edge
+   * Staging traced). Wired by index.ts to emit a loop.file_attribution_retry
+   * audit. Optional + best-effort (a throw here never fails the review).
+   */
+  onFileAttributionRetry?: (info: { before: number; after: number; applied: boolean; hadPriorFindings: boolean }) => void;
 }
 
 /**
@@ -297,12 +305,28 @@ export async function runAdversary(
         const stillMissing = findingsMissingFile(retry.parsed.findings);
         // Accept the retry result only if it is not WORSE (fewer or equal
         // unfiled diff-addressable findings). Keeps the better of the two.
-        if (stillMissing.length <= missing.length) {
+        const applied = stillMissing.length <= missing.length;
+        if (applied) {
           result = retry;
           deps.logger.info("[adversary] file-attribution retry applied", {
             before: missing.length, after: stillMissing.length,
           });
+        } else {
+          deps.logger.warn("[adversary] file-attribution retry came back WORSE; keeping original findings", {
+            before: missing.length, after: stillMissing.length,
+          });
         }
+        // beta.91 (Staging pass-2 nit): surface before/after so a WORSE retry
+        // (rejected by the guard) is visible in prod -- the priorFindings
+        // conflation edge Staging traced would show up here.
+        try {
+          deps.onFileAttributionRetry?.({
+            before: missing.length,
+            after: stillMissing.length,
+            applied,
+            hadPriorFindings: !!(input.priorFindings && input.priorFindings.length > 0),
+          });
+        } catch { /* observability must never fail the review */ }
       } catch (err) {
         // A retry failure (timeout/format) is non-fatal: keep the original
         // findings (unfiled). F1 stays safe (unscopable => run all).

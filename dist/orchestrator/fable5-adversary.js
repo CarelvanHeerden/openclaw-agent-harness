@@ -212,12 +212,30 @@ export async function runAdversary(input, deps) {
                 const stillMissing = findingsMissingFile(retry.parsed.findings);
                 // Accept the retry result only if it is not WORSE (fewer or equal
                 // unfiled diff-addressable findings). Keeps the better of the two.
-                if (stillMissing.length <= missing.length) {
+                const applied = stillMissing.length <= missing.length;
+                if (applied) {
                     result = retry;
                     deps.logger.info("[adversary] file-attribution retry applied", {
                         before: missing.length, after: stillMissing.length,
                     });
                 }
+                else {
+                    deps.logger.warn("[adversary] file-attribution retry came back WORSE; keeping original findings", {
+                        before: missing.length, after: stillMissing.length,
+                    });
+                }
+                // beta.91 (Staging pass-2 nit): surface before/after so a WORSE retry
+                // (rejected by the guard) is visible in prod -- the priorFindings
+                // conflation edge Staging traced would show up here.
+                try {
+                    deps.onFileAttributionRetry?.({
+                        before: missing.length,
+                        after: stillMissing.length,
+                        applied,
+                        hadPriorFindings: !!(input.priorFindings && input.priorFindings.length > 0),
+                    });
+                }
+                catch { /* observability must never fail the review */ }
             }
             catch (err) {
                 // A retry failure (timeout/format) is non-fatal: keep the original

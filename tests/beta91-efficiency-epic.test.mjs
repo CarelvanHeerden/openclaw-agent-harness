@@ -147,6 +147,40 @@ test("F1c: adversary prompt REQUIRES file + runAdversary re-prompts once + Revie
   assert.match(adv, /findingsMissingFile\(result\.parsed\.findings\)/);
   assert.match(adv, /buildFileAttributionRetryNudge\(missing\)/);
   assert.match(adv, /file\?: string \| null/);
+  // pass-2 nit: retry observability hook + index wiring
+  assert.match(adv, /onFileAttributionRetry\?:/);
+  assert.match(S("src/index.ts"), /loop\.file_attribution_retry/);
+});
+
+test("F1c behavioural: runAdversary re-prompts once + fires onFileAttributionRetry (worse retry rejected)", async () => {
+  const { runAdversary } = await import("../dist/orchestrator/fable5-adversary.js");
+  let calls = 0;
+  const events = [];
+  // call 1: one file-less quality/medium finding. retry: WORSE (two file-less).
+  const report = await runAdversary(
+    { crystallisedPrompt: "p", diffPath: "/d", repoPath: "/r", reviewChecklist: [], model: "m", timeoutSeconds: 10, priorFindings: [{ dimension: "quality", severity: "medium", title: "prior" }] },
+    {
+      logger: { info() {}, warn() {} },
+      readDiff: async () => "diff",
+      onFileAttributionRetry: (info) => events.push(info),
+      callAdversaryModel: async () => {
+        calls++;
+        const findings = calls === 1
+          ? [{ dimension: "quality", severity: "medium", title: "a", detail: "", file: null }]
+          : [{ dimension: "quality", severity: "medium", title: "a", detail: "", file: null },
+             { dimension: "security", severity: "high", title: "b", detail: "", file: null }];
+        return { parsed: { verdict: "revise", findings, summary: "" }, sdkSessionId: "s", costUsd: 0, tokensIn: 0, tokensOut: 0 };
+      },
+    },
+  );
+  assert.equal(calls, 2, "should re-prompt exactly once");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].before, 1);
+  assert.equal(events[0].after, 2);
+  assert.equal(events[0].applied, false, "worse retry must be rejected");
+  assert.equal(events[0].hadPriorFindings, true);
+  // rejected retry -> original (1 file-less) findings kept, not the worse 2
+  assert.equal(report.findings.filter((f) => !(f.file)).length >= 1, true);
 });
 
 // ---------------------------------------------------------------------------

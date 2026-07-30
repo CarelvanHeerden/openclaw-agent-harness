@@ -104,6 +104,19 @@ export interface AdversaryDeps {
         tokensOut: number;
     }>;
     readDiff: (diffPath: string) => Promise<string>;
+    /**
+     * beta.91 (Staging pass-2 nit): observability hook for the file-attribution
+     * retry. Fired once when a retry runs, carrying before/after unfiled counts
+     * and whether the call already carried priorFindings (the conflation edge
+     * Staging traced). Wired by index.ts to emit a loop.file_attribution_retry
+     * audit. Optional + best-effort (a throw here never fails the review).
+     */
+    onFileAttributionRetry?: (info: {
+        before: number;
+        after: number;
+        applied: boolean;
+        hadPriorFindings: boolean;
+    }) => void;
 }
 /**
  * beta.70 (F3): the adversary's response was not the verdict JSON. In PR #870
