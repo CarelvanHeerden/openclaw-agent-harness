@@ -77,6 +77,15 @@ import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type Chec
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
 import { isInfraCrash } from "./infra-crash.js";
 import { computeReviseScope } from "./revise-scope.js";
+import {
+  mapFindingsToSubTasks,
+  buildScopedReviseHint,
+  type ReviseMappingResult,
+  type SubTaskAssignment,
+  type MapSubTask,
+  type MapFinding,
+} from "./revise-mapping.js";
+import { detectWorkerConfab } from "./worker-confab-detect.js";
 import { selectWorkerModel } from "./worker-model-select.js";
 import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
 
@@ -1051,65 +1060,69 @@ export class OrchestratorLoop {
       this.setStatus(sessionId, "executing");
       await this.deps.reportProgress?.(sessionId, "executing", { cycle });
 
-      // beta.67 (P0b): FABLE-IN-THE-LOOP revise-spec turn. On a revise cycle
-      // (cycle > 1) run ONE Fable turn that reads the findings and refreshes
-      // each affected sub-task's workerContext, so cycle-2 workers get a
-      // resolved changeSpec via the beta.66 render path -- NEVER the raw
-      // findings (the beta.63/64 no-op regression). Any failure (unwired /
-      // throw / empty) falls back to buildReviseDispatchHint. reviseSpecApplied
-      // gates the raw-hint suppression in runOne.
+      // beta.92: DETERMINISTIC finding -> sub-task mapping REPLACES the deleted
+      // LLM revise-spec turn (beta.67). The revise-spec turn kept exceeding its
+      // lane-cap timeout (b73 signature) across THREE smokes (b89/b90/b91) and
+      // falling back to a raw 10-finding dump handed to every sub-task, which
+      // starved F1 scoping and induced worker confabulation. We now map each
+      // diff-addressable finding (spec|quality|security, `.file` required) onto
+      // the sub-task(s) that own its file via the SAME strict resolveContractPath
+      // machinery b87/b88 use, broadcast meta (fit|runtime) findings to all, and
+      // attach any mapping-miss to all (never dropped). No LLM turn => no
+      // timeout => no raw-dump => no confab. `reviseSpecApplied` now means
+      // "deterministic per-sub-task targeting is available"; downstream
+      // consumers (per-sub-task contract relaxation, observe-reprobe skip, raw-
+      // hint suppression) read the SAME flag, now driven by deterministic data.
       let reviseSpecApplied = false;
+      let reviseMapping: ReviseMappingResult | undefined;
+      const reviseAssignmentBySeq = new Map<number, SubTaskAssignment>();
       if (
         cycle > 1 &&
-        lastReview &&
-        this.deps.config.loop.revise_spec_turn_enabled !== false &&
-        this.deps.runLeadReviseSpec
+        lastReview?.findings &&
+        this.deps.config.loop.deterministic_revise_mapping !== false
       ) {
-        try {
-          // beta.84 (#2): bound the revise-spec turn. It is an unbounded lead
-          // call that has spun ~570s then died on the ambient cron lane cap
-          // (beta.73 signature) -- ~10 min burned before falling back. With a
-          // bound we drop to the raw-findings hint FAST. 0 disables the bound.
-          const reviseSpecTimeout = this.deps.config.loop.revise_spec_timeout_seconds;
-          const reviseSpecCall = this.deps.runLeadReviseSpec({
-            brief, plan, review: lastReview, requester: row.requester,
-          });
-          const refreshed = reviseSpecTimeout && reviseSpecTimeout > 0
-            ? await withTimeout(reviseSpecCall, reviseSpecTimeout)
-            : await reviseSpecCall;
-          if (refreshed?.subTasks && refreshed.subTasks.length > 0) {
-            plan.subTasks = refreshed.subTasks;
-            this.deps.state.db
-              .prepare(`UPDATE sessions SET lead_plan_json = ? WHERE id = ?`)
-              .run(JSON.stringify(plan), sessionId);
-            reviseSpecApplied = true;
-            const withCtx = refreshed.subTasks.filter(
-              (sub) => sub.workerContext && (sub.taskMode === "mutate" || sub.taskMode === "mixed"),
-            ).length;
-            this.deps.state.audit(
-              "loop.revise_spec_applied",
-              { sessionId, cycle, subTasks: refreshed.subTasks.length, withWorkerContext: withCtx },
-              sessionId,
-            );
-            this.deps.interactionLog?.log(sessionId, {
-              event: "revise_spec_applied", phase: "plan", cycle, subTasks: refreshed.subTasks.length,
-            });
-          } else {
-            this.deps.state.audit("loop.revise_spec_empty", { sessionId, cycle }, sessionId);
-            this.deps.logger.warn("[loop] revise-spec turn returned no sub-tasks; falling back to raw findings hint", { sessionId, cycle });
-          }
-        } catch (err) {
-          // beta.84 (#2): distinguish a TIMEOUT (bounded fast-fail) from a
-          // generic revise-spec failure so the fast-fallback is greppable. Both
-          // fall back to the raw-findings hint identically (never worse than
-          // beta.66); the timeout just means we stopped waiting on the lane cap.
-          if (err instanceof WorkerTimeoutError) {
-            this.deps.state.audit("loop.revise_spec_timeout", { sessionId, cycle, seconds: this.deps.config.loop.revise_spec_timeout_seconds }, sessionId);
-            this.deps.logger.warn("[loop] revise-spec turn exceeded revise_spec_timeout_seconds; falling back to raw findings hint FAST (never worse than beta.66)", { sessionId, cycle, seconds: this.deps.config.loop.revise_spec_timeout_seconds });
-          } else {
-            this.deps.state.audit("loop.revise_spec_failed", { sessionId, cycle, error: String((err as Error)?.message ?? err) }, sessionId);
-            this.deps.logger.warn("[loop] revise-spec turn failed; falling back to raw findings hint (never worse than beta.66)", { sessionId, cycle, err: String(err) });
-          }
+        const mapSubTasks: MapSubTask[] = plan.subTasks.map((s) => ({
+          seq: s.seq,
+          filesLikelyTouched: s.filesLikelyTouched,
+          contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
+        }));
+        reviseMapping = mapFindingsToSubTasks(
+          mapSubTasks,
+          lastReview.findings as MapFinding[],
+          (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }),
+        );
+        for (const a of reviseMapping.assignments) reviseAssignmentBySeq.set(a.seq, a);
+        reviseSpecApplied = reviseMapping.anyTargeted;
+        this.deps.state.audit(
+          "loop.revise_mapping",
+          {
+            sessionId, cycle,
+            subTasks: plan.subTasks.length,
+            targetedSubTasks: reviseMapping.assignments.filter((a) => a.targeted.length > 0).length,
+            metaBroadcast: reviseMapping.metaBroadcast.length,
+            mappingMisses: reviseMapping.mappingMisses.length,
+          },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, {
+          event: "revise_mapping", phase: "plan", cycle,
+          targetedSubTasks: reviseMapping.assignments.filter((a) => a.targeted.length > 0).length,
+        });
+        // Charter guardrail: a filed diff-addressable finding that matched NO
+        // sub-task is a MAPPING MISS -- it is attached to every sub-task as
+        // context (never dropped, never run-all), and surfaced so we can see it.
+        for (const miss of reviseMapping.mappingMisses) {
+          this.deps.state.audit(
+            "loop.finding_mapping_miss",
+            { sessionId, cycle, dimension: miss.dimension, severity: miss.severity, file: (miss.file ?? "").trim() || null, title: miss.title },
+            sessionId,
+          );
+        }
+        if (reviseMapping.mappingMisses.length > 0) {
+          this.deps.logger.info(
+            "[loop] revise-mapping: filed finding(s) matched no sub-task -> broadcast to all as context (never dropped)",
+            { sessionId, cycle, misses: reviseMapping.mappingMisses.length },
+          );
         }
       }
 
@@ -1182,11 +1195,18 @@ export class OrchestratorLoop {
         let envWaitRetried = false;
         // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
         // review's findings or it will simply replay cycle 1's work.
-        // beta.67 (P0b): suppressed when the revise-spec turn refreshed the plan
-        // (reviseSpecApplied) -- the worker gets the fix via warm workerContext
-        // instead of raw findings. Fallback keeps the beta.56 raw hint.
+        // beta.92: the deterministic mapping now produces a PER-SUB-TASK scoped
+        // hint (only THIS sub-task's targeted findings + cross-cutting broadcast
+        // guidance) -- never the full untargeted 10-finding dump that overwhelmed
+        // workers and induced confabs (b91). Fall back to the beta.56 whole-
+        // review raw hint only if mapping was unavailable/disabled.
+        const reviseAssignment = reviseAssignmentBySeq.get(st.seq);
         const reviseHint =
-          cycle > 1 && lastReview && !reviseSpecApplied ? buildReviseDispatchHint(lastReview) : undefined;
+          cycle > 1 && lastReview
+            ? reviseAssignment
+              ? buildScopedReviseHint(lastReview.verdict, lastReview.summary, reviseAssignment)
+              : buildReviseDispatchHint(lastReview)
+            : undefined;
         // beta.70 (F5): skip observe-only RE-PROBE on a revise cycle. In
         // PR #870 the cycle-2 plan re-listed seq-1 as taskMode:'observe'
         // ("already completed and requires no changes; do not modify any
@@ -1519,12 +1539,20 @@ export class OrchestratorLoop {
           // strict mode from a finding about seq-7's file. Fall back to the
           // review-wide findings' `.file` only when there's no per-sub-task
           // signal (raw-findings path).
-          const perSubTaskFiles = reviseSpecApplied
-            ? [
-                ...(st.filesLikelyTouched ?? []),
-                ...((st.workerContext?.codeExcerpts ?? []).map((e) => e.path)),
-              ].map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean)
-            : [];
+          // beta.92: prefer the DETERMINISTIC mapping's per-sub-task targeted
+          // file set (the files THIS sub-task's findings actually name). Fall
+          // back to filesLikelyTouched + codeExcerpts (per-sub-task signal), then
+          // to the review-wide finding files (raw path) only if mapping is off.
+          const mappedTargetedFiles = (reviseAssignment?.targetedFiles ?? [])
+            .map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean);
+          const perSubTaskFiles = mappedTargetedFiles.length > 0
+            ? mappedTargetedFiles
+            : reviseSpecApplied
+              ? [
+                  ...(st.filesLikelyTouched ?? []),
+                  ...((st.workerContext?.codeExcerpts ?? []).map((e) => e.path)),
+                ].map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean)
+              : [];
           const reviewFindingFiles = lastReview.findings
             .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
             .filter(Boolean);
@@ -1611,6 +1639,42 @@ export class OrchestratorLoop {
               { sessionId, seq: st.seq, cycle, findingCount: lastReview.findings.length },
               sessionId,
             );
+          }
+        }
+        // beta.92 (charter #3): LOG-ONLY worker self-contradiction detector. The
+        // b91 seq-6 confab: the worker's final message admitted it "did not
+        // touch" a contract-REQUIRED file (b84 caught it at verify; we can bark
+        // earlier). REQUIRED = file_written/file_committed contract entries that
+        // are NOT reviseRelaxed (a relaxed file is legitimately left alone). No
+        // behaviour change in b92 -- emit the audit, verification still decides.
+        if (this.deps.config.loop.worker_confab_detect !== false) {
+          try {
+            const requiredPaths = contract
+              .filter(
+                (v) =>
+                  (v.kind === "file_written" || v.kind === "file_committed") &&
+                  !!(v as { path?: string }).path &&
+                  !(v as { reviseRelaxed?: boolean }).reviseRelaxed,
+              )
+              .map((v) => (v as { path: string }).path);
+            const confab = detectWorkerConfab(result.finalMessage, requiredPaths);
+            if (confab.suspected) {
+              this.deps.state.audit(
+                "loop.worker_confab_suspected",
+                { sessionId, seq: st.seq, cycle, offenders: confab.offenders, phrase: confab.phrase, requiredPaths },
+                sessionId,
+              );
+              this.deps.logger.warn(
+                "[loop] worker self-contradiction suspected: finalMessage claims a contract-required file was left untouched (LOG-ONLY; verification still decides)",
+                { sessionId, seq: st.seq, cycle, offenders: confab.offenders },
+              );
+              this.deps.interactionLog?.log(sessionId, {
+                event: "worker_confab_suspected", phase: "worker", seq: st.seq, cycle, offenders: confab.offenders,
+              });
+            }
+          } catch (err) {
+            // Detector must never fail a run -- it's observability only.
+            this.deps.logger.warn("[loop] worker_confab_detect threw (ignored)", { sessionId, seq: st.seq, err: String(err) });
           }
         }
         if (contract.length > 0 && this.deps.buildVerifyProbes) {

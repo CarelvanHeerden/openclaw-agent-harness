@@ -53,6 +53,23 @@ export interface ScopeSubTask {
 /** Minimal shape we read off a review finding. */
 export interface ScopeFinding {
   file?: string | null;
+  /** beta.92: dimension drives the unscopable-gate exemption for meta findings. */
+  dimension?: string | null;
+}
+
+/**
+ * beta.92 (charter item #3): meta dimensions (fit|runtime) are cross-cutting
+ * and inherently often file-less (a `runtime` "preview deploy reports N errors"
+ * finding has no single `.file`). They must NOT force the whole cycle
+ * unscopable -- in the b91 smoke a SINGLE unfiled runtime finding tripped the
+ * "ANY unfiled -> run everything" gate and F1 never engaged despite 10/11
+ * findings being cleanly filed. So the unscopable gate now considers ONLY
+ * DIFF-ADDRESSABLE (spec|quality|security) findings that lack a file; a
+ * file-less meta finding is expected and broadcast elsewhere (revise-mapping).
+ */
+const META_DIMENSIONS = new Set(["fit", "runtime"]);
+function isMetaDimension(f: ScopeFinding): boolean {
+  return META_DIMENSIONS.has(((f.dimension ?? "") as string).trim().toLowerCase());
 }
 
 export interface ReviseScopeResult {
@@ -143,9 +160,15 @@ export function computeReviseScope(
   if (!findings || findings.length === 0) {
     return { scoped: false, runSeqs: allSeqs, skipSeqs: [], reason: "no_findings", findingFiles: [] };
   }
-  // If ANY finding lacks a resolvable file, we cannot prove which sub-tasks are
-  // irrelevant -> run everything (beta.86 strict_no_targets conservatism).
-  const anyFindingUnfiled = (findings ?? []).some((f) => !(f.file ?? "").trim());
+  // beta.92: only a DIFF-ADDRESSABLE (spec|quality|security) finding that lacks
+  // a resolvable file makes the cycle unscopable -- those SHOULD carry a file
+  // (b91 attribution requirement) so a missing one is genuine ambiguity. A
+  // file-less META (fit|runtime) finding is expected + broadcast, NOT a reason
+  // to run every sub-task. (Pre-b92 this considered ALL findings, so one
+  // unfiled runtime finding nuked F1 scoping.)
+  const anyFindingUnfiled = (findings ?? []).some(
+    (f) => !(f.file ?? "").trim() && !isMetaDimension(f),
+  );
   if (anyFindingUnfiled || fs.length === 0) {
     return {
       scoped: false,

@@ -232,24 +232,15 @@ test("beta.84 #2: manifest declares revise_spec_timeout_seconds (additionalPrope
   assert.equal(loop.properties.revise_spec_timeout_seconds.default, 180);
 });
 
-test("beta.84 #2: loop wraps revise-spec in withTimeout + audits loop.revise_spec_timeout on WorkerTimeoutError", skip, () => {
+test("beta.92 SUPERSEDES beta.84 #2: the timed revise-spec turn was DELETED (no withTimeout(reviseSpecCall), no revise_spec_timeout audit)", skip, () => {
   const src = readSrc("src/orchestrator/loop.ts");
-  // bounded call
-  assert.ok(
-    /revise_spec_timeout_seconds[\s\S]{0,500}withTimeout\(reviseSpecCall,\s*reviseSpecTimeout\)/.test(src),
-    "revise-spec call must be wrapped in withTimeout when the bound is > 0",
-  );
-  // 0 disables (unbounded fallback preserved)
-  assert.ok(
-    /reviseSpecTimeout\s*&&\s*reviseSpecTimeout\s*>\s*0[\s\S]{0,120}:\s*await reviseSpecCall/.test(src),
-    "a 0/disabled bound must fall back to the unbounded call",
-  );
-  // distinct timeout audit, distinct from the generic failed audit
-  assert.ok(
-    /err instanceof WorkerTimeoutError[\s\S]{0,200}loop\.revise_spec_timeout/.test(src),
-    "a timeout must audit loop.revise_spec_timeout (not the generic revise_spec_failed)",
-  );
-  assert.ok(src.includes('this.deps.state.audit("loop.revise_spec_failed"'), "the non-timeout branch keeps loop.revise_spec_failed");
+  // beta.92 deleted the LLM revise-spec turn entirely -> none of the b84 timing
+  // wiring exists in the loop anymore (the whole failure mode is gone).
+  assert.ok(!/withTimeout\(reviseSpecCall/.test(src), "beta.92 removed the timed revise-spec call");
+  assert.ok(!/loop\.revise_spec_timeout/.test(src), "beta.92 removed the revise_spec_timeout audit");
+  assert.ok(!/loop\.revise_spec_failed/.test(src), "beta.92 removed the revise_spec_failed audit");
+  // Replaced by the deterministic mapping (no timeout surface).
+  assert.ok(src.includes("mapFindingsToSubTasks"), "beta.92 uses the deterministic mapping");
 });
 
 test("beta.84 #2: progress fallback detection includes the timeout event", skip, () => {

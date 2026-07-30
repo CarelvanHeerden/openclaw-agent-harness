@@ -140,14 +140,18 @@ test("P0a: a good first plan does NOT re-ask", async () => {
 });
 
 // --- P0b + boundary source assertions ---
-test("P0b: loop runs the revise-spec turn at cycle>1 and suppresses the raw hint", () => {
+test("beta.92 SUPERSEDES P0b: loop no longer runs the timed LLM revise-spec turn; uses deterministic mapping", () => {
   const src = S("src/orchestrator/loop.ts");
-  assert.match(src, /runLeadReviseSpec\?:/);
-  assert.match(src, /reviseSpecApplied/);
-  assert.match(src, /revise_spec_turn_enabled !== false/);
-  assert.match(src, /cycle > 1 && lastReview && !reviseSpecApplied \? buildReviseDispatchHint/);
-  assert.match(src, /loop\.revise_spec_failed/);
-  assert.match(src, /loop\.revise_spec_applied/);
+  // The LLM revise-spec turn was DELETED in beta.92. The loop must NOT call
+  // the timed turn nor gate on revise_spec_turn_enabled anymore.
+  assert.ok(!/revise_spec_turn_enabled !== false/.test(src), "beta.92 removed the revise_spec_turn_enabled gate from the loop");
+  assert.ok(!/loop\.revise_spec_applied/.test(src), "beta.92 removed the revise_spec_applied audit");
+  assert.ok(!/loop\.revise_spec_timeout/.test(src), "beta.92 removed the revise_spec_timeout audit");
+  // reviseSpecApplied is now a DETERMINISTIC signal (mapping produced targeting).
+  assert.match(src, /reviseSpecApplied = reviseMapping\.anyTargeted/);
+  // The deterministic mapping drives the per-sub-task scoped hint.
+  assert.match(src, /mapFindingsToSubTasks/);
+  assert.match(src, /buildScopedReviseHint/);
 });
 test("P0b: revise-spec SDK adapter reads findings + refreshes workerContext", () => {
   const src = S("src/adapters/claude-sdk.ts");
