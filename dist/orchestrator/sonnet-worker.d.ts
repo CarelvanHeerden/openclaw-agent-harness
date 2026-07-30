@@ -198,6 +198,12 @@ onStreamSlow?: (info: {
     elapsedMs: number;
     tokensOut: number;
     label: string;
-}) => void): Promise<WorkerResult>;
+}) => void, 
+/**
+ * beta.91 (Fix 3): per-sub-task model override. When set, this SDK call uses
+ * this model instead of config.models.worker (mechanical scaffolding
+ * sub-tasks -> cheaper/faster model). Undefined => config.models.worker.
+ */
+modelOverride?: string): Promise<WorkerResult>;
 export {};
 //# sourceMappingURL=sonnet-worker.d.ts.map

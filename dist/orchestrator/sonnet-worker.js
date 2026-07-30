@@ -175,7 +175,13 @@ dispatchHint,
  * configured threshold. OBSERVABILITY ONLY -- never aborts. Undefined => no
  * stream-slow surfacing (the detector still ticks but has nowhere to report).
  */
-onStreamSlow) {
+onStreamSlow, 
+/**
+ * beta.91 (Fix 3): per-sub-task model override. When set, this SDK call uses
+ * this model instead of config.models.worker (mechanical scaffolding
+ * sub-tasks -> cheaper/faster model). Undefined => config.models.worker.
+ */
+modelOverride) {
     const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
     const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
         (dispatchHint ? `\n\n${dispatchHint}` : "");
@@ -187,7 +193,7 @@ onStreamSlow) {
             worktreePath,
             systemPrompt,
             userMessage,
-            model: deps.config.models.worker,
+            model: modelOverride?.trim() || deps.config.models.worker,
             permissionMode: deps.config.safety.worker_permission_mode,
             resumeSessionId,
             timeoutSeconds: deps.config.loop.worker_timeout_seconds,

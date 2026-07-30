@@ -76,6 +76,9 @@ import type { InteractionLog, InteractionPhase } from "../state/interaction-log.
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
 import { isInfraCrash } from "./infra-crash.js";
+import { computeReviseScope } from "./revise-scope.js";
+import { selectWorkerModel } from "./worker-model-select.js";
+import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
 
 export type LoopStatus =
   | "crystallising"
@@ -397,6 +400,12 @@ export interface OrchestratorDeps {
     requester?: string;
     /** beta.53 (P1b): corrective dispatch context appended on a retry. */
     dispatchHint?: string;
+    /**
+     * beta.91 (Fix 3): per-sub-task worker model override. When set, the SDK
+     * call uses this model instead of config.models.worker (mechanical
+     * scaffolding sub-tasks -> cheaper/faster model). Absent = config.models.worker.
+     */
+    modelOverride?: string;
     /**
      * beta.90 (Feature 2): stream-slow liveness callback. Invoked when the
      * worker SDK stream opens then goes idle (no token/activity delta) past
@@ -1105,8 +1114,50 @@ export class OrchestratorLoop {
       }
 
       const ordered = topoSortSubTasks(plan.subTasks);
-      const concurrency = Math.max(1, this.deps.config.loop.subtask_concurrency ?? 1);
+
+      // beta.91 (Fix 1): revise-cycle scoping. On cycle > 1, skip sub-tasks whose
+      // file scope does not intersect any finding -- they are already-correct
+      // from a prior cycle (the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks).
+      // Conservative: any unfiled finding => run everything; never skip a dep of
+      // a kept sub-task. Feature-gated (default on). Cycle 1 is never scoped.
+      const reviseScopeSkip = new Set<number>();
+      if (cycle > 1 && this.deps.config.loop.revise_scoping_enabled !== false && lastReview?.findings) {
+        const scope = computeReviseScope(plan.subTasks, lastReview.findings, cycle);
+        if (scope.scoped) {
+          for (const s of scope.skipSeqs) reviseScopeSkip.add(s);
+          this.deps.state.audit(
+            "loop.revise_scoped",
+            { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length, skipSeqs: scope.skipSeqs, findingFiles: scope.findingFiles },
+            sessionId,
+          );
+          this.deps.logger.info(
+            "[loop] revise-scoping: skipping sub-tasks not targeted by any finding (already correct from a prior cycle)",
+            { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length },
+          );
+          this.deps.interactionLog?.log(sessionId, { event: "revise_scoped", phase: "plan", cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
+        } else {
+          // beta.91 NIT-6: count unfiled findings so we can measure over time
+          // whether the adversary `.file`-required fix is populating file paths
+          // (an unscopable cycle with a high unfiled count = the prompt fix not
+          // landing; a low count = genuinely file-less meta findings).
+          const unfiledFindingCount = (lastReview.findings ?? []).filter((f) => !((f.file ?? "") as string).trim()).length;
+          this.deps.state.audit(
+            "loop.revise_scope_skipped",
+            { sessionId, cycle, reason: scope.reason, findingCount: (lastReview.findings ?? []).length, unfiledFindingCount },
+            sessionId,
+          );
+        }
+      }
+
+      // beta.91 (Fix 2): effective concurrency. Serial (1) unless the feature is
+      // on AND subtask_concurrency > 1. The dispatcher additionally enforces a
+      // file-overlap guard (canDispatchConcurrently) below.
+      const concurrency = resolveEffectiveConcurrency({
+        subtaskConcurrency: this.deps.config.loop.subtask_concurrency ?? 1,
+        parallelEnabled: this.deps.config.loop.parallel_independent_subtasks === true,
+      });
       const inFlight: Array<Promise<void>> = [];
+      const inFlightSubTasks = new Map<Promise<void>, LeadPlanSubTask>();
       const done = new Set<number>();
       const failed = { seq: -1, err: null as unknown };
       // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
@@ -1115,6 +1166,18 @@ export class OrchestratorLoop {
       const clarify = { question: null as string | null, seq: -1, subtask: null as { title: string; intent: string } | null };
 
       const runOne = async (st: LeadPlanSubTask): Promise<void> => {
+        // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
+        // intersect any finding -> its prior-cycle commit is already correct and
+        // part of the branch. Mark completed_no_change without a worker turn.
+        if (reviseScopeSkip.has(st.seq)) {
+          this.deps.state.db
+            .prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
+            .run("revise-scoped: not targeted by any review finding (unchanged from prior cycle)", Date.now(), sessionId, cycle, st.seq);
+          this.deps.state.audit("loop.subtask_revise_scoped_skip", { sessionId, cycle, seq: st.seq }, sessionId);
+          this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_scoped_skip", phase: "worker", seq: st.seq, cycle });
+          done.add(st.seq);
+          return;
+        }
         // beta.53 (P1b): at most ONE env-wait retry per sub-task.
         let envWaitRetried = false;
         // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
@@ -1656,6 +1719,8 @@ export class OrchestratorLoop {
                     brief, subTask: st, plan, requester: row.requester,
                     // Compose the revise context (if any) with the corrective hint.
                     dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
+                    // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
+                    modelOverride: selectWorkerModel(st, this.deps.config.models),
                     onStreamSlow: onRetryStreamSlow,
                   }),
                   this.deps.config.loop.worker_timeout_seconds,
@@ -2009,7 +2074,11 @@ export class OrchestratorLoop {
         while (
           idx < ordered.length &&
           inFlight.length < concurrency &&
-          (ordered[idx]!.dependsOn ?? []).every((d) => done.has(d))
+          (ordered[idx]!.dependsOn ?? []).every((d) => done.has(d)) &&
+          // beta.91 (Fix 2): only start a second worker when its file scope is
+          // known-disjoint from every in-flight worker (shared worktree write
+          // safety). With concurrency=1 this is always true (inFlight empty).
+          canDispatchConcurrently(ordered[idx]!, [...inFlightSubTasks.values()])
         ) {
           const st = ordered[idx]!;
           // beta.60: bound the ENTIRE runOne, not just the worker SDK call.
@@ -2049,8 +2118,10 @@ export class OrchestratorLoop {
             .finally(() => {
               const i = inFlight.indexOf(p);
               if (i >= 0) inFlight.splice(i, 1);
+              inFlightSubTasks.delete(p);
             });
           inFlight.push(p);
+          inFlightSubTasks.set(p, st);
           idx++;
         }
         if (inFlight.length === 0 && idx < ordered.length) {
@@ -2371,10 +2442,12 @@ export class OrchestratorLoop {
     // CI, never run locally). ciAuthorWorkflow returns null when a workflow
     // already exists or nothing is runnable. Best-effort: a failure here must
     // not block the push (the PR + review already stand); it just means no CI.
+    let authoredWorkflowThisCycle = false;
     if (this.deps.ciAuthorWorkflow) {
       try {
         const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
         if (authored) {
+          authoredWorkflowThisCycle = true;
           this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts }, sessionId);
           this.deps.interactionLog?.log(sessionId, { event: "ci_workflow_authored", phase: "finalize", cycle, path: authored.path, scripts: authored.scripts });
           this.deps.logger.info("[loop] authored a GitHub Actions workflow for a no-CI repo (beta.81 B3)", { sessionId, path: authored.path, scripts: authored.scripts });
@@ -2402,6 +2475,8 @@ export class OrchestratorLoop {
     // verdict (a no-CI repo just got a workflow authored above but its FIRST
     // status may not exist yet on this SHA; do not block the deliverable).
     let ciOverride: { recommendation: "needs_human_review"; reason: string } | null = null;
+    // beta.91 (F4): non-blocking caveat when an authored workflow never registered.
+    let ciNeverRegisteredCaveat: string | null = null;
     {
       let headSha = "";
       try {
@@ -2410,7 +2485,7 @@ export class OrchestratorLoop {
       if (headSha && this.deps.ciCombinedStatus) {
         this.setStatus(sessionId, "reviewing");
         this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
-        const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester });
+        const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
         if (ci.outcome === "failure") {
           ciOverride = {
             recommendation: "needs_human_review",
@@ -2425,6 +2500,16 @@ export class OrchestratorLoop {
               `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
               `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via harness_progress -- this is a soft checkpoint, not a failure.`,
           };
+        } else if (ci.outcome === "authored_workflow_never_registered") {
+          // beta.91 (F4): we authored + pushed a workflow this cycle but GitHub
+          // never registered a run within the grace window. NON-blocking: the
+          // merge recommendation is NOT overridden to needs_human_review (that
+          // would be too aggressive for a registration lag), but the caveat is
+          // surfaced so a human knows CI never actually verified this SHA.
+          this.deps.state.audit("loop.ci_authored_never_registered", { sessionId, cycle, sha: headSha, waitedSeconds: ci.waitedSeconds }, sessionId);
+          this.deps.logger.warn("[loop] authored a CI workflow but GitHub never registered a run within the grace window; shipping with a visible caveat (CI did NOT verify this SHA)", { sessionId, sha: headSha, waitedSeconds: ci.waitedSeconds });
+          ciNeverRegisteredCaveat =
+            `NOTE: the harness authored a CI workflow but GitHub did not register a run on ${headSha} within ${ci.waitedSeconds}s. CI did NOT verify this commit -- confirm the workflow ran (or re-run it) before relying on a green check.`;
         }
       }
     }
@@ -2441,7 +2526,10 @@ export class OrchestratorLoop {
     // recommendation to needs_human_review -- CI is the verification spine, so
     // a red or still-running CI must never be recommended for merge.
     const finalRecommendation = ciOverride?.recommendation ?? rec.recommendation;
-    const finalReason = ciOverride ? `${ciOverride.reason}\n\n(review verdict: ${lastReview.verdict}; ${rec.reason})` : rec.reason;
+    let finalReason = ciOverride ? `${ciOverride.reason}\n\n(review verdict: ${lastReview.verdict}; ${rec.reason})` : rec.reason;
+    // beta.91 (F4): append the never-registered caveat to whatever reason we have
+    // (merge still recommended, but the human sees CI did not verify the SHA).
+    if (ciNeverRegisteredCaveat) finalReason = `${finalReason}\n\n${ciNeverRegisteredCaveat}`;
     const prNumber = parsePrNumber(prUrl);
     this.deps.state.db
       .prepare(
@@ -2711,7 +2799,8 @@ export class OrchestratorLoop {
         // (no token delta) as loop.worker_stream_slow + a heartbeat bump.
         const onStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
         result = await withTimeout(
-          this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint, onStreamSlow }),
+          // beta.91 (Fix 3): mechanical sub-tasks -> cheaper worker model.
+          this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint, modelOverride: selectWorkerModel(st, this.deps.config.models), onStreamSlow }),
           this.deps.config.loop.worker_timeout_seconds,
         );
       } catch (err) {
@@ -2990,6 +3079,13 @@ export class OrchestratorLoop {
     repoFullName: string;
     sha: string;
     requester: string;
+    /**
+     * beta.91 (F4): true when the harness AUTHORED + pushed a CI workflow this
+     * cycle. A `none` status then means "GitHub has not registered the run
+     * YET" (registration lag), NOT "repo has no CI" -- so we grace-poll instead
+     * of terminating on poll 1 (the b90 shipped-known-red bug).
+     */
+    workflowAuthoredThisSession?: boolean;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
   }): Promise<
@@ -2997,13 +3093,20 @@ export class OrchestratorLoop {
     | { outcome: "failure"; logs: string }
     | { outcome: "timeout"; sha: string; waitedSeconds: number }
     | { outcome: "none" }
+    | { outcome: "authored_workflow_never_registered"; sha: string; waitedSeconds: number }
     | { outcome: "skipped" }
   > {
     const { sessionId, repoFullName, sha, requester } = input;
     if (!this.deps.ciCombinedStatus) return { outcome: "skipped" };
-    const cfg = this.deps.config.ci ?? { wait_timeout_seconds: 900, poll_interval_seconds: 20 };
+    const cfg = this.deps.config.ci ?? { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 };
     const waitMs = Math.max(30, cfg.wait_timeout_seconds ?? 900) * 1000;
     const pollMs = Math.max(5, cfg.poll_interval_seconds ?? 20) * 1000;
+    // beta.91 (F4): when we authored + pushed a workflow this cycle, a `none`
+    // status means GitHub has not registered the run YET (registration lag),
+    // not "no CI". Grace-poll for the run to appear instead of terminating on
+    // poll 1 (the b90 shipped-known-red bug). Bounded, never exceeds waitMs.
+    const graceMs = Math.max(0, cfg.none_grace_seconds ?? 45) * 1000;
+    const graceActive = !!input.workflowAuthoredThisSession && graceMs > 0;
     const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     const now = input.now ?? (() => Date.now());
     const started = now();
@@ -3039,8 +3142,24 @@ export class OrchestratorLoop {
         return { outcome: "failure", logs: logs ?? "" };
       }
       if (status === "none") {
-        this.deps.state.audit("loop.ci_none", { sessionId, sha, polls }, sessionId);
+        // beta.91 (F4): if we authored a workflow this cycle and are still
+        // inside the grace window, treat `none` as "not registered yet" and
+        // keep polling -- GitHub often takes several seconds to register a
+        // freshly-pushed workflow run. Only after the grace window elapses with
+        // still-`none` do we conclude the authored workflow never registered.
+        const elapsedNone = now() - started;
+        if (graceActive && elapsedNone < graceMs && elapsedNone + pollMs <= waitMs) {
+          this.deps.state.audit("loop.ci_none_grace_wait", { sessionId, sha, polls, elapsedMs: elapsedNone, graceMs }, sessionId);
+          await sleep(pollMs);
+          continue;
+        }
+        this.deps.state.audit("loop.ci_none", { sessionId, sha, polls, graceActive, elapsedMs: elapsedNone }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "ci_none", phase: "finalize", sha });
+        // Authored a workflow but it never registered within grace -> distinct,
+        // NON-blocking outcome (a real no-CI repo returns plain `none`).
+        if (graceActive) {
+          return { outcome: "authored_workflow_never_registered", sha, waitedSeconds: Math.round(elapsedNone / 1000) };
+        }
         return { outcome: "none" };
       }
       // pending: check the deadline, then sleep + re-poll.

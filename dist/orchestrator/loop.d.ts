@@ -170,6 +170,12 @@ export interface OrchestratorDeps {
         /** beta.53 (P1b): corrective dispatch context appended on a retry. */
         dispatchHint?: string;
         /**
+         * beta.91 (Fix 3): per-sub-task worker model override. When set, the SDK
+         * call uses this model instead of config.models.worker (mechanical
+         * scaffolding sub-tasks -> cheaper/faster model). Absent = config.models.worker.
+         */
+        modelOverride?: string;
+        /**
          * beta.90 (Feature 2): stream-slow liveness callback. Invoked when the
          * worker SDK stream opens then goes idle (no token/activity delta) past
          * the configured threshold. OBSERVABILITY ONLY -- never aborts.
@@ -573,6 +579,13 @@ export declare class OrchestratorLoop {
         repoFullName: string;
         sha: string;
         requester: string;
+        /**
+         * beta.91 (F4): true when the harness AUTHORED + pushed a CI workflow this
+         * cycle. A `none` status then means "GitHub has not registered the run
+         * YET" (registration lag), NOT "repo has no CI" -- so we grace-poll instead
+         * of terminating on poll 1 (the b90 shipped-known-red bug).
+         */
+        workflowAuthoredThisSession?: boolean;
         sleep?: (ms: number) => Promise<void>;
         now?: () => number;
     }): Promise<{
@@ -586,6 +599,10 @@ export declare class OrchestratorLoop {
         waitedSeconds: number;
     } | {
         outcome: "none";
+    } | {
+        outcome: "authored_workflow_never_registered";
+        sha: string;
+        waitedSeconds: number;
     } | {
         outcome: "skipped";
     }>;

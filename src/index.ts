@@ -665,7 +665,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     },
 
 
-    runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint, onStreamSlow }) => {
+    runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow }) => {
       const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
       const canUseTool = buildBashGuard(config.safety);
       const resolution = pat.resolve({
@@ -696,6 +696,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         resumeSessionId,
         dispatchHint,
         onStreamSlow,
+        modelOverride,
       );
     },
 
@@ -767,6 +768,17 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         {
           logger: api.logger,
           readDiff: async (p) => (await readFile(p, "utf8")),
+          // beta.91 (Staging pass-2 nit): surface file-attribution retry
+          // before/after counts so a WORSE retry (rejected by the guard, e.g.
+          // the priorFindings-conflation edge) is visible in prod logs.
+          onFileAttributionRetry: (info) =>
+            api.logger.info("[adversary] loop.file_attribution_retry", {
+              event: "loop.file_attribution_retry",
+              before: info.before,
+              after: info.after,
+              applied: info.applied,
+              hadPriorFindings: info.hadPriorFindings,
+            }),
           callAdversaryModel: async (params) => {
             const r = await runAdversarySdk({ ...params, apiKey: await anthropicApiKey() });
             return {

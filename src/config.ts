@@ -64,6 +64,20 @@ export interface CiConfig {
    * Default 20. Clamped to [5, 300].
    */
   poll_interval_seconds: number;
+  /**
+   * beta.91 (F4): grace window (seconds) for an AUTHORED-this-cycle workflow to
+   * REGISTER on GitHub. When the harness authored + pushed a CI workflow and
+   * the combined status comes back `none`, that means GitHub has not registered
+   * the run YET (registration lag) rather than "no CI" -- so we keep polling for
+   * up to this many seconds before concluding the workflow never registered
+   * (a distinct, NON-blocking `authored_workflow_never_registered` outcome).
+   * Fixes the b90 bug where the harness shipped a `merge` recommendation 0.5s
+   * after push, before its own workflow registered, then CI later caught a real
+   * typecheck error. Only applies when a workflow was authored this cycle; a
+   * genuine no-CI repo still returns `none` fast. 0 disables the grace window
+   * (restores beta.90 terminate-on-first-none). Default 45. Clamped [0, 300].
+   */
+  none_grace_seconds?: number;
 }
 
 export interface BriefConfig {
@@ -222,6 +236,16 @@ export interface ModelsConfig {
   worker: string;
   adversary: string;
   classifier: string;
+  /**
+   * beta.91 (Fix 3): optional cheaper/faster model for MECHANICAL sub-tasks
+   * (Prisma models, migration, sidebar entry, barrel exports -- pattern-follow
+   * scaffolding with no cross-file judgment). When set, such sub-tasks dispatch
+   * on this model; everything else (and the lead + adversary) stays on the
+   * strong models. Absent = every sub-task uses `worker` (beta.90 behaviour).
+   * The verify + adversary safety net is unchanged, so a weaker model that gets
+   * a mechanical task wrong is caught by review, not shipped.
+   */
+  worker_mechanical?: string;
   /** Optional per-model price overrides for cost estimation. Set when Anthropic ships new pricing before we release. Keys are model ids (e.g. 'claude-fable-5'). Values are USD per million tokens. */
   price_overrides?: Record<string, { input: number; output: number }>;
   /**
@@ -442,6 +466,25 @@ export interface LoopConfig {
    * false restores the always-re-run behaviour.
    */
   skip_observe_reprobe_on_revise?: boolean;
+  /**
+   * beta.91 (Fix 1): on a revise cycle (cycle > 1), skip sub-tasks whose file
+   * scope does not intersect ANY review finding's file -- they are
+   * already-correct from a prior cycle and re-running them is pure overhead (the
+   * DR/BCP smoke re-ran 8 of 12 no-change sub-tasks). A finding with no
+   * resolvable file makes the cycle unscopable -> the optimisation is skipped
+   * and every sub-task runs (conservative). Never skips a sub-task a KEPT one
+   * depends on. true (default) enables; false restores beta.90 (run-all).
+   */
+  revise_scoping_enabled?: boolean;
+  /**
+   * beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no
+   * dependency) to run concurrently up to subtask_concurrency. The dispatcher
+   * already honours subtask_concurrency + dependsOn; this flag additionally
+   * enforces a file-overlap guard so two workers never write the same file in
+   * the shared worktree. false (default) keeps beta.90 serial behaviour even if
+   * subtask_concurrency > 1; set true AND subtask_concurrency > 1 to parallelise.
+   */
+  parallel_independent_subtasks?: boolean;
   /**
    * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
    * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
@@ -792,6 +835,8 @@ const DEFAULTS: HarnessConfig = {
     revise_spec_turn_enabled: true,
     revise_spec_timeout_seconds: 180,
     skip_observe_reprobe_on_revise: true,
+    revise_scoping_enabled: true,
+    parallel_independent_subtasks: false,
     sdk_first_token_timeout_seconds: 30,
     sdk_stream_open_timeout_seconds: 120,
     worker_stream_idle_warn_seconds: 90,
@@ -811,6 +856,7 @@ const DEFAULTS: HarnessConfig = {
   ci: {
     wait_timeout_seconds: 900,
     poll_interval_seconds: 20,
+    none_grace_seconds: 45,
   },
   vercel: {
     api_key_env: "VERCEL_TOKEN",
@@ -1043,6 +1089,9 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   // CI is not hammered and ceilings at 300s so a slow CI is not missed.
   if (typeof merged.ci?.wait_timeout_seconds === "number") {
     merged.ci.wait_timeout_seconds = Math.max(30, Math.min(7200, merged.ci.wait_timeout_seconds));
+  }
+  if (typeof merged.ci?.none_grace_seconds === "number") {
+    merged.ci.none_grace_seconds = Math.max(0, Math.min(300, merged.ci.none_grace_seconds));
   }
   if (typeof merged.ci?.poll_interval_seconds === "number") {
     merged.ci.poll_interval_seconds = Math.max(5, Math.min(300, merged.ci.poll_interval_seconds));

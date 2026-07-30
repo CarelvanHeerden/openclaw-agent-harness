@@ -22,6 +22,7 @@
  */
 import { renderConventionsForPrompt } from "./repo-conventions.js";
 import { gateVerdict } from "./finding-classify.js";
+import { findingsMissingFile, buildFileAttributionRetryNudge } from "./adversary-file-attribution.js";
 /**
  * Adversary prompt-preamble helper. Injected verbatim into the adversary's
  * system prompt so runtime dimension is never silently skipped.
@@ -95,6 +96,15 @@ export function buildAdversarySystemPrompt(input) {
         "- Do NOT emit a finding whose severity or recommended action depends on an UNRESOLVED CONDITIONAL about repo state ('if X exists...', 'assuming Y is not used elsewhere...', 'unless Z is an established convention...'). You have repo access: RUN THE CHECK (grep/ls/read) and resolve the conditional YOURSELF before finalising the finding.",
         "- After checking: if the condition holds, emit a DEFINITE finding stating what you verified ('grep confirms 0 other files use path P, so introducing P here creates a new convention'). If it does NOT hold, DROP the finding (or downgrade it) -- do not pass a false or unverified premise downstream. A conditional finding becomes an unconditional mandate by the time it reaches the worker, who then either does the wrong thing or refuses.",
         "- Naming/convention findings specifically: before claiming something introduces a NEW convention, grep the repo for the EXISTING prevalence of both the old and proposed names. Report the counts. A rename that leaves N siblings behind is usually worse than the status quo.",
+        "",
+        // beta.91 (F1 companion): the revise-cycle SCOPING optimisation can only
+        // skip an already-correct sub-task when it knows which file each finding
+        // targets. Left optional, the adversary returns file-less findings
+        // (b90 DR/BCP: targetCount:0 on all 12) and scoping stays inert. So every
+        // diff-addressable finding MUST name its file.
+        "## File attribution (REQUIRED for diff-addressable findings)",
+        "- For ANY finding that points at a concrete code defect in the diff (a type error, a missing tenant/authz scope, a wrong header, a dead branch, a bug, a missing/incorrect line), set `file` to the EXACT repo-relative path from the diff (e.g. `src/app/api/grc/continuity-exercises/route.ts`) and `line` when you can. You have the full diff -- you can always name the file. A `medium`+ finding in dimension spec/quality/security WITHOUT a `file` will be REJECTED and you will be re-prompted.",
+        "- Only META findings may omit `file` (set `file: null`): a missing-test/coverage complaint where the file is 'wherever the test would go', or a purely architectural comment that isn't tied to one diff line.",
         "",
         "## Runtime banner",
         runtimeBanner(input),
@@ -180,6 +190,61 @@ export async function runAdversary(input, deps) {
             timeoutSeconds: input.timeoutSeconds,
         });
         deps.logger.info("[adversary] format-retry succeeded", { verdict: result.parsed.verdict });
+    }
+    // beta.91 (F1 companion): require `file` on diff-addressable findings so F1
+    // revise-scoping is not inert. If >= 1 medium+ spec/quality/security finding
+    // came back file-less, re-prompt ONCE naming the offenders. Second failure =>
+    // KEEP the unfiled findings (F1 treats the cycle unscopable => run all; a lost
+    // optimisation, never a lost review). Never hard-fails.
+    {
+        const missing = findingsMissingFile(result.parsed.findings);
+        if (missing.length > 0) {
+            deps.logger.warn("[adversary] diff-addressable finding(s) missing `file`; re-prompting once for file attribution", {
+                missing: missing.length,
+            });
+            try {
+                const retry = await deps.callAdversaryModel({
+                    systemPrompt: systemPrompt + buildFileAttributionRetryNudge(missing),
+                    diffText,
+                    model: input.model,
+                    timeoutSeconds: input.timeoutSeconds,
+                });
+                const stillMissing = findingsMissingFile(retry.parsed.findings);
+                // Accept the retry result only if it is not WORSE (fewer or equal
+                // unfiled diff-addressable findings). Keeps the better of the two.
+                const applied = stillMissing.length <= missing.length;
+                if (applied) {
+                    result = retry;
+                    deps.logger.info("[adversary] file-attribution retry applied", {
+                        before: missing.length, after: stillMissing.length,
+                    });
+                }
+                else {
+                    deps.logger.warn("[adversary] file-attribution retry came back WORSE; keeping original findings", {
+                        before: missing.length, after: stillMissing.length,
+                    });
+                }
+                // beta.91 (Staging pass-2 nit): surface before/after so a WORSE retry
+                // (rejected by the guard) is visible in prod -- the priorFindings
+                // conflation edge Staging traced would show up here.
+                try {
+                    deps.onFileAttributionRetry?.({
+                        before: missing.length,
+                        after: stillMissing.length,
+                        applied,
+                        hadPriorFindings: !!(input.priorFindings && input.priorFindings.length > 0),
+                    });
+                }
+                catch { /* observability must never fail the review */ }
+            }
+            catch (err) {
+                // A retry failure (timeout/format) is non-fatal: keep the original
+                // findings (unfiled). F1 stays safe (unscopable => run all).
+                deps.logger.warn("[adversary] file-attribution retry failed (non-fatal; keeping original findings)", {
+                    err: String(err?.message ?? err).slice(0, 200),
+                });
+            }
+        }
     }
     // beta.69 (F1/F4): runtime evidence is genuinely absent ONLY when there is no
     // runtime snapshot at all, OR a non-local snapshot in no_deploy_yet/unavailable.

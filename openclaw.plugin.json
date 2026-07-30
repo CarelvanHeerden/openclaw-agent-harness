@@ -178,6 +178,10 @@
           "worker": {
             "type": "string"
           },
+          "worker_mechanical": {
+            "type": "string",
+            "description": "beta.91 (Fix 3): optional cheaper/faster model for mechanical scaffolding sub-tasks (prisma models, migration, sidebar entry, barrel exports). When set, mechanical sub-tasks dispatch on this model; lead + adversary + non-mechanical workers stay on the strong models. Absent = every sub-task uses `worker`."
+          },
           "adversary": {
             "type": "string"
           },
@@ -361,6 +365,16 @@
             "default": true,
             "description": "beta.70 (F5): skip an observe-only sub-task's re-probe on a revise cycle when the same seq already completed cleanly in a prior cycle (PR #870 re-ran the seq-1 probe for 58s/$0.29 despite the revise-spec saying 'no changes'). Default true."
           },
+          "revise_scoping_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.91 (Fix 1): on a revise cycle, skip sub-tasks whose file scope does not intersect any review finding's file (already-correct from a prior cycle; the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks). A finding with no resolvable file makes the cycle unscopable => run every sub-task (conservative). Never skips a sub-task a kept one depends on. Default true; false restores beta.90 run-all."
+          },
+          "parallel_independent_subtasks": {
+            "type": "boolean",
+            "default": false,
+            "description": "beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no dependency) to run concurrently up to subtask_concurrency, with a file-overlap guard so two workers never write the same file in the shared worktree. Default false (serial, beta.90). Set true AND subtask_concurrency > 1 to parallelise."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,
@@ -433,6 +447,11 @@
             "type": "number",
             "default": 20,
             "description": "beta.81 (B2): poll interval (seconds) for the post-push CI wait; the harness re-queries getCombinedStatus(headSha) every this-many seconds until it is not pending or the wait_timeout_seconds elapses. Clamped [5, 300]."
+          },
+          "none_grace_seconds": {
+            "type": "number",
+            "default": 45,
+            "description": "beta.91 (F4): grace window (seconds) for an authored-this-cycle CI workflow to REGISTER on GitHub before the harness concludes 'no CI'. Fixes the b90 bug where the harness shipped a merge recommendation 0.5s after push, before its own workflow registered, then CI later caught a real typecheck error. Only applies when a workflow was authored this cycle; a genuine no-CI repo still returns none fast. A still-none result after the grace window is a distinct NON-blocking authored_workflow_never_registered outcome (merge still recommended, but the human sees CI did not verify the SHA). 0 disables (beta.90 terminate-on-first-none). Clamped [0, 300]."
           }
         }
       },
