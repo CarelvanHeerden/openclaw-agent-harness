@@ -806,7 +806,12 @@ export class OrchestratorLoop {
                     this.deps.interactionLog?.log(sessionId, { event: "revise_scoped", phase: "plan", cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
                 }
                 else {
-                    this.deps.state.audit("loop.revise_scope_skipped", { sessionId, cycle, reason: scope.reason }, sessionId);
+                    // beta.91 NIT-6: count unfiled findings so we can measure over time
+                    // whether the adversary `.file`-required fix is populating file paths
+                    // (an unscopable cycle with a high unfiled count = the prompt fix not
+                    // landing; a low count = genuinely file-less meta findings).
+                    const unfiledFindingCount = (lastReview.findings ?? []).filter((f) => !(f.file ?? "").trim()).length;
+                    this.deps.state.audit("loop.revise_scope_skipped", { sessionId, cycle, reason: scope.reason, findingCount: (lastReview.findings ?? []).length, unfiledFindingCount }, sessionId);
                 }
             }
             // beta.91 (Fix 2): effective concurrency. Serial (1) unless the feature is

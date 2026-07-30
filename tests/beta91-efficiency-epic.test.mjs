@@ -171,6 +171,20 @@ test("Fix3: heuristic classifies scaffolding mechanical, judgment work not", () 
   assert.equal(isMechanicalSubTask({ title: "Write route tests", filesLikelyTouched: ["x.test.ts"] }), false);
 });
 
+test("NIT-5: generalise/extract-prop cues classify mechanical when no non-mechanical cue present", () => {
+  // clean generalise (no endpoint/upload/auth cue) -> mechanical
+  assert.equal(isMechanicalSubTask({ title: "Minimally generalise the attachment component", filesLikelyTouched: ["src/components/attachment.tsx"] }), true);
+  assert.equal(isMechanicalSubTask({ title: "Extract a props interface", filesLikelyTouched: ["src/components/x.tsx"] }), true);
+  // the b90 actual sub-task carries "upload" + "endpoint" -> correctly NOT auto-downgraded (lead-hint path covers it)
+  assert.equal(isMechanicalSubTask({ title: "Minimally generalise poi-attachment-upload.tsx with endpoint + kinds props", filesLikelyTouched: ["src/components/grc/poi-attachment-upload.tsx"] }), false);
+});
+
+test("NIT-6: loop.revise_scope_skipped audit carries unfiledFindingCount", () => {
+  const loop = S("src/orchestrator/loop.ts");
+  assert.match(loop, /loop\.revise_scope_skipped/);
+  assert.match(loop, /unfiledFindingCount/);
+});
+
 test("Fix3: heuristic is conservative on broad file scope", () => {
   // >2 files -> not treated as mechanical even with a boilerplate cue
   assert.equal(isMechanicalSubTask({ title: "add sidebar entry", filesLikelyTouched: ["a.ts", "b.ts", "c.ts"] }), false);

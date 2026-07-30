@@ -54,7 +54,7 @@ export interface ModelSelectConfig {
  * (those carry judgment) or "test" (tests need care).
  */
 const MECHANICAL_INTENT_RE =
-  /(\bsidebar\b|prisma (models?|schema|back-?relations?)|(add|create|generate).{0,40}\bmigrations?\b|prisma migrate|\bscaffold\b|\bboilerplate\b|barrel (export|file)|re-?export|\bindex (export|barrel)\b|generate(d)? (types|client)|import .{0,20}\bicon\b)/i;
+  /(\bsidebar\b|prisma (models?|schema|back-?relations?)|(add|create|generate).{0,40}\bmigrations?\b|prisma migrate|\bscaffold\b|\bboilerplate\b|barrel (export|file)|re-?export|\bindex (export|barrel)\b|generate(d)? (types|client)|import .{0,20}\bicon\b|(minimal(ly)? )?generali[sz]e\b|extract (a )?props?\b|add .{0,30}\bprops?\b)/i;
 
 /**
  * Cues that a sub-task is DEFINITELY not mechanical even if a boilerplate word

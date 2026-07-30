@@ -29,6 +29,15 @@
  *   5. This is purely which-sub-tasks-to-run; the adversary still reviews the
  *      WHOLE branch diff afterwards, so a wrongly-skipped file would still be
  *      caught by review, not silently shipped.
+ *   6. (beta.91 QUESTION-8, Staging pass 1) An unscopable-for-itself sub-task S
+ *      (empty filesLikelyTouched, e.g. a "verify feature complete" probe) that
+ *      LOGICALLY reads state written by a skipped scaffolding sub-task is safe:
+ *      the scaffolding sub-task's file is ALREADY COMMITTED from the prior
+ *      cycle, so the branch on-disk state S reads is correct even though the
+ *      scaffolding sub-task was not re-executed. And a cycle-1 sub-task that
+ *      FAILED is forced back into re-execution by the loop's worker-deviation /
+ *      failure path independent of scoping, so a stale file is never preserved.
+ *      Hence dependency closure only needs the FORWARD dependsOn edges (below).
  *
  * All pure/deterministic. No fs, no git, no SDK.
  */
