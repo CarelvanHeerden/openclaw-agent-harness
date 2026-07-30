@@ -503,6 +503,15 @@ export interface LoopConfig {
      */
     worker_confab_detect?: boolean;
     /**
+     * beta.76 (Option 1) + beta.93 kill-switch: contract-path RE-DERIVATION. When
+     * true (default) a stale lead-guessed contract path is corrected against the
+     * repo's real touched layout BEFORE verification (with the beta.93 exact-match
+     * + same-basename guards so a correctly-committed path is never rewritten).
+     * false disables re-derivation entirely -- the verifier compares against the
+     * lead's declared path verbatim (relies on the beta.50+ tolerant match rules).
+     */
+    contract_rederive_enabled?: boolean;
+    /**
      * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
      * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
      * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on
