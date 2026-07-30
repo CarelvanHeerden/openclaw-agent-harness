@@ -2442,10 +2442,12 @@ export class OrchestratorLoop {
     // CI, never run locally). ciAuthorWorkflow returns null when a workflow
     // already exists or nothing is runnable. Best-effort: a failure here must
     // not block the push (the PR + review already stand); it just means no CI.
+    let authoredWorkflowThisCycle = false;
     if (this.deps.ciAuthorWorkflow) {
       try {
         const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
         if (authored) {
+          authoredWorkflowThisCycle = true;
           this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts }, sessionId);
           this.deps.interactionLog?.log(sessionId, { event: "ci_workflow_authored", phase: "finalize", cycle, path: authored.path, scripts: authored.scripts });
           this.deps.logger.info("[loop] authored a GitHub Actions workflow for a no-CI repo (beta.81 B3)", { sessionId, path: authored.path, scripts: authored.scripts });
@@ -2473,6 +2475,8 @@ export class OrchestratorLoop {
     // verdict (a no-CI repo just got a workflow authored above but its FIRST
     // status may not exist yet on this SHA; do not block the deliverable).
     let ciOverride: { recommendation: "needs_human_review"; reason: string } | null = null;
+    // beta.91 (F4): non-blocking caveat when an authored workflow never registered.
+    let ciNeverRegisteredCaveat: string | null = null;
     {
       let headSha = "";
       try {
@@ -2481,7 +2485,7 @@ export class OrchestratorLoop {
       if (headSha && this.deps.ciCombinedStatus) {
         this.setStatus(sessionId, "reviewing");
         this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
-        const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester });
+        const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
         if (ci.outcome === "failure") {
           ciOverride = {
             recommendation: "needs_human_review",
@@ -2496,6 +2500,16 @@ export class OrchestratorLoop {
               `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
               `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via harness_progress -- this is a soft checkpoint, not a failure.`,
           };
+        } else if (ci.outcome === "authored_workflow_never_registered") {
+          // beta.91 (F4): we authored + pushed a workflow this cycle but GitHub
+          // never registered a run within the grace window. NON-blocking: the
+          // merge recommendation is NOT overridden to needs_human_review (that
+          // would be too aggressive for a registration lag), but the caveat is
+          // surfaced so a human knows CI never actually verified this SHA.
+          this.deps.state.audit("loop.ci_authored_never_registered", { sessionId, cycle, sha: headSha, waitedSeconds: ci.waitedSeconds }, sessionId);
+          this.deps.logger.warn("[loop] authored a CI workflow but GitHub never registered a run within the grace window; shipping with a visible caveat (CI did NOT verify this SHA)", { sessionId, sha: headSha, waitedSeconds: ci.waitedSeconds });
+          ciNeverRegisteredCaveat =
+            `NOTE: the harness authored a CI workflow but GitHub did not register a run on ${headSha} within ${ci.waitedSeconds}s. CI did NOT verify this commit -- confirm the workflow ran (or re-run it) before relying on a green check.`;
         }
       }
     }
@@ -2512,7 +2526,10 @@ export class OrchestratorLoop {
     // recommendation to needs_human_review -- CI is the verification spine, so
     // a red or still-running CI must never be recommended for merge.
     const finalRecommendation = ciOverride?.recommendation ?? rec.recommendation;
-    const finalReason = ciOverride ? `${ciOverride.reason}\n\n(review verdict: ${lastReview.verdict}; ${rec.reason})` : rec.reason;
+    let finalReason = ciOverride ? `${ciOverride.reason}\n\n(review verdict: ${lastReview.verdict}; ${rec.reason})` : rec.reason;
+    // beta.91 (F4): append the never-registered caveat to whatever reason we have
+    // (merge still recommended, but the human sees CI did not verify the SHA).
+    if (ciNeverRegisteredCaveat) finalReason = `${finalReason}\n\n${ciNeverRegisteredCaveat}`;
     const prNumber = parsePrNumber(prUrl);
     this.deps.state.db
       .prepare(
@@ -3062,6 +3079,13 @@ export class OrchestratorLoop {
     repoFullName: string;
     sha: string;
     requester: string;
+    /**
+     * beta.91 (F4): true when the harness AUTHORED + pushed a CI workflow this
+     * cycle. A `none` status then means "GitHub has not registered the run
+     * YET" (registration lag), NOT "repo has no CI" -- so we grace-poll instead
+     * of terminating on poll 1 (the b90 shipped-known-red bug).
+     */
+    workflowAuthoredThisSession?: boolean;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
   }): Promise<
@@ -3069,13 +3093,20 @@ export class OrchestratorLoop {
     | { outcome: "failure"; logs: string }
     | { outcome: "timeout"; sha: string; waitedSeconds: number }
     | { outcome: "none" }
+    | { outcome: "authored_workflow_never_registered"; sha: string; waitedSeconds: number }
     | { outcome: "skipped" }
   > {
     const { sessionId, repoFullName, sha, requester } = input;
     if (!this.deps.ciCombinedStatus) return { outcome: "skipped" };
-    const cfg = this.deps.config.ci ?? { wait_timeout_seconds: 900, poll_interval_seconds: 20 };
+    const cfg = this.deps.config.ci ?? { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 };
     const waitMs = Math.max(30, cfg.wait_timeout_seconds ?? 900) * 1000;
     const pollMs = Math.max(5, cfg.poll_interval_seconds ?? 20) * 1000;
+    // beta.91 (F4): when we authored + pushed a workflow this cycle, a `none`
+    // status means GitHub has not registered the run YET (registration lag),
+    // not "no CI". Grace-poll for the run to appear instead of terminating on
+    // poll 1 (the b90 shipped-known-red bug). Bounded, never exceeds waitMs.
+    const graceMs = Math.max(0, cfg.none_grace_seconds ?? 45) * 1000;
+    const graceActive = !!input.workflowAuthoredThisSession && graceMs > 0;
     const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     const now = input.now ?? (() => Date.now());
     const started = now();
@@ -3111,8 +3142,24 @@ export class OrchestratorLoop {
         return { outcome: "failure", logs: logs ?? "" };
       }
       if (status === "none") {
-        this.deps.state.audit("loop.ci_none", { sessionId, sha, polls }, sessionId);
+        // beta.91 (F4): if we authored a workflow this cycle and are still
+        // inside the grace window, treat `none` as "not registered yet" and
+        // keep polling -- GitHub often takes several seconds to register a
+        // freshly-pushed workflow run. Only after the grace window elapses with
+        // still-`none` do we conclude the authored workflow never registered.
+        const elapsedNone = now() - started;
+        if (graceActive && elapsedNone < graceMs && elapsedNone + pollMs <= waitMs) {
+          this.deps.state.audit("loop.ci_none_grace_wait", { sessionId, sha, polls, elapsedMs: elapsedNone, graceMs }, sessionId);
+          await sleep(pollMs);
+          continue;
+        }
+        this.deps.state.audit("loop.ci_none", { sessionId, sha, polls, graceActive, elapsedMs: elapsedNone }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "ci_none", phase: "finalize", sha });
+        // Authored a workflow but it never registered within grace -> distinct,
+        // NON-blocking outcome (a real no-CI repo returns plain `none`).
+        if (graceActive) {
+          return { outcome: "authored_workflow_never_registered", sha, waitedSeconds: Math.round(elapsedNone / 1000) };
+        }
         return { outcome: "none" };
       }
       // pending: check the deadline, then sleep + re-poll.

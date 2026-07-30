@@ -91,6 +91,7 @@ const DEFAULTS = {
     ci: {
         wait_timeout_seconds: 900,
         poll_interval_seconds: 20,
+        none_grace_seconds: 45,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",
@@ -334,6 +335,9 @@ export function parseHarnessConfig(input) {
     // CI is not hammered and ceilings at 300s so a slow CI is not missed.
     if (typeof merged.ci?.wait_timeout_seconds === "number") {
         merged.ci.wait_timeout_seconds = Math.max(30, Math.min(7200, merged.ci.wait_timeout_seconds));
+    }
+    if (typeof merged.ci?.none_grace_seconds === "number") {
+        merged.ci.none_grace_seconds = Math.max(0, Math.min(300, merged.ci.none_grace_seconds));
     }
     if (typeof merged.ci?.poll_interval_seconds === "number") {
         merged.ci.poll_interval_seconds = Math.max(5, Math.min(300, merged.ci.poll_interval_seconds));

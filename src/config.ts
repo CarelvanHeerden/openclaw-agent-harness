@@ -64,6 +64,20 @@ export interface CiConfig {
    * Default 20. Clamped to [5, 300].
    */
   poll_interval_seconds: number;
+  /**
+   * beta.91 (F4): grace window (seconds) for an AUTHORED-this-cycle workflow to
+   * REGISTER on GitHub. When the harness authored + pushed a CI workflow and
+   * the combined status comes back `none`, that means GitHub has not registered
+   * the run YET (registration lag) rather than "no CI" -- so we keep polling for
+   * up to this many seconds before concluding the workflow never registered
+   * (a distinct, NON-blocking `authored_workflow_never_registered` outcome).
+   * Fixes the b90 bug where the harness shipped a `merge` recommendation 0.5s
+   * after push, before its own workflow registered, then CI later caught a real
+   * typecheck error. Only applies when a workflow was authored this cycle; a
+   * genuine no-CI repo still returns `none` fast. 0 disables the grace window
+   * (restores beta.90 terminate-on-first-none). Default 45. Clamped [0, 300].
+   */
+  none_grace_seconds?: number;
 }
 
 export interface BriefConfig {
@@ -842,6 +856,7 @@ const DEFAULTS: HarnessConfig = {
   ci: {
     wait_timeout_seconds: 900,
     poll_interval_seconds: 20,
+    none_grace_seconds: 45,
   },
   vercel: {
     api_key_env: "VERCEL_TOKEN",
@@ -1074,6 +1089,9 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   // CI is not hammered and ceilings at 300s so a slow CI is not missed.
   if (typeof merged.ci?.wait_timeout_seconds === "number") {
     merged.ci.wait_timeout_seconds = Math.max(30, Math.min(7200, merged.ci.wait_timeout_seconds));
+  }
+  if (typeof merged.ci?.none_grace_seconds === "number") {
+    merged.ci.none_grace_seconds = Math.max(0, Math.min(300, merged.ci.none_grace_seconds));
   }
   if (typeof merged.ci?.poll_interval_seconds === "number") {
     merged.ci.poll_interval_seconds = Math.max(5, Math.min(300, merged.ci.poll_interval_seconds));

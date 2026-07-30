@@ -447,6 +447,11 @@
             "type": "number",
             "default": 20,
             "description": "beta.81 (B2): poll interval (seconds) for the post-push CI wait; the harness re-queries getCombinedStatus(headSha) every this-many seconds until it is not pending or the wait_timeout_seconds elapses. Clamped [5, 300]."
+          },
+          "none_grace_seconds": {
+            "type": "number",
+            "default": 45,
+            "description": "beta.91 (F4): grace window (seconds) for an authored-this-cycle CI workflow to REGISTER on GitHub before the harness concludes 'no CI'. Fixes the b90 bug where the harness shipped a merge recommendation 0.5s after push, before its own workflow registered, then CI later caught a real typecheck error. Only applies when a workflow was authored this cycle; a genuine no-CI repo still returns none fast. A still-none result after the grace window is a distinct NON-blocking authored_workflow_never_registered outcome (merge still recommended, but the human sees CI did not verify the SHA). 0 disables (beta.90 terminate-on-first-none). Clamped [0, 300]."
           }
         }
       },

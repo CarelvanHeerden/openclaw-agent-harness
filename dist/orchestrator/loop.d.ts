@@ -579,6 +579,13 @@ export declare class OrchestratorLoop {
         repoFullName: string;
         sha: string;
         requester: string;
+        /**
+         * beta.91 (F4): true when the harness AUTHORED + pushed a CI workflow this
+         * cycle. A `none` status then means "GitHub has not registered the run
+         * YET" (registration lag), NOT "repo has no CI" -- so we grace-poll instead
+         * of terminating on poll 1 (the b90 shipped-known-red bug).
+         */
+        workflowAuthoredThisSession?: boolean;
         sleep?: (ms: number) => Promise<void>;
         now?: () => number;
     }): Promise<{
@@ -592,6 +599,10 @@ export declare class OrchestratorLoop {
         waitedSeconds: number;
     } | {
         outcome: "none";
+    } | {
+        outcome: "authored_workflow_never_registered";
+        sha: string;
+        waitedSeconds: number;
     } | {
         outcome: "skipped";
     }>;

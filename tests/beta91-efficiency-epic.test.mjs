@@ -320,6 +320,26 @@ test("wiring: config + manifest declare all new keys with conservative defaults"
   assert.equal(man.configSchema.properties.models.additionalProperties, false);
 });
 
+test("F4: CI grace-window wired in loop + config + manifest", () => {
+  const loop = S("src/orchestrator/loop.ts");
+  // grace-poll on none when a workflow was authored this session
+  assert.match(loop, /workflowAuthoredThisSession/);
+  assert.match(loop, /none_grace_seconds/);
+  assert.match(loop, /graceActive/);
+  assert.match(loop, /loop\.ci_none_grace_wait/);
+  assert.match(loop, /authored_workflow_never_registered/);
+  assert.match(loop, /authoredWorkflowThisCycle/);
+  // caveat is NON-blocking (does not force needs_human_review)
+  assert.match(loop, /ciNeverRegisteredCaveat/);
+  assert.match(loop, /loop\.ci_authored_never_registered/);
+  const cfg = S("src/config.ts");
+  assert.match(cfg, /none_grace_seconds\?: number/);
+  assert.match(cfg, /none_grace_seconds: 45/);
+  assert.match(cfg, /none_grace_seconds = Math\.max\(0, Math\.min\(300/);
+  const man = JSON.parse(S("openclaw.plugin.json"));
+  assert.equal(man.configSchema.properties.ci.properties.none_grace_seconds.default, 45);
+});
+
 test("beta91: version >= beta.91", () => {
   assert.ok(betaNum(JSON.parse(S("package.json")).version) >= 91, "package.json >= beta.91");
   assert.ok(betaNum(S("src/version.ts").match(/pluginVersion: "([^"]+)"/)[1]) >= 91, "version.ts >= beta.91");

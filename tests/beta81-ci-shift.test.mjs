@@ -132,6 +132,63 @@ test("beta81/B2: pollCiStatus that stays pending forever TIMES OUT (soft, resuma
   state.close();
 });
 
+// ---- beta.91 F4: authored-workflow grace window ----
+test("beta91/F4: authored workflow + none-then-success within grace -> success (does NOT terminate on poll 1)", { skip: OrchestratorLoop === null }, async () => {
+  const state = makeStore();
+  let t = 0; const now = () => t; const sleep = async (ms) => { t += ms; };
+  let calls = 0;
+  // none on polls 1-2 (GitHub not registered yet), success on poll 3.
+  const loop = loopWith(state, {
+    config: { ci: { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 } },
+    ciCombinedStatus: async () => (++calls < 3 ? "none" : "success"),
+  });
+  const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "sha1", requester: "U1", workflowAuthoredThisSession: true, sleep, now });
+  assert.equal(r.outcome, "success", "grace window must keep polling past a not-yet-registered none");
+  assert.equal(calls, 3);
+  assert.ok(state.audits.some((a) => a.event === "loop.ci_none_grace_wait"));
+  state.close();
+});
+
+test("beta91/F4: authored workflow + none for the whole grace -> authored_workflow_never_registered (NON-blocking)", { skip: OrchestratorLoop === null }, async () => {
+  const state = makeStore();
+  let t = 0; const now = () => t; const sleep = async (ms) => { t += ms; };
+  const loop = loopWith(state, {
+    config: { ci: { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 } },
+    ciCombinedStatus: async () => "none",
+  });
+  const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "shaZ", requester: "U1", workflowAuthoredThisSession: true, sleep, now });
+  assert.equal(r.outcome, "authored_workflow_never_registered");
+  assert.equal(r.sha, "shaZ");
+  assert.ok(r.waitedSeconds >= 45);
+  state.close();
+});
+
+test("beta91/F4: NO workflow authored -> none terminates immediately (beta.90 behaviour preserved)", { skip: OrchestratorLoop === null }, async () => {
+  const state = makeStore();
+  let calls = 0;
+  const loop = loopWith(state, {
+    config: { ci: { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 } },
+    ciCombinedStatus: async () => { calls++; return "none"; },
+  });
+  const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "s", requester: "U1", workflowAuthoredThisSession: false, sleep: noSleep });
+  assert.equal(r.outcome, "none");
+  assert.equal(calls, 1, "a genuine no-CI repo still resolves on poll 1");
+  state.close();
+});
+
+test("beta91/F4: none_grace_seconds:0 disables the grace window even when authored", { skip: OrchestratorLoop === null }, async () => {
+  const state = makeStore();
+  let calls = 0;
+  const loop = loopWith(state, {
+    config: { ci: { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 0 } },
+    ciCombinedStatus: async () => { calls++; return "none"; },
+  });
+  const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "s", requester: "U1", workflowAuthoredThisSession: true, sleep: noSleep });
+  assert.equal(r.outcome, "none");
+  assert.equal(calls, 1);
+  state.close();
+});
+
 // ---- B2: skipped when no dep ----
 test("beta81/B2: pollCiStatus is SKIPPED when ciCombinedStatus dep is absent", { skip: OrchestratorLoop === null }, async () => {
   const state = makeStore();
