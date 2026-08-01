@@ -215,6 +215,32 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
                 break;
             }
         }
+        // beta.96: GENERIC-REASON fallback. When no verifier-path-fail event is
+        // present (e.g. a plan-phase death: `loop.plan_failed` / `loop.failed`
+        // {reason}), read the canonical terminal reason so the headline is NEVER
+        // empty. Pre-b96 a `plan_failed` produced a bare `Failed during planning`
+        // with no reason, and (because the sub-task ledger was also empty) the
+        // native terminal post gated on `!headline` was silently dropped -> the
+        // 1b267b86 zero-feedback incident. Query the durable audit_log directly so
+        // this works even when the reason is outside the recentEvents window.
+        if (!failureDetail) {
+            try {
+                const fr = db
+                    .prepare(`SELECT payload FROM audit_log
+               WHERE session_id = ? AND event IN ('loop.failed','loop.plan_failed')
+               ORDER BY created_at DESC, id DESC LIMIT 1`)
+                    .get(sessionId);
+                if (fr?.payload) {
+                    const p = JSON.parse(fr.payload);
+                    const raw = p.reason ?? p.err;
+                    if (typeof raw === "string" && raw.trim())
+                        failureDetail = raw.slice(0, 300);
+                }
+            }
+            catch {
+                /* best-effort: a missing/garbled reason must not blank the headline */
+            }
+        }
     }
     // beta.83 (#1): surface the revise-spec raw-findings fallback for the CURRENT
     // cycle so the reduced-fidelity degradation is no longer silent. The

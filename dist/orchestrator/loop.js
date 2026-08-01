@@ -3123,16 +3123,14 @@ export class OrchestratorLoop {
      * cannot forget to release the worktree on new failure paths.
      */
     finaliseFailed(sessionId, reason, cycles, totalCostUsd) {
-        this.setStatus(sessionId, "failed");
-        // beta.73 (D3): ALWAYS audit the failure reason. Pre-beta.73 finaliseFailed
-        // wrote only the status column (setStatus emits no audit) and then the
-        // worktree release emitted a bare `loop.worktree_released reason:failed` with
-        // NO reason -- so a `pr_error:`/`no_review_produced`/`plan_failed:` terminal
-        // was INVISIBLE in the audit log (session 70341bc3: 2-min gap between
-        // transition->done and worktree_released, zero events explaining the fail).
-        // Emit the reason so every terminal-fail is greppable from harness_progress.
+        // beta.73 (D3): ALWAYS audit the failure reason (greppable terminal).
+        // beta.96: audit the reason BEFORE setStatus -- setStatus -> deliverProgress
+        // (native Slack terminal post) reads this reason to build the headline; the
+        // pre-b96 order (audit AFTER setStatus) meant a plan-phase death posted an
+        // empty headline and was silently dropped (session 1b267b86, 2h no feedback).
         this.deps.state.audit("loop.failed", { sessionId, reason, cycles }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "failed", phase: "finalize", reason });
+        this.setStatus(sessionId, "failed");
         this.scheduleWorktreeReleaseForSession(sessionId, "failed");
         return { status: "failed", sessionId, reason, cycles, totalCostUsd };
     }
@@ -3146,7 +3144,8 @@ export class OrchestratorLoop {
      * can `git log`/push the branch manually even when the harness couldn't.
      */
     finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd) {
-        this.setStatus(sessionId, "failed");
+        // beta.96: audit the reason BEFORE setStatus so the native terminal post
+        // (deliverProgress) sees it (see finaliseFailed for the full rationale).
         // beta.74 (D3 nit): also emit the canonical `loop.failed{reason}` event so
         // there is ONE terminal-fail event across BOTH terminal paths (this
         // preserve-worktree variant AND finaliseFailed). Pre-beta.74 a review crash
@@ -3157,6 +3156,7 @@ export class OrchestratorLoop {
         this.deps.state.audit("loop.failed", { sessionId, reason, cycles, worktreePreserved: true }, sessionId);
         this.deps.state.audit("loop.failed_worktree_preserved", { sessionId, reason, cycles }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "failed_worktree_preserved", phase: "finalize", reason });
+        this.setStatus(sessionId, "failed");
         return { status: "failed", sessionId, reason, cycles, totalCostUsd };
     }
     /**
