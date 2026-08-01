@@ -23,6 +23,7 @@ import type { PatRouter } from "../auth/pat-router.js";
 import type { StateStore } from "../state/store.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask, SubTaskVerify } from "./fable5-lead.js";
+import { elideFinalScopeSubTask } from "./fable5-lead.js";
 import type { ReviewReport, ReviewFinding } from "./fable5-adversary.js";
 import type { WorkerResult } from "./sonnet-worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
@@ -59,6 +60,26 @@ export function collectExpectedFiles(plan: LeadPlan): string[] {
   const set = new Set<string>();
   for (const st of plan.subTasks ?? []) {
     for (const f of st.filesLikelyTouched ?? []) if (f) set.add(f);
+  }
+  return [...set];
+}
+
+/**
+ * beta.94 (Feature 1b): the UNION of every sub-task's DECLARED file scope --
+ * the concrete file paths carried on each sub-task's verify probes
+ * (file_written / file_committed / file_pushed / file_in_pr) PLUS its
+ * `filesLikelyTouched`. This is the authoritative "in-scope" set the
+ * deterministic final-scope check compares committed files against. A committed
+ * file OUTSIDE this union is out-of-scope. Pure/deterministic.
+ */
+export function collectDeclaredScopeFiles(plan: LeadPlan): string[] {
+  const set = new Set<string>();
+  for (const st of plan.subTasks ?? []) {
+    for (const f of st.filesLikelyTouched ?? []) if (f) set.add(f);
+    for (const v of st.verify ?? []) {
+      const p = (v as { path?: string }).path;
+      if (typeof p === "string" && p) set.add(p);
+    }
   }
   return [...set];
 }
@@ -525,6 +546,15 @@ export interface OrchestratorDeps {
   gitDiffStat?: (worktreePath: string, base: string) => Promise<string>;
 
   /**
+   * beta.94 (Feature 1b): files COMMITTED in `<base>..HEAD` in the worktree
+   * (`git log <base>..HEAD --name-only`). Wraps GitAdapter.listCommittedFiles.
+   * Used by the deterministic final-scope check to compare committed files
+   * against the union of declared per-sub-task scopes. Optional; when absent the
+   * scope check is skipped (no finding). Injected in tests.
+   */
+  worktreeCommittedFiles?: (worktreePath: string, base: string) => Promise<string[]>;
+
+  /**
    * beta.64 (P0-4): run `npx tsc --noEmit` in the worktree for the scripted
    * verifier fallback. Returns `{ ok, output }` (ok=true means exit 0). Optional;
    * when absent (or the repo has no tsconfig), the tsc step is skipped and the
@@ -698,7 +728,23 @@ export class OrchestratorLoop {
    * than the phase looking wedged. Best-effort + throw-guarded: this is pure
    * observability and must NEVER disturb the worker call.
    */
-  private makeStreamSlowCallback(sessionId: string, seq: number, cycle: number) {
+  private makeStreamSlowCallback(
+    sessionId: string,
+    seq: number,
+    cycle: number,
+    // beta.94 (Feature 2): optional idle-no-work wiring. When supplied, the
+    // callback ALSO tracks the b93 seq-12 idle conjunction and (per config)
+    // emits loop.worker_idle_no_work / triggers a narrow abort. `plan` is the
+    // worktree source for the "did this sub-task touch files" probe; onIdleAbort
+    // (when set) is invoked to abort the sub-task via the WorkerTimeoutError
+    // path. Absent = pure beta.90 observability (unchanged).
+    idle?: { plan: LeadPlan; baseSha: string; onIdleAbort?: () => void },
+  ) {
+    // beta.94 (Feature 2): per-dispatch conjunction state. Consecutive
+    // stream-slow ticks that ALL had tokensOut===0. Reset on any tick with
+    // tokensOut>0 (the worker resumed producing tokens -> not idle).
+    let consecutiveSlowZeroTokens = 0;
+    let idleFired = false; // emit loop.worker_idle_no_work at most once per dispatch
     return (info: { idleMs: number; elapsedMs: number; tokensOut: number; label: string }) => {
       try {
         const idleSec = Math.round(info.idleMs / 1000);
@@ -721,10 +767,106 @@ export class OrchestratorLoop {
           cycle,
           idleMs: info.idleMs,
         });
+
+        // beta.94 (Feature 2): idle-no-work conjunction. Track CONSECUTIVE
+        // stream-slow ticks with tokensOut===0. When (>= threshold consecutive)
+        // AND (cumulative elapsed > floor), verify the sub-task has produced NO
+        // worktree writes and, if so, emit loop.worker_idle_no_work (log-only by
+        // default) and optionally abort via the existing timeout-class path.
+        if (idle) {
+          if (info.tokensOut === 0) consecutiveSlowZeroTokens += 1;
+          else consecutiveSlowZeroTokens = 0;
+          const threshold = this.deps.config.loop.worker_idle_consecutive_slow ?? 3;
+          const elapsedFloorMs = (this.deps.config.loop.worker_idle_min_elapsed_seconds ?? 900) * 1000;
+          if (
+            !idleFired &&
+            consecutiveSlowZeroTokens >= threshold &&
+            info.tokensOut === 0 &&
+            info.elapsedMs > elapsedFloorMs
+          ) {
+            idleFired = true; // guard re-entry while the async no-writes probe runs
+            // The no-writes probe is async; run it fire-and-forget. If writes DID
+            // occur, re-arm (clear idleFired) so a later genuinely-idle window
+            // can still fire.
+            void this.handleWorkerIdleNoWork({
+              sessionId, seq, cycle,
+              consecutiveSlow: consecutiveSlowZeroTokens,
+              elapsedMs: info.elapsedMs,
+              idle,
+              rearm: () => { idleFired = false; },
+            });
+          }
+        }
       } catch {
         /* best-effort: stream-slow surfacing never affects the worker call */
       }
     };
+  }
+
+  /**
+   * beta.94 (Feature 2): the idle-no-work conjunction handler. Confirms the
+   * sub-task produced NO worktree writes (committed OR working-tree changes)
+   * since the sub-task base, then emits `loop.worker_idle_no_work`
+   * (LOG-ONLY by default). When loop.worker_idle_abort_enabled is true it ALSO
+   * calls onIdleAbort() to abort the sub-task via the existing
+   * WorkerTimeoutError / {outcome:'timeout'} terminal path (worktree preserved).
+   * Never throws.
+   */
+  private async handleWorkerIdleNoWork(p: {
+    sessionId: string; seq: number; cycle: number; consecutiveSlow: number; elapsedMs: number;
+    idle: { plan: LeadPlan; baseSha: string; onIdleAbort?: () => void };
+    rearm: () => void;
+  }): Promise<void> {
+    const { sessionId, seq, cycle, consecutiveSlow, elapsedMs, idle, rearm } = p;
+    try {
+      const worktree = idle.plan.worktreePath;
+      // "Did this sub-task touch files" signal: committed files in
+      // <subTaskBase>..HEAD plus any uncommitted working-tree changes. If EITHER
+      // is non-empty the worker is producing work (just slowly) -> not idle;
+      // re-arm and bail (no event, no abort).
+      let touched = false;
+      if (worktree) {
+        if (this.deps.worktreeCommittedFiles && idle.baseSha) {
+          const committed = await this.deps.worktreeCommittedFiles(worktree, idle.baseSha).catch(() => [] as string[]);
+          if (committed.length > 0) touched = true;
+        }
+        if (!touched && this.deps.gitDiffStat && idle.baseSha) {
+          const stat = await this.deps.gitDiffStat(worktree, idle.baseSha).catch(() => "");
+          if (stat && stat.trim().length > 0) touched = true;
+        }
+      }
+      if (touched) {
+        // Work exists -> this is a slow-but-alive worker, not the idle-no-work
+        // failure mode. Do NOT emit the event or abort; allow re-arming.
+        rearm();
+        return;
+      }
+
+      // Conjunction confirmed: consecutive zero-token slow ticks past the
+      // elapsed floor with NO worktree writes. This is the b93 seq-12 signature.
+      const abortEnabled = this.deps.config.loop.worker_idle_abort_enabled === true;
+      this.deps.state.audit(
+        "loop.worker_idle_no_work",
+        { sessionId, seq, cycle, consecutiveSlow, elapsedMs, abortEnabled },
+        sessionId,
+      );
+      this.deps.interactionLog?.log(sessionId, {
+        event: "worker_idle_no_work", phase: "worker", seq, cycle, consecutiveSlow, elapsedMs, abortEnabled,
+      });
+      this.deps.logger.warn("[loop] beta.94: worker idle with no work (zero tokens, no writes) past the idle floor", {
+        sessionId, seq, cycle, consecutiveSlow, elapsedMs, abortEnabled,
+      });
+
+      // LOG-ONLY unless the abort flag is set. When set, abort via the SAME
+      // timeout-class path (WorkerTimeoutError) so the worktree is preserved and
+      // the sub-task terminates as {outcome:'timeout'} -- NO new terminal path.
+      if (abortEnabled && idle.onIdleAbort) {
+        this.deps.state.audit("loop.worker_idle_abort", { sessionId, seq, cycle, consecutiveSlow, elapsedMs }, sessionId);
+        idle.onIdleAbort();
+      }
+    } catch {
+      /* best-effort: idle detection never disturbs the worker call by throwing */
+    }
   }
 
   private checkpoint(sessionId: string, cycle: number, lastSubTask?: string, sdkSessionId?: string): void {
@@ -969,6 +1111,31 @@ export class OrchestratorLoop {
         finishReason: "end_turn", durationMs: Date.now() - leadStart,
         outputChars: JSON.stringify(plan).length, toolCalls: [],
       });
+      // beta.94 (Feature 1a): elide the idle-prone trailing PURE-OBSERVE scope
+      // "final verification" sub-task (the b93 seq-12 stall). It has nothing to
+      // write, so a worker can go idle on it indefinitely while adding zero
+      // signal (every prior mutate sub-task already passed strict per-file
+      // contract verification, and runFinalVerifyChecks runs the repo convention
+      // scripts + the beta.94 deterministic scope check below). Gated on
+      // loop.deterministic_final_scope_check (default true); audited so the
+      // elision is visible in the trail. Best-effort; never fatal.
+      if (this.deps.config.loop.deterministic_final_scope_check !== false) {
+        try {
+          const elided = elideFinalScopeSubTask(plan);
+          if (elided) {
+            this.deps.state.audit(
+              "loop.final_verify_subtask_elided",
+              { sessionId, seq: elided.seq, title: elided.title },
+              sessionId,
+            );
+            this.deps.logger.info("[loop] beta.94: elided trailing pure-observe scope-verification sub-task (idle-prone, zero signal)", {
+              sessionId, seq: elided.seq, title: elided.title,
+            });
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] beta.94 final-scope sub-task elision failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
         .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
@@ -2271,6 +2438,12 @@ export class OrchestratorLoop {
       // verify gate. An operator can still opt back in by setting
       // verify.run_repo_check_scripts:true, but the default path is CI-only.
       const conventionFindings = await this.runFinalVerifyChecks(sessionId, plan, cycle);
+      // beta.94 (Feature 1b): deterministic harness-side scope check -- replaces
+      // the elided LLM "final verification of scope boundaries" sub-task. Folds
+      // any out-of-scope committed file into the review as a `fit`/`medium`
+      // finding (never a hard fail). Same findings-return pattern.
+      const scopeFindings = await this.runFinalScopeCheck(sessionId, plan, cycle);
+      if (scopeFindings.length > 0) conventionFindings.push(...scopeFindings);
 
       this.setStatus(sessionId, "reviewing");
       await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
@@ -2819,6 +2992,13 @@ export class OrchestratorLoop {
     const { sessionId, st, cycle, brief, plan, requester, dispatchHint } = p;
     const retryEnabled = this.deps.config.loop.worker_timeout_retry_enabled !== false;
     const maxAttempts = retryEnabled ? 2 : 1;
+    // beta.94 (Feature 2): capture the sub-task base sha ONCE so the idle-no-work
+    // "did this sub-task touch files" probe can diff <subTaskBase>..HEAD. Absent
+    // probe => the idle detector still tracks counts but the no-writes gate is
+    // conservative (treats an unavailable diff as "no writes").
+    const idleSubTaskBase = this.deps.worktreeHeadSha
+      ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
+      : "";
 
     let lastFirstToken = false;
     let lastSummary = "";
@@ -2860,13 +3040,30 @@ export class OrchestratorLoop {
           sessionId,
         );
       }
+      // beta.94 (Feature 2): a narrow idle-no-work ABORT channel. onStreamSlow
+      // (when the conjunction holds AND loop.worker_idle_abort_enabled is true)
+      // rejects this race with a WorkerTimeoutError, routing the sub-task into
+      // the SAME timeout-class terminal ({outcome:'timeout'}) as a real worker
+      // timeout -- worktree preserved, no new terminal path. When the abort flag
+      // is off the reject is never called, so behaviour is unchanged.
+      let idleAbortReject: ((e: Error) => void) | undefined;
+      const idleAbortPromise = new Promise<never>((_resolve, reject) => { idleAbortReject = reject; });
+      idleAbortPromise.catch(() => { /* swallow if the worker wins the race */ });
       try {
         // beta.90 (Feature 2): surface a worker stream that opens then goes idle
         // (no token delta) as loop.worker_stream_slow + a heartbeat bump.
-        const onStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
+        // beta.94 (Feature 2): also arm the idle-no-work conjunction detector.
+        const onStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle, {
+          plan,
+          baseSha: idleSubTaskBase,
+          onIdleAbort: () => idleAbortReject?.(new WorkerTimeoutError(this.deps.config.loop.worker_timeout_seconds)),
+        });
         result = await withTimeout(
-          // beta.91 (Fix 3): mechanical sub-tasks -> cheaper worker model.
-          this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint, modelOverride: selectWorkerModel(st, this.deps.config.models), onStreamSlow }),
+          Promise.race([
+            // beta.91 (Fix 3): mechanical sub-tasks -> cheaper worker model.
+            this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint, modelOverride: selectWorkerModel(st, this.deps.config.models), onStreamSlow }),
+            idleAbortPromise,
+          ]),
           this.deps.config.loop.worker_timeout_seconds,
         );
       } catch (err) {
@@ -3326,6 +3523,87 @@ export class OrchestratorLoop {
       }
     }
     return findings;
+  }
+
+  /**
+   * beta.94 (Feature 1b): DETERMINISTIC FINAL SCOPE CHECK. Replaces the
+   * idle-prone LLM "final verification of scope boundaries" sub-task (elided in
+   * Feature 1a) with a harness-side git check: diff the files COMMITTED in
+   * `<plan_base_sha>..HEAD` against the UNION of every sub-task's declared
+   * per-file scope (collectDeclaredScopeFiles). A committed file OUTSIDE that
+   * union is out-of-scope. This does NOT hard-fail -- it returns a ReviewFinding
+   * (dimension `fit`, severity `medium`) so it folds into the adversary review,
+   * mirroring runFinalVerifyChecks. Gated by loop.deterministic_final_scope_check
+   * (default true). Best-effort; never throws.
+   *
+   * Emits `loop.final_scope_check_ran` per run and
+   * `loop.final_scope_check_out_of_scope` when out-of-scope files are found.
+   */
+  private async runFinalScopeCheck(sessionId: string, plan: LeadPlan, cycle: number): Promise<ReviewFinding[]> {
+    if (this.deps.config.loop.deterministic_final_scope_check === false) return [];
+    const worktree = plan.worktreePath;
+    if (!worktree || !this.deps.worktreeCommittedFiles) return [];
+    // Base = the persisted branch fork-point (same base the adversary diffs
+    // against). Without it we cannot scope committed files to THIS branch's own
+    // commits, so we conservatively skip (no finding) rather than diff against a
+    // wrong base and hallucinate out-of-scope files.
+    let base: string | undefined;
+    try {
+      const r = this.deps.state.db
+        .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+        .get(sessionId) as { plan_base_sha: string | null } | undefined;
+      base = r?.plan_base_sha ?? undefined;
+    } catch {
+      base = undefined;
+    }
+    if (!base) return [];
+
+    let committed: string[];
+    try {
+      committed = await this.deps.worktreeCommittedFiles(worktree, base);
+    } catch (err) {
+      this.deps.logger.warn("[loop] beta.94 final-scope check: committed-files probe failed (non-fatal)", { sessionId, err: String(err) });
+      return [];
+    }
+    if (!Array.isArray(committed) || committed.length === 0) return [];
+
+    const declared = collectDeclaredScopeFiles(plan);
+    // A committed file is IN-SCOPE if it matches ANY declared contract path via
+    // the shared tolerant path matcher (route-group / suffix / basename-dir) --
+    // the same normalisation every per-file verifier uses, so we don't
+    // false-flag a route-group-normalised path the worker legitimately wrote.
+    const outOfScope = committed.filter((f) => !declared.some((d) => pathMatches(f, d)));
+
+    this.deps.state.audit(
+      "loop.final_scope_check_ran",
+      { sessionId, cycle, committedCount: committed.length, declaredCount: declared.length, outOfScopeCount: outOfScope.length },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, { event: "final_scope_check_ran", phase: "review", cycle, committedCount: committed.length, outOfScopeCount: outOfScope.length });
+
+    if (outOfScope.length === 0) return [];
+
+    this.deps.state.audit(
+      "loop.final_scope_check_out_of_scope",
+      { sessionId, cycle, outOfScope, declared },
+      sessionId,
+    );
+    this.deps.logger.warn("[loop] beta.94 final-scope check: committed file(s) outside the declared sub-task scope union", { sessionId, cycle, outOfScope });
+    return [
+      {
+        dimension: "fit",
+        severity: "medium",
+        title: `Out-of-scope file write(s): ${outOfScope.length} committed file(s) fall outside the declared sub-task scope`,
+        detail:
+          `The deterministic final-scope check compared the files committed in this branch (\`git diff ${base.slice(0, 12)}..HEAD\`) ` +
+          `against the UNION of every sub-task's declared file scope (verify paths + filesLikelyTouched). ` +
+          `These committed file(s) were NOT declared by any sub-task and may be unintended scope creep:\n` +
+          outOfScope.map((f) => `  - ${f}`).join("\n") +
+          `\n\nDeclared scope union:\n` +
+          (declared.length ? declared.map((f) => `  - ${f}`).join("\n") : "  (none declared)") +
+          `\n\nEither confirm these edits are intended (and the plan under-declared its scope) or revert the out-of-scope changes.`,
+      },
+    ];
   }
 
   /**

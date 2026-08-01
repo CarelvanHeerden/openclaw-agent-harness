@@ -650,6 +650,9 @@ export function bootstrapHarnessSync(api) {
         // clean-diff gate and the scripted verifier fallback of a timed-out LLM
         // VERIFY sub-task. A "run tsc/diff/check-scripts" verify step needs no model.
         gitDiffStat: async (worktreePath, base) => git.diffStat(worktreePath, base).catch(() => ""),
+        // beta.94 (Feature 1b): committed files in <base>..HEAD for the deterministic
+        // final-scope check (out-of-scope commit -> fit/medium review finding).
+        worktreeCommittedFiles: async (worktreePath, base) => git.listCommittedFiles(worktreePath, base).catch(() => []),
         runScriptedTsc: async (worktreePath, timeoutMs) => {
             const res = spawnSync("npx", ["tsc", "--noEmit"], { cwd: worktreePath, timeout: timeoutMs, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
             const output = `${res.stdout ?? ""}${res.stderr ?? ""}`;
