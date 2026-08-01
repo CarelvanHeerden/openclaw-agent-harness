@@ -1126,13 +1126,20 @@ export function bootstrapHarnessSync(api) {
             const thread = bind?.slack_thread ?? "";
             if (!hasRealSlackBinding(channel, thread))
                 return; // agent-orchestrated run -> poll model
+            // beta.96: a TERMINAL transition must ALWAYS speak. Pre-b96 a plan-phase
+            // death had an empty ledger -> empty headline -> `if (!headline) return`
+            // dropped the only failure signal (session 1b267b86, ~2h no feedback).
+            const isTerminal = status === "done" || status === "failed" || status === "aborted";
             let headline = "";
             try {
                 headline = buildProgressSnapshot(state.db, sessionId).headline;
             }
             catch {
-                return;
+                if (!isTerminal)
+                    return; // snapshot failure only silences non-terminals
             }
+            if (!headline && isTerminal)
+                headline = terminalFallbackHeadline(state.db, sessionId, status);
             if (!headline)
                 return;
             // beta.86: skip an IDENTICAL consecutive headline for this session (nit:
@@ -2204,6 +2211,32 @@ function registerOkfAutoForwardHooks(api, runtime) {
     return disposers;
 }
 /** beta.36: extract a PR/MR number from a GitHub/GitLab PR URL. */
+/**
+ * beta.96: minimal reason-bearing terminal headline for the native Slack post
+ * when `buildProgressSnapshot` yields an empty headline (a plan-phase death has
+ * an empty sub-task ledger). Reads the canonical `loop.failed`/`loop.plan_failed`
+ * {reason|err}. Guarantees a terminal transition ALWAYS announces itself (the
+ * 1b267b86 zero-feedback class). Best-effort; never throws.
+ */
+function terminalFallbackHeadline(db, sessionId, status) {
+    let reason = "";
+    try {
+        const fr = db
+            .prepare(`SELECT payload FROM audit_log
+           WHERE session_id = ? AND event IN ('loop.failed','loop.plan_failed')
+           ORDER BY created_at DESC, id DESC LIMIT 1`)
+            .get(sessionId);
+        if (fr?.payload) {
+            const p = JSON.parse(fr.payload);
+            reason = (p.reason ?? p.err ?? "").toString().slice(0, 300);
+        }
+    }
+    catch {
+        /* best-effort: a missing/garbled reason must never re-silence the terminal */
+    }
+    const label = status === "done" ? "completed" : status;
+    return reason ? `Run ${label} — ${reason}.` : `Run ${label}.`;
+}
 function parsePrNumber(prUrl) {
     const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
     return m ? Number(m[1]) : undefined;
