@@ -631,6 +631,56 @@ export interface LoopConfig {
    * d01a7484 re-plan) does not hard-crash the plan. Default true.
    */
   lead_json_retry_enabled?: boolean;
+  /**
+   * beta.94 (Feature 1): DETERMINISTIC FINAL SCOPE CHECK. Two behaviours gated
+   * together:
+   *   (a) In the lead-plan normalisation, DROP a trailing PURE-OBSERVE sub-task
+   *       whose sole purpose is scope/boundary "final verification" (taskMode
+   *       observe, no mutate verify kinds, description matches the scope-verify
+   *       heuristic). Such a sub-task has nothing to write, so a worker can go
+   *       IDLE on it indefinitely (the b93 seq-12 stall) while adding ZERO
+   *       signal -- every prior mutate sub-task already passed strict per-file
+   *       contract verification, and runFinalVerifyChecks already runs the repo
+   *       convention scripts deterministically. Elision is audited as
+   *       `loop.final_verify_subtask_elided`.
+   *   (b) After the last mutate sub-task completes, run a HARNESS-SIDE
+   *       deterministic scope check: the files COMMITTED in `<base>..HEAD` are
+   *       compared against the UNION of every sub-task's declared per-file
+   *       verify/contract scope. A committed file OUTSIDE that union produces a
+   *       ReviewFinding (dimension `fit`, severity `medium`) that folds into the
+   *       adversary review -- it is NOT a hard fail. Audited as
+   *       `loop.final_scope_check_ran` / `loop.final_scope_check_out_of_scope`.
+   * Default true.
+   */
+  deterministic_final_scope_check?: boolean;
+  /**
+   * beta.94 (Feature 2): NARROW IDLE-NO-WORK ABORT. beta.90 added
+   * `loop.worker_stream_slow` as pure observability. beta.94 adds a NEW
+   * `loop.worker_idle_no_work` audit event that fires when the conjunction of
+   * (>= worker_idle_consecutive_slow consecutive stream-slow ticks) AND
+   * (tokensOut===0 on ALL of them) AND (cumulative elapsed >
+   * worker_idle_min_elapsed_seconds) AND (no worktree writes during the
+   * sub-task) holds -- the b93 seq-12 signature (worker went idle, tokensOut=0,
+   * ~15 min, nothing to write). That event is LOG-ONLY by default.
+   *
+   * When this flag is TRUE, the same conjunction ALSO aborts the sub-task
+   * cleanly via the existing WorkerTimeoutError / {outcome:'timeout'} terminal
+   * path (so the worktree is preserved -- NO new terminal path is invented).
+   * Default FALSE (beta.90 observability-only behaviour stays fully intact).
+   */
+  worker_idle_abort_enabled?: boolean;
+  /**
+   * beta.94 (Feature 2): number of CONSECUTIVE `loop.worker_stream_slow` ticks
+   * (all with tokensOut===0) required before `loop.worker_idle_no_work` may
+   * fire. Default 3. Clamped [2, 20].
+   */
+  worker_idle_consecutive_slow?: number;
+  /**
+   * beta.94 (Feature 2): minimum cumulative elapsed (seconds) inside the worker
+   * stream before `loop.worker_idle_no_work` may fire. Default 900 (15 min).
+   * Clamped [60, 3600].
+   */
+  worker_idle_min_elapsed_seconds?: number;
 }
 
 export interface VercelConfig {
@@ -890,6 +940,16 @@ const DEFAULTS: HarnessConfig = {
     recovery_resume_window_seconds: 60,
     recovery_resume_at_subtask: true,
     lead_json_retry_enabled: true,
+    // beta.94 (Feature 1): elide the idle-prone trailing pure-observe scope
+    // "final verification" sub-task + run a deterministic harness-side scope
+    // check that folds out-of-scope commits into the review. Default ON.
+    deterministic_final_scope_check: true,
+    // beta.94 (Feature 2): the loop.worker_idle_no_work audit event ALWAYS
+    // fires on the conjunction; the ABORT is opt-in (default OFF, so beta.90's
+    // observability-only behaviour is preserved).
+    worker_idle_abort_enabled: false,
+    worker_idle_consecutive_slow: 3,
+    worker_idle_min_elapsed_seconds: 900,
   },
   ci: {
     wait_timeout_seconds: 900,
@@ -1120,6 +1180,17 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   if (typeof merged.loop.worker_stream_idle_warn_seconds === "number") {
     if (merged.loop.worker_stream_idle_warn_seconds < 30) merged.loop.worker_stream_idle_warn_seconds = 30;
     if (merged.loop.worker_stream_idle_warn_seconds > 600) merged.loop.worker_stream_idle_warn_seconds = 600;
+  }
+  // beta.94 (Feature 2): clamp the idle-no-work conjunction thresholds. The
+  // consecutive-slow floor is 2 (a single tick is noise); the elapsed floor is
+  // 60s so a genuinely-slow-but-alive worker is never mistaken for idle. Both
+  // are generous ceilings because this is a narrow LAST-RESORT abort, not a
+  // primary timeout (the worker_timeout / stall watchdog own the normal path).
+  if (typeof merged.loop.worker_idle_consecutive_slow === "number") {
+    merged.loop.worker_idle_consecutive_slow = Math.max(2, Math.min(20, Math.round(merged.loop.worker_idle_consecutive_slow)));
+  }
+  if (typeof merged.loop.worker_idle_min_elapsed_seconds === "number") {
+    merged.loop.worker_idle_min_elapsed_seconds = Math.max(60, Math.min(3600, merged.loop.worker_idle_min_elapsed_seconds));
   }
   // beta.81 (Track B / B2): clamp the CI-wait window + poll cadence. The wait
   // is a SOFT checkpoint (surfaces + offers resume on timeout, never a hard

@@ -37,6 +37,15 @@ export declare function parseDiffStatPaths(diffStat: string): string[];
  * check. Pure/deterministic.
  */
 export declare function collectExpectedFiles(plan: LeadPlan): string[];
+/**
+ * beta.94 (Feature 1b): the UNION of every sub-task's DECLARED file scope --
+ * the concrete file paths carried on each sub-task's verify probes
+ * (file_written / file_committed / file_pushed / file_in_pr) PLUS its
+ * `filesLikelyTouched`. This is the authoritative "in-scope" set the
+ * deterministic final-scope check compares committed files against. A committed
+ * file OUTSIDE this union is out-of-scope. Pure/deterministic.
+ */
+export declare function collectDeclaredScopeFiles(plan: LeadPlan): string[];
 import { type VerifyProbes } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 export type LoopStatus = "crystallising" | "planning" | "executing" | "reviewing" | "done" | "failed" | "aborted" | "awaiting_clarification";
@@ -300,6 +309,14 @@ export interface OrchestratorDeps {
      */
     gitDiffStat?: (worktreePath: string, base: string) => Promise<string>;
     /**
+     * beta.94 (Feature 1b): files COMMITTED in `<base>..HEAD` in the worktree
+     * (`git log <base>..HEAD --name-only`). Wraps GitAdapter.listCommittedFiles.
+     * Used by the deterministic final-scope check to compare committed files
+     * against the union of declared per-sub-task scopes. Optional; when absent the
+     * scope check is skipped (no finding). Injected in tests.
+     */
+    worktreeCommittedFiles?: (worktreePath: string, base: string) => Promise<string[]>;
+    /**
      * beta.64 (P0-4): run `npx tsc --noEmit` in the worktree for the scripted
      * verifier fallback. Returns `{ ok, output }` (ok=true means exit 0). Optional;
      * when absent (or the repo has no tsconfig), the tsc step is skipped and the
@@ -414,6 +431,16 @@ export declare class OrchestratorLoop {
      * observability and must NEVER disturb the worker call.
      */
     private makeStreamSlowCallback;
+    /**
+     * beta.94 (Feature 2): the idle-no-work conjunction handler. Confirms the
+     * sub-task produced NO worktree writes (committed OR working-tree changes)
+     * since the sub-task base, then emits `loop.worker_idle_no_work`
+     * (LOG-ONLY by default). When loop.worker_idle_abort_enabled is true it ALSO
+     * calls onIdleAbort() to abort the sub-task via the existing
+     * WorkerTimeoutError / {outcome:'timeout'} terminal path (worktree preserved).
+     * Never throws.
+     */
+    private handleWorkerIdleNoWork;
     private checkpoint;
     private addCost;
     private saveReview;
@@ -616,6 +643,21 @@ export declare class OrchestratorLoop {
      * per non-zero exit.
      */
     private runFinalVerifyChecks;
+    /**
+     * beta.94 (Feature 1b): DETERMINISTIC FINAL SCOPE CHECK. Replaces the
+     * idle-prone LLM "final verification of scope boundaries" sub-task (elided in
+     * Feature 1a) with a harness-side git check: diff the files COMMITTED in
+     * `<plan_base_sha>..HEAD` against the UNION of every sub-task's declared
+     * per-file scope (collectDeclaredScopeFiles). A committed file OUTSIDE that
+     * union is out-of-scope. This does NOT hard-fail -- it returns a ReviewFinding
+     * (dimension `fit`, severity `medium`) so it folds into the adversary review,
+     * mirroring runFinalVerifyChecks. Gated by loop.deterministic_final_scope_check
+     * (default true). Best-effort; never throws.
+     *
+     * Emits `loop.final_scope_check_ran` per run and
+     * `loop.final_scope_check_out_of_scope` when out-of-scope files are found.
+     */
+    private runFinalScopeCheck;
     /**
      * beta.78 (Feature 2): the configured per-user daily hard cap, or 0 when
      * unset/misconfigured. 0 => no daily gate (back-compat: pre-beta.78 configs

@@ -263,5 +263,34 @@ export declare function hasSubstantiveWorkerContext(wc?: WorkerContext): boolean
 export declare function subTasksMissingWorkerContext(plan: {
     subTasks: LeadPlanSubTask[];
 }): number[];
+/**
+ * beta.94 (Feature 1): is `st` a TRAILING PURE-OBSERVE scope-verification
+ * sub-task that can be safely elided?
+ *
+ *   - taskMode === "observe" (explicitly read-only), AND
+ *   - it declares NO mutate verify kind (nothing to write/commit/push), AND
+ *   - its title/intent/successCriteria match SCOPE_VERIFY_DESC_RE.
+ *
+ * Such a sub-task has nothing to produce, so a worker can go IDLE on it
+ * indefinitely while adding zero signal: every prior mutate sub-task already
+ * passed strict per-file contract verification, and runFinalVerifyChecks runs
+ * the repo convention scripts deterministically. Pure/deterministic.
+ */
+export declare function isElidableFinalScopeSubTask(st: LeadPlanSubTask): boolean;
+/**
+ * beta.94 (Feature 1a): DROP a trailing pure-observe scope-verification
+ * sub-task from the worker plan (the b93 seq-12 idle-prone "final verification
+ * of scope boundaries" step). Only the LAST sub-task is a candidate, and only
+ * if NOTHING depends on it. Mutates `plan.subTasks` in place and returns the
+ * elided sub-task (so the caller can audit `loop.final_verify_subtask_elided`),
+ * or `undefined` when nothing was elided. Pure aside from the in-place splice;
+ * never throws.
+ */
+export declare function elideFinalScopeSubTask(plan: {
+    subTasks: LeadPlanSubTask[];
+}): {
+    seq: number;
+    title: string;
+} | undefined;
 export declare function runLeadPlanner(brief: CrystallisedBrief, deps: LeadDeps): Promise<LeadPlan>;
 //# sourceMappingURL=fable5-lead.d.ts.map

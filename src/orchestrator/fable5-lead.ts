@@ -291,6 +291,74 @@ export function subTasksMissingWorkerContext(
     .map((st) => st.seq);
 }
 
+/**
+ * beta.94 (Feature 1): mutate-scope verify kinds. A sub-task whose verify
+ * carries ANY of these is a real mutation step (writes/commits/pushes), not a
+ * pure observation. Used to distinguish a genuinely-empty pure-observe
+ * "final scope verification" sub-task from a mutate sub-task.
+ */
+const MUTATE_VERIFY_KINDS = new Set<SubTaskVerify["kind"]>([
+  "file_written",
+  "file_committed",
+  "commit_made",
+  "branch_pushed",
+  "file_pushed",
+  "pr_opened",
+]);
+
+/**
+ * beta.94 (Feature 1): heuristic for a scope/boundary "final verification"
+ * sub-task -- the b93 seq-12 idle-stall signature. Matches phrasings like
+ * "final verification of scope boundaries", "verify nothing outside scope was
+ * touched", "confirm scope boundaries".
+ */
+const SCOPE_VERIFY_DESC_RE = /scope|boundar|final.{0,15}verif|nothing.{0,10}(outside|touched)/i;
+
+/**
+ * beta.94 (Feature 1): is `st` a TRAILING PURE-OBSERVE scope-verification
+ * sub-task that can be safely elided?
+ *
+ *   - taskMode === "observe" (explicitly read-only), AND
+ *   - it declares NO mutate verify kind (nothing to write/commit/push), AND
+ *   - its title/intent/successCriteria match SCOPE_VERIFY_DESC_RE.
+ *
+ * Such a sub-task has nothing to produce, so a worker can go IDLE on it
+ * indefinitely while adding zero signal: every prior mutate sub-task already
+ * passed strict per-file contract verification, and runFinalVerifyChecks runs
+ * the repo convention scripts deterministically. Pure/deterministic.
+ */
+export function isElidableFinalScopeSubTask(st: LeadPlanSubTask): boolean {
+  if (st.taskMode !== "observe") return false;
+  const hasMutateVerify =
+    Array.isArray(st.verify) && st.verify.some((v) => MUTATE_VERIFY_KINDS.has(v.kind));
+  if (hasMutateVerify) return false;
+  const text = `${st.title ?? ""} ${st.intent ?? ""} ${(st.successCriteria ?? []).join(" ")}`;
+  return SCOPE_VERIFY_DESC_RE.test(text);
+}
+
+/**
+ * beta.94 (Feature 1a): DROP a trailing pure-observe scope-verification
+ * sub-task from the worker plan (the b93 seq-12 idle-prone "final verification
+ * of scope boundaries" step). Only the LAST sub-task is a candidate, and only
+ * if NOTHING depends on it. Mutates `plan.subTasks` in place and returns the
+ * elided sub-task (so the caller can audit `loop.final_verify_subtask_elided`),
+ * or `undefined` when nothing was elided. Pure aside from the in-place splice;
+ * never throws.
+ */
+export function elideFinalScopeSubTask(
+  plan: { subTasks: LeadPlanSubTask[] },
+): { seq: number; title: string } | undefined {
+  const subs = plan.subTasks;
+  if (!Array.isArray(subs) || subs.length <= 1) return undefined; // never elide the only sub-task
+  const last = subs[subs.length - 1]!;
+  if (!isElidableFinalScopeSubTask(last)) return undefined;
+  // Do not drop if any other sub-task depends on it (topo integrity).
+  const dependedOn = subs.some((s) => (s.dependsOn ?? []).includes(last.seq));
+  if (dependedOn) return undefined;
+  plan.subTasks = subs.slice(0, -1);
+  return { seq: last.seq, title: last.title };
+}
+
 export async function runLeadPlanner(
   brief: CrystallisedBrief,
   deps: LeadDeps,

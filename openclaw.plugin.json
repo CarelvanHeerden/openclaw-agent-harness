@@ -445,6 +445,30 @@
             "type": "boolean",
             "default": true,
             "description": "beta.81 (Track C): give the LEAD re-plan SDK call the same retry-once-on-extractJson-failure guard the classifier has, so a transient prose-drift (lead returns prose instead of the JSON plan contract) does not hard-crash the plan."
+          },
+          "deterministic_final_scope_check": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.94 (Feature 1): DETERMINISTIC FINAL SCOPE CHECK. (a) Elide a trailing PURE-OBSERVE scope/boundary 'final verification' sub-task from the worker plan (taskMode observe, no mutate verify, description matches scope|boundar|final-verif|nothing-outside) -- it has nothing to write so a worker can go idle on it indefinitely (the b93 seq-12 stall) while adding zero signal. Audited as loop.final_verify_subtask_elided. (b) After the last mutate sub-task, compare the files committed in <base>..HEAD against the UNION of every sub-task's declared file scope; a committed file outside the union folds into the adversary review as a fit/medium ReviewFinding (never a hard fail). Audited as loop.final_scope_check_ran / loop.final_scope_check_out_of_scope. Default true."
+          },
+          "worker_idle_abort_enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "beta.94 (Feature 2): NARROW IDLE-NO-WORK ABORT. loop.worker_idle_no_work fires (LOG-ONLY) when the conjunction holds: >= worker_idle_consecutive_slow consecutive worker_stream_slow ticks, all with tokensOut===0, cumulative elapsed > worker_idle_min_elapsed_seconds, AND no worktree writes during the sub-task (the b93 seq-12 signature). When this flag is TRUE the same conjunction ALSO aborts the sub-task cleanly via the existing WorkerTimeoutError / {outcome:'timeout'} terminal path (worktree preserved -- no new terminal path). Default FALSE (beta.90 observability-only behaviour preserved)."
+          },
+          "worker_idle_consecutive_slow": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 20,
+            "default": 3,
+            "description": "beta.94 (Feature 2): number of CONSECUTIVE loop.worker_stream_slow ticks (all with tokensOut===0) required before loop.worker_idle_no_work may fire. Default 3; clamped [2,20]."
+          },
+          "worker_idle_min_elapsed_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600,
+            "default": 900,
+            "description": "beta.94 (Feature 2): minimum cumulative elapsed (seconds) inside the worker stream before loop.worker_idle_no_work may fire. Default 900 (15 min); clamped [60,3600]."
           }
         }
       },

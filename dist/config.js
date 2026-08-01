@@ -90,6 +90,16 @@ const DEFAULTS = {
         recovery_resume_window_seconds: 60,
         recovery_resume_at_subtask: true,
         lead_json_retry_enabled: true,
+        // beta.94 (Feature 1): elide the idle-prone trailing pure-observe scope
+        // "final verification" sub-task + run a deterministic harness-side scope
+        // check that folds out-of-scope commits into the review. Default ON.
+        deterministic_final_scope_check: true,
+        // beta.94 (Feature 2): the loop.worker_idle_no_work audit event ALWAYS
+        // fires on the conjunction; the ABORT is opt-in (default OFF, so beta.90's
+        // observability-only behaviour is preserved).
+        worker_idle_abort_enabled: false,
+        worker_idle_consecutive_slow: 3,
+        worker_idle_min_elapsed_seconds: 900,
     },
     ci: {
         wait_timeout_seconds: 900,
@@ -331,6 +341,17 @@ export function parseHarnessConfig(input) {
             merged.loop.worker_stream_idle_warn_seconds = 30;
         if (merged.loop.worker_stream_idle_warn_seconds > 600)
             merged.loop.worker_stream_idle_warn_seconds = 600;
+    }
+    // beta.94 (Feature 2): clamp the idle-no-work conjunction thresholds. The
+    // consecutive-slow floor is 2 (a single tick is noise); the elapsed floor is
+    // 60s so a genuinely-slow-but-alive worker is never mistaken for idle. Both
+    // are generous ceilings because this is a narrow LAST-RESORT abort, not a
+    // primary timeout (the worker_timeout / stall watchdog own the normal path).
+    if (typeof merged.loop.worker_idle_consecutive_slow === "number") {
+        merged.loop.worker_idle_consecutive_slow = Math.max(2, Math.min(20, Math.round(merged.loop.worker_idle_consecutive_slow)));
+    }
+    if (typeof merged.loop.worker_idle_min_elapsed_seconds === "number") {
+        merged.loop.worker_idle_min_elapsed_seconds = Math.max(60, Math.min(3600, merged.loop.worker_idle_min_elapsed_seconds));
     }
     // beta.81 (Track B / B2): clamp the CI-wait window + poll cadence. The wait
     // is a SOFT checkpoint (surfaces + offers resume on timeout, never a hard
