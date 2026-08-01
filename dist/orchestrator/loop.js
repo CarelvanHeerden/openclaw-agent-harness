@@ -1415,7 +1415,13 @@ export class OrchestratorLoop {
                     const branchHint = contract.reduce((acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc), plan.branch);
                     let verification;
                     try {
-                        verification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs, baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify }, probes);
+                        verification = await verifySubTaskOutput(contract, {
+                            defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                            baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                            // beta.95: revise-cycle TARGETED-file plan-base window.
+                            cycle,
+                            reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                        }, probes);
                     }
                     catch (err) {
                         // A probe error is a verification FAILURE, not a pass. Never let
@@ -1509,7 +1515,15 @@ export class OrchestratorLoop {
                                     const retryProbes = this.deps.buildVerifyProbes({
                                         plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
                                     });
-                                    retryVerification = await verifySubTaskOutput(contract, { defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs, baseSha: subTaskBaseSha }, retryProbes);
+                                    retryVerification = await verifySubTaskOutput(contract, {
+                                        defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                                        // beta.95: the retry path dropped branchBaseSha -- a
+                                        // reviseRelaxed/targeted file on a revise-cycle retry lost
+                                        // its plan-base window. Thread both through here too.
+                                        baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                                        cycle,
+                                        reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                                    }, retryProbes);
                                 }
                                 catch (err) {
                                     retryVerification = { ok: false, results: [], summary: `probe error: ${String(err)}` };

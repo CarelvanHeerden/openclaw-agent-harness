@@ -43,6 +43,18 @@ import { tmpdir } from "node:os";
  * healthy.
  */
 export const DISK_EXHAUSTION_RE = /\bENOSPC\b|no space left on device|disk quota exceeded|cannot allocate memory|\bENOMEM\b|\bEIO\b/i;
+/**
+ * beta.95: commit-message SCRATCH files a worker's git shell leaves in the diff
+ * (`.commit-msg-tmp.txt`, `.git-commit-msg.txt`, `.gitmessage`, editor `COMMIT_EDITMSG`
+ * copies, etc.). These are NEVER a declared contract path; on 98cea58f cyc2 seq2
+ * the strict `file_committed` match saw ONLY these instead of `prisma/schema.prisma`
+ * and false-failed. Stripped from committed/changed file listings so they can
+ * neither spoof a match nor mask the real contract path.
+ */
+const COMMIT_MSG_NOISE_RE = /(^|\/)\.?(git-?)?commit-?(msg|message)[^/]*$|(^|\/)COMMIT_EDITMSG$|(^|\/)\.gitmessage$/i;
+export function isCommitMsgNoise(path) {
+    return COMMIT_MSG_NOISE_RE.test(path ?? "");
+}
 export function looksLikeDiskExhaustion(text) {
     return DISK_EXHAUSTION_RE.test(text ?? "");
 }
@@ -596,7 +608,7 @@ esac
     }
     async listChangedFiles(worktreePath, base) {
         const out = await this.run(["-C", worktreePath, "diff", "--name-only", base, "HEAD"]);
-        return out.split("\n").map((l) => l.trim()).filter(Boolean);
+        return out.split("\n").map((l) => l.trim()).filter(Boolean).filter((f) => !isCommitMsgNoise(f));
     }
     /**
      * beta.53 (P2): the working-tree files a worker actually touched, INCLUDING
@@ -633,7 +645,12 @@ esac
         const out = await this.run([
             "-C", worktreePath, "log", `${base}..HEAD`, "--name-only", "--pretty=format:",
         ]).catch(() => "");
-        return Array.from(new Set(out.split("\n").map((l) => l.trim()).filter(Boolean)));
+        // beta.95: strip commit-message scratch files (`.commit-msg-tmp.txt`,
+        // `.git-commit-msg.txt`, etc.) that a worker's git shell leaves in the
+        // diff. On 98cea58f cyc2 seq2 the strict `file_committed` match saw ONLY
+        // these two temp files instead of `prisma/schema.prisma` and false-failed.
+        // They are verifier NOISE, never a declared contract path.
+        return Array.from(new Set(out.split("\n").map((l) => l.trim()).filter(Boolean).filter((f) => !isCommitMsgNoise(f))));
     }
     /**
      * beta.10: query the remote for a branch's tip SHA via `git ls-remote`.

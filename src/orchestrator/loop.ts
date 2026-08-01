@@ -1858,7 +1858,13 @@ export class OrchestratorLoop {
           try {
             verification = await verifySubTaskOutput(
               contract,
-              { defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs, baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify },
+              {
+                defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                // beta.95: revise-cycle TARGETED-file plan-base window.
+                cycle,
+                reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+              },
               probes,
             );
           } catch (err) {
@@ -1969,7 +1975,15 @@ export class OrchestratorLoop {
                   });
                   retryVerification = await verifySubTaskOutput(
                     contract,
-                    { defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs, baseSha: subTaskBaseSha },
+                    {
+                      defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                      // beta.95: the retry path dropped branchBaseSha -- a
+                      // reviseRelaxed/targeted file on a revise-cycle retry lost
+                      // its plan-base window. Thread both through here too.
+                      baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                      cycle,
+                      reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                    },
                     retryProbes,
                   );
                 } catch (err) {

@@ -199,5 +199,18 @@ export declare function verifySubTaskOutput(verify: SubTaskVerify[] | undefined,
     subTaskStartMs: number;
     baseSha: string;
     branchBaseSha?: string;
+    /**
+     * beta.95: current loop cycle (1 = first pass, >1 = revise cycle). Used to
+     * widen the TARGETED-file verify window on revise cycles (see below).
+     */
+    cycle?: number;
+    /**
+     * beta.95 kill-switch (config.loop.revise_targeted_planbase_window). When
+     * true (default) a TARGETED contract file on cycle > 1 is verified against
+     * the branch fork-point window (`branchBaseSha`/plan_base_sha) instead of
+     * the worker-session-start `baseSha` + mtime heuristic -- both of which
+     * false-fail a file that a prior cycle already touched (98cea58f cyc2 seq2).
+     */
+    reviseTargetedPlanbaseWindow?: boolean;
 }, probes: VerifyProbes): Promise<VerifyOutcome>;
 //# sourceMappingURL=verify.d.ts.map

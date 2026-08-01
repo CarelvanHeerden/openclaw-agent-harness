@@ -71,6 +71,7 @@ const DEFAULTS = {
         revise_spec_timeout_seconds: 180,
         skip_observe_reprobe_on_revise: true,
         revise_scoping_enabled: true,
+        revise_targeted_planbase_window: true,
         parallel_independent_subtasks: false,
         deterministic_revise_mapping: true,
         worker_confab_detect: true,

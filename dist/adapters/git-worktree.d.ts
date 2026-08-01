@@ -38,6 +38,7 @@
  * healthy.
  */
 export declare const DISK_EXHAUSTION_RE: RegExp;
+export declare function isCommitMsgNoise(path: string): boolean;
 export declare function looksLikeDiskExhaustion(text: string): boolean;
 export interface GitAdapterOptions {
     worktreesRoot: string;
