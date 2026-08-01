@@ -51,6 +51,15 @@ export function evaluateVerification(results) {
 export async function verifySubTaskOutput(verify, ctx, probes) {
     if (!verify || verify.length === 0)
         return evaluateVerification([]);
+    // beta.95: on a revise cycle (cycle > 1), a TARGETED file (reviseRelaxed NOT
+    // set -- the review DID target it, so the worker was expected to re-touch it)
+    // is legitimately older-than-this-sub-task (cycle 1 wrote it first) and its
+    // cycle-1 commit sits OUTSIDE worker-session-start..HEAD. Verifying it against
+    // the BRANCH fork-point window (plan_base_sha) + committed-in-branch presence
+    // is the property that is actually true, and cures the mtime + strict-match
+    // false-positives without weakening cycle-1 (fresh-write) verification.
+    const reviseCycle = (ctx.cycle ?? 1) > 1 && ctx.reviseTargetedPlanbaseWindow !== false;
+    const planBaseWindow = ctx.branchBaseSha ?? ctx.baseSha;
     const results = [];
     for (const v of verify) {
         switch (v.kind) {
@@ -87,6 +96,18 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     results.push({ kind: v.kind, passed: r.present, detail: `revise-relaxed (not targeted this cycle): ${r.detail}`, path: v.path });
                     break;
                 }
+                // beta.95: TARGETED file on a revise cycle. The strict fresh-write path
+                // below (mtime >= subTaskStartMs) false-fails a file cycle-1 already
+                // wrote (its mtime predates cycle-2's sub-task start). Verify instead
+                // that it is present + committed in the BRANCH window (plan_base_sha..
+                // HEAD) -- true for both cycle-1's original write and any cycle-2 edit.
+                // Still fails a genuinely-missing/empty file (fileCommittedInBranch does
+                // a disk-presence check). cycle 1 keeps the strict fresh-write path.
+                if (reviseCycle && probes.fileCommittedInBranch) {
+                    const r = await probes.fileCommittedInBranch(v.path, planBaseWindow);
+                    results.push({ kind: v.kind, passed: r.present, detail: `revise-targeted (plan-base window): ${r.detail}`, path: v.path });
+                    break;
+                }
                 // beta.9 FIX: use fs.stat (includes untracked files) when probe available.
                 // Falls back to git-diff-based probe for backward compat with beta.8 test doubles.
                 if (probes.fileExistsOnDisk) {
@@ -115,6 +136,19 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                 if (v.reviseRelaxed && probes.fileCommittedInBranch) {
                     const r = await probes.fileCommittedInBranch(v.path, ctx.branchBaseSha ?? ctx.baseSha);
                     results.push({ kind: v.kind, passed: r.present, detail: `revise-relaxed (not targeted this cycle): ${r.detail}`, path: v.path });
+                    break;
+                }
+                // beta.95: TARGETED file on a revise cycle. `fileCommittedSince(baseSha)`
+                // uses the worker-session-start SHA, so cycle-1's commit of this file
+                // sits OUTSIDE the range and the strict structural match sees only
+                // cycle-2's diff (on 98cea58f that was the two `.commit-msg` scratch
+                // files -> false-fail). Widen to the BRANCH window (plan_base_sha..HEAD)
+                // via fileCommittedSince so the file's real commit is in-range AND the
+                // beta.84 non-zero-diff gate still applies. The listCommittedFiles noise
+                // filter (beta.95) also strips the `.commit-msg` scratch files.
+                if (reviseCycle && probes.fileCommittedSince) {
+                    const r = await probes.fileCommittedSince(v.path, planBaseWindow);
+                    results.push({ kind: v.kind, passed: r.committed, detail: `revise-targeted (plan-base window): ${r.detail}`, path: v.path });
                     break;
                 }
                 if (probes.fileCommittedSince) {

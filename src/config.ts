@@ -512,6 +512,22 @@ export interface LoopConfig {
    */
   worker_confab_detect?: boolean;
   /**
+   * beta.95: REVISE-CYCLE VERIFIER DIFF-WINDOW fix. On a revise cycle (cycle > 1)
+   * a TARGETED contract file (one the review DID target, so `reviseRelaxed` is
+   * NOT set) is verified against the worker-session-start SHA + an mtime-
+   * predates-sub-task-start freshness heuristic. Both read the WRONG window: a
+   * file that cycle-1 already touched has an mtime older than cycle-2's sub-task
+   * start, and its cycle-1 commit sits OUTSIDE `worker-session-start..HEAD`, so
+   * `file_written` (mtime) and `file_committed` (strict-match base) BOTH false-
+   * fail even though the worker's cycle-2 edit is genuine (the 98cea58f cyc2
+   * seq2 `prisma/schema.prisma` failure: real commit e75c669, base 202720e).
+   * When true (default) a TARGETED file on cycle > 1 is verified against the
+   * BRANCH fork-point window (`plan_base_sha..HEAD`, i.e. `branchBaseSha`) for
+   * both checks, matching the range the worker legitimately owns. false restores
+   * the beta.94 worker-session-start window (targeted-file false-positive vector).
+   */
+  revise_targeted_planbase_window?: boolean;
+  /**
    * beta.76 (Option 1) + beta.93 kill-switch: contract-path RE-DERIVATION. When
    * true (default) a stale lead-guessed contract path is corrected against the
    * repo's real touched layout BEFORE verification (with the beta.93 exact-match
@@ -921,6 +937,7 @@ const DEFAULTS: HarnessConfig = {
     revise_spec_timeout_seconds: 180,
     skip_observe_reprobe_on_revise: true,
     revise_scoping_enabled: true,
+    revise_targeted_planbase_window: true,
     parallel_independent_subtasks: false,
     deterministic_revise_mapping: true,
     worker_confab_detect: true,
