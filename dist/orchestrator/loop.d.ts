@@ -391,6 +391,23 @@ export interface OrchestratorDeps {
         error?: string;
     }>;
 }
+/**
+ * beta.97 (Fix #7): is the adversary finding count CONVERGING across cycles?
+ *
+ * Convergence = the run was making real progress toward a clean pass but ran
+ * out of cycle budget, so an operator should be TOLD it's worth extending
+ * (re-run harness_revise) rather than shown a bare do_not_merge. We require
+ * BOTH: (a) at least two cycles of signal, and (b) a NET downward trend from
+ * the first cycle to the last (last < first). A late bump (e.g. 13 -> 8 -> 12,
+ * where cycle-3 fixes added new review surface) still counts as converging so
+ * long as the run ended below where it started -- that late bump is exactly the
+ * "new code introduced new findings" case where one more cycle plausibly clears
+ * it. A flat or net-rising arc (e.g. 8 -> 9 -> 11) is NOT converging: extending
+ * would likely just churn, so the plain do_not_merge stands.
+ *
+ * Pure + unit-tested. Empty/single-cycle input returns false (no signal).
+ */
+export declare function isConvergingFindingTrend(counts: number[] | undefined): boolean;
 export declare class OrchestratorLoop {
     private readonly deps;
     constructor(deps: OrchestratorDeps);
@@ -402,6 +419,8 @@ export declare class OrchestratorLoop {
         verdict?: "pass" | "revise" | "block";
         cyclesRan: number;
         maxCycles: number;
+        /** beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order. */
+        findingCountsByCycle?: number[];
         reactions: {
             shipIt: boolean;
             abort: boolean;

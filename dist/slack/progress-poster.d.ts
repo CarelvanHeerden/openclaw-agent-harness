@@ -52,6 +52,8 @@ export interface PostResult {
     ok: boolean;
     ts?: string;
     error?: string;
+    /** beta.97 (Fix #4): attempts made before returning (1 = no retry). */
+    attempts?: number;
 }
 export declare class SlackProgressPoster {
     private readonly deps;
@@ -63,5 +65,24 @@ export declare class SlackProgressPoster {
      * or a thrown fetch). A failed progress post must not fail the run.
      */
     post(channel: string, threadTs: string, text: string): Promise<PostResult>;
+    /**
+     * beta.97 (Fix #4): TERMINAL-post path with bounded retry + Retry-After.
+     *
+     * The plain `post()` is best-effort single-shot -- correct for the high-
+     * frequency PROGRESS stream (a dropped mid-run headline is harmless). But the
+     * TERMINAL post is the one message a run must not lose: b96 guaranteed the
+     * harness always GENERATES a reason-bearing terminal headline, yet a transient
+     * Slack 429/5xx/network blip on that single fire-and-forget POST still drops
+     * it silently -> zero-feedback death via the transport vector. This wrapper
+     * retries a bounded number of times, honouring Slack's `Retry-After` (capped),
+     * and hard-logs a final failure so the drop is never silent. Still NEVER
+     * throws -- a failed terminal post must not fail the (already-terminal) run.
+     */
+    postTerminal(channel: string, threadTs: string, text: string, opts?: {
+        maxAttempts?: number;
+        baseDelayMs?: number;
+        maxDelayMs?: number;
+        sleepImpl?: (ms: number) => Promise<void>;
+    }): Promise<PostResult>;
 }
 //# sourceMappingURL=progress-poster.d.ts.map
