@@ -174,11 +174,14 @@ test("index.ts gates deliverProgress on poster + native_progress_delivery + hasR
   const idx = src("index.ts");
   assert.match(idx, /import \{ SlackProgressPoster, hasRealSlackBinding \} from "\.\/slack\/progress-poster\.js"/);
   // deliverProgress closure: all three gates present
-  const dp = idx.slice(idx.indexOf("deliverProgress: (sessionId"), idx.indexOf("deliverProgress: (sessionId") + 2600); // beta.86/.88: widened for de-dup guard + terminal-eviction inserts; beta.96: + terminal never-drop guard
+  const dp = idx.slice(idx.indexOf("deliverProgress: (sessionId"), idx.indexOf("deliverProgress: (sessionId") + 3600); // beta.86/.88: widened for de-dup guard + terminal-eviction inserts; beta.96: + terminal never-drop guard; beta.97: + terminal-vs-progress post split
   assert.match(dp, /runtime\.progressPoster/);
   assert.match(dp, /native_progress_delivery === false/);
   assert.match(dp, /hasRealSlackBinding\(channel, thread\)/);
   assert.match(dp, /buildProgressSnapshot\(state\.db, sessionId\)\.headline/);
+  // beta.97 (Fix #4): terminal posts go through the bounded-retry path, progress
+  // stays best-effort single-shot.
+  assert.match(dp, /poster\.postTerminal\(/);
   assert.match(dp, /poster\.post\(/);
 });
 

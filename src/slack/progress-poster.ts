@@ -57,6 +57,18 @@ export interface PostResult {
   ok: boolean;
   ts?: string;
   error?: string;
+  /** beta.97 (Fix #4): attempts made before returning (1 = no retry). */
+  attempts?: number;
+}
+
+/** beta.97 (Fix #4): retryable failure classes for the terminal-post path. */
+function isRetryablePostError(r: PostResult): boolean {
+  const e = r.error ?? "";
+  if (e === "ratelimited") return true;
+  if (/^http_(408|429|5\d\d)$/.test(e)) return true;
+  // A thrown fetch (network blip) is stringified into `error`; retry those too.
+  if (/fetch failed|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|network/i.test(e)) return true;
+  return false;
 }
 
 interface ChatPostMessageResponse {
@@ -96,7 +108,7 @@ export class SlackProgressPoster {
       if (res.status === 429) {
         const retryAfter = res.headers.get("retry-after") ?? "?";
         this.deps.logger.warn("[progress-poster] rate limited; dropping progress post", { channel, retryAfter });
-        return { ok: false, error: "ratelimited" };
+        return { ok: false, error: "ratelimited", retryAfterSec: parseRetryAfter(retryAfter) } as PostResult & { retryAfterSec?: number };
       }
       if (!res.ok) {
         this.deps.logger.warn("[progress-poster] HTTP not ok", { status: res.status, channel });
@@ -113,4 +125,70 @@ export class SlackProgressPoster {
       return { ok: false, error: String(err) };
     }
   }
+
+  /**
+   * beta.97 (Fix #4): TERMINAL-post path with bounded retry + Retry-After.
+   *
+   * The plain `post()` is best-effort single-shot -- correct for the high-
+   * frequency PROGRESS stream (a dropped mid-run headline is harmless). But the
+   * TERMINAL post is the one message a run must not lose: b96 guaranteed the
+   * harness always GENERATES a reason-bearing terminal headline, yet a transient
+   * Slack 429/5xx/network blip on that single fire-and-forget POST still drops
+   * it silently -> zero-feedback death via the transport vector. This wrapper
+   * retries a bounded number of times, honouring Slack's `Retry-After` (capped),
+   * and hard-logs a final failure so the drop is never silent. Still NEVER
+   * throws -- a failed terminal post must not fail the (already-terminal) run.
+   */
+  async postTerminal(
+    channel: string,
+    threadTs: string,
+    text: string,
+    opts?: { maxAttempts?: number; baseDelayMs?: number; maxDelayMs?: number; sleepImpl?: (ms: number) => Promise<void> },
+  ): Promise<PostResult> {
+    const maxAttempts = Math.max(1, opts?.maxAttempts ?? 4);
+    const baseDelayMs = opts?.baseDelayMs ?? 1000;
+    const maxDelayMs = opts?.maxDelayMs ?? 30_000;
+    const sleep = opts?.sleepImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    let last: PostResult = { ok: false, error: "not_attempted" };
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      last = await this.post(channel, threadTs, text);
+      if (last.ok) return { ...last, attempts: attempt };
+      // A structural failure (no binding, auth, bad channel) will never clear
+      // on retry -- stop immediately.
+      if (!isRetryablePostError(last)) {
+        this.deps.logger.warn("[progress-poster] terminal post non-retryable; giving up", {
+          channel,
+          error: last.error,
+          attempt,
+        });
+        return { ...last, attempts: attempt };
+      }
+      if (attempt === maxAttempts) break;
+      const retryAfterSec = (last as PostResult & { retryAfterSec?: number }).retryAfterSec;
+      const backoffMs = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
+      const delayMs = retryAfterSec != null ? Math.min(maxDelayMs, retryAfterSec * 1000) : backoffMs;
+      this.deps.logger.warn("[progress-poster] terminal post failed; retrying", {
+        channel,
+        error: last.error,
+        attempt,
+        nextDelayMs: delayMs,
+      });
+      await sleep(delayMs);
+    }
+    // Bounded retries exhausted -- HARD log (not a silent drop) so the terminal
+    // announcement loss is at least visible in the harness log.
+    this.deps.logger.warn("[progress-poster] TERMINAL POST DROPPED after retries (run terminated but announcement not delivered)", {
+      channel,
+      error: last.error,
+      attempts: maxAttempts,
+    });
+    return { ...last, attempts: maxAttempts };
+  }
+}
+
+/** beta.97 (Fix #4): parse a Slack `Retry-After` header (seconds) into a number, or undefined. */
+function parseRetryAfter(v: string | null | undefined): number | undefined {
+  if (!v || v === "?") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }

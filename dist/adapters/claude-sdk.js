@@ -393,6 +393,15 @@ async function structuredCall(params) {
     let costUsd = 0;
     let tokensIn = 0;
     let tokensOut = 0;
+    // beta.97 (Fix #8): capture the result stop_reason so callers can
+    // distinguish a TRUNCATED structured output (stop_reason === "max_tokens")
+    // from a prose-drift / malformed-JSON failure. A truncated plan needs a
+    // COMPACTION retry (fewer/terser sub-tasks), not a terse contract re-assert
+    // (which re-truncates identically). Root cause of the b95 + revise a8ba76d5
+    // plan_failed crashes: `extractJson failed: no JSON in output` where the raw
+    // payload STARTED with valid `{"repo":...` but the closing braces never
+    // arrived (scanBalanced never returns to depth 0 -> zero candidates -> throw).
+    let stopReason = null;
     const textChunks = [];
     // Informational: emit a periodic tick so operators can tell a long SDK
     // phase (e.g. a 9-minute plan) is progressing vs stuck. Uses the running
@@ -461,6 +470,15 @@ async function structuredCall(params) {
                 costUsd = message.total_cost_usd ?? 0;
                 tokensIn = message.usage?.input_tokens ?? 0;
                 tokensOut = message.usage?.output_tokens ?? 0;
+                // beta.97 (Fix #8): both SDKResultSuccess and SDKResultError expose
+                // `stop_reason: string | null`. "max_tokens" = the model hit the output
+                // ceiling mid-JSON = truncation. Also treat the structured-output
+                // exhaustion subtype as truncation-equivalent.
+                stopReason =
+                    message.stop_reason ??
+                        (message.subtype === "error_max_structured_output_retries"
+                            ? "max_tokens"
+                            : null);
             }
         }
     }
@@ -472,13 +490,24 @@ async function structuredCall(params) {
     const raw = textChunks.join("");
     let parsed;
     if (params.validation) {
-        parsed = extractAndValidateJson(raw, { ...params.validation, logger: params.logger ?? params.validation.logger });
+        try {
+            parsed = extractAndValidateJson(raw, { ...params.validation, logger: params.logger ?? params.validation.logger });
+        }
+        catch (err) {
+            // beta.97 (Fix #8): annotate a JSON-extraction failure that coincides
+            // with a truncation stop_reason so the caller's retry path can raise the
+            // compaction pressure instead of blindly re-asserting the contract.
+            if (stopReason === "max_tokens" && err instanceof Error && !/\[truncated:max_tokens\]/.test(err.message)) {
+                err.message = `[truncated:max_tokens] ${err.message}`;
+            }
+            throw err;
+        }
     }
     else {
         const json = extractJson(raw);
         parsed = JSON.parse(json);
     }
-    return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw };
+    return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw, stopReason };
 }
 /**
  * Extracts the first well-formed top-level JSON object or array from a
@@ -975,9 +1004,23 @@ export async function runLeadSdk(params) {
         // failed` / `[lead] validation failed`.
         if (!/extractJson failed|no JSON in output|validation failed|JSON\.parse/i.test(msg))
             throw err;
-        params.logger?.warn?.("[lead] plan JSON parse/validation failed; retrying ONCE with a terse output-contract re-assertion (beta.81 anti-prose-drift)", { error: msg.slice(0, 300) });
-        const retryMsg = `${userMessage}\n\nYOUR PREVIOUS REPLY WAS NOT VALID JSON (you returned prose or an incomplete object). ` +
-            `Return the plan as a SINGLE raw JSON object and NOTHING else -- no prose, no code fence, no narration. Begin your reply with '{'.`;
+        // beta.97 (Fix #8): a TRUNCATED plan (stop_reason max_tokens -> annotated
+        // `[truncated:max_tokens]` by structuredCall) will re-truncate identically
+        // under the beta.81 terse re-assertion, which only fixes prose-drift. On
+        // truncation, retry with a COMPACTION instruction: same coverage, fewer
+        // words per field, so the plan fits under the output ceiling. This is the
+        // fix for the b95 + revise a8ba76d5 `plan_failed: no JSON in output`
+        // crashes (valid JSON head, missing tail).
+        const truncated = /\[truncated:max_tokens\]/.test(msg);
+        const retryMsg = truncated
+            ? `${userMessage}\n\nYOUR PREVIOUS REPLY WAS TRUNCATED: the JSON was cut off before it closed (it hit the output length limit). ` +
+                `Produce the SAME plan but MORE COMPACT so it fits: keep every sub-task and its seq, but write each string field TERSELY (short rationales, trim codeExcerpts to the few lines that matter, no restated boilerplate). ` +
+                `Return a SINGLE complete raw JSON object and NOTHING else -- no prose, no code fence. Begin with '{' and ensure it is fully closed.`
+            : `${userMessage}\n\nYOUR PREVIOUS REPLY WAS NOT VALID JSON (you returned prose or an incomplete object). ` +
+                `Return the plan as a SINGLE raw JSON object and NOTHING else -- no prose, no code fence, no narration. Begin your reply with '{'.`;
+        params.logger?.warn?.(truncated
+            ? "[lead] plan JSON TRUNCATED (stop_reason max_tokens); retrying ONCE with a compaction instruction (beta.97 Fix #8)"
+            : "[lead] plan JSON parse/validation failed; retrying ONCE with a terse output-contract re-assertion (beta.81 anti-prose-drift)", { error: msg.slice(0, 300), truncated });
         const r2 = await call(retryMsg);
         return { ...r2.parsed, costUsd: r2.costUsd, tokensIn: r2.tokensIn, tokensOut: r2.tokensOut };
     }

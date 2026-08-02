@@ -614,6 +614,36 @@ export interface OrchestratorDeps {
   }) => Promise<{ ok: boolean; path?: string; error?: string }>;
 }
 
+/**
+ * beta.97 (Fix #7): is the adversary finding count CONVERGING across cycles?
+ *
+ * Convergence = the run was making real progress toward a clean pass but ran
+ * out of cycle budget, so an operator should be TOLD it's worth extending
+ * (re-run harness_revise) rather than shown a bare do_not_merge. We require
+ * BOTH: (a) at least two cycles of signal, and (b) a NET downward trend from
+ * the first cycle to the last (last < first). A late bump (e.g. 13 -> 8 -> 12,
+ * where cycle-3 fixes added new review surface) still counts as converging so
+ * long as the run ended below where it started -- that late bump is exactly the
+ * "new code introduced new findings" case where one more cycle plausibly clears
+ * it. A flat or net-rising arc (e.g. 8 -> 9 -> 11) is NOT converging: extending
+ * would likely just churn, so the plain do_not_merge stands.
+ *
+ * Pure + unit-tested. Empty/single-cycle input returns false (no signal).
+ */
+export function isConvergingFindingTrend(counts: number[] | undefined): boolean {
+  if (!counts || counts.length < 2) return false;
+  const first = counts[0]!;
+  const last = counts[counts.length - 1]!;
+  if (first <= 0) return false; // no findings to converge from
+  // Net improvement from start to finish is the core signal.
+  if (last >= first) return false;
+  // Guard against a single lucky dip masquerading as a trend: require the run
+  // minimum to be meaningfully below the start too (it will be, given last<first,
+  // but this makes the intent explicit and robust to future edits).
+  const min = Math.min(...counts);
+  return min < first;
+}
+
 export class OrchestratorLoop {
   constructor(private readonly deps: OrchestratorDeps) {}
 
@@ -625,6 +655,8 @@ export class OrchestratorLoop {
     verdict?: "pass" | "revise" | "block";
     cyclesRan: number;
     maxCycles: number;
+    /** beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order. */
+    findingCountsByCycle?: number[];
     reactions: { shipIt: boolean; abort: boolean; pause: boolean };
     budgetExhausted: boolean;
     hardTimeout: boolean;
@@ -662,6 +694,19 @@ export class OrchestratorLoop {
           // "you review, then tell me to merge and verify the deploy" flow.
           // A `block` verdict never reaches here (returned above): a genuine
           // blocking defect still hard-fails and ships nothing.
+          //
+          // beta.97 (Fix #7): distinguish CONVERGING from stuck. If the finding
+          // count was trending DOWN across cycles (net drop from first to last,
+          // AND the last cycle is at/below the run minimum-ish), a clean pass
+          // was plausibly one more cycle away -- ship do_not_merge as before,
+          // but with a DISTINCT reason so the terminal headline + PR body can
+          // SURFACE an ask-to-extend ("converging but incomplete -- re-run
+          // harness_revise to continue?") instead of a bare do_not_merge. The
+          // merge gate is unchanged (still do_not_merge); this is purely an
+          // observability signal so the operator can make an informed call.
+          if (isConvergingFindingTrend(input.findingCountsByCycle)) {
+            return { nextStatus: "done", reason: "shipped_max_cycles_revise_converging" };
+          }
           return { nextStatus: "done", reason: "shipped_max_cycles_revise" };
         }
         return { nextStatus: "executing", reason: "adversary_revise" };
@@ -1199,6 +1244,17 @@ export class OrchestratorLoop {
     let cycle = 0;
     let totalCost = row.cost_usd;
     let lastReview: ReviewReport | undefined;
+    // beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order, so
+    // the max-cycles terminal path can distinguish CONVERGING (findings
+    // trending down -> a clean pass is plausibly one more cycle away, so SURFACE
+    // an ask-to-extend) from DIVERGING/stuck (findings flat or rising -> the
+    // plain do_not_merge ship is correct). Root: the b96 smoke shipped #893
+    // do_not_merge on a 13 -> 8 -> 12 arc; 13 -> 8 was real convergence the
+    // operator was never told about.
+    const findingCountsByCycle: number[] = [];
+    // beta.97 (Fix #7): the reason the loop left the review cycle for a terminal
+    // "done", so the ship path can surface the converging ask-to-extend note.
+    let terminalDoneReason = "";
     // beta.7 fix #2: running record of actual sub-task costs, used to project
     // the cost of upcoming sub-tasks for pre-execution budget gating.
     const subTaskCosts: number[] = [];
@@ -2644,6 +2700,8 @@ export class OrchestratorLoop {
         this.deps.state.audit("loop.converged_on_green", { sessionId, cycle, findings: report.findings.length }, sessionId);
       }
       this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length, conventionFindings: conventionFindings.length }, sessionId);
+      // beta.97 (Fix #7): record this cycle's finding count for the convergence check.
+      findingCountsByCycle.push(report.findings?.length ?? 0);
 
       const reactions = await this.deps.readReactions(sessionId);
       const decision = OrchestratorLoop.advance({
@@ -2651,6 +2709,7 @@ export class OrchestratorLoop {
         verdict: report.verdict,
         cyclesRan: cycle,
         maxCycles: this.deps.config.loop.max_cycles,
+        findingCountsByCycle,
         reactions,
         // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
         // per-user DAILY cap, not the (now-soft) session budget. Crossing the
@@ -2664,7 +2723,10 @@ export class OrchestratorLoop {
       });
       this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
 
-      if (decision.nextStatus === "done") break;
+      if (decision.nextStatus === "done") {
+        terminalDoneReason = decision.reason;
+        break;
+      }
       if (decision.nextStatus === "failed") {
         return this.finaliseFailed(sessionId, decision.reason, cycle, totalCost);
       }
@@ -2783,6 +2845,22 @@ export class OrchestratorLoop {
     // beta.91 (F4): append the never-registered caveat to whatever reason we have
     // (merge still recommended, but the human sees CI did not verify the SHA).
     if (ciNeverRegisteredCaveat) finalReason = `${finalReason}\n\n${ciNeverRegisteredCaveat}`;
+    // beta.97 (Fix #7): if we shipped on max-cycles with a CONVERGING finding
+    // trend, append an explicit ask-to-extend note. The merge recommendation is
+    // UNCHANGED (still do_not_merge / needs_human_review); this is purely the
+    // operator-facing signal that one more revise cycle was plausibly worth it,
+    // rather than a bare do_not_merge with no context.
+    if (terminalDoneReason === "shipped_max_cycles_revise_converging") {
+      const arc = findingCountsByCycle.join(" → ");
+      finalReason =
+        `${finalReason}\n\nCONVERGING: adversary findings were trending down across cycles (${arc}) but the run hit the ${this.deps.config.loop.max_cycles}-cycle ceiling before a clean pass. ` +
+        `This looks worth extending: re-run \`harness_revise\` on this PR to continue from the current findings — a clean sign-off was plausibly one or two cycles away.`;
+      this.deps.state.audit(
+        "loop.max_cycles_extend_suggested",
+        { sessionId, findingCountsByCycle, maxCycles: this.deps.config.loop.max_cycles },
+        sessionId,
+      );
+    }
     const prNumber = parsePrNumber(prUrl);
     this.deps.state.db
       .prepare(

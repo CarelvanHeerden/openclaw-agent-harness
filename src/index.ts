@@ -1414,8 +1414,19 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const dedup = (runtime.lastProgressHeadline ??= new Map<string, string>());
       if (dedup.get(sessionId) === headline) return;
       dedup.set(sessionId, headline);
-      // Fire-and-forget; poster.post is best-effort and never throws.
-      void poster.post(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
+      // beta.97 (Fix #4): the TERMINAL post is the one message a run must not
+      // lose -- b96 guaranteed we always GENERATE a reason-bearing terminal
+      // headline, but a single fire-and-forget best-effort POST still drops it
+      // on a transient Slack 429/5xx/network blip (zero-feedback death via the
+      // transport vector). Route terminal posts through the bounded-retry
+      // Retry-After path; keep the high-frequency PROGRESS stream on the
+      // best-effort single-shot post (a dropped mid-run headline is harmless).
+      // Both never throw.
+      if (isTerminal) {
+        void poster.postTerminal(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
+      } else {
+        void poster.post(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
+      }
     },
     // beta.78 (Feature 1+2): ad-hoc warning delivery over the SAME independent
     // direct-post channel as deliverProgress. Same gating (poster present +
