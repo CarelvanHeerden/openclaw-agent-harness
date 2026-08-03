@@ -41,7 +41,23 @@ import { renderConventionsForPrompt } from "../orchestrator/repo-conventions.js"
  */
 const SDK_ENV_DENY_EXACT = new Set(["OAH_GH_TOKEN"]);
 const SDK_ENV_DENY_RE = /(^|_)(TOKEN|SECRET|SECRETS|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)(_|$)/i;
-export function buildSdkEnv(apiKey) {
+/**
+ * beta.99 (P0-4): default output-token ceiling exported to the SDK subprocess.
+ * Fable 5 / Sonnet 5 / Opus 4.7 / Opus 4.8 all advertise
+ * `max_output_tokens: { default: 64000, upper: 128000 }`. We pin the default
+ * rather than the upper bound: 64k is ample for a plan, and a ceiling that is
+ * merely LARGE does not fix a plan that is unboundedly large (that is what the
+ * bounded top-up and the compaction retry are for).
+ */
+export const DEFAULT_SDK_MAX_OUTPUT_TOKENS = 64000;
+/**
+ * beta.99 (P0-7): default stream-open watchdog window for structured calls.
+ * Matches the worker path's phase-1 default. A healthy call opens its stream in
+ * seconds; 120s is slack for a cold subprocess spawn, not for model thinking
+ * time (which happens AFTER the stream is open and is bounded separately).
+ */
+export const DEFAULT_STREAM_OPEN_TIMEOUT_SECONDS = 120;
+export function buildSdkEnv(apiKey, maxOutputTokens) {
     if (!apiKey)
         return undefined;
     const base = {};
@@ -56,7 +72,54 @@ export function buildSdkEnv(apiKey) {
     }
     // The ONE secret the SDK subprocess genuinely needs.
     base.ANTHROPIC_API_KEY = apiKey;
+    // beta.99 (P0-4): make the output ceiling explicit and OURS. `0` disables
+    // (inherit whatever the bundled SDK picks for the model id). Note this is
+    // NOT caught by SDK_ENV_DENY_RE: that pattern matches the bare word TOKEN,
+    // and this name ends in TOKENS.
+    const ceiling = typeof maxOutputTokens === "number" ? maxOutputTokens : DEFAULT_SDK_MAX_OUTPUT_TOKENS;
+    if (ceiling > 0)
+        base.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(ceiling));
     return base;
+}
+/**
+ * beta.99 (P0-5): did THIS SDK message indicate the model was cut off at the
+ * output ceiling?
+ *
+ * b97's Fix #8 read `stop_reason` from the `result` event ONLY. That event
+ * reports how the SESSION ended, which is `end_turn`/`success` even when an
+ * assistant turn inside it was truncated -- so the `[truncated:max_tokens]`
+ * annotation never fired, the compaction retry it gates was dead code, and
+ * every truncation fell through to the beta.81 prose-drift retry, which
+ * re-truncates identically. That is the b98 retry ladder: 3 calls, 3 identical
+ * truncations, ~12 minutes, no plan.
+ *
+ * Truncation surfaces in three places, so we check all three:
+ *   1. `assistant.error === "max_output_tokens"` -- the SDK's own dedicated
+ *      signal (see SDKAssistantMessageError in sdk.d.ts).
+ *   2. `assistant.message.stop_reason === "max_tokens"` -- the raw API stop
+ *      reason for that turn.
+ *   3. `result.stop_reason === "max_tokens"`, plus the
+ *      `error_max_structured_output_retries` subtype (b97's original check).
+ */
+export function messageIndicatesTruncation(message) {
+    const m = message;
+    if (!m || typeof m !== "object")
+        return false;
+    if (m.type === "assistant") {
+        if (m.error === "max_output_tokens")
+            return true;
+        if (m.message?.stop_reason === "max_tokens")
+            return true;
+        return false;
+    }
+    if (m.type === "result") {
+        if (m.stop_reason === "max_tokens")
+            return true;
+        if (m.subtype === "error_max_structured_output_retries")
+            return true;
+        return false;
+    }
+    return false;
 }
 let sdkCache;
 async function loadSdk() {
@@ -358,7 +421,7 @@ export async function runWorkerSdk(params) {
                 cwd: params.worktreePath,
                 permissionMode: params.permissionMode,
                 resume: params.resumeSessionId,
-                env: buildSdkEnv(params.apiKey),
+                env: buildSdkEnv(params.apiKey, params.maxOutputTokens),
                 canUseTool: async (toolName, toolInput) => {
                     const decision = await params.canUseTool(toolName, toolInput);
                     if (decision.allow)
@@ -384,11 +447,27 @@ export async function runWorkerSdk(params) {
         clearTimeout(timer);
     }
 }
-// ---- Structured-output helpers (classifier, crystalliser, lead, adversary) ----
 async function structuredCall(params) {
     const sdk = await loadSdk();
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), params.timeoutSeconds * 1000);
+    // beta.99 (P0-7): stream-open watchdog.
+    const streamOpenWindowMs = typeof params.streamOpenTimeoutSeconds === "number"
+        ? params.streamOpenTimeoutSeconds * 1000
+        : DEFAULT_STREAM_OPEN_TIMEOUT_SECONDS * 1000;
+    let streamOpened = false;
+    let streamOpenTimedOut = false;
+    const streamOpenTimer = streamOpenWindowMs > 0
+        ? setTimeout(() => {
+            if (streamOpened)
+                return;
+            streamOpenTimedOut = true;
+            abort.abort();
+        }, streamOpenWindowMs)
+        : undefined;
+    if (streamOpenTimer && typeof streamOpenTimer.unref === "function") {
+        streamOpenTimer.unref();
+    }
     let sdkSessionId = "";
     let costUsd = 0;
     let tokensIn = 0;
@@ -402,6 +481,8 @@ async function structuredCall(params) {
     // payload STARTED with valid `{"repo":...` but the closing braces never
     // arrived (scanBalanced never returns to depth 0 -> zero candidates -> throw).
     let stopReason = null;
+    // beta.99 (P0-5): set by ANY frame that reports an output-ceiling cut-off.
+    let truncationSeen = false;
     const textChunks = [];
     // Informational: emit a periodic tick so operators can tell a long SDK
     // phase (e.g. a 9-minute plan) is progressing vs stuck. Uses the running
@@ -452,14 +533,23 @@ async function structuredCall(params) {
                 // execution safety here, only persona harm. `default` keeps tools off
                 // (via tools:[]) without the planner persona.
                 permissionMode: "default",
-                env: buildSdkEnv(params.apiKey),
+                env: buildSdkEnv(params.apiKey, params.maxOutputTokens),
                 abortSignal: abort.signal,
             },
         });
         for await (const message of stream) {
             if (message.type === "system" && message.subtype === "init") {
                 sdkSessionId = message.session_id;
+                // beta.99 (P0-7): the stream is open; the call is alive. Disarm.
+                streamOpened = true;
+                if (streamOpenTimer)
+                    clearTimeout(streamOpenTimer);
             }
+            // beta.99 (P0-5): OR-in truncation across EVERY frame. Checked before the
+            // per-type handling below so an assistant-frame truncation is recorded
+            // even though the session then ends cleanly (the exact b97 blind spot).
+            if (messageIndicatesTruncation(message))
+                truncationSeen = true;
             if (message.type === "assistant" && Array.isArray(message.message?.content)) {
                 for (const c of message.message.content) {
                     if (c.type === "text")
@@ -481,9 +571,26 @@ async function structuredCall(params) {
                             : null);
             }
         }
+        // beta.99 (P0-5): a truncated turn ANYWHERE wins over the session-end
+        // stop_reason. b97 read only the latter, which reports how the session
+        // finished (end_turn) rather than that a turn inside it was cut off.
+        if (truncationSeen)
+            stopReason = "max_tokens";
+    }
+    catch (err) {
+        // beta.99 (P0-7): re-label a stream-open wedge so it is distinguishable
+        // from a genuine model/JSON failure and can be retried on a fresh session.
+        if (streamOpenTimedOut) {
+            throw new Error(`[stream_open_timeout] the SDK stream never opened within ${Math.round(streamOpenWindowMs / 1000)}s ` +
+                `(subprocess or upstream POST wedged before the first byte); aborted instead of waiting out the ` +
+                `full ${params.timeoutSeconds}s call timeout`);
+        }
+        throw err;
     }
     finally {
         clearTimeout(timer);
+        if (streamOpenTimer)
+            clearTimeout(streamOpenTimer);
         if (tickTimer)
             clearInterval(tickTimer);
     }
@@ -499,6 +606,14 @@ async function structuredCall(params) {
             // compaction pressure instead of blindly re-asserting the contract.
             if (stopReason === "max_tokens" && err instanceof Error && !/\[truncated:max_tokens\]/.test(err.message)) {
                 err.message = `[truncated:max_tokens] ${err.message}`;
+            }
+            // beta.99 (P0-6): attach the FULL raw reply (the message embeds only the
+            // first 4000 chars, far too little to salvage a plan) plus the truncation
+            // verdict, so a caller can attempt `repairTruncatedJson` as a last resort
+            // instead of losing the entire call.
+            if (err instanceof Error) {
+                err.rawText = raw;
+                err.truncated = stopReason === "max_tokens";
             }
             throw err;
         }
@@ -566,6 +681,114 @@ function parsesAsJson(s) {
     catch {
         return false;
     }
+}
+/**
+ * beta.99 (P0-6): repair a JSON document that was cut off mid-write.
+ *
+ * `scanBalanced` requires depth to return to 0, so a truncated reply yields
+ * ZERO candidates and `extractJson` throws "no JSON in output" -- discarding a
+ * document that was perfectly well-formed for its first 95%. On b98 that meant
+ * a plan whose sub-task 1 was complete and sub-task 2 half-written was binned
+ * wholesale.
+ *
+ * The repair walks the text tracking string/escape state and container depth,
+ * rewinds to the last position where a COMPLETE element had just been closed,
+ * and appends the closers needed to balance it. Anything after that point (the
+ * half-written element) is dropped.
+ *
+ * Returns null when there is nothing recoverable. The result is deliberately
+ * INCOMPLETE-BUT-VALID: callers must treat it as a partial document, announce
+ * it loudly, and re-validate before use. It is never a silent substitute for a
+ * complete reply.
+ */
+export function repairTruncatedJson(text) {
+    const start = text.search(/[{[]/);
+    if (start === -1)
+        return null;
+    // The cut point is chosen so the PARTIAL trailing element is dropped whole.
+    // Preferring the last CLOSED container does that: on a plan cut mid-way
+    // through sub-task 5, we rewind to the `}` that closed sub-task 4 and keep
+    // 1..4 intact. Cutting at the last comma instead would keep a half-built
+    // `{"seq":5}` that then fails plan validation for a confusing reason.
+    const stack = [];
+    let inStr = false;
+    let esc = false;
+    let lastCloseEnd = -1; // index AFTER the last `}`/`]` that closed a container
+    let lastCloseDepth = 0; // container depth remaining after that close
+    let lastCommaAt = -1; // fallback for documents where nothing ever closed
+    let lastCommaDepth = 0;
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (esc) {
+            esc = false;
+            continue;
+        }
+        if (ch === "\\") {
+            esc = true;
+            continue;
+        }
+        if (ch === '"') {
+            inStr = !inStr;
+            continue;
+        }
+        if (inStr)
+            continue;
+        if (ch === "{" || ch === "[") {
+            stack.push(ch === "{" ? "}" : "]");
+            continue;
+        }
+        if (ch === "}" || ch === "]") {
+            if (stack.length === 0)
+                break;
+            stack.pop();
+            if (stack.length === 0)
+                return text.slice(start, i + 1); // never truncated
+            lastCloseEnd = i + 1;
+            lastCloseDepth = stack.length;
+            continue;
+        }
+        if (ch === ",") {
+            lastCommaAt = i;
+            lastCommaDepth = stack.length;
+            continue;
+        }
+    }
+    const cutEnd = lastCloseEnd > 0 ? lastCloseEnd : lastCommaAt;
+    const cutDepth = lastCloseEnd > 0 ? lastCloseDepth : lastCommaDepth;
+    if (cutEnd <= start || cutDepth <= 0)
+        return null;
+    // Re-walk to the cut point to recover the exact set of open containers.
+    const closers = [];
+    let s2 = false;
+    let e2 = false;
+    for (let i = start; i < cutEnd; i++) {
+        const ch = text[i];
+        if (e2) {
+            e2 = false;
+            continue;
+        }
+        if (ch === "\\") {
+            e2 = true;
+            continue;
+        }
+        if (ch === '"') {
+            s2 = !s2;
+            continue;
+        }
+        if (s2)
+            continue;
+        if (ch === "{")
+            closers.push("}");
+        else if (ch === "[")
+            closers.push("]");
+        else if (ch === "}" || ch === "]")
+            closers.pop();
+    }
+    if (closers.length === 0)
+        return null;
+    const body = text.slice(start, cutEnd).replace(/[,\s]+$/, "");
+    const repaired = body + closers.reverse().join("");
+    return parsesAsJson(repaired) ? repaired : null;
 }
 /**
  * Extract the JSON contract from a model's raw output.
@@ -969,15 +1192,22 @@ export async function runLeadSdk(params) {
         // lead gets NO OpenClaw context injection, so this must be explicit.
         renderConventionsForPrompt(params.brief.repoConventions, "lead"),
     ].join("\n");
+    // beta.99 (P0-3): keep the base brief and the corrective note SEPARATE.
+    // b98's truncation retry appended "be more compact" to a message that still
+    // carried the b67 "you MUST add more rationale/changeSpec/codeExcerpts" note,
+    // so the model was told to expand and contract in the same breath and did
+    // neither. The truncation retry now rebuilds from `baseMessage` alone.
+    const baseMessage = JSON.stringify(params.brief);
     const userMessage = params.correctiveNote
-        ? `${JSON.stringify(params.brief)}\n\nCORRECTION (your previous plan was rejected):\n${params.correctiveNote}`
-        : JSON.stringify(params.brief);
+        ? `${baseMessage}\n\nCORRECTION (your previous plan was rejected):\n${params.correctiveNote}`
+        : baseMessage;
     const call = (msg) => structuredCall({
         model: params.model,
         systemPrompt,
         userMessage: msg,
         timeoutSeconds: params.timeoutSeconds,
         apiKey: params.apiKey,
+        maxOutputTokens: params.maxOutputTokens,
         logger: params.logger,
         validation: { requiredKeys: ["repo", "branch", "subTasks", "reviewChecklist", "riskLevel"], label: "lead" },
     });
@@ -1002,7 +1232,10 @@ export async function runLeadSdk(params) {
         // error (which a re-ask would not fix and which is already retried at the
         // stream level). extractAndValidateJson labels these `[lead] extractJson
         // failed` / `[lead] validation failed`.
-        if (!/extractJson failed|no JSON in output|validation failed|JSON\.parse/i.test(msg))
+        // beta.99 (P0-7): a stream-open wedge joins this set. It is not a model
+        // failure at all -- the subprocess never got going -- so a fresh call is
+        // exactly the right remedy, and it is bounded to the same single retry.
+        if (!/extractJson failed|no JSON in output|validation failed|JSON\.parse|\[stream_open_timeout\]/i.test(msg))
             throw err;
         // beta.97 (Fix #8): a TRUNCATED plan (stop_reason max_tokens -> annotated
         // `[truncated:max_tokens]` by structuredCall) will re-truncate identically
@@ -1011,18 +1244,76 @@ export async function runLeadSdk(params) {
         // words per field, so the plan fits under the output ceiling. This is the
         // fix for the b95 + revise a8ba76d5 `plan_failed: no JSON in output`
         // crashes (valid JSON head, missing tail).
-        const truncated = /\[truncated:max_tokens\]/.test(msg);
+        const truncated = /\[truncated:max_tokens\]/.test(msg) || err.truncated === true;
+        // beta.99 (P0-3): on truncation, retry from the BASE brief with a
+        // MECHANICAL size reduction (drop the largest field outright), not a
+        // politely-worded plea to be terser. And never carry the corrective note
+        // that asked for more prose into a retry whose whole purpose is less prose.
         const retryMsg = truncated
-            ? `${userMessage}\n\nYOUR PREVIOUS REPLY WAS TRUNCATED: the JSON was cut off before it closed (it hit the output length limit). ` +
-                `Produce the SAME plan but MORE COMPACT so it fits: keep every sub-task and its seq, but write each string field TERSELY (short rationales, trim codeExcerpts to the few lines that matter, no restated boilerplate). ` +
+            ? `${baseMessage}\n\nYOUR PREVIOUS REPLY WAS TRUNCATED: the JSON was cut off before it closed (it hit the output length limit). ` +
+                `Re-plan with the SAME sub-task coverage and the SAME seq numbers, but apply these HARD limits so it fits:\n` +
+                `  - OMIT \`codeExcerpts\` ENTIRELY. Put the same information in \`changeSpec\` as a file:line reference.\n` +
+                `  - Each \`changeSpec\` <= 300 characters. Each \`rationale\` <= 200 characters.\n` +
+                `  - Each \`intent\` <= 200 characters. At most 5 \`successCriteria\`, one line each.\n` +
+                `  - No restated boilerplate, no commentary fields, nothing outside the schema.\n` +
+                `A COMPLETE terse plan is REQUIRED. A richer plan that gets cut off is a FAILED plan. ` +
                 `Return a SINGLE complete raw JSON object and NOTHING else -- no prose, no code fence. Begin with '{' and ensure it is fully closed.`
             : `${userMessage}\n\nYOUR PREVIOUS REPLY WAS NOT VALID JSON (you returned prose or an incomplete object). ` +
                 `Return the plan as a SINGLE raw JSON object and NOTHING else -- no prose, no code fence, no narration. Begin your reply with '{'.`;
         params.logger?.warn?.(truncated
-            ? "[lead] plan JSON TRUNCATED (stop_reason max_tokens); retrying ONCE with a compaction instruction (beta.97 Fix #8)"
+            ? "[lead] plan JSON TRUNCATED (output ceiling hit); retrying ONCE with a MECHANICAL size reduction (beta.99)"
             : "[lead] plan JSON parse/validation failed; retrying ONCE with a terse output-contract re-assertion (beta.81 anti-prose-drift)", { error: msg.slice(0, 300), truncated });
-        const r2 = await call(retryMsg);
-        return { ...r2.parsed, costUsd: r2.costUsd, tokensIn: r2.tokensIn, tokensOut: r2.tokensOut };
+        try {
+            const r2 = await call(retryMsg);
+            return { ...r2.parsed, costUsd: r2.costUsd, tokensIn: r2.tokensIn, tokensOut: r2.tokensOut };
+        }
+        catch (err2) {
+            // beta.99 (P0-6): LAST RESORT. Both attempts were cut off. Rather than
+            // end the session with nothing, salvage the longest well-formed prefix.
+            // The result is a REAL but INCOMPLETE plan (trailing sub-tasks are gone),
+            // so it is announced loudly and still has to pass validatePlan upstream.
+            // Preferred over `plan_failed`, which costs the operator the entire run.
+            if (params.leadSalvageEnabled === false)
+                throw err2;
+            const salvaged = salvageLeadPlan(err2) ?? salvageLeadPlan(err);
+            if (salvaged) {
+                params.logger?.warn?.("[lead] both plan attempts were TRUNCATED; SALVAGED the well-formed prefix of the reply (beta.99). " +
+                    "This plan is INCOMPLETE -- trailing sub-tasks were cut off. Review the PR with that in mind.", { subTasks: salvaged.subTasks?.length ?? 0 });
+                return { ...salvaged, costUsd: 0, tokensIn: 0, tokensOut: 0 };
+            }
+            throw err2;
+        }
+    }
+}
+/**
+ * beta.99 (P0-6): try to recover a usable plan from a truncated lead reply.
+ * Returns undefined unless the repaired JSON both parses AND carries the
+ * required top-level keys with at least one sub-task.
+ */
+function salvageLeadPlan(err) {
+    const raw = err?.rawText;
+    if (!raw)
+        return undefined;
+    const repaired = repairTruncatedJson(raw);
+    if (!repaired)
+        return undefined;
+    try {
+        const p = JSON.parse(repaired);
+        if (!p || typeof p !== "object")
+            return undefined;
+        if (typeof p.repo !== "string" || typeof p.branch !== "string")
+            return undefined;
+        if (!Array.isArray(p.subTasks) || p.subTasks.length === 0)
+            return undefined;
+        // A salvaged tail can leave these absent; they are required downstream.
+        if (!Array.isArray(p.reviewChecklist))
+            p.reviewChecklist = [];
+        if (!p.riskLevel)
+            p.riskLevel = "high";
+        return p;
+    }
+    catch {
+        return undefined;
     }
 }
 /**
@@ -1065,10 +1356,66 @@ export async function runLeadReviseSpecSdk(params) {
         userMessage,
         timeoutSeconds: params.timeoutSeconds,
         apiKey: params.apiKey,
+        maxOutputTokens: params.maxOutputTokens,
         logger: params.logger,
         validation: { requiredKeys: ["subTasks"], label: "lead-revise-spec" },
     });
     return { subTasks: r.parsed.subTasks, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+}
+/**
+ * beta.99 (P0-2): BOUNDED workerContext top-up.
+ *
+ * The beta.67 gate used to re-ask for the WHOLE plan whenever any mutate
+ * sub-task had thin `workerContext`. That reply has to restate every sub-task
+ * AND add the extra prose, so its size grows with the plan -- and on b98
+ * (session f2613eec) it breached the output ceiling three times running and
+ * took the run down with it, discarding a plan that was already valid.
+ *
+ * This asks for ONLY the `workerContext` blocks of the named seqs. Output size
+ * is bounded by how many are missing, the validated plan is never re-emitted
+ * (so it cannot be corrupted or lost), and the reply is small enough that
+ * truncation is not a realistic failure mode.
+ */
+export async function runLeadWorkerContextSdk(params) {
+    const systemPrompt = [
+        "You are the lead planner. A plan you already produced is ACCEPTED and will not be re-planned. Your ONLY job now is to supply the missing `workerContext` for the sub-task seqs named below, so a CHEAP worker can implement each one WITHOUT re-exploring the repo.",
+        "Return STRICT JSON: { contexts: [ { seq: number, workerContext: WorkerContext } ] }",
+        "WorkerContext: { rationale: string, changeSpec?: string, codeExcerpts?: {path: string, startLine?: number, snippet: string, note?: string}[], gotchas?: string[], relatedSymbols?: string[] }",
+        "- Emit one entry for EACH seq in `missingSeqs`, and for NO other seq.",
+        "- Each workerContext MUST have a non-empty `rationale` AND concrete file-anchored guidance: either a `changeSpec` of at least 40 characters naming a real path (e.g. src/foo/bar.ts) or a `codeExcerpts` entry with real code and its path.",
+        "- Do NOT restate the plan. Do NOT return sub-tasks, titles, intents, verify contracts or any other field. Only the contexts array.",
+        // The whole point of this call is to be small; say so explicitly.
+        "- SIZE LIMIT (HARD): keep each `rationale` under 250 characters and each `changeSpec` under 400. Include at most ONE codeExcerpt per seq and keep it under 15 lines. A COMPLETE reply is REQUIRED -- a richer reply that gets cut off is a FAILED reply.",
+        "CRITICAL OUTPUT RULE: Return the JSON object DIRECTLY as your reply text. No file, no code fence, no narration. Your ENTIRE reply is the raw JSON object and nothing else.",
+    ].join("\n");
+    // Send only what is needed to write the contexts: the brief, and a SLIM
+    // projection of the target sub-tasks (no verify contracts, no existing
+    // context) so the input stays small too.
+    const targets = params.subTasks
+        .filter((st) => params.missingSeqs.includes(st.seq))
+        .map((st) => ({
+        seq: st.seq,
+        title: st.title,
+        intent: st.intent,
+        filesLikelyTouched: st.filesLikelyTouched,
+        successCriteria: st.successCriteria,
+    }));
+    const userMessage = JSON.stringify({
+        brief: params.brief,
+        missingSeqs: params.missingSeqs,
+        subTasksNeedingContext: targets,
+    });
+    const r = await structuredCall({
+        model: params.model,
+        systemPrompt,
+        userMessage,
+        timeoutSeconds: params.timeoutSeconds,
+        apiKey: params.apiKey,
+        maxOutputTokens: params.maxOutputTokens,
+        logger: params.logger,
+        validation: { requiredKeys: ["contexts"], label: "lead-worker-context" },
+    });
+    return Array.isArray(r.parsed.contexts) ? r.parsed.contexts : [];
 }
 /**
  * Adversary SDK call.

@@ -243,7 +243,37 @@ export interface LeadDeps {
      * (behaviour reverts to pre-beta.73 -- branchHint is a name hint only).
      */
     remoteBranchExists?: (repoFullName: string, branch: string) => Promise<boolean>;
+    /**
+     * beta.99 (P0-2): BOUNDED workerContext top-up. Asks the lead for ONLY the
+     * `workerContext` blocks of the named seqs -- not the whole plan again.
+     *
+     * The b67 whole-plan re-ask is what killed b98: its reply must restate every
+     * sub-task AND add more prose, so its size grows with the plan and reliably
+     * breaches the output ceiling on a large brief. This call's output size is
+     * bounded by `missingSeqs.length` instead, and the plan we already validated
+     * is never put at risk.
+     *
+     * Optional: when absent (or when it throws) the caller falls back to the
+     * whole-plan re-ask, so behaviour degrades to pre-beta.99 rather than
+     * breaking.
+     */
+    callWorkerContextModel?: (brief: CrystallisedBrief, plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">, missingSeqs: number[]) => Promise<Array<{
+        seq: number;
+        workerContext: WorkerContext;
+    }>>;
 }
+/**
+ * beta.99 (P0-2): merge bounded top-up contexts into the plan IN PLACE.
+ * Only fills seqs that are currently insubstantive, and only when the
+ * incoming block is itself substantive -- so a vague top-up can never
+ * overwrite context the lead already got right. Returns the seqs merged.
+ */
+export declare function mergeWorkerContexts(plan: {
+    subTasks: LeadPlanSubTask[];
+}, topUp: Array<{
+    seq: number;
+    workerContext: WorkerContext;
+}>): number[];
 /**
  * beta.67 (P0a): raised when a plan fails workerContext enforcement AFTER the
  * one bounded lead re-ask. Surfaced as a plan failure -- a loud fail at

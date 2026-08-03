@@ -10,6 +10,31 @@
  * writes a "review checklist" that the adversary consumes on cycle N.
  */
 /**
+ * beta.99 (P0-2): merge bounded top-up contexts into the plan IN PLACE.
+ * Only fills seqs that are currently insubstantive, and only when the
+ * incoming block is itself substantive -- so a vague top-up can never
+ * overwrite context the lead already got right. Returns the seqs merged.
+ */
+export function mergeWorkerContexts(plan, topUp) {
+    if (!Array.isArray(topUp) || topUp.length === 0)
+        return [];
+    const merged = [];
+    for (const entry of topUp) {
+        if (!entry || typeof entry.seq !== "number" || !entry.workerContext)
+            continue;
+        const target = plan.subTasks.find((st) => st.seq === entry.seq);
+        if (!target)
+            continue;
+        if (hasSubstantiveWorkerContext(target.workerContext))
+            continue;
+        if (!hasSubstantiveWorkerContext(entry.workerContext))
+            continue;
+        target.workerContext = entry.workerContext;
+        merged.push(entry.seq);
+    }
+    return merged;
+}
+/**
  * beta.67 (P0a): raised when a plan fails workerContext enforcement AFTER the
  * one bounded lead re-ask. Surfaced as a plan failure -- a loud fail at
  * planning beats another silent workers-no-op'd revise cycle downstream.
@@ -163,40 +188,107 @@ export async function runLeadPlanner(brief, deps) {
             deps.logger.warn?.("[lead] branchHint existence check failed (non-fatal; treating as new branch)", { err: String(err) });
         }
     }
+    // beta.99 (P0-1): the LAST plan that parsed AND validated. b98 (session
+    // f2613eec) proved why this must exist: lead call #1 returned a perfectly
+    // good plan whose only sin was thin workerContext, the b67 gate re-asked for
+    // the WHOLE plan with MORE prose, that bigger reply blew the output ceiling,
+    // and the resulting throw propagated out of runLeadPlanner -- discarding the
+    // valid plan we already held. A run must never die holding a usable plan.
+    let lastValid;
+    let lastValidMissing = [];
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        raw = await deps.callLeadModel(brief, deps.config.repos.allowed, correctiveNote);
-        // beta.44: revise flow. Override the lead branch/repo BEFORE validation.
-        if (brief.pinnedBranch) {
-            raw.branch = brief.pinnedBranch;
-            if (brief.repoHint && brief.repoHint.includes("/"))
-                raw.repo = brief.repoHint;
-            deps.logger.info("[lead] revise: branch pinned", { branch: raw.branch, repo: raw.repo, reviseOf: brief.reviseOfSessionId });
+        try {
+            raw = await deps.callLeadModel(brief, deps.config.repos.allowed, correctiveNote);
+            // beta.44: revise flow. Override the lead branch/repo BEFORE validation.
+            if (brief.pinnedBranch) {
+                raw.branch = brief.pinnedBranch;
+                if (brief.repoHint && brief.repoHint.includes("/"))
+                    raw.repo = brief.repoHint;
+                deps.logger.info("[lead] revise: branch pinned", { branch: raw.branch, repo: raw.repo, reviseOf: brief.reviseOfSessionId });
+            }
+            // beta.33: defensively strip push/PR sub-tasks BEFORE validation.
+            sanitizeRemoteSubTasks(raw, deps.logger);
+            validatePlan(raw, deps.config);
         }
-        // beta.33: defensively strip push/PR sub-tasks BEFORE validation.
-        sanitizeRemoteSubTasks(raw, deps.logger);
-        validatePlan(raw, deps.config);
+        catch (err) {
+            // beta.99 (P0-1): a FAILED re-ask must not destroy the plan we already
+            // banked. Only a failure with nothing banked is terminal.
+            if (attempt > 1 && lastValid) {
+                deps.logger.warn?.("[lead] workerContext re-ask FAILED; falling back to the previous VALID plan rather than failing the run (beta.99)", { err: String(err).slice(0, 300), missingSeqs: lastValidMissing, reviseOf: brief.reviseOfSessionId });
+                raw = lastValid;
+                break;
+            }
+            throw err;
+        }
         // beta.67 (P0a): workerContext substance gate (mutate/mixed only).
         if (!enforceContext)
             break;
         const missing = subTasksMissingWorkerContext(raw);
         if (missing.length === 0)
             break;
+        lastValid = raw;
+        lastValidMissing = missing;
         if (attempt < maxAttempts) {
+            // beta.99 (P0-2): prefer the BOUNDED context top-up -- ask ONLY for the
+            // missing workerContext blocks and merge them into the plan we already
+            // have. The whole-plan re-ask below is what truncated on b98: its output
+            // size is the entire plan PLUS the extra prose, on every retry.
+            if (deps.callWorkerContextModel) {
+                try {
+                    const topUp = await deps.callWorkerContextModel(brief, raw, missing);
+                    const merged = mergeWorkerContexts(raw, topUp);
+                    const stillMissing = subTasksMissingWorkerContext(raw);
+                    deps.logger.info("[lead] bounded workerContext top-up applied (beta.99)", {
+                        requestedSeqs: missing,
+                        mergedSeqs: merged,
+                        stillMissing,
+                    });
+                    if (stillMissing.length === 0)
+                        break;
+                    // Partial success still shrinks the whole-plan re-ask below.
+                    lastValidMissing = stillMissing;
+                }
+                catch (err) {
+                    deps.logger.warn?.("[lead] bounded workerContext top-up failed; falling back to whole-plan re-ask", {
+                        err: String(err).slice(0, 300),
+                        missingSeqs: missing,
+                    });
+                }
+            }
+            const stillMissing = subTasksMissingWorkerContext(raw);
             correctiveNote =
-                `WORKER CONTEXT REQUIRED: sub-tasks [${missing.join(", ")}] are taskMode mutate/mixed but ` +
+                `WORKER CONTEXT REQUIRED: sub-tasks [${stillMissing.join(", ")}] are taskMode mutate/mixed but ` +
                     `their workerContext is missing or insubstantive. For EACH of those seqs you MUST provide a ` +
                     `workerContext with a non-empty rationale AND concrete file-anchored guidance -- either a ` +
                     `changeSpec that names the exact file+location of the edit (>=40 chars, referencing a real ` +
                     `path like src/foo/bar.ts) OR a codeExcerpts entry with the actual code you read (with its ` +
                     `path). A worker CANNOT implement these correctly from a bare intent; hand down your ` +
                     `investigation. If you cannot produce concrete context for a sub-task, it is mis-scoped -- ` +
-                    `split it into an observe (investigate) step + a mutate (implement) step, or reduce its scope.`;
-            deps.logger.warn?.("[lead] workerContext insufficient; re-asking lead once", { missingSeqs: missing, reviseOf: brief.reviseOfSessionId });
+                    `split it into an observe (investigate) step + a mutate (implement) step, or reduce its scope.` +
+                    // beta.99 (P0-3): the b98 reply blew the output ceiling because this
+                    // note demands MORE prose with no size bound. Bound it explicitly, and
+                    // keep it consistent with the truncation-retry instruction so the two
+                    // can never contradict each other inside one prompt again.
+                    `\nSIZE LIMIT (HARD): return the COMPLETE plan as ONE closed JSON object. Keep every other field ` +
+                    `EXACTLY as you already wrote it -- do not re-expand prose elsewhere. Keep each changeSpec under ` +
+                    `400 characters and include at most ONE short codeExcerpt (<=15 lines) per sub-task. A COMPLETE ` +
+                    `terse plan is REQUIRED; a richer plan that gets cut off is a FAILED plan.`;
+            deps.logger.warn?.("[lead] workerContext insufficient; re-asking lead once", { missingSeqs: stillMissing, reviseOf: brief.reviseOfSessionId });
         }
         else {
-            throw new LeadPlanValidationError(`lead plan sub-tasks [${missing.join(", ")}] are taskMode mutate/mixed but lack substantive ` +
-                `workerContext after one re-ask (rationale + file-anchored changeSpec/excerpt required). ` +
-                `Set loop.enforce_worker_context:false to downgrade this to a warning.`);
+            // beta.99 (P0-1): the gate has now had its bounded re-ask and the plan is
+            // STILL thin. Historically this threw and killed the run. A thin-context
+            // plan is a DEGRADED plan (workers start colder), not a broken one -- so
+            // by default we ship it with a loud warning instead of burning the whole
+            // session. Set loop.require_worker_context_strict:true to restore the
+            // old hard-fail.
+            if (deps.config.loop?.require_worker_context_strict === true) {
+                throw new LeadPlanValidationError(`lead plan sub-tasks [${missing.join(", ")}] are taskMode mutate/mixed but lack substantive ` +
+                    `workerContext after one re-ask (rationale + file-anchored changeSpec/excerpt required). ` +
+                    `Set loop.enforce_worker_context:false to downgrade this to a warning.`);
+            }
+            deps.logger.warn?.("[lead] workerContext STILL insufficient after the bounded re-ask; proceeding with the degraded plan " +
+                "(workers start colder on these seqs). Set loop.require_worker_context_strict:true to hard-fail instead. (beta.99)", { missingSeqs: missing, reviseOf: brief.reviseOfSessionId });
         }
     }
     if (!raw)

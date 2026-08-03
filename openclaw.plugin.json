@@ -188,6 +188,13 @@
           "classifier": {
             "type": "string"
           },
+          "max_output_tokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128000,
+            "default": 64000,
+            "description": "beta.99: output-token ceiling exported to the SDK subprocess as CLAUDE_CODE_MAX_OUTPUT_TOKENS. Nothing previously set one, so every structured call inherited whatever ceiling the bundled SDK picked for the model id -- which is undefined for a model newer than the pinned SDK (e.g. claude-opus-5 against SDK 0.3.207). 0 disables (inherit the SDK default)."
+          },
           "price_overrides": {
             "type": "object",
             "description": "Per-model price overrides for cost estimation, keyed by model id. Values are USD per million tokens.",
@@ -445,6 +452,16 @@
             "type": "boolean",
             "default": true,
             "description": "beta.81 (Track C): give the LEAD re-plan SDK call the same retry-once-on-extractJson-failure guard the classifier has, so a transient prose-drift (lead returns prose instead of the JSON plan contract) does not hard-crash the plan."
+          },
+          "require_worker_context_strict": {
+            "type": "boolean",
+            "default": false,
+            "description": "beta.99: what to do when a plan still lacks substantive workerContext after the bounded re-ask. false (default) ships the degraded plan with a loud warning -- workers on those seqs simply start colder. true restores the pre-beta.99 hard-fail. The default flipped because b98 (session f2613eec) burned an entire session and produced nothing while the harness was holding a valid plan."
+          },
+          "lead_salvage_truncated_plan": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.99: when BOTH lead plan attempts are cut off at the output ceiling, salvage the well-formed prefix of the reply instead of failing the run with plan_failed. The salvaged plan is REAL but INCOMPLETE (trailing sub-tasks were cut off) and is logged loudly as such; it still has to pass validatePlan. Set false to restore the pre-beta.99 hard-fail."
           },
           "deterministic_final_scope_check": {
             "type": "boolean",

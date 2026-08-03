@@ -1,5 +1,106 @@
 # Changelog
 
+## [0.1.0-beta.99] -- 2026-08-03
+
+### The plan phase stops throwing away plans it already has
+
+Fixes the b98 smoke failure (session `f2613eec`), where the harness spent ~12
+minutes and three lead calls and produced no plan at all.
+
+**What actually happened.** The b98 handoff report attributed this to a single
+defect (beta.97 reading `stop_reason` from the wrong SDK event). That defect is
+real, but it was the third link in a chain, and the first link is the one that
+mattered:
+
+1. Lead call #1 returned a **valid, complete plan**. Its only flaw was thin
+   `workerContext` on some sub-tasks.
+2. The beta.67 gate re-asked for the **entire plan again**, demanding *more*
+   prose per sub-task (rationale + a >=40-char changeSpec + verbatim code
+   excerpts). That reply is strictly larger than the plan itself, and it
+   breached the model's output ceiling.
+3. Truncation went **undetected**, so the compaction retry meant to handle it
+   never ran.
+4. The prose-drift retry ran instead and re-truncated identically -- and its
+   prompt still carried the "add more prose" note, so it asked for more and
+   less output in the same message.
+5. `runLeadPlanner` threw, **discarding the valid plan from step 1**.
+
+The run died holding a plan it could have shipped. Every fix below is aimed at
+that, in priority order.
+
+**P0-1 -- a valid plan is never discarded.** `runLeadPlanner` now banks each
+plan that parses and validates. If the workerContext re-ask then fails for any
+reason, it falls back to the banked plan with a loud warning instead of
+propagating the failure. Relatedly, a plan that is *still* thin after the
+bounded re-ask now ships as a DEGRADED plan (workers on those seqs start
+colder) rather than hard-failing the session; `loop.require_worker_context_strict:true`
+restores the old behaviour. A first-call failure with nothing banked still
+throws, as it must.
+
+**P0-2 -- the workerContext re-ask is now bounded.** New
+`runLeadWorkerContextSdk` asks only for the `workerContext` blocks of the
+sub-task seqs that need them, and merges them into the plan already in hand.
+Output size now scales with the number of *missing* blocks instead of with the
+whole plan, and the validated plan is never put back on the wire where it can
+be lost or corrupted. The merge refuses to overwrite context the lead already
+got right, and refuses an insubstantive top-up. If the top-up call fails, the
+old whole-plan re-ask still runs as a fallback.
+
+**P0-3 -- the truncation retry no longer contradicts itself.** The retry is
+rebuilt from the base brief, dropping the corrective note that asked for more
+prose. It also shrinks the contract *mechanically* -- omit `codeExcerpts`
+entirely, `changeSpec` <= 300 chars, `rationale` <= 200, at most 5
+`successCriteria` -- instead of politely asking the model to be terser, which
+produced three identically-truncated replies on b98. The beta.67 note carries
+its own hard size limit for the same reason.
+
+**P0-4 -- the output ceiling is now ours.** Nothing in the harness ever set
+one, so every structured call inherited whatever the bundled SDK chose for the
+model id, resolved from the SDK's own baked-in model table. The b98 lead ran on
+`claude-opus-5`, which is **not in the pinned SDK 0.3.207 model table at all**,
+so the ceiling in force was neither chosen nor visible to us.
+`CLAUDE_CODE_MAX_OUTPUT_TOKENS` is now exported explicitly via `buildSdkEnv`
+(`models.max_output_tokens`, default 64000, 0 to disable) and wired into the
+lead, top-up, revise-spec and worker calls.
+
+**P0-5 -- truncation is actually detected now.** beta.97 read `stop_reason`
+only from the `result` event, which reports how the *session* ended -- `end_turn`
+even when a turn inside it was cut off. So the `[truncated:max_tokens]`
+annotation never fired and the compaction retry it gated was dead code.
+`messageIndicatesTruncation()` now checks all three signals the SDK offers:
+`assistant.error === "max_output_tokens"`, `assistant.message.stop_reason ===
+"max_tokens"`, and the result-event reason/subtype. Any truncated frame wins
+over a clean session-end reason.
+
+**P0-6 -- a truncated reply is no longer a lost reply.** `repairTruncatedJson()`
+recovers the longest well-formed prefix of a cut-off document, dropping the
+partial trailing element whole (on a plan cut mid-sub-task-5, sub-tasks 1-4
+survive intact). Used only as a last resort when both attempts truncate, gated
+by `loop.lead_salvage_truncated_plan` (default true). The salvaged plan is REAL
+but INCOMPLETE and is logged as such; it still has to pass `validatePlan`.
+Structured-call failures now carry the full raw reply on the error object,
+since the error *message* embeds only the first 4000 characters -- far too few
+to rebuild a plan from.
+
+**P0-7 -- structured calls get a stream-open watchdog.** `structuredCall` had
+only the blunt outer timer, so a wedged subprocess sat silently for the full
+lead timeout. A separate 120s watchdog now aborts if the SDK stream never opens,
+with a distinct `[stream_open_timeout]` error that joins the bounded retry set.
+Deliberately stream-open and *not* first-token: structured calls don't enable
+partial messages, so assistant text arrives only when the turn completes, and a
+first-token timer would fire on every slow-but-healthy call.
+
+**Also fixed.** The lead call used `loop.worker_timeout_seconds` (1800s) while
+`loop.lead_timeout_seconds` (900s) -- the knob documented and audited for
+exactly this call -- was ignored, so operators tuning it changed nothing. The
+revise-spec turn likewise now honours `loop.revise_spec_timeout_seconds`.
+`package-lock.json` was stale at beta.94 and is back in sync with
+`package.json` and `src/version.ts`.
+
+37 new regression tests (`tests/beta99-plan-truncation.test.mjs`, plus the
+planner-fallback cases in `tests/beta67-fable-in-loop.test.mjs`) pin each link
+of the chain so it cannot re-form. Suite: 1207 passing.
+
 ## [0.1.0-beta.68] -- 2026-07-23
 
 ### Adaptive decomposition (lead planner)
