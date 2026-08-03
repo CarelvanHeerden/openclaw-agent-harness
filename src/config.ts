@@ -249,6 +249,23 @@ export interface ModelsConfig {
   /** Optional per-model price overrides for cost estimation. Set when Anthropic ships new pricing before we release. Keys are model ids (e.g. 'claude-fable-5'). Values are USD per million tokens. */
   price_overrides?: Record<string, { input: number; output: number }>;
   /**
+   * beta.99 (P0-4): OUTPUT-TOKEN CEILING for the SDK subprocess, exported as
+   * `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
+   *
+   * Why this exists: nothing in the harness ever set an output ceiling, so
+   * every structured call inherited whatever default the bundled SDK picks for
+   * the model id -- and the SDK resolves that from its OWN baked-in model
+   * table. A model id newer than the pinned SDK (e.g. `claude-opus-5` against
+   * SDK 0.3.207, which is exactly the b98 lead configuration) is absent from
+   * that table, so the ceiling it lands on is not one we chose and not one we
+   * can see. Setting this explicitly makes the plan-size budget OURS.
+   *
+   * Current-generation models (Fable 5, Sonnet 5, Opus 4.7/4.8) accept up to
+   * 128000 output tokens; 64000 is their default. Default here: 64000.
+   * Set 0 to disable (inherit the SDK default, pre-beta.99 behaviour).
+   */
+  max_output_tokens?: number;
+  /**
    * Anthropic auth for the embedded `@anthropic-ai/claude-agent-sdk`.
    *
    * The SDK spawns the bundled Claude Code binary as a subprocess. With no
@@ -435,6 +452,20 @@ export interface LoopConfig {
    * only escape hatch. Enforces the founding orchestrator-split goal.
    */
   enforce_worker_context?: boolean;
+  /**
+   * beta.99 (P0-1): what to do when a plan is STILL missing substantive
+   * workerContext after the bounded re-ask.
+   *
+   * false (default) -> ship the degraded plan with a loud warning. Workers on
+   * those seqs simply start colder, which is a quality regression, not a
+   * broken run.
+   * true -> restore the pre-beta.99 hard-fail (LeadPlanValidationError).
+   *
+   * The default flipped because b98 (session f2613eec) burned a whole session
+   * and produced NOTHING while the harness was holding a valid plan: the gate
+   * failing is not a good enough reason to throw the plan away.
+   */
+  require_worker_context_strict?: boolean;
   /**
    * beta.67 (P0b): run ONE Fable revise-spec turn between the adversary and
    * the cycle-2 workers to refresh workerContext (resolved changeSpec) instead
@@ -647,6 +678,18 @@ export interface LoopConfig {
    * d01a7484 re-plan) does not hard-crash the plan. Default true.
    */
   lead_json_retry_enabled?: boolean;
+  /**
+   * beta.99 (P0-6): when BOTH lead plan attempts are cut off at the output
+   * ceiling, salvage the well-formed prefix of the reply rather than failing
+   * the run with `plan_failed`.
+   *
+   * The salvaged plan is REAL but INCOMPLETE -- trailing sub-tasks were cut
+   * off -- and it is logged loudly as such. It still has to pass validatePlan.
+   * Default true: an incomplete plan that ships something reviewable beats a
+   * dead session that spent the operator's time and shipped nothing.
+   * Set false to restore the pre-beta.99 hard-fail.
+   */
+  lead_salvage_truncated_plan?: boolean;
   /**
    * beta.94 (Feature 1): DETERMINISTIC FINAL SCOPE CHECK. Two behaviours gated
    * together:

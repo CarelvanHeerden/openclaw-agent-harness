@@ -119,11 +119,105 @@ test("P0a: bad-then-good triggers exactly ONE re-ask", async () => {
   assert.match(String(calls[1].correctiveNote), /WORKER CONTEXT REQUIRED/);
   assert.equal(plan.subTasks[0].workerContext.changeSpec, REF_CHANGESPEC);
 });
-test("P0a: bad-then-bad hard-throws after exactly ONE re-ask (bounded)", async () => {
+// beta.99 (P0-1): the default flipped. b98 (session f2613eec) burned an entire
+// session and shipped NOTHING because this gate threw while the harness was
+// holding a valid plan. A thin-context plan is DEGRADED (workers start colder),
+// not broken, so the bounded re-ask now still bounds at ONE call but ships the
+// plan with a loud warning. The old hard-fail is opt-in.
+test("beta.99: bad-then-bad SHIPS the degraded plan after exactly ONE re-ask (no throw)", async () => {
   if (!runLeadPlanner) return;
   const { deps, calls } = makeDeps({ ...BASE_CFG, loop: { enforce_worker_context: true } }, [badPlan, badPlan]);
+  const warns = [];
+  deps.logger.warn = (m) => warns.push(String(m));
+  const plan = await runLeadPlanner({ pinnedBranch: undefined }, deps);
+  assert.equal(calls.length, 2, "still bounded to exactly one re-ask");
+  assert.equal(plan.subTasks.length, 1, "the degraded plan is returned, not discarded");
+  assert.ok(
+    warns.some((w) => /STILL insufficient/.test(w)),
+    "shipping a degraded plan must be announced loudly",
+  );
+});
+test("beta.99: require_worker_context_strict restores the pre-beta.99 hard-fail", async () => {
+  if (!runLeadPlanner) return;
+  const { deps, calls } = makeDeps(
+    { ...BASE_CFG, loop: { enforce_worker_context: true, require_worker_context_strict: true } },
+    [badPlan, badPlan],
+  );
   await assert.rejects(() => runLeadPlanner({ pinnedBranch: undefined }, deps), (e) => { assert.ok(e instanceof LeadPlanValidationError); return true; });
   assert.equal(calls.length, 2);
+});
+// beta.99 (P0-1): THE b98 REGRESSION. Lead call #1 returned a valid plan; the
+// b67 whole-plan re-ask then blew the output ceiling and threw -- and that
+// throw propagated out, discarding the plan we already had. The run must now
+// fall back to the banked plan instead of dying holding it.
+test("beta.99: a re-ask that THROWS falls back to the last valid plan (b98 regression)", async () => {
+  if (!runLeadPlanner) return;
+  let i = 0;
+  const calls = [];
+  const deps = {
+    config: { ...BASE_CFG, loop: { enforce_worker_context: true } },
+    logger: { info() {}, warn() {} },
+    callLeadModel: async (_b, _r, correctiveNote) => {
+      calls.push({ correctiveNote });
+      i += 1;
+      if (i === 1) return JSON.parse(JSON.stringify(badPlan));
+      throw new Error("[lead] extractJson failed: no JSON in output (truncated)");
+    },
+    allocateWorktree: async () => "/tmp/wt",
+    estimateCost: () => 0,
+  };
+  const warns = [];
+  deps.logger.warn = (m) => warns.push(String(m));
+  const plan = await runLeadPlanner({ pinnedBranch: undefined }, deps);
+  assert.equal(calls.length, 2);
+  assert.equal(plan.subTasks.length, 1, "the plan banked on attempt 1 must survive a failed re-ask");
+  assert.ok(warns.some((w) => /falling back to the previous VALID plan/.test(w)));
+});
+// beta.99 (P0-1): with NOTHING banked there is nothing to fall back to, so a
+// first-call failure must still surface rather than be swallowed.
+test("beta.99: a FIRST-call failure still throws (nothing banked to fall back to)", async () => {
+  if (!runLeadPlanner) return;
+  const deps = {
+    config: { ...BASE_CFG, loop: { enforce_worker_context: true } },
+    logger: { info() {}, warn() {} },
+    callLeadModel: async () => { throw new Error("[lead] extractJson failed: no JSON in output"); },
+    allocateWorktree: async () => "/tmp/wt",
+    estimateCost: () => 0,
+  };
+  await assert.rejects(() => runLeadPlanner({ pinnedBranch: undefined }, deps), /extractJson failed/);
+});
+// beta.99 (P0-2): the bounded top-up must be preferred over the whole-plan
+// re-ask, and must satisfy the gate WITHOUT a second full plan call.
+test("beta.99: bounded workerContext top-up satisfies the gate with no whole-plan re-ask", async () => {
+  if (!runLeadPlanner) return;
+  const calls = [];
+  const topUpCalls = [];
+  const deps = {
+    config: { ...BASE_CFG, loop: { enforce_worker_context: true } },
+    logger: { info() {}, warn() {} },
+    callLeadModel: async (_b, _r, correctiveNote) => { calls.push({ correctiveNote }); return JSON.parse(JSON.stringify(badPlan)); },
+    callWorkerContextModel: async (_b, _plan, missingSeqs) => {
+      topUpCalls.push(missingSeqs);
+      return missingSeqs.map((seq) => ({ seq, workerContext: { rationale: "why", changeSpec: REF_CHANGESPEC } }));
+    },
+    allocateWorktree: async () => "/tmp/wt",
+    estimateCost: () => 0,
+  };
+  const plan = await runLeadPlanner({ pinnedBranch: undefined }, deps);
+  assert.equal(calls.length, 1, "the whole plan must NOT be re-requested when the bounded top-up works");
+  assert.deepEqual(topUpCalls, [[1]], "the top-up asks for ONLY the missing seqs");
+  assert.equal(plan.subTasks[0].workerContext.changeSpec, REF_CHANGESPEC);
+});
+// beta.99 (P0-2): the top-up is best-effort. If it throws we must degrade to
+// the old whole-plan re-ask, never lose the run.
+test("beta.99: a failing top-up falls back to the whole-plan re-ask", async () => {
+  if (!runLeadPlanner) return;
+  const { deps, calls } = makeDeps({ ...BASE_CFG, loop: { enforce_worker_context: true } }, [badPlan, okPlan]);
+  deps.callWorkerContextModel = async () => { throw new Error("top-up unavailable"); };
+  const plan = await runLeadPlanner({ pinnedBranch: undefined }, deps);
+  assert.equal(calls.length, 2, "falls back to the whole-plan re-ask");
+  assert.match(String(calls[1].correctiveNote), /WORKER CONTEXT REQUIRED/);
+  assert.equal(plan.subTasks[0].workerContext.changeSpec, REF_CHANGESPEC);
 });
 test("P0a: enforcement disabled -> proceeds with a bad plan, no re-ask, no throw", async () => {
   if (!runLeadPlanner) return;

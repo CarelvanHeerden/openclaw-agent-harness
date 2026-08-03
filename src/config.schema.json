@@ -87,6 +87,13 @@
         "worker": { "type": "string" },
         "adversary": { "type": "string" },
         "classifier": { "type": "string" },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128000,
+          "default": 64000,
+          "description": "beta.99: output-token ceiling exported to the SDK subprocess as CLAUDE_CODE_MAX_OUTPUT_TOKENS. Nothing previously set one, so structured calls inherited whatever the bundled SDK picked for the model id -- undefined for a model newer than the pinned SDK. 0 disables (inherit the SDK default)."
+        },
         "price_overrides": {
           "type": "object",
           "description": "beta.57 schema fix (drift): per-model price overrides for cost estimation, keyed by model id. Values are USD per million tokens.",
@@ -140,7 +147,17 @@
         "recovery_max_resumes": { "type": "integer", "minimum": 1, "maximum": 100, "default": 3 },
         "recovery_resume_window_seconds": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 60 },
         "recovery_resume_at_subtask": { "type": "boolean", "default": true },
-        "lead_json_retry_enabled": { "type": "boolean", "default": true }
+        "lead_json_retry_enabled": { "type": "boolean", "default": true },
+        "require_worker_context_strict": {
+          "type": "boolean",
+          "default": false,
+          "description": "beta.99: hard-fail the plan when workerContext is still thin after the bounded re-ask. Default false -- ship the degraded plan with a warning instead of burning the session (the b98 failure mode)."
+        },
+        "lead_salvage_truncated_plan": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.99: when both lead plan attempts are cut off at the output ceiling, salvage the well-formed prefix instead of failing with plan_failed. The salvaged plan is INCOMPLETE and is logged as such."
+        }
       }
     },
     "ci": {

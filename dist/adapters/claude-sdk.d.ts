@@ -17,9 +17,46 @@
  * the SDK is missing.
  */
 import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crystallise/prompt-refiner.js";
-import type { LeadPlan, LeadPlanSubTask } from "../orchestrator/fable5-lead.js";
+import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/fable5-lead.js";
 import type { ReviewReport } from "../orchestrator/fable5-adversary.js";
-export declare function buildSdkEnv(apiKey?: string): Record<string, string> | undefined;
+/**
+ * beta.99 (P0-4): default output-token ceiling exported to the SDK subprocess.
+ * Fable 5 / Sonnet 5 / Opus 4.7 / Opus 4.8 all advertise
+ * `max_output_tokens: { default: 64000, upper: 128000 }`. We pin the default
+ * rather than the upper bound: 64k is ample for a plan, and a ceiling that is
+ * merely LARGE does not fix a plan that is unboundedly large (that is what the
+ * bounded top-up and the compaction retry are for).
+ */
+export declare const DEFAULT_SDK_MAX_OUTPUT_TOKENS = 64000;
+/**
+ * beta.99 (P0-7): default stream-open watchdog window for structured calls.
+ * Matches the worker path's phase-1 default. A healthy call opens its stream in
+ * seconds; 120s is slack for a cold subprocess spawn, not for model thinking
+ * time (which happens AFTER the stream is open and is bounded separately).
+ */
+export declare const DEFAULT_STREAM_OPEN_TIMEOUT_SECONDS = 120;
+export declare function buildSdkEnv(apiKey?: string, maxOutputTokens?: number): Record<string, string> | undefined;
+/**
+ * beta.99 (P0-5): did THIS SDK message indicate the model was cut off at the
+ * output ceiling?
+ *
+ * b97's Fix #8 read `stop_reason` from the `result` event ONLY. That event
+ * reports how the SESSION ended, which is `end_turn`/`success` even when an
+ * assistant turn inside it was truncated -- so the `[truncated:max_tokens]`
+ * annotation never fired, the compaction retry it gates was dead code, and
+ * every truncation fell through to the beta.81 prose-drift retry, which
+ * re-truncates identically. That is the b98 retry ladder: 3 calls, 3 identical
+ * truncations, ~12 minutes, no plan.
+ *
+ * Truncation surfaces in three places, so we check all three:
+ *   1. `assistant.error === "max_output_tokens"` -- the SDK's own dedicated
+ *      signal (see SDKAssistantMessageError in sdk.d.ts).
+ *   2. `assistant.message.stop_reason === "max_tokens"` -- the raw API stop
+ *      reason for that turn.
+ *   3. `result.stop_reason === "max_tokens"`, plus the
+ *      `error_max_structured_output_retries` subtype (b97's original check).
+ */
+export declare function messageIndicatesTruncation(message: unknown): boolean;
 export interface RunWorkerParams {
     worktreePath: string;
     systemPrompt: string;
@@ -81,6 +118,8 @@ export interface RunWorkerParams {
     logger?: {
         warn: (m: string, meta?: unknown) => void;
     };
+    /** beta.99 (P0-4): output-token ceiling for the SDK subprocess. See buildSdkEnv. */
+    maxOutputTokens?: number;
 }
 export interface RunWorkerResult {
     sdkSessionId: string;
@@ -202,6 +241,35 @@ export declare function evaluateStreamSlowTick(input: {
 };
 export declare function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult>;
 /**
+ * beta.99 (P0-6): a `structuredCall` failure carrying the FULL raw model reply
+ * and whether the call was cut off at the output ceiling, so callers can try
+ * `repairTruncatedJson` rather than discard the work.
+ */
+export interface StructuredCallError extends Error {
+    rawText?: string;
+    truncated?: boolean;
+}
+/**
+ * beta.99 (P0-6): repair a JSON document that was cut off mid-write.
+ *
+ * `scanBalanced` requires depth to return to 0, so a truncated reply yields
+ * ZERO candidates and `extractJson` throws "no JSON in output" -- discarding a
+ * document that was perfectly well-formed for its first 95%. On b98 that meant
+ * a plan whose sub-task 1 was complete and sub-task 2 half-written was binned
+ * wholesale.
+ *
+ * The repair walks the text tracking string/escape state and container depth,
+ * rewinds to the last position where a COMPLETE element had just been closed,
+ * and appends the closers needed to balance it. Anything after that point (the
+ * half-written element) is dropped.
+ *
+ * Returns null when there is nothing recoverable. The result is deliberately
+ * INCOMPLETE-BUT-VALID: callers must treat it as a partial document, announce
+ * it loudly, and re-validate before use. It is never a silent substitute for a
+ * complete reply.
+ */
+export declare function repairTruncatedJson(text: string): string | null;
+/**
  * Extract the JSON contract from a model's raw output.
  *
  * beta.31: the lead planner (session 78237f43) failed with
@@ -313,6 +381,14 @@ export declare function runLeadSdk(params: {
      * loop.lead_json_retry_enabled. Set false to disable.
      */
     jsonRetryEnabled?: boolean;
+    /** beta.99 (P0-4): output-token ceiling for the SDK subprocess. */
+    maxOutputTokens?: number;
+    /**
+     * beta.99 (P0-6): when both attempts are truncated, salvage the well-formed
+     * prefix instead of failing the plan. Default true; set false to restore the
+     * pre-beta.99 hard-fail.
+     */
+    leadSalvageEnabled?: boolean;
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
     costUsd: number;
     tokensIn: number;
@@ -333,6 +409,12 @@ export declare function runLeadReviseSpecSdk(params: {
     review: ReviewReport;
     timeoutSeconds: number;
     apiKey?: string;
+    /**
+     * beta.99 (P0-4): output-token ceiling. This turn re-emits the FULL sub-task
+     * list with refreshed workerContext, so it has the same size profile -- and
+     * the same truncation exposure -- as the initial plan call.
+     */
+    maxOutputTokens?: number;
     logger?: {
         warn: (m: string, meta?: unknown) => void;
     };
@@ -342,6 +424,35 @@ export declare function runLeadReviseSpecSdk(params: {
     tokensIn: number;
     tokensOut: number;
 }>;
+/**
+ * beta.99 (P0-2): BOUNDED workerContext top-up.
+ *
+ * The beta.67 gate used to re-ask for the WHOLE plan whenever any mutate
+ * sub-task had thin `workerContext`. That reply has to restate every sub-task
+ * AND add the extra prose, so its size grows with the plan -- and on b98
+ * (session f2613eec) it breached the output ceiling three times running and
+ * took the run down with it, discarding a plan that was already valid.
+ *
+ * This asks for ONLY the `workerContext` blocks of the named seqs. Output size
+ * is bounded by how many are missing, the validated plan is never re-emitted
+ * (so it cannot be corrupted or lost), and the reply is small enough that
+ * truncation is not a realistic failure mode.
+ */
+export declare function runLeadWorkerContextSdk(params: {
+    model: string;
+    brief: CrystallisedBrief;
+    subTasks: LeadPlanSubTask[];
+    missingSeqs: number[];
+    timeoutSeconds: number;
+    apiKey?: string;
+    maxOutputTokens?: number;
+    logger?: {
+        warn: (m: string, meta?: unknown) => void;
+    };
+}): Promise<Array<{
+    seq: number;
+    workerContext: WorkerContext;
+}>>;
 export declare function splitDiffOnFileBoundaries(diff: string, maxBytes?: number): string[];
 export declare function runAdversarySdk(params: {
     model: string;

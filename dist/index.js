@@ -41,7 +41,7 @@ import { GitAdapter } from "./adapters/git-worktree.js";
 import { createPullRequest, getPullRequest, getCombinedStatus, getFailingCheckLogs, mergePullRequest, postPrComment } from "./adapters/github.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
-import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, } from "./adapters/claude-sdk.js";
+import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, } from "./adapters/claude-sdk.js";
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt } from "./crystallise/prompt-refiner.js";
@@ -344,12 +344,32 @@ export function bootstrapHarnessSync(api) {
                     model: config.models.lead,
                     brief: b,
                     reposAllowed: config.repos.allowed,
-                    timeoutSeconds: config.loop.worker_timeout_seconds,
+                    // beta.99: the lead ran on `worker_timeout_seconds` (1800s) while
+                    // `lead_timeout_seconds` (900s) -- the knob documented and audited
+                    // for exactly this call -- was ignored, so operators tuning the
+                    // lead timeout changed nothing.
+                    timeoutSeconds: config.loop.lead_timeout_seconds ?? config.loop.worker_timeout_seconds,
                     apiKey: await anthropicApiKey(),
                     logger: api.logger,
                     correctiveNote,
                     // beta.81 (Track C): retry-once-on-prose-drift guard for the lead.
                     jsonRetryEnabled: config.loop.lead_json_retry_enabled !== false,
+                    // beta.99 (P0-4/P0-6): explicit output ceiling + truncation salvage.
+                    maxOutputTokens: config.models.max_output_tokens,
+                    leadSalvageEnabled: config.loop.lead_salvage_truncated_plan !== false,
+                }),
+                // beta.99 (P0-2): bounded workerContext top-up. Replaces the b67
+                // whole-plan re-ask as the FIRST remedy for thin context; the
+                // whole-plan re-ask remains as the fallback inside runLeadPlanner.
+                callWorkerContextModel: async (b, plan, missingSeqs) => runLeadWorkerContextSdk({
+                    model: config.models.lead,
+                    brief: b,
+                    subTasks: plan.subTasks,
+                    missingSeqs,
+                    timeoutSeconds: config.loop.lead_timeout_seconds ?? config.loop.worker_timeout_seconds,
+                    apiKey: await anthropicApiKey(),
+                    maxOutputTokens: config.models.max_output_tokens,
+                    logger: api.logger,
                 }),
                 allocateWorktree: async (repo, branch) => {
                     const [owner] = repo.split("/");
@@ -403,8 +423,11 @@ export function bootstrapHarnessSync(api) {
                 brief,
                 subTasks: plan.subTasks,
                 review,
-                timeoutSeconds: config.loop.worker_timeout_seconds,
+                timeoutSeconds: config.loop.revise_spec_timeout_seconds ?? config.loop.worker_timeout_seconds,
                 apiKey: await anthropicApiKey(),
+                // beta.99 (P0-4): same output ceiling as the plan call -- this turn
+                // re-emits the full sub-task list and truncates the same way.
+                maxOutputTokens: config.models.max_output_tokens,
                 logger: api.logger,
             });
             return { subTasks: r.subTasks };
@@ -421,7 +444,7 @@ export function bootstrapHarnessSync(api) {
                 config,
                 logger: api.logger,
                 buildCanUseTool: () => canUseTool,
-                runWorkerModel: async (params) => runWorkerSdk({ ...params, apiKey: await anthropicApiKey() }),
+                runWorkerModel: async (params) => runWorkerSdk({ ...params, apiKey: await anthropicApiKey(), maxOutputTokens: config.models.max_output_tokens }),
                 gitBaseSha: (wt) => git.baseSha(wt),
                 gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),
                 gitCommit: (wt, msg, id) => git.commit(wt, msg, id),
