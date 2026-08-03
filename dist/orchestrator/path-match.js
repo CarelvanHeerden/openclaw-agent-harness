@@ -45,6 +45,54 @@ export function stripRouteGroups(p) {
         .filter((seg) => !(seg.startsWith("(") && seg.endsWith(")")))
         .join("/");
 }
+/**
+ * beta.98: strip a MIGRATION-TIMESTAMP / migration-hash prefix from each path
+ * segment. Migration tooling stamps a dynamic, execution-time prefix onto the
+ * migration DIRECTORY (Prisma / Rails / Django / Alembic), which the lead
+ * cannot predict at planning time (the timestamp is generated minutes later
+ * when the worker runs `migrate dev`). This defeated ALL FOUR structural rules
+ * for the b96/b97 smoke: contract `prisma/migrations/continuity_resilience/migration.sql`
+ * vs committed `prisma/migrations/20260803073723_continuity_resilience/migration.sql`
+ * -> the `20260803073723_` prefix broke exact/route-group/suffix/basename-dir,
+ * and `strictContract:true` (b84) disables the fuzzy fallbacks, so a correctly
+ * generated + committed migration false-failed `file_committed`.
+ *
+ * Same CLASS as the b50 route-group / b76 drift bugs; new TRIGGER = dynamic
+ * `<stamp>_` dir-segment prefixes. Supported prefix forms (all followed by
+ * `_<name>`):
+ *   - Prisma / Rails / Django-timestamp:  14-digit `YYYYMMDDHHmmss_`
+ *   - Django sequential:                  `NNNN_` (1+ digits)
+ *   - Alembic:                            12-hex-char revision id `abc123def456_`
+ *
+ * Deliberately conservative: only strips a prefix that is PURELY the stamp
+ * followed by `_` and a non-empty remainder, so a legitimately-named segment
+ * like `2024_report` (name that merely starts with digits) still keeps its
+ * meaning where the remainder must still match. Because the rule requires the
+ * REST of the path to match exactly after stripping on both sides, it cannot
+ * introduce a fuzzy false-positive (unlike the `*-unique` fallbacks): a wrong
+ * sibling with a different name-after-prefix still fails.
+ */
+export function stripMigrationTimestamp(p) {
+    return normalisePath(p)
+        .split("/")
+        .map((seg) => {
+        // 14-digit timestamp prefix: 20260803073723_continuity_resilience
+        let m = /^\d{14}_(.+)$/.exec(seg);
+        if (m)
+            return m[1];
+        // Alembic 12-hex revision id prefix: 1a2b3c4d5e6f_add_users
+        m = /^[0-9a-f]{12}_(.+)$/.exec(seg);
+        if (m)
+            return m[1];
+        // Django sequential prefix: 0001_initial (>=3 digits to avoid eating
+        // meaningful short numeric names; migrations pad to 4).
+        m = /^\d{3,}_(.+)$/.exec(seg);
+        if (m)
+            return m[1];
+        return seg;
+    })
+        .join("/");
+}
 /** Normalise separators + strip a leading `./` and any leading/trailing `/`. */
 export function normalisePath(p) {
     return p
@@ -79,10 +127,26 @@ export function pathMatchRule(committed, contract) {
     const tg = stripRouteGroups(t);
     if (cg === tg)
         return "route-group";
+    // 2.5 (beta.98) migration-timestamp-normalised: strip a dynamic migration
+    //     stamp prefix (`<timestamp>_` / `<hash>_` / `<seq>_`) from each segment
+    //     on BOTH sides, then compare. Also applied on top of the route-group
+    //     normalisation so a stamped dir under a route group still resolves.
+    //     STRUCTURAL: the whole remaining path must match exactly, so a wrong
+    //     sibling with a different name still fails (no fuzzy widening).
+    const cm = stripMigrationTimestamp(cg);
+    const tm = stripMigrationTimestamp(tg);
+    if (cm === tm)
+        return "timestamp-prefix";
     // 3. suffix: committed ends with the (group-normalised) contract path,
     //    on a segment boundary (contract omits a leading prefix like packages/*).
     if (cg.endsWith(`/${tg}`))
         return "suffix";
+    // 3b (beta.98): suffix under migration-stamp normalisation (contract omits a
+    //     leading prefix AND the committed dir carries a migration stamp).
+    if (cm !== cg || tm !== tg) {
+        if (cm.endsWith(`/${tm}`))
+            return "timestamp-prefix";
+    }
     // 4. basename + trailing-dir context. Same filename AND every directory of
     //    the contract (group-normalised) appears in order as a suffix of the
     //    committed dir chain. Requires >=1 shared parent dir when the contract
@@ -125,11 +189,12 @@ export function anyPathMatches(committedFiles, contract) {
 const RULE_RANK = {
     exact: 0,
     "route-group": 1,
-    suffix: 2,
-    "basename-dir": 3,
-    basename: 4,
-    "basename-unique": 5,
-    "test-file-unique": 6,
+    "timestamp-prefix": 2,
+    suffix: 3,
+    "basename-dir": 4,
+    basename: 5,
+    "basename-unique": 6,
+    "test-file-unique": 7,
 };
 /**
  * beta.76 (Defect A): is `p` a TEST/SPEC file, by any common convention?
@@ -167,16 +232,20 @@ export function isTestFilePath(p) {
     return false;
 }
 /**
- * beta.84 (#1): a STRUCTURAL match is one of the four un-fuzzy rules that
- * require real directory context (`exact`, `route-group`, `suffix`,
- * `basename-dir`). The two `*-unique` fallbacks (`basename-unique`,
+ * beta.84 (#1): a STRUCTURAL match is one of the un-fuzzy rules that require
+ * real directory context (`exact`, `route-group`, `timestamp-prefix` [b98],
+ * `suffix`, `basename-dir`). The two `*-unique` fallbacks (`basename-unique`,
  * `test-file-unique`) are the FUZZY ones -- they match on filename/type alone
  * and are the source of the cyc2-seq7 false-positive (a lone same-basename
  * SIBLING satisfied the wrong contract entry). A caller that must not accept a
  * fuzzy match passes `strictContract: true`.
  */
 export function isStructuralRule(rule) {
-    return rule === "exact" || rule === "route-group" || rule === "suffix" || rule === "basename-dir";
+    return (rule === "exact" ||
+        rule === "route-group" ||
+        rule === "timestamp-prefix" ||
+        rule === "suffix" ||
+        rule === "basename-dir");
 }
 export function resolveContractPath(realFiles, contract, opts = {}) {
     let best = null;
