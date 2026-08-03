@@ -1,5 +1,106 @@
 # Changelog
 
+## [0.1.0-beta.100] -- 2026-08-03
+
+### A correct commit stops being a run-killer
+
+Fixes the b99 smoke failure (session `4420aa45`), where the run died at cycle 1
+sub-task 3 holding a commit that was right.
+
+b99 itself passed its release bar: the lead produced a valid 10-sub-task plan on
+ONE call with `finishReason: "end_turn"`, and none of b99's recovery machinery
+had to fire. The run then died on something else, which the handoff report filed
+as a plan-vs-repo-convention gap unrelated to b99. It is not unrelated, and it is
+not a planning problem. It is a regression in our own matcher, and the cure has
+been sitting in the codebase as dead code since b84.
+
+**What actually happened.** The lead authored a co-located contract path
+`src/app/api/grc/continuity-exercises/route.test.ts`. The worker committed
+`d7cc9602` with both deliverables, placing the test at
+`src/__tests__/api/grc/continuity-exercises-api.test.ts` -- the correct choice,
+because the repo's `jest.config.ts` `testMatch` is `**/__tests__/**/*.test.ts`
+and a co-located file would never run in CI. The worker verified this against the
+config and cited the four sibling GRC test files that follow the same convention.
+
+Three layers that each exist to catch exactly this all missed:
+
+1. `rederiveContractPath` (b76/b93), the layer explicitly designated as "the real
+   cure" for path drift, learns a leading-prefix remap only from a SHARED
+   TRAILING directory chain. Here the stale dir
+   (`src/app/api/grc/continuity-exercises`) and the real dir
+   (`src/__tests__/api/grc`) share no common suffix -- `continuity-exercises` is
+   not `grc` -- so `commonDirSuffix` returned empty, nothing was learned, and the
+   path came back unchanged. b76 handles drift on the directory OR the basename;
+   this drifted on both at once.
+2. The `test-file-unique` rule in `path-match.ts` resolves this shape correctly.
+   It was BUILT for it, by b76, for a near-identical case. But b84 set
+   `strictContract: true` on `file_committed`, which early-returns before both
+   `*-unique` fallbacks. b84's actual false positive -- a `route.ts` contract
+   matching a `download/route.ts` sibling -- came only from `basename-unique`, on
+   a NON-test file. `test-file-unique` was collateral damage and has been dead on
+   this path for sixteen releases.
+3. Every recovery path missed. The b53 env-wait retry requires NO commit, the b35
+   revise no-op requires `cycle > 1`, and the b55 clarification escalation
+   requires `looksLikeRefusal`, which also requires NO commit. A worker that
+   committed real work and deviated for a verifiable reason had nothing.
+
+So the run hard-failed at cycle 1: $3.94 spent, two good commits and a correct
+third one discarded, no PR, nothing to resume from.
+
+**Fix 1 -- bounded test-contract reconciliation.** We do NOT re-open the fuzzy
+fallbacks in `path-match.ts`. b84, b87 and b95 all depend on `file_committed`
+staying strict, and loosening the matcher would re-open the sibling
+false-positive class. Instead the CONTRACT is corrected before verification, at
+the layer b76 designated for it, under a 1:1 constraint that admits no ambiguity:
+when exactly ONE contract path is a test file that does not structurally resolve
+against what the sub-task touched, and exactly ONE touched test file is not
+already claimed by another contract entry, those two are necessarily each other's
+counterpart. Two unmatched test contracts, or two unclaimed test files, is
+genuine ambiguity and reconciles nothing -- the strict verifier fails as before.
+A non-test contract path never enters the rule, so b84's `route.ts` can never
+reconcile onto a sibling. The rewrite is audited (`loop.contract_test_path_reconciled`),
+never silent, and the reconciled path still has to satisfy the unchanged strict
+check including b84's non-zero-diff gate. Safety rests on the file list being
+PER-SUB-TASK-scoped -- the worker turn's own `filesChanged` + `uncommittedFiles`,
+never the run-wide `discoveredRealPaths` -- which is the same scoping argument the
+b59/b76 fallbacks rest on, and there is a test pinning it.
+
+**Fix 2 -- a contract-path mismatch pauses instead of killing the run.** Fix 1
+self-heals the provable case. What remains is the genuinely ambiguous case: the
+worker committed real work, but the harness cannot prove whether the plan's path
+or the worker's placement is wrong. That is a human decision. When every failing
+check is a path-bearing `file_committed`/`file_written` mismatch AND the worker
+made a real commit, the run now pauses in `awaiting_clarification` via the
+existing b55 machinery -- worktree and commits preserved, resumable through
+`harness_answer` -- instead of discarding everything.
+
+This does not weaken trust-but-verify. The sub-task still FAILS verification, the
+row is still `failed_verification`, and no check is relaxed or accepted; only the
+terminal disposition changes from `failed` to a resumable pause. The question put
+to the human is built from ground truth -- expected paths from the contract,
+actual paths from git via `filesChanged`. The worker's prose is quoted as a
+"stated reason" for context and is never the evidence, which is the line that
+keeps this from becoming the confabulation hole b8/b84/b92 closed.
+
+**Also fixed.** `tests/beta70-ten-minute-ceiling.test.mjs` pinned the version with
+an alternation that only admitted two-digit betas (`7[0-9]|[89][0-9]`), so the
+first three-digit release broke it. It now uses the numeric floor every other
+version-floor test converged on.
+
+**Deliberately NOT in this release.** The b99 report also asks for live validation
+of `stripMigrationTimestamp` and of b99's own P0-1/P0-2/P0-5/salvage paths. Both
+already have unit coverage (11 and 30 tests respectively, against the real
+modules); what is missing in both cases is a live trigger, which cannot be
+manufactured locally -- it needs a smoke with a brief large enough to cross the
+64k output ceiling, and one whose lead emits a placeholder migration timestamp.
+Those stay smoke tasks rather than being padded into this release as more local
+tests that would not have exercised anything new.
+
+28 new regression tests (`tests/beta100-contract-path-reconcile.test.mjs`) pin
+each link of the chain, including the two negatives that matter: b84's sibling
+false-positive stays closed, and ambiguous pairings still fail. Suite: 1238
+passing.
+
 ## [0.1.0-beta.99] -- 2026-08-03
 
 ### The plan phase stops throwing away plans it already has

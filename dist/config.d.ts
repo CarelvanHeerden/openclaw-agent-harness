@@ -559,6 +559,27 @@ export interface LoopConfig {
      */
     contract_rederive_enabled?: boolean;
     /**
+     * beta.100: bounded TEST-CONTRACT reconciliation. When true (default), a
+     * contract path that is a TEST file and does not structurally resolve against
+     * what the sub-task actually touched is rewritten onto the sub-task's own
+     * committed test file -- but ONLY when there is exactly one such unmatched
+     * test contract and exactly one unclaimed committed test file, so the pairing
+     * is unambiguous. Closes the b99 seq-3 failure, where the lead guessed a
+     * co-located `route.test.ts` and the worker correctly used the repo's real
+     * Jest `__tests__/` location; the b76 prefix-remapper could not help because
+     * the two paths share no trailing directory chain. false disables it, and the
+     * strict file_committed check fails such a sub-task as it did before b100.
+     */
+    contract_test_path_reconcile?: boolean;
+    /**
+     * beta.100: when a sub-task made a REAL commit but its files do not match the
+     * contract paths, pause the run in `awaiting_clarification` (worktree and
+     * commits preserved, resumable via harness_answer) instead of hard-failing.
+     * The sub-task still fails verification and nothing is accepted -- only the
+     * terminal disposition changes. false restores the pre-b100 hard fail.
+     */
+    contract_mismatch_escalation_enabled?: boolean;
+    /**
      * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
      * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
      * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on

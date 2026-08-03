@@ -157,6 +157,16 @@
           "type": "boolean",
           "default": true,
           "description": "beta.99: when both lead plan attempts are cut off at the output ceiling, salvage the well-formed prefix instead of failing with plan_failed. The salvaged plan is INCOMPLETE and is logged as such."
+        },
+        "contract_test_path_reconcile": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.100: rewrite a drifted TEST contract path onto the test file the sub-task actually committed, but only when exactly one unmatched test contract and exactly one unclaimed committed test file exist. Closes the b99 seq-3 failure. Default true."
+        },
+        "contract_mismatch_escalation_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.100: when a sub-task made a REAL commit whose files do not match the contract, pause in awaiting_clarification (resumable, worktree preserved) instead of hard-failing the run. The sub-task still fails verification; only the terminal disposition changes. Default true."
         }
       }
     },

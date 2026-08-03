@@ -397,6 +397,16 @@
             "default": true,
             "description": "beta.76 + beta.93 kill-switch: correct a stale lead-guessed contract path against the repo's real touched layout BEFORE verification (with the beta.93 exact-match short-circuit + same-basename evidence guards, so a correctly-committed path is never rewritten -- the session de0cba9f false-positive). Default true; false disables re-derivation entirely (verify against the declared path verbatim, relying on the beta.50+ tolerant match rules)."
           },
+          "contract_test_path_reconcile": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.100: bounded TEST-CONTRACT reconciliation. Rewrite a contract path that is a TEST file and does not structurally resolve against what the sub-task actually touched onto that sub-task's own committed test file -- ONLY when exactly one such unmatched test contract and exactly one unclaimed committed test file exist, so the pairing is unambiguous. Closes the b99 seq-3 failure (session 4420aa45), where the lead guessed a co-located route.test.ts and the worker correctly used the repo's real Jest __tests__/ location; the beta.76 prefix-remapper could not help because the two paths share no trailing directory chain. Cannot re-open the beta.84 sibling false-positive: a non-test contract path never enters the rule. Default true; false restores the pre-b100 strict failure."
+          },
+          "contract_mismatch_escalation_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.100: when a sub-task made a REAL commit but its files do not match the contract paths, pause in awaiting_clarification (worktree + commits preserved, resumable via harness_answer) instead of hard-failing the run. The sub-task still FAILS verification and nothing is accepted -- only the terminal disposition changes. Closes the b99 seq-3 death, where the b53 env-wait retry (needs no commit), the b35 revise no-op (needs cycle > 1) and the b55 refusal escalation (needs no commit) all missed a worker that had committed correct work. Default true; false restores the pre-b100 hard fail."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,
