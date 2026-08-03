@@ -83,7 +83,7 @@ function parsePrNumber(prUrl) {
     return m ? Number(m[1]) : undefined;
 }
 import { inferVerifyContract } from "./verify-contract.js";
-import { rederiveContractPath } from "./contract-rederive.js";
+import { rederiveContractPath, reconcileTestContractPaths } from "./contract-rederive.js";
 import { pathMatches, resolveContractPath } from "./path-match.js";
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
@@ -1324,6 +1324,50 @@ export class OrchestratorLoop {
                     });
                     return { ...v, path: rd.path };
                 });
+                // beta.100: BOUNDED TEST-CONTRACT RECONCILIATION. The b76 prefix-remap
+                // above only fires when the stale and real directories share a trailing
+                // chain, so it cannot correct a test path that drifted on BOTH the
+                // directory and the basename (b99 seq 3: contract
+                // `.../continuity-exercises/route.test.ts` vs committed
+                // `src/__tests__/api/grc/continuity-exercises-api.test.ts` -- no shared
+                // dir suffix, so no remap was learned and a correct commit died on the
+                // strict file_committed check). Reconcile that shape here, against THIS
+                // sub-task's own touched files, under a 1:1 no-ambiguity constraint.
+                // Scope matters: we pass the PER-SUB-TASK set, never discoveredRealPaths
+                // (run-wide), which is what makes a lone unclaimed test file provably
+                // this sub-task's. See contract-rederive.ts for the full argument.
+                if (this.deps.config.loop.contract_test_path_reconcile !== false) {
+                    const subTaskTouched = [...(result.filesChanged ?? []), ...(result.uncommittedFiles ?? [])]
+                        .map((f) => (typeof f === "string" ? f.trim() : ""))
+                        .filter(Boolean);
+                    const pathEntryIdx = [];
+                    const pathEntryPaths = [];
+                    for (let i = 0; i < contract.length; i++) {
+                        const v = contract[i];
+                        if ((v.kind === "file_written" || v.kind === "file_committed") && v.path) {
+                            pathEntryIdx.push(i);
+                            pathEntryPaths.push(v.path);
+                        }
+                    }
+                    for (const rc of reconcileTestContractPaths(pathEntryPaths, subTaskTouched)) {
+                        const at = pathEntryPaths.indexOf(rc.from);
+                        if (at === -1)
+                            continue;
+                        const i = pathEntryIdx[at];
+                        const entry = contract[i];
+                        if (entry.kind !== "file_written" && entry.kind !== "file_committed")
+                            continue;
+                        contract[i] = { ...entry, path: rc.to };
+                        this.deps.state.audit("loop.contract_test_path_reconciled", { sessionId, seq: st.seq, cycle, kind: entry.kind, from: rc.from, to: rc.to, subTaskTouched }, sessionId);
+                        this.deps.logger.info("[loop] reconciled a drifted TEST contract path onto the file this sub-task committed", {
+                            sessionId, seq: st.seq, cycle, from: rc.from, to: rc.to,
+                        });
+                        this.deps.interactionLog?.log(sessionId, {
+                            event: "contract_test_path_reconciled", phase: "worker", seq: st.seq, cycle,
+                            from: rc.from, to: rc.to,
+                        });
+                    }
+                }
                 // beta.85: REVISE-CYCLE-AWARE CONTRACT RELAXATION -- the fix for the
                 // revise verifier false-positive (session 696226e4 cyc2 seq7, and the
                 // inverse-but-same-signature 1c744d70). On a revise cycle (cycle > 1)
@@ -1822,6 +1866,65 @@ export class OrchestratorLoop {
                             // beta.58 (D1/D2): capture the paused sub-task's title+intent so a
                             // `skip` answer keys the prohibition by CONTENT (survives a re-plan's
                             // seq renumbering) and can strip the owning finding line.
+                            clarify.subtask = { title: st.title, intent: st.intent };
+                        }
+                        // ---- beta.100: a CONTRACT-PATH MISMATCH pauses, it does not kill ----
+                        // b99 seq 3 (session 4420aa45): the worker committed d7cc9602 carrying
+                        // BOTH deliverables, but placed the test at the repo's real Jest
+                        // location rather than the co-located path the lead guessed pre-probe.
+                        // EVERY recovery path missed -- the b53 env-wait retry requires NO
+                        // commit, the b35 revise no-op requires cycle > 1, and the b55
+                        // escalation directly above requires `looksLikeRefusal`, which also
+                        // requires NO commit. So a run holding two good commits plus a correct
+                        // third one hard-failed at cycle 1, $3.94 spent, no PR, nothing to
+                        // resume from.
+                        //
+                        // The b100 reconciliation (see the contract build above) self-heals the
+                        // provable case. What reaches HERE is the genuinely ambiguous
+                        // remainder: the worker committed real work, but the harness cannot
+                        // prove whether the PLAN's path or the WORKER's placement is the wrong
+                        // one. That is a human decision, so pause resumably -- the worktree and
+                        // its commits survive and harness_answer re-drives from this seq.
+                        //
+                        // This does NOT weaken trust-but-verify. The sub-task still FAILS
+                        // (failed.err is set and the row is already `failed_verification`);
+                        // nothing is accepted and no check is relaxed. We change only the
+                        // TERMINAL DISPOSITION, from `failed` to `awaiting_clarification`. The
+                        // worker's prose is quoted as context but is never the evidence: the
+                        // expected paths come from the contract and the actual paths from git
+                        // via result.filesChanged.
+                        const PATH_MISMATCH_KINDS = new Set(["file_committed", "file_written"]);
+                        const contractPathMismatch = !!result.commitSha &&
+                            failedResults.length > 0 &&
+                            failedResults.every((x) => PATH_MISMATCH_KINDS.has(x.kind) && !!x.path);
+                        if (!clarify.question &&
+                            contractPathMismatch &&
+                            this.deps.config.loop.contract_mismatch_escalation_enabled !== false &&
+                            this.deps.config.loop.clarification_escalation_enabled !== false) {
+                            const expected = [...new Set(failedResults.map((x) => x.path).filter(Boolean))];
+                            const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && f.trim());
+                            const workerNote = (result.finalMessage ?? "").trim();
+                            const firstLine = workerNote.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+                            this.deps.state.audit("loop.contract_path_mismatch_escalated", {
+                                sessionId, seq: st.seq, cycle,
+                                expected, actual,
+                                commitSha: result.commitSha,
+                                failedKinds: failedResults.map((x) => x.kind),
+                                summary: verification.summary,
+                            }, sessionId);
+                            this.deps.interactionLog?.log(sessionId, {
+                                event: "contract_path_mismatch_escalated", phase: "worker", seq: st.seq, cycle, expected, actual,
+                            });
+                            this.deps.logger.warn("[loop] contract-path mismatch on a REAL commit; pausing for a human instead of failing the run", {
+                                sessionId, seq: st.seq, cycle, expected, actual,
+                            });
+                            clarify.question =
+                                `Sub-task ${st.seq} ("${st.title}") committed ${result.commitSha.slice(0, 7)} but the files do not match its contract. ` +
+                                    `The plan required: ${expected.join(", ")}. The sub-task actually committed: ${actual.join(", ") || "(no files reported)"}. ` +
+                                    (firstLine ? `The worker's stated reason: ${firstLine.slice(0, 400)} ` : "") +
+                                    `Was the plan's path wrong, or the worker's placement? (Reply with the path convention this repo should use -- ` +
+                                    `it is folded into the brief and the plan re-derived -- or say "skip" to drop this sub-task, or "abort".)`;
+                            clarify.seq = st.seq;
                             clarify.subtask = { title: st.title, intent: st.intent };
                         }
                         return;

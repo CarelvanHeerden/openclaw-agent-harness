@@ -167,7 +167,9 @@ test("wiring: index.ts enables allowTestFileFallback at the scoped call sites", 
 
 test("wiring: loop.ts re-derives contract paths + accumulates discovered paths", () => {
   const loop = src("orchestrator/loop.ts");
-  assert.ok(loop.includes('import { rederiveContractPath }'), "loop imports rederiveContractPath");
+  // beta.100 widened this named import (reconcileTestContractPaths joined it),
+  // so match the SYMBOL rather than the exact import line.
+  assert.ok(/import \{[^}]*\brederiveContractPath\b[^}]*\} from "\.\/contract-rederive\.js"/.test(loop), "loop imports rederiveContractPath");
   assert.ok(loop.includes("discoveredRealPaths"), "loop accumulates discoveredRealPaths");
   assert.ok(loop.includes("loop.contract_path_rederived"), "loop audits contract_path_rederived");
   // The accumulate step reads both committed and uncommitted files.

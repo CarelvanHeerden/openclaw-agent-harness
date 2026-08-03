@@ -255,6 +255,10 @@ test("beta70: config defaults + manifest declare the new keys", () => {
 test("beta70: version is at least beta.70 (superseded by beta.71 bump)", () => {
   // beta.71 bumped the version; assert >= beta.70 rather than an exact string
   // so future bumps don't re-break this.
-  assert.match(S("package.json"), /"version": "0\.1\.0-beta\.(7[0-9]|[89][0-9])"/);
-  assert.match(S("src/version.ts"), /0\.1\.0-beta\.(7[0-9]|[89][0-9])/);
+  // beta.100: the old alternation only admitted TWO-digit betas (7x/8x/9x), so
+  // the first three-digit release broke it. Use the numeric floor every other
+  // version-floor test converged on.
+  const betaNum = (s) => Number(/0\.1\.0-beta\.(\d+)/.exec(s)?.[1] ?? -1);
+  assert.ok(betaNum(S("package.json")) >= 70, `package.json >= beta.70, got ${S("package.json").match(/0\.1\.0-beta\.\d+/)}`);
+  assert.ok(betaNum(S("src/version.ts")) >= 70, `version.ts >= beta.70, got ${S("src/version.ts").match(/0\.1\.0-beta\.\d+/)}`);
 });

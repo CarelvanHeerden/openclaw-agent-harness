@@ -86,7 +86,7 @@
  * exact declared path -- a genuinely-drifted path (absent from the touched set)
  * still gets the beta.76 correction.
  */
-import { normalisePath } from "./path-match.js";
+import { isTestFilePath, normalisePath, resolveContractPath } from "./path-match.js";
 function dirSegments(p) {
     const n = normalisePath(p);
     const segs = n.split("/");
@@ -192,5 +192,91 @@ export function rederiveContractPath(contract, realFiles) {
         return { path: corrected, remapped: true, via: rm };
     }
     return { path: contract, remapped: false };
+}
+/**
+ * beta.100: bounded TEST-CONTRACT reconciliation.
+ *
+ * ROOT CAUSE (b99 smoke, session 4420aa45, cycle 1 seq 3). The lead authored a
+ * co-located contract path `src/app/api/grc/continuity-exercises/route.test.ts`.
+ * The worker correctly committed the test at the repo's real Jest location,
+ * `src/__tests__/api/grc/continuity-exercises-api.test.ts`, because the repo's
+ * `jest.config.ts` `testMatch` is `**\/__tests__\/**\/*.test.ts` -- a co-located
+ * file would never run in CI. The run then died at seq 3 holding a correct
+ * commit, having spent $3.94 and opened no PR.
+ *
+ * THREE layers that each existed to catch exactly this all missed:
+ *
+ *   1. {@link rederiveContractPath} (b76/b93) learns a leading-prefix remap only
+ *      from a SHARED TRAILING directory chain. Here the stale dir
+ *      (`src/app/api/grc/continuity-exercises`) and the real dir
+ *      (`src/__tests__/api/grc`) share NO common suffix -- `continuity-exercises`
+ *      != `grc` -- so `commonDirSuffix` returned empty, no remap was learned,
+ *      and the path came back unchanged.
+ *   2. The `test-file-unique` rule in path-match.ts (b76) resolves this shape
+ *      correctly -- it was BUILT for it -- but b84 set `strictContract: true` on
+ *      `file_committed`, which early-returns before both `*-unique` fallbacks.
+ *      b84's actual false positive (a `route.ts` contract matching a
+ *      `download/route.ts` sibling) came only from `basename-unique`, on a
+ *      NON-test file; `test-file-unique` was collateral damage and has been
+ *      dead code on this path ever since.
+ *   3. The b55 clarification escalation only fires when the worker made NO
+ *      commit, so a reasoned deviation that DID commit had no recovery at all.
+ *
+ * THE RULE. We deliberately do NOT re-open the fuzzy fallbacks in path-match.ts
+ * -- b84/b87/b95 depend on `file_committed` staying strict, and loosening the
+ * matcher would re-open the sibling false-positive class. Instead we correct the
+ * CONTRACT before verification (the layer b76 designated as "the real cure"),
+ * under a 1:1 constraint that admits no ambiguity:
+ *
+ *   - EXACTLY ONE contract path is a test file that does not structurally
+ *     resolve against what this sub-task actually touched, AND
+ *   - EXACTLY ONE touched test file is not already claimed by some other
+ *     contract path.
+ *
+ * Then those two are necessarily each other's counterpart, and we rewrite the
+ * contract onto the real path. Two unmatched test contracts, or two unclaimed
+ * test files, is genuine ambiguity -> we return nothing and the strict verifier
+ * fails as before. This cannot re-open b84: a non-test contract path never
+ * enters the rule, so `route.ts` can never reconcile onto a sibling.
+ *
+ * SAFETY depends on `subTaskTouched` being the PER-SUB-TASK-scoped file set
+ * (this worker turn's own `filesChanged` + `uncommittedFiles`), NOT the
+ * run-level set -- exactly the same scoping argument the b59/b76 fallbacks rest
+ * on. A lone unclaimed test file in that tiny set is demonstrably the test THIS
+ * sub-task just wrote. Callers must not pass the run-wide discovered-paths set.
+ *
+ * Like the rest of this module the function is PURE, so it cannot false-green
+ * anything on its own: it only produces a corrected path that the strict
+ * verifier still has to be satisfied by (including b84's non-zero-diff gate).
+ */
+export function reconcileTestContractPaths(contractPaths, subTaskTouched) {
+    const touched = [...new Set(subTaskTouched.map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean))];
+    if (touched.length === 0 || contractPaths.length === 0)
+        return [];
+    // One pass: partition contract paths into those the worker satisfied
+    // structurally (recording WHICH file each claimed) and unmatched test paths.
+    const claimed = new Set();
+    const unmatchedTestContracts = [];
+    for (const cp of contractPaths) {
+        if (!cp)
+            continue;
+        const hit = resolveContractPath(touched, cp, { strictContract: true });
+        if (hit) {
+            claimed.add(normalisePath(hit.file));
+            continue;
+        }
+        if (isTestFilePath(cp))
+            unmatchedTestContracts.push(cp);
+    }
+    if (unmatchedTestContracts.length !== 1)
+        return [];
+    const freeTests = touched.filter((f) => isTestFilePath(f) && !claimed.has(normalisePath(f)));
+    if (freeTests.length !== 1)
+        return [];
+    const from = unmatchedTestContracts[0];
+    const to = freeTests[0];
+    if (normalisePath(from) === normalisePath(to))
+        return [];
+    return [{ from, to }];
 }
 //# sourceMappingURL=contract-rederive.js.map

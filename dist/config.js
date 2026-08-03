@@ -76,6 +76,8 @@ const DEFAULTS = {
         deterministic_revise_mapping: true,
         worker_confab_detect: true,
         contract_rederive_enabled: true,
+        contract_test_path_reconcile: true,
+        contract_mismatch_escalation_enabled: true,
         sdk_first_token_timeout_seconds: 30,
         sdk_stream_open_timeout_seconds: 120,
         worker_stream_idle_warn_seconds: 90,
