@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/**", "fix/**"]
+    # `harness/**` is the branch prefix every release actually uses; without it
+    # pushes ran no CI at all and the first signal was the PR.
+    branches: [main, "feat/**", "fix/**", "harness/**"]
   pull_request:
     branches: [main]
 
@@ -46,6 +48,14 @@ jobs:
 
       - name: Test
         run: node --test tests/*.mjs
+
+      - name: Mutation check (are the safety tests vacuous?)
+        # Breaks each b101/b102 safety mechanism in the BUILT output and requires
+        # the tests to fail. A green suite proves nothing if it would stay green
+        # with the behaviour removed -- which is how the b100 defect survived
+        # review in the first place. Restores dist/ itself; the dist-sync step
+        # above has already run, so a leaked edit cannot mask a real drift.
+        run: node scripts/mutation-check.mjs
 
       - name: Smoke
         # Use a Node ESM loader hook to stub `openclaw/plugin-sdk/plugin-entry`

@@ -45,6 +45,15 @@ cannot be overwritten by a re-plan. The underlying row-clobbering is left in
 place -- it is correct for the recovery path it was built for -- but nothing
 load-bearing depends on that table being durable any more.
 
+**CI.** Two gaps closed. `harness/**` is now in the push trigger -- every release
+branch uses that prefix, so pushes ran no CI at all and the PR was the first
+signal. And `scripts/mutation-check.mjs` runs after the suite: it breaks each
+b101/b102 safety mechanism in the built output and requires the covering tests
+to fail. A green suite proves nothing if it stays green with the behaviour
+removed, which is how the b100 defect survived review. A mutation whose anchor
+text has disappeared is a hard failure rather than a skip, so a rename cannot
+silently disarm the check.
+
 No behaviour changes beyond the guard's data source.
 
 ## [0.1.0-beta.101] -- 2026-08-04
