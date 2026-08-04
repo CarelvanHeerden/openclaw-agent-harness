@@ -12,6 +12,7 @@
 
 import type { HarnessConfig } from "../config.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
+import { boundScoutReport, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
 
 /**
  * Observable side-effect a sub-task is expected to produce. The harness
@@ -205,6 +206,29 @@ export interface LeadPlan {
   reviewChecklist: string[];         // items adversary must verify
   riskLevel: "low" | "medium" | "high";
   approxCostUsd: number;             // sum of estimatedTokens converted via price table
+  /**
+   * beta.104: what the pre-planning repo scout did. Carried on the plan so the
+   * loop can audit it, because the question "did the lead actually see the
+   * repo?" must be answerable from the trail alone. b102's post-mortem could
+   * not tell a delivered dispatch hint from a dropped one for exactly this
+   * reason. Absent on plans built by callers that predate the scout.
+   */
+  scout?: LeadScoutOutcome;
+}
+
+/** beta.104: one scout attempt, whether or not it produced anything. */
+export interface LeadScoutOutcome {
+  /** True only when a non-empty report reached `brief.repoScoutReport`. */
+  ran: boolean;
+  reportChars: number;
+  costUsd?: number;
+  durationMs?: number;
+  /**
+   * Why the lead planned blind: `disabled`, `unwired`, `no_repo_hint`,
+   * `repo_not_allowed`, `empty_report` or `error`. Undefined when `ran`.
+   */
+  skippedReason?: string;
+  error?: string;
 }
 
 export interface LeadDeps {
@@ -216,6 +240,27 @@ export interface LeadDeps {
     correctiveNote?: string,
   ) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
   allocateWorktree: (repo: string, branch: string) => Promise<string>;
+  /**
+   * beta.104: THE SCOUT TURN. Gives the lead a read-only look at the repository
+   * before it plans, and returns the prose report.
+   *
+   * Until b104 the lead planned with `tools: []` and no worktree (allocation
+   * happens AFTER this function's planning call), so it had never opened a file
+   * of the repo it was planning against -- while the b67 gate simultaneously
+   * required it to supply verbatim `codeExcerpts`. The b102 smoke counted seven
+   * fictional paths in one plan.
+   *
+   * The implementation (index.ts) allocates a throwaway worktree with deps
+   * bootstrap OFF, runs the read-only SDK turn in it, and releases it.
+   *
+   * OPTIONAL and BEST-EFFORT by design. Unwired, disabled, no resolvable
+   * `repoHint`, a throw or an empty report all fall through to exactly the
+   * pre-b104 blind plan. A scout failure must never cost a run.
+   */
+  scoutRepo?: (input: {
+    brief: CrystallisedBrief;
+    repoFullName: string;
+  }) => Promise<{ report: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | undefined>;
   estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
   /**
    * beta.73 (D2): best-effort check whether `branch` already exists on origin
@@ -444,6 +489,60 @@ export async function runLeadPlanner(
     }
   }
 
+  // beta.104: SCOUT THE REPO BEFORE PLANNING. See lead-scout.ts for why the
+  // pre-b104 lead was planning blind and what that cost. Everything here is
+  // best-effort: any failure leaves `brief.repoScoutReport` unset, and the
+  // planning prompt is then byte-identical to b103's.
+  let scoutOutcome: LeadScoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
+  if (deps.config.loop?.lead_repo_scout_enabled !== false && deps.scoutRepo) {
+    const repoForScout = brief.repoHint && brief.repoHint.includes("/") ? brief.repoHint : undefined;
+    // Only scout a repo the run is actually allowed to touch. An unresolvable
+    // or disallowed hint means the lead picks the repo itself, so there is no
+    // worktree we could legitimately allocate at this point.
+    const allowed = deps.config.repos?.allowed ?? [];
+    if (!repoForScout) {
+      scoutOutcome = { ran: false, reportChars: 0, skippedReason: "no_repo_hint" };
+    } else if (allowed.length > 0 && !isRepoAllowed(repoForScout, allowed)) {
+      scoutOutcome = { ran: false, reportChars: 0, skippedReason: "repo_not_allowed" };
+    } else {
+      const startedAt = Date.now();
+      try {
+        const result = await deps.scoutRepo({ brief, repoFullName: repoForScout });
+        const report = boundScoutReport(
+          result?.report ?? "",
+          deps.config.loop?.lead_scout_max_chars ?? SCOUT_REPORT_MAX_CHARS,
+        );
+        if (report) {
+          brief.repoScoutReport = report;
+          scoutOutcome = {
+            ran: true,
+            reportChars: report.length,
+            costUsd: result?.costUsd,
+            durationMs: Date.now() - startedAt,
+          };
+          deps.logger.info("[lead] beta.104: scouted the repo before planning", {
+            repo: repoForScout, reportChars: report.length, durationMs: scoutOutcome.durationMs,
+          });
+        } else {
+          scoutOutcome = { ran: false, reportChars: 0, skippedReason: "empty_report", durationMs: Date.now() - startedAt };
+          deps.logger.warn?.("[lead] beta.104: scout returned an empty report; planning blind (pre-b104 behaviour)", {
+            repo: repoForScout,
+          });
+        }
+      } catch (err) {
+        scoutOutcome = {
+          ran: false, reportChars: 0, skippedReason: "error",
+          error: String(err).slice(0, 300), durationMs: Date.now() - startedAt,
+        };
+        deps.logger.warn?.("[lead] beta.104: scout FAILED; planning blind (non-fatal, pre-b104 behaviour)", {
+          repo: repoForScout, err: String(err).slice(0, 300),
+        });
+      }
+    }
+  } else if (!deps.scoutRepo) {
+    scoutOutcome = { ran: false, reportChars: 0, skippedReason: "unwired" };
+  }
+
   // beta.99 (P0-1): the LAST plan that parsed AND validated. b98 (session
   // f2613eec) proved why this must exist: lead call #1 returned a perfectly
   // good plan whose only sin was thin workerContext, the b67 gate re-asked for
@@ -561,13 +660,29 @@ export async function runLeadPlanner(
   }
   const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch);
   const approxCostUsd = deps.estimateCost(raw);
-  const plan: LeadPlan = { ...raw, worktreePath, approxCostUsd };
+  const plan: LeadPlan = { ...raw, worktreePath, approxCostUsd, scout: scoutOutcome };
   deps.logger.info("[lead] plan", {
     subTaskCount: plan.subTasks.length,
     risk: plan.riskLevel,
     approxCostUsd,
   });
   return plan;
+}
+
+/**
+ * beta.104: the allow-list match `validatePlan` has always applied to the
+ * lead's chosen repo, extracted so the scout gate uses the SAME rule. An
+ * exact-match-only check here would silently skip scouting every repo that is
+ * allowed by an `owner/*` glob -- i.e. most of them.
+ */
+export function isRepoAllowed(repoFullName: string, allowed: string[]): boolean {
+  if (!repoFullName.includes("/")) return false;
+  const owner = repoFullName.split("/")[0]!;
+  return allowed.some((glob) => {
+    if (glob === repoFullName) return true;
+    if (glob.endsWith("/*") && glob.slice(0, -2) === owner) return true;
+    return false;
+  });
 }
 
 function validatePlan(

@@ -614,6 +614,28 @@ export interface LoopConfig {
    */
   plan_path_writeback_enabled?: boolean;
   /**
+   * beta.104: run a READ-ONLY repo investigation turn before the lead plans.
+   *
+   * Until b104 the lead planned with `tools: []` and no worktree, so it had
+   * never opened a file of the repo it was planning against -- while the b67
+   * gate required it to emit verbatim `codeExcerpts` regardless. The b102 smoke
+   * counted seven fictional paths in one plan, and every worker had to
+   * rediscover the real layout the planner should have established once.
+   *
+   * true (default) -> scout, then plan against the findings. false -> the
+   * pre-b104 blind plan. Best-effort either way: a scout failure never fails
+   * the run, it just falls back to blind.
+   */
+  lead_repo_scout_enabled?: boolean;
+  /** beta.104: wall-clock ceiling on the scout turn. Default 600. */
+  lead_scout_timeout_seconds?: number;
+  /**
+   * beta.104: ceiling on the report folded into the planning prompt. Default
+   * 20000. b98 is the standing reminder that an oversized lead input costs a
+   * whole run when the reply breaches the output ceiling.
+   */
+  lead_scout_max_chars?: number;
+  /**
    * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
    * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
    * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on
@@ -1036,6 +1058,9 @@ const DEFAULTS: HarnessConfig = {
     ledger_reachability_guard_enabled: true,
     plan_path_validation_enabled: true,
     plan_path_writeback_enabled: true,
+    lead_repo_scout_enabled: true,
+    lead_scout_timeout_seconds: 600,
+    lead_scout_max_chars: 20000,
     sdk_first_token_timeout_seconds: 30,
     sdk_stream_open_timeout_seconds: 120,
     worker_stream_idle_warn_seconds: 90,

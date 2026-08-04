@@ -313,7 +313,10 @@ esac
         // #858 smoke) since workers stop re-running npm ci mid-turn. Best-effort:
         // a failed install must NOT block allocation (the worker can still fall
         // back to its own inline `npm ci`); we log + continue.
-        if (this.opts.bootstrapDeps !== false) {
+        // beta.104: a per-allocation `bootstrapDeps` wins over the adapter default,
+        // so the scout's read-only worktree can skip the install entirely.
+        const bootstrap = ctx.bootstrapDeps ?? this.opts.bootstrapDeps;
+        if (bootstrap !== false) {
             await this.bootstrapWorktreeDeps(wt);
         }
         return wt;

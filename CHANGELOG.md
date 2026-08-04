@@ -1,5 +1,97 @@
 # Changelog
 
+## [0.1.0-beta.104] -- 2026-08-04
+
+### The lead gets to see the repository
+
+Every lead call ran through `structuredCall`, which sets `tools: []` and
+disallows `Read`, `Glob` and `Grep`. There was no worktree either, because
+`runLeadPlanner` calls `callLeadModel` on line 458 and `allocateWorktree` on
+line 562. So the lead planned entire features -- file paths, verify contracts,
+verbatim code excerpts -- having never opened a single file of the repository it
+was planning against.
+
+Its own prompt demanded otherwise, and the b67 gate enforced the demand: every
+mutate sub-task must carry `workerContext.codeExcerpts`, described as "the
+ACTUAL code you read, verbatim, with `path` and `startLine`". The lead read
+nothing. The harness was mandating plausible fabrication and then spending the
+rest of the run detecting and repairing it -- the b63 conventions ingest, the
+b76 rederive, the b100 test reconcile, the b101 suspect-path check and b103's
+writeback are five mechanisms downstream of one blindfold.
+
+In the b102 smoke `loop.plan_paths_suspect` counted **seven** fictional paths in
+a single plan: `src/app/(app)/...` where the repo uses `(portal)`,
+`src/components/layout/` where it uses `components/ui/`. The cost was not only
+correctness. The founding architecture is a smart expensive planner handing
+mechanical work to cheap executors, and workers are explicitly told not to
+re-explore -- but context that is confidently wrong is worse than none, so they
+re-explored anyway. Eighteen cold turns each re-deriving the repo shape the
+planner should have established once.
+
+**The lead now scouts the repo before it plans.** A new turn runs in a real
+worktree with `Read`, `Glob` and `Grep` and produces a prose report; the
+existing planning call then receives that report as its only admissible source
+of repo facts, and is told never to write an excerpt it cannot point to there.
+
+Two turns rather than simply giving the planning call tools, because `tools: []`
+is not incidental: b28 and b40 record the planner wandering off and writing its
+plan to a *file* instead of returning JSON. The planning call is untouched --
+same toolless shape, same JSON contract, same retry, same truncation salvage --
+so that protection is unchanged and the scout has no schema to drift away from.
+
+**Reviewer independence is unaffected.** The report reaches the lead and,
+through `workerContext`, the workers. It does not reach the adversary: that
+prompt is built in `index.ts` from a hand-written projection of the brief
+(title, motivation, acceptance criteria), never from the brief object. A test
+asserts this, because the day it becomes `JSON.stringify(brief)` the reviewer
+starts reviewing against the planner's own investigation.
+
+Read-only is enforced three times over: the `tools` allow-list (the
+authoritative switch per `sdk.d.ts`), an explicit `disallowedTools` deny-list,
+and a `canUseTool` gate that refuses anything off the allow-list. The scout
+observes; it must not be able to touch the worktree the run is about to build
+in.
+
+Everything degrades. Disabled, unwired, no resolvable `repoHint`, a repo outside
+the allow-list, a throw, or an empty report all fall through to exactly the
+pre-b104 blind plan. A scout failure must never cost a run -- b98 is the
+standing reminder of what that mistake is worth.
+
+### Details
+
+- The scout's worktree is a throwaway allocated with the dependency bootstrap
+  OFF (`GitContext.bootstrapDeps`, new per-allocation override) and released in
+  a `finally`. Running `npm ci` for a read-only look would add minutes to every
+  run installing dependencies nothing in that worktree will execute. The bare
+  clone stays warm, so the real allocation moments later is a `git worktree
+  add`, not a fresh clone.
+- The report is bounded (`lead_scout_max_chars`, default 20000) and truncated
+  from the TAIL, because the scout is instructed to establish locations and
+  conventions first and list traps last.
+- It is sent once. The system prompt carries it with its framing; it is stripped
+  from the brief JSON in the user message.
+- `consumeWorkerStream` gained an opt-in `accumulateAllText`. The scout's
+  deliverable is long prose the SDK may split across messages, and the existing
+  last-message-only capture would have silently dropped the front of the report
+  -- the part carrying the paths. The worker path is unchanged.
+- `loop.lead_scout` audits every attempt with `ran`, `reportChars`,
+  `durationMs`, `costUsd` and `skippedReason`, so a smoke report can attribute a
+  plan full of fictional paths to a scout that never ran. b102 could not answer
+  the equivalent question about the dispatch hint.
+
+### Config
+
+- `loop.lead_repo_scout_enabled` (default `true`)
+- `loop.lead_scout_timeout_seconds` (default `600`)
+- `loop.lead_scout_max_chars` (default `20000`)
+
+### Tests
+
+`tests/beta104-lead-repo-scout.test.mjs` (33) covers ordering, each degradation
+path, the allow-list glob gate, bounding, read-only enforcement, reviewer
+independence and multi-message report assembly. Four new mutations bring
+`scripts/mutation-check.mjs` to ten; all ten are caught.
+
 ## [0.1.0-beta.103] -- 2026-08-04
 
 ### The plan stops lying about where the work lives

@@ -422,6 +422,25 @@
             "default": true,
             "description": "beta.103: once verification proves a contract path correction (the b76 rederive or the b100 test reconcile), write that correction back into the sub-task's filesLikelyTouched so the rest of the run reasons about the real path. Before b103 a correction only ever reached the local contract array, so the plan kept the lead's fictional path -- and both computeReviseScope and mapFindingsToSubTasks key off filesLikelyTouched. In the b102 smoke (PR #906) the lead planned src/app/(app)/... where the repo uses (portal); verification rederived it and the sub-task passed, but on cycle 3 the scoper could not intersect the adversary's (portal) findings with the plan's (app) path, skipped that sub-task, and shipped a PR blocked on a one-character lint error it had been told about for three cycles. Only ever REWRITES a path the plan already declared, never appends, so a sub-task's scope can be corrected but never widened. Default true."
           },
+          "lead_repo_scout_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.104: give the lead a READ-ONLY look at the repository before it plans. Until b104 every lead call ran through structuredCall with tools:[] and Read/Glob/Grep explicitly disallowed, and the worktree did not exist yet (runLeadPlanner calls the lead model first and allocateWorktree afterwards) -- so the lead planned entire features, file paths and code excerpts included, having never opened a single file of the repo. The b67 gate simultaneously REQUIRED every mutate sub-task to carry workerContext.codeExcerpts described as 'the ACTUAL code you read, verbatim', which the lead could not have read, so the harness was mandating plausible fabrication and then spending the rest of the run detecting it: the b63 conventions ingest, the b76 rederive, the b100 test reconcile, the b101 suspect-path check and the b103 writeback are all downstream of this one blindfold. In the b102 smoke loop.plan_paths_suspect counted seven fictional paths in a single plan ((app) where the repo uses (portal), components/layout where it uses components/ui), and the workers re-explored the repo anyway -- context that is confidently wrong is worse than none. With this enabled the lead first runs a scout turn in a real worktree with Read/Glob/Grep and no write tools, then the existing toolless planning call receives that report as its only admissible source of repo facts. The planning call itself is unchanged, which preserves the b28/b40 protection against a tool-enabled planner wandering off and writing its plan to a file. The adversary never sees the report -- its prompt is built from a hand-written projection of the brief, not the brief object -- so reviewer independence is unaffected. Best-effort: unwired, disabled, no resolvable repoHint, a throw or an empty report all fall back to the pre-b104 blind plan. Default true."
+          },
+          "lead_scout_timeout_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600,
+            "default": 600,
+            "description": "beta.104: wall-clock ceiling on the lead's repo scout turn. The scout does real filesystem work (glob, grep, read) across a possibly large repo, so this is sized like a worker turn rather than a structured call. Exceeding it aborts the scout only -- the run continues and plans blind."
+          },
+          "lead_scout_max_chars": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 120000,
+            "default": 20000,
+            "description": "beta.104: ceiling on the scout report folded into the lead planning prompt and persisted on the brief. Truncation keeps the HEAD of the report, because the scout is instructed to establish locations and conventions first and list traps last. b98 is the standing reminder for why this is bounded at all: an oversized lead input cost a whole run when the reply breached the output ceiling."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,

@@ -17,6 +17,7 @@
  * the SDK is missing.
  */
 import { renderConventionsForPrompt } from "../orchestrator/repo-conventions.js";
+import { renderScoutForPrompt } from "../orchestrator/lead-scout.js";
 /**
  * Build the `env` passed to the SDK subprocess.
  *
@@ -243,6 +244,8 @@ export async function consumeWorkerStream(stream, abort, opts) {
     // final message. Reset on each assistant message so we keep only the LAST
     // turn's text (the concluding statement / refusal), not the whole stream.
     let finalMessage = "";
+    // beta.104: every assistant text block, in order, when the caller asks for it.
+    const allText = [];
     // beta.90 (Feature 2): STREAM-SLOW liveness detector. A 30s tick (mirroring
     // structuredCall's tick) that fires `onStreamSlow` when the stream has been
     // idle -- no token/activity delta -- for >= streamIdleWarnSeconds. Observability
@@ -344,8 +347,16 @@ export async function consumeWorkerStream(stream, abort, opts) {
                         .filter((c) => c?.type === "text" && typeof c.text === "string")
                         .map((c) => c.text)
                         .join("");
-                    if (text.trim())
+                    if (text.trim()) {
                         finalMessage = text;
+                        // beta.104: the scout's deliverable is prose, and the SDK may split
+                        // a long report across several assistant messages. Keeping only the
+                        // last one would silently drop the front of the report -- the part
+                        // that carries the paths and conventions. Opt-in so the worker path
+                        // (which wants the concluding statement alone) is unchanged.
+                        if (opts.accumulateAllText)
+                            allText.push(text);
+                    }
                 }
             }
             if (message.type === "result") {
@@ -387,6 +398,7 @@ export async function consumeWorkerStream(stream, abort, opts) {
         tokensOut,
         logsExcerpt: logLines.slice(-25).join("\n"),
         finalMessage,
+        allText: opts.accumulateAllText ? allText.join("\n\n") : undefined,
         streamOpened,
         msToFirstToken,
     };
@@ -442,6 +454,73 @@ export async function runWorkerSdk(params) {
             streamSlowLabel: "worker",
             logger: params.logger,
         });
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+/**
+ * beta.104: THE LEAD'S ONE LOOK AT THE REPOSITORY.
+ *
+ * Runs BEFORE the toolless planning call, in a real worktree, with read-only
+ * tools. Returns free-form prose that the planning call then receives as input.
+ *
+ * Why this is a separate call rather than tools on the planning call: b28/b40
+ * record the planner, when given tools, wandering off and writing its plan to a
+ * FILE instead of returning JSON. `structuredCall`'s toolless shape is what
+ * fixed that, and it stays untouched -- this call has no JSON contract to drift
+ * away from, and the planning call has no tools to wander with.
+ *
+ * Read-only is enforced twice: an allow-list (`tools`, the authoritative switch
+ * per sdk.d.ts) and a deny-list, plus a `canUseTool` gate that refuses anything
+ * off the allow-list even if the SDK's own filtering changes shape. The scout
+ * must not be able to touch the worktree the run is about to build in.
+ */
+export async function runLeadScoutSdk(params) {
+    const sdk = await loadSdk();
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), params.timeoutSeconds * 1000);
+    const allowed = new Set(params.allowedTools);
+    try {
+        const stream = sdk.query({
+            prompt: params.userMessage,
+            options: {
+                model: params.model,
+                systemPrompt: params.systemPrompt,
+                cwd: params.worktreePath,
+                tools: [...params.allowedTools],
+                disallowedTools: [...params.deniedTools],
+                // The scout only reads, so nothing needs approving -- but the SDK still
+                // routes every call through canUseTool, which is where the third layer
+                // of read-only enforcement lives.
+                permissionMode: "bypassPermissions",
+                env: buildSdkEnv(params.apiKey, params.maxOutputTokens),
+                canUseTool: async (toolName, toolInput) => {
+                    if (allowed.has(toolName))
+                        return { behavior: "allow", updatedInput: toolInput };
+                    return { behavior: "deny", message: `scout is read-only; ${toolName} is not available` };
+                },
+                abortSignal: abort.signal,
+            },
+        });
+        const r = await consumeWorkerStream(stream, abort, {
+            // The scout does real filesystem work between messages, so the
+            // idle-warning cadence is the only liveness signal worth keeping. The
+            // first-token watchdogs stay off: a scout that spends its opening
+            // seconds globbing a large repo is healthy, not hung.
+            streamIdleWarnSeconds: 120,
+            streamSlowLabel: "lead-scout",
+            accumulateAllText: true,
+            logger: params.logger,
+        });
+        return {
+            report: (r.allText ?? r.finalMessage ?? "").trim(),
+            sdkSessionId: r.sdkSessionId,
+            costUsd: r.costUsd,
+            tokensIn: r.tokensIn,
+            tokensOut: r.tokensOut,
+            stopReason: r.stopReason,
+        };
     }
     finally {
         clearTimeout(timer);
@@ -1084,7 +1163,7 @@ export async function runLeadSdk(params) {
         // the smart, expensive orchestrator. Your workers are CHEAPER models that
         // will NOT re-investigate the repo. Hand them your findings, not a bare
         // ticket, so they implement mechanically instead of re-scanning.
-        "- WARM WORKER CONTEXT (CRITICAL for cost + quality). You are the ORCHESTRATOR: you investigate deeply, your workers are CHEAPER models that will NOT re-explore the repo. For EVERY mutate sub-task, populate `workerContext` with everything a worker needs to implement it CORRECTLY WITHOUT re-reading the codebase: (a) `rationale` -- WHY this change is needed and HOW you decided to shape it; (b) `codeExcerpts` -- the ACTUAL code you read, verbatim, with `path` and `startLine`, so the worker does not re-open files to re-find them; (c) `changeSpec` -- the precise, low-ambiguity edit ('in useTaxonomy() at src/hooks/useTaxonomy.ts:41, replace the hardcoded LABELS map with getTaxonomyOptions() from src/lib/taxonomy-options.ts'); (d) `gotchas` -- traps specific to this sub-task (e.g. 'React 19.2.7 has no React.act; use renderToStaticMarkup for component tests here'); (e) `relatedSymbols` -- exports/functions the worker will need and where they live. If a worker would have to re-derive something you already know, it belongs in workerContext. This is not optional polish -- it is why the harness exists (smart planner + cheap executors). Keep excerpts focused (only lines that matter); do not paste whole files.",
+        "- WARM WORKER CONTEXT (CRITICAL for cost + quality). You are the ORCHESTRATOR: you investigate deeply, your workers are CHEAPER models that will NOT re-explore the repo. For EVERY mutate sub-task, populate `workerContext` with everything a worker needs to implement it CORRECTLY WITHOUT re-reading the codebase: (a) `rationale` -- WHY this change is needed and HOW you decided to shape it; (b) `codeExcerpts` -- code quoted from your repo investigation below, verbatim, with `path` and `startLine`, so the worker does not re-open files to re-find them. NEVER write an excerpt you cannot point to in that report -- an invented excerpt is worse than none, because the worker trusts it; (c) `changeSpec` -- the precise, low-ambiguity edit ('in useTaxonomy() at src/hooks/useTaxonomy.ts:41, replace the hardcoded LABELS map with getTaxonomyOptions() from src/lib/taxonomy-options.ts'); (d) `gotchas` -- traps specific to this sub-task (e.g. 'React 19.2.7 has no React.act; use renderToStaticMarkup for component tests here'); (e) `relatedSymbols` -- exports/functions the worker will need and where they live. If a worker would have to re-derive something you already know, it belongs in workerContext. This is not optional polish -- it is why the harness exists (smart planner + cheap executors). Keep excerpts focused (only lines that matter); do not paste whole files.",
         "- workerContext is for DEV WORKERS ONLY. The adversary reviewer never sees it and must stay independent. Observe/probe sub-tasks may omit workerContext (they investigate, they don't implement).",
         "Rules:",
         // beta.68 (adaptive decomposition): scale the sub-task COUNT to the actual
@@ -1191,13 +1270,22 @@ export async function runLeadSdk(params) {
         // the brief) so the plan respects file-placement + regeneration rules. The
         // lead gets NO OpenClaw context injection, so this must be explicit.
         renderConventionsForPrompt(params.brief.repoConventions, "lead"),
+        // beta.104: the scout's findings. Rendered LAST so it is the freshest
+        // context in the prompt when the model starts emitting paths, and framed
+        // as the only admissible source of repo facts. Empty when the scout is
+        // disabled or could not run -- the prompt is then byte-identical to b103's.
+        renderScoutForPrompt(params.brief.repoScoutReport),
     ].join("\n");
     // beta.99 (P0-3): keep the base brief and the corrective note SEPARATE.
     // b98's truncation retry appended "be more compact" to a message that still
     // carried the b67 "you MUST add more rationale/changeSpec/codeExcerpts" note,
     // so the model was told to expand and contract in the same breath and did
     // neither. The truncation retry now rebuilds from `baseMessage` alone.
-    const baseMessage = JSON.stringify(params.brief);
+    // beta.104: the scout report is already in the system prompt, framed as the
+    // authority on repo facts. Sending it again inside the brief JSON would pay
+    // for it twice and bury the framing -- so strip it from the user message.
+    const { repoScoutReport: _scoutInSystemPrompt, ...briefForMessage } = params.brief;
+    const baseMessage = JSON.stringify(briefForMessage);
     const userMessage = params.correctiveNote
         ? `${baseMessage}\n\nCORRECTION (your previous plan was rejected):\n${params.correctiveNote}`
         : baseMessage;

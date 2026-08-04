@@ -85,7 +85,9 @@ test("beta48 C1: SDK adapter captures the worker's final assistant message", () 
   assert.match(sdkSrc, /finalMessage: string;/);
   // Assistant-message text is collected and returned.
   assert.match(sdkSrc, /message\.type === "assistant"/);
-  assert.match(sdkSrc, /if \(text\.trim\(\)\) finalMessage = text;/);
+  // beta.104 added an opt-in accumulator alongside this for the lead scout;
+  // the last-message assignment that b48 exists to protect is unchanged.
+  assert.match(sdkSrc, /if \(text\.trim\(\)\) \{\s*finalMessage = text;/);
   assert.match(sdkSrc, /logsExcerpt: logLines\.slice\(-25\)\.join\("\\n"\),\s*finalMessage,/);
 });
 

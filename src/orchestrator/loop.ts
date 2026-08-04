@@ -1208,6 +1208,25 @@ export class OrchestratorLoop {
         .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
         .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
       this.deps.state.audit("loop.plan_ready", { sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel }, sessionId);
+      // beta.104: record whether the lead actually SAW the repo before it
+      // planned. Emitted on both outcomes -- a smoke report must be able to
+      // attribute a plan full of fictional paths to a scout that never ran,
+      // which is precisely what b102 could not do for the dispatch hint.
+      if (plan.scout) {
+        this.deps.state.audit(
+          "loop.lead_scout",
+          {
+            sessionId,
+            ran: plan.scout.ran,
+            reportChars: plan.scout.reportChars,
+            durationMs: plan.scout.durationMs,
+            costUsd: plan.scout.costUsd,
+            skippedReason: plan.scout.skippedReason,
+            error: plan.scout.error,
+          },
+          sessionId,
+        );
+      }
       // beta.67 (Bug B): capture the branch FORK-POINT sha ONCE now that the
       // worktree exists. The worktree was branched from origin/<default base>
       // (git-worktree allocateInner), so `git merge-base <base> HEAD` is the

@@ -136,6 +136,12 @@ export interface RunWorkerResult {
      */
     finalMessage: string;
     /**
+     * beta.104: every assistant text block joined in order. Populated ONLY when
+     * the caller passes `accumulateAllText` (the lead scout); undefined
+     * otherwise, so the worker path carries no extra retained text.
+     */
+    allText?: string;
+    /**
      * beta.64 (P0-1): true once the SDK stream opened (a system/init message
      * carrying session_id arrived). Lets the caller distinguish "the POST hung
      * before the stream ever opened" (streamOpened=false) from "the stream
@@ -203,6 +209,13 @@ export declare function consumeWorkerStream(stream: AsyncIterable<any>, abort: A
         label: string;
     }) => void;
     /**
+     * beta.104: also return EVERY assistant text block joined, not just the
+     * last one. Needed by the lead scout, whose whole deliverable is a long
+     * prose report the SDK may emit across several messages. Off by default:
+     * the worker path deliberately wants the concluding message alone.
+     */
+    accumulateAllText?: boolean;
+    /**
      * beta.90 (Feature 2): idle-warn threshold in SECONDS. Default 90; <=0
      * disables the stream-slow detector entirely. The detector re-uses the
      * existing 30s tick cadence (it only fires onStreamSlow once idleMs crosses
@@ -240,6 +253,44 @@ export declare function evaluateStreamSlowTick(input: {
     nowMs: number;
 };
 export declare function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult>;
+/**
+ * beta.104: THE LEAD'S ONE LOOK AT THE REPOSITORY.
+ *
+ * Runs BEFORE the toolless planning call, in a real worktree, with read-only
+ * tools. Returns free-form prose that the planning call then receives as input.
+ *
+ * Why this is a separate call rather than tools on the planning call: b28/b40
+ * record the planner, when given tools, wandering off and writing its plan to a
+ * FILE instead of returning JSON. `structuredCall`'s toolless shape is what
+ * fixed that, and it stays untouched -- this call has no JSON contract to drift
+ * away from, and the planning call has no tools to wander with.
+ *
+ * Read-only is enforced twice: an allow-list (`tools`, the authoritative switch
+ * per sdk.d.ts) and a deny-list, plus a `canUseTool` gate that refuses anything
+ * off the allow-list even if the SDK's own filtering changes shape. The scout
+ * must not be able to touch the worktree the run is about to build in.
+ */
+export declare function runLeadScoutSdk(params: {
+    model: string;
+    worktreePath: string;
+    systemPrompt: string;
+    userMessage: string;
+    timeoutSeconds: number;
+    apiKey?: string;
+    maxOutputTokens?: number;
+    allowedTools: readonly string[];
+    deniedTools: readonly string[];
+    logger?: {
+        warn: (m: string, meta?: unknown) => void;
+    };
+}): Promise<{
+    report: string;
+    sdkSessionId: string;
+    costUsd: number;
+    tokensIn: number;
+    tokensOut: number;
+    stopReason: string;
+}>;
 /**
  * beta.99 (P0-6): a `structuredCall` failure carrying the FULL raw model reply
  * and whether the call was cut off at the output ceiling, so callers can try
