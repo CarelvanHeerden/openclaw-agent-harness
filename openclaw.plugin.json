@@ -407,6 +407,16 @@
             "default": true,
             "description": "beta.100: when a sub-task made a REAL commit but its files do not match the contract paths, pause in awaiting_clarification (worktree + commits preserved, resumable via harness_answer) instead of hard-failing the run. The sub-task still FAILS verification and nothing is accepted -- only the terminal disposition changes. Closes the b99 seq-3 death, where the b53 env-wait retry (needs no commit), the b35 revise no-op (needs cycle > 1) and the b55 refusal escalation (needs no commit) all missed a worker that had committed correct work. Default true; false restores the pre-b100 hard fail."
           },
+          "ledger_reachability_guard_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.101: before the adversary SDK call, cross-check every commit_sha in the sub-task ledger for reachability from HEAD, and fail the run with an explicit ledger_commits_unreachable reason when any is missing. Detects a branch that has silently lost work the run already committed. In the b100 smoke (session 3c6c1608) a clarification resume reset the branch to origin/main and orphaned six recorded commits; nothing noticed until the adversary blocked on the absence of work that had in fact been written correctly, after a paid review turn. The b101 preserve-local-branch fix removes that specific trigger; this guard is the independent detector for the next one. Fails OPEN -- a git probe error never blocks a healthy run. Default true."
+          },
+          "plan_path_validation_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.101: at plan time, flag any filesLikelyTouched entry that names a file whose PARENT DIRECTORY does not exist in the repo, and fold a warning into that sub-task's worker dispatch telling it to treat the path as a guess and locate the real convention. The parent directory is the discriminator: planning a file that does not exist yet is normal (most sub-tasks create files), but a file in a directory that does not exist either is usually invented. In the b100 smoke the lead planned src/components/layout/grc-nav.tsx when src/components/layout/ does not exist, costing a failed verify, a clarification round-trip, a re-plan and a review turn. Advisory only -- new modules legitimately create new directories, so this never blocks. Default true."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,

@@ -167,6 +167,16 @@
           "type": "boolean",
           "default": true,
           "description": "beta.100: when a sub-task made a REAL commit whose files do not match the contract, pause in awaiting_clarification (resumable, worktree preserved) instead of hard-failing the run. The sub-task still fails verification; only the terminal disposition changes. Default true."
+        },
+        "ledger_reachability_guard_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.101: before adversary review, check every sub-task commit_sha is reachable from HEAD and fail the run when any is not, rather than reviewing or shipping a branch that has lost work. Default true."
+        },
+        "plan_path_validation_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.101: at plan time, flag filesLikelyTouched entries naming a file in a directory that does not exist and warn the worker to treat them as guesses. Advisory; never blocks. Default true."
         }
       }
     },

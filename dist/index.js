@@ -394,6 +394,10 @@ export function bootstrapHarnessSync(api) {
                         // existing branch at its tip instead of resetting to base, so the
                         // prior PR's commits are preserved and new work stacks on them.
                         reuseExistingBranch: !!brief.pinnedBranch,
+                        // beta.101: a clarification re-drive must not reset the branch --
+                        // its commits are never pushed, so reuseExistingBranch (which
+                        // resolves origin/<branch>) cannot save them either.
+                        preserveLocalBranch: !!brief.resumeFromClarification,
                     });
                 },
                 estimateCost: (p) => p.subTasks.reduce((acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens), 0),
@@ -669,6 +673,11 @@ export function bootstrapHarnessSync(api) {
         // fork-point, not against main-at-review-time.
         worktreeMergeBase: async (worktreePath, baseBranch) => git.mergeBase(worktreePath, baseBranch).catch(() => ""),
         worktreeCommitCount: async (worktreePath, base) => git.commitCount(worktreePath, base).catch(() => -1),
+        // beta.101: ledger-reachability probe. Returns [] on failure so the guard
+        // fails OPEN -- a broken probe must never block an otherwise sound run.
+        unreachableCommits: async (worktreePath, from, shas) => git.unreachableCommits(worktreePath, from, shas).catch(() => []),
+        // beta.101: tracked-file listing for plan-time fictional-path detection.
+        listRepoFiles: async (worktreePath) => git.listTrackedFiles(worktreePath).catch(() => []),
         // beta.64 (P0-3/P0-4): diff-stat + scripted tsc for the best-effort-verify
         // clean-diff gate and the scripted verifier fallback of a timed-out LLM
         // VERIFY sub-task. A "run tsc/diff/check-scripts" verify step needs no model.

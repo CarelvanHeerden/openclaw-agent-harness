@@ -79,6 +79,15 @@ export interface CrystallisedBrief {
   reviseOfSessionId?: string;
   pinnedBranch?: string;
   /**
+   * beta.101: set by harness_answer when re-driving a session out of
+   * `awaiting_clarification`. The resume path re-plans, which allocates a fresh
+   * worktree; without this marker allocation resets the session branch to base
+   * and orphans every commit the run has already made (b100 smoke, session
+   * 3c6c1608: six commits lost). Threaded to GitContext.preserveLocalBranch so
+   * the new worktree checks the branch out at its own tip instead.
+   */
+  resumeFromClarification?: boolean;
+  /**
    * beta.63 (convention-awareness Fix 1): the checked-out repo's declared
    * convention files (.cursor/rules/**, .cursorrules, CONTRIBUTING.md,
    * CONVENTIONS.md, AGENTS.md, .github/CONTRIBUTING.md) + repo check scripts,

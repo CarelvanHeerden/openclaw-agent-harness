@@ -1,5 +1,110 @@
 # Changelog
 
+## [0.1.0-beta.101] -- 2026-08-04
+
+### The pause stops eating the work it paused over
+
+Fixes the b100 smoke (session `3c6c1608`), where six correct worker commits were
+destroyed by the resume path that b100's own clarification pause hands off to.
+
+b100 did what it was built to do. Sub-task 7 committed real, correct work,
+verification failed it against a fictional contract path, and Fix 2 paused the
+run in `awaiting_clarification` instead of killing it. Every safety invariant
+held: the sub-task stayed `failed_verification`, no check was flipped to passed,
+the worktree was preserved, and `harness_answer` resumed cleanly. That is the
+first live validation of Fix 2 and it is not in doubt -- the operator was shown
+the exact question template Fix 2 emits.
+
+Then the resume threw the run's work away.
+
+**What actually happened.** `harness_answer` re-drives through a FULL re-plan
+(`status='planning'` -> `loop.run`), and planning unconditionally allocates a NEW
+worktree. Allocation force-removed the paused worktree via
+`reconcileBranchWorktrees` and ran `git worktree add -B <branch> <wt>
+origin/main`. `-B` RESETS the branch. Six commits (`ce05f55f..88ce5f44`) had
+never been pushed -- the harness only pushes at ship time -- so the ref jumped to
+`origin/main`, which had meanwhile moved on to an unrelated docs commit, and all
+six became unreachable. Nothing noticed. The adversary was handed a diff
+containing one docs commit, computed `suspicious: false`, and blocked on the
+absence of work that had in fact been written correctly. $7.94 spent, no PR, the
+whole implementation orphaned as loose objects.
+
+Three things are worth being precise about. The orphaning bug is OLDER than b100
+and lives in b55's resume path, not in b100's code. But b100 is what made it
+reachable with work at stake: before b100 the only route into
+`awaiting_clarification` was `looksLikeRefusal`, which requires `!commitSha`,
+whereas Fix 2 requires `!!commitSha` -- so by construction the new path only ever
+fires when there ARE commits to lose. And the comments claimed the opposite of
+what the code did: `loop.ts` says "the worktree must survive so the answered
+resume continues in place" while the resume force-removes it. In its shipped
+b100 state, for this failure class, the pause was a worse outcome than the b99
+hard failure it replaced -- b99 died, but its branch kept its commits.
+
+**Fix 1 -- preserve the branch on resume.** `harness_answer` now marks the brief
+`resumeFromClarification` before persisting it (so crash-recovery re-drives
+inherit it too), which threads to a new `GitContext.preserveLocalBranch`. When
+set and the local branch exists, allocation runs `git worktree add <wt>
+<branch>` -- no `-B`, no start-point, an invocation that CANNOT move a ref. The
+existing `reuseExistingBranch` could not have covered this: it resolves the tip
+from `origin/<branch>`, and these commits were never pushed. Falls back to the
+base checkout when the branch does not exist, so it is safe on a first run.
+
+**Fix 2 -- never silently discard commits.** Fix 1 cures the known trigger; this
+is the net for the next one. Before ANY destructive `-B` reset, `git rev-list
+<branch> ^<startPoint>` asks what the reset would orphan, and if the answer is
+non-empty the old tip is parked at `refs/harness-rescue/<branch>/<ts>`. The reset
+still proceeds -- we do not block legitimate fresh starts -- it is simply no
+longer destructive, and the work stays reachable and `git branch`-recoverable.
+Applied to all four `-B` call sites including the revert scratch path, whose
+caller-supplied `opts.revertBranch` could name a branch carrying commits.
+
+**Fix 3 -- detect a branch that has lost work.** Every committing sub-task
+records its sha; the harness never checked those shas were still reachable.
+Before the adversary SDK call (so a lost branch costs nothing to find), every
+`sub_tasks.commit_sha` is now tested against HEAD, and any unreachable one fails
+the run with an explicit `ledger_commits_unreachable` reason naming the lost
+sub-tasks and the recovery path. Failing beats reviewing or shipping a diff that
+silently omits work the run already did. Fails OPEN: a git probe error never
+blocks a healthy run.
+
+**Fix 4 -- the adversary's `suspicious` heuristic was half-blind.** b67 only ever
+asked "too MANY commits?". b100 was the mirror image -- a one-commit diff while
+six recorded commits were missing -- and scored `suspicious: false`. Missing
+recorded work now sets it too.
+
+**Fix 5 -- quote the right sentence to the human.** Fix 2's clarification
+question sourced the worker's justification from the first non-empty line of its
+final message. In b100 that showed the operator "That's fine, it's a harmless
+temp file outside the repo" -- a remark about an unrelated file -- while the real
+explanation sat four lines below. The one input a human needs to adjudicate
+correctly was actively misleading. Selection is now by relevance (does the
+sentence name a disputed path, or explain a placement decision?) with the
+first-line behaviour kept only as the fallback, and content-free sign-offs like
+"Sub-task complete." excluded outright.
+
+**Fix 6 -- catch the fictional path at plan time.** The entire cascade started
+with the lead inventing `src/components/layout/grc-nav.tsx`, in a directory the
+repo does not have. The worker was right on every count. Plan paths are now
+checked against the repo tree, and the discriminator is the PARENT DIRECTORY:
+planning a file that does not exist yet is normal, but a file in a directory that
+does not exist either is usually invented. Purely advisory -- new modules
+legitimately create new directories -- so the affected sub-task's worker is told
+to treat the path as a guess and find the real convention.
+
+**Tests.** `tests/beta101-branch-preservation.test.mjs` (41) drives REAL git
+against local file remotes rather than asserting on source text, because this was
+a git-semantics failure that no source grep could have caught. It reproduces the
+b100 orphaning directly (allocate, commit, advance main, reallocate, assert the
+reset), proves the six-commit chain survives with `preserveLocalBranch`, and
+proves the rescue ref holds the doomed tip when a reset does happen.
+
+**Still unvalidated live.** b100's Fix 1 (test-contract reconciliation) never
+fired -- the test sub-task was never reached. It, b98's `stripMigrationTimestamp`
+and b99's four defensive paths remain unproven in a live run.
+
+New config: `loop.ledger_reachability_guard_enabled`,
+`loop.plan_path_validation_enabled` (both default true).
+
 ## [0.1.0-beta.100] -- 2026-08-03
 
 ### A correct commit stops being a run-killer
