@@ -94,6 +94,21 @@ export interface CrystallisedBrief {
      */
     repoConventions?: RepoConvention[];
     /**
+     * beta.104: the lead scout's report on the actual repository, produced in a
+     * read-only worktree turn BEFORE planning.
+     *
+     * Not written by the crystalliser -- `runLeadPlanner` sets it. It lives on
+     * the brief because the brief is what the lead planning call and the bounded
+     * workerContext top-up call both receive, so both get the repo facts with no
+     * further plumbing.
+     *
+     * The ADVERSARY must never see this. It does not: the reviewer's prompt is
+     * built in index.ts from a hand-written projection (title, motivation,
+     * acceptance criteria), never from the brief object. If that ever becomes a
+     * `JSON.stringify(brief)`, reviewer independence goes with it.
+     */
+    repoScoutReport?: string;
+    /**
      * beta.80 (F2): the crystalliser's self-reported DISTINCT readings of the
      * brief that would produce MATERIALLY DIFFERENT diffs. When >= 2, the brief
      * is bimodal and the run must PAUSE for clarification rather than the

@@ -76,6 +76,41 @@ const MUTATIONS = [
     replace: "if (false && headBefore !== baseSha)",
     tests: ["tests/beta103-plan-path-writeback.test.mjs"],
   },
+  {
+    name: "lead repo scout (b104): the report reaches the planning call",
+    file: "dist/orchestrator/fable5-lead.js",
+    // Neutered to the pre-b104 blind plan: the scout still runs and still
+    // costs a turn, but nothing it found reaches the lead. This is the exact
+    // shape of the b102 defect -- seven fictional paths in one plan -- so the
+    // b104 tests must notice.
+    find: "brief.repoScoutReport = report;",
+    replace: "/* mutated */;",
+    tests: ["tests/beta104-lead-repo-scout.test.mjs"],
+  },
+  {
+    name: "scout read-only (b104): the scout cannot write to the worktree",
+    file: "dist/orchestrator/lead-scout.js",
+    find: 'export const SCOUT_ALLOWED_TOOLS = ["Read", "Glob", "Grep"];',
+    replace: 'export const SCOUT_ALLOWED_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];',
+    tests: ["tests/beta104-lead-repo-scout.test.mjs"],
+  },
+  {
+    name: "scout failure is non-fatal (b104): a throw plans blind, it does not kill the run",
+    file: "dist/orchestrator/fable5-lead.js",
+    // Re-throwing turns a best-effort investigation into a new way to lose a
+    // whole session -- the b98 failure class, which is why every path here
+    // degrades instead of failing.
+    find: 'skippedReason: "error",',
+    replace: 'skippedReason: (() => { throw err; })(),',
+    tests: ["tests/beta104-lead-repo-scout.test.mjs"],
+  },
+  {
+    name: "full scout report (b104): a multi-message report is not cut to its last chunk",
+    file: "dist/adapters/claude-sdk.js",
+    find: "allText: opts.accumulateAllText ? allText.join(\"\\n\\n\") : undefined,",
+    replace: "allText: undefined,",
+    tests: ["tests/beta104-lead-repo-scout.test.mjs"],
+  },
 ];
 
 function runTests(files) {

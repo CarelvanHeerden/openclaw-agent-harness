@@ -146,7 +146,11 @@ test("beta53 wiring: env-prep bootstrap runs at worktree allocation", () => {
   const gw = S("src/adapters/git-worktree.ts");
   assert.match(gw, /bootstrapWorktreeDeps/);
   assert.match(gw, /npm ci|"ci"/);
-  assert.match(gw, /this\.opts\.bootstrapDeps !== false/);
+  // beta.104 made this a per-allocation override (the scout's read-only
+  // worktree opts out), but the DEFAULT must still be "bootstrap unless the
+  // caller explicitly says otherwise" -- an undefined must never skip it.
+  assert.match(gw, /const bootstrap = ctx\.bootstrapDeps \?\? this\.opts\.bootstrapDeps;/);
+  assert.match(gw, /if \(bootstrap !== false\) \{/);
   // best-effort: must not throw out of allocate
   assert.match(gw, /deps bootstrap failed \(non-fatal\)/);
 });

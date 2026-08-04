@@ -225,6 +225,28 @@ export interface LeadPlan {
     reviewChecklist: string[];
     riskLevel: "low" | "medium" | "high";
     approxCostUsd: number;
+    /**
+     * beta.104: what the pre-planning repo scout did. Carried on the plan so the
+     * loop can audit it, because the question "did the lead actually see the
+     * repo?" must be answerable from the trail alone. b102's post-mortem could
+     * not tell a delivered dispatch hint from a dropped one for exactly this
+     * reason. Absent on plans built by callers that predate the scout.
+     */
+    scout?: LeadScoutOutcome;
+}
+/** beta.104: one scout attempt, whether or not it produced anything. */
+export interface LeadScoutOutcome {
+    /** True only when a non-empty report reached `brief.repoScoutReport`. */
+    ran: boolean;
+    reportChars: number;
+    costUsd?: number;
+    durationMs?: number;
+    /**
+     * Why the lead planned blind: `disabled`, `unwired`, `no_repo_hint`,
+     * `repo_not_allowed`, `empty_report` or `error`. Undefined when `ran`.
+     */
+    skippedReason?: string;
+    error?: string;
 }
 export interface LeadDeps {
     config: HarnessConfig;
@@ -234,6 +256,32 @@ export interface LeadDeps {
     };
     callLeadModel: (brief: CrystallisedBrief, repos: string[], correctiveNote?: string) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
     allocateWorktree: (repo: string, branch: string) => Promise<string>;
+    /**
+     * beta.104: THE SCOUT TURN. Gives the lead a read-only look at the repository
+     * before it plans, and returns the prose report.
+     *
+     * Until b104 the lead planned with `tools: []` and no worktree (allocation
+     * happens AFTER this function's planning call), so it had never opened a file
+     * of the repo it was planning against -- while the b67 gate simultaneously
+     * required it to supply verbatim `codeExcerpts`. The b102 smoke counted seven
+     * fictional paths in one plan.
+     *
+     * The implementation (index.ts) allocates a throwaway worktree with deps
+     * bootstrap OFF, runs the read-only SDK turn in it, and releases it.
+     *
+     * OPTIONAL and BEST-EFFORT by design. Unwired, disabled, no resolvable
+     * `repoHint`, a throw or an empty report all fall through to exactly the
+     * pre-b104 blind plan. A scout failure must never cost a run.
+     */
+    scoutRepo?: (input: {
+        brief: CrystallisedBrief;
+        repoFullName: string;
+    }) => Promise<{
+        report: string;
+        costUsd?: number;
+        tokensIn?: number;
+        tokensOut?: number;
+    } | undefined>;
     estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
     /**
      * beta.73 (D2): best-effort check whether `branch` already exists on origin
@@ -323,4 +371,11 @@ export declare function elideFinalScopeSubTask(plan: {
     title: string;
 } | undefined;
 export declare function runLeadPlanner(brief: CrystallisedBrief, deps: LeadDeps): Promise<LeadPlan>;
+/**
+ * beta.104: the allow-list match `validatePlan` has always applied to the
+ * lead's chosen repo, extracted so the scout gate uses the SAME rule. An
+ * exact-match-only check here would silently skip scouting every repo that is
+ * allowed by an `owner/*` glob -- i.e. most of them.
+ */
+export declare function isRepoAllowed(repoFullName: string, allowed: string[]): boolean;
 //# sourceMappingURL=fable5-lead.d.ts.map

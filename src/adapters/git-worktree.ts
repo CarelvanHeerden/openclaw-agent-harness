@@ -170,6 +170,17 @@ export interface GitContext {
    * unconditionally on any resume.
    */
   preserveLocalBranch?: boolean;
+  /**
+   * beta.104: per-allocation override of the adapter-wide {@link
+   * GitAdapterOptions.bootstrapDeps}.
+   *
+   * Exists for the lead scout, which allocates a throwaway worktree purely to
+   * READ the repo before planning and then releases it. Running `npm ci` for a
+   * read-only look would add minutes to every run to install dependencies
+   * nothing in that worktree will ever execute. Undefined keeps the
+   * adapter-wide default, so the real run worktree still bootstraps.
+   */
+  bootstrapDeps?: boolean;
 }
 
 export class GitAdapter {
@@ -384,7 +395,10 @@ esac
     // #858 smoke) since workers stop re-running npm ci mid-turn. Best-effort:
     // a failed install must NOT block allocation (the worker can still fall
     // back to its own inline `npm ci`); we log + continue.
-    if (this.opts.bootstrapDeps !== false) {
+    // beta.104: a per-allocation `bootstrapDeps` wins over the adapter default,
+    // so the scout's read-only worktree can skip the install entirely.
+    const bootstrap = ctx.bootstrapDeps ?? this.opts.bootstrapDeps;
+    if (bootstrap !== false) {
       await this.bootstrapWorktreeDeps(wt);
     }
 

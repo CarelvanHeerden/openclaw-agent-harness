@@ -47,6 +47,12 @@ import {
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
+import {
+  buildScoutSystemPrompt,
+  buildScoutUserMessage,
+  SCOUT_ALLOWED_TOOLS,
+  SCOUT_DENIED_TOOLS,
+} from "./orchestrator/lead-scout.js";
 import { createPullRequest, getPullRequest, getCombinedStatus, getFailingCheckLogs, mergePullRequest, postPrComment } from "./adapters/github.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
@@ -57,6 +63,7 @@ import {
   runClassifierSdk,
   runCrystalliserSdk,
   runLeadSdk,
+  runLeadScoutSdk,
   runLeadWorkerContextSdk,
   runLeadReviseSpecSdk,
   runWorkerSdk,
@@ -628,6 +635,65 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             maxOutputTokens: config.models.max_output_tokens,
             logger: api.logger,
           }),
+        // beta.104: the lead's ONE look at the repository, before it plans.
+        //
+        // Allocates a THROWAWAY worktree with the deps bootstrap OFF (the scout
+        // only reads; installing node_modules for that would add minutes per
+        // run), runs the read-only SDK turn in it, and releases it in a finally
+        // so a scout failure cannot leak a worktree. The bare clone stays warm,
+        // so the real allocation moments later is a `git worktree add`, not a
+        // fresh clone.
+        //
+        // Every failure path returns undefined rather than throwing:
+        // runLeadPlanner treats an absent report as "plan blind", which is
+        // exactly the pre-b104 behaviour.
+        scoutRepo: async ({ brief: scoutBrief, repoFullName }) => {
+          const [owner] = repoFullName.split("/");
+          const resolution = pat.resolve({
+            slackUserId: requester,
+            gitHubUser: owner!,
+            repoFullName,
+          });
+          const ghToken = await resolveGitToken(resolution);
+          let scoutWorktree: string | undefined;
+          try {
+            scoutWorktree = await git.allocate({
+              repoFullName,
+              baseBranch: config.repos.default_base_branch,
+              // The scout reads the BASE branch, never the session branch: the
+              // session branch does not exist yet, and the scout must not be
+              // able to influence the branch the run will build on.
+              sessionBranch: `harness/scout-${Date.now()}-${(globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2)).slice(0, 8)}`,
+              sessionId: `scout-${Date.now()}-${(globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2)).slice(0, 8)}`,
+              ghToken,
+              commitIdentity: resolution.commitIdentity,
+              bootstrapDeps: false,
+            });
+            const r = await runLeadScoutSdk({
+              model: config.models.lead,
+              worktreePath: scoutWorktree,
+              systemPrompt: buildScoutSystemPrompt(),
+              userMessage: buildScoutUserMessage(scoutBrief),
+              timeoutSeconds: config.loop.lead_scout_timeout_seconds ?? 600,
+              apiKey: await anthropicApiKey(),
+              maxOutputTokens: config.models.max_output_tokens,
+              allowedTools: SCOUT_ALLOWED_TOOLS,
+              deniedTools: SCOUT_DENIED_TOOLS,
+              logger: api.logger,
+            });
+            return { report: r.report, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+          } finally {
+            if (scoutWorktree) {
+              await git
+                .releaseByPath(scoutWorktree, repoFullName)
+                .catch((err: unknown) =>
+                  api.logger.warn("[lead] beta.104: scout worktree release failed (non-fatal)", {
+                    path: scoutWorktree, err: String(err),
+                  }),
+                );
+            }
+          }
+        },
         allocateWorktree: async (repo, branch) => {
           const [owner] = repo.split("/");
           // Determine PAT + identity for the ACTUAL requester (multi-user).
