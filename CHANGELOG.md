@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.1.0-beta.102] -- 2026-08-04
+
+### Executing the path b101 only read
+
+b101 fixed the defect that destroyed six worker commits in the b100 smoke, and
+shipped real-git tests proving `worktree add -B` orphans commits and that
+`preserveLocalBranch` prevents it. Those tests covered the GIT LAYER. The layer
+where the bug actually lived -- `harness_answer` -> full re-plan -> fresh
+allocation -> branch reset -- was verified by READING the code.
+
+That is the same gap that produced the bug in the first place. Three separate
+comments and the CHANGELOG all asserted the resume "continues in place" while
+the code force-removed the worktree and reset the branch. Nobody was lying;
+nobody had executed the path. Shipping a fix validated the same way the bug was
+missed is not a fix, it is a coin flip.
+
+`tests/beta102-clarification-resume-integration.test.mjs` (13) drives the whole
+chain for real: real `OrchestratorLoop`, real sqlite state, real `GitAdapter`
+against a local remote, the real `harness_answer` tool, a real re-plan and a
+real re-allocation. Only the three LLM turns are stubbed, and the stubbed worker
+makes genuine commits through the real adapter, because commits are the subject.
+It asserts the b100 shape end-to-end: a sub-task commits correct work, fails its
+contract against a fictional path, pauses, and -- after the operator answers --
+its commits are still reachable in the newly-allocated worktree.
+
+Confirmed meaningful by mutation: disabling `preserveLocalBranch` in the built
+output fails three of these tests, including the load-bearing one. The suite
+also carries a permanent counterfactual that allocates WITHOUT the resume marker
+and asserts the commits are destroyed, so the tests cannot quietly start passing
+for the wrong reason.
+
+**The defect it found.** Sub-task rows are keyed `<session>-c<cycle>-s<seq>` and
+written with `INSERT OR REPLACE`. A clarification resume re-plans from cycle 1,
+so the new plan's seq 1 CLOBBERS the original seq 1 -- erasing its `commit_sha`.
+b101's ledger-reachability guard read `sub_tasks` alone, so it would have gone
+progressively blind on exactly the runs it exists to protect: in the reproduction
+it saw one of the two orphaned commits instead of both. In a run where the
+re-plan has as many sub-tasks as the original, it could have seen none.
+
+The guard now unions `sub_tasks` with the `commitSha` carried on
+`loop.worker_end_turn`, which lands in the append-only audit log and therefore
+cannot be overwritten by a re-plan. The underlying row-clobbering is left in
+place -- it is correct for the recovery path it was built for -- but nothing
+load-bearing depends on that table being durable any more.
+
+**CI.** Two gaps closed. `harness/**` is now in the push trigger -- every release
+branch uses that prefix, so pushes ran no CI at all and the PR was the first
+signal. And `scripts/mutation-check.mjs` runs after the suite: it breaks each
+b101/b102 safety mechanism in the built output and requires the covering tests
+to fail. A green suite proves nothing if it stays green with the behaviour
+removed, which is how the b100 defect survived review. A mutation whose anchor
+text has disappeared is a hard failure rather than a skip, so a rename cannot
+silently disarm the check.
+
+No behaviour changes beyond the guard's data source.
+
 ## [0.1.0-beta.101] -- 2026-08-04
 
 ### The pause stops eating the work it paused over

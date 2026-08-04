@@ -85,7 +85,7 @@ function parsePrNumber(prUrl) {
 import { inferVerifyContract } from "./verify-contract.js";
 import { rederiveContractPath, reconcileTestContractPaths } from "./contract-rederive.js";
 import { pathMatches, resolveContractPath } from "./path-match.js";
-import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure } from "./ledger-integrity.js";
+import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedgerCommits } from "./ledger-integrity.js";
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-validate.js";
 import { verifySubTaskOutput } from "./verify.js";
@@ -2193,11 +2193,25 @@ export class OrchestratorLoop {
                     const rows = this.deps.state.db
                         .prepare(`SELECT seq, commit_sha, description FROM sub_tasks WHERE session_id = ? AND commit_sha IS NOT NULL AND commit_sha != '' ORDER BY cycle, seq`)
                         .all(sessionId);
-                    const ledger = rows.map((r) => ({
-                        seq: r.seq,
-                        commitSha: r.commit_sha,
-                        title: r.description ?? undefined,
-                    }));
+                    // beta.102: union with the append-only audit log. sub_tasks rows are
+                    // keyed by (cycle, seq) and REPLACED, so a clarification re-plan --
+                    // which restarts at cycle 1 -- erases the commit_sha of any row whose
+                    // seq the new plan reuses. Reading only that table would blind this
+                    // guard on precisely the runs it exists to protect. See
+                    // mergeLedgerCommits.
+                    const auditRows = this.deps.state.db
+                        .prepare(`SELECT payload FROM audit_log WHERE session_id = ? AND event = 'loop.worker_end_turn' ORDER BY created_at`)
+                        .all(sessionId);
+                    const fromAudit = [];
+                    for (const a of auditRows) {
+                        try {
+                            const p = JSON.parse(a.payload);
+                            if (p?.commitSha)
+                                fromAudit.push({ seq: Number(p.seq ?? -1), commitSha: String(p.commitSha) });
+                        }
+                        catch { /* a malformed payload must not break the guard */ }
+                    }
+                    const ledger = mergeLedgerCommits(rows.map((r) => ({ seq: r.seq, commitSha: r.commit_sha, title: r.description ?? undefined })), fromAudit);
                     if (ledger.length > 0) {
                         const headSha = this.deps.worktreeHeadSha
                             ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")

@@ -33,6 +33,19 @@ export interface LedgerIntegrityReport {
     ok: boolean;
 }
 /**
+ * Pure: combine ledger sources, de-duplicated by sha, earlier sources winning
+ * (they carry richer metadata like the sub-task title).
+ *
+ * beta.102: the guard MUST NOT read `sub_tasks` alone. Sub-task rows are keyed
+ * `<session>-c<cycle>-s<seq>` and written with INSERT OR REPLACE, and a
+ * clarification resume re-plans from cycle 1 -- so the new plan's seq 1 CLOBBERS
+ * the original seq 1, silently erasing its `commit_sha`. A guard that only read
+ * that table would go progressively blind exactly on the runs it exists to
+ * protect. The `loop.worker_end_turn` audit event carries the same sha into an
+ * append-only log, so unioning the two makes the ledger un-eraseable.
+ */
+export declare function mergeLedgerCommits(...sources: LedgerCommit[][]): LedgerCommit[];
+/**
  * Pure: pair the ledger against the set of shas a reachability probe reported
  * as unreachable. Comparison is prefix-tolerant in both directions because the
  * ledger stores full shas while git output and audit payloads are frequently
