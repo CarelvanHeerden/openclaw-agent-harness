@@ -302,6 +302,19 @@ export interface OrchestratorDeps {
      */
     worktreeCommitCount?: (worktreePath: string, base: string) => Promise<number>;
     /**
+     * beta.101: of `shas`, which are NOT reachable from `from`? Powers the
+     * ledger-reachability guard that refuses to review or ship a branch which has
+     * lost commits this run already recorded (see ./ledger-integrity.ts).
+     * Optional; when absent the guard is skipped (fails open).
+     */
+    unreachableCommits?: (worktreePath: string, from: string, shas: string[]) => Promise<string[]>;
+    /**
+     * beta.101: list the repo's tracked files in the worktree, for plan-time
+     * detection of paths the lead invented (see ./plan-path-validate.ts).
+     * Optional; when absent the check is skipped.
+     */
+    listRepoFiles?: (worktreePath: string) => Promise<string[]>;
+    /**
      * beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree, for the
      * best-effort-verify clean-diff check and the scripted-verifier fallback's
      * informational diff. Optional; when absent the clean-diff check treats the

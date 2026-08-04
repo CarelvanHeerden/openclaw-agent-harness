@@ -1086,6 +1086,13 @@ export function registerHarnessTools(api, runtime) {
                 brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
                 brief.acceptanceCriteria.push(`OPERATOR CLARIFICATION (for the previously-blocked sub-task ${seq}): In response to "${q.slice(0, 300)}", the operator decided: ${trimmed}. Follow this decision exactly; do not re-raise the same question.`);
             }
+            // beta.101: mark this as a clarification re-drive BEFORE persisting, so
+            // both this resume and any later crash-recovery re-drive allocate with
+            // preserveLocalBranch. The re-plan below allocates a NEW worktree; the
+            // pre-b101 allocation reset the session branch to origin/<base> and
+            // silently orphaned every commit the run had already made (b100 smoke,
+            // session 3c6c1608 lost six). See CrystallisedBrief.resumeFromClarification.
+            brief.resumeFromClarification = true;
             // Persist the amended brief so a subsequent restart/recovery re-drives
             // WITH the clarification baked in.
             liveDb().prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', updated_at = ? WHERE id = ?`)

@@ -580,6 +580,21 @@ export interface LoopConfig {
      */
     contract_mismatch_escalation_enabled?: boolean;
     /**
+     * beta.101: before adversary review, verify every commit_sha in the sub-task
+     * ledger is reachable from HEAD, and FAIL the run when any is not. Catches a
+     * branch that has silently lost work the run already committed (b100 smoke,
+     * session 3c6c1608: six orphaned commits went unnoticed until the adversary
+     * blocked on their absence). false restores the pre-b101 unchecked review.
+     */
+    ledger_reachability_guard_enabled?: boolean;
+    /**
+     * beta.101: at plan time, flag `filesLikelyTouched` entries naming a file in
+     * a directory the repo does not have, and warn the worker to treat them as
+     * guesses. Advisory only -- never blocks, since new modules legitimately
+     * create new directories. false disables the check entirely.
+     */
+    plan_path_validation_enabled?: boolean;
+    /**
      * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
      * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
      * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on

@@ -105,6 +105,28 @@ export interface GitContext {
      * available locally before the checkout.
      */
     reuseExistingBranch?: boolean;
+    /**
+     * beta.101: check out the LOCAL sessionBranch at its own tip, never resetting
+     * it. Distinct from {@link reuseExistingBranch}, which resolves the tip from
+     * `origin/<branch>` and therefore only works for a branch that has already
+     * been PUSHED (the revise-of-a-shipped-PR flow).
+     *
+     * ROOT CAUSE (b100 smoke, session 3c6c1608). Resuming from
+     * `awaiting_clarification` runs a full re-plan, which allocates a NEW
+     * worktree. Allocation force-removed the paused worktree and then ran
+     * `worktree add -B <branch> <wt> origin/<base>`, and `-B` RESETS the branch.
+     * The branch had six worker commits (`ce05f55f..88ce5f44`) and had never been
+     * pushed, so `reuseExistingBranch` could not have saved it either. The ref
+     * jumped to `origin/main` (which had moved on to an unrelated docs commit)
+     * and all six commits became unreachable. The adversary then reviewed a diff
+     * containing none of the run's work and blocked.
+     *
+     * With this flag, allocation checks out the existing local branch as-is, so
+     * local commits survive a re-plan. Falls back to the base checkout when the
+     * branch does not exist locally (a first run), so it is safe to set
+     * unconditionally on any resume.
+     */
+    preserveLocalBranch?: boolean;
 }
 export declare class GitAdapter {
     private readonly opts;
@@ -177,6 +199,39 @@ export declare class GitAdapter {
      * of orphaning a directory that then collides with the next run.
      */
     private robustRemoveDir;
+    /** beta.101: does `refs/heads/<branch>` exist in the bare repo? Never throws. */
+    private localBranchExists;
+    /**
+     * beta.101: NEVER SILENTLY DISCARD COMMITS.
+     *
+     * `git worktree add -B <branch> <wt> <startPoint>` RESETS <branch> to
+     * <startPoint>. When the branch already carries commits that <startPoint>
+     * cannot reach, those commits become unreachable from any ref and are lost to
+     * the next `git gc` -- which is exactly how the b100 smoke (session 3c6c1608)
+     * destroyed six worker commits on a clarification resume.
+     *
+     * The preserve-local-branch path above is the CURE for the known trigger.
+     * This is the NET for every other path to a destructive reset, including ones
+     * that do not exist yet: before the reset, park the doomed tip under
+     * `refs/harness-rescue/<branch>/<timestamp>` so the work stays reachable and
+     * recoverable. Deliberately non-blocking -- we do not refuse the reset, we
+     * just make it non-destructive, so no legitimate fresh-start allocation is
+     * broken by this guard.
+     *
+     * Best-effort by construction: any git failure here must not fail allocation,
+     * because a rescue ref is a safety bonus and never a precondition.
+     */
+    private rescueBranchIfAhead;
+    /**
+     * beta.101: are ALL of `shas` reachable from `from` in this worktree? Returns
+     * the subset that is NOT reachable. Powers the ledger-reachability guard: a
+     * sub-task that recorded a commit_sha which HEAD cannot reach means the work
+     * is no longer on the branch, and anything downstream (review, PR) would be
+     * operating on a diff that does not contain it. Never throws; an
+     * indeterminate check returns [] so the guard fails OPEN (a git failure must
+     * not block a healthy run).
+     */
+    unreachableCommits(worktreePath: string, from: string, shas: string[]): Promise<string[]>;
     /**
      * beta.38: before `git worktree add -B <branch>`, ensure no OTHER worktree
      * still holds <branch>. `git worktree add -B` refuses when the branch is
@@ -321,6 +376,12 @@ export declare class GitAdapter {
     mergeBase(worktreePath: string, ref: string): Promise<string>;
     /** beta.67 (Bug B): count commits in `<base>..HEAD` (the branch's own commits). */
     commitCount(worktreePath: string, base: string): Promise<number>;
+    /**
+     * beta.101: the repo's tracked files at HEAD, for plan-time detection of
+     * paths the lead invented (see orchestrator/plan-path-validate.ts). Returns
+     * [] on failure, which makes the check express no opinion.
+     */
+    listTrackedFiles(worktreePath: string): Promise<string[]>;
     /** beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree. */
     diffStat(worktreePath: string, base: string): Promise<string>;
     /**

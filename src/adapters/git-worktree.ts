@@ -148,6 +148,28 @@ export interface GitContext {
    * available locally before the checkout.
    */
   reuseExistingBranch?: boolean;
+  /**
+   * beta.101: check out the LOCAL sessionBranch at its own tip, never resetting
+   * it. Distinct from {@link reuseExistingBranch}, which resolves the tip from
+   * `origin/<branch>` and therefore only works for a branch that has already
+   * been PUSHED (the revise-of-a-shipped-PR flow).
+   *
+   * ROOT CAUSE (b100 smoke, session 3c6c1608). Resuming from
+   * `awaiting_clarification` runs a full re-plan, which allocates a NEW
+   * worktree. Allocation force-removed the paused worktree and then ran
+   * `worktree add -B <branch> <wt> origin/<base>`, and `-B` RESETS the branch.
+   * The branch had six worker commits (`ce05f55f..88ce5f44`) and had never been
+   * pushed, so `reuseExistingBranch` could not have saved it either. The ref
+   * jumped to `origin/main` (which had moved on to an unrelated docs commit)
+   * and all six commits became unreachable. The adversary then reviewed a diff
+   * containing none of the run's work and blocked.
+   *
+   * With this flag, allocation checks out the existing local branch as-is, so
+   * local commits survive a re-plan. Falls back to the base checkout when the
+   * branch does not exist locally (a first run), so it is safe to set
+   * unconditionally on any resume.
+   */
+  preserveLocalBranch?: boolean;
 }
 
 export class GitAdapter {
@@ -305,7 +327,18 @@ esac
       // dangling admin state, then locate and release any live worktree still
       // holding this branch so the add can proceed cleanly.
       await this.reconcileBranchWorktrees(bare, ctx.sessionBranch, wt);
-      if (ctx.reuseExistingBranch) {
+      // beta.101: PRESERVE-LOCAL-BRANCH. When resuming a session whose branch
+      // already carries local (never-pushed) commits, check the branch out at
+      // its own tip. `worktree add <wt> <branch>` (no `-B`, no start-point)
+      // cannot move the ref, so nothing can be orphaned. See GitContext
+      // .preserveLocalBranch for the b100 session-3c6c1608 root cause.
+      if (ctx.preserveLocalBranch && (await this.localBranchExists(bare, ctx.sessionBranch))) {
+        await this.run(["-C", bare, "worktree", "add", wt, ctx.sessionBranch], undefined, ask.path, ctx.ghToken);
+        this.opts.logger.info("[git] preserving local branch at its own tip (no reset)", {
+          branch: ctx.sessionBranch,
+          worktree: wt,
+        });
+      } else if (ctx.reuseExistingBranch) {
         // beta.44 revise: check out the EXISTING branch at the pushed PR head so
         // the prior session's commits are preserved (new work stacks on the PR
         // head).
@@ -321,12 +354,15 @@ esac
         // so revise still produces a usable worktree.
         const remoteRef = `origin/${ctx.sessionBranch}`;
         try {
+          await this.rescueBranchIfAhead(bare, ctx.sessionBranch, remoteRef);
           await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, remoteRef], undefined, ask.path, ctx.ghToken);
         } catch {
+          await this.rescueBranchIfAhead(bare, ctx.sessionBranch, ctx.baseBranch);
           await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
         }
       } else {
         // beta.46: base checkout resolves from the remote-tracking ref too.
+        await this.rescueBranchIfAhead(bare, ctx.sessionBranch, `origin/${ctx.baseBranch}`);
         await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, `origin/${ctx.baseBranch}`], undefined, ask.path, ctx.ghToken);
       }
       await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
@@ -523,6 +559,83 @@ esac
   private async robustRemoveDir(dir: string): Promise<void> {
     if (!existsSync(dir)) return;
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+  }
+
+  /** beta.101: does `refs/heads/<branch>` exist in the bare repo? Never throws. */
+  private async localBranchExists(bare: string, branch: string): Promise<boolean> {
+    try {
+      await this.run(["-C", bare, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * beta.101: NEVER SILENTLY DISCARD COMMITS.
+   *
+   * `git worktree add -B <branch> <wt> <startPoint>` RESETS <branch> to
+   * <startPoint>. When the branch already carries commits that <startPoint>
+   * cannot reach, those commits become unreachable from any ref and are lost to
+   * the next `git gc` -- which is exactly how the b100 smoke (session 3c6c1608)
+   * destroyed six worker commits on a clarification resume.
+   *
+   * The preserve-local-branch path above is the CURE for the known trigger.
+   * This is the NET for every other path to a destructive reset, including ones
+   * that do not exist yet: before the reset, park the doomed tip under
+   * `refs/harness-rescue/<branch>/<timestamp>` so the work stays reachable and
+   * recoverable. Deliberately non-blocking -- we do not refuse the reset, we
+   * just make it non-destructive, so no legitimate fresh-start allocation is
+   * broken by this guard.
+   *
+   * Best-effort by construction: any git failure here must not fail allocation,
+   * because a rescue ref is a safety bonus and never a precondition.
+   */
+  private async rescueBranchIfAhead(bare: string, branch: string, startPoint: string): Promise<void> {
+    try {
+      if (!(await this.localBranchExists(bare, branch))) return;
+      // Commits reachable from the branch but NOT from the start point: exactly
+      // the set the reset would orphan.
+      const out = await this.run(["-C", bare, "rev-list", `refs/heads/${branch}`, `^${startPoint}`]);
+      const doomed = out.split("\n").map((s) => s.trim()).filter(Boolean);
+      if (doomed.length === 0) return;
+      const tip = (await this.run(["-C", bare, "rev-parse", `refs/heads/${branch}`])).trim();
+      const rescueRef = `refs/harness-rescue/${branch}/${Date.now()}`;
+      await this.run(["-C", bare, "update-ref", rescueRef, tip]);
+      this.opts.logger.warn(
+        "[git] branch reset would have orphaned commits; parked them under a rescue ref before resetting",
+        { branch, startPoint, orphanCount: doomed.length, tip, rescueRef, orphans: doomed.slice(0, 20) },
+      );
+    } catch (err) {
+      this.opts.logger.warn("[git] rescue-ref check failed (non-fatal; proceeding with reset)", {
+        branch, startPoint, err: String(err),
+      });
+    }
+  }
+
+  /**
+   * beta.101: are ALL of `shas` reachable from `from` in this worktree? Returns
+   * the subset that is NOT reachable. Powers the ledger-reachability guard: a
+   * sub-task that recorded a commit_sha which HEAD cannot reach means the work
+   * is no longer on the branch, and anything downstream (review, PR) would be
+   * operating on a diff that does not contain it. Never throws; an
+   * indeterminate check returns [] so the guard fails OPEN (a git failure must
+   * not block a healthy run).
+   */
+  async unreachableCommits(worktreePath: string, from: string, shas: string[]): Promise<string[]> {
+    const out: string[] = [];
+    for (const sha of shas) {
+      if (!sha || !sha.trim()) continue;
+      try {
+        await this.run(["-C", worktreePath, "merge-base", "--is-ancestor", sha.trim(), from]);
+      } catch {
+        // Non-zero exit = not an ancestor. Distinguish "not reachable" from
+        // "not a commit at all" (a bogus sha is also a real integrity problem,
+        // so both count).
+        out.push(sha.trim());
+      }
+    }
+    return out;
   }
 
   /**
@@ -843,6 +956,10 @@ esac
       // held by a worktree.
       await this.run(["-C", bare, "fetch", "--prune", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`], undefined, ask.path, ghToken);
       // Scratch worktree on a fresh revert branch pointing at latest main.
+      // beta.101: the default revertBranch is timestamped and so has nothing to
+      // discard, but a CALLER-SUPPLIED opts.revertBranch may name a branch that
+      // already carries commits. Same net as allocate(): park them first.
+      await this.rescueBranchIfAhead(bare, revertBranch, `origin/${baseBranch}`);
       await this.run(["-C", bare, "worktree", "add", "-B", revertBranch, scratch, `origin/${baseBranch}`], undefined, ask.path, ghToken);
       // Set a commit identity for the revert commits (worktree-local).
       await this.run(["-C", scratch, "config", "user.name", "openclaw-agent-harness"]);
@@ -941,6 +1058,16 @@ esac
       const n = parseInt(out, 10);
       return Number.isFinite(n) ? n : 0;
     } catch { return 0; }
+  }
+
+  /**
+   * beta.101: the repo's tracked files at HEAD, for plan-time detection of
+   * paths the lead invented (see orchestrator/plan-path-validate.ts). Returns
+   * [] on failure, which makes the check express no opinion.
+   */
+  async listTrackedFiles(worktreePath: string): Promise<string[]> {
+    const out = await this.run(["-C", worktreePath, "ls-files"]).catch(() => "");
+    return out.split("\n").map((l) => l.trim()).filter(Boolean);
   }
 
   /** beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree. */

@@ -51,6 +51,12 @@ interface RunnableBrief {
    */
   reviseOfSessionId?: string;
   pinnedBranch?: string;
+  /**
+   * beta.101: marks a re-drive out of `awaiting_clarification` so worktree
+   * allocation preserves the session branch's existing local commits. See
+   * CrystallisedBrief.resumeFromClarification.
+   */
+  resumeFromClarification?: boolean;
 }
 
 export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRuntime): () => void {
@@ -1257,6 +1263,13 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             `OPERATOR CLARIFICATION (for the previously-blocked sub-task ${seq}): In response to "${q.slice(0, 300)}", the operator decided: ${trimmed}. Follow this decision exactly; do not re-raise the same question.`,
           );
         }
+        // beta.101: mark this as a clarification re-drive BEFORE persisting, so
+        // both this resume and any later crash-recovery re-drive allocate with
+        // preserveLocalBranch. The re-plan below allocates a NEW worktree; the
+        // pre-b101 allocation reset the session branch to origin/<base> and
+        // silently orphaned every commit the run had already made (b100 smoke,
+        // session 3c6c1608 lost six). See CrystallisedBrief.resumeFromClarification.
+        brief.resumeFromClarification = true;
         // Persist the amended brief so a subsequent restart/recovery re-drives
         // WITH the clarification baked in.
         liveDb().prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', updated_at = ? WHERE id = ?`)

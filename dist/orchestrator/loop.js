@@ -85,6 +85,9 @@ function parsePrNumber(prUrl) {
 import { inferVerifyContract } from "./verify-contract.js";
 import { rederiveContractPath, reconcileTestContractPaths } from "./contract-rederive.js";
 import { pathMatches, resolveContractPath } from "./path-match.js";
+import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure } from "./ledger-integrity.js";
+import { extractStatedReason } from "./worker-reason.js";
+import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-validate.js";
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
@@ -788,6 +791,10 @@ export class OrchestratorLoop {
         const startedAt = Date.now();
         const hardDeadlineMs = startedAt + this.deps.config.loop.session_hard_timeout_seconds * 1000;
         this.deps.state.audit("loop.start", { sessionId, brief }, sessionId);
+        // beta.101: plan paths the repo tree says are fictional (see the
+        // plan_paths_suspect block below). Consulted at dispatch so each worker is
+        // warned only about the paths in its OWN sub-task.
+        let planPathSuspects = [];
         // 1. Planning
         this.setStatus(sessionId, "planning");
         await this.deps.reportProgress?.(sessionId, "planning");
@@ -882,6 +889,34 @@ export class OrchestratorLoop {
                 }
                 catch (err) {
                     this.deps.logger.warn("[loop] repo convention ingest failed (non-fatal)", { sessionId, err: String(err) });
+                }
+            }
+            // beta.101: flag plan paths that name a file in a directory the repo does
+            // not have. The b100 smoke's entire failure cascade -- a failed verify, a
+            // clarification round-trip, a re-plan and a wasted review turn -- traces
+            // back to the lead inventing `src/components/layout/grc-nav.tsx` when
+            // `src/components/layout/` does not exist. The worker found the real
+            // sidebar and edited it correctly; only the CONTRACT was fictional.
+            // Advisory by design (see plan-path-validate.ts): new modules legitimately
+            // create new directories, so this informs the worker, never blocks.
+            if (this.deps.config.loop.plan_path_validation_enabled !== false && this.deps.listRepoFiles) {
+                try {
+                    const repoFiles = await this.deps.listRepoFiles(plan.worktreePath);
+                    const planPaths = plan.subTasks.flatMap((s) => s.filesLikelyTouched ?? []);
+                    const suspects = findSuspectPlanPaths(planPaths, repoFiles);
+                    if (suspects.length > 0) {
+                        planPathSuspects = suspects;
+                        this.deps.state.audit("loop.plan_paths_suspect", { sessionId, count: suspects.length, suspects: suspects.map((s) => ({ path: s.path, missingDir: s.missingDir })), repoFileCount: repoFiles.length }, sessionId);
+                        this.deps.interactionLog?.log(sessionId, {
+                            event: "plan_paths_suspect", phase: "plan", count: suspects.length, paths: suspects.map((s) => s.path),
+                        });
+                        this.deps.logger.warn("[loop] plan names path(s) in directories that do not exist; workers will be told to treat them as guesses", {
+                            sessionId, suspects: suspects.map((s) => `${s.path} (no ${s.missingDir}/)`),
+                        });
+                    }
+                }
+                catch (err) {
+                    this.deps.logger.warn("[loop] plan path validation failed (non-fatal)", { sessionId, err: String(err) });
                 }
             }
         }
@@ -1047,11 +1082,18 @@ export class OrchestratorLoop {
                 // workers and induced confabs (b91). Fall back to the beta.56 whole-
                 // review raw hint only if mapping was unavailable/disabled.
                 const reviseAssignment = reviseAssignmentBySeq.get(st.seq);
-                const reviseHint = cycle > 1 && lastReview
+                const baseReviseHint = cycle > 1 && lastReview
                     ? reviseAssignment
                         ? buildScopedReviseHint(lastReview.verdict, lastReview.summary, reviseAssignment)
                         : buildReviseDispatchHint(lastReview)
                     : undefined;
+                // beta.101: warn this worker about ITS OWN fictional plan paths only,
+                // so the note stays short and unambiguous rather than a plan-wide dump.
+                const mine = new Set((st.filesLikelyTouched ?? []).map((p) => p.trim().replace(/^\.\//, "")));
+                const mySuspects = planPathSuspects.filter((s) => mine.has(s.path));
+                const reviseHint = mySuspects.length
+                    ? `${baseReviseHint ? `${baseReviseHint}\n\n` : ""}${describeSuspectPlanPaths(mySuspects)}`
+                    : baseReviseHint;
                 // beta.70 (F5): skip observe-only RE-PROBE on a revise cycle. In
                 // PR #870 the cycle-2 plan re-listed seq-1 as taskMode:'observe'
                 // ("already completed and requires no changes; do not modify any
@@ -1903,8 +1945,12 @@ export class OrchestratorLoop {
                             this.deps.config.loop.clarification_escalation_enabled !== false) {
                             const expected = [...new Set(failedResults.map((x) => x.path).filter(Boolean))];
                             const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && f.trim());
-                            const workerNote = (result.finalMessage ?? "").trim();
-                            const firstLine = workerNote.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+                            // beta.101: select the worker's reason by RELEVANCE, not
+                            // position. b100 quoted the first line and showed the operator
+                            // "That's fine, it's a harmless temp file outside the repo" --
+                            // about an unrelated file -- while the real explanation sat lower
+                            // in the message. See extractStatedReason.
+                            const statedReason = extractStatedReason(result.finalMessage ?? "", expected, actual);
                             this.deps.state.audit("loop.contract_path_mismatch_escalated", {
                                 sessionId, seq: st.seq, cycle,
                                 expected, actual,
@@ -1921,7 +1967,7 @@ export class OrchestratorLoop {
                             clarify.question =
                                 `Sub-task ${st.seq} ("${st.title}") committed ${result.commitSha.slice(0, 7)} but the files do not match its contract. ` +
                                     `The plan required: ${expected.join(", ")}. The sub-task actually committed: ${actual.join(", ") || "(no files reported)"}. ` +
-                                    (firstLine ? `The worker's stated reason: ${firstLine.slice(0, 400)} ` : "") +
+                                    (statedReason ? `The worker's stated reason: ${statedReason} ` : "") +
                                     `Was the plan's path wrong, or the worker's placement? (Reply with the path convention this repo should use -- ` +
                                     `it is folded into the brief and the plan re-derived -- or say "skip" to drop this sub-task, or "abort".)`;
                             clarify.seq = st.seq;
@@ -2133,6 +2179,61 @@ export class OrchestratorLoop {
                     };
                 }
             }
+            // beta.101: LEDGER-COMMIT REACHABILITY GUARD. Runs BEFORE the adversary
+            // SDK call so a branch that has lost work costs nothing to detect.
+            //
+            // b100 (session 3c6c1608) shipped six recorded commits into the void and
+            // then paid for a review of a diff that contained none of them. The
+            // adversary had to infer the problem from absence and blocked with
+            // findings about "missing" work that had actually been written. Every
+            // input needed to catch this deterministically was already in the DB.
+            let ledgerUnreachable = [];
+            if (this.deps.config.loop.ledger_reachability_guard_enabled !== false && this.deps.unreachableCommits) {
+                try {
+                    const rows = this.deps.state.db
+                        .prepare(`SELECT seq, commit_sha, description FROM sub_tasks WHERE session_id = ? AND commit_sha IS NOT NULL AND commit_sha != '' ORDER BY cycle, seq`)
+                        .all(sessionId);
+                    const ledger = rows.map((r) => ({
+                        seq: r.seq,
+                        commitSha: r.commit_sha,
+                        title: r.description ?? undefined,
+                    }));
+                    if (ledger.length > 0) {
+                        const headSha = this.deps.worktreeHeadSha
+                            ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
+                            : "";
+                        const bad = await this.deps.unreachableCommits(plan.worktreePath, headSha || "HEAD", ledger.map((e) => e.commitSha));
+                        const integrity = buildLedgerIntegrityReport(ledger, bad);
+                        ledgerUnreachable = integrity.unreachable.map((e) => e.commitSha);
+                        this.deps.state.audit("loop.ledger_reachability_checked", { sessionId, cycle, headSha, checked: integrity.checked, unreachableCount: integrity.unreachable.length, ok: integrity.ok }, sessionId);
+                        if (!integrity.ok) {
+                            const detail = describeLedgerIntegrityFailure(integrity, headSha);
+                            this.deps.state.audit("loop.ledger_commits_unreachable", {
+                                sessionId, cycle, headSha,
+                                checked: integrity.checked,
+                                unreachable: integrity.unreachable.map((e) => ({ seq: e.seq, commitSha: e.commitSha })),
+                            }, sessionId);
+                            this.deps.interactionLog?.log(sessionId, {
+                                event: "ledger_commits_unreachable", phase: "review", cycle,
+                                unreachable: integrity.unreachable.map((e) => e.commitSha),
+                            });
+                            this.deps.logger.error("[loop] recorded sub-task commits are unreachable from HEAD; refusing to review or ship an incomplete branch", {
+                                sessionId, cycle, headSha, unreachable: integrity.unreachable,
+                            });
+                            // Fail rather than pause: a text answer cannot restore a branch,
+                            // and reviewing or shipping this diff would silently omit work
+                            // the run already did. The commits survive under the rescue refs.
+                            return this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${detail}`, cycle, totalCost);
+                        }
+                    }
+                }
+                catch (err) {
+                    // Fail OPEN: a probe failure must never block an otherwise sound run.
+                    this.deps.logger.warn("[loop] ledger reachability guard failed (non-fatal; continuing to review)", {
+                        sessionId, cycle, err: String(err),
+                    });
+                }
+            }
             let report;
             // beta.63 (Part B): adversary SDK call boundary logging.
             const reviewStart = Date.now();
@@ -2162,10 +2263,20 @@ export class OrchestratorLoop {
                             ? await this.deps.worktreeCommitCount(plan.worktreePath, adversaryBaseSha).catch(() => -1)
                             : -1;
                         const subTaskCount = plan.subTasks.length;
-                        const suspicious = commitCount >= 0 && commitCount > Math.max(subTaskCount * 3, subTaskCount + 5);
-                        this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha, headSha, commitCount, subTaskCount, suspicious }, sessionId);
-                        if (suspicious) {
+                        const tooManyCommits = commitCount >= 0 && commitCount > Math.max(subTaskCount * 3, subTaskCount + 5);
+                        // beta.101: the b67 heuristic only ever asked "too MANY commits?".
+                        // The b100 smoke was the mirror image -- a diff of ONE commit while
+                        // six recorded sub-task commits were missing from it -- and scored
+                        // `suspicious: false`. Missing recorded work is at least as strong
+                        // a signal that the diff base is wrong as excess commits are.
+                        const missingLedgerCommits = ledgerUnreachable.length > 0;
+                        const suspicious = tooManyCommits || missingLedgerCommits;
+                        this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha, headSha, commitCount, subTaskCount, suspicious, tooManyCommits, missingLedgerCommits, unreachableLedgerCommits: ledgerUnreachable }, sessionId);
+                        if (tooManyCommits) {
                             this.deps.logger.warn("[loop] adversary diff commit count is suspiciously high vs sub-task count -- diff base may be wrong", { sessionId, commitCount, subTaskCount, baseSha: adversaryBaseSha });
+                        }
+                        if (missingLedgerCommits) {
+                            this.deps.logger.warn("[loop] adversary diff is missing recorded sub-task commits -- diff base or branch may be wrong", { sessionId, unreachable: ledgerUnreachable, baseSha: adversaryBaseSha });
                         }
                     }
                     else {
