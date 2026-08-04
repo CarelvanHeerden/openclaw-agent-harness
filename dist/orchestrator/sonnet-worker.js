@@ -223,7 +223,21 @@ modelOverride) {
     }
     let changed = await deps.gitListChangedFiles(worktreePath, baseSha);
     let commitSha;
+    // beta.103: the worker's OWN tip, read before the harness commits the
+    // remainder. When both happen in one turn this is the commit that used to
+    // vanish from the ledger entirely (see WorkerResult.commitShas).
+    const commitShas = [];
     if (changed.length > 0) {
+        if (deps.gitHeadSha && baseSha) {
+            try {
+                const headBefore = await deps.gitHeadSha(worktreePath);
+                if (headBefore && headBefore !== baseSha)
+                    commitShas.push(headBefore);
+            }
+            catch {
+                // best-effort; a failed probe just means no extra ledger anchor.
+            }
+        }
         // Uncommitted working-tree changes exist -> the harness commits them.
         const sha = await deps.gitCommit(worktreePath, `harness(${subTask.seq}): ${subTask.title}`, commitIdentity);
         commitSha = sha ?? undefined;
@@ -287,10 +301,13 @@ modelOverride) {
             : sdkResult.stopReason === "end_turn"
                 ? "completed"
                 : "failed";
+    if (commitSha && !commitShas.includes(commitSha))
+        commitShas.push(commitSha);
     return {
         status,
         filesChanged: changed,
         commitSha,
+        commitShas,
         sdkSessionId: sdkResult.sdkSessionId,
         costUsd: sdkResult.costUsd,
         tokensIn: sdkResult.tokensIn,

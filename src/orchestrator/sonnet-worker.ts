@@ -22,6 +22,26 @@ export interface WorkerResult {
   status: "completed" | "failed" | "timeout" | "first_token_timeout";
   filesChanged: string[];
   commitSha?: string;
+  /**
+   * beta.103: EVERY commit tip this turn produced, not just the one that lands
+   * in `sub_tasks.commit_sha` (a single column, so a turn that commits twice
+   * can only ever record one).
+   *
+   * A worker that commits some of its own work with its git tool and leaves the
+   * rest dirty produces TWO commits: its own, then the harness's
+   * `harness(N): ...` commit of the remainder. `commitSha` holds only the
+   * latter, and the HEAD-reconcile fallback below is gated on `!commitSha`, so
+   * the worker's own commit was never recorded anywhere. The b102 smoke has
+   * exactly that shape -- `f4b5d2e3` sits on the branch, contributes to the
+   * diff, and appears in no ledger row.
+   *
+   * It was harmless there because nothing was lost, but a commit that never
+   * enters the ledger cannot be checked for reachability, which is a blind spot
+   * in precisely the b100 failure mode the guard exists to catch. Recording the
+   * worker's own tip is enough: reachability of a tip implies reachability of
+   * its ancestors, so one anchor per chain detects an orphaned chain.
+   */
+  commitShas?: string[];
   sdkSessionId?: string;
   costUsd: number;
   tokensIn: number;
@@ -447,7 +467,19 @@ export async function runWorker(
 
   let changed = await deps.gitListChangedFiles(worktreePath, baseSha);
   let commitSha: string | undefined;
+  // beta.103: the worker's OWN tip, read before the harness commits the
+  // remainder. When both happen in one turn this is the commit that used to
+  // vanish from the ledger entirely (see WorkerResult.commitShas).
+  const commitShas: string[] = [];
   if (changed.length > 0) {
+    if (deps.gitHeadSha && baseSha) {
+      try {
+        const headBefore = await deps.gitHeadSha(worktreePath);
+        if (headBefore && headBefore !== baseSha) commitShas.push(headBefore);
+      } catch {
+        // best-effort; a failed probe just means no extra ledger anchor.
+      }
+    }
     // Uncommitted working-tree changes exist -> the harness commits them.
     const sha = await deps.gitCommit(
       worktreePath,
@@ -515,10 +547,13 @@ export async function runWorker(
           ? "completed"
           : "failed";
 
+  if (commitSha && !commitShas.includes(commitSha)) commitShas.push(commitSha);
+
   return {
     status,
     filesChanged: changed,
     commitSha,
+    commitShas,
     sdkSessionId: sdkResult.sdkSessionId,
     costUsd: sdkResult.costUsd,
     tokensIn: sdkResult.tokensIn,

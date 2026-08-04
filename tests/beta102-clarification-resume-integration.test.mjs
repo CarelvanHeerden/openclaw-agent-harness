@@ -41,7 +41,12 @@ const { DatabaseSync } = await import("node:sqlite");
 
 const QUIET = { info() {}, warn() {}, error() {}, debug() {} };
 const IDENT = { name: "Harness Test", email: "harness@test.local" };
-const git = (args, cwd) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+// beta.103: `-c commit.gpgsign=false` keeps this hermetic. Without it the test
+// inherits the developer's global git config, and a machine that signs commits
+// fails here for reasons that have nothing to do with the harness (a local run
+// hit `gpg: signing failed: Cannot allocate memory` mid-suite).
+const git = (args, cwd) =>
+  execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
 
 // The b100 shape: the plan names a file in a directory the repo does not have,
 // and the worker correctly puts the work where the convention actually lives.

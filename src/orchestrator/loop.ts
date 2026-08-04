@@ -95,6 +95,7 @@ import { pathMatches, resolveContractPath } from "./path-match.js";
 import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedgerCommits, type LedgerCommit } from "./ledger-integrity.js";
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths, type SuspectPlanPath } from "./plan-path-validate.js";
+import { applyPathCorrections, describePathCorrections, type PathCorrection } from "./plan-path-writeback.js";
 import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult } from "./repo-conventions.js";
@@ -1490,6 +1491,26 @@ export class OrchestratorLoop {
         const reviseHint = mySuspects.length
           ? `${baseReviseHint ? `${baseReviseHint}\n\n` : ""}${describeSuspectPlanPaths(mySuspects)}`
           : baseReviseHint;
+        // beta.103: attaching a hint emitted NO audit event, so "did the worker
+        // actually get told?" was unanswerable after the fact. The b102 smoke
+        // report concluded the b101 plan-path warning was observability-only
+        // and never reached a worker -- an unsound inference, but one the audit
+        // trail gave no way to refute. Record the attachment itself.
+        if (reviseHint) {
+          this.deps.state.audit(
+            "loop.dispatch_hint_attached",
+            {
+              sessionId, seq: st.seq, cycle,
+              chars: reviseHint.length,
+              sources: [
+                ...(baseReviseHint ? ["revise"] : []),
+                ...(mySuspects.length ? ["plan_path_suspect"] : []),
+              ],
+              suspectPaths: mySuspects.map((s) => s.path),
+            },
+            sessionId,
+          );
+        }
         // beta.70 (F5): skip observe-only RE-PROBE on a revise cycle. In
         // PR #870 the cycle-2 plan re-listed seq-1 as taskMode:'observe'
         // ("already completed and requires no changes; do not modify any
@@ -1703,6 +1724,13 @@ export class OrchestratorLoop {
               cycle,
               status: result.status,
               commitSha: result.commitSha ?? null,
+              // beta.103: every commit tip this turn produced. `commitSha` is a
+              // single value and `sub_tasks.commit_sha` a single column, so a
+              // turn where the worker committed its own work AND the harness
+              // committed the remainder recorded only the harness commit -- the
+              // worker's own commit entered no ledger at all and so could never
+              // be reachability-checked. This array is what the guard reads.
+              commitShas: result.commitShas ?? (result.commitSha ? [result.commitSha] : []),
               filesTouched: result.filesChanged,
               hasFinalMessage: fm.length > 0,
               finalMessage: fm.slice(0, 4000),
@@ -1778,11 +1806,17 @@ export class OrchestratorLoop {
         // remap applies (returns the path unchanged), so this never makes
         // verification stricter. Skips file_in_pr (repo-wide, not scoped).
         const rederiveEnabled = this.deps.config.loop.contract_rederive_enabled !== false;
+        // beta.103: every evidence-backed correction made below is also folded
+        // back into st.filesLikelyTouched after the contract is built, so a
+        // later revise cycle scopes against the real path instead of the
+        // lead's fiction. See plan-path-writeback.ts for the b102 failure.
+        const pathCorrections: PathCorrection[] = [];
         const contract: SubTaskVerify[] = rawContract.map((v) => {
           if (!rederiveEnabled) return v;
           if (!("path" in v) || !v.path || v.kind === "file_in_pr") return v;
           const rd = rederiveContractPath(v.path, [...discoveredRealPaths]);
           if (!rd.remapped) return v;
+          pathCorrections.push({ from: v.path, to: rd.path });
           this.deps.state.audit(
             "loop.contract_path_rederived",
             { sessionId, seq: st.seq, cycle, kind: v.kind, from: v.path, to: rd.path, via: rd.via },
@@ -1826,6 +1860,7 @@ export class OrchestratorLoop {
             const entry = contract[i]!;
             if (entry.kind !== "file_written" && entry.kind !== "file_committed") continue;
             contract[i] = { ...entry, path: rc.to };
+            pathCorrections.push({ from: rc.from, to: rc.to });
             this.deps.state.audit(
               "loop.contract_test_path_reconciled",
               { sessionId, seq: st.seq, cycle, kind: entry.kind, from: rc.from, to: rc.to, subTaskTouched },
@@ -1837,6 +1872,35 @@ export class OrchestratorLoop {
             this.deps.interactionLog?.log(sessionId, {
               event: "contract_test_path_reconciled", phase: "worker", seq: st.seq, cycle,
               from: rc.from, to: rc.to,
+            });
+          }
+        }
+        // beta.103: fold the proven corrections back into the PLAN. Until now a
+        // remap only ever reached the local `contract` array, so
+        // `st.filesLikelyTouched` kept the lead's fictional path for the rest
+        // of the run -- and computeReviseScope / mapFindingsToSubTasks both key
+        // off filesLikelyTouched. In the b102 smoke that made cycle 3 skip the
+        // one sub-task that owned both of its own outstanding findings. The
+        // corrections are evidence-backed (learned from paths this run really
+        // touched, 1:1 for the test reconcile), and applyPathCorrections only
+        // ever REWRITES an entry the plan already declared -- it never appends
+        // -- so a sub-task's scope can be corrected but never widened.
+        if (this.deps.config.loop.plan_path_writeback_enabled !== false && pathCorrections.length > 0) {
+          const wb = applyPathCorrections(st.filesLikelyTouched, pathCorrections);
+          if (wb.applied.length > 0) {
+            const before = [...(st.filesLikelyTouched ?? [])];
+            st.filesLikelyTouched = wb.files;
+            this.deps.state.audit(
+              "loop.plan_path_written_back",
+              { sessionId, seq: st.seq, cycle, applied: wb.applied, before, after: wb.files },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, {
+              event: "plan_path_written_back", phase: "worker", seq: st.seq, cycle,
+              applied: wb.applied.map((c) => `${c.from} -> ${c.to}`),
+            });
+            this.deps.logger.info("[loop] corrected the plan's declared paths from verified evidence; revise scoping will use the real paths", {
+              sessionId, seq: st.seq, cycle, corrections: describePathCorrections(wb.applied),
             });
           }
         }
@@ -2743,8 +2807,15 @@ export class OrchestratorLoop {
           const fromAudit: LedgerCommit[] = [];
           for (const a of auditRows) {
             try {
-              const p = JSON.parse(a.payload) as { seq?: number; commitSha?: string | null };
-              if (p?.commitSha) fromAudit.push({ seq: Number(p.seq ?? -1), commitSha: String(p.commitSha) });
+              const p = JSON.parse(a.payload) as { seq?: number; commitSha?: string | null; commitShas?: unknown };
+              const seq = Number(p?.seq ?? -1);
+              // beta.103: prefer the full per-turn tip list; fall back to the
+              // single `commitSha` for turns recorded before b103.
+              const many = Array.isArray(p?.commitShas) ? p.commitShas : [];
+              for (const s of many) {
+                if (typeof s === "string" && s.trim()) fromAudit.push({ seq, commitSha: s.trim() });
+              }
+              if (many.length === 0 && p?.commitSha) fromAudit.push({ seq, commitSha: String(p.commitSha) });
             } catch { /* a malformed payload must not break the guard */ }
           }
           const ledger = mergeLedgerCommits(
@@ -3728,8 +3799,26 @@ export class OrchestratorLoop {
     // status means GitHub has not registered the run YET (registration lag),
     // not "no CI". Grace-poll for the run to appear instead of terminating on
     // poll 1 (the b90 shipped-known-red bug). Bounded, never exceeds waitMs.
+    //
+    // beta.103: the SAME registration lag applies to a repo that ALREADY has
+    // CI, and b91 gated the grace on `workflowAuthoredThisSession` -- so for
+    // those repos poll 1 still terminated on `none`. The b102 smoke shipped
+    // PR #906 that way: the PR opened at 10:30:44, GitHub registered the first
+    // check run at 10:30:49, and the immediate first poll landed in that
+    // ~5s hole, read `none`, and concluded "this repo has no CI". Lint went
+    // red at 10:33:11 against a 900s wait budget that was never touched, and
+    // the run shipped `do_not_merge` on the review verdict instead of
+    // `needs_human_review` with the failing logs.
+    //
+    // The grace is now unconditional. A repo that genuinely has no CI still
+    // resolves to `none`, just `none_grace_seconds` later -- irrelevant at the
+    // end of a multi-minute run, and the price of never again mistaking
+    // "GitHub has not caught up" for "there is nothing to wait for".
+    // `authoredWorkflowGrace` is kept separate because only the authoring case
+    // may return `authored_workflow_never_registered`.
     const graceMs = Math.max(0, cfg.none_grace_seconds ?? 45) * 1000;
-    const graceActive = !!input.workflowAuthoredThisSession && graceMs > 0;
+    const graceActive = graceMs > 0;
+    const authoredWorkflowGrace = !!input.workflowAuthoredThisSession && graceMs > 0;
     const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     const now = input.now ?? (() => Date.now());
     const started = now();
@@ -3776,11 +3865,11 @@ export class OrchestratorLoop {
           await sleep(pollMs);
           continue;
         }
-        this.deps.state.audit("loop.ci_none", { sessionId, sha, polls, graceActive, elapsedMs: elapsedNone }, sessionId);
+        this.deps.state.audit("loop.ci_none", { sessionId, sha, polls, graceActive, authoredWorkflowGrace, elapsedMs: elapsedNone }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "ci_none", phase: "finalize", sha });
         // Authored a workflow but it never registered within grace -> distinct,
         // NON-blocking outcome (a real no-CI repo returns plain `none`).
-        if (graceActive) {
+        if (authoredWorkflowGrace) {
           return { outcome: "authored_workflow_never_registered", sha, waitedSeconds: Math.round(elapsedNone / 1000) };
         }
         return { outcome: "none" };

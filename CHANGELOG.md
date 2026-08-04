@@ -1,5 +1,84 @@
 # Changelog
 
+## [0.1.0-beta.103] -- 2026-08-04
+
+### The plan stops lying about where the work lives
+
+The b102 smoke (session `670c8440`) shipped ProjectThanos PR #906 blocked on a
+single unescaped apostrophe. The adversary had found it, named the file and the
+rule, and predicted that `npm run lint` would error. It said so on all three
+cycles. Nothing fixed it, and the run reported `do_not_merge` for unrelated
+reasons while GitHub's `main-protection` ruleset held the PR at `BLOCKED` with
+`Lint` red and `Build` skipped behind it.
+
+Two independent defects produced that, and neither is about severity ranking.
+Neither `computeReviseScope` nor `mapFindingsToSubTasks` filters by severity at
+all.
+
+**1. Path corrections never reached the plan.** The lead planned the page at
+`src/app/(app)/grc/continuity-exercises/page.tsx`; the repo uses `(portal)`.
+b101's plan-path validation flagged it, b76's rederive corrected it at verify
+time, and the sub-task passed. But the correction was applied to the local
+contract array only -- `return { ...v, path: rd.path }` -- so
+`st.filesLikelyTouched` kept the fiction for the rest of the run. Both revise
+consumers key off `filesLikelyTouched`, and neither `(app)` nor `(portal)` is a
+suffix of the other, so on cycle 3 the scoper could not intersect the
+adversary's findings with the plan's path and skipped the one sub-task that
+owned both of them: the apostrophe AND the medium that made the edit drawer 403
+every legitimate non-owner edit. Both were re-raised verbatim as "prior-cycle
+fix did not land" because the sub-task that could have fixed them never ran.
+
+Corrections are now written back into the plan (`plan-path-writeback.ts`, config
+`loop.plan_path_writeback_enabled`, default on). `applyPathCorrections` only ever
+REWRITES a path the plan already declared -- it never appends -- so a sub-task's
+scope can be corrected but never widened, and the corrections it consumes are
+evidence-backed by construction.
+
+**2. The CI wait lost a five-second race.** The harness has a 900-second
+post-push CI wait that turns a red build into `needs_human_review` with the
+failing logs attached. It never engaged. The PR opened at 10:30:44, GitHub
+registered its first check run at 10:30:49, and the immediate first poll landed
+in that hole and read `none`. The `none_grace_seconds` window that exists for
+exactly this registration lag was gated on `workflowAuthoredThisSession`, so a
+repo that ALREADY has CI got no grace and the poll concluded "this repo has no
+CI". Lint went red at 10:33:11, two and a half minutes later, against a wait
+budget that was never touched.
+
+The grace is now unconditional. A genuinely CI-less repo still resolves to
+`none`, just `none_grace_seconds` later. Only the terminal outcome still
+distinguishes the authored case.
+
+### Fixed
+
+- **A turn that commits twice now records both tips.** When a worker commits its
+  own work and leaves the rest dirty, the harness commits the remainder; the
+  single `commitSha` held only the latter, and the HEAD-reconcile fallback is
+  gated on `!commitSha`, so the worker's own commit entered no ledger at all.
+  b102's `f4b5d2e3` has that shape. Nothing was lost there, but a commit outside
+  the ledger cannot be reachability-checked, which is a blind spot in precisely
+  the b100 failure mode the guard exists to catch. `WorkerResult.commitShas`
+  carries every tip and the guard reads the list.
+
+### Added
+
+- `loop.dispatch_hint_attached` audit event. Attaching a worker hint emitted
+  nothing, so the b102 report concluded the b101 plan-path warning was
+  observability-only and never reached a worker -- an unsound inference the
+  audit trail gave no way to refute.
+- `tests/beta103-plan-path-writeback.test.mjs` (21), including the b102
+  regression driven through the real `computeReviseScope` and
+  `mapFindingsToSubTasks`, and the two-commit turn driven through the real
+  `runWorker`. Three new mutations in `scripts/mutation-check.mjs`; all six are
+  caught.
+
+### Changed
+
+- The b101 test that asserted "no workflow authored -> `none` terminates on poll
+  1" is superseded. That assertion described the bug.
+- The real-git suites pin `commit.gpgsign=false`, so a developer whose global git
+  config signs commits no longer fails the suite for reasons unrelated to the
+  harness.
+
 ## [0.1.0-beta.102] -- 2026-08-04
 
 ### Executing the path b101 only read

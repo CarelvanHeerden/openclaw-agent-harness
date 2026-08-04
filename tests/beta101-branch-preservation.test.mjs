@@ -35,7 +35,9 @@ const { extractStatedReason } = await import("../dist/orchestrator/worker-reason
 
 const QUIET = { info: () => {}, warn: () => {}, error: () => {} };
 const IDENT = { name: "Harness Test", email: "harness@test.local" };
-const git = (args, cwd) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+// beta.103: hermetic against a developer's global git config (see b102's helper).
+const git = (args, cwd) =>
+  execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
 
 const tmpRoots = [];
 function scratch(prefix) {
