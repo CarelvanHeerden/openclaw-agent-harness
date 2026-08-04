@@ -52,6 +52,30 @@ const MUTATIONS = [
     replace: "if (false) {",
     tests: ["tests/beta102-clarification-resume-integration.test.mjs"],
   },
+  {
+    name: "plan path writeback (b103): a proven correction reaches the plan",
+    file: "dist/orchestrator/plan-path-writeback.js",
+    // Neutered to the identity function: corrections are computed and then
+    // thrown away, which is precisely the pre-b103 behaviour that let cycle 3
+    // skip the sub-task owning both of its findings.
+    find: "export function applyPathCorrections(files, corrections) {",
+    replace: "export function applyPathCorrections(files, corrections) { return { files: files ?? [], applied: [] };",
+    tests: ["tests/beta103-plan-path-writeback.test.mjs"],
+  },
+  {
+    name: "CI none grace (b103): a not-yet-registered check is not read as no-CI",
+    file: "dist/orchestrator/loop.js",
+    find: "const graceActive = graceMs > 0;",
+    replace: "const graceActive = !!input.workflowAuthoredThisSession && graceMs > 0;",
+    tests: ["tests/beta81-ci-shift.test.mjs"],
+  },
+  {
+    name: "full commit-tip recording (b103): a two-commit turn records both",
+    file: "dist/orchestrator/sonnet-worker.js",
+    find: "if (headBefore && headBefore !== baseSha)",
+    replace: "if (false && headBefore !== baseSha)",
+    tests: ["tests/beta103-plan-path-writeback.test.mjs"],
+  },
 ];
 
 function runTests(files) {

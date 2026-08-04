@@ -80,6 +80,7 @@ const DEFAULTS = {
         contract_mismatch_escalation_enabled: true,
         ledger_reachability_guard_enabled: true,
         plan_path_validation_enabled: true,
+        plan_path_writeback_enabled: true,
         sdk_first_token_timeout_seconds: 30,
         sdk_stream_open_timeout_seconds: 120,
         worker_stream_idle_warn_seconds: 90,

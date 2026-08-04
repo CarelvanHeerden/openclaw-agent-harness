@@ -163,16 +163,52 @@ test("beta91/F4: authored workflow + none for the whole grace -> authored_workfl
   state.close();
 });
 
-test("beta91/F4: NO workflow authored -> none terminates immediately (beta.90 behaviour preserved)", { skip: OrchestratorLoop === null }, async () => {
+// beta.103 SUPERSEDES the b91 "none terminates immediately when nothing was
+// authored" behaviour. That gate is exactly what shipped PR #906 blocked: the
+// PR opened at 10:30:44, GitHub registered its first check run at 10:30:49, and
+// the immediate first poll landed in that hole, read `none`, and concluded the
+// repo had no CI. Lint went red at 10:33:11 against an untouched 900s budget.
+// The grace now applies to EVERY repo; only the terminal outcome still
+// distinguishes the authored case.
+test("beta103: NO workflow authored + none-then-failure within grace -> failure (the b102 PR #906 race)", { skip: OrchestratorLoop === null }, async () => {
   const state = makeStore();
+  let t = 0; const now = () => t; const sleep = async (ms) => { t += ms; };
   let calls = 0;
   const loop = loopWith(state, {
     config: { ci: { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 } },
+    // Poll 1 lands before GitHub registered anything; the checks then report red.
+    ciCombinedStatus: async () => (++calls < 2 ? "none" : "failure"),
+    ciFailingLogs: async () => "- Lint [failure]: react/no-unescaped-entities",
+  });
+  const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "s", requester: "U1", workflowAuthoredThisSession: false, sleep, now });
+  assert.equal(r.outcome, "failure", "a pre-existing-CI repo must not terminate on a not-yet-registered none");
+  assert.match(r.logs, /no-unescaped-entities/);
+  assert.ok(state.audits.some((a) => a.event === "loop.ci_none_grace_wait"));
+  state.close();
+});
+
+test("beta103: NO workflow authored + none for the whole grace -> plain none (a real no-CI repo still resolves)", { skip: OrchestratorLoop === null }, async () => {
+  const state = makeStore();
+  let t = 0; const now = () => t; const sleep = async (ms) => { t += ms; };
+  const loop = loopWith(state, {
+    config: { ci: { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 } },
+    ciCombinedStatus: async () => "none",
+  });
+  const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "s", requester: "U1", workflowAuthoredThisSession: false, sleep, now });
+  assert.equal(r.outcome, "none", "no workflow authored => plain none, never authored_workflow_never_registered");
+  state.close();
+});
+
+test("beta103: none_grace_seconds:0 still terminates on poll 1 for an unauthored repo (opt-out preserved)", { skip: OrchestratorLoop === null }, async () => {
+  const state = makeStore();
+  let calls = 0;
+  const loop = loopWith(state, {
+    config: { ci: { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 0 } },
     ciCombinedStatus: async () => { calls++; return "none"; },
   });
   const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "s", requester: "U1", workflowAuthoredThisSession: false, sleep: noSleep });
   assert.equal(r.outcome, "none");
-  assert.equal(calls, 1, "a genuine no-CI repo still resolves on poll 1");
+  assert.equal(calls, 1);
   state.close();
 });
 
@@ -201,8 +237,10 @@ test("beta81/B2: pollCiStatus is SKIPPED when ciCombinedStatus dep is absent", {
 // ---- B2: 'none' outcome (no CI) ----
 test("beta81/B2: pollCiStatus reports 'none' when the repo has no CI", { skip: OrchestratorLoop === null }, async () => {
   const state = makeStore();
+  // beta.103: a fake clock, because `none` now grace-polls before resolving.
+  let t = 0; const now = () => t; const sleep = async (ms) => { t += ms; };
   const loop = loopWith(state, { ciCombinedStatus: async () => "none" });
-  const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "s", requester: "U1", sleep: noSleep });
+  const r = await loop.pollCiStatus({ sessionId: "S", repoFullName: "o/r", sha: "s", requester: "U1", sleep, now });
   assert.deepEqual(r, { outcome: "none" });
   assert.ok(state.audits.some((a) => a.event === "loop.ci_none"));
   state.close();

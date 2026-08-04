@@ -604,6 +604,16 @@ export interface LoopConfig {
    */
   plan_path_validation_enabled?: boolean;
   /**
+   * beta.103: after verification proves a contract path correction (b76 rederive
+   * or b100 test reconcile), write it back into the sub-task's
+   * `filesLikelyTouched` so later revise cycles scope against the real path.
+   * Without this the plan keeps the lead's fictional path and revise-scoping
+   * skips the sub-task that owns the findings (b102 smoke, PR #906: three
+   * cycles re-raising the same two findings against a sub-task it kept
+   * skipping). false restores the pre-b103 write-nothing-back behaviour.
+   */
+  plan_path_writeback_enabled?: boolean;
+  /**
    * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
    * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
    * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on
@@ -1025,6 +1035,7 @@ const DEFAULTS: HarnessConfig = {
     contract_mismatch_escalation_enabled: true,
     ledger_reachability_guard_enabled: true,
     plan_path_validation_enabled: true,
+    plan_path_writeback_enabled: true,
     sdk_first_token_timeout_seconds: 30,
     sdk_stream_open_timeout_seconds: 120,
     worker_stream_idle_warn_seconds: 90,
