@@ -56,7 +56,8 @@ test("beta60: dispatcher wraps runOne in withTimeout(subtask_deadline_seconds), 
   const src = S("src/orchestrator/loop.ts");
   assert.match(
     src,
-    /withTimeout\(runOne\(st\), this\.deps\.config\.loop\.subtask_deadline_seconds\)/,
+    // b106 added a label argument so the timeout error names its own knob.
+    /withTimeout\(runOne\(st\), this\.deps\.config\.loop\.subtask_deadline_seconds(, "subtask_deadline_seconds")?\)/,
     "runOne must be bounded by subtask_deadline_seconds at the dispatcher",
   );
   // on deadline: audit + mark the stuck row failed + set failed.err

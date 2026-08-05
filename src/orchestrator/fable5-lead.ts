@@ -230,6 +230,13 @@ export interface LeadScoutOutcome {
    */
   skippedReason?: string;
   error?: string;
+  /**
+   * beta.106: the scout hit its ceiling and the planner proceeded with a
+   * partial report. Not a failure -- `ran` is still true and the report is
+   * still used -- but it means the budget is mis-set for this repo, and that
+   * needs to be visible rather than inferred from a suspiciously short report.
+   */
+  timedOut?: boolean;
 }
 
 export interface LeadDeps {
@@ -266,7 +273,7 @@ export interface LeadDeps {
   scoutRepo?: (input: {
     brief: CrystallisedBrief;
     repoFullName: string;
-  }) => Promise<{ report: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | undefined>;
+  }) => Promise<{ report: string; costUsd?: number; tokensIn?: number; tokensOut?: number; timedOut?: boolean } | undefined>;
   /** beta.105: see GitContext.onBranchDecision. Threaded through to allocation. */
   onBranchDecision?: (d: BranchAllocationDecision) => void;
   estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
@@ -527,9 +534,11 @@ export async function runLeadPlanner(
             reportChars: report.length,
             costUsd: result?.costUsd,
             durationMs: Date.now() - startedAt,
+            timedOut: result?.timedOut === true ? true : undefined,
           };
           deps.logger.info("[lead] beta.104: scouted the repo before planning", {
             repo: repoForScout, reportChars: report.length, durationMs: scoutOutcome.durationMs,
+            timedOut: scoutOutcome.timedOut ?? false,
           });
         } else {
           scoutOutcome = { ran: false, reportChars: 0, skippedReason: "empty_report", durationMs: Date.now() - startedAt };

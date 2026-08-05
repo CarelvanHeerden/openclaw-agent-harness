@@ -216,6 +216,13 @@ export declare function consumeWorkerStream(stream: AsyncIterable<any>, abort: A
      */
     accumulateAllText?: boolean;
     /**
+     * beta.106: called with each assistant text block as it arrives (only when
+     * `accumulateAllText` is set). Lets a caller that gives up waiting still
+     * salvage the prose produced so far. Best-effort; never throws into the
+     * stream loop.
+     */
+    onText?: (text: string) => void;
+    /**
      * beta.90 (Feature 2): idle-warn threshold in SECONDS. Default 90; <=0
      * disables the stream-slow detector entirely. The detector re-uses the
      * existing 30s tick cadence (it only fires onStreamSlow once idleMs crosses
@@ -280,6 +287,13 @@ export declare function runLeadScoutSdk(params: {
     maxOutputTokens?: number;
     allowedTools: readonly string[];
     deniedTools: readonly string[];
+    /**
+     * beta.106: hard ceiling on scout agent turns. The b105 smoke's scout ran 14
+     * minutes against a 600s budget; a wall-clock abort cannot interrupt a tool
+     * call already in flight, so the SDK's own turn cap is the bound that
+     * actually holds. See lead-scout.ts SCOUT_MAX_TURNS.
+     */
+    maxTurns?: number;
     logger?: {
         warn: (m: string, meta?: unknown) => void;
     };
@@ -290,6 +304,7 @@ export declare function runLeadScoutSdk(params: {
     tokensIn: number;
     tokensOut: number;
     stopReason: string;
+    timedOut?: boolean;
 }>;
 /**
  * beta.99 (P0-6): a `structuredCall` failure carrying the FULL raw model reply

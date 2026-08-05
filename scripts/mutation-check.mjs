@@ -172,6 +172,50 @@ const MUTATIONS = [
     replace: '"--diff-filter=AMR"',
     tests: ["tests/beta105-resume-integrity-and-rescue.test.mjs"],
   },
+  {
+    name: "lead budget covers the scout (b106): planning keeps its own full ceiling",
+    file: "dist/orchestrator/loop.js",
+    // Restores b104's nesting exactly: one budget for two turns, which is what
+    // killed the b105 smoke at 900s with the lead mid-plan.
+    find: "this.deps.config.loop.lead_timeout_seconds + scoutBudget",
+    replace: "this.deps.config.loop.lead_timeout_seconds",
+    tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
+  },
+  {
+    name: "timeout errors name their own knob (b106): a lead timeout is not reported as a worker one",
+    file: "dist/orchestrator/loop.js",
+    find: 'super(`worker exceeded ${limit} (${seconds}s) with no result`);',
+    replace: 'super(`worker exceeded worker_timeout_seconds (${seconds}s) with no result`);',
+    tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
+  },
+  {
+    name: "scout turn cap (b106): the wall clock alone cannot bound a tool call in flight",
+    file: "dist/adapters/claude-sdk.js",
+    find: "...(params.maxTurns && params.maxTurns > 0 ? { maxTurns: params.maxTurns } : {}),",
+    replace: "...({}),",
+    tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
+  },
+  {
+    name: "scout hard stop (b106): the harness stops waiting and keeps the partial report",
+    file: "dist/adapters/claude-sdk.js",
+    find: "const hardStopMs = params.timeoutSeconds * 1000 + 30_000;",
+    replace: "const hardStopMs = 24 * 60 * 60 * 1000;",
+    tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
+  },
+  {
+    name: "streamed scout text (b106): a caller that gives up can still salvage prose",
+    file: "dist/adapters/claude-sdk.js",
+    find: "opts.onText?.(text);",
+    replace: "void text;",
+    tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
+  },
+  {
+    name: "scout budget prompt (b106): the model is told what it may spend",
+    file: "dist/orchestrator/lead-scout.js",
+    find: '"## Your budget",',
+    replace: '"## Notes",',
+    tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
+  },
 ];
 
 function runTests(files) {

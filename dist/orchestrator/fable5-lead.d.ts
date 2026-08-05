@@ -248,6 +248,13 @@ export interface LeadScoutOutcome {
      */
     skippedReason?: string;
     error?: string;
+    /**
+     * beta.106: the scout hit its ceiling and the planner proceeded with a
+     * partial report. Not a failure -- `ran` is still true and the report is
+     * still used -- but it means the budget is mis-set for this repo, and that
+     * needs to be visible rather than inferred from a suspiciously short report.
+     */
+    timedOut?: boolean;
 }
 export interface LeadDeps {
     config: HarnessConfig;
@@ -284,6 +291,7 @@ export interface LeadDeps {
         costUsd?: number;
         tokensIn?: number;
         tokensOut?: number;
+        timedOut?: boolean;
     } | undefined>;
     /** beta.105: see GitContext.onBranchDecision. Threaded through to allocation. */
     onBranchDecision?: (d: BranchAllocationDecision) => void;

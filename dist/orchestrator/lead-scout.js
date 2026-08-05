@@ -65,6 +65,20 @@ export const SCOUT_ALLOWED_TOOLS = ["Read", "Glob", "Grep"];
 export const SCOUT_DENIED_TOOLS = ["Task", "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
 /** Default ceiling on the report folded into the planning prompt. */
 export const SCOUT_REPORT_MAX_CHARS = 20000;
+/**
+ * beta.106: hard ceiling on scout agent turns.
+ *
+ * The b105 smoke (session b08502aa) scouted for FOURTEEN MINUTES against a 600s
+ * budget. A wall-clock abort cannot interrupt a tool call already in flight, so
+ * the only bound that reliably holds is the SDK's own turn cap.
+ *
+ * The number is a judgement about what the job needs, not a guess: find an
+ * analogue, read it, verify the handful of paths the plan will name, note the
+ * traps. That is tens of reads, not hundreds. The prompt now states the same
+ * budget in words, because a model that knows its budget spends it deliberately
+ * -- the cap alone would just truncate mid-exploration.
+ */
+export const SCOUT_MAX_TURNS = 60;
 export function buildScoutSystemPrompt() {
     return [
         "You are the lead planner's SCOUT. You are about to plan a change to this repository, and this turn is your ONE chance to look at it.",
@@ -80,12 +94,17 @@ export function buildScoutSystemPrompt() {
         "3. The code a worker will need to see: the analogue's imports, the auth/validation wrapper the repo uses, the shared helpers, the schema or model style. Quote the real lines with their paths.",
         "4. Traps: framework version quirks, generated files, repo rules that apply to this change.",
         "",
+        "## Your budget",
+        `You have roughly ${SCOUT_MAX_TURNS} tool calls and a few minutes of wall clock. That is deliberately enough to find ONE good analogue, read it properly, verify the specific paths the plan will name, and note the traps -- and deliberately NOT enough to survey the codebase.`,
+        "Go straight at the analogue. Glob for the feature area, read the closest match, and follow only the imports a worker will actually need. Do not enumerate directories you have no plan to touch, do not read a file twice, and do not keep looking for confirmation once you have an answer.",
+        "Stop as soon as you can name the real paths and quote the real code. Running out of budget mid-exploration is far worse than reporting early with an honest gap: the report is truncated at the ceiling and the planner proceeds with whatever you had.",
+        "",
         "## How to report",
         "Reply in plain prose and code blocks -- NOT JSON, this turn has no schema.",
+        "Write the report as you go rather than saving it all for the end, so a partial report is still useful. Locations and conventions FIRST, code excerpts next, traps last.",
         "Anchor every claim to a path you actually opened. Quote code verbatim with its file path and line numbers.",
         "If you could not determine something, SAY SO explicitly and say what you checked. An honest gap is useful; a confident guess is the exact failure this turn exists to prevent.",
         "Do not write the plan itself. Report what you found; the planning turn will decompose it.",
-        "Be thorough over brief -- this is the only repo access the planning side of the run gets.",
     ].join("\n");
 }
 /** The scout's task framing: what the run is about to attempt. */

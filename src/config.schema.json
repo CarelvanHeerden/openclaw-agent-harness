@@ -192,8 +192,15 @@
           "type": "integer",
           "minimum": 60,
           "maximum": 3600,
-          "default": 600,
-          "description": "beta.104: wall-clock ceiling on the lead's repo scout turn."
+          "default": 420,
+          "description": "beta.106: wall-clock ceiling on the lead's repo scout turn, ADDED to lead_timeout_seconds by the loop rather than carved out of it. Pair it with lead_scout_max_turns, which is the bound that actually holds."
+        },
+        "lead_scout_max_turns": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 400,
+          "default": 60,
+          "description": "beta.106: hard ceiling on scout agent turns. Aborting the wall clock cannot interrupt a tool call already in flight, so the SDK turn cap is the bound that actually holds."
         },
         "lead_scout_max_chars": {
           "type": "integer",

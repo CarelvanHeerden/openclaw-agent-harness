@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.1.0-beta.106] -- 2026-08-05
+
+### The lead budget could not fit the scout
+
+The b105 smoke (session `b08502aa`) never produced a plan. It died at
+`plan_failed` after fifteen minutes, and the arithmetic says it was never going
+to do anything else.
+
+b104 added the scout turn inside `runLeadPlanner`, and the loop wraps that whole
+call in `withTimeout(..., lead_timeout_seconds)`. That bound was never raised.
+The shipped defaults were 900s for the lead and 600s for the scout, leaving 300s
+for planning -- and planning alone measured 441s and 182s on b103. One budget
+had to fit two turns, and it could not, on any repo.
+
+`lead_timeout_seconds` now means what its name says: the time the *planner*
+gets. The loop adds the scout's own ceiling on top when scouting is enabled, so
+the planner keeps its full budget however the scout knob is set.
+
+### A scout that outran its own clock
+
+The 600s abort fired on schedule and the scout kept going to roughly 850s.
+Aborting an `AbortController` signals the SDK but cannot interrupt a tool call
+already in flight, so the ceiling was advisory.
+
+Two changes make it real. The SDK's own `maxTurns` cap is now set, because a
+turn cap is a bound the model cannot outrun the way it outran the wall clock.
+And the harness stops *waiting* thirty seconds past the ceiling: assistant text
+is streamed out block by block as it arrives, so when the harness gives up it
+still holds everything the scout had written, plans with that partial report,
+and lets the SDK unwind on its own time. A truncated scout degrades the plan; it
+no longer ends the run.
+
+### Fourteen minutes was invited
+
+The scout prompt closed with "be thorough over brief -- this is the only repo
+access the planning side of the run gets", and offered no budget. It now states
+what it may spend, in the same number the cap enforces, and says plainly that
+running out mid-exploration is worse than reporting early with an honest gap. It
+is also told to write findings as it goes, locations first and traps last, so a
+partial report is still a useful one.
+
+### The error named the wrong knob
+
+`WorkerTimeoutError` hardcoded `worker exceeded worker_timeout_seconds` whatever
+timer fired. So a *lead* timeout at 900s was reported against a worker limit
+that was actually configured to 1800 -- a number appearing nowhere in the
+config, which sent the diagnosis to the wrong phase entirely. Every call site
+now names its own knob, and the unlabelled default keeps the old wording.
+
+### Config
+
+`loop.lead_scout_max_turns` (default 60). `loop.lead_scout_timeout_seconds`
+lowered from 600 to 420, and now added to the lead budget rather than carved out
+of it.
+
+### Tests
+
+`tests/beta106-lead-budget-and-scout-bounds.test.mjs` -- 20 tests, including the
+b105 failure reproduced in miniature and in real time: a 1s lead budget, a 2s
+scout ceiling and a 1.5s lead phase, which dies under b104's nesting and
+completes under b106's, plus the converse with the scout disabled to prove the
+addition is conditional. Six new mutations, all caught.
+
 ## [0.1.0-beta.105] -- 2026-08-04
 
 ### The guard that was never asked

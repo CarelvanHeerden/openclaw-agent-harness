@@ -627,8 +627,22 @@ export interface LoopConfig {
    * the run, it just falls back to blind.
    */
   lead_repo_scout_enabled?: boolean;
-  /** beta.104: wall-clock ceiling on the scout turn. Default 600. */
+  /**
+   * beta.104: wall-clock ceiling on the scout turn.
+   *
+   * beta.106: default lowered 600 -> 420, and the loop now ADDS this to
+   * `lead_timeout_seconds` rather than expecting the planner to share it. The
+   * b105 smoke scouted for 14 minutes and left the planner nothing.
+   */
   lead_scout_timeout_seconds?: number;
+  /**
+   * beta.106: hard ceiling on scout agent turns. Default 60 (SCOUT_MAX_TURNS).
+   *
+   * Aborting the wall clock does not interrupt a tool call already in flight --
+   * on the b105 smoke the 600s abort fired and the scout still ran to ~850s --
+   * so the SDK's turn cap is the bound that actually holds.
+   */
+  lead_scout_max_turns?: number;
   /**
    * beta.104: ceiling on the report folded into the planning prompt. Default
    * 20000. b98 is the standing reminder that an oversized lead input costs a
@@ -1099,7 +1113,8 @@ const DEFAULTS: HarnessConfig = {
     plan_path_validation_enabled: true,
     plan_path_writeback_enabled: true,
     lead_repo_scout_enabled: true,
-    lead_scout_timeout_seconds: 600,
+    lead_scout_timeout_seconds: 420,
+    lead_scout_max_turns: 60,
     lead_scout_max_chars: 20000,
     resume_ledger_guard_enabled: true,
     basename_rescue_enabled: true,

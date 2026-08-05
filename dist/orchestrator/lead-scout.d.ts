@@ -65,6 +65,20 @@ export declare const SCOUT_ALLOWED_TOOLS: readonly ["Read", "Glob", "Grep"];
 export declare const SCOUT_DENIED_TOOLS: readonly ["Task", "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
 /** Default ceiling on the report folded into the planning prompt. */
 export declare const SCOUT_REPORT_MAX_CHARS = 20000;
+/**
+ * beta.106: hard ceiling on scout agent turns.
+ *
+ * The b105 smoke (session b08502aa) scouted for FOURTEEN MINUTES against a 600s
+ * budget. A wall-clock abort cannot interrupt a tool call already in flight, so
+ * the only bound that reliably holds is the SDK's own turn cap.
+ *
+ * The number is a judgement about what the job needs, not a guess: find an
+ * analogue, read it, verify the handful of paths the plan will name, note the
+ * traps. That is tens of reads, not hundreds. The prompt now states the same
+ * budget in words, because a model that knows its budget spends it deliberately
+ * -- the cap alone would just truncate mid-exploration.
+ */
+export declare const SCOUT_MAX_TURNS = 60;
 export declare function buildScoutSystemPrompt(): string;
 /** The scout's task framing: what the run is about to attempt. */
 export declare function buildScoutUserMessage(brief: {

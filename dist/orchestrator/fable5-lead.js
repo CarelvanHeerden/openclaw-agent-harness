@@ -218,9 +218,11 @@ export async function runLeadPlanner(brief, deps) {
                         reportChars: report.length,
                         costUsd: result?.costUsd,
                         durationMs: Date.now() - startedAt,
+                        timedOut: result?.timedOut === true ? true : undefined,
                     };
                     deps.logger.info("[lead] beta.104: scouted the repo before planning", {
                         repo: repoForScout, reportChars: report.length, durationMs: scoutOutcome.durationMs,
+                        timedOut: scoutOutcome.timedOut ?? false,
                     });
                 }
                 else {

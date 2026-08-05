@@ -52,6 +52,7 @@ import {
   buildScoutUserMessage,
   SCOUT_ALLOWED_TOOLS,
   SCOUT_DENIED_TOOLS,
+  SCOUT_MAX_TURNS,
 } from "./orchestrator/lead-scout.js";
 import { createPullRequest, getPullRequest, getCombinedStatus, getFailingCheckLogs, mergePullRequest, postPrComment } from "./adapters/github.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
@@ -674,14 +675,15 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               worktreePath: scoutWorktree,
               systemPrompt: buildScoutSystemPrompt(),
               userMessage: buildScoutUserMessage(scoutBrief),
-              timeoutSeconds: config.loop.lead_scout_timeout_seconds ?? 600,
+              timeoutSeconds: config.loop.lead_scout_timeout_seconds ?? 420,
+              maxTurns: config.loop.lead_scout_max_turns ?? SCOUT_MAX_TURNS,
               apiKey: await anthropicApiKey(),
               maxOutputTokens: config.models.max_output_tokens,
               allowedTools: SCOUT_ALLOWED_TOOLS,
               deniedTools: SCOUT_DENIED_TOOLS,
               logger: api.logger,
             });
-            return { report: r.report, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+            return { report: r.report, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut, timedOut: r.timedOut };
           } finally {
             if (scoutWorktree) {
               await git

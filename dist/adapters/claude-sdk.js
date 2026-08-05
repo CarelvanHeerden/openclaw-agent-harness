@@ -354,8 +354,15 @@ export async function consumeWorkerStream(stream, abort, opts) {
                         // last one would silently drop the front of the report -- the part
                         // that carries the paths and conventions. Opt-in so the worker path
                         // (which wants the concluding statement alone) is unchanged.
-                        if (opts.accumulateAllText)
+                        if (opts.accumulateAllText) {
                             allText.push(text);
+                            // beta.106: hand each block to the caller as it lands. Aborting
+                            // the SDK does not interrupt a tool call already in flight, so a
+                            // scout that blows its ceiling can take minutes to unwind and the
+                            // caller must be able to stop waiting WITHOUT throwing away what
+                            // it already has. See runLeadScoutSdk's hard stop.
+                            opts.onText?.(text);
+                        }
                     }
                 }
             }
@@ -481,6 +488,12 @@ export async function runLeadScoutSdk(params) {
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), params.timeoutSeconds * 1000);
     const allowed = new Set(params.allowedTools);
+    // beta.106: keep our own copy of the prose as it arrives. On the b105 smoke
+    // the abort fired at 600s and the scout kept running to ~850s before the
+    // in-flight tool call unwound, blowing the lead's whole budget. We now stop
+    // WAITING at the ceiling and return what has landed, letting the SDK unwind
+    // on its own time.
+    const collected = [];
     try {
         const stream = sdk.query({
             prompt: params.userMessage,
@@ -490,6 +503,7 @@ export async function runLeadScoutSdk(params) {
                 cwd: params.worktreePath,
                 tools: [...params.allowedTools],
                 disallowedTools: [...params.deniedTools],
+                ...(params.maxTurns && params.maxTurns > 0 ? { maxTurns: params.maxTurns } : {}),
                 // The scout only reads, so nothing needs approving -- but the SDK still
                 // routes every call through canUseTool, which is where the third layer
                 // of read-only enforcement lives.
@@ -503,7 +517,7 @@ export async function runLeadScoutSdk(params) {
                 abortSignal: abort.signal,
             },
         });
-        const r = await consumeWorkerStream(stream, abort, {
+        const consumed = consumeWorkerStream(stream, abort, {
             // The scout does real filesystem work between messages, so the
             // idle-warning cadence is the only liveness signal worth keeping. The
             // first-token watchdogs stay off: a scout that spends its opening
@@ -511,8 +525,39 @@ export async function runLeadScoutSdk(params) {
             streamIdleWarnSeconds: 120,
             streamSlowLabel: "lead-scout",
             accumulateAllText: true,
+            onText: (t) => collected.push(t),
             logger: params.logger,
         });
+        // beta.106: HARD STOP. A small grace past the abort lets a cooperative
+        // stream finish cleanly; past that we take the partial report and go, so
+        // the planner still gets its own full budget. The abort has already been
+        // signalled, so the SDK tears itself down in the background.
+        const hardStopMs = params.timeoutSeconds * 1000 + 30_000;
+        let hardStop;
+        const giveUp = new Promise((resolve) => {
+            hardStop = setTimeout(() => resolve("timeout"), hardStopMs);
+        });
+        let r;
+        try {
+            r = await Promise.race([consumed, giveUp]);
+        }
+        finally {
+            if (hardStop)
+                clearTimeout(hardStop);
+        }
+        if (r === "timeout") {
+            // Never let the orphaned stream reject into an unhandled rejection.
+            void consumed.catch(() => { });
+            params.logger?.warn("[lead-scout] beta.106: ceiling reached; planning with the partial report", {
+                timeoutSeconds: params.timeoutSeconds,
+                reportChars: collected.join("\n\n").trim().length,
+            });
+            return {
+                report: collected.join("\n\n").trim(),
+                sdkSessionId: "", costUsd: 0, tokensIn: 0, tokensOut: 0,
+                stopReason: "timeout", timedOut: true,
+            };
+        }
         return {
             report: (r.allText ?? r.finalMessage ?? "").trim(),
             sdkSessionId: r.sdkSessionId,
