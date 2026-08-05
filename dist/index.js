@@ -430,7 +430,10 @@ export function bootstrapHarnessSync(api) {
                         }
                     }
                 },
-                allocateWorktree: async (repo, branch) => {
+                // beta.105: forwarded from loop.run so the checkout path lands in the
+                // session's audit trail as `loop.branch_allocation`.
+                onBranchDecision: ctx?.onBranchDecision,
+                allocateWorktree: async (repo, branch, onBranchDecision) => {
                     const [owner] = repo.split("/");
                     // Determine PAT + identity for the ACTUAL requester (multi-user).
                     const resolution = pat.resolve({
@@ -457,6 +460,7 @@ export function bootstrapHarnessSync(api) {
                         // its commits are never pushed, so reuseExistingBranch (which
                         // resolves origin/<branch>) cannot save them either.
                         preserveLocalBranch: !!brief.resumeFromClarification,
+                        onBranchDecision,
                     });
                 },
                 estimateCost: (p) => p.subTasks.reduce((acc, s) => acc + estimateSubTaskCost(config.models.worker, s.estimatedTokens), 0),
@@ -912,6 +916,10 @@ export function bootstrapHarnessSync(api) {
                             return {
                                 exists: true,
                                 nonEmpty: false,
+                                // beta.105: distinguish stale from empty. `nonEmpty: false`
+                                // carries both, and only the stale case can be answered by
+                                // asking git whether this sub-task renamed the file into place.
+                                stale: true,
                                 detail: `file present (${s.size} bytes) but its mtime predates the sub-task start -- pre-existing, not written by this sub-task`,
                             };
                         }
@@ -998,6 +1006,22 @@ export function bootstrapHarnessSync(api) {
                  * drift ok) + a disk-presence check so an accidentally-deleted file
                  * still fails.
                  */
+                /**
+                 * beta.105: did THIS sub-task put the file at this path? Answers the
+                 * question `file_written`'s mtime check is a proxy for, from git, so a
+                 * correct `git mv` (which preserves mtime) stops producing a
+                 * `file_committed` PASS and a `file_written` FAIL on the same file in
+                 * the same commit. See VerifyProbes.filePathIntroducedSince.
+                 */
+                filePathIntroducedSince: async (path, baseSha) => {
+                    try {
+                        const introduced = await git.pathIntroducedSince(worktreePath, baseSha, path);
+                        return introduced;
+                    }
+                    catch (err) {
+                        return { introduced: false, changeType: "", detail: `git log error: ${String(err)}` };
+                    }
+                },
                 fileCommittedInBranch: async (path, branchBaseSha) => {
                     try {
                         const files = await git.listCommittedFiles(worktreePath, branchBaseSha);

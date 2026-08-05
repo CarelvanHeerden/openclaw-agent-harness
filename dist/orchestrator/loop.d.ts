@@ -46,6 +46,7 @@ export declare function collectExpectedFiles(plan: LeadPlan): string[];
  * file OUTSIDE this union is out-of-scope. Pure/deterministic.
  */
 export declare function collectDeclaredScopeFiles(plan: LeadPlan): string[];
+import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 import { type VerifyProbes } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 export type LoopStatus = "crystallising" | "planning" | "executing" | "reviewing" | "done" | "failed" | "aborted" | "awaiting_clarification";
@@ -152,6 +153,19 @@ export interface OrchestratorDeps {
      */
     runLead: (brief: CrystallisedBrief, ctx?: {
         requester?: string;
+        /**
+         * beta.105: the session the plan belongs to, so worktree allocation can
+         * audit which checkout path it took against that session. Optional for
+         * back-compat with test doubles.
+         */
+        sessionId?: string;
+        /**
+         * beta.105: called when allocation chooses its checkout path. The loop
+         * turns it into `loop.branch_allocation`, because the b103 smoke could
+         * not tell from the trail whether a resume preserved the branch or reset
+         * it off eight of its own commits.
+         */
+        onBranchDecision?: (d: BranchAllocationDecision) => void;
     }) => Promise<LeadPlan>;
     /**
      * beta.67 (P0b): the Fable revise-spec turn. On an adversary `revise`
@@ -827,6 +841,27 @@ export declare class OrchestratorLoop {
      */
     private finaliseStalled;
     /** beta.63: read the persisted lead plan JSON for a session (or null). */
+    /**
+     * beta.101 / beta.105: is every commit this session recorded still reachable
+     * from the worktree's HEAD?
+     *
+     * b101 built this and ran it in ONE place: immediately before the adversary
+     * SDK call. The b103 smoke (session b8ece861) showed why that is not enough.
+     * A clarification resume moved the branch ref off the run's own work -- eight
+     * of ten ledger commits stopped being ancestors of the tip -- and the run then
+     * stalled at a second clarification and was aborted. The guard never ran once,
+     * because the session never reached review. The loss was found four hours
+     * later, by hand, in a post-mortem.
+     *
+     * So this is now a shared probe with two call sites: at RESUME (right after a
+     * re-plan re-allocates the worktree, which is the operation that loses
+     * commits) and before REVIEW (unchanged). Extracted rather than duplicated so
+     * the two can never drift apart.
+     *
+     * Fails OPEN on a probe error: an unreachable-commit check that cannot run
+     * must not block an otherwise sound run.
+     */
+    private checkLedgerReachability;
     private getPlanJson;
     /** beta.63: read the most recent completed review for a session (or undefined). */
     private getLastReview;

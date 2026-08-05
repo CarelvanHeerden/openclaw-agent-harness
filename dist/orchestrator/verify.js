@@ -114,8 +114,29 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     // beta.57 (P1): thread the sub-task start time so the probe can
                     // reject a stale pre-existing file (freshness enforced probe-side).
                     const r = await probes.fileExistsOnDisk(v.path, ctx.subTaskStartMs);
-                    const passed = r.exists && r.nonEmpty;
-                    results.push({ kind: v.kind, passed, detail: r.detail, path: v.path });
+                    let passed = r.exists && r.nonEmpty;
+                    let detail = r.detail;
+                    // beta.105: THE `git mv` CONTRADICTION. mtime is a proxy for "this
+                    // sub-task authored this path", and `git mv` breaks the proxy: it
+                    // preserves the blob's mtime, so a worker that correctly MOVES a file
+                    // to the path the contract asks for fails the freshness check while
+                    // `file_committed` on the very same file, in the very same commit,
+                    // passes. b103 smoke seq 3 died on exactly that split verdict.
+                    //
+                    // So when mtime says no, ask git directly: was this path ADDED or
+                    // RENAMED-TO inside THIS sub-task's commit range? That is a stronger
+                    // authorship signal than mtime, not a weaker one -- it is scoped to
+                    // the sub-task's own commits, so a file that merely pre-existed the
+                    // sub-task still fails. Presence + non-emptiness on disk are still
+                    // required; this only replaces the freshness half.
+                    if (!passed && r.exists && r.stale && ctx.acceptRenameAsWrite && probes.filePathIntroducedSince) {
+                        const introduced = await probes.filePathIntroducedSince(v.path, ctx.baseSha);
+                        if (introduced.introduced) {
+                            passed = true;
+                            detail = `path introduced by this sub-task (${introduced.changeType}); mtime predates it (git mv preserves mtime): ${introduced.detail}`;
+                        }
+                    }
+                    results.push({ kind: v.kind, passed, detail, path: v.path });
                 }
                 else {
                     // Backward compat: beta.8 behaviour (git diff, excludes untracked)

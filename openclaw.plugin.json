@@ -441,6 +441,21 @@
             "default": 20000,
             "description": "beta.104: ceiling on the scout report folded into the lead planning prompt and persisted on the brief. Truncation keeps the HEAD of the report, because the scout is instructed to establish locations and conventions first and list traps last. b98 is the standing reminder for why this is bounded at all: an oversized lead input cost a whole run when the reply breached the output ceiling."
           },
+          "resume_ledger_guard_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.105: also run the ledger reachability guard at RESUME, immediately after a re-plan re-allocates the worktree, not only before adversary review. b101 built the guard and wired it in one place. The b103 smoke (session b8ece861) then lost eight of ten recorded commits when a clarification resume re-allocated onto a different tip, stalled at a second clarification and was aborted -- so the guard never ran at all and the loss surfaced four hours later in a hand-written post-mortem. Re-allocation is the operation that loses commits, so it is where the check belongs. A fresh run has an empty ledger and short-circuits, so this costs one no-op call on the common path."
+          },
+          "basename_rescue_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.105: generate a path remap from the mismatch itself instead of escalating to a human. b103's rederive only corrects a contract path when an EARLIER sub-task already taught the run the substitution; it has no producer. On the b103 smoke, seq 9 was the first sub-task to touch src/components/, so the lead's fictional components/layout/sidebar.tsx met the worker's correct components/ui/sidebar.tsx with no lesson to apply, no rederive fired, and a mechanically-obvious correction cost an hour of clarification dead time. Fires only when the mismatch is a SINGLE file, the basenames match, the planned directory is absent from the repo and the committed directory is present -- and even then only continues if re-verification against the corrected contract actually passes."
+          },
+          "file_written_accepts_rename": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.105: accept a file_written contract when git shows the path was ADDED or RENAMED-TO inside the sub-task's own commit range, even though the blob's mtime predates the sub-task. mtime is a proxy for authorship and git mv preserves it, so a worker that correctly moves a file onto the contract's path produced a file_committed PASS and a file_written FAIL on the same file in the same commit (b103 smoke seq 3). Two checks disagreeing about one file is incoherent verifier state, not a safety property. Presence and non-emptiness on disk are still required, and the range is the sub-task's own, so a merely pre-existing file still fails."
+          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,

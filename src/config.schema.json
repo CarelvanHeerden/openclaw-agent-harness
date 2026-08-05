@@ -201,6 +201,21 @@
           "maximum": 120000,
           "default": 20000,
           "description": "beta.104: ceiling on the scout report folded into the planning prompt. Truncation keeps the head, where the paths and conventions are."
+        },
+        "resume_ledger_guard_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.105: also run the ledger reachability guard at RESUME, right after a re-plan re-allocates the worktree. b101 ran it only before adversary review; the b103 smoke lost eight of ten recorded commits on a resume, then stalled before review, so the guard never fired."
+        },
+        "basename_rescue_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.105: on a single-file contract mismatch where the basenames match, the planned directory is absent from the repo and the committed directory is present, synthesize the remap and re-verify instead of pausing for a human. Only continues if re-verification actually passes."
+        },
+        "file_written_accepts_rename": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.105: accept a file_written contract when the path was added or renamed-to inside the sub-task's commit range, even though the blob's mtime predates it. git mv preserves mtime, so a correct move made file_committed pass and file_written fail on the same file in the same commit."
         }
       }
     },

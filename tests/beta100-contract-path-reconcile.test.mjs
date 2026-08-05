@@ -245,9 +245,11 @@ test("beta100: the mismatch question is built from git ground truth, not the wor
 
 test("beta100: the pause reuses the b55 resumable machinery (worktree preserved)", () => {
   assert.match(loopSrc, /clarification_escalation_enabled !== false/);
+  // b105 inserted the basename rescue between the mismatch test and the
+  // escalation, so the window is wider than it was.
   const block = loopSrc.slice(loopSrc.indexOf("const PATH_MISMATCH_KINDS"));
-  assert.match(block.slice(0, 3000), /clarify\.question =/);
-  assert.match(block.slice(0, 3000), /clarify\.seq = st\.seq/);
+  assert.match(block.slice(0, 9000), /clarify\.question =/);
+  assert.match(block.slice(0, 9000), /clarify\.seq = st\.seq/);
 });
 
 // --- 7. config + version ------------------------------------------------------

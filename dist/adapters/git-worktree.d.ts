@@ -138,6 +138,31 @@ export interface GitContext {
      * adapter-wide default, so the real run worktree still bootstraps.
      */
     bootstrapDeps?: boolean;
+    /**
+     * beta.105: report which checkout path allocation actually took.
+     *
+     * The b103 smoke (session b8ece861) lost eight commits on a clarification
+     * resume, and nothing in the durable trail could say whether allocation
+     * preserved the branch or reset it -- the answer had to be reconstructed from
+     * the commit graph hours later. `preserveLocalBranch` is a REQUEST that
+     * silently falls through when no local branch of that name exists, so the
+     * request being set proves nothing about what happened.
+     *
+     * Optional; the adapter always logs the same information regardless.
+     */
+    onBranchDecision?: (d: BranchAllocationDecision) => void;
+}
+/** beta.105: the checkout path allocation took, and the inputs that chose it. */
+export interface BranchAllocationDecision {
+    /** `preserve_local` never moves the ref; the other two reset it. */
+    path: "preserve_local" | "reuse_remote" | "reset_to_base";
+    branch: string;
+    /** The ref the branch was pointed at (empty for `preserve_local`). */
+    startPoint: string;
+    preserveRequested: boolean;
+    localBranchExists: boolean;
+    /** The local branch's tip BEFORE allocation, when it had one. */
+    tipBefore: string;
 }
 export declare class GitAdapter {
     private readonly opts;
@@ -212,6 +237,8 @@ export declare class GitAdapter {
     private robustRemoveDir;
     /** beta.101: does `refs/heads/<branch>` exist in the bare repo? Never throws. */
     private localBranchExists;
+    /** beta.105: a local branch's tip, or "" when it has none. Diagnostics only. */
+    private branchTipSha;
     /**
      * beta.101: NEVER SILENTLY DISCARD COMMITS.
      *
@@ -304,6 +331,27 @@ export declare class GitAdapter {
      * Used by the `file_committed` verify probe.
      */
     listCommittedFiles(worktreePath: string, base: string): Promise<string[]>;
+    /**
+     * beta.105: was `path` ADDED (A) or RENAMED-TO (R) by a commit in
+     * `base..HEAD`?
+     *
+     * `file_written` uses mtime as its proxy for "this sub-task authored this
+     * path", and `git mv` preserves mtime. So a worker that correctly moves a
+     * file onto the contract's path fails `file_written` while `file_committed`
+     * passes on the same file in the same commit -- the split verdict that killed
+     * b103 smoke seq 3. This asks git the question mtime was standing in for.
+     *
+     * `--diff-filter=AR` with `--name-status` reports `A<TAB>path` for a fresh
+     * file and `R<score><TAB>old<TAB>new` for a rename, so the path is matched
+     * structurally against the LAST field of each record (the destination).
+     * Modifications (M) are deliberately excluded: touching a file that already
+     * existed at this path is not authoring it here.
+     */
+    pathIntroducedSince(worktreePath: string, base: string, path: string): Promise<{
+        introduced: boolean;
+        changeType: string;
+        detail: string;
+    }>;
     /**
      * beta.10: query the remote for a branch's tip SHA via `git ls-remote`.
      * Returns `undefined` when the branch does not exist on the remote (or the

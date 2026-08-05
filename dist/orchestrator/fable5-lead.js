@@ -356,7 +356,7 @@ export async function runLeadPlanner(brief, deps) {
             deps.logger.warn?.("[lead] workerContext insufficient (enforcement disabled; not retrying)", { missingSeqs: missing, reviseOf: brief.reviseOfSessionId });
         }
     }
-    const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch);
+    const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch, deps.onBranchDecision);
     const approxCostUsd = deps.estimateCost(raw);
     const plan = { ...raw, worktreePath, approxCostUsd, scout: scoutOutcome };
     deps.logger.info("[lead] plan", {
