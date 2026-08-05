@@ -367,6 +367,41 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
+  {
+    name: "the merge gate (b109): a revise carrying only lows is mergeable",
+    file: "dist/orchestrator/merge-recommendation.js",
+    find: "if (blockingCount === 0) {",
+    replace: "if (false) {",
+    tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
+  },
+  {
+    name: "block is never overridable (b109): an explicit withhold is not a severity tally",
+    file: "dist/orchestrator/merge-recommendation.js",
+    find: 'if (review.verdict === "block") {',
+    replace: "if (false) {",
+    tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
+  },
+  {
+    name: "the cycling gate (b109): three cycles of nits on PR #932 bought nothing",
+    file: "dist/orchestrator/loop.js",
+    find: "input.blockingFindings === 0) {",
+    replace: "false) {",
+    tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
+  },
+  {
+    name: "the gate respects medium (b109): shipping open mediums would be a real loosening",
+    file: "dist/orchestrator/finding-classify.js",
+    find: 'return f.severity === "medium" || f.severity === "high" || f.severity === "critical";',
+    replace: 'return f.severity === "high" || f.severity === "critical";',
+    tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
+  },
+  {
+    name: "the loop counts what it gates on (b109): an uncounted review never ships early",
+    file: "dist/orchestrator/loop.js",
+    find: "blockingFindings: this.countBlockingFindings(lastReview.findings),",
+    replace: "blockingFindings: undefined,",
+    tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
+  },
 ];
 
 function runTests(files) {

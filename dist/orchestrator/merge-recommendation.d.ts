@@ -39,6 +39,13 @@ export interface ReviewSignal {
 export interface RecommendationInput {
     /** The FINAL adversary review for the session. */
     review: ReviewSignal | undefined;
+    /**
+     * beta.109: how many findings in the final review are BLOCKING -- diff-
+     * addressable and at medium severity or above -- as counted by the caller
+     * with isBlockingFinding. Zero means another cycle has nothing worth doing.
+     * Undefined preserves the pre-b109 behaviour for callers that do not count.
+     */
+    blockingFindings?: number;
     /** True if the loop reached a clean adversary pass (vs. shipping at cap). */
     reachedCleanPass: boolean;
     /**

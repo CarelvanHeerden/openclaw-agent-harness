@@ -120,7 +120,7 @@ test("loop: adversary revise once then pass",
       runAdversary: async () => {
         advCallNo++;
         return advCallNo === 1
-          ? { verdict: "revise", findings: [{ dimension:"quality", severity:"low", title:"t", detail:"d" }], summary:"try again", costUsd: 0.02, tokensIn:1, tokensOut:1 }
+          ? { verdict: "revise", findings: [{ dimension:"quality", severity:"medium", title:"t", detail:"d" }], summary:"try again", costUsd: 0.02, tokensIn:1, tokensOut:1 }
           : { verdict: "pass", findings: [], summary:"ok", costUsd: 0.02, tokensIn:1, tokensOut:1 };
       },
       pushBranchAndOpenPr: async () => "https://x/pr/1",

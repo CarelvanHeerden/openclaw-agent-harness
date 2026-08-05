@@ -88,6 +88,7 @@ const DEFAULTS = {
         revise_adopt_orphan_findings: true,
         revise_max_adoptions_per_cycle: 3,
         early_exit_no_change_cycle: true,
+        ship_when_no_blocking_findings: true,
         resume_ledger_guard_enabled: true,
         basename_rescue_enabled: true,
         file_written_accepts_rename: true,

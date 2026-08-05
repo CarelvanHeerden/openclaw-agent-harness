@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.1.0-beta.109
+
+### The merge gate stops treating "not pass" as "not mergeable"
+
+`deriveMergeRecommendation` returned `do_not_merge` on any verdict other than
+`pass`, before severity was ever consulted. Yet the passing path has always let
+a PR ship carrying informational and low findings, and says so in the reason it
+writes. The same set of findings therefore produced opposite advice depending
+only on whether the adversary wrote "pass" or "revise".
+
+ProjectThanos PR #932 is the case that made this visible. Three separate runs,
+roughly $23 of revise spend, and a final review carrying ten low, six
+informational and one low convention finding -- nothing at medium or above --
+and the harness still said do_not_merge. No further cycle could have changed
+that: a cycle only closes findings, and the verdict stays `revise` while any
+finding at all is open. This module's header says a do-not-merge should be
+"structurally RARE"; it had fired on three runs out of three.
+
+- A `revise` verdict with no blocking finding is now recommended for **merge**,
+  with the residual count stated and `harness_revise` offered to close the nits.
+- The review loop **ends** on that same condition rather than buying a cycle
+  (`shipped_no_blocking_findings`). On PR #932 cycles 2 and 3 spent roughly 36
+  minutes and closed low-severity nits while opening others on the files they
+  had just touched.
+- "Blocking" means `isBlockingFinding`: diff-addressable AND medium or above,
+  the predicate the convention-finding gate already used. Deliberately stricter
+  than merge-recommendation's own high-and-above `BLOCKING_SEVERITIES`, so open
+  mediums still cycle.
+- `block` remains an explicit withhold and is never overridable. Red CI still
+  blocks. Callers that do not supply a count keep the pre-b109 behaviour.
+- New `loop.blocking_findings` audit event; new `loop.ship_when_no_blocking_findings`
+  config key, default on.
+
+### Verified from the b108 revise of PR #932 (session `25274621`)
+
+- Bounded adoption held: 3 adoptions of 11 mapping misses, all `low`, zero
+  `info`. The severity filter did the work; the cap never bound (peak 2/cycle).
+- Branch pinning held exactly -- `harness/feat/grc-continuity-exercises-b106`,
+  no session suffix, same PR #932 updated in place.
+- Scout ran free at 15,952 chars, `truncated: false`, confirming the prior two
+  runs at 20,048/20,049 were capped rather than converging.
+- `recovery.skipped_live_runner` fired twice, against b106's two spurious
+  auto-resumes.
+- Phase timing captured 83% of wall-clock: executing 50%, review 29%, setup and
+  scout 17%, ship 4%.
+- The report attributed the disappearance of `.git-commit-msg.txt` to a worker
+  and a changed sandbox. It was the b107 sweep in `GitAdapter.commit`, firing on
+  the first commit of the run exactly as designed.
+
 ## [0.1.0-beta.108] -- 2026-08-05
 
 Driven by the `harness_revise` run on ProjectThanos PR #932 (session
