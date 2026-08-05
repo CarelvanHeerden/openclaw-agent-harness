@@ -8,10 +8,28 @@ try {
   buildSdkEnv = null;
 }
 
-test("buildSdkEnv: undefined key -> undefined env (inherit default SDK behaviour)",
+// beta.110: this used to assert `undefined` for a missing key, which told the
+// SDK to inherit the FULL parent env -- silently bypassing the beta.57 denylist
+// in exactly the configuration (no explicit key) where it still matters. The
+// no-key path now returns a FILTERED env: no ANTHROPIC_API_KEY is injected, so
+// the child still falls through to its own `/login` store, but it no longer
+// inherits every secret the harness holds.
+test("buildSdkEnv: undefined key -> filtered env with no injected key",
   { skip: buildSdkEnv === null }, () => {
-    assert.equal(buildSdkEnv(undefined), undefined);
-    assert.equal(buildSdkEnv(""), undefined);
+    process.env.OAH_TEST_MARKER = "keep-me";
+    process.env.OAH_TEST_TOKEN = "strip-me";
+    try {
+      for (const key of [undefined, ""]) {
+        const env = buildSdkEnv(key);
+        assert.ok(env && typeof env === "object", "no-key path must not hand the child an unfiltered env");
+        assert.equal(env.ANTHROPIC_API_KEY, undefined, "no key was resolved, so none should be injected");
+        assert.equal(env.OAH_TEST_MARKER, "keep-me", "non-secret vars should still be inherited");
+        assert.equal(env.OAH_TEST_TOKEN, undefined, "the denylist must still apply without a key");
+      }
+    } finally {
+      delete process.env.OAH_TEST_MARKER;
+      delete process.env.OAH_TEST_TOKEN;
+    }
   });
 
 test("buildSdkEnv: sets ANTHROPIC_API_KEY and inherits parent env",

@@ -402,6 +402,36 @@ const MUTATIONS = [
     replace: "blockingFindings: undefined,",
     tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
   },
+  {
+    name: "vault key env strip (b110): the worker subprocess never inherits the key",
+    file: "dist/adapters/claude-sdk.js",
+    // Dropped from the exact denylist. The regex beside it does NOT cover this
+    // name -- it matches API_KEY / ACCESS_KEY / PRIVATE_KEY, not a bare _KEY
+    // suffix -- so removing the entry really does hand the key to the child.
+    find: '    "OAH_VAULT_KEY",',
+    replace: "",
+    tests: ["tests/beta110-credential-vault.test.mjs"],
+  },
+  {
+    name: "vault key verifier (b110): a wrong key fails at open, not entry by entry",
+    file: "dist/adapters/credential-vault.js",
+    // Without the verifier the vault opens happily under the wrong key and
+    // every lookup reports "not found", sending an operator to hunt for entries
+    // that are present but sealed.
+    find: "        vault.verifyKey();",
+    replace: "",
+    tests: ["tests/beta110-credential-vault.test.mjs"],
+  },
+  {
+    name: "authenticated decryption (b110): a tampered row is refused, not swallowed",
+    file: "dist/adapters/credential-vault.js",
+    // Turns the GCM auth failure into a silent miss. That would make tampering
+    // and cross-service ciphertext swaps indistinguishable from an absent
+    // entry -- i.e. it would discard the only thing GCM buys us over raw AES.
+    find: '            this.opts.audit?.("vault.corrupt", { service });',
+    replace: "            return undefined;",
+    tests: ["tests/beta110-credential-vault.test.mjs"],
+  },
 ];
 
 function runTests(files) {

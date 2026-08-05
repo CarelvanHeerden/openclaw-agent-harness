@@ -9,8 +9,9 @@ a real Slack channel, and (optionally) a real Vercel project.
   `memory-hybrid` (mirrored here). Node 24+.
 - A private Slack channel for dev requests. Recommended: `#infosecbot_dev`.
 - A GitHub PAT scoped to the target repos with `repo, workflow` (and
-  `contents:write` for org-owned repos). Store in the hybrid-memory
-  credential vault as e.g. `github-<user>-<org>`.
+  `contents:write` for org-owned repos). Store in the harness credential vault
+  as e.g. `github-<user>-<org>`:
+  `printf '%s' 'ghp_...' | node scripts/vault.mjs set github-<user>-<org>`.
 - A Slack bot token with `chat:write, reactions:read, reactions:write,
   channels:history, groups:history`. Store in the vault as e.g.
   `slack-openclaw-agent-harness`.

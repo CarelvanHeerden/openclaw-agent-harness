@@ -49,8 +49,25 @@ import { renderScoutForPrompt } from "../orchestrator/lead-scout.js";
  * these: git creds are injected per-invocation by the HARNESS's own git ops
  * (askpass/cred-helper), never the worker's.
  */
-const SDK_ENV_DENY_EXACT = new Set(["OAH_GH_TOKEN"]);
+const SDK_ENV_DENY_EXACT = new Set([
+  "OAH_GH_TOKEN",
+  // beta.110: the credential-vault key and the path to it. NOTE the regex below
+  // does NOT catch these: it matches API_KEY / ACCESS_KEY / PRIVATE_KEY, but a
+  // bare `_KEY` suffix is not in the alternation, so `OAH_VAULT_KEY` would sail
+  // straight through. They are listed explicitly for that reason.
+  "OAH_VAULT_KEY",
+  "OAH_VAULT_KEY_FILE",
+]);
 const SDK_ENV_DENY_RE = /(^|_)(TOKEN|SECRET|SECRETS|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)(_|$)/i;
+
+/**
+ * beta.110: allow bootstrap to deny an operator-renamed secret env var (e.g. a
+ * custom `credentials.key_env`). The denylist is static by design -- this is the
+ * one seam that widens it, and it only ever ADDS.
+ */
+export function registerDeniedSdkEnvVar(name: string): void {
+  if (name && name.trim()) SDK_ENV_DENY_EXACT.add(name.trim());
+}
 
 /**
  * beta.99 (P0-4): default output-token ceiling exported to the SDK subprocess.
@@ -71,7 +88,14 @@ export const DEFAULT_SDK_MAX_OUTPUT_TOKENS = 64000;
 export const DEFAULT_STREAM_OPEN_TIMEOUT_SECONDS = 120;
 
 export function buildSdkEnv(apiKey?: string, maxOutputTokens?: number): Record<string, string> | undefined {
-  if (!apiKey) return undefined;
+  // beta.110: this used to `return undefined` when no explicit key was
+  // resolved, which told the SDK "inherit the parent env" -- silently handing
+  // the child EVERY secret the beta.57 denylist exists to withhold, including
+  // the vault key. The no-key case (local dev on an interactive `/login`) still
+  // needs a working child, but it does not need an unfiltered one: `/login`
+  // credentials live in an on-disk session store, not the environment. So we
+  // always build a filtered env now, and the key is the only thing the branch
+  // below decides.
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v !== "string") continue;
@@ -79,8 +103,10 @@ export function buildSdkEnv(apiKey?: string, maxOutputTokens?: number): Record<s
     if (SDK_ENV_DENY_RE.test(k)) continue;
     base[k] = v;
   }
-  // The ONE secret the SDK subprocess genuinely needs.
-  base.ANTHROPIC_API_KEY = apiKey;
+  // The ONE secret the SDK subprocess genuinely needs. Absent it, the child
+  // falls back to the interactive `/login` store (fine locally, fatal headless
+  // -- which is why every production path resolves a key first).
+  if (apiKey) base.ANTHROPIC_API_KEY = apiKey;
   // beta.99 (P0-4): make the output ceiling explicit and OURS. `0` disables
   // (inherit whatever the bundled SDK picks for the model id). Note this is
   // NOT caught by SDK_ENV_DENY_RE: that pattern matches the bare word TOKEN,
