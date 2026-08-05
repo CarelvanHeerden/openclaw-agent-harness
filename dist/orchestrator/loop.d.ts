@@ -467,6 +467,13 @@ export declare class OrchestratorLoop {
         };
         budgetExhausted: boolean;
         hardTimeout: boolean;
+        /**
+         * beta.109: findings in this review that are diff-addressable AND at medium
+         * severity or above, per isBlockingFinding. Undefined disables the gate.
+         */
+        blockingFindings?: number;
+        /** beta.109: `loop.ship_when_no_blocking_findings`, default on. */
+        shipWhenNoBlockingFindings?: boolean;
     }): {
         nextStatus: LoopStatus;
         reason: string;
@@ -881,6 +888,15 @@ export declare class OrchestratorLoop {
      * wall clock. Never throws -- timing must not be able to fail a run.
      */
     private emitPhaseTiming;
+    /**
+     * beta.109: how many of a review's findings would justify another cycle.
+     *
+     * Uses isBlockingFinding -- diff-addressable AND medium or above -- so this
+     * agrees with the convention-finding gate rather than inventing a second,
+     * looser notion of "serious" alongside merge-recommendation's high-and-above
+     * BLOCKING_SEVERITIES.
+     */
+    private countBlockingFindings;
     private checkLedgerReachability;
     private getPlanJson;
     /** beta.63: read the most recent completed review for a session (or undefined). */

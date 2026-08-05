@@ -684,6 +684,12 @@ export interface LoopConfig {
    */
   early_exit_no_change_cycle?: boolean;
   /**
+   * beta.109: end the review loop when the adversary says `revise` but no finding is diff-addressable at medium severity or above.
+   * The adversary writes `revise` while ANY finding is open, including the informational ones it emits to record that a prior finding was fixed, so a run converges to a floor it can never cross: ProjectThanos PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten low, six info and one low convention finding, nothing at medium or above, over three separate revises.
+   * Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and harness_revise picks them up on request.
+   */
+  ship_when_no_blocking_findings?: boolean;
+  /**
    * beta.105: also run the ledger reachability guard at RESUME, right after a
    * re-plan re-allocates the worktree, not only before adversary review.
    *
@@ -1153,6 +1159,7 @@ const DEFAULTS: HarnessConfig = {
     revise_adopt_orphan_findings: true,
     revise_max_adoptions_per_cycle: 3,
     early_exit_no_change_cycle: true,
+    ship_when_no_blocking_findings: true,
     resume_ledger_guard_enabled: true,
     basename_rescue_enabled: true,
     file_written_accepts_rename: true,

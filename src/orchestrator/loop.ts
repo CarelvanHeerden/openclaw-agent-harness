@@ -710,6 +710,13 @@ export class OrchestratorLoop {
     reactions: { shipIt: boolean; abort: boolean; pause: boolean };
     budgetExhausted: boolean;
     hardTimeout: boolean;
+    /**
+     * beta.109: findings in this review that are diff-addressable AND at medium
+     * severity or above, per isBlockingFinding. Undefined disables the gate.
+     */
+    blockingFindings?: number;
+    /** beta.109: `loop.ship_when_no_blocking_findings`, default on. */
+    shipWhenNoBlockingFindings?: boolean;
   }): { nextStatus: LoopStatus; reason: string } {
     if (input.reactions.abort) return { nextStatus: "aborted", reason: "user_abort_reaction" };
     if (input.budgetExhausted) return { nextStatus: "aborted", reason: "budget_exhausted" };
@@ -724,6 +731,29 @@ export class OrchestratorLoop {
       case "reviewing":
         if (input.verdict === "pass") return { nextStatus: "done", reason: "adversary_pass" };
         if (input.verdict === "block") return { nextStatus: "failed", reason: "adversary_block" };
+        // beta.109: a `revise` carrying nothing blocking has nothing left for
+        // another cycle to do that would change the answer.
+        //
+        // The adversary writes `revise` while ANY finding is open, including
+        // informational ones it emits to record that a PRIOR finding was fixed.
+        // So a run converges towards a floor it can never cross: ProjectThanos
+        // PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten
+        // low, six informational and one low convention finding, none at medium
+        // or above. Each cycle closed a few nits and opened a few more on the
+        // files it had just touched. Two earlier revises on the same PR ended
+        // the same way. That is not convergence failing, it is a loop with no
+        // exit condition for "good enough".
+        //
+        // Medium and above still cycles, so this cannot ship real defects. The
+        // remaining lows are not lost either -- they go on the PR body and
+        // `harness_revise` will pick them up if asked.
+        if (
+          input.verdict === "revise" &&
+          input.shipWhenNoBlockingFindings !== false &&
+          input.blockingFindings === 0
+        ) {
+          return { nextStatus: "done", reason: "shipped_no_blocking_findings" };
+        }
         // beta.57 (P3): was `>= maxCycles - 1`, which shipped one cycle EARLY
         // (max_cycles: 3 ran only 2 execute/review cycles -- the check fired at
         // the END of cycle 2 with cyclesRan=2 >= 3-1). A config that promises N
@@ -3301,9 +3331,17 @@ export class OrchestratorLoop {
       findingCountsByCycle.push(report.findings?.length ?? 0);
 
       const reactions = await this.deps.readReactions(sessionId);
+      const blockingFindings = this.countBlockingFindings(report.findings);
+      this.deps.state.audit(
+        "loop.blocking_findings",
+        { sessionId, cycle, verdict: report.verdict, findings: report.findings?.length ?? 0, blockingFindings },
+        sessionId,
+      );
       const decision = OrchestratorLoop.advance({
         currentStatus: "reviewing",
         verdict: report.verdict,
+        blockingFindings,
+        shipWhenNoBlockingFindings: this.deps.config.loop.ship_when_no_blocking_findings !== false,
         cyclesRan: cycle,
         maxCycles: this.deps.config.loop.max_cycles,
         findingCountsByCycle,
@@ -3434,6 +3472,9 @@ export class OrchestratorLoop {
     const reachedCleanPass = lastReview.verdict === "pass";
     const rec = deriveMergeRecommendation({
       review: { verdict: lastReview.verdict, findings: lastReview.findings ?? [] },
+      // beta.109: so a `revise` carrying only lows is recommended for merge
+      // rather than blocked on the verdict word alone.
+      blockingFindings: this.countBlockingFindings(lastReview.findings),
       reachedCleanPass,
       ciStatus: undefined, // the merge tool re-checks CI at merge time
     });
@@ -4815,6 +4856,19 @@ export class OrchestratorLoop {
     } catch {
       /* observability only */
     }
+  }
+
+  /**
+   * beta.109: how many of a review's findings would justify another cycle.
+   *
+   * Uses isBlockingFinding -- diff-addressable AND medium or above -- so this
+   * agrees with the convention-finding gate rather than inventing a second,
+   * looser notion of "serious" alongside merge-recommendation's high-and-above
+   * BLOCKING_SEVERITIES.
+   */
+  private countBlockingFindings(findings: ReviewFinding[] | undefined): number {
+    if (!findings) return 0;
+    return findings.filter((f) => isBlockingFinding(f, classifyFinding(f, { repoHasTestScript: true }))).length;
   }
 
   private async checkLedgerReachability(

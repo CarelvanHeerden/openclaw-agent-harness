@@ -109,7 +109,10 @@ test("beta62: cycle-2 review crash with green self-verify opens PR flagged needs
       runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "sha1", costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
       runAdversary: async () => {
         advCall++;
-        if (advCall === 1) return { verdict: "revise", findings: [{ dimension: "quality", severity: "low", title: "f", detail: "d" }], summary: "revise", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
+        // beta.109: `medium`, not `low`. A revise carrying only lows now ends the
+        // loop (ship_when_no_blocking_findings), so a fixture that needs a SECOND
+        // cycle has to carry something genuinely blocking.
+        if (advCall === 1) return { verdict: "revise", findings: [{ dimension: "quality", severity: "medium", title: "f", detail: "d" }], summary: "revise", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
         throw new Error("simulated cycle-2 adversary SDK crash");
       },
       pushBranchAndOpenPr: async () => { prCalls++; return "https://github.com/o/r/pull/42"; },
@@ -202,7 +205,7 @@ test("beta62: graceful_pr_on_review_crash=false keeps hard-fail behaviour",
       runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "sha1", costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
       runAdversary: async () => {
         advCall++;
-        if (advCall === 1) return { verdict: "revise", findings: [{ dimension: "quality", severity: "low", title: "f", detail: "d" }], summary: "revise", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
+        if (advCall === 1) return { verdict: "revise", findings: [{ dimension: "quality", severity: "medium", title: "f", detail: "d" }], summary: "revise", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
         throw new Error("cycle-2 crash");
       },
       pushBranchAndOpenPr: async () => { prCalls++; return "unused"; },

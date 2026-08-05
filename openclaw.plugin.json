@@ -560,6 +560,11 @@
             "minimum": 0,
             "description": "beta.108: ceiling on orphan-finding adoptions per revise cycle. Adoption widens a sub-task's file scope, and scope is what a revise cycle costs. The b106 revise on PR #932 fired 21 mapping misses across two cycles against the original smoke's two, because the adversary re-reads the whole branch each cycle and keeps surfacing adjacent issues; uncapped adoption would pull most of the branch back into every cycle. Candidates are taken in severity order, and info-severity findings are never adopted -- info is how the adversary records that a PRIOR finding was verified fixed."
           },
+          "ship_when_no_blocking_findings": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.109: end the review loop when the adversary says `revise` but no finding is diff-addressable at medium severity or above. The adversary writes `revise` while ANY finding is open, including the informational ones it emits to record that a prior finding was fixed, so a run converges to a floor it can never cross: ProjectThanos PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten low, six info and one low convention finding, nothing at medium or above, over three separate revises. Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and harness_revise picks them up on request."
+          },
           "early_exit_no_change_cycle": {
             "type": "boolean",
             "default": true,
