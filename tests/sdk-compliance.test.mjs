@@ -14,6 +14,7 @@ const pkgPath = resolve(repoRoot, "package.json");
 // beta.9: added harness_bootstrap_test_repo (was registered since beta.6 but missing from manifest)
 const EXPECTED_TOOLS = [
   "harness_run",
+  "harness_help",
   "harness_status",
   "harness_progress",
   "harness_logs",

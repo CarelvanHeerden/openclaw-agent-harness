@@ -98,6 +98,17 @@ export function redactSecrets(text, token) {
  * window, which a slow `npm ci` bootstrap could outlive.
  */
 const inFlightWorktrees = new Set();
+/**
+ * beta.108: `<repo>#<branch>` -> the session id currently allocating it.
+ *
+ * Module-scoped for the same reason `inFlightWorktrees` is: it must survive a
+ * plugin re-register, because the sessions it protects do.
+ */
+const inFlightBranches = new Map();
+/** Test/diagnostic helper: which branches are mid-allocation right now. */
+export function inFlightBranchHolders() {
+    return [...inFlightBranches].map(([key, sessionId]) => ({ key, sessionId }));
+}
 export function inFlightWorktreePaths() {
     return [...inFlightWorktrees];
 }
@@ -154,6 +165,31 @@ esac
         if (existsSync(wt)) {
             throw new Error(`worktree already exists at ${wt}; refusing to reuse without explicit release`);
         }
+        // beta.108: REFUSE a branch another live session is already building on.
+        //
+        // Worktrees are isolated per session, but the branch refs in the shared
+        // bare clone are not. Branch names come from the lead's plan JSON, and
+        // validation only checked the `harness/` prefix -- nothing derived them
+        // from the session or compared them against other in-flight work. Two
+        // sessions on related briefs ("add a field to users" / "add a column to
+        // users") could plausibly draw the same slug, and the consequences are
+        // quiet rather than loud: `git worktree add -B` collides, or, worse, it
+        // succeeds and `createPullRequest` returns the FIRST session's PR with
+        // `updatedExisting: true` -- two unrelated changes stacked on one branch,
+        // in one PR, reviewed as one diff.
+        //
+        // b108 also makes fresh branch names session-scoped (see runLeadPlanner),
+        // which should make this unreachable. It is kept because the suffix is
+        // deliberately skipped for revise and clarification re-drives, and because
+        // a clear refusal beats a git error nobody can attribute.
+        const branchKey = `${ctx.repoFullName}#${ctx.sessionBranch}`;
+        const holder = inFlightBranches.get(branchKey);
+        if (holder && holder !== ctx.sessionId) {
+            throw new Error(`branch ${ctx.sessionBranch} on ${ctx.repoFullName} is already being built by another live session ` +
+                `(${holder}). Refusing to allocate a second worktree on it: both sessions would push to one branch ` +
+                `and GitHub would fold them into a single pull request.`);
+        }
+        inFlightBranches.set(branchKey, ctx.sessionId);
         // beta.57 (P3): register the path as in-flight for the FULL allocation
         // (clone + fetch + worktree add + dep bootstrap). A concurrent self-heal
         // (plugin re-register churn) can no longer reap the dir mid-allocation.
@@ -163,6 +199,8 @@ esac
         }
         finally {
             inFlightWorktrees.delete(wt);
+            if (inFlightBranches.get(branchKey) === ctx.sessionId)
+                inFlightBranches.delete(branchKey);
         }
     }
     async allocateInner(ctx, bare, wt) {

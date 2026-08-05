@@ -85,6 +85,11 @@ export declare function buildAuthedCloneUrl(repoFullName: string, token: string)
  *   - the exact token value when known.
  */
 export declare function redactSecrets(text: string, token?: string): string;
+/** Test/diagnostic helper: which branches are mid-allocation right now. */
+export declare function inFlightBranchHolders(): Array<{
+    key: string;
+    sessionId: string;
+}>;
 export declare function inFlightWorktreePaths(): string[];
 export interface GitContext {
     repoFullName: string;

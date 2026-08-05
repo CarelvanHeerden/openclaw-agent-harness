@@ -12,6 +12,7 @@
   "contracts": {
     "tools": [
       "harness_run",
+      "harness_help",
       "harness_status",
       "harness_progress",
       "harness_logs",
@@ -552,6 +553,17 @@
             "maximum": 3600,
             "default": 900,
             "description": "beta.94 (Feature 2): minimum cumulative elapsed (seconds) inside the worker stream before loop.worker_idle_no_work may fire. Default 900 (15 min); clamped [60,3600]."
+          },
+          "revise_max_adoptions_per_cycle": {
+            "type": "number",
+            "default": 3,
+            "minimum": 0,
+            "description": "beta.108: ceiling on orphan-finding adoptions per revise cycle. Adoption widens a sub-task's file scope, and scope is what a revise cycle costs. The b106 revise on PR #932 fired 21 mapping misses across two cycles against the original smoke's two, because the adversary re-reads the whole branch each cycle and keeps surfacing adjacent issues; uncapped adoption would pull most of the branch back into every cycle. Candidates are taken in severity order, and info-severity findings are never adopted -- info is how the adversary records that a PRIOR finding was verified fixed."
+          },
+          "early_exit_no_change_cycle": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.108: end a revise cycle that moved the branch tip nowhere instead of buying an adversary pass over an unchanged diff. The b106 revise's cycle 3 dispatched five sub-tasks, four returned subtask_revise_no_change, and the run still paid for a full review. Applies from cycle 2 only, and only when a prior review exists to carry forward."
           },
           "revise_adopt_orphan_findings": {
             "type": "boolean",

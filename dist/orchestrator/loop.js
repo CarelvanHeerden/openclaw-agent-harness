@@ -1062,6 +1062,12 @@ export class OrchestratorLoop {
             // 2a. Executing sub-tasks in dependency order, with bounded concurrency.
             this.setStatus(sessionId, "executing");
             await this.deps.reportProgress?.(sessionId, "executing", { cycle });
+            const executeStart = Date.now();
+            // beta.108: branch tip before this cycle's workers run, so a cycle that
+            // changed nothing can be recognised as such. See the early-exit below.
+            const cycleBaseSha = this.deps.worktreeHeadSha
+                ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
+                : "";
             // beta.92: DETERMINISTIC finding -> sub-task mapping REPLACES the deleted
             // LLM revise-spec turn (beta.67). The revise-spec turn kept exceeding its
             // lane-cap timeout (b73 signature) across THREE smokes (b89/b90/b91) and
@@ -1086,7 +1092,10 @@ export class OrchestratorLoop {
                     filesLikelyTouched: s.filesLikelyTouched,
                     contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
                 }));
-                reviseMapping = mapFindingsToSubTasks(mapSubTasks, lastReview.findings, (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }), { adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false });
+                reviseMapping = mapFindingsToSubTasks(mapSubTasks, lastReview.findings, (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }), {
+                    adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
+                    maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
+                });
                 for (const a of reviseMapping.assignments)
                     reviseAssignmentBySeq.set(a.seq, a);
                 reviseSpecApplied = reviseMapping.anyTargeted;
@@ -2457,6 +2466,36 @@ export class OrchestratorLoop {
                     return this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${check.detail}`, cycle, totalCost);
                 }
             }
+            this.emitPhaseTiming(sessionId, "executing", cycle, executeStart, {
+                subTasks: plan.subTasks.length,
+            });
+            // beta.108: a revise cycle that moved the branch tip nowhere has nothing
+            // for the adversary to review, and re-reviewing an unchanged diff cannot
+            // do anything but re-emit the previous cycle's findings.
+            //
+            // The b106 revise (session 21c9c44e) closed exactly this way: cycle 3
+            // dispatched five sub-tasks, four came back `subtask_revise_no_change`,
+            // and the run still paid for a full adversary pass over the whole branch
+            // to change two files. When NOTHING commits, that pass is pure cost.
+            //
+            // Guarded tightly: only on a revise cycle (cycle > 1, so a first cycle
+            // that legitimately produced no diff still gets reviewed), only when we
+            // could actually read both shas (an unreadable sha must not be mistaken
+            // for "no change"), and only when a prior review exists to carry forward
+            // as the verdict.
+            if (this.deps.config.loop.early_exit_no_change_cycle !== false &&
+                cycle > 1 &&
+                lastReview &&
+                cycleBaseSha &&
+                this.deps.worktreeHeadSha) {
+                const tipNow = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
+                if (tipNow && tipNow === cycleBaseSha) {
+                    this.deps.state.audit("loop.cycle_no_change_early_exit", { sessionId, cycle, headSha: tipNow, carriedFindings: lastReview.findings?.length ?? 0 }, sessionId);
+                    this.deps.logger.info("[loop] revise cycle produced no commits; skipping a re-review of an unchanged diff and shipping on the prior verdict (beta.108)", { sessionId, cycle, headSha: tipNow });
+                    terminalDoneReason = "shipped_no_change_cycle";
+                    break;
+                }
+            }
             let report;
             // beta.63 (Part B): adversary SDK call boundary logging.
             const reviewStart = Date.now();
@@ -2615,6 +2654,18 @@ export class OrchestratorLoop {
                 this.deps.state.audit("loop.converged_on_green", { sessionId, cycle, findings: report.findings.length }, sessionId);
             }
             this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length, conventionFindings: conventionFindings.length }, sessionId);
+            // beta.108: the review phase is the largest UNMEASURED block in a run.
+            // The b106 revise (session 21c9c44e) reported a 55.2-minute wall clock of
+            // which planning (574s) and worker execution (1499s) account for 35
+            // minutes; the other ~20 were review, push, PR update and CI polling, and
+            // nothing timed any of them. We were optimising the two thirds we could
+            // see. Emit the phase duration so the next speed decision has a number
+            // behind it.
+            this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
+                verdict: report.verdict,
+                findings: report.findings.length,
+                costUsd: report.costUsd,
+            });
             // beta.97 (Fix #7): record this cycle's finding count for the convergence check.
             findingCountsByCycle.push(report.findings?.length ?? 0);
             const reactions = await this.deps.readReactions(sessionId);
@@ -2656,6 +2707,9 @@ export class OrchestratorLoop {
         // phase as live (this is exactly the b60 gap: quiet AFTER the last sub-task
         // deadline but BEFORE/at finalize, with no watchdog covering it).
         this.markProgress(sessionId, "finalize_start", "finalize", { cycle });
+        // beta.108: everything from here to `loop.shipped` -- push, PR open/update,
+        // review comment, CI polling -- was untimed. See emitPhaseTiming.
+        const shipStart = Date.now();
         // beta.73 (D3): instrument the push/PR-open step. Pre-beta.73 there was NO
         // audit event between the transition->done and the terminal worktree
         // release, so a push/PR failure (422 branch collision, missing GH token, a
@@ -2779,6 +2833,10 @@ export class OrchestratorLoop {
             .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
             .run(prUrl, prNumber ?? null, finalRecommendation, finalReason, Date.now(), sessionId);
         this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: finalRecommendation, reason: finalReason, ciOverride: !!ciOverride }, sessionId);
+        this.emitPhaseTiming(sessionId, "ship", cycle, shipStart, {
+            prNumber,
+            mergeRecommendation: finalRecommendation,
+        });
         // beta.16 fix #3 + beta.17 correctness: prune the worktree on
         // `loop.shipped`. Beta.16 emitted the audit event but the underlying
         // release() silently no-op'd because it reconstructed the path from
@@ -3973,6 +4031,21 @@ export class OrchestratorLoop {
      * Fails OPEN on a probe error: an unreachable-commit check that cannot run
      * must not block an otherwise sound run.
      */
+    /**
+     * beta.108: emit `loop.phase_timing` so every phase of a run is attributable.
+     *
+     * Deliberately one event shape rather than a bespoke field per phase, so a
+     * report can sum `durationMs` grouped by `phase` and have the total match the
+     * wall clock. Never throws -- timing must not be able to fail a run.
+     */
+    emitPhaseTiming(sessionId, phase, cycle, startedAtMs, extra = {}) {
+        try {
+            this.deps.state.audit("loop.phase_timing", { sessionId, phase, cycle, durationMs: Math.max(0, Date.now() - startedAtMs), ...extra }, sessionId);
+        }
+        catch {
+            /* observability only */
+        }
+    }
     async checkLedgerReachability(sessionId, worktreePath, cycle, phase) {
         const none = { failed: false, unreachable: [], headSha: "", detail: "" };
         if (!this.deps.unreachableCommits)

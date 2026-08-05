@@ -1,5 +1,100 @@
 # Changelog
 
+## [0.1.0-beta.108] -- 2026-08-05
+
+Driven by the `harness_revise` run on ProjectThanos PR #932 (session
+`21c9c44e`), which was the first evidence of how b107's machinery behaves on a
+revise rather than a fresh smoke, and by a readiness review of the Slack surface
+and multi-user safety ahead of real users.
+
+### Orphan adoption is bounded (a b107 regression, caught before it ran)
+
+b107 let a sub-task adopt an adversary finding no sub-task owned, so it could
+actually be fixed. It was designed against the b106 smoke, which produced two
+mapping misses. The b106 revise produced **twenty-one** across two cycles: the
+adversary re-reads the whole branch each cycle and keeps surfacing adjacent
+issues faster than workers close them.
+
+Two problems follow. Seven of that run's eighteen findings were `info` severity
+and read like *"Findings 2, 3, 4, 5, 7 verified resolved (no action)"* -- `info`
+is how the adversary records that an EARLIER finding was fixed, so adopting one
+puts a worker on a finding that says the code is already correct. And adoption
+widens a sub-task's file scope, which is precisely what a revise cycle costs;
+uncapped, it would drag most of the branch back into every cycle and undo the
+targeting that makes revise cheap.
+
+Adoption now skips `info`, takes candidates in severity order, and stops at
+`loop.revise_max_adoptions_per_cycle` (default 3) so the cap sheds the least
+important candidates rather than whichever the adversary happened to emit last.
+
+### Branch names are session-scoped, and stable
+
+Branch names came from the lead's plan JSON and validation only checked the
+`harness/` prefix. Nothing derived them from the session or compared them
+against other in-flight work. With one Slack channel and a thread per run, two
+sessions on related briefs could draw the same slug -- and the failure is quiet:
+`createPullRequest` returns the FIRST session's PR with `updatedExisting: true`,
+so two unrelated changes stack on one branch and get reviewed as one diff.
+
+Fresh branches now carry the session id's first eight characters, and
+`GitAdapter.allocate` refuses a branch another live session holds, naming the
+holder. A revise keeps its pinned branch untouched.
+
+The suffix also makes the name **reproducible**. A clarification re-drive
+re-plans from scratch and nothing obliged the lead to re-emit its earlier slug;
+if it changed, b101's `preserveLocalBranch` would look for a branch that no
+longer existed and fall through to `reset_to_base` -- the shape of the b100
+lost-commits defect.
+
+### A revise cycle that changed nothing no longer buys a review
+
+The b106 revise's cycle 3 dispatched five sub-tasks, four returned
+`subtask_revise_no_change`, and the run still paid for a full adversary pass
+over the whole branch to change two files. When the branch tip does not move
+there is nothing to re-review. Guarded to cycle 2 onward, to a readable pair of
+shas, and to the existence of a prior verdict to carry forward.
+
+### Phase timing, because a third of every run was unmeasured
+
+The b106 revise reported 55.2 minutes wall clock. Planning (574s) and worker
+execution (1499s) account for 35 of them. The other ~20 -- review, push, PR
+update, CI polling -- were untimed, so we were tuning the two thirds we could
+see. `loop.phase_timing` now reports `executing`, `review` and `ship`.
+
+### Slack says whether to merge
+
+`deriveMergeRecommendation` writes a precise reason, and on a max-cycles finish
+appends an explicit "re-run `harness_revise` on this PR". That string reached
+the database, the audit log, `harness_session_get` and the `harness_merge_pr`
+refusal -- and never the thread. Both b106 runs ended `do_not_merge` and both
+told Slack nothing but `Done — PR #932.`
+
+The terminal headline now carries the verdict and the next move.
+`harness_progress` also returns a `worklog`: one line per sub-task saying what
+it did -- files, duration, whether it committed or found nothing to change --
+so a fifty-minute run can be judged on whether it is building the right thing,
+not merely on whether it is still alive.
+
+### `harness_help`
+
+There was no way to ask what the harness can do. Every tool is addressed to the
+calling agent; a person had nothing. `harness_help` answers in outcomes rather
+than tool names, and states the limits that cost people the most time -- above
+all that the harness opens pull requests and will not merge one its own review
+did not sign off on. The README's tool list, stale at 9 of 19 and still claiming
+the harness never posts to Slack, is rebuilt and now covered by a test.
+
+### Not done: parallel sub-tasks
+
+Investigated and deliberately left off. Every sub-task shares one worktree
+(`plan.worktreePath`) and `GitAdapter.commit` stages with an unscoped
+`git add -A`, so the first worker to commit sweeps a concurrent worker's
+half-finished edits into its own commit. b91's guard compares *declared* file
+scope only, and b106 measured `committedCount: 141` against `declaredCount: 7`.
+Enabling this needs per-sub-task worktrees; the phase timings above are there to
+size the win before that work is done. A test now pins the default off with the
+reason attached.
+
 ## [0.1.0-beta.107] -- 2026-08-05
 
 The b106 smoke (session `06b91509`, ProjectThanos PR #932) was the best run so

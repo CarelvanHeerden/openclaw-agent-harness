@@ -11,6 +11,35 @@
  */
 import { boundScoutReportDetailed, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
 /**
+ * beta.108: make a fresh branch name unique to its session, and STABLE for it.
+ *
+ * The lead invents the branch and validation only checked the `harness/`
+ * prefix, so two concurrent sessions on related briefs could draw the same
+ * slug. In a single-user harness that never surfaced; with a Slack channel
+ * where every thread is an independent run against one repo, it is a matter of
+ * time. The consequence is quiet: GitHub folds the second push into the first
+ * session's pull request and the review reads two unrelated changes as one.
+ *
+ * Stability matters as much as uniqueness. A clarification re-drive re-plans
+ * from scratch, and nothing obliged the lead to re-emit the same slug -- so the
+ * b101 `preserveLocalBranch` machinery could go looking for a branch under the
+ * old name, not find it, and fall through to `reset_to_base`. That is precisely
+ * the shape of the b100 lost-commits defect. Deriving the suffix from the
+ * session id makes the name reproducible across every re-plan of that session.
+ *
+ * Skipped for a revise, where `pinnedBranch` must match the existing PR.
+ */
+export function sessionScopedBranch(branch, sessionId) {
+    const suffix = (sessionId ?? "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase();
+    if (!suffix)
+        return branch;
+    const b = (branch ?? "").trim().replace(/\/+$/, "");
+    // Idempotent: a re-plan of the same session must not stack suffixes.
+    if (b.endsWith(`-${suffix}`))
+        return b;
+    return `${b}-${suffix}`;
+}
+/**
  * beta.99 (P0-2): merge bounded top-up contexts into the plan IN PLACE.
  * Only fills seqs that are currently insubstantive, and only when the
  * incoming block is itself substantive -- so a vague top-up can never
@@ -275,6 +304,9 @@ export async function runLeadPlanner(brief, deps) {
                 if (brief.repoHint && brief.repoHint.includes("/"))
                     raw.repo = brief.repoHint;
                 deps.logger.info("[lead] revise: branch pinned", { branch: raw.branch, repo: raw.repo, reviseOf: brief.reviseOfSessionId });
+            }
+            else if (deps.sessionId) {
+                raw.branch = sessionScopedBranch(raw.branch, deps.sessionId);
             }
             // beta.33: defensively strip push/PR sub-tasks BEFORE validation.
             sanitizeRemoteSubTasks(raw, deps.logger);

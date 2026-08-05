@@ -60,6 +60,16 @@ export function renderFindingLine(f) {
     const loc = f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : "";
     return `- [${f.severity}/${f.dimension}] ${f.title ?? "(untitled)"}${loc}: ${f.detail ?? ""}`.slice(0, 600);
 }
+/**
+ * beta.108: severities an orphan finding may be adopted at. Everything the
+ * adversary emits below `low` is commentary -- `info` in particular is how it
+ * records that a PRIOR finding was verified fixed.
+ */
+export const ADOPTABLE_SEVERITIES = new Set(["low", "medium", "high", "critical"]);
+const SEVERITY_ORDER = ["info", "low", "medium", "high", "critical"];
+function severityRank(f) {
+    return SEVERITY_ORDER.indexOf((f.severity ?? "").toLowerCase());
+}
 /** Leading path segments `a` and `b` share. `src/lib/x` vs `src/lib/y` -> 2. */
 function sharedPrefixDepth(a, b) {
     const x = a.split("/").filter(Boolean);
@@ -110,12 +120,32 @@ function findingMentions(text, owned) {
  * directory with any sub-task and named by none, is left as a pure broadcast.
  * An arbitrary owner is worse than an honest miss.
  */
-export function adoptOrphanFindings(subTasks, misses, ownedOf) {
+export function adoptOrphanFindings(subTasks, misses, ownedOf, limits = {}) {
     const adoptions = [];
-    for (const f of misses) {
+    // beta.108: adopt in severity order, so a cap spends itself on the findings
+    // that matter. `misses` arrives in the adversary's emission order, which is
+    // not a priority order.
+    const ordered = [...misses].sort((a, b) => severityRank(b) - severityRank(a));
+    for (const f of ordered) {
         const file = fileOf(f);
         if (!file || !isDiffAddressable(f))
             continue;
+        // beta.108: `info` is the adversary's ACKNOWLEDGEMENT severity, not a
+        // request. The b106 revise (session 21c9c44e) closed with seven of eighteen
+        // findings reading like "Findings 2, 3, 4, 5, 7 verified resolved (no
+        // action)" -- adopting one of those puts a worker on a finding that says the
+        // code is already correct, which is worse than leaving it unmapped.
+        if (!ADOPTABLE_SEVERITIES.has((f.severity ?? "").toLowerCase()))
+            continue;
+        // beta.108: a cap, because adoption widens scope and scope is what revise
+        // cycles cost. That same revise fired TWENTY-ONE mapping misses across two
+        // cycles against the original smoke's two: the adversary reviews the whole
+        // branch every cycle and keeps finding adjacent issues, so an uncapped
+        // adopter would drag most of the branch back into every cycle and undo the
+        // targeting that makes revise cheap. Severity-ordered, so the cap drops the
+        // least important ones.
+        if (adoptions.length >= (limits.maxPerCycle ?? Infinity))
+            break;
         const text = `${f.title ?? ""}\n${f.detail ?? ""}`;
         let best;
         for (const st of subTasks) {
@@ -212,7 +242,7 @@ opts = {}) {
     const orphanAdoptions = opts.adoptOrphans
         ? adoptOrphanFindings(subTasks, misses, (st) => [...(st.filesLikelyTouched ?? []), ...(st.contextPaths ?? [])]
             .map((p) => (typeof p === "string" ? p.trim() : ""))
-            .filter(Boolean))
+            .filter(Boolean), { maxPerCycle: opts.maxAdoptionsPerCycle })
         : [];
     for (const ad of orphanAdoptions) {
         const a = bySeq.get(ad.seq);

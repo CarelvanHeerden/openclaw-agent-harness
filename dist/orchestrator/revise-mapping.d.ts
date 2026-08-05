@@ -103,6 +103,12 @@ export interface OrphanAdoption {
     score: number;
 }
 /**
+ * beta.108: severities an orphan finding may be adopted at. Everything the
+ * adversary emits below `low` is commentary -- `info` in particular is how it
+ * records that a PRIOR finding was verified fixed.
+ */
+export declare const ADOPTABLE_SEVERITIES: Set<string>;
+/**
  * beta.107: GIVE AN ORPHAN FINDING AN OWNER.
  *
  * A diff-addressable finding whose file no sub-task claims is a mapping miss.
@@ -127,7 +133,9 @@ export interface OrphanAdoption {
  * directory with any sub-task and named by none, is left as a pure broadcast.
  * An arbitrary owner is worse than an honest miss.
  */
-export declare function adoptOrphanFindings(subTasks: MapSubTask[], misses: MapFinding[], ownedOf: (st: MapSubTask) => string[]): OrphanAdoption[];
+export declare function adoptOrphanFindings(subTasks: MapSubTask[], misses: MapFinding[], ownedOf: (st: MapSubTask) => string[], limits?: {
+    maxPerCycle?: number;
+}): OrphanAdoption[];
 /**
  * Deterministically map the previous review's findings onto the plan sub-tasks.
  *
@@ -137,6 +145,7 @@ export declare function adoptOrphanFindings(subTasks: MapSubTask[], misses: MapF
  */
 export declare function mapFindingsToSubTasks(subTasks: MapSubTask[], findings: MapFinding[] | undefined, match: StructuralMatch, opts?: {
     adoptOrphans?: boolean;
+    maxAdoptionsPerCycle?: number;
 }): ReviseMappingResult;
 /**
  * Build the per-sub-task revise dispatch hint from a deterministic assignment.
