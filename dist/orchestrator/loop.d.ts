@@ -873,6 +873,14 @@ export declare class OrchestratorLoop {
      * Fails OPEN on a probe error: an unreachable-commit check that cannot run
      * must not block an otherwise sound run.
      */
+    /**
+     * beta.108: emit `loop.phase_timing` so every phase of a run is attributable.
+     *
+     * Deliberately one event shape rather than a bespoke field per phase, so a
+     * report can sum `durationMs` grouped by `phase` and have the total match the
+     * wall clock. Never throws -- timing must not be able to fail a run.
+     */
+    private emitPhaseTiming;
     private checkLedgerReachability;
     private getPlanJson;
     /** beta.63: read the most recent completed review for a session (or undefined). */

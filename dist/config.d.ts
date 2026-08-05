@@ -654,6 +654,27 @@ export interface LoopConfig {
      */
     revise_adopt_orphan_findings?: boolean;
     /**
+     * beta.108: ceiling on how many orphan findings a single revise cycle may
+     * adopt. Adoption widens a sub-task's file scope, and scope is what a revise
+     * cycle costs -- the b106 revise on PR #932 fired TWENTY-ONE mapping misses
+     * across two cycles (against the original smoke's two), because the adversary
+     * re-reads the whole branch each cycle and keeps surfacing adjacent issues.
+     * Uncapped, the adopter would drag most of the branch back into every cycle
+     * and undo the targeting that makes revise cheap. Adoption is severity-
+     * ordered, so the cap sheds the least important candidates first. Default 3.
+     */
+    revise_max_adoptions_per_cycle?: number;
+    /**
+     * beta.108: end a revise cycle that moved the branch tip nowhere, instead of
+     * paying for an adversary pass over a diff that did not change. The b106
+     * revise's cycle 3 dispatched five sub-tasks, four returned
+     * `subtask_revise_no_change`, and the run still bought a full review. Only
+     * applies from cycle 2 onward and only when a prior review exists to carry
+     * forward. true (default) enables; false restores the b107 always-review
+     * behaviour.
+     */
+    early_exit_no_change_cycle?: boolean;
+    /**
      * beta.105: also run the ledger reachability guard at RESUME, right after a
      * re-plan re-allocates the worktree, not only before adversary review.
      *

@@ -600,6 +600,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const requester = ctx?.requester ?? config.slack.authorised_users[0]!;
       return runLeadPlanner(brief, {
         config,
+        // beta.108: lets the planner make the branch name session-unique and
+        // reproducible across re-plans. See sessionScopedBranch.
+        sessionId: ctx?.sessionId,
         logger: api.logger,
         // beta.67 (P0a): callLeadModel genuinely (re-)invokes the lead SDK so
         // the ONE bounded re-ask actually re-plans with the corrective note.

@@ -204,21 +204,43 @@ Nothing pushes until the adversary passes (or a human drops `:rocket:`). Reactio
 | State store                  | `src/state/store.ts` + `schema.sql`              | SQLite (built-in `node:sqlite`), audit log             |
 | Retention                    | `src/state/retention.ts`                         | 90-day audit prune, terminal-session prune             |
 | Session recovery             | `src/state/recovery.ts`                          | Stale in-flight -> `interrupted`, Slack notify         |
-| Tools                        | `src/tools/registration.ts`                      | 9 tools (see below)                                    |
+| Tools                        | `src/tools/registration.ts`                      | 19 tools (see below)                                   |
 
 ## Tools exposed
 
-- `harness_run` -- **primary agent entry point**: raw request -> crystallise -> start session (returns sessionId, a clarifying question, or a rejection)
-- `harness_start_session` -- start from a pre-built structured brief (skips crystallisation); Slack channel/thread optional
+All 19 tools are called by the *agent*, not typed by the user. A person says
+"fix the findings on that PR" and the agent picks `harness_revise`.
+
+**Starting work**
+
+- `harness_run` -- **primary entry point**: raw request -> crystallise -> start session (returns sessionId, a clarifying question, or a rejection)
+- `harness_start_session` -- start from a pre-built structured brief (skips crystallisation)
+- `harness_help` -- what the harness can do, in plain language, for a human who asks
+
+**While a run is live**
+
+- `harness_progress` -- **poll this**: current phase, per-sub-task status, running cost vs budget, recent events, PR/deploy state, `msSinceLastEvent`, a ready-to-post `headline`, and (beta.108) a `worklog` of what each sub-task actually did. Poll every 30-60s and edit one message in place rather than posting per poll. The terminal headline carries the merge recommendation -- relay it, because a `do_not_merge` PR that reads as plain "Done" gets merged by mistake.
+- `harness_answer` -- answer a run paused in `awaiting_clarification`; `abort` and `skip` are accepted
+- `harness_cancel` -- set the abort flag; the loop stops at the next checkpoint
+- `harness_resume` -- re-kick an interrupted session with its brief (`force: true` for a dead executor)
+
+**Once a PR exists**
+
+- `harness_revise` -- address the outstanding findings and update the SAME PR; takes `prNumber` or `sessionId`, or neither to get the picker
+- `harness_list_revisable` -- shipped PRs that are not merge-ready, for "what's still outstanding?"
+- `harness_merge_pr` -- merge and verify the deploy. Refuses anything the review did not sign off on, and the refusal says why.
+
+**Diagnosis and operations**
+
+- `harness_session_get` -- one session with sub-tasks, reviews and audit trail
+- `harness_logs` -- tail the durable interaction log when progress looks stalled
 - `harness_status` -- active sessions + monthly spend
-- `harness_progress` -- **poll live progress for a running session**: current phase, per-sub-task N/M status, running cost vs budget, recent lifecycle events, PR/deploy state, `msSinceLastEvent`, and a ready-to-post `headline` line. The harness is tool-driven and never posts to Slack itself, so the calling agent polls this (~30-60s) right after kicking off a run and relays `headline` to the user, stopping when `terminal` is true. Without it an agent-orchestrated run gives the user zero feedback.
-- `harness_health` -- DB reachable, schema OK, config valid, cred set
-- `harness_session_get` -- one session with sub-tasks/reviews/audit
-- `harness_telemetry` -- monthly ledger + session cost breakdown
-- `harness_upload_logs` -- attach runtime logs from any deploy target (nginx, CloudWatch, on-prem) when Vercel is off
-- `harness_cancel` -- set abort flag; loop terminates at next checkpoint
-- `harness_resume` -- re-kick an interrupted session with its brief
+- `harness_health` -- DB reachable, schema OK, config valid, credentials set
+- `harness_telemetry` -- monthly ledger + per-session cost breakdown
+- `harness_upload_logs` -- attach runtime logs from any deploy target when the Vercel bridge is off
+- `harness_onboard` -- DM-based git-token onboarding (also `/harness-onboard`)
 - `harness_retention_prune` -- manual audit-log prune
+- `harness_bootstrap_test_repo` -- disposable repo for smoke tests
 
 ## Runtime data (optional, not tied to Vercel)
 

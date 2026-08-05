@@ -97,12 +97,13 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         clarificationQuestion: null,
         clarificationSeq: null,
         reviseSpecFellBack: false,
+        worklog: [],
     });
     const row = db
         .prepare(`SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
               pr_number, final_pr_url, deploy_status,
               clarification_question, clarification_seq, last_progress_at,
-              estimated_usd
+              estimated_usd, merge_recommendation, merge_recommendation_reason
          FROM sessions WHERE id = ?`)
         .get(sessionId);
     if (!row)
@@ -114,7 +115,8 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     const latestCycle = row.cycles_ran > 0 ? row.cycles_ran : 1;
     const stRows = db
         .prepare(`SELECT seq, cycle, description AS title, status, cost_usd AS costUsd,
-              started_at AS startedAt, completed_at AS completedAt
+              started_at AS startedAt, completed_at AS completedAt,
+              files_touched AS filesTouched, commit_sha AS commitSha
          FROM sub_tasks WHERE session_id = ? AND cycle = ?
          ORDER BY seq ASC`)
         .all(sessionId, latestCycle);
@@ -293,6 +295,9 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
             deployStatus: row.deploy_status ?? null,
             failureDetail,
             estimatedUsd: typeof row.estimated_usd === "number" ? row.estimated_usd : null,
+            // beta.108: so the terminal headline can say whether to merge.
+            mergeRecommendation: row.merge_recommendation ?? null,
+            mergeRecommendationReason: row.merge_recommendation_reason ?? null,
         });
     // beta.83 (#1): append a visible warning to the headline when the current
     // cycle degraded to raw findings, unless a clarification pause already owns
@@ -334,6 +339,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         clarificationQuestion,
         clarificationSeq,
         reviseSpecFellBack,
+        worklog: renderWorklog(stRows, all.length),
     };
 }
 function fmtUsd(n) {
@@ -350,7 +356,16 @@ export function buildHeadline(input) {
     if (input.status === "done") {
         const pr = input.prNumber ? ` — PR #${input.prNumber}` : "";
         // beta.81 (A2): terminal totals -- final spend vs cap + % of cap.
-        return `Done${pr}${cost}.`;
+        // beta.108: say whether the PR should actually be MERGED.
+        //
+        // The harness already decides this well -- deriveMergeRecommendation writes
+        // a precise reason, and on a max-cycles finish it appends an explicit
+        // "re-run `harness_revise` on this PR" instruction. That string reached the
+        // database, the audit log, `harness_session_get` and the `harness_merge_pr`
+        // refusal, and never reached the one place the person who asked for the
+        // work is actually looking. Both b106 runs ended `do_not_merge`, and both
+        // said nothing more to the thread than "Done — PR #932."
+        return `Done${pr}${cost}.${mergeAdvice(input.mergeRecommendation, input.mergeRecommendationReason)}`;
     }
     if (input.status === "failed" || input.status === "failed_verification") {
         const why = input.failureDetail ? ` — ${input.failureDetail}` : "";
@@ -377,6 +392,93 @@ export function buildHeadline(input) {
     if (input.status === "planning")
         return `Planning the change${cost}.`;
     return `${input.phase}${cost}.`;
+}
+/**
+ * beta.108: render the per-sub-task work log.
+ *
+ * `✓` committed, `·` ran but changed nothing (a legitimate revise outcome, and
+ * one worth showing -- four of five sub-tasks in the b106 revise's last cycle
+ * ended this way), `✗` failed, `⟳` in flight, `◦` not started.
+ */
+export function renderWorklog(subTasks, total) {
+    const lines = [];
+    for (const st of subTasks) {
+        const glyph = st.status === "done"
+            ? st.commitSha
+                ? "✓"
+                : "·"
+            : st.status === "completed_no_change"
+                ? "·"
+                : st.status === "failed" || st.status === "failed_verification"
+                    ? "✗"
+                    : st.status === "running"
+                        ? "⟳"
+                        : "◦";
+        const bits = [];
+        const files = countFiles(st.filesTouched);
+        if (files > 0)
+            bits.push(`${files} file${files === 1 ? "" : "s"}`);
+        else if (st.status === "done" && !st.commitSha)
+            bits.push("no change");
+        // `!= null` rather than truthiness: a timestamp of 0 is a real value.
+        if (st.startedAt != null && st.completedAt != null && st.completedAt > st.startedAt) {
+            bits.push(fmtDuration(st.completedAt - st.startedAt));
+        }
+        const detail = bits.length > 0 ? `  ·  ${bits.join(", ")}` : "";
+        lines.push(`${glyph} ${st.seq}/${total}  ${truncate(st.title, 70)}${detail}`);
+    }
+    return lines;
+}
+function countFiles(filesTouched) {
+    if (!filesTouched)
+        return 0;
+    try {
+        const parsed = JSON.parse(filesTouched);
+        if (Array.isArray(parsed))
+            return parsed.filter(Boolean).length;
+    }
+    catch {
+        // Older rows stored a comma/newline separated string, not JSON.
+    }
+    return filesTouched.split(/[,\n]/).map((x) => x.trim()).filter(Boolean).length;
+}
+function fmtDuration(ms) {
+    const secs = Math.round(ms / 1000);
+    if (secs < 90)
+        return `${secs}s`;
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    return rem === 0 ? `${mins}m` : `${mins}m ${rem}s`;
+}
+/**
+ * beta.108: turn a merge recommendation into one actionable clause.
+ *
+ * Deliberately short. The full reason can run to a paragraph and belongs in the
+ * tools; the thread needs the verdict and the next move. A `merge` says so
+ * plainly, because "Done" alone leaves the reader unsure whether it is safe.
+ */
+export function mergeAdvice(recommendation, reason) {
+    const rec = (recommendation ?? "").trim().toLowerCase();
+    if (!rec)
+        return "";
+    if (rec === "merge")
+        return " Ready to merge.";
+    const gist = firstSentence(reason ?? "");
+    const why = gist ? ` ${gist}` : "";
+    if (rec === "do_not_merge") {
+        // The revise hint is the actionable half: without it the reader knows the
+        // PR is bad but not that the harness can carry on from where it stopped.
+        const next = /harness_revise/i.test(reason ?? "") ? " Ask me to revise it to continue." : "";
+        return ` :warning: Do not merge yet.${why}${next}`;
+    }
+    return ` :warning: Needs a human look before merging.${why}`;
+}
+function firstSentence(s) {
+    const flat = s.replace(/\s+/g, " ").trim();
+    if (!flat)
+        return "";
+    const m = flat.match(/^.{0,180}?[.!?](?=\s|$)/);
+    return truncate(m ? m[0] : flat, 180);
 }
 function truncate(s, max) {
     if (s.length <= max)

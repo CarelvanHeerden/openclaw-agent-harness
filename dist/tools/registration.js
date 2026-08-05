@@ -6,6 +6,7 @@
  * include the "run a task" surface -- that entry point is the Slack
  * listener. These tools are for inspection, admin, and cron jobs.
  */
+import { buildHarnessHelp } from "./help-content.js";
 import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
@@ -208,6 +209,37 @@ export function registerHarnessTools(api, runtime) {
         }
         return { recommended, note, dailySoFar, dailyMax, remainingDaily };
     }
+    // beta.108: a capability list a HUMAN can ask for.
+    //
+    // Every other tool is addressed to the calling agent -- users never type
+    // `harness_revise`, they say "fix the findings" and the agent picks. That
+    // works only when the agent's read of the tool descriptions is complete, and
+    // it leaves a person with no way to find out what is on offer. Asking "what
+    // can you do with this repo?" had no answer. This gives one, in the user's
+    // language rather than in tool names.
+    disposers.push(toDispose(api.registerTool({
+        name: "harness_help",
+        description: "Explain what the harness can do, in plain language, for a HUMAN. Use when someone asks what the harness is, what it can do, how to start a change, what happens after a PR is opened, what the reactions/budget controls are, or when they seem stuck about what to ask for next. Returns `capabilities` (grouped, user-facing) and `tools` (the machine names behind them). Relay the capabilities, not the tool names -- users do not invoke tools, you do.",
+        parameters: {
+            type: "object",
+            properties: {
+                topic: {
+                    type: "string",
+                    enum: ["all", "starting", "during", "after", "budget"],
+                    description: "Narrow the answer: starting a change, controlling a run in flight, what to do once a PR exists, or how budgets/caps work. Default 'all'.",
+                },
+            },
+            additionalProperties: false,
+        },
+        execute: (_callId, input) => {
+            const topic = String(input?.topic ?? "all");
+            const help = buildHarnessHelp(topic);
+            return {
+                content: [{ type: "text", text: JSON.stringify(help) }],
+                details: { ok: true, topic },
+            };
+        },
+    })));
     disposers.push(toDispose(api.registerTool({
         name: "harness_status",
         description: "Return harness runtime status: active sessions, monthly spend per user, model config.",
@@ -254,7 +286,7 @@ export function registerHarnessTools(api, runtime) {
     // hot-path writes. Returns a `headline` string the agent can post verbatim.
     disposers.push(toDispose(api.registerTool({
         name: "harness_progress",
-        description: "Poll live progress for a harness run started by harness_run / harness_start_session. Returns the current phase, per-sub-task N/M status, running cost vs budget, recent lifecycle events, PR/deploy state, ms-since-last-event, and a ready-to-post `headline` line. The harness NEVER posts to Slack itself (tool-driven) -- YOU poll this on an interval (~30-60s) and relay `headline` (or a rephrase) to the user, stopping when `terminal` is true. Use this right after kicking off a run so the user gets feedback instead of silence.",
+        description: "Poll live progress for a harness run started by harness_run / harness_start_session. Returns the current phase, per-sub-task N/M status, running cost vs budget, recent lifecycle events, PR/deploy state, ms-since-last-event, a ready-to-post `headline` line, and (beta.108) `worklog`: one line per sub-task saying what it actually did. Poll on an interval (~30-60s) and relay `headline` plus `worklog` to the user, stopping when `terminal` is true -- EDIT your previous progress message in place rather than posting a new one each poll, so a 30-sub-task run is one living message and not 30 notifications. When the run is terminal the headline carries the merge recommendation; relay it verbatim, because a `do_not_merge` PR that reads as plain 'Done' will get merged by mistake. Note: when a Slack bot token is configured the harness ALSO posts progress natively (beta.77); in that mode you need not re-post, only answer questions. Use this right after kicking off a run so the user gets feedback instead of silence.",
         parameters: {
             type: "object",
             properties: {

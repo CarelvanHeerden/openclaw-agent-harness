@@ -53,6 +53,20 @@ export interface ProgressSnapshot {
     ok: boolean;
     found: boolean;
     sessionId: string;
+    /**
+     * beta.108: a running WORK LOG -- one line per sub-task of the current cycle,
+     * saying what it did rather than which phase the run is in.
+     *
+     * `headline` answers "is it still alive". Over a fifty-minute run that is not
+     * enough: it cannot tell you whether the harness is building the right thing,
+     * so the only options are to wait it out or kill it blind. Each line carries
+     * the title, the files, and the time, which is the smallest amount of
+     * evidence that supports the judgement.
+     *
+     * Meant to be rendered into ONE Slack message and edited in place -- thirty
+     * sub-tasks across three cycles is thirty notifications otherwise.
+     */
+    worklog: string[];
     /** High-level phase, mapped from the session status to human words. */
     phase: string;
     status: string;
@@ -159,5 +173,33 @@ export declare function buildHeadline(input: {
     failureDetail?: string;
     /** beta.81 (Track A / A2): up-front session estimate, for the terminal line. */
     estimatedUsd?: number | null;
+    /** beta.108: `merge` | `do_not_merge` | `needs_human_review`. */
+    mergeRecommendation?: string | null;
+    /** beta.108: the full reason; only its first sentence reaches the headline. */
+    mergeRecommendationReason?: string | null;
 }): string;
+/**
+ * beta.108: render the per-sub-task work log.
+ *
+ * `✓` committed, `·` ran but changed nothing (a legitimate revise outcome, and
+ * one worth showing -- four of five sub-tasks in the b106 revise's last cycle
+ * ended this way), `✗` failed, `⟳` in flight, `◦` not started.
+ */
+export declare function renderWorklog(subTasks: Array<{
+    seq: number;
+    title: string;
+    status: string;
+    startedAt: number | null;
+    completedAt: number | null;
+    filesTouched?: string | null;
+    commitSha?: string | null;
+}>, total: number): string[];
+/**
+ * beta.108: turn a merge recommendation into one actionable clause.
+ *
+ * Deliberately short. The full reason can run to a paragraph and belongs in the
+ * tools; the thread needs the verdict and the next move. A `merge` says so
+ * plainly, because "Done" alone leaves the reader unsure whether it is safe.
+ */
+export declare function mergeAdvice(recommendation?: string | null, reason?: string | null): string;
 //# sourceMappingURL=progress.d.ts.map
