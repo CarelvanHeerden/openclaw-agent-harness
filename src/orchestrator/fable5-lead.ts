@@ -12,7 +12,7 @@
 
 import type { HarnessConfig } from "../config.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
-import { boundScoutReport, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
+import { boundScoutReportDetailed, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
 import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 
 /**
@@ -237,6 +237,15 @@ export interface LeadScoutOutcome {
    * needs to be visible rather than inferred from a suspiciously short report.
    */
   timedOut?: boolean;
+  /**
+   * beta.107: whether the report was cut to fit `lead_scout_max_chars`, and by
+   * how much. b106 recorded `reportChars: 20049` -- a number produced only by
+   * truncation at the then-ceiling of 20000, which nobody reading the trail was
+   * expected to reverse-engineer. Now the trail says it.
+   */
+  truncated?: boolean;
+  /** Report length before bounding. Equals `reportChars` when nothing was cut. */
+  reportCharsRaw?: number;
 }
 
 export interface LeadDeps {
@@ -523,10 +532,11 @@ export async function runLeadPlanner(
       const startedAt = Date.now();
       try {
         const result = await deps.scoutRepo({ brief, repoFullName: repoForScout });
-        const report = boundScoutReport(
+        const bounds = boundScoutReportDetailed(
           result?.report ?? "",
           deps.config.loop?.lead_scout_max_chars ?? SCOUT_REPORT_MAX_CHARS,
         );
+        const report = bounds.text;
         if (report) {
           brief.repoScoutReport = report;
           scoutOutcome = {
@@ -535,11 +545,22 @@ export async function runLeadPlanner(
             costUsd: result?.costUsd,
             durationMs: Date.now() - startedAt,
             timedOut: result?.timedOut === true ? true : undefined,
+            truncated: bounds.truncated ? true : undefined,
+            reportCharsRaw: bounds.originalChars,
           };
           deps.logger.info("[lead] beta.104: scouted the repo before planning", {
             repo: repoForScout, reportChars: report.length, durationMs: scoutOutcome.durationMs,
             timedOut: scoutOutcome.timedOut ?? false,
           });
+          if (bounds.truncated) {
+            // Not fatal -- both ends survive -- but it means the ceiling is
+            // binding for this repo, which is a knob-tuning signal that b106
+            // had no way to surface.
+            deps.logger.warn?.("[lead] beta.107: scout report exceeded the ceiling; kept both ends, dropped the middle", {
+              repo: repoForScout, reportCharsRaw: bounds.originalChars, omittedChars: bounds.omittedChars,
+              ceiling: deps.config.loop?.lead_scout_max_chars ?? SCOUT_REPORT_MAX_CHARS,
+            });
+          }
         } else {
           scoutOutcome = { ran: false, reportChars: 0, skippedReason: "empty_report", durationMs: Date.now() - startedAt };
           deps.logger.warn?.("[lead] beta.104: scout returned an empty report; planning blind (pre-b104 behaviour)", {

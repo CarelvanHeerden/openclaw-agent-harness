@@ -905,6 +905,12 @@ export class OrchestratorLoop {
                     // mis-set for this repo, and that must be visible in the trail.
                     timedOut: plan.scout.timedOut === true,
                     scoutBudgetSeconds: scoutBudget,
+                    // beta.107: b106's `reportChars: 20049` WAS a truncation, and the
+                    // smoke report read it as a report that happened to be that long.
+                    // Say it outright rather than leaving it to arithmetic on a
+                    // constant nobody has to hand.
+                    truncated: plan.scout.truncated === true,
+                    reportCharsRaw: plan.scout.reportCharsRaw,
                 }, sessionId);
             }
             // beta.67 (Bug B): capture the branch FORK-POINT sha ONCE now that the
@@ -1080,7 +1086,7 @@ export class OrchestratorLoop {
                     filesLikelyTouched: s.filesLikelyTouched,
                     contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
                 }));
-                reviseMapping = mapFindingsToSubTasks(mapSubTasks, lastReview.findings, (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }));
+                reviseMapping = mapFindingsToSubTasks(mapSubTasks, lastReview.findings, (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }), { adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false });
                 for (const a of reviseMapping.assignments)
                     reviseAssignmentBySeq.set(a.seq, a);
                 reviseSpecApplied = reviseMapping.anyTargeted;
@@ -1098,8 +1104,38 @@ export class OrchestratorLoop {
                 // Charter guardrail: a filed diff-addressable finding that matched NO
                 // sub-task is a MAPPING MISS -- it is attached to every sub-task as
                 // context (never dropped, never run-all), and surfaced so we can see it.
+                const adoptedBySeq = new Map(reviseMapping.orphanAdoptions.map((a) => [a.finding, a]));
                 for (const miss of reviseMapping.mappingMisses) {
-                    this.deps.state.audit("loop.finding_mapping_miss", { sessionId, cycle, dimension: miss.dimension, severity: miss.severity, file: (miss.file ?? "").trim() || null, title: miss.title }, sessionId);
+                    const adopted = adoptedBySeq.get(miss);
+                    this.deps.state.audit("loop.finding_mapping_miss", {
+                        sessionId, cycle, dimension: miss.dimension, severity: miss.severity,
+                        file: (miss.file ?? "").trim() || null, title: miss.title,
+                        // beta.107: a miss that found an owner is a different animal from
+                        // one that stayed unactionable. b106 could not tell them apart,
+                        // because before b107 there was only the one kind.
+                        adoptedBySeq: adopted?.seq ?? null,
+                        adoptionReason: adopted?.reason ?? null,
+                    }, sessionId);
+                }
+                for (const ad of reviseMapping.orphanAdoptions) {
+                    this.deps.state.audit("loop.orphan_finding_adopted", { sessionId, cycle, seq: ad.seq, file: ad.file, reason: ad.reason, score: ad.score, title: ad.finding.title }, sessionId);
+                }
+                if (reviseMapping.orphanAdoptions.length > 0) {
+                    // Put the adopted file into the sub-task's SCOPE as well. b91 scoping
+                    // (which runs just below) keeps a sub-task only when its
+                    // `filesLikelyTouched` intersects a finding file, so without this the
+                    // adopting sub-task can still be skipped -- and the one worker asked
+                    // to fix the finding never runs. `filesLikelyTouched` is a scope hint,
+                    // not a contract, and b103's path writeback already rewrites it.
+                    for (const ad of reviseMapping.orphanAdoptions) {
+                        const st = plan.subTasks.find((s) => s.seq === ad.seq);
+                        if (!st)
+                            continue;
+                        st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
+                        if (!st.filesLikelyTouched.includes(ad.file))
+                            st.filesLikelyTouched.push(ad.file);
+                    }
+                    this.deps.logger.info("[loop] beta.107: orphan finding(s) adopted by the nearest sub-task -- now targeted, not just broadcast", { sessionId, cycle, adopted: reviseMapping.orphanAdoptions.length });
                 }
                 if (reviseMapping.mappingMisses.length > 0) {
                     this.deps.logger.info("[loop] revise-mapping: filed finding(s) matched no sub-task -> broadcast to all as context (never dropped)", { sessionId, cycle, misses: reviseMapping.mappingMisses.length });

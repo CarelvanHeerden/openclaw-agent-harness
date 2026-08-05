@@ -63,8 +63,31 @@
 export declare const SCOUT_ALLOWED_TOOLS: readonly ["Read", "Glob", "Grep"];
 /** Tools explicitly denied, as a second layer behind the allow-list. */
 export declare const SCOUT_DENIED_TOOLS: readonly ["Task", "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
-/** Default ceiling on the report folded into the planning prompt. */
-export declare const SCOUT_REPORT_MAX_CHARS = 20000;
+/**
+ * Default ceiling on the report folded into the planning prompt.
+ *
+ * beta.107: raised from 20000. The b106 smoke (session 06b91509) reported
+ * `reportChars: 20049`, which is not a report that happened to be that long --
+ * it is the exact arithmetic of `boundScoutReport` truncating at 20000 and
+ * appending its notice. The scout had more to say and we cut between 1k and 10k
+ * characters of it, silently, and the audit said nothing.
+ */
+export declare const SCOUT_REPORT_MAX_CHARS = 32000;
+/**
+ * beta.107: share of a truncated report kept from the TAIL.
+ *
+ * b104 kept the head only, reasoning that locations and conventions come first
+ * and are the load-bearing part. That reasoning was right about the head and
+ * wrong about the consequence: the prompt orders the report locations, then
+ * excerpts, then TRAPS -- so head-only truncation removes precisely the section
+ * about framework quirks, generated files and repo rules.
+ *
+ * The b106 run is the illustration. Its one finding that no cycle could close
+ * was a repo rule (`help-content.ts` must be updated alongside a new page) that
+ * the adversary raised every cycle, that no sub-task owned, and that a surviving
+ * traps section is exactly what would have put into the plan.
+ */
+export declare const SCOUT_REPORT_TAIL_SHARE = 0.25;
 /**
  * beta.106: hard ceiling on scout agent turns.
  *
@@ -88,15 +111,29 @@ export declare function buildScoutUserMessage(brief: {
     filesLikelyTouched?: string[];
     outOfScope?: string[];
 }): string;
+/** What bounding did, so the audit can say so rather than leaving it to arithmetic. */
+export interface ScoutReportBounds {
+    text: string;
+    truncated: boolean;
+    /** Length of the scout's report before bounding. */
+    originalChars: number;
+    /** Characters removed from the middle. 0 when nothing was cut. */
+    omittedChars: number;
+}
 /**
  * Bound the report before it is folded into the planning prompt and persisted
  * on the brief.
  *
- * Truncation keeps the HEAD, not the tail: the scout is instructed to establish
- * locations and conventions first and list traps last, so the opening is the
- * load-bearing part. b98 is the standing reminder that an oversized lead input
- * costs a whole run when the reply breaches the output ceiling.
+ * beta.107: truncation is MIDDLE-OUT, keeping both ends. The head carries
+ * locations and conventions, the tail carries the traps, and the excerpts in
+ * between are the most compressible part of the report -- a worker that is
+ * missing an excerpt reads the file, but a plan that is missing a repo rule
+ * violates it and no revise cycle can find its way back. b98 remains the reason
+ * a ceiling exists at all: an oversized lead input costs a whole run when the
+ * reply breaches the output ceiling.
  */
+export declare function boundScoutReportDetailed(text: string, maxChars?: number): ScoutReportBounds;
+/** String-only wrapper, for callers that do not need the bounding detail. */
 export declare function boundScoutReport(text: string, maxChars?: number): string;
 /**
  * Render the report for the planning prompt.

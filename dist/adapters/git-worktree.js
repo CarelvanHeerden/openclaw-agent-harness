@@ -870,7 +870,66 @@ esac
             await ask.cleanup();
         }
     }
+    /**
+     * beta.107: DELETE commit-message scratch files before they can be staged.
+     *
+     * Workers write `.git-commit-msg.txt` into the worktree to pass a multi-line
+     * message to `git commit -F` when the sandbox blocks heredocs and command
+     * substitution -- and then cannot delete it, because the sandbox blocks `rm`
+     * on it too. b95 taught the VERIFIER to ignore these files, which stopped them
+     * spoofing a contract match, but they still get committed and still show up in
+     * the PR diff, where the adversary reads them as what they are: a stray
+     * scratch file at the repo root.
+     *
+     * On b106 that became finding #1, raised in the final review of a run that had
+     * otherwise converged, and unclosable: every revise cycle that tried to remove
+     * it hit the same sandbox denial. The harness has no such restriction, so it
+     * sweeps them here, at the one point every worker's work passes through.
+     *
+     * Only ever removes paths `isCommitMsgNoise` already classifies as scratch --
+     * the same predicate b95 uses to keep them out of the verifier -- so a repo
+     * that legitimately tracks such a file could only be affected if it also
+     * matches that pattern, and b95 would already be hiding it from verification.
+     */
+    async sweepCommitMsgScratch(worktreePath) {
+        const swept = [];
+        // Already committed -- by the worker's own `git commit`, or by an earlier
+        // cycle. `git rm` so the file is absent from the branch TIP: the review and
+        // the PR diff both read base..HEAD, so removing it here retires the finding
+        // even though a middle commit still contains it.
+        try {
+            const tracked = await this.run(["-C", worktreePath, "ls-files"]);
+            for (const path of tracked.split("\n").map((l) => l.trim()).filter(Boolean)) {
+                if (!isCommitMsgNoise(path))
+                    continue;
+                await this.run(["-C", worktreePath, "rm", "-f", "--ignore-unmatch", "--", path]).catch(() => "");
+                swept.push(path);
+            }
+        }
+        catch { /* never let housekeeping break a commit */ }
+        // Not yet staged -- the usual case, written this turn and about to be swept
+        // into the harness's own `git add -A`.
+        try {
+            const status = await this.run(["-C", worktreePath, "status", "--porcelain"]);
+            for (const line of status.split("\n")) {
+                // porcelain v1: "XY <path>", and renames carry "old -> new".
+                const path = line.slice(3).trim().split(" -> ").pop()?.trim();
+                if (!path || !isCommitMsgNoise(path) || swept.includes(path))
+                    continue;
+                await rm(resolve(worktreePath, path), { force: true }).catch(() => { });
+                swept.push(path);
+            }
+        }
+        catch { /* best-effort */ }
+        if (swept.length > 0) {
+            this.opts.logger.info("[git] beta.107: removed commit-message scratch file(s) before staging", {
+                worktreePath, swept,
+            });
+        }
+        return swept;
+    }
     async commit(worktreePath, message, identity) {
+        await this.sweepCommitMsgScratch(worktreePath);
         await this.run(["-C", worktreePath, "add", "-A"]);
         const status = await this.run(["-C", worktreePath, "status", "--porcelain"]);
         if (!status.trim())

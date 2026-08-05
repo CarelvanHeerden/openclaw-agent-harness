@@ -2387,6 +2387,10 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
       // beta.81 (Track C / C4): recovery-resume circuit breaker thresholds.
       maxResumes: config.loop.recovery_max_resumes ?? 3,
       resumeWindowSeconds: config.loop.recovery_resume_window_seconds ?? 60,
+      // beta.107: ask the live-runner question BEFORE the breaker counts an
+      // attempt, not after. The b47 check inside autoResume below stays as
+      // defence in depth, but by then the ledger entry already exists.
+      isLiveRunner: (id) => runningSessionIds().includes(id),
       autoResume: async (s) => {
         // beta.47: recovery runs on every bootstrap (incl. plugin re-register
         // churn while a session is still mid-flight). If a loop for this

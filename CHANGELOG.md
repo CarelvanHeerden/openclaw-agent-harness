@@ -1,5 +1,115 @@
 # Changelog
 
+## [0.1.0-beta.107] -- 2026-08-05
+
+The b106 smoke (session `06b91509`, ProjectThanos PR #932) was the best run so
+far. The scout ran cleanly inside its budget, corrected `(app)` to `(portal)` and
+`components/layout` to `components/ui` at plan time, and the run shipped at 37%
+of budget with zero contract-path escalations, zero rescues and clean CI. Every
+defect below is something that run left behind rather than something it broke.
+
+### The scout report was being truncated, silently
+
+`loop.lead_scout` recorded `reportChars: 20049`, and the smoke report read it as
+a report that happened to be that long. It is not. It is the exact length
+`boundScoutReport` produces when it cuts at 20000 and appends its notice --
+identical for any input between roughly 21k and 30k characters. Between 1k and
+10k characters of scout output were dropped and nothing in the trail said so.
+
+Where the cut landed matters more than that it happened. b104 truncated from the
+tail, reasoning that locations and conventions come first and are load-bearing.
+That was right about the head and wrong about the consequence: the prompt orders
+the report locations, then excerpts, then **traps** -- so head-only truncation
+removes exactly the section on framework quirks, generated files and repo rules.
+
+b106's one finding that no cycle could close was a repo rule: `help-content.ts`
+must be updated alongside a new page. A surviving traps section is what would
+have put it in the plan.
+
+- Truncation is now MIDDLE-OUT, keeping both ends. The excerpts in between are
+  the compressible part: a worker missing an excerpt reads the file, whereas a
+  plan missing a repo rule violates it.
+- `lead_scout_max_chars` default raised 20000 -> 32000, so an ordinary brief
+  stops hitting the ceiling at all.
+- `loop.lead_scout` now carries `truncated` and `reportCharsRaw`, so this is
+  never again a fact that has to be recovered by arithmetic on a constant.
+- The scout prompt states the shape of the cut, so it knows to put locations at
+  the very start and traps at the very end.
+
+### Recovery counted resumes it never performed
+
+Two `recovery.auto_resuming` events fired at +83s and +126s against a live,
+healthy planning turn. `findInterruptedSessions` selects every session in a
+non-terminal status with no liveness filter, and plugin re-register churn makes
+those sweeps common; the scout roughly doubled how long a session sits in
+`planning`, which widened the window enough to notice.
+
+b47 already skipped the re-drive for a live session -- but inside `autoResume`,
+which runs *after* the b81 circuit breaker has counted the attempt. So a healthy
+session accrues breaker credit for resumes that were correctly refused, and four
+bursts of churn inside a minute mark a working run `failed` with
+`recovery_bounce_loop`. b106 was two of the three needed.
+
+`recoverSessions` now takes `isLiveRunner` and asks the question BEFORE the
+breaker: a live session is skipped entirely, with `recovery.skipped_live_runner`
+and no ledger entry. The three other consumers of the guard (`harness_resume`
+force, and both `sweepStalls` paths) already asked first; recovery was the
+outlier. A genuinely dead session recovers exactly as before, and a real bounce
+loop still trips the breaker.
+
+### A finding nobody owned could never be closed
+
+`src/lib/help/help-content.ts` is required by an ingested repo rule. The
+adversary raised it in both revise cycles, no sub-task's plan claimed the file,
+and `finding_mapping_miss` fired on it both times. It was still open when the run
+hit its ceiling, and no number of extra cycles would have changed that.
+
+b92 broadcasts an unmapped finding to every sub-task as CONTEXT, which never
+drops it but never asks anyone to fix it -- and b91 scoping then skips those
+sub-tasks, because their files intersect no finding.
+
+`adoptOrphanFindings` gives such a finding an owner: the sub-task the finding's
+own prose names, else the one nearest in the directory tree. The finding becomes
+TARGETED there, the orphan file joins that sub-task's targeted set and its
+`filesLikelyTouched` so scoping cannot skip it, and it stays broadcast to
+everyone as before. Deliberately conservative -- a finding with no file, or one
+sharing no directory with any sub-task and named by none, stays a pure broadcast,
+because an arbitrary owner is worse than an honest miss. New audit events
+`loop.orphan_finding_adopted`, and `adoptedBySeq` on `loop.finding_mapping_miss`.
+
+### The scratch file the sandbox would not let a worker delete
+
+Workers write `.git-commit-msg.txt` into the worktree to pass a multi-line
+message to `git commit -F` when the sandbox blocks heredocs and command
+substitution -- and then cannot delete it, because the sandbox blocks `rm` on it
+too. b95 taught the verifier to ignore these files, which stopped them spoofing a
+contract match, but they still got committed and still reached the PR diff. On
+b106 that became finding #1 of the final review, on a run that had otherwise
+converged, and every revise cycle that tried to remove it hit the same denial.
+
+`GitAdapter.commit` now sweeps them before staging, at the one point all worker
+output passes through, using the same `isCommitMsgNoise` predicate b95 already
+uses. Tracked copies -- from a worker's own `git commit`, or an earlier cycle --
+are `git rm`'d so the file is absent from the branch tip, which is what the
+review and the PR diff both read.
+
+### Config
+
+- `loop.lead_scout_max_chars` default `20000` -> `32000`
+- `loop.revise_adopt_orphan_findings` (default `true`)
+
+### Tests
+
+`tests/beta107-scout-bounds-recovery-and-orphans.test.mjs` (29). The b106
+truncation signature is reproduced exactly, then shown to keep the traps under
+b107 and lose them under b104's rule. The recovery tests run five sweeps against
+a live session and assert the breaker never trips, with a counterfactual that
+hard-stops the same healthy session without the guard. Orphan adoption is tested
+on b106's real plan and finding, including the b91 scoping payoff. The scratch
+file is tested against real git on both paths -- written-not-committed, and
+already committed by the worker. Eight new mutations bring the suite to 31, all
+caught.
+
 ## [0.1.0-beta.106] -- 2026-08-05
 
 ### The lead budget could not fit the scout
