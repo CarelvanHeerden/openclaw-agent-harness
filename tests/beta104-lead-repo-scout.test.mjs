@@ -370,7 +370,8 @@ test("beta104: the new keys carry their documented defaults", { skip }, () => {
     repos: { allowed: ["example-org/*"], default_base_branch: "main" },
   });
   assert.equal(cfg.loop.lead_repo_scout_enabled, true);
-  assert.equal(cfg.loop.lead_scout_timeout_seconds, 600);
+  // b106 lowered this 600 -> 420 and made the loop ADD it to the lead budget.
+  assert.equal(cfg.loop.lead_scout_timeout_seconds, 420);
   assert.equal(cfg.loop.lead_scout_max_chars, 20000);
 });
 
@@ -387,7 +388,7 @@ test("beta104: an operator can turn the scout off", { skip }, () => {
 test("beta104: the new keys are declared in the plugin manifest", () => {
   const loop = JSON.parse(S("openclaw.plugin.json")).configSchema.properties.loop.properties;
   assert.equal(loop.lead_repo_scout_enabled.default, true);
-  assert.equal(loop.lead_scout_timeout_seconds.default, 600);
+  assert.equal(loop.lead_scout_timeout_seconds.default, 420);
   assert.equal(loop.lead_scout_max_chars.default, 20000);
 });
 

@@ -315,18 +315,31 @@ export function runningSessionIds() {
  */
 export class WorkerTimeoutError extends Error {
     seconds;
-    constructor(seconds) {
-        super(`worker exceeded worker_timeout_seconds (${seconds}s) with no result`);
+    limit;
+    /**
+     * beta.106: `limit` names the knob that actually fired.
+     *
+     * This helper bounds the worker, the lead and the adversary, but the message
+     * hardcoded "worker_timeout_seconds" for all three. On the b105 smoke a LEAD
+     * timeout at 900s was reported as "worker exceeded worker_timeout_seconds
+     * (900s)" while `worker_timeout_seconds` was set to 1800 -- a number that
+     * appeared nowhere in the config, sending the diagnosis to the wrong phase.
+     * Defaults to the old text so existing callers and their assertions are
+     * unchanged.
+     */
+    constructor(seconds, limit = "worker_timeout_seconds") {
+        super(`worker exceeded ${limit} (${seconds}s) with no result`);
         this.seconds = seconds;
+        this.limit = limit;
         this.name = "WorkerTimeoutError";
     }
 }
-export async function withTimeout(p, seconds) {
+export async function withTimeout(p, seconds, limit) {
     if (!(seconds > 0))
         return p; // 0/undefined disables the bound (defensive)
     let timer;
     const timeout = new Promise((_resolve, reject) => {
-        timer = setTimeout(() => reject(new WorkerTimeoutError(seconds)), seconds * 1000);
+        timer = setTimeout(() => reject(new WorkerTimeoutError(seconds, limit)), seconds * 1000);
     });
     try {
         return await Promise.race([p, timeout]);
@@ -815,6 +828,22 @@ export class OrchestratorLoop {
             // planner froze the run with no timeout -- and a healthy long plan was
             // indistinguishable from a wedge, which is exactly what caused the
             // beta.42 smoke misdiagnosis.
+            // beta.106: the lead budget must COVER the scout, not be consumed by it.
+            //
+            // b104 added the scout turn inside runLeadPlanner without touching this
+            // bound, so one budget had to fit two turns. With the shipped defaults
+            // (lead 900s, scout 600s) that leaves 300s for planning, and planning
+            // alone measured 441s and 182s on b103 -- the arithmetic never closed. The
+            // b105 smoke (session b08502aa) died at exactly 900s after the scout
+            // start, with the lead mid-plan, and the failure was reported against the
+            // WORKER timeout because the error text was generic (see WorkerTimeoutError).
+            //
+            // Adding the scout's own ceiling keeps `lead_timeout_seconds` meaning what
+            // its name and docs say -- the time the PLANNER gets -- however the scout
+            // knob is set.
+            const scoutBudget = this.deps.config.loop.lead_repo_scout_enabled !== false
+                ? Math.max(0, this.deps.config.loop.lead_scout_timeout_seconds ?? 420)
+                : 0;
             plan = await withTimeout(this.deps.runLead(brief, {
                 requester: row.requester,
                 sessionId,
@@ -827,7 +856,7 @@ export class OrchestratorLoop {
                     }
                     catch { /* an audit write must never fail an allocation */ }
                 },
-            }), this.deps.config.loop.lead_timeout_seconds);
+            }), this.deps.config.loop.lead_timeout_seconds + scoutBudget, "lead_timeout_seconds");
             this.deps.interactionLog?.logSdkResponse(sessionId, {
                 role: "lead", model: this.deps.config.models.lead, phase: "plan",
                 finishReason: "end_turn", durationMs: Date.now() - leadStart,
@@ -872,6 +901,10 @@ export class OrchestratorLoop {
                     costUsd: plan.scout.costUsd,
                     skippedReason: plan.scout.skippedReason,
                     error: plan.scout.error,
+                    // beta.106: a partial report is usable but means the budget is
+                    // mis-set for this repo, and that must be visible in the trail.
+                    timedOut: plan.scout.timedOut === true,
+                    scoutBudgetSeconds: scoutBudget,
                 }, sessionId);
             }
             // beta.67 (Bug B): capture the branch FORK-POINT sha ONCE now that the
@@ -2222,7 +2255,7 @@ export class OrchestratorLoop {
                     // auto-recovery, because nothing re-called run() to arm the
                     // stall-watchdog). Bounding runOne converts any such hang into a
                     // clean SubTaskDeadlineError -> failed.err -> terminal.
-                    const p = withTimeout(runOne(st), this.deps.config.loop.subtask_deadline_seconds)
+                    const p = withTimeout(runOne(st), this.deps.config.loop.subtask_deadline_seconds, "subtask_deadline_seconds")
                         .catch((err) => {
                         if (err instanceof WorkerTimeoutError) {
                             this.deps.state.audit("loop.subtask_deadline_exceeded", { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds }, sessionId);
@@ -2440,7 +2473,7 @@ export class OrchestratorLoop {
                 catch (err) {
                     this.deps.logger.warn("[loop] adversary_diff_base sanity log failed (non-fatal)", { sessionId, err: String(err) });
                 }
-                report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings }), this.deps.config.loop.adversary_timeout_seconds);
+                report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds");
                 this.deps.interactionLog?.logSdkResponse(sessionId, {
                     role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
                     finishReason: report.verdict, costUsd: report.costUsd, durationMs: Date.now() - reviewStart,

@@ -431,8 +431,15 @@
             "type": "integer",
             "minimum": 60,
             "maximum": 3600,
-            "default": 600,
-            "description": "beta.104: wall-clock ceiling on the lead's repo scout turn. The scout does real filesystem work (glob, grep, read) across a possibly large repo, so this is sized like a worker turn rather than a structured call. Exceeding it aborts the scout only -- the run continues and plans blind."
+            "default": 420,
+            "description": "beta.106: wall-clock ceiling on the lead's repo scout turn, now ADDED to lead_timeout_seconds by the loop instead of being carved out of it. b104 nested the scout inside the lead budget without raising it: with the shipped defaults (lead 900s, scout 600s) that left 300s for planning, and planning alone measured 441s and 182s on b103 -- arithmetic that never closed, and the b105 smoke duly died at exactly 900s after the scout started with the lead mid-plan. Note this is the SOFT bound: aborting the wall clock signals the SDK but cannot interrupt a tool call already in flight, so the harness stops WAITING 30s past this ceiling and plans with the partial report, letting the SDK unwind in the background. lead_scout_max_turns is the hard bound. Exceeding either costs the scout only -- the run continues, with a partial report or blind."
+          },
+          "lead_scout_max_turns": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 400,
+            "default": 60,
+            "description": "beta.106: hard ceiling on scout agent turns. The b105 smoke (session b08502aa) scouted for FOURTEEN MINUTES against a 600s budget: aborting the wall clock signals the SDK but cannot interrupt a tool call already in flight, so the abort fired at 600s and the scout still ran to roughly 850s. The SDK turn cap is the only bound that reliably holds. 60 turns is enough to find one analogue, read it, verify the paths the plan will name and note the traps, and deliberately not enough to survey a codebase; the scout prompt states the same budget in words so the model spends it deliberately rather than being truncated mid-exploration."
           },
           "lead_scout_max_chars": {
             "type": "integer",

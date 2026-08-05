@@ -122,9 +122,21 @@ export declare function runningSessionIds(): string[];
  */
 export declare class WorkerTimeoutError extends Error {
     readonly seconds: number;
-    constructor(seconds: number);
+    readonly limit: string;
+    /**
+     * beta.106: `limit` names the knob that actually fired.
+     *
+     * This helper bounds the worker, the lead and the adversary, but the message
+     * hardcoded "worker_timeout_seconds" for all three. On the b105 smoke a LEAD
+     * timeout at 900s was reported as "worker exceeded worker_timeout_seconds
+     * (900s)" while `worker_timeout_seconds` was set to 1800 -- a number that
+     * appeared nowhere in the config, sending the diagnosis to the wrong phase.
+     * Defaults to the old text so existing callers and their assertions are
+     * unchanged.
+     */
+    constructor(seconds: number, limit?: string);
 }
-export declare function withTimeout<T>(p: Promise<T>, seconds: number): Promise<T>;
+export declare function withTimeout<T>(p: Promise<T>, seconds: number, limit?: string): Promise<T>;
 export interface OrchestratorDeps {
     config: HarnessConfig;
     state: StateStore;
