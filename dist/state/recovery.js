@@ -86,6 +86,16 @@ export async function recoverSessions(state, opts) {
             }
         }
         else if (opts.agentOrchestrated) {
+            // beta.107: a live in-process loop already owns this session, so there is
+            // nothing to recover. Skip BEFORE the breaker counts the attempt -- see
+            // RecoveryOptions.isLiveRunner for why counting it is the actual bug.
+            if (opts.isLiveRunner?.(s.id)) {
+                state.audit("recovery.skipped_live_runner", { sessionId: s.id, wasStatus: s.status }, s.id);
+                opts.logger.info("[recovery] session has a live loop-runner; not a candidate for recovery", {
+                    sessionId: s.id, status: s.status,
+                });
+                continue;
+            }
             // No reaction poller / listener in this mode -> a 'resumable' session
             // would strand forever. Auto-resume by re-driving the loop.
             resumable++;

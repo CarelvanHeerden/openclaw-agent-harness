@@ -89,7 +89,45 @@ export interface ReviseMappingResult {
     metaBroadcast: MapFinding[];
     /** true when at least one diff-addressable finding mapped to a sub-task. */
     anyTargeted: boolean;
+    /** beta.107: orphan findings given an owner. Empty unless `adoptOrphans`. */
+    orphanAdoptions: OrphanAdoption[];
 }
+/** beta.107: one orphan finding, and the sub-task made responsible for it. */
+export interface OrphanAdoption {
+    finding: MapFinding;
+    /** the finding's file, which no sub-task's plan claimed. */
+    file: string;
+    /** the sub-task that adopted it. */
+    seq: number;
+    reason: "mentioned_in_finding" | "nearest_path";
+    score: number;
+}
+/**
+ * beta.107: GIVE AN ORPHAN FINDING AN OWNER.
+ *
+ * A diff-addressable finding whose file no sub-task claims is a mapping miss.
+ * b92 broadcasts it to every sub-task as CONTEXT, which never drops it but also
+ * never asks anyone to fix it -- and b91 revise-scoping then skips the very
+ * sub-tasks it was broadcast to, because their files intersect no finding. The
+ * finding is preserved and unactionable, so it is re-raised every cycle.
+ *
+ * b106 is the worked example. `.cursor/rules/help-section-updates.mdc` requires
+ * `src/lib/help/help-content.ts` to be updated alongside a new page. The rule was
+ * ingested, the adversary enforced it every cycle, no sub-task's plan mentioned
+ * the file, and the finding was still open when the run hit the cycle ceiling --
+ * `finding_mapping_miss` fired on the same file in both revise cycles. The run
+ * could not have closed it however many cycles it was given.
+ *
+ * Adoption picks the sub-task with the strongest claim -- one the finding's own
+ * prose names, else the one nearest in the directory tree -- and makes the
+ * finding TARGETED there, adding the orphan file to that sub-task's targeted
+ * set so the worker is instructed to change it and the contract permits it.
+ *
+ * Deliberately conservative: a finding with no file, and one sharing no
+ * directory with any sub-task and named by none, is left as a pure broadcast.
+ * An arbitrary owner is worse than an honest miss.
+ */
+export declare function adoptOrphanFindings(subTasks: MapSubTask[], misses: MapFinding[], ownedOf: (st: MapSubTask) => string[]): OrphanAdoption[];
 /**
  * Deterministically map the previous review's findings onto the plan sub-tasks.
  *
@@ -97,7 +135,9 @@ export interface ReviseMappingResult {
  * @param findings    the previous review's findings
  * @param match       injected strict structural matcher (resolveContractPath)
  */
-export declare function mapFindingsToSubTasks(subTasks: MapSubTask[], findings: MapFinding[] | undefined, match: StructuralMatch): ReviseMappingResult;
+export declare function mapFindingsToSubTasks(subTasks: MapSubTask[], findings: MapFinding[] | undefined, match: StructuralMatch, opts?: {
+    adoptOrphans?: boolean;
+}): ReviseMappingResult;
 /**
  * Build the per-sub-task revise dispatch hint from a deterministic assignment.
  * Replaces the reviseSpecApplied warm-context render + the raw-dump fallback:

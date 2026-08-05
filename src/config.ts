@@ -644,11 +644,24 @@ export interface LoopConfig {
    */
   lead_scout_max_turns?: number;
   /**
-   * beta.104: ceiling on the report folded into the planning prompt. Default
-   * 20000. b98 is the standing reminder that an oversized lead input costs a
-   * whole run when the reply breaches the output ceiling.
+   * beta.104: ceiling on the report folded into the planning prompt.
+   *
+   * beta.107: default raised 20000 -> 32000, and truncation is now middle-out.
+   * b106 reported `reportChars: 20049`, which is the exact length
+   * `boundScoutReport` produces when it cuts at 20000 -- the ceiling was binding
+   * on an ordinary feature brief and nothing said so. b98 remains the reason a
+   * ceiling exists: an oversized lead input costs a whole run when the reply
+   * breaches the output ceiling.
    */
   lead_scout_max_chars?: number;
+  /**
+   * beta.107: let a diff-addressable finding whose file NO sub-task claims be
+   * adopted by the nearest sub-task, so it is targeted rather than merely
+   * broadcast as context. See adoptOrphanFindings in revise-mapping.ts: on b106
+   * the `help-content.ts` convention finding was raised, mapped to nobody, and
+   * re-raised every cycle until the run hit its ceiling. Default on.
+   */
+  revise_adopt_orphan_findings?: boolean;
   /**
    * beta.105: also run the ledger reachability guard at RESUME, right after a
    * re-plan re-allocates the worktree, not only before adversary review.
@@ -1115,7 +1128,8 @@ const DEFAULTS: HarnessConfig = {
     lead_repo_scout_enabled: true,
     lead_scout_timeout_seconds: 420,
     lead_scout_max_turns: 60,
-    lead_scout_max_chars: 20000,
+    lead_scout_max_chars: 32000,
+    revise_adopt_orphan_findings: true,
     resume_ledger_guard_enabled: true,
     basename_rescue_enabled: true,
     file_written_accepts_rename: true,

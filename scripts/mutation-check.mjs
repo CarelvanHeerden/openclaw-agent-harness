@@ -216,6 +216,66 @@ const MUTATIONS = [
     replace: '"## Notes",',
     tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
   },
+  {
+    // b106 truncated a real report and the trail said nothing; head-only
+    // truncation is what removed the traps section.
+    name: "middle-out truncation (b107): the scout's traps section survives the ceiling",
+    file: "dist/orchestrator/lead-scout.js",
+    find: "const tail = Math.floor(maxChars * SCOUT_REPORT_TAIL_SHARE);",
+    replace: "const tail = 0;",
+    tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
+  {
+    name: "truncation is reported (b107): reportChars 20049 must not need decoding",
+    file: "dist/orchestrator/fable5-lead.js",
+    find: "truncated: bounds.truncated ? true : undefined,",
+    replace: "truncated: undefined,",
+    tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
+  {
+    // The b106 defect exactly: the live-runner question asked too late, after
+    // the breaker has already counted an attempt that never happened.
+    name: "recovery skips live runners (b107): a healthy run is not counted toward a hard stop",
+    file: "dist/state/recovery.js",
+    find: "if (opts.isLiveRunner?.(s.id)) {",
+    replace: "if (false) {",
+    tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
+  {
+    name: "orphan adoption (b107): a finding nobody owns still gets an owner",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "const orphanAdoptions = opts.adoptOrphans",
+    replace: "const orphanAdoptions = false",
+    tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
+  {
+    name: "adoption prefers the named sub-task (b107): not an arbitrary prefix tie",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "const score = (mentioned ? 1000 : 0) + depth;",
+    replace: "const score = depth;",
+    tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
+  {
+    name: "adoption stays conservative (b107): an unrelated finding gets no arbitrary owner",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "if (score <= 0)\n                continue;",
+    replace: "if (false)\n                continue;",
+    tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
+  {
+    name: "scratch-file sweep (b107): the file the sandbox will not let a worker rm",
+    file: "dist/adapters/git-worktree.js",
+    find: "await this.sweepCommitMsgScratch(worktreePath);",
+    replace: "void worktreePath;",
+    tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
+  {
+    name: "sweep reaches committed scratch files (b107): the PR diff, not just the worktree",
+    file: "dist/adapters/git-worktree.js",
+    find: 'const tracked = await this.run(["-C", worktreePath, "ls-files"]);',
+    replace: 'const tracked = "";',
+    tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
 ];
 
 function runTests(files) {

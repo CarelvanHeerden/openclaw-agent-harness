@@ -368,6 +368,28 @@ export declare class GitAdapter {
      * or a new one (-> create fresh). Best-effort: returns false on any error.
      */
     remoteBranchExistsByUrl(repoFullName: string, branch: string, ghToken: string): Promise<boolean>;
+    /**
+     * beta.107: DELETE commit-message scratch files before they can be staged.
+     *
+     * Workers write `.git-commit-msg.txt` into the worktree to pass a multi-line
+     * message to `git commit -F` when the sandbox blocks heredocs and command
+     * substitution -- and then cannot delete it, because the sandbox blocks `rm`
+     * on it too. b95 taught the VERIFIER to ignore these files, which stopped them
+     * spoofing a contract match, but they still get committed and still show up in
+     * the PR diff, where the adversary reads them as what they are: a stray
+     * scratch file at the repo root.
+     *
+     * On b106 that became finding #1, raised in the final review of a run that had
+     * otherwise converged, and unclosable: every revise cycle that tried to remove
+     * it hit the same sandbox denial. The harness has no such restriction, so it
+     * sweeps them here, at the one point every worker's work passes through.
+     *
+     * Only ever removes paths `isCommitMsgNoise` already classifies as scratch --
+     * the same predicate b95 uses to keep them out of the verifier -- so a repo
+     * that legitimately tracks such a file could only be affected if it also
+     * matches that pattern, and b95 would already be hiding it from verification.
+     */
+    private sweepCommitMsgScratch;
     commit(worktreePath: string, message: string, identity: {
         name: string;
         email: string;

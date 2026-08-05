@@ -49,6 +49,29 @@ export interface RecoveryOptions {
    */
   maxResumes?: number;
   resumeWindowSeconds?: number;
+  /**
+   * beta.107: is a loop for this session ALREADY running in this process?
+   *
+   * `findInterruptedSessions` selects every session in a non-terminal status
+   * with no liveness filter, so a healthy, actively-running session is picked up
+   * by any recovery sweep that happens while it runs -- and plugin re-register
+   * churn makes those sweeps common. b47 already skipped the re-drive for a live
+   * session, but it did so INSIDE `autoResume`, which runs after the breaker has
+   * already counted the attempt. So the b81 breaker counts resumes that were
+   * never performed, and four bursts of re-register churn inside a minute mark a
+   * perfectly healthy session `failed` with `recovery_bounce_loop`.
+   *
+   * The b106 smoke (session 06b91509) fired two of those against a live planning
+   * turn, at +83s and +126s -- half the budget for a hard-stop, spent on a run
+   * that was working correctly. The scout roughly doubled how long the planning
+   * phase stays in one status, which is what widened the window enough to notice.
+   *
+   * Checked BEFORE the breaker, so a live session is skipped entirely: no
+   * `recovery.auto_resuming`, no ledger entry, no progress toward a hard stop.
+   * The three other consumers of the guard (harness_resume force, and both
+   * sweepStalls paths) already ask this question first; recovery was the outlier.
+   */
+  isLiveRunner?: (sessionId: string) => boolean;
 }
 
 /**
@@ -138,6 +161,16 @@ export async function recoverSessions(state: StateStore, opts: RecoveryOptions):
         opts.logger.warn("[recovery] notify failed", { err: String(err), sessionId: s.id });
       }
     } else if (opts.agentOrchestrated) {
+      // beta.107: a live in-process loop already owns this session, so there is
+      // nothing to recover. Skip BEFORE the breaker counts the attempt -- see
+      // RecoveryOptions.isLiveRunner for why counting it is the actual bug.
+      if (opts.isLiveRunner?.(s.id)) {
+        state.audit("recovery.skipped_live_runner", { sessionId: s.id, wasStatus: s.status }, s.id);
+        opts.logger.info("[recovery] session has a live loop-runner; not a candidate for recovery", {
+          sessionId: s.id, status: s.status,
+        });
+        continue;
+      }
       // No reaction poller / listener in this mode -> a 'resumable' session
       // would strand forever. Auto-resume by re-driving the loop.
       resumable++;

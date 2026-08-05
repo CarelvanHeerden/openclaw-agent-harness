@@ -445,8 +445,8 @@
             "type": "integer",
             "minimum": 2000,
             "maximum": 120000,
-            "default": 20000,
-            "description": "beta.104: ceiling on the scout report folded into the lead planning prompt and persisted on the brief. Truncation keeps the HEAD of the report, because the scout is instructed to establish locations and conventions first and list traps last. b98 is the standing reminder for why this is bounded at all: an oversized lead input cost a whole run when the reply breached the output ceiling."
+            "default": 32000,
+            "description": "beta.107: ceiling on the scout report folded into the lead planning prompt. Raised 20000 -> 32000: b106 reported reportChars 20049, the exact length produced by truncating at 20000, so the ceiling was binding on an ordinary brief with nothing in the trail saying so. Truncation is now MIDDLE-OUT, keeping both ends -- the head carries locations and conventions, the tail carries the traps, and head-only truncation was dropping precisely the repo rules the plan needed. b98 is why a ceiling exists at all: an oversized lead input cost a whole run when the reply breached the output ceiling."
           },
           "resume_ledger_guard_enabled": {
             "type": "boolean",
@@ -552,6 +552,11 @@
             "maximum": 3600,
             "default": 900,
             "description": "beta.94 (Feature 2): minimum cumulative elapsed (seconds) inside the worker stream before loop.worker_idle_no_work may fire. Default 900 (15 min); clamped [60,3600]."
+          },
+          "revise_adopt_orphan_findings": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.107: when an adversary finding names a file that no sub-task's plan claims, let the nearest sub-task adopt it so a worker is actually asked to fix it. b92 broadcasts such a finding to every sub-task as context, which never drops it but never targets it either, and b91 scoping then skips those sub-tasks because their files intersect no finding. On b106 the help-content.ts convention finding was raised in both revise cycles, owned by nobody, and could not have been closed however many cycles the run was given. Adoption prefers a sub-task the finding's own prose names, else the nearest in the directory tree, and leaves a finding that matches neither as a pure broadcast."
           }
         }
       },

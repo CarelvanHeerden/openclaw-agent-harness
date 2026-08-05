@@ -206,8 +206,13 @@
           "type": "integer",
           "minimum": 2000,
           "maximum": 120000,
-          "default": 20000,
-          "description": "beta.104: ceiling on the scout report folded into the planning prompt. Truncation keeps the head, where the paths and conventions are."
+          "default": 32000,
+          "description": "beta.107: ceiling on the scout report folded into the planning prompt. Raised 20000 -> 32000 after b106 reported reportChars 20049, the exact length produced by truncating at 20000. Truncation is now middle-out, keeping the head (locations and conventions) and the tail (traps)."
+        },
+        "revise_adopt_orphan_findings": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.107: when an adversary finding names a file no sub-task claims, let the nearest sub-task adopt it so a worker is actually asked to fix it. On b106 the help-content.ts convention finding was raised in both revise cycles, owned by nobody, and could not have been closed however many cycles the run was given."
         },
         "resume_ledger_guard_enabled": {
           "type": "boolean",

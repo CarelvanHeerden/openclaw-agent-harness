@@ -111,6 +111,100 @@ export interface ReviseMappingResult {
   metaBroadcast: MapFinding[];
   /** true when at least one diff-addressable finding mapped to a sub-task. */
   anyTargeted: boolean;
+  /** beta.107: orphan findings given an owner. Empty unless `adoptOrphans`. */
+  orphanAdoptions: OrphanAdoption[];
+}
+
+/** beta.107: one orphan finding, and the sub-task made responsible for it. */
+export interface OrphanAdoption {
+  finding: MapFinding;
+  /** the finding's file, which no sub-task's plan claimed. */
+  file: string;
+  /** the sub-task that adopted it. */
+  seq: number;
+  reason: "mentioned_in_finding" | "nearest_path";
+  score: number;
+}
+
+/** Leading path segments `a` and `b` share. `src/lib/x` vs `src/lib/y` -> 2. */
+function sharedPrefixDepth(a: string, b: string): number {
+  const x = a.split("/").filter(Boolean);
+  const y = b.split("/").filter(Boolean);
+  let n = 0;
+  while (n < x.length - 1 && n < y.length - 1 && x[n] === y[n]) n += 1;
+  return n;
+}
+
+/**
+ * Does the finding's prose actually name this owned path? Matches the full path
+ * or its last two segments, which is specific enough that `page.tsx` alone will
+ * not match every page in the repo.
+ */
+function findingMentions(text: string, owned: string): boolean {
+  if (!text) return false;
+  const segs = owned.split("/").filter(Boolean);
+  const tail = segs.slice(-2).join("/");
+  for (const frag of [owned, tail]) {
+    if (frag.length >= 8 && text.includes(frag)) return true;
+  }
+  return false;
+}
+
+/**
+ * beta.107: GIVE AN ORPHAN FINDING AN OWNER.
+ *
+ * A diff-addressable finding whose file no sub-task claims is a mapping miss.
+ * b92 broadcasts it to every sub-task as CONTEXT, which never drops it but also
+ * never asks anyone to fix it -- and b91 revise-scoping then skips the very
+ * sub-tasks it was broadcast to, because their files intersect no finding. The
+ * finding is preserved and unactionable, so it is re-raised every cycle.
+ *
+ * b106 is the worked example. `.cursor/rules/help-section-updates.mdc` requires
+ * `src/lib/help/help-content.ts` to be updated alongside a new page. The rule was
+ * ingested, the adversary enforced it every cycle, no sub-task's plan mentioned
+ * the file, and the finding was still open when the run hit the cycle ceiling --
+ * `finding_mapping_miss` fired on the same file in both revise cycles. The run
+ * could not have closed it however many cycles it was given.
+ *
+ * Adoption picks the sub-task with the strongest claim -- one the finding's own
+ * prose names, else the one nearest in the directory tree -- and makes the
+ * finding TARGETED there, adding the orphan file to that sub-task's targeted
+ * set so the worker is instructed to change it and the contract permits it.
+ *
+ * Deliberately conservative: a finding with no file, and one sharing no
+ * directory with any sub-task and named by none, is left as a pure broadcast.
+ * An arbitrary owner is worse than an honest miss.
+ */
+export function adoptOrphanFindings(
+  subTasks: MapSubTask[],
+  misses: MapFinding[],
+  ownedOf: (st: MapSubTask) => string[],
+): OrphanAdoption[] {
+  const adoptions: OrphanAdoption[] = [];
+  for (const f of misses) {
+    const file = fileOf(f);
+    if (!file || !isDiffAddressable(f)) continue;
+    const text = `${f.title ?? ""}\n${f.detail ?? ""}`;
+    let best: OrphanAdoption | undefined;
+    for (const st of subTasks) {
+      const owned = ownedOf(st);
+      if (owned.length === 0) continue;
+      // A path the finding itself names beats mere directory adjacency: the
+      // b106 finding's title is "New page ... without the mandatory
+      // help-content.ts update", which names the page, not the schema.
+      const mentioned = owned.some((p) => findingMentions(text, p));
+      const depth = Math.max(0, ...owned.map((p) => sharedPrefixDepth(p, file)));
+      const score = (mentioned ? 1000 : 0) + depth;
+      if (score <= 0) continue;
+      // Strictly-greater keeps ties on the lowest seq, so adoption is stable
+      // across cycles and a re-run maps the same finding to the same worker.
+      if (!best || score > best.score) {
+        best = { finding: f, file, seq: st.seq, reason: mentioned ? "mentioned_in_finding" : "nearest_path", score };
+      }
+    }
+    if (best) adoptions.push(best);
+  }
+  return adoptions;
 }
 
 /**
@@ -124,6 +218,9 @@ export function mapFindingsToSubTasks(
   subTasks: MapSubTask[],
   findings: MapFinding[] | undefined,
   match: StructuralMatch,
+  // beta.107: opt-in so every pre-b107 caller and test keeps byte-identical
+  // behaviour; the loop turns it on from `revise_adopt_orphan_findings`.
+  opts: { adoptOrphans?: boolean } = {},
 ): ReviseMappingResult {
   const list = findings ?? [];
   const assignments: SubTaskAssignment[] = subTasks.map((s) => ({
@@ -179,11 +276,29 @@ export function mapFindingsToSubTasks(
     misses.push(f);
   }
 
+  // beta.107: an orphan finding stays broadcast to everyone (never dropped) AND
+  // becomes TARGETED on its adopting sub-task, so someone is actually asked to
+  // fix it and b91 scoping cannot skip the one worker who could.
+  const orphanAdoptions = opts.adoptOrphans
+    ? adoptOrphanFindings(subTasks, misses, (st) =>
+        [...((st.filesLikelyTouched ?? []) as string[]), ...((st.contextPaths ?? []) as string[])]
+          .map((p) => (typeof p === "string" ? p.trim() : ""))
+          .filter(Boolean),
+      )
+    : [];
+  for (const ad of orphanAdoptions) {
+    const a = bySeq.get(ad.seq);
+    if (!a) continue;
+    anyTargeted = true;
+    if (!a.targeted.includes(ad.finding)) a.targeted.push(ad.finding);
+    if (!a.targetedFiles.includes(ad.file)) a.targetedFiles.push(ad.file);
+  }
+
   // Broadcast meta + misses to every sub-task.
   const broadcastAll = [...meta, ...misses];
   for (const a of assignments) a.broadcast = broadcastAll;
 
-  return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted };
+  return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted, orphanAdoptions };
 }
 
 /**

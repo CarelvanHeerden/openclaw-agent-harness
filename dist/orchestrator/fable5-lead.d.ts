@@ -255,6 +255,15 @@ export interface LeadScoutOutcome {
      * needs to be visible rather than inferred from a suspiciously short report.
      */
     timedOut?: boolean;
+    /**
+     * beta.107: whether the report was cut to fit `lead_scout_max_chars`, and by
+     * how much. b106 recorded `reportChars: 20049` -- a number produced only by
+     * truncation at the then-ceiling of 20000, which nobody reading the trail was
+     * expected to reverse-engineer. Now the trail says it.
+     */
+    truncated?: boolean;
+    /** Report length before bounding. Equals `reportChars` when nothing was cut. */
+    reportCharsRaw?: number;
 }
 export interface LeadDeps {
     config: HarnessConfig;
