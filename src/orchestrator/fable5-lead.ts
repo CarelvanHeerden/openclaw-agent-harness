@@ -13,6 +13,7 @@
 import type { HarnessConfig } from "../config.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 import { boundScoutReport, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
+import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 
 /**
  * Observable side-effect a sub-task is expected to produce. The harness
@@ -239,7 +240,12 @@ export interface LeadDeps {
     repos: string[],
     correctiveNote?: string,
   ) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
-  allocateWorktree: (repo: string, branch: string) => Promise<string>;
+  allocateWorktree: (
+    repo: string,
+    branch: string,
+    /** beta.105: forwarded to GitContext.onBranchDecision so the loop can audit it. */
+    onBranchDecision?: (d: BranchAllocationDecision) => void,
+  ) => Promise<string>;
   /**
    * beta.104: THE SCOUT TURN. Gives the lead a read-only look at the repository
    * before it plans, and returns the prose report.
@@ -261,6 +267,8 @@ export interface LeadDeps {
     brief: CrystallisedBrief;
     repoFullName: string;
   }) => Promise<{ report: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | undefined>;
+  /** beta.105: see GitContext.onBranchDecision. Threaded through to allocation. */
+  onBranchDecision?: (d: BranchAllocationDecision) => void;
   estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
   /**
    * beta.73 (D2): best-effort check whether `branch` already exists on origin
@@ -658,7 +666,7 @@ export async function runLeadPlanner(
       deps.logger.warn?.("[lead] workerContext insufficient (enforcement disabled; not retrying)", { missingSeqs: missing, reviseOf: brief.reviseOfSessionId });
     }
   }
-  const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch);
+  const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch, deps.onBranchDecision);
   const approxCostUsd = deps.estimateCost(raw);
   const plan: LeadPlan = { ...raw, worktreePath, approxCostUsd, scout: scoutOutcome };
   deps.logger.info("[lead] plan", {

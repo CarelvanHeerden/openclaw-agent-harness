@@ -384,7 +384,7 @@ test("beta101: the preserve path checks out the branch with no start-point", () 
   // `worktree add <wt> <branch>` cannot move a ref; `-B <branch> ... <start>` can.
   assert.match(gitSrc, /"worktree", "add", wt, ctx\.sessionBranch/);
   const i = gitSrc.indexOf('"worktree", "add", wt, ctx.sessionBranch');
-  const seg = gitSrc.slice(Math.max(0, i - 600), i);
+  const seg = gitSrc.slice(Math.max(0, i - 2500), i);
   assert.match(seg, /preserveLocalBranch/, "gated on the flag");
   assert.match(seg, /localBranchExists/, "and on the branch actually existing");
 });
@@ -399,19 +399,21 @@ test("beta101: EVERY destructive -B reset is preceded by a rescue attempt", () =
 });
 
 test("beta101: the ledger guard runs BEFORE the adversary SDK call is paid for", () => {
-  const guard = loopSrc.indexOf("loop.ledger_reachability_checked");
+  // b105 extracted the guard into a shared method (defined below the loop
+  // body), so assert on the review CALL SITE, which is what orders it.
+  const guard = loopSrc.indexOf('checkLedgerReachability(sessionId, plan.worktreePath, cycle, "review")');
   const call = loopSrc.indexOf("this.deps.runAdversary(");
   assert.ok(guard > 0 && call > guard, "guard must precede the review call");
 });
 
 test("beta101: unreachable ledger commits fail the run rather than reviewing or shipping", () => {
   assert.match(loopSrc, /loop\.ledger_commits_unreachable/);
-  assert.match(loopSrc, /finaliseFailed\(sessionId, `ledger_commits_unreachable: \$\{detail\}`/);
+  assert.match(loopSrc, /finaliseFailed\(sessionId, `ledger_commits_unreachable: \$\{check\.detail\}`/);
 });
 
 test("beta101: the ledger guard fails OPEN on a probe error", () => {
   const i = loopSrc.indexOf("loop.ledger_reachability_checked");
-  const seg = loopSrc.slice(i, i + 3000);
+  const seg = loopSrc.slice(Math.max(0, i - 3000), i + 3000);
   assert.match(seg, /ledger reachability guard failed \(non-fatal/);
 });
 

@@ -627,6 +627,46 @@ export interface LoopConfig {
      */
     lead_scout_max_chars?: number;
     /**
+     * beta.105: also run the ledger reachability guard at RESUME, right after a
+     * re-plan re-allocates the worktree, not only before adversary review.
+     *
+     * b101 built the guard and ran it in one place. The b103 smoke (session
+     * b8ece861) then lost eight of ten recorded commits when a clarification
+     * resume re-allocated the worktree onto a different tip, stalled at a second
+     * clarification, and was aborted -- so the guard never ran at all and the
+     * loss surfaced four hours later in a hand-written post-mortem. Re-allocation
+     * is the operation that loses commits, so it is where the check belongs.
+     *
+     * A fresh run has an empty ledger and short-circuits, so this costs one no-op
+     * call on the common path. Default true.
+     */
+    resume_ledger_guard_enabled?: boolean;
+    /**
+     * beta.105: when contract verification fails on a single file whose basename
+     * matches the committed file's, the plan's directory does not exist in the
+     * repo and the committed file's does, synthesise the remap and rederive
+     * instead of pausing for a human.
+     *
+     * b103's rederive is a CONSUMER of remaps learned from earlier sub-tasks. On
+     * the b103 smoke seq 9 was the first sub-task to touch `src/components/`, so
+     * there was no remap to lean on and a mechanically-obvious correction
+     * (`components/layout/sidebar.tsx` -> `components/ui/sidebar.tsx`) escalated
+     * to clarification and cost an hour of dead time. Default true.
+     */
+    basename_rescue_enabled?: boolean;
+    /**
+     * beta.105: accept a `file_written` contract when the path was ADDED or
+     * RENAMED-TO inside the sub-task's own commit range, even though the blob's
+     * mtime predates the sub-task.
+     *
+     * `git mv` preserves mtime, so a worker that correctly moves a file to the
+     * path the contract asks for produces `file_committed` PASS and
+     * `file_written` FAIL on the same file in the same commit (b103 smoke seq 3).
+     * Two checks disagreeing about one file is incoherent verifier state, not a
+     * safety property. Default true.
+     */
+    file_written_accepts_rename?: boolean;
+    /**
      * beta.64 (P0-1): FIRST-TOKEN WATCHDOG window (seconds). A SEPARATE timer from
      * worker_timeout_seconds, this is the PHASE-2 watchdog: armed inside
      * consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on

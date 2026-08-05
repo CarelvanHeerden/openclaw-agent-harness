@@ -181,6 +181,32 @@ export interface GitContext {
    * adapter-wide default, so the real run worktree still bootstraps.
    */
   bootstrapDeps?: boolean;
+  /**
+   * beta.105: report which checkout path allocation actually took.
+   *
+   * The b103 smoke (session b8ece861) lost eight commits on a clarification
+   * resume, and nothing in the durable trail could say whether allocation
+   * preserved the branch or reset it -- the answer had to be reconstructed from
+   * the commit graph hours later. `preserveLocalBranch` is a REQUEST that
+   * silently falls through when no local branch of that name exists, so the
+   * request being set proves nothing about what happened.
+   *
+   * Optional; the adapter always logs the same information regardless.
+   */
+  onBranchDecision?: (d: BranchAllocationDecision) => void;
+}
+
+/** beta.105: the checkout path allocation took, and the inputs that chose it. */
+export interface BranchAllocationDecision {
+  /** `preserve_local` never moves the ref; the other two reset it. */
+  path: "preserve_local" | "reuse_remote" | "reset_to_base";
+  branch: string;
+  /** The ref the branch was pointed at (empty for `preserve_local`). */
+  startPoint: string;
+  preserveRequested: boolean;
+  localBranchExists: boolean;
+  /** The local branch's tip BEFORE allocation, when it had one. */
+  tipBefore: string;
 }
 
 export class GitAdapter {
@@ -343,12 +369,40 @@ esac
       // its own tip. `worktree add <wt> <branch>` (no `-B`, no start-point)
       // cannot move the ref, so nothing can be orphaned. See GitContext
       // .preserveLocalBranch for the b100 session-3c6c1608 root cause.
-      if (ctx.preserveLocalBranch && (await this.localBranchExists(bare, ctx.sessionBranch))) {
+      // beta.105: which of the three checkout paths ran, and why. The b103
+      // smoke lost eight commits on a resume and the trail could not say which
+      // branch this decision took -- `preserveLocalBranch` was requested, the
+      // reset path is what actually ran, and the only way to tell afterwards
+      // was to reconstruct it from the commit graph by hand.
+      const preserveRequested = !!ctx.preserveLocalBranch;
+      const localExists = preserveRequested ? await this.localBranchExists(bare, ctx.sessionBranch) : false;
+      const tipBefore = localExists ? await this.branchTipSha(bare, ctx.sessionBranch) : "";
+      const decide = (path: "preserve_local" | "reuse_remote" | "reset_to_base", startPoint: string) => {
+        this.opts.logger.info("[git] branch allocation", {
+          branch: ctx.sessionBranch, worktree: wt, path, startPoint,
+          preserveRequested, localBranchExists: localExists, tipBefore,
+        });
+        ctx.onBranchDecision?.({
+          path, branch: ctx.sessionBranch, startPoint,
+          preserveRequested, localBranchExists: localExists, tipBefore,
+        });
+      };
+      // A requested preservation that falls through to a RESET is the b100/b103
+      // commit-loss shape. It is not necessarily wrong -- a first run has no
+      // local branch yet -- but on a resume it means the ref is about to move
+      // off work this session already committed, so say so at WARN.
+      if (preserveRequested && !localExists) {
+        this.opts.logger.warn("[git] preserveLocalBranch requested but no LOCAL branch of that name exists; falling through to a resetting checkout", {
+          branch: ctx.sessionBranch, worktree: wt, reuseExistingBranch: !!ctx.reuseExistingBranch,
+        });
+      }
+      if (preserveRequested && localExists) {
         await this.run(["-C", bare, "worktree", "add", wt, ctx.sessionBranch], undefined, ask.path, ctx.ghToken);
         this.opts.logger.info("[git] preserving local branch at its own tip (no reset)", {
           branch: ctx.sessionBranch,
           worktree: wt,
         });
+        decide("preserve_local", ctx.sessionBranch);
       } else if (ctx.reuseExistingBranch) {
         // beta.44 revise: check out the EXISTING branch at the pushed PR head so
         // the prior session's commits are preserved (new work stacks on the PR
@@ -367,14 +421,17 @@ esac
         try {
           await this.rescueBranchIfAhead(bare, ctx.sessionBranch, remoteRef);
           await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, remoteRef], undefined, ask.path, ctx.ghToken);
+          decide("reuse_remote", remoteRef);
         } catch {
           await this.rescueBranchIfAhead(bare, ctx.sessionBranch, ctx.baseBranch);
           await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, ctx.baseBranch], undefined, ask.path, ctx.ghToken);
+          decide("reset_to_base", ctx.baseBranch);
         }
       } else {
         // beta.46: base checkout resolves from the remote-tracking ref too.
         await this.rescueBranchIfAhead(bare, ctx.sessionBranch, `origin/${ctx.baseBranch}`);
         await this.run(["-C", bare, "worktree", "add", "-B", ctx.sessionBranch, wt, `origin/${ctx.baseBranch}`], undefined, ask.path, ctx.ghToken);
+        decide("reset_to_base", `origin/${ctx.baseBranch}`);
       }
       await this.run(["-C", wt, "config", "user.name", ctx.commitIdentity.name]);
       await this.run(["-C", wt, "config", "user.email", ctx.commitIdentity.email]);
@@ -582,6 +639,15 @@ esac
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** beta.105: a local branch's tip, or "" when it has none. Diagnostics only. */
+  private async branchTipSha(bare: string, branch: string): Promise<string> {
+    try {
+      return (await this.run(["-C", bare, "rev-parse", `refs/heads/${branch}`])).trim();
+    } catch {
+      return "";
     }
   }
 
@@ -826,6 +892,50 @@ esac
     // these two temp files instead of `prisma/schema.prisma` and false-failed.
     // They are verifier NOISE, never a declared contract path.
     return Array.from(new Set(out.split("\n").map((l) => l.trim()).filter(Boolean).filter((f) => !isCommitMsgNoise(f))));
+  }
+
+  /**
+   * beta.105: was `path` ADDED (A) or RENAMED-TO (R) by a commit in
+   * `base..HEAD`?
+   *
+   * `file_written` uses mtime as its proxy for "this sub-task authored this
+   * path", and `git mv` preserves mtime. So a worker that correctly moves a
+   * file onto the contract's path fails `file_written` while `file_committed`
+   * passes on the same file in the same commit -- the split verdict that killed
+   * b103 smoke seq 3. This asks git the question mtime was standing in for.
+   *
+   * `--diff-filter=AR` with `--name-status` reports `A<TAB>path` for a fresh
+   * file and `R<score><TAB>old<TAB>new` for a rename, so the path is matched
+   * structurally against the LAST field of each record (the destination).
+   * Modifications (M) are deliberately excluded: touching a file that already
+   * existed at this path is not authoring it here.
+   */
+  async pathIntroducedSince(
+    worktreePath: string,
+    base: string,
+    path: string,
+  ): Promise<{ introduced: boolean; changeType: string; detail: string }> {
+    if (!base) return { introduced: false, changeType: "", detail: "no base sha" };
+    const out = await this.run([
+      "-C", worktreePath, "log", `${base}..HEAD`, "--diff-filter=AR", "--name-status", "--pretty=format:",
+    ]).catch(() => "");
+    const want = path.replace(/^\.?\//, "");
+    for (const line of out.split("\n")) {
+      const parts = line.trim().split("\t").filter(Boolean);
+      if (parts.length < 2) continue;
+      const status = parts[0] ?? "";
+      const dest = parts[parts.length - 1] ?? "";
+      if (!dest) continue;
+      if (dest === want || dest.endsWith(`/${want}`) || want.endsWith(`/${dest}`)) {
+        const kind = status.startsWith("R") ? "renamed" : "added";
+        return {
+          introduced: true,
+          changeType: kind,
+          detail: `${kind} at ${dest} in ${base.slice(0, 7)}..HEAD (${status})`,
+        };
+      }
+    }
+    return { introduced: false, changeType: "", detail: `not added or renamed-to in ${base.slice(0, 7)}..HEAD` };
   }
 
   /**

@@ -1,5 +1,96 @@
 # Changelog
 
+## [0.1.0-beta.105] -- 2026-08-04
+
+### The guard that was never asked
+
+The b103 smoke (session `b8ece861`, ProjectThanos) lost eight of the ten commits
+it recorded. A clarification resume re-allocated the worktree, the branch ref
+came back pointing somewhere else, and the two sub-tasks that ran afterwards
+stacked onto a tip that contained none of the run's own work. The commits still
+exist as objects. They are simply not ancestors of the branch any more.
+
+b101 built the check that catches this exactly. It reports unreachable ledger
+commits and refuses to review or ship a truncated branch, and on the b102 smoke
+it fired three times and passed three times. On b103 it ran **zero** times,
+because it was wired in one place -- immediately before the adversary SDK call
+-- and this run stalled at a second clarification and was aborted without ever
+reaching review. The loss surfaced four hours later, by hand, in a post-mortem.
+
+Re-allocation is the operation that loses commits, so that is where the check
+now also runs. `checkLedgerReachability` is extracted into a shared method with
+two call sites, resume and review, so the two cannot drift apart. A fresh run
+has an empty ledger and short-circuits, so the common path pays for one no-op
+call; a resume that has lost work stops before a single worker turn is bought.
+
+### What the trail could not tell us
+
+Reconstructing that failure meant reading the commit graph by hand, because
+nothing durable said which of the three checkout paths allocation had taken.
+`preserveLocalBranch` is a *request*: it silently falls through to a resetting
+checkout when no local branch of that name exists. The flag being set proved
+nothing about what happened.
+
+Allocation now reports its decision -- which path ran, the start point, whether
+preservation was requested, whether the local branch existed, and the tip it
+held beforehand -- and the loop records it as `loop.branch_allocation`. A
+requested preservation that falls through to a reset logs at WARN, because on a
+resume that is the commit-loss shape.
+
+### Two checks, one file, opposite verdicts
+
+Seq 3 `git mv`'d pre-existing test files onto the paths its contract asked for.
+`file_committed` passed. `file_written` failed. Same file, same commit.
+
+`file_written` uses mtime as a proxy for "this sub-task authored this path", and
+`git mv` preserves mtime. So the more correct the worker's move, the more
+certainly it failed. Two checks disagreeing about one file is incoherent
+verifier state, not a safety property.
+
+When mtime says no, the verifier now asks git the question mtime was standing in
+for: was this path added or renamed-to inside *this sub-task's* commit range? A
+merely pre-existing file still fails, an empty or missing file still fails, and
+the range is the sub-task's own -- this replaces the freshness half of the check
+and nothing else.
+
+### Rederive learns to go first
+
+b103's rederive worked flawlessly on this run: nine corrections, nine correct,
+all three writebacks landing in the plan. But it is a *consumer* of remaps that
+earlier sub-tasks taught it, and it has no producer.
+
+Seq 9 planned `src/components/layout/sidebar.tsx` and committed
+`src/components/ui/sidebar.tsx`. No prior sub-task had touched `src/components/`,
+so there was no lesson to apply, no rederive fired at all, and the run escalated
+to a human -- who took an hour to answer a question the harness had every input
+to settle itself: the basenames match, the planned directory is absent from the
+repo, the committed directory is present.
+
+The rescue now proposes that remap from the mismatch itself, before the
+clarification. It fires only on a *single*-file mismatch with a shared basename,
+a fictional planned directory and a real committed one, and even then only
+continues if re-verification against the corrected contract actually passes.
+Nothing is waved through; a rescue that does not verify falls into the same
+escalation as before. The correction is written back to the plan through b103's
+path, so a later revise cycle scopes against the real path too.
+
+### Config
+
+`loop.resume_ledger_guard_enabled`, `loop.basename_rescue_enabled` and
+`loop.file_written_accepts_rename`, all defaulting to on.
+
+### Tests
+
+`tests/beta105-resume-integrity-and-rescue.test.mjs` -- 32 tests. The rescue's
+five conditions each proved load-bearing by a counterexample; the `git mv`
+contradiction reproduced and then shown to resolve; `pathIntroducedSince` driven
+against real git for a rename, an addition and a modification; the allocation
+decision and the resume guard driven through a real loop over real repositories,
+asserting the guard stops the run before the first worker turn is paid for.
+Seven new mutations in `scripts/mutation-check.mjs`, all caught, including two
+that strip the rescue's guards and the rename fallback's scoping to prove they
+are not decoration.
+
 ## [0.1.0-beta.104] -- 2026-08-04
 
 ### The lead gets to see the repository

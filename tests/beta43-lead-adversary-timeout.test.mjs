@@ -19,7 +19,7 @@ const manifestSrc = readFileSync(join(here, "..", "openclaw.plugin.json"), "utf8
 test("beta43: runLead is wrapped in withTimeout(lead_timeout_seconds)", () => {
   assert.match(
     loopSrc,
-    /withTimeout\(\s*this\.deps\.runLead\([^)]*\),\s*this\.deps\.config\.loop\.lead_timeout_seconds/s,
+    /withTimeout\(\s*this\.deps\.runLead\([\s\S]*?\),\s*this\.deps\.config\.loop\.lead_timeout_seconds/s,
     "runLead must be raced against lead_timeout_seconds",
   );
   assert.ok(loopSrc.includes('"loop.lead_timeout"'), "a lead timeout must emit loop.lead_timeout audit");

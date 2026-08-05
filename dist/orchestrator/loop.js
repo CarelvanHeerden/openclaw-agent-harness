@@ -89,6 +89,7 @@ import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedger
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-validate.js";
 import { applyPathCorrections, describePathCorrections } from "./plan-path-writeback.js";
+import { proposeBasenameRescue, repoDirsFromFiles, describeBasenameRescue } from "./basename-rescue.js";
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
@@ -814,7 +815,19 @@ export class OrchestratorLoop {
             // planner froze the run with no timeout -- and a healthy long plan was
             // indistinguishable from a wedge, which is exactly what caused the
             // beta.42 smoke misdiagnosis.
-            plan = await withTimeout(this.deps.runLead(brief, { requester: row.requester }), this.deps.config.loop.lead_timeout_seconds);
+            plan = await withTimeout(this.deps.runLead(brief, {
+                requester: row.requester,
+                sessionId,
+                // beta.105: make the checkout path durable. `preserveLocalBranch` is
+                // a REQUEST that falls through silently when no local branch of that
+                // name exists, so the flag being set proves nothing about what ran.
+                onBranchDecision: (d) => {
+                    try {
+                        this.deps.state.audit("loop.branch_allocation", { sessionId, ...d }, sessionId);
+                    }
+                    catch { /* an audit write must never fail an allocation */ }
+                },
+            }), this.deps.config.loop.lead_timeout_seconds);
             this.deps.interactionLog?.logSdkResponse(sessionId, {
                 role: "lead", model: this.deps.config.models.lead, phase: "plan",
                 finishReason: "end_turn", durationMs: Date.now() - leadStart,
@@ -889,6 +902,30 @@ export class OrchestratorLoop {
                 }
                 catch (err) {
                     this.deps.logger.warn("[loop] plan_base_sha capture failed (non-fatal)", { sessionId, err: String(err) });
+                }
+            }
+            // beta.105: LEDGER REACHABILITY AT RESUME. The worktree has just been
+            // (re-)allocated, which is the exact operation that loses commits.
+            //
+            // b103 smoke (session b8ece861): a clarification resume re-planned, the
+            // allocation took the reset path instead of preserving the local branch,
+            // and eight of this run's ten recorded commits stopped being ancestors of
+            // the tip. The b101 guard would have caught it instantly, but it only ran
+            // before adversary review -- and this run stalled at a second
+            // clarification and was aborted, so it never reached review. The loss was
+            // found four hours later by hand.
+            //
+            // A fresh run has an empty ledger and returns immediately, so this costs
+            // one no-op call on the common path and catches the b100 class at the
+            // moment it happens on the path that has now produced it twice.
+            if (this.deps.config.loop.resume_ledger_guard_enabled !== false &&
+                this.deps.config.loop.ledger_reachability_guard_enabled !== false) {
+                const check = await this.checkLedgerReachability(sessionId, plan.worktreePath, 1, "resume");
+                if (check.failed) {
+                    this.deps.logger.error("[loop] re-allocated worktree has lost commits this session already made; refusing to continue on a truncated branch", {
+                        sessionId, headSha: check.headSha, unreachable: check.unreachable,
+                    });
+                    return this.finaliseFailed(sessionId, `ledger_commits_unreachable_at_resume: ${check.detail}`, 1, 0);
                 }
             }
             // beta.63 (convention-awareness Fix 1): now that the repo is checked out
@@ -1634,6 +1671,7 @@ export class OrchestratorLoop {
                             // beta.95: revise-cycle TARGETED-file plan-base window.
                             cycle,
                             reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                            acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
                         }, probes);
                     }
                     catch (err) {
@@ -1736,6 +1774,7 @@ export class OrchestratorLoop {
                                         baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
                                         cycle,
                                         reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                                        acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
                                     }, retryProbes);
                                 }
                                 catch (err) {
@@ -2010,6 +2049,83 @@ export class OrchestratorLoop {
                         const contractPathMismatch = !!result.commitSha &&
                             failedResults.length > 0 &&
                             failedResults.every((x) => PATH_MISMATCH_KINDS.has(x.kind) && !!x.path);
+                        // ---- beta.105: BASENAME-ANCHORED RESCUE, before we bother a human ----
+                        // b103's rederive only corrects a path when an EARLIER sub-task
+                        // already taught the run the substitution. On the b103 smoke, seq 9
+                        // was the first sub-task to touch `src/components/`, so the lead's
+                        // fictional `components/layout/sidebar.tsx` met the worker's correct
+                        // `components/ui/sidebar.tsx` with no lesson to apply: no rederive
+                        // fired, and a mechanically-obvious correction escalated to a human
+                        // who took an hour to answer. Same basename, planned directory
+                        // absent from the repo, committed directory present -- the harness
+                        // had everything it needed to resolve this itself.
+                        //
+                        // So: propose the remap from the mismatch, re-verify against the
+                        // corrected contract, and only continue if verification ACTUALLY
+                        // passes. Nothing is waved through -- a rescue that does not verify
+                        // falls straight into the escalation below, unchanged. The strict
+                        // conditions live in basename-rescue.ts.
+                        if (!clarify.question &&
+                            contractPathMismatch &&
+                            this.deps.config.loop.basename_rescue_enabled !== false &&
+                            this.deps.listRepoFiles &&
+                            this.deps.buildVerifyProbes) {
+                            try {
+                                const expected = [...new Set(failedResults.map((x) => x.path).filter(Boolean))];
+                                const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && !!f.trim());
+                                const repoFiles = await this.deps.listRepoFiles(plan.worktreePath);
+                                const rescue = proposeBasenameRescue({ expected, actual, repoDirs: repoDirsFromFiles(repoFiles) });
+                                if (rescue) {
+                                    const rescued = contract.map((v) => "path" in v && v.path === rescue.from ? { ...v, path: rescue.to } : v);
+                                    const rescueProbes = this.deps.buildVerifyProbes({
+                                        plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
+                                    });
+                                    const reverified = await verifySubTaskOutput(rescued, {
+                                        defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                                        baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                                        cycle,
+                                        reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                                        acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                                    }, rescueProbes);
+                                    this.deps.state.audit("loop.contract_path_basename_rescued", {
+                                        sessionId, seq: st.seq, cycle,
+                                        from: rescue.from, to: rescue.to, via: rescue.via, reason: rescue.reason,
+                                        verified: reverified.ok, summary: reverified.summary,
+                                    }, sessionId);
+                                    if (reverified.ok) {
+                                        // Fold the correction into the plan through the same b103
+                                        // writeback path a learned remap uses, so a later revise
+                                        // cycle scopes against the real path too.
+                                        if (this.deps.config.loop.plan_path_writeback_enabled !== false) {
+                                            const before = st.filesLikelyTouched ?? [];
+                                            const wb = applyPathCorrections(before, [{ from: rescue.from, to: rescue.to }]);
+                                            if (wb.applied.length > 0) {
+                                                st.filesLikelyTouched = wb.files;
+                                                this.deps.state.audit("loop.plan_path_written_back", { sessionId, seq: st.seq, cycle, applied: wb.applied, before, after: wb.files, source: "basename_rescue" }, sessionId);
+                                            }
+                                        }
+                                        this.deps.interactionLog?.log(sessionId, {
+                                            event: "contract_path_basename_rescued", phase: "worker", seq: st.seq, cycle,
+                                            from: rescue.from, to: rescue.to,
+                                        });
+                                        this.deps.logger.info(`[loop] ${describeBasenameRescue(rescue)}; re-verified clean, continuing without a clarification`, {
+                                            sessionId, seq: st.seq, cycle,
+                                        });
+                                        this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run("completed", JSON.stringify(result.filesChanged ?? []), result.commitSha ?? null, result.sdkSessionId ?? null, `basename-rescued contract path (${rescue.from} -> ${rescue.to}): ${reverified.summary}`, Date.now(), Date.now(), subTaskId);
+                                        this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                                        done.add(st.seq);
+                                        return;
+                                    }
+                                }
+                            }
+                            catch (err) {
+                                // A rescue that throws must leave the run exactly where it was:
+                                // escalating to a human, which is the pre-b105 behaviour.
+                                this.deps.logger.warn("[loop] basename rescue failed (non-fatal; escalating as before)", {
+                                    sessionId, seq: st.seq, cycle, err: String(err),
+                                });
+                            }
+                        }
                         if (!clarify.question &&
                             contractPathMismatch &&
                             this.deps.config.loop.contract_mismatch_escalation_enabled !== false &&
@@ -2259,72 +2375,17 @@ export class OrchestratorLoop {
             // findings about "missing" work that had actually been written. Every
             // input needed to catch this deterministically was already in the DB.
             let ledgerUnreachable = [];
-            if (this.deps.config.loop.ledger_reachability_guard_enabled !== false && this.deps.unreachableCommits) {
-                try {
-                    const rows = this.deps.state.db
-                        .prepare(`SELECT seq, commit_sha, description FROM sub_tasks WHERE session_id = ? AND commit_sha IS NOT NULL AND commit_sha != '' ORDER BY cycle, seq`)
-                        .all(sessionId);
-                    // beta.102: union with the append-only audit log. sub_tasks rows are
-                    // keyed by (cycle, seq) and REPLACED, so a clarification re-plan --
-                    // which restarts at cycle 1 -- erases the commit_sha of any row whose
-                    // seq the new plan reuses. Reading only that table would blind this
-                    // guard on precisely the runs it exists to protect. See
-                    // mergeLedgerCommits.
-                    const auditRows = this.deps.state.db
-                        .prepare(`SELECT payload FROM audit_log WHERE session_id = ? AND event = 'loop.worker_end_turn' ORDER BY created_at`)
-                        .all(sessionId);
-                    const fromAudit = [];
-                    for (const a of auditRows) {
-                        try {
-                            const p = JSON.parse(a.payload);
-                            const seq = Number(p?.seq ?? -1);
-                            // beta.103: prefer the full per-turn tip list; fall back to the
-                            // single `commitSha` for turns recorded before b103.
-                            const many = Array.isArray(p?.commitShas) ? p.commitShas : [];
-                            for (const s of many) {
-                                if (typeof s === "string" && s.trim())
-                                    fromAudit.push({ seq, commitSha: s.trim() });
-                            }
-                            if (many.length === 0 && p?.commitSha)
-                                fromAudit.push({ seq, commitSha: String(p.commitSha) });
-                        }
-                        catch { /* a malformed payload must not break the guard */ }
-                    }
-                    const ledger = mergeLedgerCommits(rows.map((r) => ({ seq: r.seq, commitSha: r.commit_sha, title: r.description ?? undefined })), fromAudit);
-                    if (ledger.length > 0) {
-                        const headSha = this.deps.worktreeHeadSha
-                            ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
-                            : "";
-                        const bad = await this.deps.unreachableCommits(plan.worktreePath, headSha || "HEAD", ledger.map((e) => e.commitSha));
-                        const integrity = buildLedgerIntegrityReport(ledger, bad);
-                        ledgerUnreachable = integrity.unreachable.map((e) => e.commitSha);
-                        this.deps.state.audit("loop.ledger_reachability_checked", { sessionId, cycle, headSha, checked: integrity.checked, unreachableCount: integrity.unreachable.length, ok: integrity.ok }, sessionId);
-                        if (!integrity.ok) {
-                            const detail = describeLedgerIntegrityFailure(integrity, headSha);
-                            this.deps.state.audit("loop.ledger_commits_unreachable", {
-                                sessionId, cycle, headSha,
-                                checked: integrity.checked,
-                                unreachable: integrity.unreachable.map((e) => ({ seq: e.seq, commitSha: e.commitSha })),
-                            }, sessionId);
-                            this.deps.interactionLog?.log(sessionId, {
-                                event: "ledger_commits_unreachable", phase: "review", cycle,
-                                unreachable: integrity.unreachable.map((e) => e.commitSha),
-                            });
-                            this.deps.logger.error("[loop] recorded sub-task commits are unreachable from HEAD; refusing to review or ship an incomplete branch", {
-                                sessionId, cycle, headSha, unreachable: integrity.unreachable,
-                            });
-                            // Fail rather than pause: a text answer cannot restore a branch,
-                            // and reviewing or shipping this diff would silently omit work
-                            // the run already did. The commits survive under the rescue refs.
-                            return this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${detail}`, cycle, totalCost);
-                        }
-                    }
-                }
-                catch (err) {
-                    // Fail OPEN: a probe failure must never block an otherwise sound run.
-                    this.deps.logger.warn("[loop] ledger reachability guard failed (non-fatal; continuing to review)", {
-                        sessionId, cycle, err: String(err),
+            if (this.deps.config.loop.ledger_reachability_guard_enabled !== false) {
+                const check = await this.checkLedgerReachability(sessionId, plan.worktreePath, cycle, "review");
+                ledgerUnreachable = check.unreachable;
+                if (check.failed) {
+                    this.deps.logger.error("[loop] recorded sub-task commits are unreachable from HEAD; refusing to review or ship an incomplete branch", {
+                        sessionId, cycle, headSha: check.headSha, unreachable: check.unreachable,
                     });
+                    // Fail rather than pause: a text answer cannot restore a branch, and
+                    // reviewing or shipping this diff would silently omit work the run
+                    // already did. The commits survive under the rescue refs.
+                    return this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${check.detail}`, cycle, totalCost);
                 }
             }
             let report;
@@ -3823,6 +3884,91 @@ export class OrchestratorLoop {
         return "failed_preserved";
     }
     /** beta.63: read the persisted lead plan JSON for a session (or null). */
+    /**
+     * beta.101 / beta.105: is every commit this session recorded still reachable
+     * from the worktree's HEAD?
+     *
+     * b101 built this and ran it in ONE place: immediately before the adversary
+     * SDK call. The b103 smoke (session b8ece861) showed why that is not enough.
+     * A clarification resume moved the branch ref off the run's own work -- eight
+     * of ten ledger commits stopped being ancestors of the tip -- and the run then
+     * stalled at a second clarification and was aborted. The guard never ran once,
+     * because the session never reached review. The loss was found four hours
+     * later, by hand, in a post-mortem.
+     *
+     * So this is now a shared probe with two call sites: at RESUME (right after a
+     * re-plan re-allocates the worktree, which is the operation that loses
+     * commits) and before REVIEW (unchanged). Extracted rather than duplicated so
+     * the two can never drift apart.
+     *
+     * Fails OPEN on a probe error: an unreachable-commit check that cannot run
+     * must not block an otherwise sound run.
+     */
+    async checkLedgerReachability(sessionId, worktreePath, cycle, phase) {
+        const none = { failed: false, unreachable: [], headSha: "", detail: "" };
+        if (!this.deps.unreachableCommits)
+            return none;
+        try {
+            const rows = this.deps.state.db
+                .prepare(`SELECT seq, commit_sha, description FROM sub_tasks WHERE session_id = ? AND commit_sha IS NOT NULL AND commit_sha != '' ORDER BY cycle, seq`)
+                .all(sessionId);
+            // beta.102: union with the append-only audit log. sub_tasks rows are
+            // keyed by (cycle, seq) and REPLACED, so a clarification re-plan -- which
+            // restarts at cycle 1 -- erases the commit_sha of any row whose seq the
+            // new plan reuses. Reading only that table would blind this guard on
+            // precisely the runs it exists to protect. See mergeLedgerCommits.
+            const auditRows = this.deps.state.db
+                .prepare(`SELECT payload FROM audit_log WHERE session_id = ? AND event = 'loop.worker_end_turn' ORDER BY created_at`)
+                .all(sessionId);
+            const fromAudit = [];
+            for (const a of auditRows) {
+                try {
+                    const p = JSON.parse(a.payload);
+                    const seq = Number(p?.seq ?? -1);
+                    // beta.103: prefer the full per-turn tip list; fall back to the single
+                    // `commitSha` for turns recorded before b103.
+                    const many = Array.isArray(p?.commitShas) ? p.commitShas : [];
+                    for (const s of many) {
+                        if (typeof s === "string" && s.trim())
+                            fromAudit.push({ seq, commitSha: s.trim() });
+                    }
+                    if (many.length === 0 && p?.commitSha)
+                        fromAudit.push({ seq, commitSha: String(p.commitSha) });
+                }
+                catch { /* a malformed payload must not break the guard */ }
+            }
+            const ledger = mergeLedgerCommits(rows.map((r) => ({ seq: r.seq, commitSha: r.commit_sha, title: r.description ?? undefined })), fromAudit);
+            // A fresh run has recorded nothing yet, so there is nothing to lose. This
+            // is what makes the resume call site safe to make unconditionally.
+            if (ledger.length === 0)
+                return none;
+            const headSha = this.deps.worktreeHeadSha
+                ? await this.deps.worktreeHeadSha(worktreePath).catch(() => "")
+                : "";
+            const bad = await this.deps.unreachableCommits(worktreePath, headSha || "HEAD", ledger.map((e) => e.commitSha));
+            const integrity = buildLedgerIntegrityReport(ledger, bad);
+            this.deps.state.audit("loop.ledger_reachability_checked", { sessionId, cycle, phase, headSha, checked: integrity.checked, unreachableCount: integrity.unreachable.length, ok: integrity.ok }, sessionId);
+            if (integrity.ok)
+                return { ...none, headSha };
+            const detail = describeLedgerIntegrityFailure(integrity, headSha);
+            this.deps.state.audit("loop.ledger_commits_unreachable", {
+                sessionId, cycle, phase, headSha,
+                checked: integrity.checked,
+                unreachable: integrity.unreachable.map((e) => ({ seq: e.seq, commitSha: e.commitSha })),
+            }, sessionId);
+            this.deps.interactionLog?.log(sessionId, {
+                event: "ledger_commits_unreachable", phase: phase === "resume" ? "plan" : "review", cycle,
+                unreachable: integrity.unreachable.map((e) => e.commitSha),
+            });
+            return { failed: true, unreachable: integrity.unreachable.map((e) => e.commitSha), headSha, detail };
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] ledger reachability guard failed (non-fatal; continuing)", {
+                sessionId, cycle, phase, err: String(err),
+            });
+            return none;
+        }
+    }
     getPlanJson(sessionId) {
         try {
             const r = this.deps.state.db.prepare(`SELECT lead_plan_json FROM sessions WHERE id = ?`).get(sessionId);
