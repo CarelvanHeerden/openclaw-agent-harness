@@ -26,11 +26,22 @@ import { parseHarnessConfig } from "../dist/config.js";
 const S = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 const D = (p) => readFileSync(new URL(`../dist/${p}`, import.meta.url), "utf8");
 
-// gpgsign off: a developer with a global commit.gpgsign=true otherwise fails here.
+// gpgsign off: a developer with a global commit.gpgsign=true otherwise fails.
+// Identity inline: a CI runner has no global user.name/user.email, so a bare
+// `git commit` fails there while passing on any developer machine.
 const git = (cwd, ...args) =>
-  execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-C", cwd, ...args], {
-    encoding: "utf8",
-  });
+  execFileSync(
+    "git",
+    [
+      "-c", "commit.gpgsign=false",
+      "-c", "tag.gpgsign=false",
+      "-c", "user.name=Test",
+      "-c", "user.email=test@example.com",
+      "-C", cwd,
+      ...args,
+    ],
+    { encoding: "utf8" },
+  );
 
 const LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
 const IDENT = { name: "Harness", email: "harness@example.com" };
