@@ -15,9 +15,8 @@
  *   1. Authorised user triggers onboarding.
  *   2. The harness opens a DM (`conversations.open`) and posts an instruction
  *      prompt (this module's helpers).
- *   3. The token is stored in the harness credential vault as `git-pat:<userid>`
- *      (or a configured pattern), validated with `GET /user` first. beta.110:
- *      this is a library call on our own vault, not memory-hybrid's tool.
+ *   3. The token is stored in the vault as `git-pat:<userid>` (or a configured
+ *      pattern) via `credential_store`, validated with `GET /user` first.
  *   4. The harness deletes ITS OWN prompt (`chat.delete`). A bot token CANNOT
  *      delete the USER's message, so the confirmation asks the user to delete
  *      their token message themselves. (A Slack modal would keep the token out

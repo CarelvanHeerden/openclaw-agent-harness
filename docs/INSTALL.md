@@ -155,19 +155,13 @@ See [`CONFIGURATION.md`](CONFIGURATION.md) for all options.
 Using OpenClaw's credential vault, add one entry per (user, org):
 
 ```bash
-# example naming convention. The secret is read from stdin, so it never lands
-# in shell history or in `ps` output.
-printf '%s' 'ghp_...' | node scripts/vault.mjs set github-carel-example-org
-printf '%s' 'ghp_...' | node scripts/vault.mjs set github-carel-personal
-printf '%s' 'ghp_...' | node scripts/vault.mjs set github-francois-example-org
-
-node scripts/vault.mjs list   # names, types and timestamps -- never values
+# example naming convention
+openclaw memory credential-store --service github-carel-example-org   --type token --value 'ghp_...'
+openclaw memory credential-store --service github-carel-personal        --type token --value 'ghp_...'
+openclaw memory credential-store --service github-francois-example-org --type token --value 'ghp_...'
 ```
 
-beta.110: these go into the harness's own vault (`<dataDir>/harness-vault`), not
-the memory plugin. On first run the harness generates `vault.key` at mode 0600 —
-**back it up**, because without it every stored credential is unrecoverable. Set
-`OAH_VAULT_KEY` instead if you would rather inject the key at container start.
+Do NOT run these commands with the gateway live; add them via a maintenance window, or use the plugin `credential_store` tool from a session.
 
 ## 5. Restart the gateway
 

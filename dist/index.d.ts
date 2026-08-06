@@ -22,7 +22,6 @@ import { SlackProgressPoster } from "./slack/progress-poster.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
-import { type CredentialRecord } from "./adapters/credential-vault.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import { type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
@@ -98,25 +97,8 @@ export interface HarnessPluginApi {
         ts: string;
         name: string;
     }) => Promise<void>;
-    /**
-     * Optional -- lookup for calling another plugin's tool. beta.110: NO LONGER
-     * used for credentials; the harness owns its vault. Retained for other
-     * cross-plugin calls and for runtimes that still provide it.
-     */
+    /** Optional -- lookup for calling another plugin's tool (e.g. hybrid-memory's credential_get). */
     callTool?: (name: string, input: unknown) => Promise<unknown>;
-}
-/**
- * beta.110: the vault surface the runtime depends on. Narrower than
- * `CredentialVault` so the sealed stub below (and tests) can stand in.
- */
-export interface CredentialStore {
-    get: (service: string, type?: "token" | "api_key") => string | undefined;
-    set: (service: string, value: string, opts?: {
-        type?: string;
-        notes?: string;
-    }) => void;
-    delete: (service: string) => boolean;
-    list: () => CredentialRecord[];
 }
 export interface HarnessRuntime {
     config: HarnessConfig;
@@ -136,10 +118,6 @@ export interface HarnessRuntime {
     slack: SlackAdapter;
     git: GitAdapter;
     creds: CredentialAdapter;
-    /** beta.110: the harness-owned vault. Used by `harness_onboard` to STORE tokens. */
-    vault: CredentialStore;
-    /** beta.110: set when the vault could not be opened; surfaced by `harness_health`. */
-    vaultError?: string;
     /**
      * Classify + crystallise a raw request into a structured brief. Shared by
      * the optional Slack dispatcher and the agent-callable `harness_run` tool.
