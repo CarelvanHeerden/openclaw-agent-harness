@@ -1,0 +1,32 @@
+# beta.110: the git config every test runs under.
+#
+# Wired in by the `test` script as GIT_CONFIG_GLOBAL, with GIT_CONFIG_SYSTEM
+# pointed at /dev/null, so no test can inherit whatever the developer or the CI
+# image happens to have configured.
+#
+# Two concrete failures made this necessary:
+#
+#   1. gpgsign. A developer with `commit.gpgsign = true` globally had every
+#      real-git test depend on a working gpg-agent. Under parallel load the
+#      agent gets contended, signing fails, and `git commit` dies with "gpg
+#      failed to sign the data / fatal: failed to write commit object". That
+#      surfaced as one failing real-git test per run, a DIFFERENT one each time,
+#      every one of them passing in isolation.
+#
+#   2. identity. CI runners have no user.name/user.email, so a fixture that
+#      built a seed commit worked on every developer machine and failed on CI.
+#
+# Both are the same bug: tests reading configuration they do not own.
+[user]
+	name = Harness Test
+	email = harness-test@example.com
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false
+[init]
+	defaultBranch = main
+[gc]
+	auto = 0
+[protocol "file"]
+	allow = always

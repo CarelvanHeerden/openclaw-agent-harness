@@ -259,6 +259,35 @@ test("beta110: a clean worktree still returns null rather than an empty commit",
   assert.equal(await adapter().commit(dir, "nothing", IDENT), null);
 });
 
+test("beta110: a harness commit succeeds on a host that signs commits by default", async () => {
+  // A harness commit is made by a bot with a synthetic identity and no key. On
+  // a host with `commit.gpgsign = true` git tries to sign anyway and the commit
+  // dies with "gpg failed to sign the data / fatal: failed to write commit
+  // object" -- in a container there is not even a TTY to prompt on.
+  //
+  // This is also what made the real-git tests flaky: under parallel load a
+  // contended gpg-agent turned a latent config dependency into one failing
+  // test per run, a different one each time, all passing in isolation.
+  const dir = repo();
+  execFileSync("git", ["-C", dir, "config", "commit.gpgsign", "true"]);
+  execFileSync("git", ["-C", dir, "config", "user.signingkey", "0xNOTAREALKEY"]);
+  writeFileSync(join(dir, "work.ts"), "export const a = 1;\n");
+
+  const sha = await adapter().commit(dir, "work", IDENT);
+  assert.ok(sha, "the harness must not depend on the host's signing setup");
+  const files = git(dir, "show", "--name-only", "--pretty=format:", "HEAD").trim().split("\n").filter(Boolean);
+  assert.deepEqual(files, ["work.ts"]);
+});
+
+test("beta110: the suite runs under its own git config, not the developer's", () => {
+  const script = JSON.parse(S("package.json")).scripts.test;
+  assert.match(script, /GIT_CONFIG_GLOBAL=/, "tests must not read ambient git config");
+  assert.match(script, /GIT_CONFIG_SYSTEM=\/dev\/null/);
+  const cfg = S("tests/fixtures/gitconfig");
+  assert.match(cfg, /gpgsign = false/, "the flake was a contended gpg-agent");
+  assert.match(cfg, /email = /, "and CI runners have no identity of their own");
+});
+
 /* ------------------------------------------------------------------ *
  * The second layer: fail fast
  * ------------------------------------------------------------------ */
