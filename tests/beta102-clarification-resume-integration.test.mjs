@@ -288,7 +288,10 @@ test("beta102: a real committed mismatch pauses the run in awaiting_clarificatio
   const row = s.state.db.prepare(`SELECT status, clarification_question, clarification_seq, worktree_path FROM sessions WHERE id='S1'`).get();
   assert.equal(row.status, "awaiting_clarification");
   assert.equal(row.clarification_seq, 2);
-  assert.match(row.clarification_question, /do not match its contract/);
+  // b111 reworded this question (see contract-clarify.ts). What matters here is
+  // unchanged: the stored question describes the mismatch and names the file.
+  assert.match(row.clarification_question, /did not change\s+everything the plan expected/);
+  assert.match(row.clarification_question, /grc-nav\.tsx/);
 });
 
 test("beta102: the paused sub-task stays failed_verification -- nothing is accepted", async () => {

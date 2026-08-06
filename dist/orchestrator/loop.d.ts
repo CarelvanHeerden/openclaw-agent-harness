@@ -736,6 +736,21 @@ export declare class OrchestratorLoop {
      * Emits `loop.final_scope_check_ran` per run and
      * `loop.final_scope_check_out_of_scope` when out-of-scope files are found.
      */
+    /**
+     * beta.111: run the repo's OWN typecheck script and block on errors in files
+     * this branch changed.
+     *
+     * Separate from runFinalVerifyChecks, which is gated behind
+     * verify.run_repo_check_scripts and stays off by default because running a
+     * repo's whole check suite per cycle is expensive. This runs exactly one
+     * script and only reports errors it can attribute to this branch, so it is
+     * safe to leave on. See typecheck-gate.ts for why the alternative -- diffing
+     * against a typecheck at the base commit -- is not worth a second full run.
+     *
+     * Never throws. A gate that cannot run is a note, not a failure; the one
+     * thing it must never do is invent a green.
+     */
+    private runTypecheckGate;
     private runFinalScopeCheck;
     /**
      * beta.78 (Feature 2): the configured per-user daily hard cap, or 0 when

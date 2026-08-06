@@ -85,6 +85,8 @@ function parsePrNumber(prUrl) {
 import { inferVerifyContract } from "./verify-contract.js";
 import { rederiveContractPath, reconcileTestContractPaths } from "./contract-rederive.js";
 import { pathMatches, resolveContractPath } from "./path-match.js";
+import { autoResolveContract, buildContractClarification } from "./contract-clarify.js";
+import { parseTscErrors, errorsInChangedFiles, buildTypecheckFinding } from "./typecheck-gate.js";
 import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedgerCommits } from "./ledger-integrity.js";
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-validate.js";
@@ -2272,12 +2274,33 @@ export class OrchestratorLoop {
                             this.deps.logger.warn("[loop] contract-path mismatch on a REAL commit; pausing for a human instead of failing the run", {
                                 sessionId, seq: st.seq, cycle, expected, actual,
                             });
-                            clarify.question =
-                                `Sub-task ${st.seq} ("${st.title}") committed ${result.commitSha.slice(0, 7)} but the files do not match its contract. ` +
-                                    `The plan required: ${expected.join(", ")}. The sub-task actually committed: ${actual.join(", ") || "(no files reported)"}. ` +
-                                    (statedReason ? `The worker's stated reason: ${statedReason} ` : "") +
-                                    `Was the plan's path wrong, or the worker's placement? (Reply with the path convention this repo should use -- ` +
-                                    `it is folded into the brief and the plan re-derived -- or say "skip" to drop this sub-task, or "abort".)`;
+                            // beta.111: before pausing a run for a human, check whether the
+                            // answer is already sitting in the branch. See contract-clarify.ts.
+                            const changedOnBranch = this.deps.worktreeCommittedFiles && plan.worktreePath
+                                ? await this.deps
+                                    .worktreeCommittedFiles(plan.worktreePath, planBaseShaForVerify)
+                                    .catch(() => [])
+                                : [];
+                            const mismatch = {
+                                seq: st.seq, title: st.title, commitSha: result.commitSha,
+                                expected, actual, statedReason, changedOnBranch,
+                            };
+                            const auto = autoResolveContract(mismatch);
+                            if (auto.resolved && this.deps.config.loop.auto_resolve_satisfied_contract !== false) {
+                                this.deps.state.audit("loop.contract_auto_resolved", { sessionId, seq: st.seq, cycle, expected, actual, coveredEarlier: auto.coveredEarlier, reason: auto.reason }, sessionId);
+                                this.deps.interactionLog?.log(sessionId, {
+                                    event: "contract_auto_resolved", phase: "worker", seq: st.seq, cycle, coveredEarlier: auto.coveredEarlier,
+                                });
+                                this.deps.logger.info("[loop] beta.111: contract mismatch settled from branch history; not pausing for a human", {
+                                    sessionId, seq: st.seq, coveredEarlier: auto.coveredEarlier,
+                                });
+                                this.deps.state.db
+                                    .prepare(`UPDATE sub_tasks SET status = 'completed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
+                                    .run(`contract satisfied by the branch: ${auto.reason}`, Date.now(), sessionId, cycle, st.seq);
+                                done.add(st.seq);
+                                return;
+                            }
+                            clarify.question = buildContractClarification(mismatch);
                             clarify.seq = st.seq;
                             clarify.subtask = { title: st.title, intent: st.intent };
                         }
@@ -2464,6 +2487,11 @@ export class OrchestratorLoop {
             const scopeFindings = await this.runFinalScopeCheck(sessionId, plan, cycle);
             if (scopeFindings.length > 0)
                 conventionFindings.push(...scopeFindings);
+            // beta.111: a branch that does not compile must not reach a merge
+            // recommendation. The adversary reads the diff, not the compiler.
+            const typeFindings = await this.runTypecheckGate(sessionId, plan, cycle);
+            if (typeFindings.length > 0)
+                conventionFindings.push(...typeFindings);
             this.setStatus(sessionId, "reviewing");
             await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
             let runtime;
@@ -3603,6 +3631,114 @@ export class OrchestratorLoop {
      * Emits `loop.final_scope_check_ran` per run and
      * `loop.final_scope_check_out_of_scope` when out-of-scope files are found.
      */
+    /**
+     * beta.111: run the repo's OWN typecheck script and block on errors in files
+     * this branch changed.
+     *
+     * Separate from runFinalVerifyChecks, which is gated behind
+     * verify.run_repo_check_scripts and stays off by default because running a
+     * repo's whole check suite per cycle is expensive. This runs exactly one
+     * script and only reports errors it can attribute to this branch, so it is
+     * safe to leave on. See typecheck-gate.ts for why the alternative -- diffing
+     * against a typecheck at the base commit -- is not worth a second full run.
+     *
+     * Never throws. A gate that cannot run is a note, not a failure; the one
+     * thing it must never do is invent a green.
+     */
+    async runTypecheckGate(sessionId, plan, cycle) {
+        const vcfg = this.deps.config.verify;
+        if (vcfg?.typecheck_gate === false)
+            return [];
+        const worktree = plan.worktreePath;
+        if (!worktree || !this.deps.worktreeCommittedFiles)
+            return [];
+        let script;
+        let discovered = [];
+        try {
+            discovered = discoverCheckScripts(worktree);
+            script = discovered.find((d) => /^(typecheck|type-check|types|tsc)$/i.test(d.name))?.name;
+        }
+        catch {
+            return [];
+        }
+        if (!script) {
+            this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, reason: "no typecheck script in package.json" }, sessionId);
+            return [];
+        }
+        let base;
+        try {
+            const r = this.deps.state.db
+                .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+                .get(sessionId);
+            base = r?.plan_base_sha ?? undefined;
+        }
+        catch {
+            base = undefined;
+        }
+        // Without a base we cannot tell this branch's errors from the repo's, and
+        // reporting the repo's would block every run on pre-existing breakage.
+        if (!base) {
+            this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, reason: "no plan_base_sha to scope errors to this branch" }, sessionId);
+            return [];
+        }
+        const startedAt = Date.now();
+        let results;
+        try {
+            results = runCheckScripts({
+                repoRoot: worktree,
+                discovered,
+                allowlist: [script],
+                timeoutSeconds: vcfg?.check_script_timeout_seconds ?? 600,
+                runScript: this.deps.runCheckScript,
+                heapRetryMb: vcfg?.check_script_heap_retry_mb ?? 8192,
+            });
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] beta.111 typecheck gate failed to run (non-fatal)", { sessionId, err: String(err) });
+            this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, reason: `runner threw: ${String(err)}` }, sessionId);
+            return [];
+        }
+        const r = results.find((x) => x.script === script);
+        const durationMs = Date.now() - startedAt;
+        if (!r || !r.ran) {
+            this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, script, reason: r?.skippedReason ?? "did not run", durationMs }, sessionId);
+            return [];
+        }
+        if (r.exitCode === 0) {
+            this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script, exitCode: 0, errorsTotal: 0, errorsInChangedFiles: 0, durationMs }, sessionId);
+            this.deps.interactionLog?.log(sessionId, { event: "typecheck_gate_ran", phase: "review", cycle, script, clean: true });
+            return [];
+        }
+        const all = parseTscErrors(r.outputTail);
+        // Non-zero exit with nothing parseable means the script failed for some
+        // other reason (missing binary, OOM). runFinalVerifyChecks owns that case
+        // when enabled; here it is a note, because a parse miss is not evidence of
+        // a type error and must not be dressed up as one.
+        if (all.length === 0) {
+            this.deps.state.audit("loop.typecheck_gate_unparsed", { sessionId, cycle, script, exitCode: r.exitCode, oom: !!r.oom, outputTail: r.outputTail, durationMs }, sessionId);
+            return [];
+        }
+        let committed;
+        try {
+            committed = await this.deps.worktreeCommittedFiles(worktree, base);
+        }
+        catch {
+            return [];
+        }
+        const mine = errorsInChangedFiles(all, committed ?? []);
+        this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script, exitCode: r.exitCode, errorsTotal: all.length, errorsInChangedFiles: mine.length, durationMs }, sessionId);
+        if (mine.length === 0) {
+            this.deps.logger.info("[loop] beta.111 typecheck gate: errors exist but none in files this branch changed; pre-existing", {
+                sessionId, script, errorsTotal: all.length,
+            });
+            return [];
+        }
+        this.deps.state.audit("loop.typecheck_gate_failed", { sessionId, cycle, script, errors: mine.slice(0, 20), errorsTotal: all.length }, sessionId);
+        this.deps.interactionLog?.log(sessionId, {
+            event: "typecheck_gate_failed", phase: "review", cycle, script, errorsInChangedFiles: mine.length,
+        });
+        return [buildTypecheckFinding(mine, script)];
+    }
     async runFinalScopeCheck(sessionId, plan, cycle) {
         if (this.deps.config.loop.deterministic_final_scope_check === false)
             return [];

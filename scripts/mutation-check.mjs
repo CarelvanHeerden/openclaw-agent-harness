@@ -479,6 +479,41 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/beta110-scope-blowout.test.mjs"],
   },
+  {
+    name: "auto-resolve needs FULL coverage (b111): one untouched path still asks a human",
+    file: "dist/orchestrator/contract-clarify.js",
+    find: "if (covered.length !== missing.length)",
+    replace: "if (covered.length === missing.length + 1)",
+    tests: ["tests/beta111-clarify-and-typecheck.test.mjs"],
+  },
+  {
+    name: "auto-resolve needs branch history (b111): empty history must never read as a green",
+    file: "dist/orchestrator/contract-clarify.js",
+    find: "if (changed.length === 0)",
+    replace: "if (changed.length === -1)",
+    tests: ["tests/beta111-clarify-and-typecheck.test.mjs"],
+  },
+  {
+    name: "the recommendation is evidence-gated (b111): no branch evidence, no suggestion",
+    file: "dist/orchestrator/contract-clarify.js",
+    find: "if (auto.coveredEarlier.length > 0)",
+    replace: "if (auto.coveredEarlier.length >= 0)",
+    tests: ["tests/beta111-clarify-and-typecheck.test.mjs"],
+  },
+  {
+    name: "typecheck errors are scoped to changed files (b111): otherwise pre-existing breakage blocks every run",
+    file: "dist/orchestrator/typecheck-gate.js",
+    find: "return errors.filter((e) => changedFiles.some((c) => pathMatches(c, e.file)));",
+    replace: "return errors;",
+    tests: ["tests/beta111-clarify-and-typecheck.test.mjs"],
+  },
+  {
+    name: "a non-compiling branch is blocking (b111): `low` would let the b109 gate ship it",
+    file: "dist/orchestrator/typecheck-gate.js",
+    find: 'severity: "high",',
+    replace: 'severity: "low",',
+    tests: ["tests/beta111-clarify-and-typecheck.test.mjs"],
+  },
 ];
 
 function runTests(files) {

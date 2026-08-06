@@ -571,6 +571,11 @@
             "default": true,
             "description": "beta.109: end the review loop when the adversary says `revise` but no finding is diff-addressable at medium severity or above. The adversary writes `revise` while ANY finding is open, including the informational ones it emits to record that a prior finding was fixed, so a run converges to a floor it can never cross: ProjectThanos PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten low, six info and one low convention finding, nothing at medium or above, over three separate revises. Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and harness_revise picks them up on request."
           },
+          "auto_resolve_satisfied_contract": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.111: settle a contract mismatch from the branch's own history instead of pausing the run for a human, when every expected path the sub-task did not touch was already changed by an earlier commit on this branch. Findings are often written conditionally (\"if the handler extends `to` unconditionally...\"); a worker that reads the code, finds the condition already handled and commits only a test then trips the contract check. That escalated on two runs running -- b109 sub-task 2 and b110 sub-task 5, the latter idle for forty minutes at $2.99 waiting for someone to type \"skip\" -- on evidence the harness already held in git. Strict: one expected path never touched on this branch and it still asks."
+          },
           "early_exit_no_change_cycle": {
             "type": "boolean",
             "default": true,
@@ -908,6 +913,11 @@
             "maximum": 7200,
             "default": 600,
             "description": "beta.63 (Fix 2): per-check-script wall-clock timeout (seconds). A timed-out script is treated as unrunnable (non-fatal log + note), not a hard fail."
+          },
+          "typecheck_gate": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.111: run the repo's own typecheck script before review and raise a `high` finding for errors in files this branch changed. The adversary reviews the diff, not the compiler: ProjectThanos PR #932 survived three revise runs with `TS2551: Property 'ownerUserId' does not exist`, introduced by the b108 revise, and that repo's CI does not run a typecheck so CI stayed green. Errors in untouched files are ignored, so a repo with pre-existing breakage (#932 also carries 71 unrelated failing tests) is still usable. One script per cycle, unlike run_repo_check_scripts which runs the whole suite and stays off by default."
           },
           "check_script_heap_retry_mb": {
             "type": "integer",
