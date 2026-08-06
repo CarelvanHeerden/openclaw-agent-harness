@@ -41,37 +41,9 @@ export interface HarnessConfig {
      * worktree release + container restart. Default ON.
      */
     log: LogConfig;
-    /**
-     * beta.110: harness-owned credential vault. Replaces the memory-hybrid
-     * `credential_get` / `credential_store` tools outright -- there is no
-     * fallback to them, by design (see adapters/credential-vault.ts).
-     */
-    credentials: CredentialsConfig;
 }
 export interface LoggingConfig {
     level: "debug" | "info" | "warn" | "error";
-}
-export interface CredentialsConfig {
-    /**
-     * Directory holding `vault.db` and (by default) `vault.key`. Relative paths
-     * resolve against the harness data dir -- the directory that already holds
-     * the state DB, NOT the git worktree, so the vault survives worktree
-     * teardown and is never inside a tree a worker can walk.
-     * Default: "harness-vault".
-     */
-    dir?: string;
-    /**
-     * Env var checked for a raw 32-byte key (64 hex chars or base64). When set
-     * it OVERRIDES the key file, so a container can inject the key without a
-     * mounted volume. Default: "OAH_VAULT_KEY".
-     */
-    key_env?: string;
-    /**
-     * Explicit key-file path. Default `<dir>/vault.key`, mode 0600. Generated on
-     * first boot if absent; back it up, because without it every stored
-     * credential is unrecoverable.
-     */
-    key_file?: string;
 }
 export interface CiConfig {
     /**
@@ -994,8 +966,7 @@ export type GitProvider = "github" | "gitlab";
  * A token pointer. Exactly one of `value` | `env` | `vault` must be set.
  *   - value: inline secret in openclaw.json (single-operator; setter accepts risk)
  *   - env:   name of an environment variable holding the token
- *   - vault: service name in the harness-owned credential vault (beta.110; was
- *            the memory-hybrid plugin's vault before the cutover)
+ *   - vault: credential-vault service name (requires memory-hybrid plugin)
  */
 export interface TokenPointer {
     value?: string;

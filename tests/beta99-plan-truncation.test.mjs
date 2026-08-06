@@ -122,23 +122,9 @@ test("beta.99: the ceiling survives the beta.57 secret filter (TOKENS != TOKEN)"
   }
 });
 
-// beta.110 amended this. b99 asserted that the no-key path returned `undefined`
-// and called it "local-dev path unchanged" -- but `undefined` means "inherit the
-// parent env", so the local-dev path was handing the SDK child every secret the
-// beta.57 denylist exists to withhold. The child still gets no injected key (so
-// it falls through to `/login` exactly as before); it just no longer inherits
-// the harness's secrets to get there.
-test("beta.110: no api key -> filtered env, not an unfiltered inherit", () => {
+test("beta.99: no api key -> undefined env (local-dev path unchanged)", () => {
   if (!sdk?.buildSdkEnv) return;
-  process.env.OAH_TEST_SECRET_TOKEN = "leak-me";
-  try {
-    const env = sdk.buildSdkEnv(undefined, 64000);
-    assert.ok(env && typeof env === "object");
-    assert.equal(env.ANTHROPIC_API_KEY, undefined, "no key resolved -> none injected");
-    assert.equal(env.OAH_TEST_SECRET_TOKEN, undefined, "beta.57 filtering must apply on the no-key path too");
-  } finally {
-    delete process.env.OAH_TEST_SECRET_TOKEN;
-  }
+  assert.equal(sdk.buildSdkEnv(undefined, 64000), undefined);
 });
 
 // ---------------------------------------------------------------------------

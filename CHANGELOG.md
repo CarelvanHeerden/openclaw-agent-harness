@@ -51,69 +51,6 @@ single `executing` event and nothing else -- the most expensive stretch of the
 run was the one with no number against it. A crashed or timed-out review now
 emits `phase_timing` with `verdict: null`, `isTimeout` and the error.
 
-## 0.1.0-beta.110
-
-### The harness owns its credential vault
-
-Credentials came from the memory-hybrid plugin's `credential_get` /
-`credential_store` MCP tools. That plugin is being retired, and its replacement
-is a *memory* backend — a retrieval system built to be searched by agents, which
-is the last place a PAT belongs. This is a hard cutover: the tool calls are gone,
-there is no fallback to them, and nothing needs migrating because the vault
-starts empty.
-
-The replacement is deliberately **not a tool**. Reaching a secret through a
-registered tool means any turn that can call tools can ask for an arbitrary
-service name; a library call cannot be reached at all. So the new vault ends up
-strictly safer than what it replaces rather than merely equivalent.
-
-- `adapters/credential-vault.ts` — AES-256-GCM, fresh 96-bit IV per write, in a
-  **dedicated** SQLite file rather than the state DB, which gets copied around
-  for debugging. The service name is bound in as additional authenticated data,
-  so an attacker with write access to the database cannot promote the
-  `github-readonly` row into `github-admin`.
-- The key comes from a 0600 key file, generated on first boot, with
-  `OAH_VAULT_KEY` overriding it for container injection. A known plaintext is
-  sealed under the active key and checked at open, so a **wrong key fails
-  immediately** instead of presenting as a procession of "credential not found"
-  errors that send an operator hunting for entries which are present but sealed.
-- `scripts/vault.mjs` for operators (`set` reads stdin, so no shell history),
-  including `rotate`, which re-encrypts every entry and stages the new key file
-  before committing so an interruption cannot leave a vault whose only key was
-  lost to a failed write. Rotation is refused when the key came from the
-  environment, since writing a key file the env var would keep overriding
-  bricks the vault on next boot.
-- A vault that will not open no longer takes the plugin down: the harness boots
-  with a sealed stub that carries the real reason into every read, and
-  `harness_health` reports `credential_vault_open` as a fatal check.
-
-### Two pre-existing holes this closed on the way
-
-Neither was the ask; both would have leaked the new key.
-
-- `buildSdkEnv` returned `undefined` when no explicit Anthropic key was
-  resolved, which tells the SDK to **inherit the full parent environment** —
-  silently bypassing the beta.57 denylist in exactly the configuration where it
-  still matters. It now always returns a filtered environment; the child still
-  gets no injected key, so the `/login` fallback is unchanged.
-- The denylist regex matches `API_KEY`, `ACCESS_KEY` and `PRIVATE_KEY`, but not
-  a bare `_KEY` suffix, so `OAH_VAULT_KEY` would have sailed straight through.
-  It is now denied explicitly, and `registerDeniedSdkEnvVar` lets an
-  operator-renamed key variable be denied too.
-
-Stripping the environment is necessary but not sufficient: the worker runs as
-the same uid as the harness, so it could still `cat vault.key`. The vault
-directory, `vault.key` and `vault.db` are therefore in the default
-`safety.path_denylist` as well. Both defences are required; neither substitutes
-for the other, and the tests assert both.
-
-`tests/beta110-credential-vault.test.mjs` (24 tests) drives the real vault
-against real files and a real database — this is a crypto and file-permission
-change, and a source-grep assertion cannot tell a working seal from a broken
-one. Three new entries in `scripts/mutation-check.mjs` (52 total, all caught)
-cover the environment strip, the key verifier, and the refusal to swallow an
-authentication failure.
-
 ## 0.1.0-beta.109
 
 ### The merge gate stops treating "not pass" as "not mergeable"
