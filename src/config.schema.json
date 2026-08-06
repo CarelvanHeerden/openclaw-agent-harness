@@ -215,6 +215,12 @@
           "minimum": 0,
           "description": "beta.108: ceiling on orphan-finding adoptions per revise cycle. Adoption widens a sub-task's file scope, and scope is what a revise cycle costs. The b106 revise on PR #932 fired 21 mapping misses across two cycles against the original smoke's two, because the adversary re-reads the whole branch each cycle and keeps surfacing adjacent issues; uncapped adoption would pull most of the branch back into every cycle. Candidates are taken in severity order, and info-severity findings are never adopted -- info is how the adversary records that a PRIOR finding was verified fixed."
         },
+        "scope_blowout_file_threshold": {
+          "type": "number",
+          "default": 500,
+          "minimum": 0,
+          "description": "beta.110: out-of-scope committed file count at which a cycle is abandoned BEFORE adversary review, instead of folding the overage into the review as a `fit` finding. On ProjectThanos PR #932 an in-worktree npm cache was swept into a commit by git add -A; the check reported 12423 out-of-scope files, produced a finding, and let the run continue -- the adversary then hit its 900s timeout on a 12432-file diff and the session died having pushed nothing, stranding eight good commits. A diff that size cannot be reviewed, so discovering that slowly is pure loss. Set 0 to disable and keep the pre-b110 finding-only behaviour."
+        },
         "ship_when_no_blocking_findings": {
           "type": "boolean",
           "default": true,
@@ -307,7 +313,7 @@
               "properties": {
                 "value": { "type": "string", "description": "Inline secret (single-operator; setter accepts risk)." },
                 "env": { "type": "string", "description": "Env var name holding the token." },
-                "vault": { "type": "string", "description": "Credential-vault service name (requires memory-hybrid)." }
+                "vault": { "type": "string", "description": "Service name in the harness-owned credential vault (see the top-level `credentials` block)." }
               },
               "minProperties": 1,
               "maxProperties": 1
@@ -378,6 +384,27 @@
         },
         "default_service_pattern": { "type": "string", "default": "github-{owner}" },
         "onboard_service_pattern": { "type": "string", "description": "beta.78: vault service-name pattern for harness_onboard token storage. Placeholders {userid} {provider}. Default git-pat:{userid}." }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them.",
+      "properties": {
+        "dir": {
+          "type": "string",
+          "default": "harness-vault",
+          "description": "Directory holding vault.db and (by default) vault.key. Relative paths resolve against the harness data dir, NOT the git worktree, so the vault survives worktree teardown."
+        },
+        "key_env": {
+          "type": "string",
+          "default": "OAH_VAULT_KEY",
+          "description": "Env var checked for a raw 32-byte key (64 hex chars or base64). When set it OVERRIDES the key file. Never reaches the worker subprocess."
+        },
+        "key_file": {
+          "type": "string",
+          "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600. Generated on first boot if absent -- back it up, because without it every stored credential is unrecoverable."
+        }
       }
     }
   }

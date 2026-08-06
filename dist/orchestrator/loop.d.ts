@@ -120,6 +120,19 @@ export declare function runningSessionIds(): string[];
  * existing try/catch already handles (marks the sub_task failed, sets
  * failed.err, returns). Returns a tuple so the caller can clear the timer.
  */
+/**
+ * beta.110: the committed tree bears no resemblance to what the plan declared,
+ * so there is nothing worth reviewing. Thrown by runFinalScopeCheck.
+ *
+ * Distinct from ordinary scope creep, which stays a `medium` review finding.
+ * This is the 12,423-out-of-scope-files case from PR #932 session `9217236c`.
+ */
+export declare class ScopeBlowoutError extends Error {
+    readonly outOfScopeCount: number;
+    readonly threshold: number;
+    readonly sample: string[];
+    constructor(outOfScopeCount: number, threshold: number, sample: string[]);
+}
 export declare class WorkerTimeoutError extends Error {
     readonly seconds: number;
     readonly limit: string;
@@ -717,7 +730,8 @@ export declare class OrchestratorLoop {
      * union is out-of-scope. This does NOT hard-fail -- it returns a ReviewFinding
      * (dimension `fit`, severity `medium`) so it folds into the adversary review,
      * mirroring runFinalVerifyChecks. Gated by loop.deterministic_final_scope_check
-     * (default true). Best-effort; never throws.
+     * (default true). Best-effort, EXCEPT for the beta.110 blowout tripwire,
+     * which throws ScopeBlowoutError to stop the cycle before review.
      *
      * Emits `loop.final_scope_check_ran` per run and
      * `loop.final_scope_check_out_of_scope` when out-of-scope files are found.

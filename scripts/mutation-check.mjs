@@ -402,6 +402,106 @@ const MUTATIONS = [
     replace: "blockingFindings: undefined,",
     tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
   },
+  {
+    name: "vault key env strip (b110): the worker subprocess never inherits the key",
+    file: "dist/adapters/claude-sdk.js",
+    // Dropped from the exact denylist. The regex beside it does NOT cover this
+    // name -- it matches API_KEY / ACCESS_KEY / PRIVATE_KEY, not a bare _KEY
+    // suffix -- so removing the entry really does hand the key to the child.
+    find: '    "OAH_VAULT_KEY",',
+    replace: "",
+    tests: ["tests/beta110-credential-vault.test.mjs"],
+  },
+  {
+    name: "vault key verifier (b110): a wrong key fails at open, not entry by entry",
+    file: "dist/adapters/credential-vault.js",
+    // Without the verifier the vault opens happily under the wrong key and
+    // every lookup reports "not found", sending an operator to hunt for entries
+    // that are present but sealed.
+    find: "        vault.verifyKey();",
+    replace: "",
+    tests: ["tests/beta110-credential-vault.test.mjs"],
+  },
+  {
+    name: "authenticated decryption (b110): a tampered row is refused, not swallowed",
+    file: "dist/adapters/credential-vault.js",
+    // Turns the GCM auth failure into a silent miss. That would make tampering
+    // and cross-service ciphertext swaps indistinguishable from an absent
+    // entry -- i.e. it would discard the only thing GCM buys us over raw AES.
+    find: '            this.opts.audit?.("vault.corrupt", { service });',
+    replace: "            return undefined;",
+    tests: ["tests/beta110-credential-vault.test.mjs"],
+  },
+  {
+    name: "harness excludes (b110): the npm cache that killed session 9217236c",
+    file: "dist/adapters/git-worktree.js",
+    find: "await this.applyHarnessExcludes(worktreePath);",
+    replace: "",
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "the .npm-cache-tmp pattern (b110): the exact tree that killed session 9217236c",
+    file: "dist/adapters/git-worktree.js",
+    find: 'HARNESS_EXCLUDE_PATTERNS = [\n    ".npm-cache-tmp/",',
+    replace: 'HARNESS_EXCLUDE_PATTERNS = [\n    "__never_matches__/",',
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "linked-worktree git dir (b110): every harness commit happens in one",
+    file: "dist/adapters/git-worktree.js",
+    find: '["-C", worktreePath, "rev-parse", "--git-path", "info/exclude"]',
+    replace: '["-C", worktreePath, "rev-parse", "--git-common-dir"]',
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "the blowout tripwire (b110): 12,423 stray files must not reach the adversary",
+    file: "dist/orchestrator/loop.js",
+    find: "if (blowoutAt > 0 && outOfScope.length >= blowoutAt) {",
+    replace: "if (false) {",
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "the blowout threshold (b110): ordinary scope creep must stay a finding",
+    file: "dist/orchestrator/loop.js",
+    find: "const blowoutAt = this.deps.config.loop.scope_blowout_file_threshold ?? 500;",
+    replace: "const blowoutAt = 1;",
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "review timing on failure (b110): the 15 lost minutes had no number against them",
+    file: "dist/orchestrator/loop.js",
+    find: 'this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {\n                    verdict: null,',
+    replace: 'this.noSuchTiming(sessionId, "review", cycle, reviewStart, {\n                    verdict: null,',
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "exclude idempotence (b110): a re-append grows info/exclude on every commit",
+    file: "dist/adapters/git-worktree.js",
+    find: "const missing = patterns.filter((x) => !have.has(x));",
+    replace: "const missing = [...patterns];",
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "runaway guard (b110): the cache dir name was a model's free choice",
+    file: "dist/adapters/git-worktree.js",
+    find: "await this.excludeRunawayUntracked(worktreePath);",
+    replace: "",
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "runaway threshold (b110): a 126-file OKF regen is real work",
+    file: "dist/adapters/git-worktree.js",
+    find: ".filter(([, n]) => n >= threshold)",
+    replace: ".filter(([, n]) => n >= 1)",
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
+  {
+    name: "runaway counts UNTRACKED only (b110): regeneration modifies tracked files",
+    file: "dist/adapters/git-worktree.js",
+    find: 'if (!line.startsWith("??"))',
+    replace: "if (!line.trim())",
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
 ];
 
 function runTests(files) {

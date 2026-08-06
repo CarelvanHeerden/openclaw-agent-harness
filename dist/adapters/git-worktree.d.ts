@@ -40,6 +40,27 @@
 export declare const DISK_EXHAUSTION_RE: RegExp;
 export declare function isCommitMsgNoise(path: string): boolean;
 export declare function looksLikeDiskExhaustion(text: string): boolean;
+/**
+ * beta.110: package-manager and tooling caches that a `npm install` (or yarn,
+ * or pnpm) can drop INSIDE the worktree when the sandbox has no writable HOME.
+ *
+ * ProjectThanos PR #932, session `9217236c`: sub-task 9 needed the prisma CLI,
+ * ran an install, and npm wrote its content-addressed cache to
+ * `.npm-cache-tmp/_cacache/` in the worktree because `$HOME/.npm` was not
+ * writable. The next `commit()` ran its unscoped `git add -A` and swept 12,292
+ * cache blobs into the schema-format commit. The adversary was then handed a
+ * 12,432-file diff, could not review it inside `adversary_timeout_seconds`,
+ * and the whole run failed at 55.6 minutes having pushed nothing -- losing
+ * eight good commits that were already sitting in the worktree.
+ *
+ * Written to `.git/info/exclude`, NOT to the repo's `.gitignore`: the target
+ * repo is somebody else's, the exclusion is a property of how the harness runs
+ * tools rather than of their project, and `info/exclude` is per-clone and
+ * never appears in a diff. Patching the target repo's `.gitignore` (as the
+ * b109 post-mortem proposed) would fix one repo and leave every other one
+ * exposed to the same failure.
+ */
+export declare const HARNESS_EXCLUDE_PATTERNS: readonly string[];
 export interface GitAdapterOptions {
     worktreesRoot: string;
     logger: {
@@ -53,6 +74,12 @@ export interface GitAdapterOptions {
      * (the env-wait "Monitor event" hallucination trigger). Default enabled;
      * set false to skip (e.g. non-node repos or tests).
      */
+    /**
+     * beta.110: untracked-file count at which a single top-level directory is
+     * treated as a runaway (tool cache, build output) and excluded from the
+     * commit. Default 500; 0 disables. See excludeRunawayUntracked.
+     */
+    runawayUntrackedThreshold?: number;
     bootstrapDeps?: boolean;
     /** beta.53: max ms for the bootstrap install before it is abandoned. Default 600000. */
     bootstrapTimeoutMs?: number;
@@ -395,6 +422,43 @@ export declare class GitAdapter {
      * matches that pattern, and b95 would already be hiding it from verification.
      */
     private sweepCommitMsgScratch;
+    /**
+     * beta.110: append the harness's own exclusions to `.git/info/exclude`.
+     *
+     * Idempotent, best-effort, and additive -- an existing exclude file is read
+     * and only missing patterns are appended, so a repo that already excludes
+     * something keeps it. Resolves the real git dir via `rev-parse --git-path`
+     * so this works in a linked worktree, where `.git` is a FILE pointing at
+     * `…/.git/worktrees/<name>` and writing `<worktree>/.git/info/exclude`
+     * directly would silently do nothing.
+     */
+    private appendExcludes;
+    applyHarnessExcludes(worktreePath: string): Promise<string[]>;
+    /**
+     * beta.110: exclude any untracked directory that is pouring thousands of new
+     * files into the worktree, whatever it happens to be called.
+     *
+     * The named list above only helps for names we predicted. On PR #932 the
+     * directory was `.npm-cache-tmp`, but the container's npm cache was already
+     * at `/home/node/.npm-cache` with a writable HOME -- so nothing forced that
+     * path. A worker chose the name itself, presumably passing `--cache
+     * .npm-cache-tmp` to avoid touching the shared cache. The next worker is free
+     * to choose `.tmp-npm`, `build-cache`, or anything else, and a static list
+     * will not save us.
+     *
+     * So: count untracked files per top-level directory and exclude any that
+     * exceeds `runawayUntrackedThreshold`. No single sub-task legitimately
+     * introduces hundreds of NEW files under one root -- regenerating a bundle
+     * modifies files that are already tracked, which this does not count.
+     *
+     * Excluding rather than refusing is deliberate. The worker's real work is
+     * sitting in the same worktree, and on #932 eight good commits were lost
+     * because the run died. Drop the cache, keep the work, say so loudly.
+     */
+    excludeRunawayUntracked(worktreePath: string): Promise<Array<{
+        dir: string;
+        count: number;
+    }>>;
     commit(worktreePath: string, message: string, identity: {
         name: string;
         email: string;

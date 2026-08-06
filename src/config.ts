@@ -42,10 +42,39 @@ export interface HarnessConfig {
    * worktree release + container restart. Default ON.
    */
   log: LogConfig;
+  /**
+   * beta.110: harness-owned credential vault. Replaces the memory-hybrid
+   * `credential_get` / `credential_store` tools outright -- there is no
+   * fallback to them, by design (see adapters/credential-vault.ts).
+   */
+  credentials: CredentialsConfig;
 }
 
 export interface LoggingConfig {
   level: "debug" | "info" | "warn" | "error";
+}
+
+export interface CredentialsConfig {
+  /**
+   * Directory holding `vault.db` and (by default) `vault.key`. Relative paths
+   * resolve against the harness data dir -- the directory that already holds
+   * the state DB, NOT the git worktree, so the vault survives worktree
+   * teardown and is never inside a tree a worker can walk.
+   * Default: "harness-vault".
+   */
+  dir?: string;
+  /**
+   * Env var checked for a raw 32-byte key (64 hex chars or base64). When set
+   * it OVERRIDES the key file, so a container can inject the key without a
+   * mounted volume. Default: "OAH_VAULT_KEY".
+   */
+  key_env?: string;
+  /**
+   * Explicit key-file path. Default `<dir>/vault.key`, mode 0600. Generated on
+   * first boot if absent; back it up, because without it every stored
+   * credential is unrecoverable.
+   */
+  key_file?: string;
 }
 
 export interface CiConfig {
@@ -690,6 +719,13 @@ export interface LoopConfig {
    */
   ship_when_no_blocking_findings?: boolean;
   /**
+   * beta.110: out-of-scope committed file count at which a cycle is abandoned BEFORE adversary review, instead of folding the overage into the review as a `fit` finding.
+   * On ProjectThanos PR #932 an in-worktree npm cache was swept into a commit by git add -A; the check reported 12423 out-of-scope files, produced a finding, and let the run continue -- the adversary then hit its 900s timeout on a 12432-file diff and the session died having pushed nothing, stranding eight good commits.
+   * A diff that size cannot be reviewed, so discovering that slowly is pure loss.
+   * Set 0 to disable and keep the pre-b110 finding-only behaviour.
+   */
+  scope_blowout_file_threshold?: number;
+  /**
    * beta.105: also run the ledger reachability guard at RESUME, right after a
    * re-plan re-allocates the worktree, not only before adversary review.
    *
@@ -974,7 +1010,8 @@ export type GitProvider = "github" | "gitlab";
  * A token pointer. Exactly one of `value` | `env` | `vault` must be set.
  *   - value: inline secret in openclaw.json (single-operator; setter accepts risk)
  *   - env:   name of an environment variable holding the token
- *   - vault: credential-vault service name (requires memory-hybrid plugin)
+ *   - vault: service name in the harness-owned credential vault (beta.110; was
+ *            the memory-hybrid plugin's vault before the cutover)
  */
 export interface TokenPointer {
   value?: string;
@@ -1160,6 +1197,7 @@ const DEFAULTS: HarnessConfig = {
     revise_max_adoptions_per_cycle: 3,
     early_exit_no_change_cycle: true,
     ship_when_no_blocking_findings: true,
+    scope_blowout_file_threshold: 500,
     resume_ledger_guard_enabled: true,
     basename_rescue_enabled: true,
     file_written_accepts_rename: true,
@@ -1236,7 +1274,15 @@ const DEFAULTS: HarnessConfig = {
     // already excludes them as base commands, but `xargs sh -c`, `find -exec
     // bash` and `env sh` smuggled an unguarded shell through whitelisted hosts.
     bash_denylist_tokens: ["sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill", "sh", "bash", "zsh", "dash", "ksh", "fish"],
-    path_denylist: [".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519"],
+    // beta.110: the credential vault and its key are readable by anything
+    // running as the harness uid -- and the worker subprocess DOES run as that
+    // uid. Stripping the key out of the child's env (buildSdkEnv) stops
+    // `echo $OAH_VAULT_KEY`; these entries stop `cat .../vault.key`. Both are
+    // needed, and neither is a substitute for the other.
+    path_denylist: [
+      ".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519",
+      "harness-vault/", "vault.key", "vault.db",
+    ],
     allow_git_push: false,
     allow_network_commands: false,
   },
@@ -1281,6 +1327,10 @@ const DEFAULTS: HarnessConfig = {
     dir: "",
     full_prompts: false,
     retention_days: 14,
+  },
+  credentials: {
+    dir: "harness-vault",
+    key_env: "OAH_VAULT_KEY",
   },
 };
 

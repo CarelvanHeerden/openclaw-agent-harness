@@ -1,5 +1,119 @@
 # Changelog
 
+## 0.1.0-beta.110
+
+### A tool cache can no longer ride into a commit on `git add -A`
+
+ProjectThanos PR #932, session `9217236c`. Sub-task 9 needed the prisma CLI and
+ran an install with `--cache .npm-cache-tmp`. `GitAdapter.commit` then ran its
+unscoped `git add -A` and swept 12,291 cache blobs into the commit. The
+adversary was handed a 12,432-file diff, hit `adversary_timeout_seconds` at 900s
+with no result, and the session died at 55.6 minutes having pushed nothing --
+stranding eight good commits that were sitting in the worktree.
+
+The commit list makes the mechanism unambiguous. The worker made its own clean
+one-file commit (`f99afd53 chore(prisma): run prisma format on schema`); the
+harness's catch-all commit right after it (`fe310bea harness(9): ...`) is the
+one carrying all 12,291. This was ours, not the worker's, and not the target
+repo's `.gitignore`.
+
+- **Named excludes.** `commit()` now writes harness-owned patterns to
+  `.git/info/exclude` before staging: npm/yarn/pnpm cache roots and the
+  commit-message scratch files. Resolved via `rev-parse --git-path` so it works
+  in a linked worktree, where `.git` is a file. Never touches the target repo's
+  `.gitignore` -- the exclusion is a property of how the harness runs tools, not
+  of somebody else's project.
+- **A magnitude guard, because the name was a free choice.** The container's npm
+  cache was already at `/home/node/.npm-cache` with a writable `HOME`, so nothing
+  forced the in-tree path; the worker invented `.npm-cache-tmp` itself, and the
+  next one could invent anything. Any single top-level directory contributing
+  `runawayUntrackedThreshold` (default 500) or more UNTRACKED files is excluded
+  and logged. Modified tracked files do not count, so a bundle regeneration
+  (#932's legitimate 126-file `807c92a0`) is unaffected.
+- **Excluding, not refusing.** The sub-task's real work still commits. Eight good
+  commits were lost on #932; dropping the cache and keeping the work is the
+  behaviour that would have saved them.
+
+### A scope blowout ends the cycle instead of being reviewed
+
+`runFinalScopeCheck` reported `outOfScopeCount: 12423`, turned it into a `medium`
+finding, and let the run continue into a review that could never succeed. Fifteen
+minutes later the adversary timed out. Beyond
+`loop.scope_blowout_file_threshold` (default 500) the cycle now aborts with
+`ScopeBlowoutError`, auditing `loop.scope_blowout` with a 20-path sample. The
+worktree is still preserved, so good commits stay recoverable. Ordinary scope
+creep is unchanged and remains a `medium` finding.
+
+### Review timing survives a failed review
+
+`phase_timing` only fired on success, so session `9217236c`'s audit log has a
+single `executing` event and nothing else -- the most expensive stretch of the
+run was the one with no number against it. A crashed or timed-out review now
+emits `phase_timing` with `verdict: null`, `isTimeout` and the error.
+
+## 0.1.0-beta.110
+
+### The harness owns its credential vault
+
+Credentials came from the memory-hybrid plugin's `credential_get` /
+`credential_store` MCP tools. That plugin is being retired, and its replacement
+is a *memory* backend — a retrieval system built to be searched by agents, which
+is the last place a PAT belongs. This is a hard cutover: the tool calls are gone,
+there is no fallback to them, and nothing needs migrating because the vault
+starts empty.
+
+The replacement is deliberately **not a tool**. Reaching a secret through a
+registered tool means any turn that can call tools can ask for an arbitrary
+service name; a library call cannot be reached at all. So the new vault ends up
+strictly safer than what it replaces rather than merely equivalent.
+
+- `adapters/credential-vault.ts` — AES-256-GCM, fresh 96-bit IV per write, in a
+  **dedicated** SQLite file rather than the state DB, which gets copied around
+  for debugging. The service name is bound in as additional authenticated data,
+  so an attacker with write access to the database cannot promote the
+  `github-readonly` row into `github-admin`.
+- The key comes from a 0600 key file, generated on first boot, with
+  `OAH_VAULT_KEY` overriding it for container injection. A known plaintext is
+  sealed under the active key and checked at open, so a **wrong key fails
+  immediately** instead of presenting as a procession of "credential not found"
+  errors that send an operator hunting for entries which are present but sealed.
+- `scripts/vault.mjs` for operators (`set` reads stdin, so no shell history),
+  including `rotate`, which re-encrypts every entry and stages the new key file
+  before committing so an interruption cannot leave a vault whose only key was
+  lost to a failed write. Rotation is refused when the key came from the
+  environment, since writing a key file the env var would keep overriding
+  bricks the vault on next boot.
+- A vault that will not open no longer takes the plugin down: the harness boots
+  with a sealed stub that carries the real reason into every read, and
+  `harness_health` reports `credential_vault_open` as a fatal check.
+
+### Two pre-existing holes this closed on the way
+
+Neither was the ask; both would have leaked the new key.
+
+- `buildSdkEnv` returned `undefined` when no explicit Anthropic key was
+  resolved, which tells the SDK to **inherit the full parent environment** —
+  silently bypassing the beta.57 denylist in exactly the configuration where it
+  still matters. It now always returns a filtered environment; the child still
+  gets no injected key, so the `/login` fallback is unchanged.
+- The denylist regex matches `API_KEY`, `ACCESS_KEY` and `PRIVATE_KEY`, but not
+  a bare `_KEY` suffix, so `OAH_VAULT_KEY` would have sailed straight through.
+  It is now denied explicitly, and `registerDeniedSdkEnvVar` lets an
+  operator-renamed key variable be denied too.
+
+Stripping the environment is necessary but not sufficient: the worker runs as
+the same uid as the harness, so it could still `cat vault.key`. The vault
+directory, `vault.key` and `vault.db` are therefore in the default
+`safety.path_denylist` as well. Both defences are required; neither substitutes
+for the other, and the tests assert both.
+
+`tests/beta110-credential-vault.test.mjs` (24 tests) drives the real vault
+against real files and a real database — this is a crypto and file-permission
+change, and a source-grep assertion cannot tell a working seal from a broken
+one. Three new entries in `scripts/mutation-check.mjs` (52 total, all caught)
+cover the environment strip, the key verifier, and the refusal to swallow an
+authentication failure.
+
 ## 0.1.0-beta.109
 
 ### The merge gate stops treating "not pass" as "not mergeable"

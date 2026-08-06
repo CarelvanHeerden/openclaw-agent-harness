@@ -313,6 +313,28 @@ export function runningSessionIds() {
  * existing try/catch already handles (marks the sub_task failed, sets
  * failed.err, returns). Returns a tuple so the caller can clear the timer.
  */
+/**
+ * beta.110: the committed tree bears no resemblance to what the plan declared,
+ * so there is nothing worth reviewing. Thrown by runFinalScopeCheck.
+ *
+ * Distinct from ordinary scope creep, which stays a `medium` review finding.
+ * This is the 12,423-out-of-scope-files case from PR #932 session `9217236c`.
+ */
+export class ScopeBlowoutError extends Error {
+    outOfScopeCount;
+    threshold;
+    sample;
+    constructor(outOfScopeCount, threshold, sample) {
+        super(`scope_blowout: ${outOfScopeCount} committed file(s) fall outside every sub-task's declared scope ` +
+            `(threshold ${threshold}). This is almost always a tool cache or build output written into the ` +
+            `worktree, not project work. Review was skipped because a diff this size cannot be reviewed; the ` +
+            `worktree is preserved so any good commits can be recovered. First paths: ${sample.slice(0, 5).join(", ")}`);
+        this.outOfScopeCount = outOfScopeCount;
+        this.threshold = threshold;
+        this.sample = sample;
+        this.name = "ScopeBlowoutError";
+    }
+}
 export class WorkerTimeoutError extends Error {
     seconds;
     limit;
@@ -2435,6 +2457,10 @@ export class OrchestratorLoop {
             // the elided LLM "final verification of scope boundaries" sub-task. Folds
             // any out-of-scope committed file into the review as a `fit`/`medium`
             // finding (never a hard fail). Same findings-return pattern.
+            // beta.110: ScopeBlowoutError is deliberately NOT caught here. It ends
+            // the run before the adversary is asked to review an unreviewable diff,
+            // and the outer handler preserves the worktree so the good commits that
+            // ARE in it stay recoverable. Ordinary scope creep is still a finding.
             const scopeFindings = await this.runFinalScopeCheck(sessionId, plan, cycle);
             if (scopeFindings.length > 0)
                 conventionFindings.push(...scopeFindings);
@@ -2630,6 +2656,19 @@ export class OrchestratorLoop {
                 this.deps.interactionLog?.log(sessionId, { event: "review_failed", phase: "review", cycle, isTimeout, error: String(err?.message ?? err) });
                 this.deps.state.audit("loop.review_failed", { sessionId, cycle, isTimeout, error: String(err?.message ?? err) }, sessionId);
                 this.deps.logger.error("[loop] adversary review crashed", { sessionId, cycle, isTimeout, err: String(err) });
+                // beta.110: time the review even when it fails, especially then.
+                //
+                // On PR #932 session `9217236c` the adversary hung for a full 900s and
+                // the session died -- and because phase_timing only fired on success,
+                // the audit log shows one `executing` event and nothing else. The
+                // single most expensive stretch of the run was the one stretch with no
+                // number against it, and the 15 minutes had to be inferred by
+                // subtracting timestamps.
+                this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
+                    verdict: null,
+                    isTimeout,
+                    error: String(err?.message ?? err).slice(0, 200),
+                });
                 // beta.62 (fix #2/#3): try to salvage the run rather than discard the
                 // completed, self-verified work. Returns a terminal outcome either way.
                 return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
@@ -3558,7 +3597,8 @@ export class OrchestratorLoop {
      * union is out-of-scope. This does NOT hard-fail -- it returns a ReviewFinding
      * (dimension `fit`, severity `medium`) so it folds into the adversary review,
      * mirroring runFinalVerifyChecks. Gated by loop.deterministic_final_scope_check
-     * (default true). Best-effort; never throws.
+     * (default true). Best-effort, EXCEPT for the beta.110 blowout tripwire,
+     * which throws ScopeBlowoutError to stop the cycle before review.
      *
      * Emits `loop.final_scope_check_ran` per run and
      * `loop.final_scope_check_out_of_scope` when out-of-scope files are found.
@@ -3605,6 +3645,32 @@ export class OrchestratorLoop {
         this.deps.interactionLog?.log(sessionId, { event: "final_scope_check_ran", phase: "review", cycle, committedCount: committed.length, outOfScopeCount: outOfScope.length });
         if (outOfScope.length === 0)
             return [];
+        // beta.110: a BLOWOUT is not scope creep, and must not become a finding.
+        //
+        // On PR #932 session `9217236c` this check fired with committedCount 12432
+        // / declaredCount 9 / outOfScopeCount 12423 -- an npm cache swept in by
+        // commit()'s `add -A` -- and then returned a `medium` finding and let the
+        // run continue. The adversary was handed a 12,432-file diff, hit
+        // adversary_timeout_seconds at 900s with no result, and the session died
+        // as `review_crash` having pushed nothing. Eight good commits were sitting
+        // in that worktree and never reached the PR.
+        //
+        // Reviewing a diff that size was never going to work, so spending fifteen
+        // minutes discovering that is pure loss. Stop here instead, with a reason
+        // that names the paths -- the worktree is preserved either way, so the good
+        // commits stay recoverable.
+        const blowoutAt = this.deps.config.loop.scope_blowout_file_threshold ?? 500;
+        if (blowoutAt > 0 && outOfScope.length >= blowoutAt) {
+            this.deps.state.audit("loop.scope_blowout", {
+                sessionId, cycle,
+                committedCount: committed.length,
+                declaredCount: declared.length,
+                outOfScopeCount: outOfScope.length,
+                threshold: blowoutAt,
+                sample: outOfScope.slice(0, 20),
+            }, sessionId);
+            throw new ScopeBlowoutError(outOfScope.length, blowoutAt, outOfScope.slice(0, 20));
+        }
         this.deps.state.audit("loop.final_scope_check_out_of_scope", { sessionId, cycle, outOfScope, declared }, sessionId);
         this.deps.logger.warn("[loop] beta.94 final-scope check: committed file(s) outside the declared sub-task scope union", { sessionId, cycle, outOfScope });
         return [

@@ -15,3 +15,10 @@ coverage/
 .cursor/
 *.swp
 .pnpm-store/
+# beta.110: never commit a credential vault or its key. The default location is
+# the harness data dir, but an operator pointing credentials.dir at the repo (or
+# running the CLI from here) must not be one `git add -A` away from publishing
+# every stored PAT.
+harness-vault/
+vault.key
+vault.db

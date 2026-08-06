@@ -30,8 +30,8 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statfsSync } from "node:fs";
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 /**
@@ -64,6 +64,40 @@ export function looksLikeDiskExhaustion(text: string): boolean {
   return DISK_EXHAUSTION_RE.test(text ?? "");
 }
 
+/**
+ * beta.110: package-manager and tooling caches that a `npm install` (or yarn,
+ * or pnpm) can drop INSIDE the worktree when the sandbox has no writable HOME.
+ *
+ * ProjectThanos PR #932, session `9217236c`: sub-task 9 needed the prisma CLI,
+ * ran an install, and npm wrote its content-addressed cache to
+ * `.npm-cache-tmp/_cacache/` in the worktree because `$HOME/.npm` was not
+ * writable. The next `commit()` ran its unscoped `git add -A` and swept 12,292
+ * cache blobs into the schema-format commit. The adversary was then handed a
+ * 12,432-file diff, could not review it inside `adversary_timeout_seconds`,
+ * and the whole run failed at 55.6 minutes having pushed nothing -- losing
+ * eight good commits that were already sitting in the worktree.
+ *
+ * Written to `.git/info/exclude`, NOT to the repo's `.gitignore`: the target
+ * repo is somebody else's, the exclusion is a property of how the harness runs
+ * tools rather than of their project, and `info/exclude` is per-clone and
+ * never appears in a diff. Patching the target repo's `.gitignore` (as the
+ * b109 post-mortem proposed) would fix one repo and leave every other one
+ * exposed to the same failure.
+ */
+export const HARNESS_EXCLUDE_PATTERNS: readonly string[] = [
+  ".npm-cache-tmp/",
+  ".npm-cache/",
+  ".yarn-cache/",
+  ".yarn/cache/",
+  ".pnpm-store/",
+  ".cache/_cacache/",
+  "_cacache/",
+  ".git-commit-msg.txt",
+  ".commit-msg-tmp.txt",
+];
+
+const EXCLUDE_HEADER = "# openclaw-agent-harness (beta.110): tooling scratch, never the project's own";
+
 export interface GitAdapterOptions {
   worktreesRoot: string;
   logger: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void; error: (m: string, meta?: unknown) => void };
@@ -73,6 +107,12 @@ export interface GitAdapterOptions {
    * (the env-wait "Monitor event" hallucination trigger). Default enabled;
    * set false to skip (e.g. non-node repos or tests).
    */
+  /**
+   * beta.110: untracked-file count at which a single top-level directory is
+   * treated as a runaway (tool cache, build output) and excluded from the
+   * commit. Default 500; 0 disables. See excludeRunawayUntracked.
+   */
+  runawayUntrackedThreshold?: number;
   bootstrapDeps?: boolean;
   /** beta.53: max ms for the bootstrap install before it is abandoned. Default 600000. */
   bootstrapTimeoutMs?: number;
@@ -1090,8 +1130,104 @@ esac
     return swept;
   }
 
+  /**
+   * beta.110: append the harness's own exclusions to `.git/info/exclude`.
+   *
+   * Idempotent, best-effort, and additive -- an existing exclude file is read
+   * and only missing patterns are appended, so a repo that already excludes
+   * something keeps it. Resolves the real git dir via `rev-parse --git-path`
+   * so this works in a linked worktree, where `.git` is a FILE pointing at
+   * `…/.git/worktrees/<name>` and writing `<worktree>/.git/info/exclude`
+   * directly would silently do nothing.
+   */
+  private async appendExcludes(worktreePath: string, patterns: string[]): Promise<string[]> {
+    const p = (await this.run(["-C", worktreePath, "rev-parse", "--git-path", "info/exclude"])).trim();
+    if (!p) return [];
+    const excludePath = isAbsolute(p) ? p : resolve(worktreePath, p);
+    await mkdir(dirname(excludePath), { recursive: true }).catch(() => {});
+    let current = "";
+    try { current = await readFile(excludePath, "utf8"); } catch { /* first write */ }
+    const have = new Set(current.split("\n").map((l) => l.trim()));
+    const missing = patterns.filter((x) => !have.has(x));
+    if (missing.length === 0) return [];
+    const body = (current.endsWith("\n") || current === "" ? current : `${current}\n`) +
+      `${EXCLUDE_HEADER}\n${missing.join("\n")}\n`;
+    await writeFile(excludePath, body, "utf8");
+    return missing;
+  }
+
+  async applyHarnessExcludes(worktreePath: string): Promise<string[]> {
+    try {
+      const added = await this.appendExcludes(worktreePath, [...HARNESS_EXCLUDE_PATTERNS]);
+      if (added.length > 0) {
+        this.opts.logger?.info?.("[git] beta.110: added harness tooling excludes", { worktreePath, added });
+      }
+      return added;
+    } catch {
+      return []; // never let housekeeping break a commit
+    }
+  }
+
+  /**
+   * beta.110: exclude any untracked directory that is pouring thousands of new
+   * files into the worktree, whatever it happens to be called.
+   *
+   * The named list above only helps for names we predicted. On PR #932 the
+   * directory was `.npm-cache-tmp`, but the container's npm cache was already
+   * at `/home/node/.npm-cache` with a writable HOME -- so nothing forced that
+   * path. A worker chose the name itself, presumably passing `--cache
+   * .npm-cache-tmp` to avoid touching the shared cache. The next worker is free
+   * to choose `.tmp-npm`, `build-cache`, or anything else, and a static list
+   * will not save us.
+   *
+   * So: count untracked files per top-level directory and exclude any that
+   * exceeds `runawayUntrackedThreshold`. No single sub-task legitimately
+   * introduces hundreds of NEW files under one root -- regenerating a bundle
+   * modifies files that are already tracked, which this does not count.
+   *
+   * Excluding rather than refusing is deliberate. The worker's real work is
+   * sitting in the same worktree, and on #932 eight good commits were lost
+   * because the run died. Drop the cache, keep the work, say so loudly.
+   */
+  async excludeRunawayUntracked(worktreePath: string): Promise<Array<{ dir: string; count: number }>> {
+    try {
+      const threshold = this.opts.runawayUntrackedThreshold ?? 500;
+      if (threshold <= 0) return [];
+      const out = await this.run(["-C", worktreePath, "status", "--porcelain", "--untracked-files=all"]);
+      const counts = new Map<string, number>();
+      for (const line of out.split("\n")) {
+        if (!line.startsWith("??")) continue;
+        const path = line.slice(3).trim().replace(/^"|"$/g, "");
+        const seg = path.split("/")[0];
+        // Only whole directories; a runaway is never thousands of root files.
+        if (!seg || seg === path) continue;
+        counts.set(seg, (counts.get(seg) ?? 0) + 1);
+      }
+      const runaway = [...counts.entries()]
+        .filter(([, n]) => n >= threshold)
+        .map(([dir, count]) => ({ dir, count }));
+      if (runaway.length === 0) return [];
+      await this.appendExcludes(worktreePath, runaway.map((r) => `${r.dir}/`));
+      this.opts.logger.warn(
+        `[git] beta.110: excluded ${runaway.length} runaway untracked director(ies) from this commit ` +
+          `-- ${runaway.map((r) => `${r.dir}/ (${r.count} files)`).join(", ")}. This is almost always a tool ` +
+          `cache or build output written into the worktree. The sub-task's real changes still commit.`,
+        { worktreePath, runaway, threshold, event: "harness.runaway_untracked_excluded" },
+      );
+      return runaway;
+    } catch {
+      return []; // never let housekeeping break a commit
+    }
+  }
+
   async commit(worktreePath: string, message: string, identity: { name: string; email: string }): Promise<string | null> {
     await this.sweepCommitMsgScratch(worktreePath);
+    // beta.110: both BEFORE the unscoped `add -A`. A tooling cache written into
+    // the worktree is not the project's work and must never reach a commit --
+    // the named list catches the ones we predicted, the magnitude check catches
+    // the ones we did not.
+    await this.applyHarnessExcludes(worktreePath);
+    await this.excludeRunawayUntracked(worktreePath);
     await this.run(["-C", worktreePath, "add", "-A"]);
     const status = await this.run(["-C", worktreePath, "status", "--porcelain"]);
     if (!status.trim()) return null;
