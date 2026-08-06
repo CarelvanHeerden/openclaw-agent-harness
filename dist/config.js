@@ -89,6 +89,7 @@ const DEFAULTS = {
         revise_max_adoptions_per_cycle: 3,
         early_exit_no_change_cycle: true,
         ship_when_no_blocking_findings: true,
+        auto_resolve_satisfied_contract: true,
         scope_blowout_file_threshold: 500,
         resume_ledger_guard_enabled: true,
         basename_rescue_enabled: true,
@@ -201,6 +202,7 @@ const DEFAULTS = {
         run_repo_check_scripts: false,
         check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
         check_script_timeout_seconds: 600,
+        typecheck_gate: true,
         check_script_heap_retry_mb: 8192,
     },
     logging: {

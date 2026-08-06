@@ -239,17 +239,27 @@ test("beta100: the mismatch question is built from git ground truth, not the wor
   // expected paths come from the contract's failed results, actual from git.
   assert.match(block, /failedResults\.map\(\(x\) => x\.path!\)/);
   assert.match(block, /result\.filesChanged/);
-  // the worker's message may only ever be quoted as a "stated reason".
-  assert.match(block, /stated reason/);
+  // The worker's message may only ever be passed along as a stated reason.
+  // b111 moved the question's prose into contract-clarify.ts, so the loop now
+  // hands `statedReason` to the builder rather than interpolating it here --
+  // the constraint is the same, the seam moved.
+  assert.match(block, /statedReason/);
+  assert.match(block, /extractStatedReason\(result\.finalMessage/);
+  assert.ok(
+    !/\$\{[^}]*finalMessage/.test(block),
+    "the raw worker message must never be interpolated into operator-facing text",
+  );
 });
 
 test("beta100: the pause reuses the b55 resumable machinery (worktree preserved)", () => {
   assert.match(loopSrc, /clarification_escalation_enabled !== false/);
   // b105 inserted the basename rescue between the mismatch test and the
   // escalation, so the window is wider than it was.
+  // b105 inserted the basename rescue and b111 the auto-resolution between the
+  // mismatch test and the escalation, so the window keeps widening.
   const block = loopSrc.slice(loopSrc.indexOf("const PATH_MISMATCH_KINDS"));
-  assert.match(block.slice(0, 9000), /clarify\.question =/);
-  assert.match(block.slice(0, 9000), /clarify\.seq = st\.seq/);
+  assert.match(block.slice(0, 12000), /clarify\.question = buildContractClarification/);
+  assert.match(block.slice(0, 12000), /clarify\.seq = st\.seq/);
 });
 
 // --- 7. config + version ------------------------------------------------------

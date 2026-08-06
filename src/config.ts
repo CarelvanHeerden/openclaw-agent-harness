@@ -135,6 +135,12 @@ export interface VerifyConfig {
   /** Per-script wall-clock timeout (seconds). Default 600. */
   check_script_timeout_seconds: number;
   /**
+   * beta.111: run the repo's typecheck script before review and block on
+   * errors in files this branch changed. Independent of
+   * run_repo_check_scripts, which stays off by default for cost. Default true.
+   */
+  typecheck_gate?: boolean;
+  /**
    * beta.70 (F4): V8 heap ceiling (MB) applied via NODE_OPTIONS on the RETRY
    * after a check script dies of a heap OOM (exit 134 / "Ineffective
    * mark-compacts near heap limit"). On Thanos-scale repos `tsc --noEmit`
@@ -690,6 +696,12 @@ export interface LoopConfig {
    */
   ship_when_no_blocking_findings?: boolean;
   /**
+   * beta.111: settle a contract mismatch from branch history instead of
+   * pausing for a human, when every expected path the sub-task did not touch
+   * was already changed earlier on this branch. Default true.
+   */
+  auto_resolve_satisfied_contract?: boolean;
+  /**
    * beta.110: out-of-scope committed file count at which a cycle is abandoned BEFORE adversary review, instead of folding the overage into the review as a `fit` finding.
    * On ProjectThanos PR #932 an in-worktree npm cache was swept into a commit by git add -A; the check reported 12423 out-of-scope files, produced a finding, and let the run continue -- the adversary then hit its 900s timeout on a 12432-file diff and the session died having pushed nothing, stranding eight good commits.
    * A diff that size cannot be reviewed, so discovering that slowly is pure loss.
@@ -1167,6 +1179,7 @@ const DEFAULTS: HarnessConfig = {
     revise_max_adoptions_per_cycle: 3,
     early_exit_no_change_cycle: true,
     ship_when_no_blocking_findings: true,
+    auto_resolve_satisfied_contract: true,
     scope_blowout_file_threshold: 500,
     resume_ledger_guard_enabled: true,
     basename_rescue_enabled: true,
@@ -1279,6 +1292,7 @@ const DEFAULTS: HarnessConfig = {
     run_repo_check_scripts: false,
     check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
     check_script_timeout_seconds: 600,
+    typecheck_gate: true,
     check_script_heap_retry_mb: 8192,
   },
   logging: {

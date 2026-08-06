@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.1.0-beta.111
+
+### A question a human can actually answer -- and, more often, no question at all
+
+ProjectThanos PR #932 again. The b110 revise paused on sub-task 5 and sat in
+`awaiting_clarification` for forty minutes at $2.99, waiting for a human to
+type one word. This is what it asked them:
+
+> Sub-task 5 ("Gate `to` end-of-day extension + tests") committed eff8908c but
+> the files do not match its contract. [...] Was the plan's path wrong, or the
+> worker's placement? (Reply with the path convention this repo should use --
+> it is folded into the brief and the plan re-derived -- or say "skip" [...])
+
+Every load-bearing phrase there is harness jargon. Somebody who did not build
+this cannot arbitrate between "the plan's path" and "the worker's placement",
+and "the path convention this repo should use" is not a thing most people can
+answer about their own repo on the spot. In a Slack thread with no harness
+author reading over your shoulder, that message is a dead end.
+
+- **Answer it from git instead of asking.** The escalation now checks whether
+  every expected path the sub-task did NOT touch was already changed by an
+  earlier commit on the same branch. When it was, the work exists, the contract
+  is satisfied by the branch as a whole, and the run carries on -- no pause. In
+  the b110 case `route.ts` had been changed for that exact finding by
+  `f2104246`, which the harness could see the whole time. Emits
+  `loop.contract_auto_resolved`. Strict on purpose: one expected path never
+  touched on this branch and it still asks.
+- **Say it plainly when a human is genuinely needed.** Outcome-first, technical
+  detail last, options phrased as what happens rather than what they mean.
+  Answers are unchanged (`skip`, a path, `abort`), so nothing downstream moves.
+- **Recommend, with the evidence attached.** When some but not all of the
+  missing paths were already changed on the branch, the question now says
+  `skip` looks right and names the files that support it. Never recommends
+  without that evidence.
+
+Two runs in a row escalated this same shape -- b109 sub-task 2 and b110
+sub-task 5 -- and both times the worker was right. Findings get written
+conditionally ("if the handler extends `to` unconditionally..."); a worker that
+reads the code, finds the condition already handled and commits only a test is
+doing the correct thing, and the contract check was reading that as a defect.
+
+New: `loop.auto_resolve_satisfied_contract` (default true).
+
+### A branch that does not compile can no longer reach a merge recommendation
+
+PR #932's head has carried this since the b108 revise introduced it in
+`ac1dc948`:
+
+```
+src/app/api/grc/continuity-exercises/[id]/route.ts(124,14): error TS2551:
+Property 'ownerUserId' does not exist on type 'ContinuityExerciseUpdateInput'.
+```
+
+Three revise runs did not catch it. The adversary reviews the diff, not the
+compiler, and that repo's CI does not run a typecheck, so CI stayed green over
+a branch that will not build. A worker's own verify sub-task did surface it
+once -- as a note in a report, gating nothing.
+
+- **Run the repo's own typecheck before review.** One script per cycle, chosen
+  from `package.json` (`typecheck`, `type-check`, `types`, `tsc`). Distinct
+  from `verify.run_repo_check_scripts`, which runs the whole check suite and
+  stays off by default on cost.
+- **Only errors in files this branch changed.** #932 also carries 71 unrelated
+  failing tests from a React version mismatch; a gate that blocked on
+  pre-existing breakage would block every run on that repo forever. Scoping to
+  changed files needs one typecheck run rather than a second one at the base
+  commit to diff against, and an error in a file you just edited is yours
+  either way.
+- **`high`, so it actually stops things.** Blocking under `isBlockingFinding`,
+  so the beta.109 no-blocking-findings gate keeps cycling instead of shipping,
+  and blocking under merge-recommendation, so it withholds the merge even on an
+  adversary pass.
+- **Never invents a green.** No typecheck script, no `plan_base_sha`, an
+  unparseable failure or a runner that throws all produce a skip note
+  (`loop.typecheck_gate_skipped`, `loop.typecheck_gate_unparsed`), never a pass.
+
+New: `verify.typecheck_gate` (default true). Emits `loop.typecheck_gate_ran`
+and `loop.typecheck_gate_failed`.
+
+
 ## 0.1.0-beta.110
 
 ### A tool cache can no longer ride into a commit on `git add -A`
