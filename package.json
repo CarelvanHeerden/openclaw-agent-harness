@@ -31,7 +31,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test tests/*.mjs",
+    "test": "npm run build && GIT_CONFIG_GLOBAL=$PWD/tests/fixtures/gitconfig GIT_CONFIG_SYSTEM=/dev/null node --test tests/*.mjs",
     "test:no-build": "node --test tests/*.mjs",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "lint": "eslint 'src/**/*.ts'",

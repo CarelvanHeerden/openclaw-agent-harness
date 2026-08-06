@@ -1234,6 +1234,17 @@ esac
     await this.run([
       "-C", worktreePath,
       "-c", `user.name=${identity.name}`,
+      // beta.110: never inherit the ambient `commit.gpgsign`.
+      //
+      // A harness commit is made by a bot with a synthetic identity, so there
+      // is no key to sign it with. On a host where the operator has set
+      // `commit.gpgsign = true` globally, git tries anyway and every harness
+      // commit dies with "gpg failed to sign the data / fatal: failed to write
+      // commit object" -- and in a container with no TTY, gpg cannot even
+      // prompt. Found while chasing an intermittent real-git test failure that
+      // only appeared under parallel load, where a contended gpg-agent turned
+      // a latent config dependency into a visible one.
+      "-c", "commit.gpgsign=false",
       "-c", `user.email=${identity.email}`,
       "commit", "-m", message,
     ]);

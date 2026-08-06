@@ -34,6 +34,24 @@ repo's `.gitignore`.
   commits were lost on #932; dropping the cache and keeping the work is the
   behaviour that would have saved them.
 
+### Harness commits no longer inherit the host's `commit.gpgsign`
+
+A harness commit is made by a bot with a synthetic identity and no signing key.
+On a host where the operator set `commit.gpgsign = true` globally, git tried to
+sign anyway and every harness commit died with "gpg failed to sign the data /
+fatal: failed to write commit object" -- and in a container there is no TTY for
+gpg to prompt on.
+
+Found while chasing a long-standing intermittent test failure: exactly one
+real-git test failed per suite run, a DIFFERENT one each time, and every one
+passed in isolation. Running three suites concurrently reproduced it on demand
+and named it -- a contended gpg-agent, not the unchecked-exit-code theory the
+symptom suggested. The suite now runs under its own `GIT_CONFIG_GLOBAL`
+(`tests/fixtures/gitconfig`) with `GIT_CONFIG_SYSTEM=/dev/null`, so no test can
+read configuration it does not own. That also fixes the CI-has-no-git-identity
+problem that #136 needed a follow-up commit for. Three concurrent suites went
+from 3, 4 and 6 failures to zero.
+
 ### A scope blowout ends the cycle instead of being reviewed
 
 `runFinalScopeCheck` reported `outOfScopeCount: 12423`, turned it into a `medium`

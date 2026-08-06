@@ -472,6 +472,13 @@ const MUTATIONS = [
     replace: "if (!line.trim())",
     tests: ["tests/beta110-scope-blowout.test.mjs"],
   },
+  {
+    name: "harness commits never sign (b110): a bot identity has no key",
+    file: "dist/adapters/git-worktree.js",
+    find: '"-c", "commit.gpgsign=false",',
+    replace: "",
+    tests: ["tests/beta110-scope-blowout.test.mjs"],
+  },
 ];
 
 function runTests(files) {
