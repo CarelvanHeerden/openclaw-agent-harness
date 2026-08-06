@@ -719,6 +719,13 @@ export interface LoopConfig {
    */
   ship_when_no_blocking_findings?: boolean;
   /**
+   * beta.110: out-of-scope committed file count at which a cycle is abandoned BEFORE adversary review, instead of folding the overage into the review as a `fit` finding.
+   * On ProjectThanos PR #932 an in-worktree npm cache was swept into a commit by git add -A; the check reported 12423 out-of-scope files, produced a finding, and let the run continue -- the adversary then hit its 900s timeout on a 12432-file diff and the session died having pushed nothing, stranding eight good commits.
+   * A diff that size cannot be reviewed, so discovering that slowly is pure loss.
+   * Set 0 to disable and keep the pre-b110 finding-only behaviour.
+   */
+  scope_blowout_file_threshold?: number;
+  /**
    * beta.105: also run the ledger reachability guard at RESUME, right after a
    * re-plan re-allocates the worktree, not only before adversary review.
    *
@@ -1190,6 +1197,7 @@ const DEFAULTS: HarnessConfig = {
     revise_max_adoptions_per_cycle: 3,
     early_exit_no_change_cycle: true,
     ship_when_no_blocking_findings: true,
+    scope_blowout_file_threshold: 500,
     resume_ledger_guard_enabled: true,
     basename_rescue_enabled: true,
     file_written_accepts_rename: true,

@@ -2,6 +2,57 @@
 
 ## 0.1.0-beta.110
 
+### A tool cache can no longer ride into a commit on `git add -A`
+
+ProjectThanos PR #932, session `9217236c`. Sub-task 9 needed the prisma CLI and
+ran an install with `--cache .npm-cache-tmp`. `GitAdapter.commit` then ran its
+unscoped `git add -A` and swept 12,291 cache blobs into the commit. The
+adversary was handed a 12,432-file diff, hit `adversary_timeout_seconds` at 900s
+with no result, and the session died at 55.6 minutes having pushed nothing --
+stranding eight good commits that were sitting in the worktree.
+
+The commit list makes the mechanism unambiguous. The worker made its own clean
+one-file commit (`f99afd53 chore(prisma): run prisma format on schema`); the
+harness's catch-all commit right after it (`fe310bea harness(9): ...`) is the
+one carrying all 12,291. This was ours, not the worker's, and not the target
+repo's `.gitignore`.
+
+- **Named excludes.** `commit()` now writes harness-owned patterns to
+  `.git/info/exclude` before staging: npm/yarn/pnpm cache roots and the
+  commit-message scratch files. Resolved via `rev-parse --git-path` so it works
+  in a linked worktree, where `.git` is a file. Never touches the target repo's
+  `.gitignore` -- the exclusion is a property of how the harness runs tools, not
+  of somebody else's project.
+- **A magnitude guard, because the name was a free choice.** The container's npm
+  cache was already at `/home/node/.npm-cache` with a writable `HOME`, so nothing
+  forced the in-tree path; the worker invented `.npm-cache-tmp` itself, and the
+  next one could invent anything. Any single top-level directory contributing
+  `runawayUntrackedThreshold` (default 500) or more UNTRACKED files is excluded
+  and logged. Modified tracked files do not count, so a bundle regeneration
+  (#932's legitimate 126-file `807c92a0`) is unaffected.
+- **Excluding, not refusing.** The sub-task's real work still commits. Eight good
+  commits were lost on #932; dropping the cache and keeping the work is the
+  behaviour that would have saved them.
+
+### A scope blowout ends the cycle instead of being reviewed
+
+`runFinalScopeCheck` reported `outOfScopeCount: 12423`, turned it into a `medium`
+finding, and let the run continue into a review that could never succeed. Fifteen
+minutes later the adversary timed out. Beyond
+`loop.scope_blowout_file_threshold` (default 500) the cycle now aborts with
+`ScopeBlowoutError`, auditing `loop.scope_blowout` with a 20-path sample. The
+worktree is still preserved, so good commits stay recoverable. Ordinary scope
+creep is unchanged and remains a `medium` finding.
+
+### Review timing survives a failed review
+
+`phase_timing` only fired on success, so session `9217236c`'s audit log has a
+single `executing` event and nothing else -- the most expensive stretch of the
+run was the one with no number against it. A crashed or timed-out review now
+emits `phase_timing` with `verdict: null`, `isTimeout` and the error.
+
+## 0.1.0-beta.110
+
 ### The harness owns its credential vault
 
 Credentials came from the memory-hybrid plugin's `credential_get` /

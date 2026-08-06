@@ -89,6 +89,7 @@ const DEFAULTS = {
         revise_max_adoptions_per_cycle: 3,
         early_exit_no_change_cycle: true,
         ship_when_no_blocking_findings: true,
+        scope_blowout_file_threshold: 500,
         resume_ledger_guard_enabled: true,
         basename_rescue_enabled: true,
         file_written_accepts_rename: true,
