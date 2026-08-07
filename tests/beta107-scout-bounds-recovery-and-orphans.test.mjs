@@ -355,7 +355,14 @@ test("beta107: the adopting sub-task survives b91 revise scoping", { skip }, () 
   ];
   const only = [HELP_FINDING];
   const before = computeReviseScope(plan, only, 2);
-  assert.ok(before.skipSeqs.includes(9), "reproduces b106: the adopter would be skipped");
+  // b106's shape: nobody declares the orphan file, so seq 9 intersects no
+  // finding. Pre-b113 that skipped seq 9 (and everyone else) and the fix never
+  // got made. b113 refuses to scope a cycle down to nobody, so the work now
+  // happens -- but only by running every sub-task, which is what adoption
+  // exists to avoid.
+  assert.equal(before.scoped, false, "b113: an empty selection falls back rather than skipping everyone");
+  assert.equal(before.reason, "no_subtask_owns_the_findings");
+  assert.ok(before.runSeqs.includes(1), "the fallback is indiscriminate: unrelated seq 1 runs too");
 
   const adopted = plan.map((s) => (s.seq === 9 ? { ...s, filesLikelyTouched: [...s.filesLikelyTouched, HELP_FINDING.file] } : s));
   const after = computeReviseScope(adopted, only, 2);

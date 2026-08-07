@@ -553,6 +553,62 @@ const MUTATIONS = [
     replace: "if (false)",
     tests: ["tests/beta112-local-run-defects.test.mjs"],
   },
+  {
+    name: "an info finding cannot force a full re-run (b113): the DR/BCP run re-ran all 8 sub-tasks twice on two of them",
+    file: "dist/orchestrator/revise-scope.js",
+    find: "&& !isBelowActionable(f)",
+    replace: "",
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
+  },
+  {
+    name: "medium is still actionable (b113): widening the floor would scope away real work",
+    file: "dist/orchestrator/revise-scope.js",
+    find: 'const BELOW_ACTIONABLE = new Set(["info", "informational", "low", "nit", "note"]);',
+    replace: 'const BELOW_ACTIONABLE = new Set(["info", "informational", "low", "nit", "note", "medium", "high", "critical"]);',
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
+  },
+  {
+    name: "scoping never selects nobody (b113): a cycle that dispatches no worker changes nothing",
+    file: "dist/orchestrator/revise-scope.js",
+    find: "if (runSeqs.length === 0) {",
+    replace: "if (false) {",
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs", "tests/beta103-plan-path-writeback.test.mjs", "tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
+  },
+  {
+    name: "the retry window widens (b113): retrying against the same deadline is the same experiment twice",
+    file: "dist/orchestrator/loop.js",
+    find: "return Math.min(cap, Math.round(base * Math.pow(mult, Math.max(0, attempt - 1))));",
+    replace: "return base;",
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
+  },
+  {
+    name: "the escalation is capped (b113): unbounded growth hands one stalled sub-task the whole turn budget",
+    file: "dist/orchestrator/loop.js",
+    find: "return Math.min(cap, Math.round(base * Math.pow(mult, Math.max(0, attempt - 1))));",
+    replace: "return Math.round(base * Math.pow(mult, Math.max(0, attempt - 1)));",
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
+  },
+  {
+    name: "a declared directory covers files beneath it (b113): a generated migration has no name to declare",
+    file: "dist/orchestrator/loop.js",
+    find: "if (!looksLikeDir)",
+    replace: "if (true)",
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
+  },
+  {
+    name: "a declared directory does not cover the world (b113): prefix matching must respect the separator",
+    file: "dist/orchestrator/loop.js",
+    find: "return f.startsWith(`${d}/`);",
+    replace: "return f.startsWith(d);",
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
+  },
+  {
+    name: "an ambiguous allow-list is not scouted (b113): scouting one of two candidates primes the plan for the wrong repo",
+    file: "dist/orchestrator/fable5-lead.js",
+    find: "if (entries.length !== 1)",
+    replace: "if (false)",
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
+  },
 ];
 
 function runTests(files) {

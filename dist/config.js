@@ -98,6 +98,9 @@ const DEFAULTS = {
         sdk_stream_open_timeout_seconds: 120,
         worker_stream_idle_warn_seconds: 90,
         worker_timeout_retry_enabled: true,
+        worker_timeout_max_attempts: 3,
+        worker_first_token_retry_multiplier: 3,
+        worker_first_token_retry_cap_seconds: 300,
         best_effort_verify: true,
         // beta.85: DEFAULT OFF. This fallback ran `tsc` + repo check-scripts LOCALLY
         // in the worktree when an observe VERIFY sub-task timed out -- the last
@@ -336,6 +339,24 @@ export function parseHarnessConfig(input) {
     // beta.64 (P0-1) / beta.65 (P0): clamp the PHASE-2 first-token watchdog window
     // (stream-open -> first-token). Phase 2 is always <10ms on success, so 30s is
     // generous; kept clamp [10, 1800] for operator flexibility.
+    if (typeof merged.loop.worker_timeout_max_attempts === "number") {
+        if (merged.loop.worker_timeout_max_attempts < 1)
+            merged.loop.worker_timeout_max_attempts = 1;
+        if (merged.loop.worker_timeout_max_attempts > 5)
+            merged.loop.worker_timeout_max_attempts = 5;
+    }
+    if (typeof merged.loop.worker_first_token_retry_multiplier === "number") {
+        if (merged.loop.worker_first_token_retry_multiplier < 1)
+            merged.loop.worker_first_token_retry_multiplier = 1;
+        if (merged.loop.worker_first_token_retry_multiplier > 10)
+            merged.loop.worker_first_token_retry_multiplier = 10;
+    }
+    if (typeof merged.loop.worker_first_token_retry_cap_seconds === "number") {
+        if (merged.loop.worker_first_token_retry_cap_seconds < 10)
+            merged.loop.worker_first_token_retry_cap_seconds = 10;
+        if (merged.loop.worker_first_token_retry_cap_seconds > 1800)
+            merged.loop.worker_first_token_retry_cap_seconds = 1800;
+    }
     if (typeof merged.loop.sdk_first_token_timeout_seconds === "number") {
         if (merged.loop.sdk_first_token_timeout_seconds < 10)
             merged.loop.sdk_first_token_timeout_seconds = 10;

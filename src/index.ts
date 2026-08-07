@@ -770,7 +770,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     },
 
 
-    runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow }) => {
+    runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, firstTokenTimeoutSecondsOverride }) => {
       const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
       const canUseTool = buildBashGuard(config.safety);
       const resolution = pat.resolve({
@@ -803,6 +803,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         dispatchHint,
         onStreamSlow,
         modelOverride,
+        firstTokenTimeoutSecondsOverride,
       );
     },
 

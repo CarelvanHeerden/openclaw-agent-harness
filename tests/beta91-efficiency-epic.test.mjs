@@ -296,7 +296,17 @@ test("wiring: sonnet-worker + index thread modelOverride to the SDK model", () =
   assert.match(worker, /modelOverride\?: string/);
   assert.match(worker, /model: modelOverride\?\.trim\(\) \|\| deps\.config\.models\.worker/);
   const index = S("src/index.ts");
-  assert.match(index, /runWorker: async \(\{ brief, subTask, plan, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow \}\)/);
+  // The list is matched by membership, not verbatim: b113 appended
+  // firstTokenTimeoutSecondsOverride to it, and a later fix will append
+  // something else. What this test is actually about is that modelOverride
+  // survives the destructure and reaches runWorkerCore.
+  const destructure = /runWorker: async \(\{([^}]*)\}\)/.exec(index)?.[1] ?? "";
+  for (const p of ["brief", "subTask", "plan", "resumeSessionId", "requester", "dispatchHint", "modelOverride", "onStreamSlow"]) {
+    assert.ok(
+      destructure.split(",").map((x) => x.trim()).includes(p),
+      `index.ts runWorker must still destructure ${p}; got: ${destructure.trim()}`,
+    );
+  }
   assert.match(index, /onStreamSlow,\s*modelOverride,/);
 });
 

@@ -795,6 +795,21 @@ export interface LoopConfig {
      */
     worker_timeout_retry_enabled?: boolean;
     /**
+     * beta.113: how many worker attempts a timeout-class failure gets in total,
+     * including the first. The b64 default of 2 retried sub-task 3 of the DR/BCP
+     * run once, against the same too-short first-token window, and then took the
+     * whole session down. Default 3. Clamped [1, 5].
+     */
+    worker_timeout_max_attempts?: number;
+    /**
+     * beta.113: multiply the first-token watchdog by this on each retry, so a
+     * genuinely slow start gets a wider window rather than the identical one that
+     * just failed. Default 3 (30s -> 90s -> 270s). Clamped [1, 10].
+     */
+    worker_first_token_retry_multiplier?: number;
+    /** beta.113: ceiling for the escalated first-token window. Default 300s. */
+    worker_first_token_retry_cap_seconds?: number;
+    /**
      * beta.64 (P0-3): BEST-EFFORT VERIFY. If a VERIFY sub-task (observe-mode, the
      * last/verify sub-task) times out even after the P0-2 retry, AND the prior
      * mutate sub-task's verify_probe was GREEN, AND git diff-stat shows only

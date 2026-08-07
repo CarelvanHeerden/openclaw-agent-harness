@@ -53,6 +53,8 @@ export interface ScopeFinding {
     file?: string | null;
     /** beta.92: dimension drives the unscopable-gate exemption for meta findings. */
     dimension?: string | null;
+    /** beta.113: severity gates the unscopable check; see BELOW_ACTIONABLE. */
+    severity?: string | null;
 }
 export interface ReviseScopeResult {
     /** true when the optimisation applied (some sub-tasks were skipped). */
@@ -62,7 +64,7 @@ export interface ReviseScopeResult {
     /** seq numbers to SKIP (mark completed_no_change without a worker turn). */
     skipSeqs: number[];
     /** why the optimisation did NOT apply, when scoped=false. */
-    reason?: "not_revise_cycle" | "no_findings" | "unscopable_findings" | "all_relevant";
+    reason?: "not_revise_cycle" | "no_findings" | "unscopable_findings" | "all_relevant" | "no_subtask_owns_the_findings";
     /** the normalised set of finding file basenames/paths used for matching (debug/audit). */
     findingFiles: string[];
 }

@@ -181,7 +181,13 @@ onStreamSlow,
  * this model instead of config.models.worker (mechanical scaffolding
  * sub-tasks -> cheaper/faster model). Undefined => config.models.worker.
  */
-modelOverride) {
+modelOverride, 
+/**
+ * beta.113: widen the phase-2 (stream-open -> first-token) watchdog for THIS
+ * call only. The loop escalates it per retry attempt, because retrying a slow
+ * start against an identical deadline just fails identically.
+ */
+firstTokenTimeoutSecondsOverride) {
     const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
     const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
         (dispatchHint ? `\n\n${dispatchHint}` : "");
@@ -200,7 +206,8 @@ modelOverride) {
             // beta.64 (P0-1) / beta.65 (P0): arm the split-phase watchdog on every
             // worker call. Phase 2 (stream-open -> first-token) default lowered to 30;
             // phase 1 (call-init -> stream-open) is the new beta.65 pre-stream cover.
-            firstTokenTimeoutSeconds: deps.config.loop.sdk_first_token_timeout_seconds ?? 30,
+            // beta.113: the loop widens this on a retry; see runWorkerCallWithRetry.
+            firstTokenTimeoutSeconds: firstTokenTimeoutSecondsOverride ?? deps.config.loop.sdk_first_token_timeout_seconds ?? 30,
             streamOpenTimeoutSeconds: deps.config.loop.sdk_stream_open_timeout_seconds ?? 120,
             // beta.90 (Feature 2): stream-slow liveness. Threshold from config; the
             // callback (when supplied by the loop) surfaces loop.worker_stream_slow +

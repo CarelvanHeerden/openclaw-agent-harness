@@ -116,7 +116,13 @@ test("beta64/P0-2: a worker timeout RETRIES once on a fresh session then goes te
     insertSession(state.db, "R1");
     let workerCalls = 0;
     const loop = new OrchestratorLoop(baseDeps(state, {
-      config: { loop: { ...config().loop, best_effort_verify: false, scripted_verify_fallback: false } },
+      config: { loop: {
+        // beta.113: pinned to 2 so this stays a test of the RETRY MECHANISM
+        // (re-invoke on a fresh session, then go terminal) rather than of the
+        // default attempt count, which b113 raised to 3. The default is
+        // asserted in beta113-drbcp-run-defects.test.mjs.
+        worker_timeout_max_attempts: 2,
+        ...config().loop, best_effort_verify: false, scripted_verify_fallback: false } },
       extra: {
         // FIRST sub-task (mutate) hangs both attempts -> retried once -> terminal.
         runWorker: async () => { workerCalls++; return HANG(); },
@@ -140,7 +146,13 @@ test("beta64/P0-2: worker_timeout_retry_enabled=false does NOT retry (single att
     insertSession(state.db, "R0");
     let workerCalls = 0;
     const loop = new OrchestratorLoop(baseDeps(state, {
-      config: { loop: { ...config().loop, worker_timeout_retry_enabled: false, best_effort_verify: false, scripted_verify_fallback: false } },
+      config: { loop: {
+        // beta.113: pinned to 2 so this stays a test of the RETRY MECHANISM
+        // (re-invoke on a fresh session, then go terminal) rather than of the
+        // default attempt count, which b113 raised to 3. The default is
+        // asserted in beta113-drbcp-run-defects.test.mjs.
+        worker_timeout_max_attempts: 2,
+        ...config().loop, worker_timeout_retry_enabled: false, best_effort_verify: false, scripted_verify_fallback: false } },
       extra: { runWorker: async () => { workerCalls++; return HANG(); } },
     }));
     const outcome = await loop.run("R0", brief);
@@ -157,7 +169,13 @@ test("beta64/P0-3: verify sub-task timeout + prior GREEN probe + clean diff => g
     insertSession(state.db, "B1");
     let prCalls = 0;
     const loop = new OrchestratorLoop(baseDeps(state, {
-      config: { loop: { ...config().loop, scripted_verify_fallback: false } }, // force best-effort path
+      config: { loop: {
+        // beta.113: pinned to 2 so this stays a test of the RETRY MECHANISM
+        // (re-invoke on a fresh session, then go terminal) rather than of the
+        // default attempt count, which b113 raised to 3. The default is
+        // asserted in beta113-drbcp-run-defects.test.mjs.
+        worker_timeout_max_attempts: 2,
+        ...config().loop, scripted_verify_fallback: false } }, // force best-effort path
       pushBranchAndOpenPr: async () => { prCalls++; return "https://github.com/o/r/pull/63"; },
       extra: {
         // seq-1 mutate completes green; seq-2 observe verify HANGS both attempts.
@@ -194,7 +212,13 @@ test("beta64/P0-3: verify timeout but prior probe RED => NOT eligible, no ship",
     // Prior mutate sub-task's verification FAILS (red probe) -> not shippable.
     const redProbes = () => ({ ...greenProbes(), commitMadeSince: async () => ({ made: false, detail: "no commit" }) });
     const loop = new OrchestratorLoop(baseDeps(state, {
-      config: { loop: { ...config().loop, scripted_verify_fallback: false } },
+      config: { loop: {
+        // beta.113: pinned to 2 so this stays a test of the RETRY MECHANISM
+        // (re-invoke on a fresh session, then go terminal) rather than of the
+        // default attempt count, which b113 raised to 3. The default is
+        // asserted in beta113-drbcp-run-defects.test.mjs.
+        worker_timeout_max_attempts: 2,
+        ...config().loop, scripted_verify_fallback: false } },
       buildVerifyProbes: redProbes,
       pushBranchAndOpenPr: async () => { prCalls++; return "unused"; },
       extra: {
@@ -262,7 +286,13 @@ test("beta64/P0-4: scripted verifier fallback RUNS tsc + allowlisted checks and 
     const localPlan = { ...plan, worktreePath: wt };
     let tscRan = 0; const scriptsRun = [];
     const loop = new OrchestratorLoop(baseDeps(state, {
-      config: { loop: { ...config().loop, best_effort_verify: false } }, // isolate the scripted path
+      config: { loop: {
+        // beta.113: pinned to 2 so this stays a test of the RETRY MECHANISM
+        // (re-invoke on a fresh session, then go terminal) rather than of the
+        // default attempt count, which b113 raised to 3. The default is
+        // asserted in beta113-drbcp-run-defects.test.mjs.
+        worker_timeout_max_attempts: 2,
+        ...config().loop, best_effort_verify: false } }, // isolate the scripted path
       extra: {
         runLead: async () => localPlan,
         runWorker: async ({ subTask }) => {
@@ -291,7 +321,13 @@ test("beta64/P0-4: scripted verifier fallback reports FAIL when a check script e
     const wt = makeWorktreeWithChecks();
     const localPlan = { ...plan, worktreePath: wt };
     const loop = new OrchestratorLoop(baseDeps(state, {
-      config: { loop: { ...config().loop, best_effort_verify: false } },
+      config: { loop: {
+        // beta.113: pinned to 2 so this stays a test of the RETRY MECHANISM
+        // (re-invoke on a fresh session, then go terminal) rather than of the
+        // default attempt count, which b113 raised to 3. The default is
+        // asserted in beta113-drbcp-run-defects.test.mjs.
+        worker_timeout_max_attempts: 2,
+        ...config().loop, best_effort_verify: false } },
       extra: {
         runLead: async () => localPlan,
         runWorker: async ({ subTask }) => {

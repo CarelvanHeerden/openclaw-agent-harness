@@ -19,6 +19,7 @@
  *
  *   node scripts/local-drive.mjs check
  *   node scripts/local-drive.mjs start <brief.json> [--budget 20] [--watch]
+ *   node scripts/local-drive.mjs run <request.md> [--budget 20] [--watch]
  *   node scripts/local-drive.mjs watch <sessionId>
  *   node scripts/local-drive.mjs answer <sessionId> "<answer>"
  *   node scripts/local-drive.mjs audit <sessionId> [--grep pat] [--tail 40] [--json]
@@ -207,6 +208,41 @@ async function cmdStart(briefPath, opts) {
   else console.log(`watch it: node scripts/local-drive.mjs watch ${sessionId}`);
 }
 
+/**
+ * The primary entry point, driven from a file.
+ *
+ * `harness_run` takes the raw request and classifies + crystallises it itself,
+ * which is what OpenClaw does with a prompt someone pastes into Slack. Reading
+ * it from a file rather than argv keeps a multi-thousand-character spec --
+ * markdown, code fences, quotes and all -- out of shell quoting, where it would
+ * otherwise arrive mangled and the harness would be blamed for the difference.
+ *
+ * Unlike `start`, this can come back with a clarifying question or a rejection
+ * instead of a session, so it does not assume it got one.
+ */
+async function cmdRun(requestPath, opts) {
+  if (!requestPath || !existsSync(requestPath)) die(`request file not found: ${requestPath}`);
+  const request = readFileSync(requestPath, "utf8");
+  const config = await boot();
+  const requester = (config.slack?.authorised_users ?? ["U_LOCAL"])[0];
+  console.log(`request     ${requestPath} (${request.length} chars)`);
+  const res = await call("harness_run", {
+    requester,
+    request,
+    budgetUsd: opts.budget ?? config.budgets?.session_default_usd ?? 20,
+  });
+  const out = text(res);
+  console.log(out);
+  const sessionId = res?.details?.sessionId ?? /([0-9a-f]{8}-[0-9a-f-]{27,})/.exec(out)?.[1];
+  if (!sessionId) {
+    console.log(`\nNo session started -- the harness asked something or declined. Read the output above.`);
+    return;
+  }
+  console.log(`\nsession ${sessionId}`);
+  if (opts.watch) await watch(config, sessionId);
+  else console.log(`watch it: node scripts/local-drive.mjs watch ${sessionId}`);
+}
+
 const TERMINAL = new Set(["done", "shipped", "failed", "cancelled", "merged", "aborted"]);
 
 async function watch(config, sessionId) {
@@ -323,6 +359,9 @@ try {
       break;
     case "start":
       await cmdStart(positional[0], { budget: flag("budget") ? Number(flag("budget")) : undefined, watch: has("watch") });
+      break;
+    case "run":
+      await cmdRun(positional[0], { budget: flag("budget") ? Number(flag("budget")) : undefined, watch: has("watch") });
       break;
     case "watch":
       await cmdWatch(positional[0]);

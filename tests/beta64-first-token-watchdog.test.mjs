@@ -137,7 +137,10 @@ test("beta64/P0-1: sonnet-worker maps first_token_timeout status + carries strea
   const src = S("src/orchestrator/sonnet-worker.ts");
   assert.match(src, /"first_token_timeout"/);
   // beta.65: phase-2 default lowered 90 -> 30 in the split-phase redesign.
-  assert.match(src, /firstTokenTimeoutSeconds: deps\.config\.loop\.sdk_first_token_timeout_seconds \?\? 30/);
+  // beta.113: the loop now widens this per retry attempt, so the config value
+  // is the FALLBACK rather than the only source. Both halves still matter:
+  // the override must be consulted, and the 30s default must survive.
+  assert.match(src, /firstTokenTimeoutSecondsOverride \?\? deps\.config\.loop\.sdk_first_token_timeout_seconds \?\? 30/);
   assert.match(src, /streamOpened: sdkResult\.streamOpened/);
   assert.match(src, /msToFirstToken: sdkResult\.msToFirstToken/);
 });

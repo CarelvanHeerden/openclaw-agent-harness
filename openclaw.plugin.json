@@ -585,6 +585,27 @@
             "type": "boolean",
             "default": true,
             "description": "beta.107: when an adversary finding names a file that no sub-task's plan claims, let the nearest sub-task adopt it so a worker is actually asked to fix it. b92 broadcasts such a finding to every sub-task as context, which never drops it but never targets it either, and b91 scoping then skips those sub-tasks because their files intersect no finding. On b106 the help-content.ts convention finding was raised in both revise cycles, owned by nobody, and could not have been closed however many cycles the run was given. Adoption prefers a sub-task the finding's own prose names, else the nearest in the directory tree, and leaves a finding that matches neither as a pure broadcast."
+          },
+          "worker_timeout_max_attempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "default": 3,
+            "description": "beta.113: total worker attempts for a timeout-class failure, including the first. Two attempts was one retry, against the same too-short first-token window."
+          },
+          "worker_first_token_retry_multiplier": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 3,
+            "description": "beta.113: widen the first-token watchdog on each retry, so a slow start gets a wider window instead of the identical one that just failed (30s -> 90s -> 270s). 1 disables escalation."
+          },
+          "worker_first_token_retry_cap_seconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 1800,
+            "default": 300,
+            "description": "beta.113: ceiling for the escalated first-token window."
           }
         }
       },

@@ -55,6 +55,38 @@ const META_DIMENSIONS = new Set(["fit", "runtime"]);
 function isMetaDimension(f) {
     return META_DIMENSIONS.has((f.dimension ?? "").trim().toLowerCase());
 }
+/**
+ * beta.113: a finding below medium cannot force the cycle unscopable.
+ *
+ * The DR/BCP run re-ran all EIGHT sub-tasks in cycle 2 and again in cycle 3.
+ * Both times the gate tripped on the same two findings:
+ *
+ *   quality / info / file=NULL  "Test coverage gaps beyond the four required
+ *                                categories"
+ *   quality / info / file=NULL  "Remaining coverage gaps beyond the four
+ *                                mandated categories (unchanged from prior)"
+ *
+ * `quality` is diff-addressable so b92's meta exemption did not apply, and
+ * neither carried a file, so `anyFindingUnfiled` was true and the optimisation
+ * switched itself off. The one finding that actually needed work in cycle 2 was
+ * a single medium naming exactly one file.
+ *
+ * An `info` finding does not drive a revise: it is not blocking, no worker is
+ * dispatched to close it, and the loop will ship with it open. Letting one
+ * decide that every sub-task must re-run inverts its own severity. The cost was
+ * not theoretical -- cycle 2 spent six minutes re-running eight sub-tasks to
+ * change one file, and cycle 3 was re-running them again when a worker stalled
+ * and took the whole 56-minute, $9.41 run down with it.
+ *
+ * Matches the severity floor used everywhere else (isBlockingFinding, b109's
+ * cycling gate, b112's merge gate): medium and above is actionable.
+ */
+const BELOW_ACTIONABLE = new Set(["info", "informational", "low", "nit", "note"]);
+function isBelowActionable(f) {
+    const sev = (f.severity ?? "").trim().toLowerCase();
+    // An absent severity is treated as actionable: unknown is not a licence to skip.
+    return sev !== "" && BELOW_ACTIONABLE.has(sev);
+}
 /** Normalise a path for loose intersection: lowercase, strip leading ./, collapse slashes. */
 function norm(p) {
     return p
@@ -124,7 +156,7 @@ export function computeReviseScope(subTasks, findings, cycle) {
     // file-less META (fit|runtime) finding is expected + broadcast, NOT a reason
     // to run every sub-task. (Pre-b92 this considered ALL findings, so one
     // unfiled runtime finding nuked F1 scoping.)
-    const anyFindingUnfiled = (findings ?? []).some((f) => !(f.file ?? "").trim() && !isMetaDimension(f));
+    const anyFindingUnfiled = (findings ?? []).some((f) => !(f.file ?? "").trim() && !isMetaDimension(f) && !isBelowActionable(f));
     if (anyFindingUnfiled || fs.length === 0) {
         return {
             scoped: false,
@@ -172,6 +204,21 @@ export function computeReviseScope(subTasks, findings, cycle) {
     const skipSeqs = allSeqs.filter((s) => !keep.has(s));
     if (skipSeqs.length === 0) {
         return { scoped: false, runSeqs: allSeqs, skipSeqs: [], reason: "all_relevant", findingFiles: fs };
+    }
+    // beta.113: never scope a cycle down to nothing.
+    //
+    // Surfaced while fixing the severity gate above. On the DR/BCP run the only
+    // actionable finding named `src/lib/help/help-content.ts`, which no sub-task
+    // declared -- the same reason it was also reported out-of-scope. With the
+    // gate correctly no longer tripping on the two `info` findings, scoping
+    // engaged and selected ZERO sub-tasks: a cycle that dispatches nobody,
+    // changes nothing, and (post-b108) exits early having burned a review.
+    //
+    // An empty selection is not evidence that there is no work; it is evidence
+    // that we cannot tell whose work it is. Fall back to the unscoped set, which
+    // is what the pre-b113 gate would have done anyway.
+    if (runSeqs.length === 0) {
+        return { scoped: false, runSeqs: allSeqs, skipSeqs: [], reason: "no_subtask_owns_the_findings", findingFiles: fs };
     }
     return { scoped: true, runSeqs, skipSeqs, findingFiles: fs };
 }
