@@ -46,6 +46,34 @@ export declare function collectExpectedFiles(plan: LeadPlan): string[];
  * file OUTSIDE this union is out-of-scope. Pure/deterministic.
  */
 export declare function collectDeclaredScopeFiles(plan: LeadPlan): string[];
+/**
+ * beta.113: the phase-2 (stream-open -> first-token) window for one attempt.
+ *
+ * Escalating, because the DR/BCP run proved a fixed one does not survive a slow
+ * start: sub-task 3 timed out at 30s, the b64 retry fired, and attempt 2 timed
+ * out at 30s again. Exported so the escalation is testable without an SDK.
+ */
+export declare function firstTokenWindowForAttempt(attempt: number, baseSeconds: number, multiplier: number, capSeconds: number): number;
+/**
+ * beta.113: does a declared scope entry cover this committed file?
+ *
+ * The DR/BCP run declared `prisma/migrations` and then committed
+ * `prisma/migrations/20260807102822_continuity_resilience/migration.sql`. That
+ * was reported out-of-scope in both cycles, because the matcher compares two
+ * file paths and a directory is not one. The file was the entire point of the
+ * sub-task, and the spec demanded it -- `prisma migrate dev --name
+ * continuity_resilience` -- so nothing could have declared its real name in
+ * advance: migrate stamps a timestamp at generation time.
+ *
+ * A false out-of-scope entry is not cosmetic. b110 made a large enough count
+ * abort the cycle outright, and every entry here is noise in the diff the
+ * adversary reads.
+ *
+ * A declared entry is treated as a directory when it ends in a slash or glob,
+ * or when its last segment carries no extension. `prisma/migrations` covers
+ * files beneath it; `src/app/api/foo/route.ts` still only covers itself.
+ */
+export declare function declaredCovers(committedFile: string, declared: string): boolean;
 import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 import { type VerifyProbes } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
@@ -234,6 +262,8 @@ export interface OrchestratorDeps {
             tokensOut: number;
             label: string;
         }) => void;
+        /** beta.113: per-attempt phase-2 watchdog widening; see runWorkerCallWithRetry. */
+        firstTokenTimeoutSecondsOverride?: number;
     }) => Promise<WorkerResult>;
     runAdversary: (params: {
         brief: CrystallisedBrief;

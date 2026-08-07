@@ -77,6 +77,51 @@ export function collectDeclaredScopeFiles(plan) {
     }
     return [...set];
 }
+/**
+ * beta.113: the phase-2 (stream-open -> first-token) window for one attempt.
+ *
+ * Escalating, because the DR/BCP run proved a fixed one does not survive a slow
+ * start: sub-task 3 timed out at 30s, the b64 retry fired, and attempt 2 timed
+ * out at 30s again. Exported so the escalation is testable without an SDK.
+ */
+export function firstTokenWindowForAttempt(attempt, baseSeconds, multiplier, capSeconds) {
+    const base = Math.max(1, baseSeconds);
+    const mult = Math.max(1, multiplier);
+    const cap = Math.max(base, capSeconds);
+    return Math.min(cap, Math.round(base * Math.pow(mult, Math.max(0, attempt - 1))));
+}
+/**
+ * beta.113: does a declared scope entry cover this committed file?
+ *
+ * The DR/BCP run declared `prisma/migrations` and then committed
+ * `prisma/migrations/20260807102822_continuity_resilience/migration.sql`. That
+ * was reported out-of-scope in both cycles, because the matcher compares two
+ * file paths and a directory is not one. The file was the entire point of the
+ * sub-task, and the spec demanded it -- `prisma migrate dev --name
+ * continuity_resilience` -- so nothing could have declared its real name in
+ * advance: migrate stamps a timestamp at generation time.
+ *
+ * A false out-of-scope entry is not cosmetic. b110 made a large enough count
+ * abort the cycle outright, and every entry here is noise in the diff the
+ * adversary reads.
+ *
+ * A declared entry is treated as a directory when it ends in a slash or glob,
+ * or when its last segment carries no extension. `prisma/migrations` covers
+ * files beneath it; `src/app/api/foo/route.ts` still only covers itself.
+ */
+export function declaredCovers(committedFile, declared) {
+    if (pathMatches(committedFile, declared))
+        return true;
+    const d = declared.trim().replace(/\/+$/, "").replace(/\/\*+$/, "").replace(/^\.\//, "");
+    if (!d)
+        return false;
+    const last = d.slice(d.lastIndexOf("/") + 1);
+    const looksLikeDir = !last.includes(".") || declared.trim().endsWith("/") || /\/\*+$/.test(declared.trim());
+    if (!looksLikeDir)
+        return false;
+    const f = committedFile.trim().replace(/^\.\//, "");
+    return f.startsWith(`${d}/`);
+}
 /** beta.34: extract the PR number from a GitHub PR URL (.../pull/846). */
 function parsePrNumber(prUrl) {
     const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
@@ -3105,7 +3150,9 @@ export class OrchestratorLoop {
     async runWorkerCallWithRetry(p) {
         const { sessionId, st, cycle, brief, plan, requester, dispatchHint } = p;
         const retryEnabled = this.deps.config.loop.worker_timeout_retry_enabled !== false;
-        const maxAttempts = retryEnabled ? 2 : 1;
+        // beta.113: two attempts was one retry. Three gives the escalated
+        // first-token window (below) somewhere to escalate to.
+        const maxAttempts = retryEnabled ? Math.max(2, this.deps.config.loop.worker_timeout_max_attempts ?? 3) : 1;
         // beta.94 (Feature 2): capture the sub-task base sha ONCE so the idle-no-work
         // "did this sub-task touch files" probe can diff <subTaskBase>..HEAD. Absent
         // probe => the idle detector still tracks counts but the no-writes gate is
@@ -3116,6 +3163,25 @@ export class OrchestratorLoop {
         let lastFirstToken = false;
         let lastSummary = "";
         let lastFailErr = "";
+        // beta.113: widen the first-token deadline on each retry.
+        //
+        // The DR/BCP run died here. Sub-task 3 hit `phase2_first_token` on attempt
+        // 1, the b64 retry fired exactly as designed, and attempt 2 hit
+        // `phase2_first_token` again -- both against the same 30-second window.
+        // Retrying a slow start against an identical deadline is not a retry, it is
+        // the same experiment twice, and it cost a 56-minute, $9.41 run that had
+        // eleven typecheck-clean commits and one blocking finding left to fix.
+        //
+        // 30s is fine for a small dispatch and tight for a large one: this worker
+        // carried a revise context, a dispatch hint and 18 ingested convention
+        // files, and a model that thinks before emitting can spend longer than that
+        // before its first visible token. So each attempt gets the previous
+        // window multiplied, capped, and always inside the full-turn timeout that
+        // bounds everything anyway.
+        const baseFirstToken = this.deps.config.loop.sdk_first_token_timeout_seconds ?? 30;
+        const mult = this.deps.config.loop.worker_first_token_retry_multiplier ?? 3;
+        const cap = Math.max(baseFirstToken, this.deps.config.loop.worker_first_token_retry_cap_seconds ?? 300);
+        const firstTokenFor = (attempt) => firstTokenWindowForAttempt(attempt, baseFirstToken, mult, cap);
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             if (attempt > 1) {
                 // beta.64 (P0-2): audit the retry BEFORE it runs, so a durable trail
@@ -3165,7 +3231,12 @@ export class OrchestratorLoop {
                 });
                 result = await withTimeout(Promise.race([
                     // beta.91 (Fix 3): mechanical sub-tasks -> cheaper worker model.
-                    this.deps.runWorker({ brief, subTask: st, plan, requester, dispatchHint, modelOverride: selectWorkerModel(st, this.deps.config.models), onStreamSlow }),
+                    this.deps.runWorker({
+                        brief, subTask: st, plan, requester, dispatchHint,
+                        modelOverride: selectWorkerModel(st, this.deps.config.models),
+                        onStreamSlow,
+                        firstTokenTimeoutSecondsOverride: firstTokenFor(attempt),
+                    }),
                     idleAbortPromise,
                 ]), this.deps.config.loop.worker_timeout_seconds);
             }
@@ -3233,7 +3304,7 @@ export class OrchestratorLoop {
                 const phase = result?.streamOpened ? "phase2_first_token" : "phase1_stream_open";
                 this.deps.state.audit("loop.worker_first_token_timeout", {
                     sessionId, seq: st.seq, attempt, phase, streamOpened: !!result?.streamOpened,
-                    sdk_first_token_timeout_seconds: this.deps.config.loop.sdk_first_token_timeout_seconds ?? 30,
+                    sdk_first_token_timeout_seconds: firstTokenFor(attempt),
                     sdk_stream_open_timeout_seconds: this.deps.config.loop.sdk_stream_open_timeout_seconds ?? 120,
                 }, sessionId);
                 lastSummary = result?.streamOpened
@@ -3776,7 +3847,7 @@ export class OrchestratorLoop {
         // the shared tolerant path matcher (route-group / suffix / basename-dir) --
         // the same normalisation every per-file verifier uses, so we don't
         // false-flag a route-group-normalised path the worker legitimately wrote.
-        const outOfScope = committed.filter((f) => !declared.some((d) => pathMatches(f, d)));
+        const outOfScope = committed.filter((f) => !declared.some((d) => declaredCovers(f, d)));
         this.deps.state.audit("loop.final_scope_check_ran", { sessionId, cycle, committedCount: committed.length, declaredCount: declared.length, outOfScopeCount: outOfScope.length }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "final_scope_check_ran", phase: "review", cycle, committedCount: committed.length, outOfScopeCount: outOfScope.length });
         if (outOfScope.length === 0)

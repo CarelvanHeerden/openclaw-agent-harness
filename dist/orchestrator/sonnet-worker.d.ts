@@ -224,6 +224,12 @@ onStreamSlow?: (info: {
  * this model instead of config.models.worker (mechanical scaffolding
  * sub-tasks -> cheaper/faster model). Undefined => config.models.worker.
  */
-modelOverride?: string): Promise<WorkerResult>;
+modelOverride?: string, 
+/**
+ * beta.113: widen the phase-2 (stream-open -> first-token) watchdog for THIS
+ * call only. The loop escalates it per retry attempt, because retrying a slow
+ * start against an identical deadline just fails identically.
+ */
+firstTokenTimeoutSecondsOverride?: number): Promise<WorkerResult>;
 export {};
 //# sourceMappingURL=sonnet-worker.d.ts.map

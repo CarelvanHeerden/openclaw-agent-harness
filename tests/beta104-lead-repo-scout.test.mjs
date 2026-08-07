@@ -131,10 +131,14 @@ test("beta104: an EMPTY report is treated as no report, not as an empty authorit
 });
 
 test("beta104: no resolvable repoHint skips the scout rather than guessing a repo", { skip }, async () => {
+  // This fixture's allow-list is `Stitch-Vercel/*`, a glob, which names no
+  // single repo to clone. b113 lets a SOLE CONCRETE allow-list entry stand in
+  // for a missing hint; a glob is still not one, so the skip holds and only
+  // the label sharpened to say why.
   const { d, calls } = deps();
   const plan = await runLeadPlanner({ ...BRIEF(), repoHint: undefined }, d);
   assert.equal(calls.scout, 0);
-  assert.equal(plan.scout.skippedReason, "no_repo_hint");
+  assert.equal(plan.scout.skippedReason, "no_repo_hint_and_no_sole_allowed_repo");
 });
 
 test("beta104: a repoHint outside the allow-list is never checked out", { skip }, async () => {

@@ -29,6 +29,30 @@ import { boundScoutReportDetailed, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.j
  *
  * Skipped for a revise, where `pinnedBranch` must match the existing PR.
  */
+/**
+ * beta.113: which repo should the scout open?
+ *
+ * The brief's hint when it has one. Otherwise the allow-list, but only when it
+ * names exactly one concrete repo -- two candidates means the lead has a real
+ * choice and scouting one could prime the plan for the wrong codebase, and a
+ * glob names no single repo to clone.
+ *
+ * Exists because the DR/BCP run logged `skippedReason=no_repo_hint` and then
+ * planned eight sub-tasks for a 6,769-file repo blind, while `repos.allowed`
+ * held the single repo the loop went on to clone twenty seconds later.
+ */
+export function resolveScoutRepo(repoHint, allowed) {
+    if (repoHint && repoHint.includes("/"))
+        return repoHint;
+    const entries = (allowed ?? []).map((r) => (r ?? "").trim()).filter(Boolean);
+    // The WHOLE list must be that one repo. Filtering globs out first and taking
+    // the last concrete entry standing would read `["owner/repo", "other/*"]` as
+    // unambiguous, when the run may legitimately target anything under `other/`.
+    if (entries.length !== 1)
+        return undefined;
+    const only = entries[0];
+    return only.includes("/") && !only.includes("*") ? only : undefined;
+}
 export function sessionScopedBranch(branch, sessionId) {
     const suffix = (sessionId ?? "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase();
     if (!suffix)
@@ -224,13 +248,30 @@ export async function runLeadPlanner(brief, deps) {
     // planning prompt is then byte-identical to b103's.
     let scoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
     if (deps.config.loop?.lead_repo_scout_enabled !== false && deps.scoutRepo) {
-        const repoForScout = brief.repoHint && brief.repoHint.includes("/") ? brief.repoHint : undefined;
         // Only scout a repo the run is actually allowed to touch. An unresolvable
         // or disallowed hint means the lead picks the repo itself, so there is no
         // worktree we could legitimately allocate at this point.
         const allowed = deps.config.repos?.allowed ?? [];
+        // beta.113: fall back to the allow-list when the brief carries no hint.
+        //
+        // The DR/BCP run logged `lead_scout ran=false skippedReason=no_repo_hint`
+        // and then planned eight sub-tasks for a 6,769-file repo without ever
+        // opening it. The repo was never ambiguous: `repos.allowed` held exactly
+        // one concrete entry, and the loop cloned precisely that one about twenty
+        // seconds later. The gate was reading `brief.repoHint`, which the
+        // crystalliser only sets when the request text happens to name a repo --
+        // and a spec written for humans usually does not.
+        //
+        // Exactly one concrete entry, or nothing. Two candidates means the lead
+        // genuinely has a choice to make and scouting one of them could prime the
+        // plan for the wrong codebase; a glob names no single repo to clone.
+        const repoForScout = resolveScoutRepo(brief.repoHint, allowed);
         if (!repoForScout) {
-            scoutOutcome = { ran: false, reportChars: 0, skippedReason: "no_repo_hint" };
+            scoutOutcome = {
+                ran: false,
+                reportChars: 0,
+                skippedReason: allowed.length > 0 ? "no_repo_hint_and_no_sole_allowed_repo" : "no_repo_hint",
+            };
         }
         else if (allowed.length > 0 && !isRepoAllowed(repoForScout, allowed)) {
             scoutOutcome = { ran: false, reportChars: 0, skippedReason: "repo_not_allowed" };

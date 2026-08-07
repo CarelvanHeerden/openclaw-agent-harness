@@ -1,5 +1,129 @@
 # Changelog
 
+## 0.1.0-beta.113
+
+### The DR/BCP brief: everything worked, and the run still produced nothing
+
+This is the disaster-recovery-and-continuity brief OpenClaw spent five revise
+cycles and sixty-one commits on. Run locally against ProjectThanos, the harness
+built it in eleven: the Prisma models and migration, all eight API routes, the
+route tests, the list page, the sidebar entry and the help content. 1,818
+insertions across twelve files. The typecheck gate passed clean in both cycles.
+The adversary went from ten findings with four blocking in cycle 1 to eight with
+one blocking in cycle 2. It was one cycle from shipping.
+
+Then a worker did not answer, and 56 minutes and $9.41 of reviewed,
+typecheck-clean work went to a branch nobody opened a PR for.
+
+Four defects, all of them in the machinery around the work rather than the work
+itself.
+
+#### A worker that did not answer in 30 seconds took the whole run with it
+
+Sub-task 3 of cycle 3 opened its stream and emitted nothing for thirty seconds.
+The b64 retry fired, exactly as designed. Attempt 2 opened its stream and
+emitted nothing for thirty seconds. The session went terminal.
+
+```
+loop.worker_first_token_timeout  seq=3 attempt=1 phase=phase2_first_token sdk_first_token_timeout_seconds=30
+loop.worker_timeout_retry        seq=3 attempt=2 priorKind=first_token_timeout
+loop.worker_first_token_timeout  seq=3 attempt=2 phase=phase2_first_token sdk_first_token_timeout_seconds=30
+loop.failed                      reason="worker_first_token_timeout: seq 3" cycles=3
+```
+
+Retrying a slow start against an identical deadline is not a retry, it is the
+same experiment run twice. Thirty seconds is comfortable for a small dispatch
+and tight for a large one, and this worker was carrying a revise context, a
+dispatch hint and the repo's ingested conventions; a model that thinks before it
+emits can spend longer than that before its first visible token.
+
+Each attempt now gets a wider window than the last -- 30s, then 90s, then 270s,
+capped at 300 and always inside the full-turn timeout that bounds everything
+anyway -- and there are three attempts rather than two. `1` as the multiplier
+restores the old fixed-window behaviour.
+
+#### Two `info` findings made every sub-task re-run, twice
+
+```
+loop.revise_scope_skipped  cycle=2 reason=unscopable_findings findingCount=10 unfiledFindingCount=2
+loop.revise_scope_skipped  cycle=3 reason=unscopable_findings findingCount=8  unfiledFindingCount=2
+```
+
+Both times the two findings were these:
+
+```
+quality / info / file=NULL   Test coverage gaps beyond the four required categories
+quality / info / file=NULL   Remaining coverage gaps beyond the four mandated categories
+```
+
+`quality` is diff-addressable, so b92's meta-dimension exemption did not apply,
+and neither carried a file, so the scoping optimisation switched itself off and
+all eight sub-tasks re-ran. In cycle 2 that was six minutes of workers to change
+one file.
+
+An `info` finding does not drive a revise. No worker is dispatched to close it,
+it is not blocking, and the loop will ship with it open. Letting one decide that
+every sub-task must re-run inverts its own severity. The unscopable gate now
+ignores anything below medium, matching the floor `isBlockingFinding`, b109's
+cycling gate and b112's merge gate already use. An unfiled finding at medium or
+above still forces the full set, because an actionable one really could belong
+to any sub-task.
+
+Fixing that exposed a second bug underneath it. With the gate correctly no
+longer tripping, scoping engaged and selected **zero** sub-tasks: the only
+actionable finding named `src/lib/help/help-content.ts`, which no sub-task had
+declared. A cycle that dispatches nobody changes nothing and burns a review
+finding that out. An empty selection is not evidence that there is no work, it
+is evidence that we cannot tell whose work it is, so it now falls back to the
+unscoped set. This also closes the b102 failure mode b103 was written for: a
+sub-task whose declared path was fictional could previously be scoped away from
+the findings it owned.
+
+#### The lead planned eight sub-tasks for a 6,769-file repo without opening it
+
+```
+lead_scout  ran=false  skippedReason=no_repo_hint
+```
+
+The repo was never ambiguous. `repos.allowed` held exactly one concrete entry,
+and the loop cloned precisely that one about twenty seconds later. The gate was
+reading `brief.repoHint`, which the crystalliser only sets when the request text
+happens to name a repo -- and a spec written for humans usually does not.
+
+The scout now falls back to the allow-list when it names exactly one concrete
+repo. Two candidates still skip, because the lead has a real choice to make and
+scouting one could prime the plan for the wrong codebase, and a glob still
+skips, because it names no single repo to clone.
+
+#### A migration the spec demanded was reported as out of scope
+
+```
+loop.final_scope_check_out_of_scope  cycle=1  outOfScope=["prisma/migrations/20260807102822_continuity_resilience/migration.sql"]
+                                              declared=["prisma/schema.prisma","prisma/migrations",...]
+```
+
+The plan declared `prisma/migrations`. The file was created inside it. Nothing
+could have declared its real name in advance -- `prisma migrate dev`, which the
+spec mandated, stamps the timestamp at generation time.
+
+The matcher compared two file paths, and a directory is not one. A declared
+entry is now treated as a directory when it ends in a slash or a glob, or when
+its last segment has no extension, and covers the files beneath it. A declared
+file still covers only itself, and prefix matching respects the separator, so
+b110's scope-blowout abort still sees an npm cache for what it is.
+
+#### Tests
+
+Twenty new tests and eight mutations. The mutations cover the severity floor in
+both directions, the empty-selection fallback, the retry escalation and its cap,
+directory coverage and its limits, and the ambiguous allow-list.
+
+Three existing tests changed meaning rather than breaking. b103's regression
+case and b107's orphan-adoption case both reproduced their bugs by asserting
+that scoping skipped the sub-task that owned the findings; b113 makes that
+outcome impossible, so both now assert the fallback and the loss of targeting
+that adoption and path-writeback exist to restore.
+
 ## 0.1.0-beta.112
 
 ### Four defects found in half an hour, by running the harness instead of reading about it

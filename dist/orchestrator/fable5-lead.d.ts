@@ -284,6 +284,19 @@ export interface LeadScoutOutcome {
  *
  * Skipped for a revise, where `pinnedBranch` must match the existing PR.
  */
+/**
+ * beta.113: which repo should the scout open?
+ *
+ * The brief's hint when it has one. Otherwise the allow-list, but only when it
+ * names exactly one concrete repo -- two candidates means the lead has a real
+ * choice and scouting one could prime the plan for the wrong codebase, and a
+ * glob names no single repo to clone.
+ *
+ * Exists because the DR/BCP run logged `skippedReason=no_repo_hint` and then
+ * planned eight sub-tasks for a 6,769-file repo blind, while `repos.allowed`
+ * held the single repo the loop went on to clone twenty seconds later.
+ */
+export declare function resolveScoutRepo(repoHint: string | undefined, allowed: string[]): string | undefined;
 export declare function sessionScopedBranch(branch: string, sessionId: string): string;
 export interface LeadDeps {
     config: HarnessConfig;

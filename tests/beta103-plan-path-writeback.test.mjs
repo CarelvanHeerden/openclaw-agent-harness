@@ -108,10 +108,21 @@ const findings = [
   { file: REAL, line: 460, dimension: "quality", severity: "low", title: "Unescaped apostrophe in JSX text" },
 ];
 
-test("beta103 REGRESSION: with the fictional path, cycle 3 SKIPS the sub-task that owns both findings", { skip }, () => {
+test("beta103 REGRESSION: with the fictional path, no sub-task owns either finding", { skip }, () => {
+  // The b102 bug was that seq 7 -- the sub-task that actually owned both
+  // findings -- got SKIPPED, because its declared path was fictional and so
+  // matched nothing the adversary filed against the real file.
+  //
+  // beta.113 stops that specific outcome: with nobody owning the findings,
+  // scoping would have selected zero sub-tasks, and a cycle that dispatches
+  // nobody is now caught and falls back to running everything. So seq 7 does
+  // get its worker. What remains lost is the targeting -- the whole point of
+  // the optimisation -- which is what the writeback below restores.
   const r = computeReviseScope(subTasks, findings, 3);
-  assert.equal(r.scoped, true);
-  assert.ok(r.skipSeqs.includes(7), "this is the b102 bug: seq 7 owned both findings and was skipped");
+  assert.equal(r.scoped, false, "b113: scoping to nobody is refused");
+  assert.equal(r.reason, "no_subtask_owns_the_findings");
+  assert.ok(!r.skipSeqs.includes(7), "seq 7 must not be skipped; it owns both findings");
+  assert.equal(r.runSeqs.length, subTasks.length, "the fallback runs everything, targeting nothing");
 });
 
 test("beta103 FIX: after writeback, cycle 3 RUNS the sub-task that owns both findings", { skip }, () => {

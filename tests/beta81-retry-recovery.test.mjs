@@ -115,7 +115,11 @@ test("beta81/C1: a worker timeout RE-INVOKES runWorker (behavioural spy) then go
       runWorker: async () => { workerCalls++; return HANG(); },
     }));
     const outcome = await loop.run("C1a", brief);
-    assert.equal(workerCalls, 2, "runWorker must be invoked TWICE (initial + one retry), never log-then-noop");
+    // beta.113 raised the default attempt count from 2 to 3, each with a wider
+    // first-token window. What C1 is actually about is unchanged: every retry
+    // must REACH runWorker rather than log-then-noop, and an exhausted retry
+    // budget must still go terminal rather than leaving a running row.
+    assert.equal(workerCalls, 3, "runWorker must be re-invoked for every attempt, never log-then-noop");
     assert.equal(outcome.status, "failed");
     // the re-invocation is PROVEN in the audit trail.
     assert.ok(state.audits.some((a) => a.event === "loop.worker_retry_reinvoked" && a.payload.attempt === 2),
