@@ -320,6 +320,8 @@ export function bootstrapHarnessSync(api) {
         logger: api.logger,
         // beta.76 (Defect B): disk preflight floor before dep bootstrap.
         minFreeDiskBytes: config.storage.min_free_disk_bytes,
+        // beta.114: generated trees this repo never wants in a feature commit.
+        neverCommitPaths: config.repos.never_commit_paths,
     });
     const slack = new SlackAdapter({
         logger: api.logger,

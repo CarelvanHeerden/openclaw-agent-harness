@@ -166,6 +166,14 @@
           "default_base_branch": {
             "type": "string",
             "default": "main"
+          },
+          "never_commit_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "beta.114: pathspecs whose changes are reverted instead of committed -- generated trees that belong to the repo's tooling, not to any feature (e.g. [\"okf/**\"]). Empty by default."
           }
         }
       },
