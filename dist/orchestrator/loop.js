@@ -3769,11 +3769,49 @@ export class OrchestratorLoop {
             this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, reason: `runner threw: ${String(err)}` }, sessionId);
             return [];
         }
-        const r = results.find((x) => x.script === script);
-        const durationMs = Date.now() - startedAt;
+        let r = results.find((x) => x.script === script);
+        let durationMs = Date.now() - startedAt;
+        // beta.115: `npm run typecheck` exiting 127 does NOT mean the branch is
+        // clean, and until now a skip returned no findings, which reads as clean.
+        // PR #964 shipped one TS2551 that CI caught on the very same tree using
+        // `npx tsc --noEmit` -- so the compiler was reachable and only the npm
+        // indirection was broken. Try the compiler directly before giving up.
         if (!r || !r.ran) {
-            this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, script, reason: r?.skippedReason ?? "did not run", durationMs }, sessionId);
-            return [];
+            const firstReason = r?.skippedReason ?? "did not run";
+            const direct = this.deps.runTypecheckDirect?.(worktree, (vcfg?.check_script_timeout_seconds ?? 600) * 1000);
+            if (direct) {
+                this.deps.state.audit("loop.typecheck_gate_fallback", { sessionId, cycle, script, scriptReason: firstReason, via: direct.via, exitCode: direct.status }, sessionId);
+                r = {
+                    script,
+                    ran: true,
+                    exitCode: direct.status ?? null,
+                    outputTail: `${direct.stdout}\n${direct.stderr}`.slice(-20_000),
+                };
+                durationMs = Date.now() - startedAt;
+            }
+            else {
+                // No route to the compiler. Say so loudly: a gate that could not run is
+                // not a gate that passed. Classified `env` by finding-classify (the text
+                // names exit 127 / missing binary), so it blocks the merge
+                // recommendation without driving revise cycles a worker cannot fix --
+                // repairing the worktree is the bootstrap's job, not the diff's.
+                const diagnosis = this.deps.diagnoseCheckEnv?.(worktree);
+                this.deps.state.audit("loop.typecheck_gate_unavailable", { sessionId, cycle, script, reason: firstReason, diagnosis, durationMs: Date.now() - startedAt }, sessionId);
+                this.deps.logger.warn("[loop] beta.115 typecheck gate could not run by any route", { sessionId, cycle, script, diagnosis });
+                return [
+                    {
+                        title: "Typecheck gate could not run: the branch is unverified, not verified",
+                        detail: `The repo declares a \`${script}\` script but it could not be executed in the review worktree ` +
+                            `(${firstReason}), and invoking the compiler directly did not work either. ` +
+                            `No type errors were found because nothing looked for them -- do not read this as a clean branch. ` +
+                            `Diagnosis: ${JSON.stringify(diagnosis ?? {})}. ` +
+                            `This is worktree/tooling breakage (missing binary, command not found), not a defect in the diff, ` +
+                            `so it cannot be fixed by changing code; a human should run the typecheck before merging.`,
+                        severity: "high",
+                        dimension: "runtime",
+                    },
+                ];
+            }
         }
         if (r.exitCode === 0) {
             this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script, exitCode: 0, errorsTotal: 0, errorsInChangedFiles: 0, durationMs }, sessionId);

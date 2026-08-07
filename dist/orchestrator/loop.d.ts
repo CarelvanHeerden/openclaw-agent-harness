@@ -351,6 +351,22 @@ export interface OrchestratorDeps {
         error?: unknown;
         timedOut?: boolean;
     };
+    /**
+     * beta.115: run the TypeScript compiler WITHOUT the repo's npm script, for
+     * when `npm run typecheck` is unrunnable (exit 127) but the compiler itself
+     * is reachable -- the b114 state, where CI typechecked the same tree fine
+     * via `npx tsc --noEmit`. Returns null when no route exists, which the gate
+     * must report as unavailable rather than clean.
+     */
+    runTypecheckDirect?: (worktree: string, timeoutMs: number) => {
+        via: string;
+        status: number | null;
+        stdout: string;
+        stderr: string;
+        timedOut?: boolean;
+    } | null;
+    /** beta.115: evidence about why a check script could not execute, for the audit. */
+    diagnoseCheckEnv?: (worktree: string) => Record<string, unknown>;
     /** Read the current HEAD sha of a worktree (for commit_made verification). */
     worktreeHeadSha?: (worktreePath: string) => Promise<string>;
     /**

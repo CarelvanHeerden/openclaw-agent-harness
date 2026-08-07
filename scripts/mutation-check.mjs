@@ -631,6 +631,55 @@ const MUTATIONS = [
   // difference for a test to detect, so a mutation there reports a gap that
   // does not exist. The opt-in property itself IS covered, behaviourally, by
   // "with no configuration the behaviour is exactly as before".
+
+  // --- beta.115: an unrunnable typecheck gate must not read as a pass -------
+  {
+    name: "the direct route is really tried (b115): PR #964's TS2551 was reachable via tsc, just not via npm run",
+    file: "dist/orchestrator/typecheck-fallback.js",
+    find: '    if (existsSync(local))\n        attempts.push({ via: "node_modules_bin", cmd: local, args: ["--noEmit"] });\n',
+    replace: "",
+    tests: ["tests/beta115-typecheck-gate-unavailable.test.mjs"],
+  },
+  {
+    name: "a 127 from the fallback is not a run (b115): 'command not found' must not be parsed as a clean typecheck",
+    file: "dist/orchestrator/typecheck-fallback.js",
+    find: "        if (res.status === 127 || res.status === 126)\n            continue;\n",
+    replace: "",
+    tests: ["tests/beta115-typecheck-gate-unavailable.test.mjs"],
+  },
+  {
+    name: "no route means null (b115): the gate must never be handed a fabricated result",
+    file: "dist/orchestrator/typecheck-fallback.js",
+    find: "    return null;\n}",
+    replace: '    return { via: "npx", status: 0, stdout: "", stderr: "" };\n}',
+    tests: ["tests/beta115-typecheck-gate-unavailable.test.mjs"],
+  },
+  {
+    name: "npx stays --no-install (b115): a review gate must not mutate the worktree to make itself runnable",
+    file: "dist/orchestrator/typecheck-fallback.js",
+    find: 'args: ["--no-install", "tsc", "--noEmit"]',
+    replace: 'args: ["tsc", "--noEmit"]',
+    tests: ["tests/beta115-typecheck-gate-unavailable.test.mjs"],
+  },
+  // NOT a mutation: a dangling-symlink guard in diagnoseCheckEnv. The first
+  // draft stat'd the path after accessSync to catch links pointing at nothing.
+  // Mutation testing showed the stat could be deleted with no test noticing,
+  // and the reason is that it was dead code: accessSync FOLLOWS the symlink, so
+  // a dangling one throws ENOENT there and already lands in the
+  // not-executable bucket. The stat has been removed rather than shipped with a
+  // mutation that can never be caught; the behaviour it was meant to protect is
+  // still covered by "a dangling symlink is not reported as an executable
+  // compiler".
+
+  // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every
+  // mutation here rewrites a `dist/` file, but the assertion that guards this
+  // property is a SOURCE pin against `src/orchestrator/loop.ts`, so a dist-side
+  // mutation is invisible to it by construction and would always survive --
+  // reporting a coverage gap that is really a harness limitation. The property
+  // that actually matters, "a >= medium unavailable-gate finding stops the
+  // merge recommendation", is covered behaviourally by "an unavailable gate
+  // blocks the merge but does not drive revise cycles", which exercises the
+  // real deriveMergeRecommendation.
 ];
 
 function runTests(files) {
