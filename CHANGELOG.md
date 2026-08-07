@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.1.0-beta.115
+
+### The typecheck gate skipped three cycles in silence, and silence read as a pass
+
+The b114 DR/BCP run shipped [PR #964](https://github.com/Stitch-Vercel/ProjectThanos/pull/964) in 52 minutes for $10.42, with a clean
+12-file diff and the adversary's first `pass` verdict in three releases. Then
+CI failed, on exactly one error, in a file the branch had changed:
+
+```
+src/app/api/grc/continuity-exercises/[id]/route.ts(118,12): error TS2551:
+Property 'updatedById' does not exist on type 'ContinuityExerciseUpdateInput'.
+Did you mean 'updatedBy'?
+```
+
+That is the same shape as the `ownerUserId` error which survived three revises
+on PR #932 and was the reason the b111 typecheck gate was built. The gate was
+enabled. The repo has a `typecheck` script. And the gate still let it through,
+recording this in all three cycles:
+
+```
+loop.typecheck_gate_skipped  cycle=1..3
+  reason="env_unavailable: check-script binary missing (exit 127 / command not found)"
+```
+
+A skipped gate returned no findings, and no findings is indistinguishable from
+a clean bill of health. So the loop concluded the branch compiled, when in truth
+nothing had ever asked.
+
+**The compiler was reachable the whole time.** CI typechecked the very same tree
+successfully using `npx tsc --noEmit`; only the `npm run` indirection was broken.
+So the gate now resolves the compiler itself when the script route fails --
+first the repo's own pinned `node_modules/.bin/tsc`, then `npx --no-install tsc`.
+Neither route installs anything: a review gate that mutated the worktree to make
+itself runnable would be a worse bug than the one it fixes.
+
+**And when no route works, it says so.** The gate emits a high-severity finding
+rather than an empty result. Because the text names the env breakage, the
+existing classifier files it as `env`, which gives it the two properties it
+needs at once: it stops the merge recommendation, and it does *not* drive revise
+cycles, since no code change can conjure a missing binary. An unverified branch
+is now reported as unverified instead of verified.
+
+**Diagnostics, so the next 127 explains itself.** b114's worktree was reclaimed
+before it could be inspected, which is why the cause was never found. The
+unavailable path now records whether `node_modules` exists and how many entries
+it holds (a near-empty tree is the signature of an aborted `npm ci`), whether
+`.bin` and `tsc` are present, whether `tsc` is executable or merely present, and
+whether `npm` is on `PATH`.
+
+Two audit events are new: `loop.typecheck_gate_fallback` when the direct route
+rescues a broken script, and `loop.typecheck_gate_unavailable` when nothing can
+run.
+
+Sixteen tests, run against real processes and real trees rather than mocks --
+the defect lives entirely in exit codes and binary resolution, and a mocked
+spawn would have passed the broken behaviour, which is how it shipped in the
+first place. Four new mutations, all caught.
+
 ## 0.1.0-beta.114
 
 ### 141 of 154 files in the last PR were a regenerated documentation bundle

@@ -50,6 +50,7 @@ import { runLeadPlanner } from "./orchestrator/fable5-lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/sonnet-worker.js";
 import { runAdversary as runAdversaryCore } from "./orchestrator/fable5-adversary.js";
 import { discoverCheckScripts } from "./orchestrator/repo-conventions.js";
+import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
 let currentRuntime = null;
@@ -754,6 +755,10 @@ export function bootstrapHarnessSync(api) {
         // beta.94 (Feature 1b): committed files in <base>..HEAD for the deterministic
         // final-scope check (out-of-scope commit -> fit/medium review finding).
         worktreeCommittedFiles: async (worktreePath, base) => git.listCommittedFiles(worktreePath, base).catch(() => []),
+        // beta.115: the typecheck gate's escape hatch when `npm run typecheck` is
+        // unrunnable, plus the evidence needed to explain why it was.
+        runTypecheckDirect: (worktreePath, timeoutMs) => runTypecheckDirect(worktreePath, timeoutMs),
+        diagnoseCheckEnv: (worktreePath) => diagnoseCheckEnv(worktreePath),
         runScriptedTsc: async (worktreePath, timeoutMs) => {
             const res = spawnSync("npx", ["tsc", "--noEmit"], { cwd: worktreePath, timeout: timeoutMs, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
             const output = `${res.stdout ?? ""}${res.stderr ?? ""}`;
