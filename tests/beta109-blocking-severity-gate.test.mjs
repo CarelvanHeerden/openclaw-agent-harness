@@ -129,7 +129,7 @@ test("beta109: a clean pass carrying a HIGH is still blocked (step 4 intact)", (
     ciStatus: "success",
   });
   assert.equal(r.recommendation, "do_not_merge");
-  assert.match(r.reason, /blocking-severity/);
+  assert.match(r.reason, /blocking finding\(s\) at medium severity or above/);
 });
 
 /* ------------------------------------------------------------------ *

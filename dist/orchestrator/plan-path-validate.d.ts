@@ -19,6 +19,17 @@
  * real one before assuming it".
  */
 export interface SuspectPlanPath {
+    /**
+     * beta.112: levels between the missing directory and the nearest real
+     * ancestor. 1 = a new sub-directory under a directory that exists.
+     */
+    missingDepth?: number;
+    /**
+     * beta.112: an existing directory of the same name near the same real
+     * ancestor. Its presence means the plan is following the repo's layout
+     * rather than inventing one.
+     */
+    precedent?: string;
     path: string;
     /** The absent ancestor directory that makes this path suspect. */
     missingDir: string;

@@ -66,7 +66,44 @@ export function findSuspectPlanPaths(planPaths, repoFiles) {
             continue; // repo root always exists
         if (dirs.has(dir))
             continue; // plausible new file in a real directory
-        out.push({ path: p, missingDir: dir });
+        // beta.112: is this a new directory the repo's own layout predicts?
+        //
+        // Both real cases are one level below a directory that exists, so depth
+        // alone cannot tell them apart:
+        //
+        //   src/app/api/grc/exceptions/stats/route.ts   correct, has two siblings
+        //   src/components/layout/grc-nav.tsx           invented (b100)
+        //
+        // What separates them is precedent. `stats/` already exists under
+        // `src/app/api/grc/` as `key-management/stats/`, so a new one is the repo
+        // repeating itself. Nothing named `layout/` exists anywhere near
+        // `src/components/`, so that directory was made up.
+        let ancestor = parentDir(dir);
+        let depth = 1;
+        while (ancestor && !dirs.has(ancestor)) {
+            depth += 1;
+            ancestor = parentDir(ancestor);
+        }
+        const name = dir.slice(dir.lastIndexOf("/") + 1);
+        // Search one level ABOVE the nearest real ancestor, because that is where a
+        // sibling lives. For `src/app/api/grc/exceptions/stats`, the ancestor is
+        // `.../exceptions` and the precedent is `.../key-management/stats` -- a
+        // cousin, invisible from `exceptions/` itself. Widening to the whole repo
+        // instead would let a stray `utils/` anywhere vouch for any `utils/`.
+        const scope = ancestor ? parentDir(ancestor) : "";
+        const prefix = scope ? `${scope}/` : "";
+        let precedent;
+        if (depth === 1) {
+            for (const d of dirs) {
+                if (d === dir || !d.startsWith(prefix))
+                    continue;
+                if (d.slice(prefix.length).split("/").includes(name)) {
+                    precedent = d;
+                    break;
+                }
+            }
+        }
+        out.push({ path: p, missingDir: dir, missingDepth: depth, precedent });
     }
     return out;
 }
@@ -76,11 +113,39 @@ export function findSuspectPlanPaths(planPaths, repoFiles) {
  * is the one with the repo in front of it.
  */
 export function describeSuspectPlanPaths(suspects) {
-    const lines = suspects.map((s) => `  - ${s.path} (no such directory: ${s.missingDir}/)`);
-    return (`PLAN PATH WARNING: the plan names ${suspects.length} path(s) that do not exist, in directories that do not ` +
-        `exist either:\n${lines.join("\n")}\n` +
-        `Treat these as GUESSES, not instructions. Before creating them, search the repo for where this kind of code ` +
-        `actually lives and follow that convention. If you place the work somewhere else, say so explicitly in your ` +
-        `final message and name the path you used.`);
+    // beta.112: "Treat these as GUESSES, not instructions" went to a worker whose
+    // target was `src/app/api/grc/exceptions/stats/route.ts` -- a correct
+    // instruction, matching the two existing `<resource>/stats/route.ts` siblings
+    // it had been told to copy. The only thing wrong with the path was that its
+    // directory did not exist yet, which is true of every new file. ProjectThanos
+    // PR #952: the worker built it anyway, but the harness spent a dispatch hint
+    // arguing against its own plan.
+    //
+    // Split on precedent, not depth: the b100 case
+    // (`src/components/layout/grc-nav.tsx`, where nothing named `layout/` exists
+    // near `src/components/`) is one level below a real directory too, and still
+    // earns the strong wording.
+    const shallow = suspects.filter((s) => !!s.precedent);
+    const detached = suspects.filter((s) => !s.precedent);
+    const parts = [];
+    if (detached.length > 0) {
+        parts.push(`PLAN PATH WARNING: the plan names ${detached.length} path(s) in directories that do not exist, and the ` +
+            `repo has nothing of that name anywhere nearby to copy:\n` +
+            detached.map((s) => `  - ${s.path} (no such directory: ${s.missingDir}/)`).join("\n") +
+            `\nTreat these as GUESSES, not instructions. Before creating them, search the repo for where this kind of ` +
+            `code actually lives and follow that convention. If you place the work somewhere else, say so explicitly ` +
+            `in your final message and name the path you used.`);
+    }
+    if (shallow.length > 0) {
+        parts.push(`NEW DIRECTORY NOTE: ${shallow.length} path(s) in the plan sit in a directory that does not exist yet, so ` +
+            `you will be creating it:\n` +
+            shallow
+                .map((s) => `  - ${s.path} (new directory: ${s.missingDir}/, alongside the existing ${s.precedent}/)`)
+                .join("\n") +
+            `\nThat is expected for new work, and the repo already has a directory of that name in the same place, so ` +
+            `the path follows an existing convention. Read that sibling before you write, and match how it is built. ` +
+            `If you choose a different path anyway, name the one you used in your final message.`);
+    }
+    return parts.join("\n\n");
 }
 //# sourceMappingURL=plan-path-validate.js.map

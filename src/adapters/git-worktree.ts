@@ -1508,6 +1508,24 @@ esac
 `;
     await writeFile(helper, script, "utf8");
     await chmod(helper, 0o700);
+    // beta.112: reset the INHERITED helper list before adding ours.
+    //
+    // Git accumulates credential helpers across system -> global -> local and
+    // asks them in that order, taking the first that answers. A host with an
+    // ambient `credential.helper` -- osxkeychain on macOS, `manager` on
+    // Windows, `store` on plenty of CI images -- therefore answers BEFORE this
+    // repo's helper and hands git whatever identity that host is logged in as.
+    // The symptom is a bare "remote: Repository not found" on a private repo:
+    // git did authenticate, just as the wrong user.
+    //
+    // An empty value resets the list accumulated so far, so this pair has to
+    // be written in this order and in the generic section -- a URL-scoped
+    // helper alone does not win, it merely joins the queue behind the ambient
+    // one. Same class as beta.110's commit.gpgsign inheritance: ambient git
+    // config leaking into harness operations. Invisible in the production
+    // container, which has no helper configured, and fatal anywhere else.
+    await this.run(["-C", bareRepoPath, "config", "--replace-all", "credential.helper", ""]);
+    await this.run(["-C", bareRepoPath, "config", "--add", "credential.helper", helper]);
     // Point github.com credential lookups at the helper. Absolute path so it
     // works regardless of git's cwd. Overwrite (--replace-all) to stay idempotent.
     await this.run(["-C", bareRepoPath, "config", "--replace-all", "credential.https://github.com.helper", helper]);

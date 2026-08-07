@@ -34,10 +34,23 @@ function base(p) {
  *                          (NOT revise-relaxed) -- a "not touched" claim about
  *                          one of these is the confab signal.
  */
-export function detectWorkerConfab(finalMessage, requiredPaths) {
+export function detectWorkerConfab(finalMessage, requiredPaths, 
+/**
+ * beta.112: paths the commit actually contains. A file that is demonstrably
+ * in the diff cannot have been skipped, whatever the prose says.
+ *
+ * ProjectThanos PR #952 fired `worker_confab_suspected` on
+ * `.../exceptions/stats/route.ts` in the same breath as a `file_committed`
+ * contract check passing on it. The worker had been handed a plan-path
+ * warning about that file (also wrong -- see plan-path-validate.ts) and its
+ * final message discussed what it had NOT done in response. Prose lost to
+ * git elsewhere in this codebase after b100; it should lose here too.
+ */
+committedPaths) {
     const msg = (finalMessage ?? "").trim();
     if (!msg || requiredPaths.length === 0)
         return { suspected: false, offenders: [] };
+    const committed = new Set((committedPaths ?? []).map((p) => base(p)).filter(Boolean));
     // Scan per-sentence so a "not touched" clause is scoped near the filename it
     // mentions (a global match on the whole message would over-fire).
     const sentences = msg.split(/(?<=[.!?\n])\s+/);
@@ -47,6 +60,8 @@ export function detectWorkerConfab(finalMessage, requiredPaths) {
         const b = base(path);
         if (!b || !b.includes("."))
             continue; // need a real filename
+        if (committed.has(b))
+            continue; // the commit settles it
         for (const s of sentences) {
             const low = s.toLowerCase();
             if (!low.includes(b) && !low.includes(path.trim().toLowerCase()))

@@ -33,5 +33,17 @@ export interface ConfabProbe {
  *                          (NOT revise-relaxed) -- a "not touched" claim about
  *                          one of these is the confab signal.
  */
-export declare function detectWorkerConfab(finalMessage: string | undefined, requiredPaths: string[]): ConfabProbe;
+export declare function detectWorkerConfab(finalMessage: string | undefined, requiredPaths: string[], 
+/**
+ * beta.112: paths the commit actually contains. A file that is demonstrably
+ * in the diff cannot have been skipped, whatever the prose says.
+ *
+ * ProjectThanos PR #952 fired `worker_confab_suspected` on
+ * `.../exceptions/stats/route.ts` in the same breath as a `file_committed`
+ * contract check passing on it. The worker had been handed a plan-path
+ * warning about that file (also wrong -- see plan-path-validate.ts) and its
+ * final message discussed what it had NOT done in response. Prose lost to
+ * git elsewhere in this codebase after b100; it should lose here too.
+ */
+committedPaths?: string[]): ConfabProbe;
 //# sourceMappingURL=worker-confab-detect.d.ts.map
