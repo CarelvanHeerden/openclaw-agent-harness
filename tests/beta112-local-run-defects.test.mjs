@@ -26,6 +26,13 @@ import { findSuspectPlanPaths, describeSuspectPlanPaths } from "../dist/orchestr
 import { detectWorkerConfab } from "../dist/orchestrator/worker-confab-detect.js";
 
 const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+/**
+ * Config values verbatim, including empty ones. `git()` trims, which silently
+ * eats the empty reset entry whenever it is the first line -- i.e. on any host
+ * with no ambient helper, which is every Linux CI runner and no Mac.
+ */
+const gitLines = (cwd, ...args) =>
+  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).replace(/\n$/, "").split("\n");
 const tmp = (label) => mkdtempSync(join(tmpdir(), `b112-${label}-`));
 
 // ---------------------------------------------------------------------------
@@ -46,14 +53,14 @@ test("beta112: an ambient credential.helper no longer shadows the harness's own"
   // config file to remove it from. That is the ambient helper that hijacked the
   // first local ProjectThanos run, and it is why the reset has to be explicit.
   git(repo, "config", "--local", "credential.helper", "ambient-host-helper");
-  const before = git(repo, "config", "--get-all", "credential.helper").split("\n").filter(Boolean);
+  const before = gitLines(repo, "config", "--get-all", "credential.helper").filter(Boolean);
   assert.ok(before.includes("ambient-host-helper"), "the ambient helper should be visible before the reset");
 
   // The sequence installCredHelper now runs, in the order it runs it.
   git(repo, "config", "--replace-all", "credential.helper", "");
   git(repo, "config", "--add", "credential.helper", "/tmp/oah-cred/credential-helper.sh");
 
-  const helpers = git(repo, "config", "--get-all", "credential.helper").split("\n");
+  const helpers = gitLines(repo, "config", "--get-all", "credential.helper");
   const reset = helpers.indexOf("");
   assert.ok(reset >= 0, "the inherited-helper reset is missing");
   assert.deepEqual(
