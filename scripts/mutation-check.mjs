@@ -609,6 +609,28 @@ const MUTATIONS = [
     replace: "if (false)",
     tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
   },
+  {
+    name: "the generated tree is actually dropped (b114): 141 of PR #961's 154 files were regenerated bundle",
+    file: "dist/adapters/git-worktree.js",
+    find: "await this.revertNeverCommitPaths(worktreePath);",
+    replace: "",
+    tests: ["tests/beta114-never-commit-paths.test.mjs"],
+  },
+  {
+    name: "unstaging is not enough (b114): a file left dirty is swept back in by the next sub-task's add -A",
+    file: "dist/adapters/git-worktree.js",
+    find: 'await this.run(["-C", worktreePath, "restore", "--worktree", "--", ...globs]).catch(() => undefined);',
+    replace: "",
+    tests: ["tests/beta114-never-commit-paths.test.mjs"],
+  },
+  // NOT a mutation: removing the `globs.length === 0` early return in
+  // revertNeverCommitPaths is an EQUIVALENT mutant. With an empty pathspec git
+  // lists every staged file for the diff but then fails the restore outright
+  // ("you must specify path(s) to restore"), the method's catch swallows it,
+  // and the commit proceeds byte-identically. There is no observable
+  // difference for a test to detect, so a mutation there reports a gap that
+  // does not exist. The opt-in property itself IS covered, behaviourally, by
+  // "with no configuration the behaviour is exactly as before".
 ];
 
 function runTests(files) {

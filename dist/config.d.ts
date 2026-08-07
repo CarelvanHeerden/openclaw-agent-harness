@@ -226,6 +226,23 @@ export interface ReposConfig {
      * The verdict warning always goes in the PR body regardless of draft state.
      */
     draft_pr_on_nonpass?: boolean;
+    /**
+     * beta.114: pathspecs whose changes are reverted instead of committed.
+     *
+     * For generated trees that belong to the repo's tooling rather than to any
+     * feature. The b113 DR/BCP run shipped 154 files of which 141 were
+     * ProjectThanos's regenerated `okf/**` documentation bundle, swept in by the
+     * unscoped `git add -A` after a worker ran the generator. That left the PR
+     * conflicting with main and gave the adversary 141 files of unrelated
+     * surface to re-review every cycle.
+     *
+     * Configured, never inferred: a generated tree looks exactly like
+     * hand-written code, and a harness that guessed would discard real work.
+     * Empty by default, so this is inert unless a repo opts in.
+     *
+     * Example: ["okf/**"]
+     */
+    never_commit_paths?: string[];
 }
 export interface ModelsConfig {
     lead: string;
