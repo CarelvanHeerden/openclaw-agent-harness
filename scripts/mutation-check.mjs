@@ -514,6 +514,45 @@ const MUTATIONS = [
     replace: 'severity: "low",',
     tests: ["tests/beta111-clarify-and-typecheck.test.mjs"],
   },
+  {
+    // The exact code that shipped PR #952 with "no blocking findings" while the
+    // audit log recorded blockingFindings=1.
+    name: "one definition of blocking (b112): the medium-blind set denies a finding the loop counted",
+    file: "dist/orchestrator/merge-recommendation.js",
+    find: "const blocking = review.findings.filter((f) => AT_LEAST_MEDIUM.has((f.severity || \"\").toLowerCase()));",
+    replace: "const blocking = review.findings.filter((f) => BLOCKING_SEVERITIES.has((f.severity || \"\").toLowerCase()));",
+    tests: ["tests/beta112-local-run-defects.test.mjs"],
+  },
+  {
+    name: "the reason reflects the loop's count (b112): not just what the severity scan found",
+    file: "dist/orchestrator/merge-recommendation.js",
+    find: "const n = Math.max(blockingCount, blocking.length);",
+    replace: "const n = blocking.length;",
+    tests: ["tests/beta112-local-run-defects.test.mjs"],
+  },
+  {
+    // Repo-wide precedent would let a stray `utils/` anywhere vouch for any
+    // `utils/`, which is how a hallucinated path gets blessed.
+    name: "precedent is scoped to the ancestor (b112): a directory far away must not vouch for a path",
+    file: "dist/orchestrator/plan-path-validate.js",
+    find: "if (d === dir || !d.startsWith(prefix))",
+    replace: "if (d === dir)",
+    tests: ["tests/beta112-local-run-defects.test.mjs"],
+  },
+  {
+    name: "precedent decides the wording (b112): without it the b100 path reads as an expected new directory",
+    file: "dist/orchestrator/plan-path-validate.js",
+    find: "const shallow = suspects.filter((s) => !!s.precedent);",
+    replace: "const shallow = suspects.filter(() => true);",
+    tests: ["tests/beta112-local-run-defects.test.mjs"],
+  },
+  {
+    name: "git beats prose (b112): a file in the commit cannot have been skipped",
+    file: "dist/orchestrator/worker-confab-detect.js",
+    find: "if (committed.has(b))",
+    replace: "if (false)",
+    tests: ["tests/beta112-local-run-defects.test.mjs"],
+  },
 ];
 
 function runTests(files) {

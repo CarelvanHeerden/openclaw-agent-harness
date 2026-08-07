@@ -2274,7 +2274,7 @@ export class OrchestratorLoop {
                   !(v as { reviseRelaxed?: boolean }).reviseRelaxed,
               )
               .map((v) => (v as { path: string }).path);
-            const confab = detectWorkerConfab(result.finalMessage, requiredPaths);
+            const confab = detectWorkerConfab(result.finalMessage, requiredPaths, result.filesChanged ?? []);
             if (confab.suspected) {
               this.deps.state.audit(
                 "loop.worker_confab_suspected",

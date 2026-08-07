@@ -62,7 +62,7 @@ test("DO-NOT-MERGE when a blocking-severity finding survives a pass",
         ciStatus: "success",
       });
       assert.equal(r.recommendation, "do_not_merge", `severity=${sev}`);
-      assert.match(r.reason, /blocking-severity/i);
+      assert.match(r.reason, /blocking finding\(s\) at medium severity or above/i);
     }
   });
 

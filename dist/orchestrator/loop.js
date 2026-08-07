@@ -1767,7 +1767,7 @@ export class OrchestratorLoop {
                             !!v.path &&
                             !v.reviseRelaxed)
                             .map((v) => v.path);
-                        const confab = detectWorkerConfab(result.finalMessage, requiredPaths);
+                        const confab = detectWorkerConfab(result.finalMessage, requiredPaths, result.filesChanged ?? []);
                         if (confab.suspected) {
                             this.deps.state.audit("loop.worker_confab_suspected", { sessionId, seq: st.seq, cycle, offenders: confab.offenders, phrase: confab.phrase, requiredPaths }, sessionId);
                             this.deps.logger.warn("[loop] worker self-contradiction suspected: finalMessage claims a contract-required file was left untouched (LOG-ONLY; verification still decides)", { sessionId, seq: st.seq, cycle, offenders: confab.offenders });

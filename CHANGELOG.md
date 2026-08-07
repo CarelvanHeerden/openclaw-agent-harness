@@ -1,5 +1,120 @@
 # Changelog
 
+## 0.1.0-beta.112
+
+### Four defects found in half an hour, by running the harness instead of reading about it
+
+Every release from b99 to b111 was diagnosed from a prose report written by an
+agent watching a production run. That loop costs hours and about ten dollars per
+data point, and the reports have been wrong about measurable things -- the b110
+one gave three different wall-clock totals for the same run and corrected itself
+twice mid-document.
+
+This release is the first one diagnosed from the harness itself, driven directly
+from a laptop against a real repository. It shipped a real feature to
+ProjectThanos (PR #952: a policy-exceptions stats endpoint, three files, 26
+minutes, $2.44) and surfaced four defects on the way. Three of them were
+invisible in every report we have ever received, because reports describe what
+the harness said, and these are all cases of the harness saying something
+untrue.
+
+#### A `pass` review carrying a blocking finding was reported as carrying none
+
+The same run wrote both of these, minutes apart:
+
+```
+loop.blocking_findings  cycle=2 verdict=pass findings=5 blockingFindings=1
+merge_recommendation: merge
+reason: "The adversary looped to a clean pass with no blocking findings
+         (5 informational/low finding(s), none blocking)."
+```
+
+One blocking finding, and a recommendation asserting there were none. The
+finding was a medium `codebase-fit` one: the adversary raised it in cycle 1, the
+worker did not fix it, and the adversary re-raised it in cycle 2 explicitly
+marked *recycled, still unfixed*. It shipped anyway, with a merge
+recommendation denying it existed.
+
+The cause was two definitions of "blocking" in one module. The caller counted
+with `isBlockingFinding` (diff-addressable, medium and above). The pass path
+scanned `BLOCKING_SEVERITIES`, which omits `medium`. b109 had already made this
+exact argument for the revise path -- shipping a PR carrying open mediums "would
+be a loosening nobody asked for" -- but never applied it here, because a
+`revise` verdict returns earlier and PR #932, the only PR being exercised at the
+time, never once produced a pass.
+
+There is now one definition, with no fallback for callers that omit the count.
+Keeping the old severity set alive for them would have left the bug in place for
+the next caller to rediscover.
+
+#### Harness git operations inherited the host's credential helper
+
+The first local run could not fetch a private repo, failing with a bare
+`remote: Repository not found` -- git had authenticated fine, just as the wrong
+user.
+
+Git accumulates credential helpers across system, global and local scope and
+asks them in order, taking the first that answers. Any host with an ambient
+helper answers before the harness's own. On macOS this is unavoidable: Apple's
+git has `osxkeychain` compiled in as a default that appears in `--get-all` even
+with `GIT_CONFIG_SYSTEM=/dev/null` and a hermetic `GIT_CONFIG_GLOBAL`. There is
+no file to remove it from.
+
+`installCredHelper` now writes an empty `credential.helper` first, which resets
+the list accumulated so far, then adds its own. Order is the whole fix: git
+treats the empty value as "discard everything before this", so reset-then-add
+works and add-then-reset leaves nothing at all.
+
+This was invisible in the production container, which has no helper configured,
+and fatal anywhere else. Same class as b110's `commit.gpgsign` inheritance:
+ambient git config leaking into harness operations.
+
+#### A correct path was described to the worker as a hallucination
+
+The plan named `src/app/api/grc/exceptions/stats/route.ts`. That is right: the
+brief said to copy the two existing `<resource>/stats/route.ts` siblings. The
+only thing wrong with it was that its directory did not exist yet, which is true
+of every new file. The worker was told:
+
+> PLAN PATH WARNING [...] Treat these as GUESSES, not instructions.
+
+The first attempt at a fix keyed on how far the path sat below a directory that
+exists, on the theory that one level is a new sub-directory and two is an
+invention. The b101 test suite killed it immediately: the real b100 hallucination,
+`src/components/layout/grc-nav.tsx`, is also one level down. Depth cannot
+separate them.
+
+Precedent can. `stats/` already exists under `src/app/api/grc/` as
+`key-management/stats/`, so a new one is the repo repeating itself. Nothing
+named `layout/` exists anywhere near `src/components/`, so that directory was
+made up. Paths with precedent now get a note naming the sibling to copy; paths
+without it keep the strong warning unchanged.
+
+#### Confabulation fired on a file that was in the commit
+
+`worker_confab_suspected` was raised for `.../stats/route.ts` in the same breath
+as a `file_committed` contract check passing on that exact path. The detector
+reads the worker's prose for "did not touch"-shaped claims, and the worker was
+discussing what it had *not* done in response to the (wrong) path warning above.
+
+The detector now takes the commit's file list and skips any path that is
+demonstrably in it. Prose lost to git ground truth everywhere else in this
+codebase after b100; it loses here too. With no commit information supplied it
+behaves exactly as before -- absent evidence is not read as proof the file
+landed.
+
+### Also
+
+- `scripts/local-drive.mjs`: a dev-only driver that boots the real plugin
+  against a fake OpenClaw API, so the harness can be run and inspected directly
+  without OpenClaw or Slack. Config lives outside the repo at
+  `~/.harness-local/config.json` so a repo name, commit identity or token can
+  never be committed by accident.
+- 18 new tests in `tests/beta112-local-run-defects.test.mjs`, each built from
+  the real data that exposed the defect. The credential test asks git which
+  identity it would actually send, rather than inspecting config and reasoning
+  about precedence.
+
 ## 0.1.0-beta.111
 
 ### A question a human can actually answer -- and, more often, no question at all

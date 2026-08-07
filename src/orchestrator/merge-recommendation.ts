@@ -171,13 +171,41 @@ export function deriveMergeRecommendation(input: RecommendationInput): Recommend
     };
   }
 
-  // 4. A blocking-severity finding survived into the final (passing) review.
-  const blocking = review.findings.filter((f) => BLOCKING_SEVERITIES.has((f.severity || "").toLowerCase()));
-  if (blocking.length > 0) {
+  // 4. A blocking finding survived into the final (passing) review.
+  //
+  // beta.112: this used to consult BLOCKING_SEVERITIES, which omits `medium`,
+  // while the caller counted blocking findings with isBlockingFinding, which
+  // does not. The same run therefore produced both of these, minutes apart:
+  //
+  //   loop.blocking_findings  cycle=2 verdict=pass findings=5 blockingFindings=1
+  //   reason: "...clean pass with no blocking findings (5 informational/low
+  //            finding(s), none blocking)"
+  //
+  // ProjectThanos PR #952. The finding being denied was a medium codebase-fit
+  // one the adversary raised in cycle 1, the worker did not fix, and the
+  // adversary re-raised in cycle 2 marked "recycled, still unfixed" -- a repo
+  // convention requiring UI changes to update help content. It shipped with a
+  // recommendation stating it did not exist.
+  //
+  // beta.109 already made this argument for the revise path: shipping a PR
+  // carrying open mediums "would be a loosening nobody asked for". It never
+  // applied it here, because a `revise` verdict returns earlier and #932 -- the
+  // only PR being exercised at the time -- never produced a pass.
+  //
+  // One definition, no fallback. Keeping the old severity set alive for callers
+  // that omit `blockingFindings` would leave exactly this bug in place for the
+  // next caller to rediscover, and there is only one production caller.
+  const blocking = review.findings.filter((f) => AT_LEAST_MEDIUM.has((f.severity || "").toLowerCase()));
+  const blockingCount = input.blockingFindings ?? blocking.length;
+  if (blockingCount > 0 || blocking.length > 0) {
     const titles = blocking.map((f) => f.title || f.dimension || "(untitled)").slice(0, 3).join("; ");
+    const n = Math.max(blockingCount, blocking.length);
     return {
       recommendation: "do_not_merge",
-      reason: `The final review passed but carries ${blocking.length} blocking-severity finding(s): ${titles}. Resolve before merge.`,
+      reason:
+        `The final review passed but carries ${n} blocking finding(s) at medium severity or above` +
+        `${titles ? `: ${titles}` : ""}. A pass verdict does not clear these -- the adversary signed off on the ` +
+        `change while these remained open. Resolve them, or run \`harness_revise\` to have the loop close them.`,
     };
   }
 
