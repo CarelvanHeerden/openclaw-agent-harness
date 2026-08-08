@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.1.0-beta.116
+
+### The adversary named the file, the owner existed, and nobody was asked
+
+The b115 DR/BCP run shipped [PR #965](https://github.com/Stitch-Vercel/ProjectThanos/pull/965) with two known findings open, one carrying
+the adversary's own note: *"second consecutive cycle, no attempted fix in this
+diff"*. The harness had identified the problem, knew which file it was in, and
+never handed it to a worker.
+
+The cause is a single string. The adversary's prompt lists its review axes in
+prose -- `2. Codebase fit: does it match existing patterns/conventions?` -- and
+its TypeScript interface declares `dimension: "spec" | "fit" | "quality" |
+"security" | "runtime"`. A TypeScript union constrains our code, not a language
+model, and the model read the heading. Across the local runs it emitted
+`codebase-fit` twenty-one times and `fit` once.
+
+`codebase-fit` matched neither set the router consults -- not `DIFF_ADDRESSABLE`
+(spec|quality|security), nor `META_DIMENSIONS` (fit|runtime) -- so those findings
+fell into a third state nobody designed: broadcast to every sub-task as context,
+targeted at none, and excluded from b107's orphan adoption, because that gate
+also tests `isDiffAddressable`. Preserved, unactionable, and re-raised every
+cycle until the run shipped with them open.
+
+Five of the b115 run's eight mapping misses were `codebase-fit` findings naming
+concrete files:
+
+```
+cycle 2  medium  src/app/api/grc/continuity-exercises/route.ts
+                 "POST creates a ContinuityExercise with no ActivityLog"
+cycle 2  medium  src/app/api/grc/continuity-exercises/[id]/route.ts
+                 "PUT updates with no ActivityLog"
+cycle 2  medium  src/lib/help/help-content.ts
+                 "New page and sidebar entry added without updating help-content.ts"
+cycle 3  medium  src/lib/help/help-content.ts   (again)
+cycle 3  low     src/app/api/grc/continuity-exercises/[id]/route.ts
+```
+
+The first two name files that sub-tasks **in that very plan** had just written.
+Structural targeting would have routed them to the right worker in one hop; the
+router never entered the targeting branch. The third is the exact scenario
+b107's orphan adoption was written for -- its doc comment cites
+`src/lib/help/help-content.ts` by name as the worked example -- and adoption
+could never fire for it, because a `fit` finding is not diff-addressable.
+**b107 could not fix its own motivating case.**
+
+Three changes:
+
+**One canonical vocabulary.** A new `finding-dimension` module folds whatever
+the model emits onto the five real dimensions, and the three modules that each
+kept a private copy of the vocabulary now share it. Those private copies are how
+the definitions drifted apart in the first place.
+
+**Route by evidence, not by label.** A finding that names a file can be acted on
+by editing that file, whatever it calls itself, so it is now targeted and
+adoption-eligible regardless of dimension. `runtime` remains broadcast-only --
+its file is where behaviour was observed, not necessarily a defect to edit --
+and a file-less finding stays a broadcast, because there is nowhere to send it.
+This also means the next vocabulary drift costs nothing.
+
+**The typecheck finding now says where.** b111's finding is `quality`, which is
+diff-addressable, so emitting it without a file tripped `anyFindingUnfiled` and
+made the whole cycle unscopable. That is what happened in b115's cycle 2: six
+sub-tasks re-ran to fix two lines, because the one finding that could have
+targeted them declined to name a file it already knew.
+
+The prompt now states the five literal tokens as well, so the drift stops at
+source rather than relying only on normalisation.
+
+Twenty-one tests built from the b115 run's actual findings. Seven new
+mutations, all caught, and the suite is 91/91.
+
 ## 0.1.0-beta.115
 
 ### The typecheck gate skipped three cycles in silence, and silence read as a pass

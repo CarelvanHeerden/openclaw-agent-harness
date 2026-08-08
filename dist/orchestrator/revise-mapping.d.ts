@@ -67,7 +67,16 @@ export declare const DIFF_ADDRESSABLE: Set<string>;
 export declare const META_DIMENSIONS: Set<string>;
 /** Is this a diff-addressable finding (spec|quality|security)? */
 export declare function isDiffAddressable(f: MapFinding): boolean;
-/** Is this a meta finding (fit|runtime) -> broadcast, exempt from unscopable gate? */
+/**
+ * Is this a meta finding -> broadcast, exempt from unscopable gate?
+ *
+ * beta.116: a `fit` finding that NAMES A FILE is no longer meta. "This route
+ * writes no ActivityLog while every sibling does" is fixed by editing exactly
+ * the named route, so it belongs to whoever owns that file -- and until b116 it
+ * belonged to nobody, because being meta excluded it from targeting and being
+ * non-diff-addressable excluded it from b107's orphan adoption. File-less
+ * `fit`, and all `runtime`, remain meta: there is nowhere to route them.
+ */
 export declare function isMetaFinding(f: MapFinding): boolean;
 /** Render one finding as a worker-facing hint line (mirrors buildReviseDispatchHint). */
 export declare function renderFindingLine(f: MapFinding): string;

@@ -76,11 +76,17 @@ export function buildAdversarySystemPrompt(input) {
         input.crystallisedPrompt,
         "",
         "## Dimensions",
-        "1. Spec fidelity: does the diff satisfy each acceptance criterion?",
-        "2. Codebase fit: does it match existing patterns/conventions?",
-        "3. Quality: types, tests, lint, `any` leaks, TODOs, dead code.",
-        "4. Security: secrets in code, injection, XSS, dangerous deps.",
-        "5. Runtime: see runtime banner. If the banner says NO RUNTIME DATA AVAILABLE, do NOT sign off on runtime — but this alone is NOT a reason to `revise`: the harness decides whether to push for a preview deploy, and the missing-runtime concern is surfaced on the PR for human review. If the banner shows LOCAL VERIFICATION passed (0 failures), treat the runtime dimension as SATISFIED for a change with no user-facing/deploy-observable surface (API logic, internal query, config): do NOT emit a 'no runtime data' finding in that case.",
+        // beta.116: each heading states the EXACT token to put in `dimension`. The
+        // prose headings alone produced `codebase-fit` 21 times against `fit` once,
+        // and the router understood only `fit`, so those findings were routed to
+        // nobody and re-raised every cycle. The harness now normalises what it
+        // receives, but naming the token here stops the drift at source.
+        "Set `dimension` to EXACTLY one of these five tokens: `spec`, `fit`, `quality`, `security`, `runtime`.",
+        "1. `spec` — spec fidelity: does the diff satisfy each acceptance criterion?",
+        "2. `fit` — codebase fit: does it match existing patterns/conventions?",
+        "3. `quality` — types, tests, lint, `any` leaks, TODOs, dead code.",
+        "4. `security` — secrets in code, injection, XSS, dangerous deps.",
+        "5. `runtime` — see runtime banner. If the banner says NO RUNTIME DATA AVAILABLE, do NOT sign off on runtime — but this alone is NOT a reason to `revise`: the harness decides whether to push for a preview deploy, and the missing-runtime concern is surfaced on the PR for human review. If the banner shows LOCAL VERIFICATION passed (0 failures), treat the runtime dimension as SATISFIED for a change with no user-facing/deploy-observable surface (API logic, internal query, config): do NOT emit a 'no runtime data' finding in that case.",
         "",
         // beta.48 (C3): the ROOT cause of the #858 revise dead-end. In session
         // 21da9f9c the adversary emitted finding 10 with an UNVERIFIED

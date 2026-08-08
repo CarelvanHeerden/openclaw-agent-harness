@@ -21,11 +21,12 @@
  *
  * Pure/deterministic.
  */
+import { normaliseDimension } from "./finding-dimension.js";
 const DIFF_ADDRESSABLE_DIMENSIONS = new Set(["spec", "quality", "security"]);
 const AT_LEAST_MEDIUM = new Set(["medium", "high", "critical"]);
 /** A finding that MUST carry a file: diff-addressable dimension AND >= medium. */
 export function requiresFile(f) {
-    return (DIFF_ADDRESSABLE_DIMENSIONS.has((f.dimension ?? "").toLowerCase()) &&
+    return (DIFF_ADDRESSABLE_DIMENSIONS.has(normaliseDimension(f.dimension)) &&
         AT_LEAST_MEDIUM.has((f.severity ?? "").toLowerCase()));
 }
 /** True when the finding is one that requires a file but has none. */

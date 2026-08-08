@@ -671,6 +671,57 @@ const MUTATIONS = [
   // still covered by "a dangling symlink is not reported as an executable
   // compiler".
 
+  // --- beta.116: a finding that names a file must reach its owner -----------
+  {
+    name: "the alias table is consulted (b116): 'correctness' and 'conventions' share no substring with their target",
+    file: "dist/orchestrator/finding-dimension.js",
+    find: "    const alias = ALIASES[s];\n    if (alias)\n        return alias;\n",
+    replace: "",
+    tests: ["tests/beta116-finding-routing.test.mjs"],
+  },
+  {
+    name: "routing follows the file (b116): gating on dimension is what orphaned 5 findings in the b115 run",
+    file: "dist/orchestrator/finding-dimension.js",
+    find: "    if (!hasFile(f))\n        return false;",
+    replace: "",
+    tests: ["tests/beta116-finding-routing.test.mjs"],
+  },
+  {
+    name: "runtime stays a broadcast (b116): its file is where behaviour was seen, not a defect to edit",
+    file: "dist/orchestrator/finding-dimension.js",
+    find: 'return normaliseDimension(f.dimension) !== "runtime";',
+    replace: "return true;",
+    tests: ["tests/beta116-finding-routing.test.mjs"],
+  },
+  {
+    name: "an unknown label is not guessed at (b116): inventing a dimension would act on the invention",
+    file: "dist/orchestrator/finding-dimension.js",
+    find: '    for (const key of ["security", "runtime", "quality", "spec", "fit"]) {\n        if (s.includes(key))\n            return key;\n    }\n',
+    replace: '    return "fit";\n',
+    tests: ["tests/beta116-finding-routing.test.mjs"],
+  },
+  {
+    name: "orphan adoption accepts fit (b116): b107 could not fix its own worked example without this",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "        if (!isRoutable(f))\n            continue;",
+    replace: "        if (!isRoutable(f) || true)\n            continue;",
+    tests: ["tests/beta116-finding-routing.test.mjs"],
+  },
+  {
+    name: "the typecheck finding names its file (b116): unfiled, it forced 6 sub-tasks to re-run in b115 cycle 2",
+    file: "dist/orchestrator/typecheck-gate.js",
+    find: "        file: errors[0]?.file,",
+    replace: "",
+    tests: ["tests/beta116-finding-routing.test.mjs"],
+  },
+  {
+    name: "the scope gate normalises too (b116): a private copy of the vocabulary is how the modules drifted apart",
+    file: "dist/orchestrator/revise-scope.js",
+    find: "return META_DIMENSIONS.has(normaliseDimension(f.dimension));",
+    replace: 'return META_DIMENSIONS.has(((f.dimension ?? "")).trim().toLowerCase());',
+    tests: ["tests/beta116-finding-routing.test.mjs"],
+  },
+
   // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every
   // mutation here rewrites a `dist/` file, but the assertion that guards this
   // property is a SOURCE pin against `src/orchestrator/loop.ts`, so a dist-side
