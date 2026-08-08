@@ -67,6 +67,16 @@ export function buildTypecheckFinding(errors, script) {
     return {
         dimension: "quality",
         severity: "high",
+        // beta.116: name a file. This finding knows exactly where the errors are,
+        // and emitting it unfiled made it the most expensive kind of finding there
+        // is: `quality` is diff-addressable, so an unfiled one trips
+        // `anyFindingUnfiled` and the whole revise cycle abandons scoping and
+        // re-runs every sub-task. That is what happened in b115's cycle 2 -- six
+        // sub-tasks re-run because the one finding that could have targeted them
+        // declined to say where. Errors are sorted by file, so the first is a
+        // stable choice, and every error is listed in `detail` regardless.
+        file: errors[0]?.file,
+        line: errors[0]?.line,
         title: `Branch does not typecheck: ${errors.length} error(s) from \`${script}\` in file(s) this branch changed`,
         detail: `\`${script}\` reported ${errors.length} error(s) in files this branch touched. These were introduced or ` +
             `left behind by this work, and the branch will not compile:\n\n` +

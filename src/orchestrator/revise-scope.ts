@@ -69,9 +69,14 @@ export interface ScopeFinding {
  * DIFF-ADDRESSABLE (spec|quality|security) findings that lack a file; a
  * file-less meta finding is expected and broadcast elsewhere (revise-mapping).
  */
+// beta.116: normalised, so the `codebase-fit` the adversary actually emits is
+// recognised here too. A private copy of the vocabulary was how the two modules
+// drifted apart in the first place.
+import { normaliseDimension } from "./finding-dimension.js";
+
 const META_DIMENSIONS = new Set(["fit", "runtime"]);
 function isMetaDimension(f: ScopeFinding): boolean {
-  return META_DIMENSIONS.has(((f.dimension ?? "") as string).trim().toLowerCase());
+  return META_DIMENSIONS.has(normaliseDimension(f.dimension as string | undefined));
 }
 
 /**

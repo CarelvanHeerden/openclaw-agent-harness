@@ -37,12 +37,13 @@
  * injected (the loop passes resolveContractPath) so this module has no import
  * cycle with path-match and stays trivially unit-testable.
  */
+import { isRoutable, normaliseDimension } from "./finding-dimension.js";
 /** Diff-addressable dimensions (must carry a `.file` per beta.91). */
 export const DIFF_ADDRESSABLE = new Set(["spec", "quality", "security"]);
 /** Meta dimensions: cross-cutting, `.file` optional, broadcast to all. */
 export const META_DIMENSIONS = new Set(["fit", "runtime"]);
 function dim(f) {
-    return (f.dimension ?? "").toLowerCase();
+    return normaliseDimension(f.dimension);
 }
 function fileOf(f) {
     return (f.file ?? "").trim();
@@ -51,9 +52,18 @@ function fileOf(f) {
 export function isDiffAddressable(f) {
     return DIFF_ADDRESSABLE.has(dim(f));
 }
-/** Is this a meta finding (fit|runtime) -> broadcast, exempt from unscopable gate? */
+/**
+ * Is this a meta finding -> broadcast, exempt from unscopable gate?
+ *
+ * beta.116: a `fit` finding that NAMES A FILE is no longer meta. "This route
+ * writes no ActivityLog while every sibling does" is fixed by editing exactly
+ * the named route, so it belongs to whoever owns that file -- and until b116 it
+ * belonged to nobody, because being meta excluded it from targeting and being
+ * non-diff-addressable excluded it from b107's orphan adoption. File-less
+ * `fit`, and all `runtime`, remain meta: there is nowhere to route them.
+ */
 export function isMetaFinding(f) {
-    return META_DIMENSIONS.has(dim(f));
+    return META_DIMENSIONS.has(dim(f)) && !isRoutable(f);
 }
 /** Render one finding as a worker-facing hint line (mirrors buildReviseDispatchHint). */
 export function renderFindingLine(f) {
@@ -128,7 +138,11 @@ export function adoptOrphanFindings(subTasks, misses, ownedOf, limits = {}) {
     const ordered = [...misses].sort((a, b) => severityRank(b) - severityRank(a));
     for (const f of ordered) {
         const file = fileOf(f);
-        if (!file || !isDiffAddressable(f))
+        // beta.116: was `!isDiffAddressable(f)`, which excluded `fit` -- and so
+        // excluded `src/lib/help/help-content.ts`, the very finding this function's
+        // doc comment cites as the case it exists to solve. b107 could not fix its
+        // own worked example.
+        if (!isRoutable(f))
             continue;
         // beta.108: `info` is the adversary's ACKNOWLEDGEMENT severity, not a
         // request. The b106 revise (session 21c9c44e) closed with seven of eighteen
@@ -199,9 +213,13 @@ opts = {}) {
             meta.push(f);
             continue;
         }
-        // Diff-addressable: need a file to structurally target.
+        // beta.116: routable == it names a file (and is not `runtime`). Previously
+        // this asked `isDiffAddressable`, so a `codebase-fit` finding naming a file
+        // a sub-task had just written skipped targeting entirely and went straight
+        // to the unowned pile -- twice in the b115 run, on the two API route files
+        // the plan itself created.
         const file = fileOf(f);
-        if (isDiffAddressable(f) && file) {
+        if (isRoutable(f)) {
             const owners = [];
             for (const st of subTasks) {
                 const owned = [
@@ -232,8 +250,8 @@ opts = {}) {
             misses.push(f);
             continue;
         }
-        // Diff-addressable but file-less, or an unknown dimension -> treat as
-        // broadcast (safe: it reaches every worker as context, never dropped).
+        // File-less, or `runtime` -> broadcast (safe: it reaches every worker as
+        // context, never dropped). There is no file to route it to.
         misses.push(f);
     }
     // beta.107: an orphan finding stays broadcast to everyone (never dropped) AND
