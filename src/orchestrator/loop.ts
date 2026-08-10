@@ -166,6 +166,8 @@ import {
 import { detectWorkerConfab } from "./worker-confab-detect.js";
 import { selectWorkerModel } from "./worker-model-select.js";
 import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
+import { WorktreePool, type PooledWorktree } from "./worktree-pool.js";
+import { Mutex, mergeBackSubTask } from "./merge-back.js";
 
 export type LoopStatus =
   | "crystallising"
@@ -535,6 +537,17 @@ export interface OrchestratorDeps {
     brief: CrystallisedBrief;
     subTask: LeadPlanSubTask;
     plan: LeadPlan;
+    /**
+     * beta.117: the checkout this worker must actually work in.
+     *
+     * Before b117 the worker derived it from `plan.worktreePath`, because there
+     * was only ever one. Under parallelism that is the integration checkout,
+     * and a worker editing it would defeat the isolation entirely -- so the
+     * loop now states the worktree explicitly and the implementation must
+     * honour THIS value, not the plan's. Optional only so pre-b117 stubs keep
+     * compiling; callers fall back to `plan.worktreePath` when it is absent.
+     */
+    worktreePath?: string;
     resumeSessionId?: string;
     requester?: string;
     /** beta.53 (P1b): corrective dispatch context appended on a retry. */
@@ -750,6 +763,30 @@ export interface OrchestratorDeps {
     worktreePath: string;
     reason: "shipped" | "aborted" | "failed";
   }) => Promise<{ ok: boolean; path?: string; error?: string }>;
+
+  /**
+   * beta.117: lifecycle for one parallel-worker slot checkout.
+   *
+   * Only consulted when effective concurrency exceeds 1, so a serial run --
+   * still the default -- never allocates a slot and behaves exactly as it did
+   * before b117. Optional so the many tests that stub the orchestrator do not
+   * all have to grow a git implementation.
+   */
+  allocatePooledWorktree?: (params: {
+    sessionId: string;
+    repoFullName: string;
+    sessionBranch: string;
+    slotBranch: string;
+    slot: number;
+  }) => Promise<string>;
+  resetPooledWorktree?: (worktreePath: string, sha: string) => Promise<void>;
+  releasePooledWorktree?: (params: {
+    repoFullName: string;
+    worktreePath: string;
+    slotBranch: string;
+  }) => Promise<{ ok: boolean; error?: string }>;
+  /** `git -C <cwd> <args>`, rejecting on non-zero exit. Used for merge-back. */
+  gitRun?: (cwd: string, args: string[]) => Promise<string>;
 }
 
 /**
@@ -783,6 +820,12 @@ export function isConvergingFindingTrend(counts: number[] | undefined): boolean 
 }
 
 export class OrchestratorLoop {
+  /**
+   * beta.117: serialises merge-back into the session worktree. One per loop
+   * instance, which is one per process -- the only worktree it guards.
+   */
+  private readonly mergeBackMutex = new Mutex();
+
   constructor(private readonly deps: OrchestratorDeps) {}
 
   /**
@@ -1130,6 +1173,78 @@ export class OrchestratorLoop {
    * The guard is registered/cleared here so EVERY entry path (fresh run and
    * recovery auto-resume both call `run()`) is covered and can't be forgotten.
    */
+  /**
+   * beta.117: bring one parallel worker's commits onto the session branch.
+   *
+   * Serialised across the whole loop instance by {@link mergeBackMutex}: git
+   * will not take two concurrent index operations in one worktree, and a lock
+   * turns that race into a queue.
+   *
+   * A conflict here is the mechanism working, not a bug. Two workers writing
+   * the same file that neither declared used to corrupt each other invisibly in
+   * the shared worktree; now it surfaces as a named conflict against a specific
+   * sub-task. The sub-task is marked failed so the cycle's own machinery
+   * re-runs it -- by which point the other worker's change is already on the
+   * branch, so the retry sees it and adapts.
+   */
+  private async mergeBackSlot(args: {
+    sessionId: string;
+    cycle: number;
+    st: LeadPlanSubTask;
+    lease: PooledWorktree;
+    baseSha: string;
+    plan: { worktreePath: string };
+    failed: { seq: number; err: unknown };
+  }): Promise<void> {
+    const { sessionId, cycle, st, lease, baseSha, plan, failed } = args;
+    const gitRun = this.deps.gitRun;
+    if (!gitRun) return;
+    const git = {
+      run: gitRun,
+      headSha: async (cwd: string) => (await gitRun(cwd, ["rev-parse", "HEAD"])).trim(),
+    };
+
+    const res = await this.mergeBackMutex.run(() =>
+      mergeBackSubTask(git, {
+        sessionWorktree: plan.worktreePath,
+        workerWorktree: lease.path,
+        workerBranch: lease.branch,
+        baseSha,
+        seq: st.seq,
+      }),
+    );
+
+    if (res.ok) {
+      if (res.landed.length > 0) {
+        this.deps.state.audit(
+          "loop.parallel_merge_back",
+          { sessionId, cycle, seq: st.seq, slot: lease.slot, commits: res.landed.length, fastForward: res.fastForward, headSha: res.headSha },
+          sessionId,
+        );
+      }
+      return;
+    }
+
+    this.deps.state.audit(
+      "loop.parallel_merge_back_conflict",
+      { sessionId, cycle, seq: st.seq, slot: lease.slot, reason: res.reason, conflictedPaths: res.conflictedPaths, detail: res.detail },
+      sessionId,
+    );
+    this.deps.logger.error("[loop] a parallel sub-task could not be merged back; its work is NOT on the branch", {
+      sessionId, cycle, seq: st.seq, reason: res.reason, conflictedPaths: res.conflictedPaths,
+    });
+    this.deps.interactionLog?.log(sessionId, {
+      event: "parallel_merge_back_conflict", phase: "worker", seq: st.seq, cycle, conflictedPaths: res.conflictedPaths,
+    });
+    this.deps.state.db
+      .prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
+      .run(`parallel merge-back ${res.reason}: ${res.detail}`, Date.now(), sessionId, cycle, st.seq);
+    if (!failed.err) {
+      failed.err = `parallel_merge_back_${res.reason} (seq ${st.seq}): ${res.detail}`;
+      failed.seq = st.seq;
+    }
+  }
+
   async run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
     if (runningSessions.has(sessionId)) {
       // beta.40: the guard entry exists -- but is the tracked loop actually
@@ -1735,12 +1850,59 @@ export class OrchestratorLoop {
       const inFlightSubTasks = new Map<Promise<void>, LeadPlanSubTask>();
       const done = new Set<number>();
       const failed = { seq: -1, err: null as unknown };
+
+      /**
+       * beta.117: isolated checkouts for concurrent workers.
+       *
+       * Built only when concurrency > 1 AND the adapter can actually create
+       * slots. Everything below tolerates a null pool by running serially, so a
+       * stubbed orchestrator or a repo the adapter cannot pool degrades to
+       * pre-b117 behaviour instead of failing.
+       *
+       * Sized to `concurrency`, not `concurrency - 1`. Letting one worker keep
+       * using the session worktree looks like a free slot and is not: that
+       * checkout is the MERGE TARGET, and a merge into a tree another worker is
+       * actively editing either aborts on a dirty tree or mixes that worker's
+       * uncommitted edits into someone else's merge. Once parallel, the session
+       * worktree is an integration checkout only, and every worker gets a slot.
+       *
+       * Slots are created lazily, so a cycle whose sub-tasks never actually
+       * overlap still pays for just one.
+       */
+      const canPool =
+        concurrency > 1 &&
+        !!this.deps.allocatePooledWorktree &&
+        !!this.deps.resetPooledWorktree &&
+        !!this.deps.gitRun &&
+        !!plan.branch;
+      const pool: WorktreePool | null = canPool
+        ? new WorktreePool({
+            size: concurrency,
+            sessionBranch: plan.branch,
+            deps: {
+              create: async (slot, slotBranch) =>
+                this.deps.allocatePooledWorktree!({
+                  sessionId, repoFullName: plan.repo, sessionBranch: plan.branch, slotBranch, slot,
+                }),
+              reset: async (wt, sha) => this.deps.resetPooledWorktree!(wt.path, sha),
+              destroy: async (wt) => {
+                await this.deps.releasePooledWorktree?.({
+                  repoFullName: plan.repo, worktreePath: wt.path, slotBranch: wt.branch,
+                });
+              },
+              logger: this.deps.logger,
+            },
+          })
+        : null;
+      if (pool) {
+        this.deps.state.audit("loop.parallel_enabled", { sessionId, cycle, concurrency, poolSize: concurrency }, sessionId);
+      }
       // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
       // instead of hard-failing. Carries the ONE question to surface + the
       // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
       const clarify = { question: null as string | null, seq: -1, subtask: null as { title: string; intent: string } | null };
 
-      const runOne = async (st: LeadPlanSubTask): Promise<void> => {
+      const runOneInner = async (st: LeadPlanSubTask, workerWorktree: string): Promise<void> => {
         // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
         // intersect any finding -> its prior-cycle commit is already correct and
         // part of the branch. Mark completed_no_change without a worker turn.
@@ -1901,7 +2063,7 @@ export class OrchestratorLoop {
 
         // Capture the worktree HEAD BEFORE the worker runs, so commit_made
         // verification (HEAD != base) is meaningful.
-        const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+        const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(workerWorktree).catch(() => "") : "";
         // beta.85: the BRANCH fork-point (plan_base_sha, persisted at plan time)
         // -- the base for "committed anywhere in this branch" used by the
         // revise-relaxed acceptance. Falls back to subTaskBaseSha when unset.
@@ -1938,6 +2100,7 @@ export class OrchestratorLoop {
         // tokens and sat the full 1800s. runWorkerCallWithRetry emits the P0-1
         // sdk_stream_opened/sdk_first_token events + owns the retry.
         const call = await this.runWorkerCallWithRetry({
+          workerWorktree,
           sessionId, st, cycle, brief, plan, requester: row.requester,
           dispatchHint: reviseHint, workerStart, subTaskId,
         });
@@ -2359,7 +2522,7 @@ export class OrchestratorLoop {
         }
         if (contract.length > 0 && this.deps.buildVerifyProbes) {
           const probes = this.deps.buildVerifyProbes({
-            plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
+            plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
           });
           const branchHint = contract.reduce<string>(
             (acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc),
@@ -2483,7 +2646,7 @@ export class OrchestratorLoop {
                 let retryVerification: VerifyOutcome;
                 try {
                   const retryProbes = this.deps.buildVerifyProbes!({
-                    plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
+                    plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
                   });
                   retryVerification = await verifySubTaskOutput(
                     contract,
@@ -2839,14 +3002,14 @@ export class OrchestratorLoop {
               try {
                 const expected = [...new Set(failedResults.map((x) => x.path!).filter(Boolean))];
                 const actual = (result.filesChanged ?? []).filter((f): f is string => typeof f === "string" && !!f.trim());
-                const repoFiles = await this.deps.listRepoFiles(plan.worktreePath);
+                const repoFiles = await this.deps.listRepoFiles(workerWorktree);
                 const rescue = proposeBasenameRescue({ expected, actual, repoDirs: repoDirsFromFiles(repoFiles) });
                 if (rescue) {
                   const rescued = contract.map((v) =>
                     "path" in v && v.path === rescue.from ? { ...v, path: rescue.to } : v,
                   );
                   const rescueProbes = this.deps.buildVerifyProbes({
-                    plan, requester: row.requester, worktreePath: plan.worktreePath, baseSha: subTaskBaseSha,
+                    plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
                   });
                   const reverified = await verifySubTaskOutput(
                     rescued,
@@ -2948,9 +3111,9 @@ export class OrchestratorLoop {
               // beta.111: before pausing a run for a human, check whether the
               // answer is already sitting in the branch. See contract-clarify.ts.
               const changedOnBranch =
-                this.deps.worktreeCommittedFiles && plan.worktreePath
+                this.deps.worktreeCommittedFiles && workerWorktree
                   ? await this.deps
-                      .worktreeCommittedFiles(plan.worktreePath, planBaseShaForVerify)
+                      .worktreeCommittedFiles(workerWorktree, planBaseShaForVerify)
                       .catch(() => [] as string[])
                   : [];
               const mismatch = {
@@ -3023,6 +3186,61 @@ export class OrchestratorLoop {
         done.add(st.seq);
       };
 
+      /**
+       * beta.117: run one sub-task, in its own checkout when running parallel.
+       *
+       * Serial runs (still the default) take the early path and are byte-for-byte
+       * the pre-b117 behaviour: the sub-task works directly in the session
+       * worktree and commits straight onto the session branch.
+       *
+       * When parallel, the sub-task gets a leased slot instead and its commits
+       * are merged back afterwards. The merge-back sits in a `finally` on
+       * purpose. `runOneInner` has more than a dozen early returns -- revise
+       * skips, clarification pauses, contract mismatches, verification failures
+       * -- and a worker can have committed real work before reaching any of
+       * them. Merging back on the success path alone would strand those commits
+       * on a slot branch that gets deleted at the end of the run, which is the
+       * b100 lost-commit failure reintroduced by the back door.
+       */
+      const runOne = async (st: LeadPlanSubTask): Promise<void> => {
+        // No pool, or nothing for a worker to do: use the session worktree.
+        if (!pool?.enabled || reviseScopeSkip.has(st.seq)) {
+          return runOneInner(st, plan.worktreePath);
+        }
+
+        const sessionTip = this.deps.worktreeHeadSha
+          ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
+          : "";
+        if (!sessionTip) {
+          // Without a start point we cannot position a slot, and a slot at the
+          // wrong base produces a diff against the wrong tree. Degrade to
+          // serial rather than guess.
+          this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "session_tip_unavailable" }, sessionId);
+          return runOneInner(st, plan.worktreePath);
+        }
+
+        let lease: PooledWorktree;
+        try {
+          lease = await pool.acquire(sessionTip);
+        } catch (err) {
+          // Disk, npm, or git trouble creating a slot must cost this sub-task
+          // its parallelism, not the run.
+          this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "acquire_failed", err: String(err) }, sessionId);
+          this.deps.logger.warn("[loop] could not lease a parallel slot; running this sub-task in the session worktree", { sessionId, seq: st.seq, err: String(err) });
+          return runOneInner(st, plan.worktreePath);
+        }
+
+        try {
+          return await runOneInner(st, lease.path);
+        } finally {
+          try {
+            await this.mergeBackSlot({ sessionId, cycle, st, lease, baseSha: sessionTip, plan, failed });
+          } finally {
+            pool.release(lease);
+          }
+        }
+      };
+
       // Dispatcher: greedily fill up to `concurrency` in-flight, respecting dependsOn.
       let idx = 0;
       while (idx < ordered.length || inFlight.length > 0) {
@@ -3092,6 +3310,14 @@ export class OrchestratorLoop {
         }
       }
       await Promise.allSettled(inFlight);
+      // beta.117: slots are per-cycle. A revise cycle re-plans which sub-tasks
+      // run, and a slot still holding the previous cycle's tree would start a
+      // worker from the wrong base. Draining here also means a run that fails
+      // mid-cycle does not leave checkouts behind for the reaper to find.
+      if (pool) {
+        await pool.drain();
+        this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots: pool.createdCount }, sessionId);
+      }
 
       if (failed.err) {
         // beta.55 (B2): a resumable clarification pause takes precedence over a
@@ -3860,8 +4086,10 @@ export class OrchestratorLoop {
   private async runWorkerCallWithRetry(p: {
     sessionId: string; st: LeadPlanSubTask; cycle: number; brief: CrystallisedBrief;
     plan: LeadPlan; requester: string; dispatchHint?: string; workerStart: number; subTaskId: string;
+    /** beta.117: the leased slot; NOT plan.worktreePath when running parallel. */
+    workerWorktree: string;
   }): Promise<{ outcome: "ok"; result: WorkerResult } | { outcome: "timeout"; summary: string; failErr: string }> {
-    const { sessionId, st, cycle, brief, plan, requester, dispatchHint } = p;
+    const { sessionId, st, cycle, brief, plan, requester, dispatchHint, workerWorktree } = p;
     const retryEnabled = this.deps.config.loop.worker_timeout_retry_enabled !== false;
     // beta.113: two attempts was one retry. Three gives the escalated
     // first-token window (below) somewhere to escalate to.
@@ -3871,7 +4099,7 @@ export class OrchestratorLoop {
     // probe => the idle detector still tracks counts but the no-writes gate is
     // conservative (treats an unavailable diff as "no writes").
     const idleSubTaskBase = this.deps.worktreeHeadSha
-      ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
+      ? await this.deps.worktreeHeadSha(workerWorktree).catch(() => "")
       : "";
 
     let lastFirstToken = false;
@@ -3957,6 +4185,9 @@ export class OrchestratorLoop {
             // beta.91 (Fix 3): mechanical sub-tasks -> cheaper worker model.
             this.deps.runWorker({
               brief, subTask: st, plan, requester, dispatchHint,
+              // beta.117: the leased slot, which is NOT plan.worktreePath when
+              // this sub-task is running in parallel.
+              worktreePath: workerWorktree,
               modelOverride: selectWorkerModel(st, this.deps.config.models),
               onStreamSlow,
               firstTokenTimeoutSecondsOverride: firstTokenFor(attempt),

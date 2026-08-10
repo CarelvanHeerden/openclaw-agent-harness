@@ -30,6 +30,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * Each mutation names a safety mechanism, the exact built code implementing it,
  * and the test files that MUST fail once it is gone.
  */
+const FILTER = process.argv[2] ?? "";
+let ran = 0;
+
 const MUTATIONS = [
   {
     name: "preserveLocalBranch (b101): resume keeps the branch at its own tip",
@@ -686,6 +689,57 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/beta116-finding-routing.test.mjs"],
   },
+  // --- beta.117: parallel sub-tasks work in isolation ----------------------
+  {
+    name: "slots are siblings (b117): a child ref cannot coexist with the session branch, so git refuses to create it",
+    file: "dist/orchestrator/worktree-pool.js",
+    find: "return `${(sessionBranch ?? \"\").replace(/[/\\-]+$/, \"\")}-w${slot}`;",
+    replace: "return `${(sessionBranch ?? \"\").replace(/[/\\-]+$/, \"\")}/w${slot}`;",
+    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+  },
+  {
+    name: "a reused slot is repositioned (b117): a stale tree diffs against the wrong base",
+    file: "dist/orchestrator/worktree-pool.js",
+    find: "            await this.deps.reset(existing, sha);",
+    replace: "",
+    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+  },
+  {
+    name: "a released slot goes to the longest waiter (b117): otherwise a third sub-task blocks forever",
+    file: "dist/orchestrator/worktree-pool.js",
+    find: "        const next = this.waiters.shift();",
+    replace: "        const next = undefined;",
+    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+  },
+  {
+    name: "a failed create is retryable (b117): one transient disk error must not shrink the pool for the run",
+    file: "dist/orchestrator/worktree-pool.js",
+    find: "                this.uncreated.unshift(slot);",
+    replace: "",
+    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+  },
+  {
+    name: "a conflicted merge is aborted (b117): a repo left mid-merge fails every later sub-task in the cycle",
+    file: "dist/orchestrator/merge-back.js",
+    find: '        await git.run(req.sessionWorktree, ["merge", "--abort"]).catch(() => undefined);',
+    replace: "",
+    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+  },
+  {
+    name: "merge-back reports conflicts (b117): swallowing one silently drops a sub-task's work from the branch",
+    file: "dist/orchestrator/merge-back.js",
+    find: '            reason: paths.length > 0 ? "conflict" : "error",',
+    replace: '            reason: "error",',
+    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+  },
+  {
+    name: "clean -fd keeps ignored files (b117): adding -x deletes the node_modules the slot paid 25s to install",
+    file: "dist/adapters/git-worktree.js",
+    find: '        await this.run(["-C", worktreePath, "clean", "-fd"]);',
+    replace: '        await this.run(["-C", worktreePath, "clean", "-fdx"]);',
+    tests: ["tests/beta117-slot-reset.test.mjs"],
+  },
+  // --- beta.117: parallel sub-tasks work in isolation ----------------------
   {
     name: "runtime stays a broadcast (b116): its file is where behaviour was seen, not a defect to edit",
     file: "dist/orchestrator/finding-dimension.js",
@@ -743,6 +797,12 @@ for (const m of MUTATIONS) {
   const path = join(root, m.file);
   const original = readFileSync(path, "utf8");
 
+  // Optional substring filter: `node scripts/mutation-check.mjs b117` runs only
+  // the mutations whose name matches. The full set takes ~40 minutes, which is
+  // fine in CI and far too slow to iterate against while writing a release.
+  if (FILTER && !m.name.includes(FILTER)) continue;
+  ran++;
+
   if (!original.includes(m.find)) {
     console.error(`FAIL  ${m.name}`);
     console.error(`      anchor not found in ${m.file}. The code was renamed or removed, so this`);
@@ -772,4 +832,4 @@ if (failures > 0) {
   console.error(`\n${failures} mutation(s) survived. The suite is not protecting these mechanisms.`);
   process.exit(1);
 }
-console.log(`\nAll ${MUTATIONS.length} mutations were caught.`);
+console.log(`\nAll ${ran} mutations were caught${FILTER ? ` (filter: ${FILTER})` : ""}.`);

@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.1.0-beta.117
+
+### Parallel sub-tasks, and the reason they were never safe to switch on
+
+Sub-task parallelism has existed since beta.91 and has shipped disabled every
+release since. The reason was never caution. The design was unsafe.
+
+Concurrent workers shared ONE worktree and ONE git index, and `GitAdapter.commit`
+stages with an unscoped `git add -A` under no lock. Whichever worker finished
+first swept up whatever the others had half-written at that instant and
+committed it under its own subject line. Nothing detected it; the run simply
+produced commits whose contents did not match their messages.
+
+b91's file-overlap guard did not save it, because that guard compares DECLARED
+`filesLikelyTouched`, and declaration is demonstrably unreliable -- in the b113
+run a worker regenerated 141 `okf/**` files it never declared, which is why b114
+exists. Under parallelism an undeclared write is not a bloated diff. It is
+cross-contamination between two sub-tasks' commits.
+
+So b117 gives every concurrent worker its own checkout.
+
+**A pool, not a worktree per sub-task.** Eight sub-tasks over three cycles is up
+to 24 allocations. Measured on ProjectThanos, `npm ci` is 25s for 1.8 GB across
+97,149 files, so per-dispatch allocation would cost ten minutes -- more than
+parallelism saves. Slots are created lazily and reused, so the install is paid
+per slot per cycle, and a cycle whose sub-tasks never actually overlap pays for
+exactly one.
+
+**A real install per slot, not a shared `node_modules`.** Symlinking measured
+0.17s against `npm ci`'s 25s and was very tempting. It also reintroduces the
+precise hazard the isolation exists to remove: one worker's stray `npm install`
+would reach through the link and mutate every other worker's dependencies, and
+b109 is on record doing exactly that. Isolation that leaks under the one failure
+mode we have actually observed is not isolation.
+
+**Merge, not cherry-pick.** The first implementation replayed commits with
+cherry-pick, for linear history. That was wrong for a reason unrelated to
+aesthetics: cherry-pick writes NEW shas, and b101's ledger guard fails a run
+when HEAD cannot reach a recorded sha -- unioning `sub_tasks.commit_sha` with the
+append-only `loop.worker_end_turn` audit events precisely so the record cannot be
+erased. Every parallel sub-task would have been reported as lost work by the
+guard that exists to detect lost work, and because the audit log is append-only
+by design, rewriting the table would not have fixed it. Merging keeps the
+worker's own commit in history. It also costs less noise than expected: a slot is
+cut from the session tip, so it FAST-FORWARDS unless another worker landed
+meanwhile.
+
+**The conflict is the feature.** Two workers writing the same undeclared file
+used to corrupt each other invisibly. It now surfaces as a merge conflict naming
+the file and the sub-task, the session worktree is left clean, and the cycle
+re-runs that one sub-task -- by which point the other worker's change is on the
+branch, so the retry sees it.
+
+Two things real git caught that a mock would have waved through. Slot branches
+must be SIBLINGS (`harness/feat-w1`), never children (`harness/feat/w1`): refs
+are a directory tree, so a session branch at `refs/heads/harness/feat` makes
+`refs/heads/harness/feat/w1` unrepresentable and `worktree add` dies with
+"cannot lock ref". And the pool is sized to `concurrency`, not `concurrency - 1`
+-- letting one worker keep using the session worktree looks like a free slot and
+is not, because that checkout is the merge target.
+
+Still default OFF. Set `parallel_independent_subtasks: true` and
+`subtask_concurrency: 2` to enable. A serial run takes an early path and is
+byte-for-byte its pre-b117 behaviour; a stubbed orchestrator or an adapter that
+cannot create slots degrades to serial rather than failing.
+
 ## 0.1.0-beta.116
 
 ### The adversary named the file, the owner existed, and nobody was asked

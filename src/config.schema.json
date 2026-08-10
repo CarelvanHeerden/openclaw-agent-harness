@@ -268,6 +268,10 @@
           "maximum": 8,
           "default": 1
         },
+        "parallel_independent_subtasks": {
+          "type": "boolean",
+          "default": false
+        },
         "stuck_loop_seconds": {
           "type": "integer",
           "minimum": 300,
