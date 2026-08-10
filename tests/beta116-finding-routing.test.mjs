@@ -164,14 +164,35 @@ test("beta116: a fit finding is no longer broadcast-only when it names an owned 
   assert.equal(isMetaFinding({ dimension: "codebase-fit", severity: "medium" }), true, "file-less, so still meta");
 });
 
-test("beta116: help-content.ts finally gets an owner -- b107's own worked example", () => {
+test("beta116: help-content.ts reaches adoption -- b107's own worked example", () => {
   // No sub-task declares src/lib/help/help-content.ts, so this IS a genuine
   // orphan. b107 wrote adoption for exactly this finding and cited it by name,
   // then gated adoption on `isDiffAddressable` -- which a fit finding fails.
+  //
+  // beta.118: this test used to assert an owner was found, and that was wrong.
+  // The title names only the REGISTRY file, so no sub-task's own path is
+  // mentioned, and all three under `src/` tie at a shared-prefix depth of 1.
+  // b116 read the resulting pick as a success; b117 shipped it and watched the
+  // finding land on seq 2, the CRUD-API sub-task, which ignored it. Reaching
+  // adoption is what b116 fixed -- finding a CREDIBLE owner needs the trigger
+  // named, which is b118.
   const owned = (st) => st.filesLikelyTouched ?? [];
-  const adoptions = adoptOrphanFindings(SUBTASKS, [HELP_CONTENT], owned);
-  assert.equal(adoptions.length, 1, "somebody must be asked to update the help content");
-  assert.equal(adoptions[0].file, "src/lib/help/help-content.ts");
+  const refusals = [];
+  const adoptions = adoptOrphanFindings(SUBTASKS, [HELP_CONTENT], owned, {}, refusals);
+  assert.equal(adoptions.length, 0, "a bare `src/` overlap identifies nobody");
+  assert.equal(refusals.length, 1, "but it IS considered -- the b116 fix, that a fit finding is routable, holds");
+  assert.equal(refusals[0].file, "src/lib/help/help-content.ts");
+  assert.equal(refusals[0].reason, "prefix_too_shallow");
+
+  // Name the page that triggered the requirement and the owner is unambiguous.
+  const withTrigger = {
+    ...HELP_CONTENT,
+    detail: "src/app/(portal)/grc/continuity-exercises/page.tsx adds a page, so help-content.ts needs an entry.",
+  };
+  const routed = adoptOrphanFindings(SUBTASKS, [withTrigger], owned);
+  assert.equal(routed.length, 1, "somebody must be asked to update the help content");
+  assert.equal(routed[0].seq, 4, "the sub-task that built the page");
+  assert.equal(routed[0].file, "src/lib/help/help-content.ts");
 });
 
 test("beta116: adoption still refuses to invent an owner out of nothing", () => {

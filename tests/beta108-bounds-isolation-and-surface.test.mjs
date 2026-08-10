@@ -68,6 +68,26 @@ test("beta108: an info-severity acknowledgement is never adopted", () => {
   );
 });
 
+test("beta108: info is refused even when it has a STRONG claim", () => {
+  // beta.118: INFO_ACK above shares only `src/` with every sub-task, so once the
+  // b118 depth floor landed it was refused for being shallow and the severity
+  // gate stopped being the thing under test -- deleting that gate changed
+  // nothing. This finding sits squarely inside seq 3's own directory, so it
+  // would certainly be adopted on the strength of its path. Only the severity
+  // filter can turn it away.
+  const infoWithDepth = {
+    ...INFO_ACK,
+    file: "src/lib/grc/continuity-notes.ts",
+    title: "Finding 9 verified resolved in src/lib/grc (no action)",
+  };
+  assert.equal(adoptOrphanFindings(REVISE_SUBTASKS, [infoWithDepth], owned).length, 0);
+  // Same path, real severity -> adopted. So the path really was strong enough.
+  const sameFileButReal = { ...infoWithDepth, severity: "low" };
+  const adopted = adoptOrphanFindings(REVISE_SUBTASKS, [sameFileButReal], owned);
+  assert.equal(adopted.length, 1, "the fixture must be adoptable but for its severity");
+  assert.equal(adopted[0].seq, 3);
+});
+
 test("beta108: a real low-severity finding IS still adopted", () => {
   const got = adoptOrphanFindings(REVISE_SUBTASKS, [REAL_LOW], owned);
   assert.equal(got.length, 1, "the severity filter must not swallow genuine work");

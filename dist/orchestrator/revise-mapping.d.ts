@@ -100,6 +100,8 @@ export interface ReviseMappingResult {
     anyTargeted: boolean;
     /** beta.107: orphan findings given an owner. Empty unless `adoptOrphans`. */
     orphanAdoptions: OrphanAdoption[];
+    /** beta.118: orphans that had candidates but no single strongest one. */
+    orphanRefusals: OrphanAdoptionRefusal[];
 }
 /** beta.107: one orphan finding, and the sub-task made responsible for it. */
 export interface OrphanAdoption {
@@ -110,6 +112,18 @@ export interface OrphanAdoption {
     seq: number;
     reason: "mentioned_in_finding" | "nearest_path";
     score: number;
+}
+/**
+ * beta.118: why an orphan finding that HAD a candidate still went unadopted.
+ * Distinct from "no candidate at all", which needs a different fix.
+ */
+export interface OrphanAdoptionRefusal {
+    finding: MapFinding;
+    file: string;
+    reason: "prefix_too_shallow";
+    /** the best claim on offer, and the sub-task that held it. */
+    score: number;
+    seqs: number[];
 }
 /**
  * beta.108: severities an orphan finding may be adopted at. Everything the
@@ -141,10 +155,31 @@ export declare const ADOPTABLE_SEVERITIES: Set<string>;
  * Deliberately conservative: a finding with no file, and one sharing no
  * directory with any sub-task and named by none, is left as a pure broadcast.
  * An arbitrary owner is worse than an honest miss.
+ *
+ * beta.118: AND SO IS A CLAIM TOO WEAK TO BE ONE. b117 (session d66dbaed)
+ * shipped `do_not_merge` on this function's own worked example. The adversary
+ * filed `src/lib/help/help-content.ts` with an EMPTY detail, so
+ * `findingMentions` had no prose to match and scored 0 everywhere. That left
+ * `sharedPrefixDepth`, which returned exactly 1 for all five sub-tasks under
+ * `src/`: they share the source root and diverge at the very next segment.
+ * Sharing `src/` in a `src/`-rooted repo distinguishes nobody -- every
+ * candidate emits it -- yet 1 cleared the `score <= 0` guard, and the
+ * lowest-seq tie-break handed a help-content finding about a UI page to
+ * sub-task 2, "Create continuity-exercises CRUD API routes", purely because
+ * 2 < 5. The API worker touched the same two route files in both cycles and,
+ * quite reasonably, ignored a finding outside its remit; the adversary
+ * re-raised it as "prior fix not applied" and the run ended unmergeable.
+ *
+ * So a `nearest_path` claim must reach MIN_NEAREST_PATH_DEPTH -- at least one
+ * shared directory BELOW the source root. Ties are still broken by lowest seq,
+ * because two sub-tasks that both own files in `src/lib/help/` really are both
+ * plausible owners of `src/lib/help/help-content.ts`; that was never the bug.
+ * The other half of b118 makes the adversary name the triggering surface in
+ * `detail`, which restores a `mentioned_in_finding` winner for this exact case.
  */
 export declare function adoptOrphanFindings(subTasks: MapSubTask[], misses: MapFinding[], ownedOf: (st: MapSubTask) => string[], limits?: {
     maxPerCycle?: number;
-}): OrphanAdoption[];
+}, refusals?: OrphanAdoptionRefusal[]): OrphanAdoption[];
 /**
  * Deterministically map the previous review's findings onto the plan sub-tasks.
  *
