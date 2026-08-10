@@ -1262,8 +1262,10 @@ export class OrchestratorLoop {
                 // sub-task is a MAPPING MISS -- it is attached to every sub-task as
                 // context (never dropped, never run-all), and surfaced so we can see it.
                 const adoptedBySeq = new Map(reviseMapping.orphanAdoptions.map((a) => [a.finding, a]));
+                const refusedFor = new Map(reviseMapping.orphanRefusals.map((r) => [r.finding, r]));
                 for (const miss of reviseMapping.mappingMisses) {
                     const adopted = adoptedBySeq.get(miss);
+                    const refused = refusedFor.get(miss);
                     this.deps.state.audit("loop.finding_mapping_miss", {
                         sessionId, cycle, dimension: miss.dimension, severity: miss.severity,
                         file: (miss.file ?? "").trim() || null, title: miss.title,
@@ -1272,6 +1274,10 @@ export class OrchestratorLoop {
                         // because before b107 there was only the one kind.
                         adoptedBySeq: adopted?.seq ?? null,
                         adoptionReason: adopted?.reason ?? null,
+                        // beta.118: and "nobody could claim it" is different again from
+                        // "several could, equally". Only the latter is worth a router fix.
+                        refusedReason: refused?.reason ?? null,
+                        refusedSeqs: refused?.seqs ?? null,
                     }, sessionId);
                 }
                 for (const ad of reviseMapping.orphanAdoptions) {
@@ -2615,8 +2621,12 @@ export class OrchestratorLoop {
             // worker from the wrong base. Draining here also means a run that fails
             // mid-cycle does not leave checkouts behind for the reaper to find.
             if (pool) {
+                // beta.118: read the count BEFORE draining. `drain()` clears the slot
+                // map, so reading after it always audited `slots: 0` -- and this line is
+                // the only evidence of how much parallelism a run actually bought.
+                const slots = pool.createdCount;
                 await pool.drain();
-                this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots: pool.createdCount }, sessionId);
+                this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots }, sessionId);
             }
             if (failed.err) {
                 // beta.55 (B2): a resumable clarification pause takes precedence over a

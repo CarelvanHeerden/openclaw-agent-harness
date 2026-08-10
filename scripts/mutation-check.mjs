@@ -254,8 +254,11 @@ const MUTATIONS = [
   {
     name: "adoption prefers the named sub-task (b107): not an arbitrary prefix tie",
     file: "dist/orchestrator/revise-mapping.js",
-    find: "const score = (mentioned ? 1000 : 0) + depth;",
-    replace: "const score = depth;",
+    // beta.118 rewrote this expression to add the depth floor; the mechanism
+    // under test is unchanged -- a path the finding NAMES must outrank mere
+    // directory adjacency.
+    find: "const score = mentioned ? 1000 + depth : depth >= MIN_NEAREST_PATH_DEPTH ? depth : 0;",
+    replace: "const score = depth >= MIN_NEAREST_PATH_DEPTH ? depth : 0;",
     tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
   },
   {
@@ -774,6 +777,49 @@ const MUTATIONS = [
     find: "return META_DIMENSIONS.has(normaliseDimension(f.dimension));",
     replace: 'return META_DIMENSIONS.has(((f.dimension ?? "")).trim().toLowerCase());',
     tests: ["tests/beta116-finding-routing.test.mjs"],
+  },
+  // --- beta.118: an owner must actually have a claim -----------------------
+  {
+    name: "a bare source-root overlap is no claim (b118): depth 1 gave a UI finding to the CRUD-API worker in b117",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "const score = mentioned ? 1000 + depth : depth >= MIN_NEAREST_PATH_DEPTH ? depth : 0;",
+    replace: "const score = (mentioned ? 1000 : 0) + depth;",
+    tests: ["tests/beta118-orphan-routing.test.mjs"],
+  },
+  {
+    name: "the depth floor is 2 (b118): at 1 every sub-task under src/ qualifies again",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "const MIN_NEAREST_PATH_DEPTH = 2;",
+    replace: "const MIN_NEAREST_PATH_DEPTH = 1;",
+    tests: ["tests/beta118-orphan-routing.test.mjs"],
+  },
+  {
+    name: "a named path outranks the floor (b118): suppressing it would drop the one explicit signal we have",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "const score = mentioned ? 1000 + depth : depth >= MIN_NEAREST_PATH_DEPTH ? depth : 0;",
+    replace: "const score = depth >= MIN_NEAREST_PATH_DEPTH ? (mentioned ? 1000 + depth : depth) : 0;",
+    tests: ["tests/beta118-orphan-routing.test.mjs"],
+  },
+  {
+    name: "a shallow refusal is recorded (b118): silence makes it look like nobody was adjacent, which needs a different fix",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: 'refusals?.push({ finding: f, file, reason: "prefix_too_shallow", score: bestDepth, seqs });',
+    replace: "",
+    tests: ["tests/beta118-orphan-routing.test.mjs"],
+  },
+  {
+    name: "the slot count is read before drain (b118): after it, the pool is empty and the audit always says zero",
+    file: "dist/orchestrator/loop.js",
+    find: "                const slots = pool.createdCount;\n                await pool.drain();",
+    replace: "                await pool.drain();\n                const slots = pool.createdCount;",
+    tests: ["tests/beta118-orphan-routing.test.mjs"],
+  },
+  {
+    name: "the adversary must name the trigger (b118): without it the registry finding has no owner to route to",
+    file: "src/orchestrator/fable5-adversary.ts",
+    find: "- REGISTRY findings",
+    replace: "- Registry findings",
+    tests: ["tests/beta118-orphan-routing.test.mjs"],
   },
 
   // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every

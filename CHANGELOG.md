@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.1.0-beta.118
+
+### The finding that was routed to the wrong worker, and looked like a success
+
+The b117 DR/BCP run (session `d66dbaed`, PR #977) shipped `do_not_merge` on a
+single medium finding, and it was b107's own worked example for the third
+release running: never routed in b115, routed in b116, and in b117 routed to a
+worker who could not act on it while the audit recorded an adoption.
+
+The adversary filed `src/lib/help/help-content.ts` -- "New UI surface shipped
+without required help-content update" -- with an EMPTY `detail`. No sub-task
+owned that file, so orphan adoption went looking for the strongest claim:
+
+- `findingMentions` wants the finding's prose to name a path some sub-task
+  owns. The only text was the title, which names none. Zero for all six.
+- `sharedPrefixDepth` then returned exactly **1** for every sub-task under
+  `src/`. They agree on the source root and diverge at the very next segment.
+- 1 cleared the `score <= 0` guard, and the lowest-seq tie-break handed the
+  finding to seq 2, "Create continuity-exercises CRUD API routes".
+
+Sub-task 2 writes API routes. It touched the identical two route files in both
+cycles and ignored a help-content finding about a UI page, which is the only
+sane thing it could have done. The adversary re-raised it as "prior fix not
+applied" and the run ended unmergeable. The correct owner was seq 5, which built
+the page -- and in cycle 2 the adversary pointed at exactly that file.
+
+Sharing `src/` in a `src/`-rooted repo is a signal every candidate emits, so it
+distinguishes nobody; the tie-break was choosing between six equally unrelated
+sub-tasks by arithmetic on their numbers. The function's own doc comment already
+said "an arbitrary owner is worse than an honest miss". The code did not.
+
+**A `nearest_path` claim must now share a directory BELOW the source root.**
+Depth 1 is refused and audited as `prefix_too_shallow` on
+`loop.finding_mapping_miss`, which is deliberately distinct from "nobody was
+even adjacent" -- the two need different fixes and b116 could not tell them
+apart. Ties are still broken by lowest seq: two sub-tasks that both own files in
+`src/lib/help/` really are both plausible owners of `src/lib/help/help-content.ts`,
+and that was never the bug.
+
+That alone makes the router honest, not useful -- a refused finding still goes
+unfixed. So the adversary now owes the router a trigger: **when a finding names
+a registry file the diff does not touch (help content, a sidebar, a route table,
+an i18n catalogue), `detail` must quote the exact repo-relative path of the diff
+file that triggered the requirement.** That restores a `mentioned_in_finding`
+winner, and on the b117 plan it is seq 5. A `medium`+ finding may no longer
+carry an empty `detail` at all.
+
+The b116 test that asserted this finding "finally gets an owner" was asserting
+the misroute; it now pins the refusal, and the routing that a named trigger
+produces.
+
+### The parallelism metric that always read zero
+
+`loop.parallel_pool_drained` audited `slots: pool.createdCount` *after*
+`pool.drain()` had cleared the slot map, so it reported `0` on a run that
+created two worktrees. That line is the only record of how much parallelism a
+run actually bought. The count is now captured before the drain.
+
+### Measured
+
+b117 at concurrency 2 produced no wall-clock saving: 41m38s against b116's
+41m00s. The mechanism worked -- two slots, genuine overlap on sub-tasks 2/3 and
+5/6, six clean merge-backs, no conflicts, no leaked branches -- but the lead
+planned 6 sub-tasks where b116 planned 8, dependency chains left only two
+overlap windows, and slot creation cost 46s of `npm ci`. Run-to-run variance is
+larger than the effect, so a single pair of runs cannot attribute it either way.
+
 ## 0.1.0-beta.117
 
 ### Parallel sub-tasks, and the reason they were never safe to switch on

@@ -71,6 +71,13 @@ export function renderFindingLine(f) {
     return `- [${f.severity}/${f.dimension}] ${f.title ?? "(untitled)"}${loc}: ${f.detail ?? ""}`.slice(0, 600);
 }
 /**
+ * beta.118: the weakest `nearest_path` claim worth acting on -- share at least
+ * one directory BELOW the source root. Depth 1 means two paths agree only on
+ * `src/`, which in a `src/`-rooted repo every candidate satisfies and so
+ * distinguishes nobody. Depth 2+ is a real directory-level claim.
+ */
+const MIN_NEAREST_PATH_DEPTH = 2;
+/**
  * beta.108: severities an orphan finding may be adopted at. Everything the
  * adversary emits below `low` is commentary -- `info` in particular is how it
  * records that a PRIOR finding was verified fixed.
@@ -129,8 +136,29 @@ function findingMentions(text, owned) {
  * Deliberately conservative: a finding with no file, and one sharing no
  * directory with any sub-task and named by none, is left as a pure broadcast.
  * An arbitrary owner is worse than an honest miss.
+ *
+ * beta.118: AND SO IS A CLAIM TOO WEAK TO BE ONE. b117 (session d66dbaed)
+ * shipped `do_not_merge` on this function's own worked example. The adversary
+ * filed `src/lib/help/help-content.ts` with an EMPTY detail, so
+ * `findingMentions` had no prose to match and scored 0 everywhere. That left
+ * `sharedPrefixDepth`, which returned exactly 1 for all five sub-tasks under
+ * `src/`: they share the source root and diverge at the very next segment.
+ * Sharing `src/` in a `src/`-rooted repo distinguishes nobody -- every
+ * candidate emits it -- yet 1 cleared the `score <= 0` guard, and the
+ * lowest-seq tie-break handed a help-content finding about a UI page to
+ * sub-task 2, "Create continuity-exercises CRUD API routes", purely because
+ * 2 < 5. The API worker touched the same two route files in both cycles and,
+ * quite reasonably, ignored a finding outside its remit; the adversary
+ * re-raised it as "prior fix not applied" and the run ended unmergeable.
+ *
+ * So a `nearest_path` claim must reach MIN_NEAREST_PATH_DEPTH -- at least one
+ * shared directory BELOW the source root. Ties are still broken by lowest seq,
+ * because two sub-tasks that both own files in `src/lib/help/` really are both
+ * plausible owners of `src/lib/help/help-content.ts`; that was never the bug.
+ * The other half of b118 makes the adversary name the triggering surface in
+ * `detail`, which restores a `mentioned_in_finding` winner for this exact case.
  */
-export function adoptOrphanFindings(subTasks, misses, ownedOf, limits = {}) {
+export function adoptOrphanFindings(subTasks, misses, ownedOf, limits = {}, refusals) {
     const adoptions = [];
     // beta.108: adopt in severity order, so a cap spends itself on the findings
     // that matter. `misses` arrives in the adversary's emission order, which is
@@ -171,17 +199,36 @@ export function adoptOrphanFindings(subTasks, misses, ownedOf, limits = {}) {
             // help-content.ts update", which names the page, not the schema.
             const mentioned = owned.some((p) => findingMentions(text, p));
             const depth = Math.max(0, ...owned.map((p) => sharedPrefixDepth(p, file)));
-            const score = (mentioned ? 1000 : 0) + depth;
+            // beta.118: a bare source-root match is not a claim. Below the threshold
+            // the sub-task is not a candidate at all, so a run of equally-unrelated
+            // sub-tasks can no longer be decided by which happens to be numbered
+            // lowest. A path the finding NAMES still qualifies at any depth -- that
+            // signal is explicit, not inferred from the tree.
+            const score = mentioned ? 1000 + depth : depth >= MIN_NEAREST_PATH_DEPTH ? depth : 0;
             if (score <= 0)
                 continue;
             // Strictly-greater keeps ties on the lowest seq, so adoption is stable
             // across cycles and a re-run maps the same finding to the same worker.
+            // Two sub-tasks sharing a DEEP directory with the file are both plausible
+            // owners; picking the lower is arbitrary but harmless, and stable.
             if (!best || score > best.score) {
                 best = { finding: f, file, seq: st.seq, reason: mentioned ? "mentioned_in_finding" : "nearest_path", score };
             }
         }
-        if (best)
-            adoptions.push(best);
+        if (!best) {
+            // Distinguish "somebody was adjacent but too weakly to own it" from "no
+            // candidate at all": only the former is fixed by the adversary naming the
+            // trigger, which is the other half of b118.
+            const bestDepth = Math.max(0, ...subTasks.flatMap((st) => ownedOf(st).map((p) => sharedPrefixDepth(p, file))));
+            if (bestDepth > 0) {
+                const seqs = subTasks
+                    .filter((st) => ownedOf(st).some((p) => sharedPrefixDepth(p, file) === bestDepth))
+                    .map((st) => st.seq);
+                refusals?.push({ finding: f, file, reason: "prefix_too_shallow", score: bestDepth, seqs });
+            }
+            continue;
+        }
+        adoptions.push(best);
     }
     return adoptions;
 }
@@ -257,10 +304,11 @@ opts = {}) {
     // beta.107: an orphan finding stays broadcast to everyone (never dropped) AND
     // becomes TARGETED on its adopting sub-task, so someone is actually asked to
     // fix it and b91 scoping cannot skip the one worker who could.
+    const orphanRefusals = [];
     const orphanAdoptions = opts.adoptOrphans
         ? adoptOrphanFindings(subTasks, misses, (st) => [...(st.filesLikelyTouched ?? []), ...(st.contextPaths ?? [])]
             .map((p) => (typeof p === "string" ? p.trim() : ""))
-            .filter(Boolean), { maxPerCycle: opts.maxAdoptionsPerCycle })
+            .filter(Boolean), { maxPerCycle: opts.maxAdoptionsPerCycle }, orphanRefusals)
         : [];
     for (const ad of orphanAdoptions) {
         const a = bySeq.get(ad.seq);
@@ -276,7 +324,7 @@ opts = {}) {
     const broadcastAll = [...meta, ...misses];
     for (const a of assignments)
         a.broadcast = broadcastAll;
-    return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted, orphanAdoptions };
+    return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted, orphanAdoptions, orphanRefusals };
 }
 /**
  * Build the per-sub-task revise dispatch hint from a deterministic assignment.

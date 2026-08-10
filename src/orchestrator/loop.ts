@@ -1754,8 +1754,12 @@ export class OrchestratorLoop {
         const adoptedBySeq = new Map(
           reviseMapping.orphanAdoptions.map((a) => [a.finding, a] as const),
         );
+        const refusedFor = new Map(
+          reviseMapping.orphanRefusals.map((r) => [r.finding, r] as const),
+        );
         for (const miss of reviseMapping.mappingMisses) {
           const adopted = adoptedBySeq.get(miss);
+          const refused = refusedFor.get(miss);
           this.deps.state.audit(
             "loop.finding_mapping_miss",
             {
@@ -1766,6 +1770,10 @@ export class OrchestratorLoop {
               // because before b107 there was only the one kind.
               adoptedBySeq: adopted?.seq ?? null,
               adoptionReason: adopted?.reason ?? null,
+              // beta.118: and "nobody could claim it" is different again from
+              // "several could, equally". Only the latter is worth a router fix.
+              refusedReason: refused?.reason ?? null,
+              refusedSeqs: refused?.seqs ?? null,
             },
             sessionId,
           );
@@ -3315,8 +3323,12 @@ export class OrchestratorLoop {
       // worker from the wrong base. Draining here also means a run that fails
       // mid-cycle does not leave checkouts behind for the reaper to find.
       if (pool) {
+        // beta.118: read the count BEFORE draining. `drain()` clears the slot
+        // map, so reading after it always audited `slots: 0` -- and this line is
+        // the only evidence of how much parallelism a run actually bought.
+        const slots = pool.createdCount;
         await pool.drain();
-        this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots: pool.createdCount }, sessionId);
+        this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots }, sessionId);
       }
 
       if (failed.err) {

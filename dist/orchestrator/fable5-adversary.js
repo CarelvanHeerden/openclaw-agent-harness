@@ -111,6 +111,15 @@ export function buildAdversarySystemPrompt(input) {
         "## File attribution (REQUIRED for diff-addressable findings)",
         "- For ANY finding that points at a concrete code defect in the diff (a type error, a missing tenant/authz scope, a wrong header, a dead branch, a bug, a missing/incorrect line), set `file` to the EXACT repo-relative path from the diff (e.g. `src/app/api/grc/continuity-exercises/route.ts`) and `line` when you can. You have the full diff -- you can always name the file. A `medium`+ finding in dimension spec/quality/security WITHOUT a `file` will be REJECTED and you will be re-prompted.",
         "- Only META findings may omit `file` (set `file: null`): a missing-test/coverage complaint where the file is 'wherever the test would go', or a purely architectural comment that isn't tied to one diff line.",
+        // beta.118: a finding whose `file` is a shared REGISTRY the diff does not
+        // touch (help-content, a sidebar, a route table, an i18n catalogue) has no
+        // owner among the sub-tasks -- nobody planned to edit it. The router then
+        // falls back to directory adjacency, and on b117 every sub-task under
+        // `src/` tied at a depth of one, so a help-content finding about a UI page
+        // was handed to the CRUD-API sub-task, which ignored it. The router now
+        // refuses that tie; naming the trigger here is what restores a real owner.
+        "- REGISTRY findings ('you added X, now register it in Y'): when `file` is a shared registry file that the diff does NOT modify, `detail` MUST quote the EXACT repo-relative path of the diff file that TRIGGERED the requirement -- the new page, route or component that needs registering. Write it as a full path, e.g. \"src/app/(portal)/grc/continuity-resilience/page.tsx introduces a new UI surface, so src/lib/help/help-content.ts needs an entry\". Naming only the registry file, or describing the trigger in words ('the new UI surface'), leaves the finding with no owner and it will NOT be fixed.",
+        "- `detail` is NEVER empty for a `medium`+ finding. A title alone is not a finding: state what is wrong, where, and what would resolve it.",
         "",
         "## Runtime banner",
         runtimeBanner(input),
