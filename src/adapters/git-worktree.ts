@@ -861,6 +861,109 @@ esac
     }
   }
 
+  /**
+   * beta.117: create one parallel-worker slot checkout.
+   *
+   * Deliberately NOT `allocate`. That path exists to put a session on its
+   * branch and carries everything that implies -- remote fetch, the
+   * reuse-remote/preserve-local/reset-to-base decision, `rescueBranchIfAhead`,
+   * and the b108 live-branch refusal. A slot branch is local, ephemeral, cut
+   * from the session tip and deleted at the end of the run; routing it through
+   * that logic would give it remote semantics it must not have, and would trip
+   * the very collision guard that protects the session branch it derives from.
+   *
+   * The slot stays in `inFlightWorktrees` for its WHOLE lifetime, not just
+   * during creation. `allocate` can drop that protection once it returns
+   * because the session worktree is then recorded on `sessions.worktree_path`,
+   * which is what self-heal consults. A pooled slot is on no table -- to the
+   * reaper it looks exactly like the orphan of a crashed run, so unprotected it
+   * would be deleted out from under a live worker.
+   */
+  async allocatePooled(o: {
+    repoFullName: string;
+    sessionBranch: string;
+    slotBranch: string;
+    slotPath: string;
+    commitIdentity: { name: string; email: string };
+    bootstrapDeps?: boolean;
+  }): Promise<string> {
+    const bare = this.repoBarePath(o.repoFullName);
+    const wt = resolve(this.expand(o.slotPath));
+    if (existsSync(wt)) {
+      throw new Error(`pooled worktree already exists at ${wt}; refusing to reuse without explicit release`);
+    }
+    inFlightWorktrees.add(wt);
+    try {
+      // -B so a slot branch left behind by an interrupted run is reset rather
+      // than colliding. The start point is the SESSION branch, so the worker
+      // begins from the work already merged back this cycle.
+      //
+      // Rescued first, under the same b101 rule that governs every other -B in
+      // this file. A slot branch is ephemeral, but "ephemeral" is not "empty":
+      // a run that died between a worker's commit and its merge-back leaves
+      // real work on this ref, and the reset below would be the only thing
+      // standing between that work and oblivion.
+      await this.rescueBranchIfAhead(bare, o.slotBranch, o.sessionBranch);
+      await this.run(["-C", bare, "worktree", "add", "-B", o.slotBranch, wt, o.sessionBranch]);
+      await this.run(["-C", wt, "config", "user.name", o.commitIdentity.name]);
+      await this.run(["-C", wt, "config", "user.email", o.commitIdentity.email]);
+      // b117 measured the alternatives on ProjectThanos (1.8 GB, 97,149 files):
+      // npm ci 25s, hardlink walk 43s, APFS clone 36s, symlink 0.17s. The
+      // symlink is by far the fastest and is still wrong -- it would let one
+      // worker's stray `npm install` reach through and mutate every other
+      // worker's dependencies, which is the b109 failure verbatim. The pool
+      // makes the honest choice affordable: this is paid per SLOT, once, not
+      // per sub-task dispatch.
+      if (o.bootstrapDeps !== false) await this.bootstrapWorktreeDeps(wt);
+      return wt;
+    } catch (err) {
+      // Do not leave a half-built slot on disk for the reaper to find later.
+      inFlightWorktrees.delete(wt);
+      await this.releaseByPath(wt, o.repoFullName).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /**
+   * beta.117: point a slot at `sha` and discard everything left from its last
+   * sub-task.
+   *
+   * `clean -fd` without `-x`, which is load-bearing: `-x` would also remove
+   * ignored files, and `node_modules` is ignored. Adding it would delete the
+   * dependency tree this slot paid 25 seconds to install, on every single
+   * reuse.
+   */
+  async resetPooled(worktreePath: string, sha: string): Promise<void> {
+    await this.run(["-C", worktreePath, "reset", "--hard", sha]);
+    await this.run(["-C", worktreePath, "clean", "-fd"]);
+  }
+
+  /**
+   * beta.117: run a plain git command in a checkout.
+   *
+   * Deliberately local-only -- no askpass, no token. Merge-back never touches
+   * a remote, and handing it credentials would widen the surface of a helper
+   * whose whole job is moving commits between two local branches.
+   */
+  async runIn(cwd: string, args: string[]): Promise<string> {
+    return this.run(["-C", cwd, ...args]);
+  }
+
+  /** beta.117: tear down a slot checkout and its ephemeral branch. */
+  async releasePooled(
+    worktreePath: string,
+    repoFullName: string,
+    slotBranch: string,
+  ): Promise<{ ok: boolean; path: string; error?: string }> {
+    const wt = resolve(this.expand(worktreePath));
+    const res = await this.releaseByPath(wt, repoFullName);
+    inFlightWorktrees.delete(wt);
+    // The branch is worthless once its commits are merged back, and leaving it
+    // behind would collide with the same slot on the next run of this session.
+    await this.run(["-C", this.repoBarePath(repoFullName), "branch", "-D", slotBranch]).catch(() => "");
+    return res;
+  }
+
   async releaseByPath(worktreePath: string, repoFullName: string): Promise<{ ok: boolean; path: string; error?: string }> {
     if (!worktreePath) return { ok: false, path: worktreePath, error: "worktreePath is empty" };
     if (!existsSync(worktreePath)) return { ok: true, path: worktreePath, error: "worktree already gone" };

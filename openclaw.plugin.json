@@ -389,7 +389,7 @@
           "parallel_independent_subtasks": {
             "type": "boolean",
             "default": false,
-            "description": "beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no dependency) to run concurrently up to subtask_concurrency, with a file-overlap guard so two workers never write the same file in the shared worktree. Default false (serial, beta.90). Set true AND subtask_concurrency > 1 to parallelise."
+            "description": "beta.117: run independent sub-tasks (disjoint declared file scope, no dependency) concurrently, up to subtask_concurrency. Each concurrent worker gets its OWN checkout on its own branch, and its commits are merged back into the session branch one at a time; two workers touching the same undeclared file surface as a merge conflict against a named sub-task instead of silently corrupting each other. Costs one `npm ci` per slot, once per cycle. Default false. Set true AND subtask_concurrency > 1 to parallelise."
           },
           "deterministic_revise_mapping": {
             "type": "boolean",

@@ -773,7 +773,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     },
 
 
-    runWorker: async ({ brief, subTask, plan, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, firstTokenTimeoutSecondsOverride }) => {
+    runWorker: async ({ brief, subTask, plan, worktreePath, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, firstTokenTimeoutSecondsOverride }) => {
       const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
       const canUseTool = buildBashGuard(config.safety);
       const resolution = pat.resolve({
@@ -782,7 +782,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         repoFullName: plan.repo,
       });
       return runWorkerCore(
-        plan.worktreePath,
+        // beta.117: the loop states which checkout this worker owns. Under
+        // parallelism it is a leased slot, and using plan.worktreePath here
+        // would silently put every worker back in the shared session worktree
+        // -- the exact cross-contamination b117 exists to prevent. The fallback
+        // covers the serial path, where the two are the same.
+        worktreePath ?? plan.worktreePath,
         brief,
         subTask,
         resolution.commitIdentity,
@@ -1113,6 +1118,57 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       }
       return outcome;
     },
+
+    /**
+     * beta.117: parallel-worker slot lifecycle.
+     *
+     * The slot path is derived from the session worktree's own directory name
+     * plus the slot number, so slots land beside the session checkout under the
+     * same worktrees root and inherit its disk headroom checks. Deriving it
+     * from the DB session UUID instead would be wrong: the allocator names
+     * session directories `pending-<ts>-<hex>`, and b16 was exactly the bug of
+     * reconstructing a worktree path from the wrong id.
+     */
+    allocatePooledWorktree: async ({ sessionId, repoFullName, sessionBranch, slotBranch, slot }) => {
+      const row = state.db.prepare(`SELECT worktree_path, requester FROM sessions WHERE id = ?`).get(sessionId) as
+        | { worktree_path?: string; requester?: string }
+        | undefined;
+      const sessionPath = row?.worktree_path;
+      if (!sessionPath) throw new Error(`cannot site a parallel slot: session ${sessionId} has no worktree_path`);
+      const slotPath = `${sessionPath}-w${slot}`;
+      // The slot's commits are merged into the session branch and pushed under
+      // the session's identity, so they must be authored by that same identity
+      // or the PR shows two authors for one piece of work.
+      const resolution = pat.resolve({
+        slackUserId: row?.requester ?? config.slack.authorised_users[0]!,
+        gitHubUser: repoFullName.split("/")[0]!,
+        repoFullName,
+      });
+      api.logger.info("[harness] creating a parallel worker slot", { sessionId, slot, slotBranch, slotPath });
+      const started = Date.now();
+      const wt = await git.allocatePooled({
+        repoFullName,
+        sessionBranch,
+        slotBranch,
+        slotPath,
+        commitIdentity: resolution.commitIdentity,
+      });
+      state.audit(
+        "harness.parallel_slot_created",
+        { sessionId, slot, slotBranch, slotPath, durationMs: Date.now() - started },
+        sessionId,
+      );
+      return wt;
+    },
+    resetPooledWorktree: async (worktreePath: string, sha: string) => git.resetPooled(worktreePath, sha),
+    releasePooledWorktree: async ({ repoFullName, worktreePath, slotBranch }) => {
+      const outcome = await git.releasePooled(worktreePath, repoFullName, slotBranch);
+      if (!outcome.ok) {
+        api.logger.warn("[harness] parallel slot release did not succeed", { worktreePath, error: outcome.error });
+      }
+      return outcome;
+    },
+    gitRun: (cwd: string, args: string[]) => git.runIn(cwd, args),
 
     buildVerifyProbes: ({ plan, requester, worktreePath, baseSha }) => {
       const resolution = pat.resolve({
