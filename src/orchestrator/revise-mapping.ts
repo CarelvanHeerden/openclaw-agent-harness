@@ -46,6 +46,8 @@ export interface MapFinding {
   detail?: string;
   file?: string | null;
   line?: number;
+  /** beta.119: other paths that must ALSO change for the fix to be complete. */
+  relatedFiles?: string[] | null;
 }
 
 /** Sub-task shape we read for mapping. */
@@ -66,6 +68,7 @@ export interface MapSubTask {
 export type StructuralMatch = (owned: string[], candidate: string) => unknown;
 
 import { isRoutable, normaliseDimension } from "./finding-dimension.js";
+import { coFixFiles, findingKey, type CcFinding } from "./cross-cutting-findings.js";
 
 /** Diff-addressable dimensions (must carry a `.file` per beta.91). */
 export const DIFF_ADDRESSABLE = new Set(["spec", "quality", "security"]);
@@ -126,6 +129,23 @@ export interface ReviseMappingResult {
   orphanAdoptions: OrphanAdoption[];
   /** beta.118: orphans that had candidates but no single strongest one. */
   orphanRefusals: OrphanAdoptionRefusal[];
+  /** beta.119: findings routed to additional owners because the fix spans sub-tasks. */
+  coFixRoutings: CoFixRouting[];
+}
+
+/**
+ * beta.119: one finding, and the EXTRA sub-tasks brought in because the fix
+ * needs files they own. The owner of the finding's own `file` is not listed
+ * here -- it was already targeted by the normal path.
+ */
+export interface CoFixRouting {
+  finding: MapFinding;
+  /** the finding's own file. */
+  file: string;
+  /** the co-fix paths that resolved to an owner. */
+  matchedFiles: string[];
+  /** the additional sub-tasks now asked to participate. */
+  seqs: number[];
 }
 
 /** beta.107: one orphan finding, and the sub-task made responsible for it. */
@@ -334,7 +354,22 @@ export function mapFindingsToSubTasks(
   match: StructuralMatch,
   // beta.107: opt-in so every pre-b107 caller and test keeps byte-identical
   // behaviour; the loop turns it on from `revise_adopt_orphan_findings`.
-  opts: { adoptOrphans?: boolean; maxAdoptionsPerCycle?: number } = {},
+  opts: {
+    adoptOrphans?: boolean;
+    maxAdoptionsPerCycle?: number;
+    /**
+     * beta.119: also target a finding at the owners of the OTHER files its fix
+     * needs (`relatedFiles`, plus any repo path its prose names). Off leaves
+     * pre-b119 behaviour byte-identical.
+     */
+    routeCoFixOwners?: boolean;
+    /**
+     * beta.119: keys of findings the previous cycle also raised. A stuck
+     * finding widens even when it is already targeted somewhere -- being
+     * targeted is precisely what did not work for it last cycle.
+     */
+    stuckKeys?: Set<string>;
+  } = {},
 ): ReviseMappingResult {
   const list = findings ?? [];
   const assignments: SubTaskAssignment[] = subTasks.map((s) => ({
@@ -415,11 +450,51 @@ export function mapFindingsToSubTasks(
     if (!a.targetedFiles.includes(ad.file)) a.targetedFiles.push(ad.file);
   }
 
+  // beta.119: bring in the OTHER sub-tasks a fix needs. Routing the b118
+  // upload finding to sub-task 5 was correct and useless: the remedy lived in
+  // the drawer and the Prisma model, which sub-task 5 does not own and cannot
+  // touch. Targeting every owner of the fix means the coordinated change can
+  // actually happen in one cycle instead of being declined in three.
+  const coFixRoutings: CoFixRouting[] = [];
+  if (opts.routeCoFixOwners) {
+    const ownedOf = (st: MapSubTask): string[] =>
+      [...((st.filesLikelyTouched ?? []) as string[]), ...((st.contextPaths ?? []) as string[])]
+        .map((p) => (typeof p === "string" ? p.trim() : ""))
+        .filter(Boolean);
+    for (const f of list) {
+      if (isMetaFinding(f)) continue;
+      const file = fileOf(f);
+      const extras = coFixFiles(f as CcFinding);
+      if (extras.length === 0) continue;
+      const seqs: number[] = [];
+      const matchedFiles: string[] = [];
+      for (const st of subTasks) {
+        const owned = ownedOf(st);
+        if (owned.length === 0) continue;
+        const hit = extras.filter((p) => !!match(owned, p));
+        if (hit.length === 0) continue;
+        const a = bySeq.get(st.seq);
+        if (!a) continue;
+        // Already carrying this finding (it owns the finding's own file, or a
+        // prior rule targeted it) -> nothing to widen.
+        if (a.targeted.includes(f) && !opts.stuckKeys?.has(findingKey(f as CcFinding))) continue;
+        if (!a.targeted.includes(f)) a.targeted.push(f);
+        for (const p of hit) {
+          if (!a.targetedFiles.includes(p)) a.targetedFiles.push(p);
+          if (!matchedFiles.includes(p)) matchedFiles.push(p);
+        }
+        if (!seqs.includes(st.seq)) seqs.push(st.seq);
+        anyTargeted = true;
+      }
+      if (seqs.length > 0) coFixRoutings.push({ finding: f, file, matchedFiles, seqs });
+    }
+  }
+
   // Broadcast meta + misses to every sub-task.
   const broadcastAll = [...meta, ...misses];
   for (const a of assignments) a.broadcast = broadcastAll;
 
-  return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted, orphanAdoptions, orphanRefusals };
+  return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted, orphanAdoptions, orphanRefusals, coFixRoutings };
 }
 
 /**
@@ -454,6 +529,14 @@ export function buildScopedReviseHint(
   parts.push(
     ``,
     `Address ONLY the findings above that fall inside THIS sub-task's files/scope. If none of them apply to this sub-task, make NO changes and end your turn -- do not redo work that is already correct.`,
+    // beta.119: the b118 upload/kind finding was raised three times and fixed
+    // never. Sub-task 5 owned the file and was targeted correctly every cycle,
+    // but the remedy needed a Prisma column and a drawer change it did not own,
+    // so it silently made no change -- indistinguishable, from the loop's side,
+    // from "already correct". Saying so out loud is what makes the difference
+    // observable in ONE cycle instead of being re-raised until the ceiling.
+    `If a finding above IS about your files but you CANNOT fully resolve it within them -- because the fix also needs a schema/migration change, a different component, or a file another sub-task owns -- do NOT silently make no change. Make whatever part IS yours, then state on its own line:`,
+    `BLOCKED: <finding title> — needs <repo-relative paths you cannot touch> — <one sentence on what must change there>`,
   );
   return parts.join("\n");
 }

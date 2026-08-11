@@ -822,6 +822,154 @@ const MUTATIONS = [
     tests: ["tests/beta118-orphan-routing.test.mjs"],
   },
 
+  // --- beta.119 fix 1: the CI gate fails closed ----------------------------
+  {
+    name: "an unreadable signal is not evidence (b119): `&&` here is the exact b118 false green -- green Vercel, invisible Actions",
+    file: "dist/adapters/github.js",
+    find: "if (!snap.statusReadable || !snap.checksReadable) {",
+    replace: "if (!snap.statusReadable && !snap.checksReadable) {",
+    tests: ["tests/beta119-ci-gate-fails-closed.test.mjs"],
+  },
+  {
+    name: "a truncated check list is unjudgeable (b119): page 2 could hold the only red check",
+    file: "dist/adapters/github.js",
+    find: "            if ((cj.total_count ?? runs.length) > runs.length) {",
+    replace: "            if (false) {",
+    tests: ["tests/beta119-ci-gate-fails-closed.test.mjs"],
+  },
+  {
+    name: "success needs every check to PASS (b119): absence of red is not presence of green",
+    file: "dist/adapters/github.js",
+    find: "const allChecksGood = snap.checkPassed === snap.checkTotal;",
+    replace: "const allChecksGood = snap.checkFailed === 0;",
+    tests: ["tests/beta119-ci-gate-fails-closed.test.mjs"],
+  },
+  {
+    name: "the fall-through is unknown, not success (b119): the pre-b119 default is what shipped a red PR as green",
+    file: "dist/adapters/github.js",
+    find: '    snap.state = "unknown";\n    snap.reason = `unclassified:',
+    replace: '    snap.state = "success";\n    snap.reason = `unclassified:',
+    tests: ["tests/beta119-ci-gate-fails-closed.test.mjs"],
+  },
+  {
+    name: "`stale` is a failing conclusion (b119): a stale check has not passed",
+    file: "dist/adapters/github.js",
+    find: 'const FAILED_CONCLUSIONS = ["failure", "timed_out", "cancelled", "action_required", "stale"];',
+    replace: 'const FAILED_CONCLUSIONS = ["failure", "timed_out", "cancelled", "action_required"];',
+    tests: ["tests/beta119-ci-gate-fails-closed.test.mjs"],
+  },
+  {
+    name: "a shrinking check list cannot end the wait (b119): the Checks API is eventually consistent and briefly returns none",
+    file: "dist/orchestrator/loop.js",
+    find: 'else if (checkTotal < maxChecksSeen && (status === "success" || status === "none")) {',
+    replace: "else if (false) {",
+    tests: ["tests/beta119-ci-gate-fails-closed.test.mjs"],
+  },
+  {
+    name: "an unresolved read ends INDETERMINATE (b119): waiting out the budget and then calling it green is the same bug with extra steps",
+    file: "dist/orchestrator/loop.js",
+    find: 'return { outcome: "indeterminate", sha, waitedSeconds, reason: lastIndeterminateReason };',
+    replace: 'return { outcome: "success" };',
+    tests: ["tests/beta119-ci-gate-fails-closed.test.mjs"],
+  },
+
+  // --- beta.119 fix 2: a fix no single owner can make ----------------------
+  {
+    name: "co-fix routing recruits the other owners (b119): b118 told sub-task 5 three times to change files it does not own",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "    if (opts.routeCoFixOwners) {",
+    replace: "    if (false) {",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+  {
+    name: "declared relatedFiles are used (b119): the adversary was asked for them precisely because prose extraction is lossy",
+    file: "dist/orchestrator/cross-cutting-findings.js",
+    find: "    const declared = (Array.isArray(f.relatedFiles) ? f.relatedFiles : [])",
+    replace: "    const declared = (Array.isArray(null) ? f.relatedFiles : [])",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+  {
+    name: "a finding never co-fixes its own file (b119): the owner is already on it; listing it manufactures a self-recruit",
+    file: "dist/orchestrator/cross-cutting-findings.js",
+    find: "        if (!p || p === own)",
+    replace: "        if (!p)",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+  {
+    name: "the overlap threshold recognises a rewrite (b119): b118's three titles for one defect score 0.55-0.62",
+    file: "dist/orchestrator/cross-cutting-findings.js",
+    find: "const SAME_FINDING_OVERLAP = 0.5;",
+    replace: "const SAME_FINDING_OVERLAP = 0.95;",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+  {
+    name: "two shared tokens minimum (b119): below it, short titles on one file match each other by coincidence",
+    file: "dist/orchestrator/cross-cutting-findings.js",
+    find: "const MIN_SHARED_TOKENS = 2;",
+    replace: "const MIN_SHARED_TOKENS = 0;",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+  {
+    name: "stuck means CONSECUTIVE (b119): a finding fixed in c2 and reintroduced in c3 is a new problem, not an unfixable one",
+    file: "dist/orchestrator/cross-cutting-findings.js",
+    find: "    const previous = history[history.length - 1] ?? [];",
+    replace: "    const previous = history.flat();",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+
+  // --- beta.119 fixes 3-5: cycles, push failures, token scope --------------
+  {
+    name: "an extension needs budget headroom (b119): a converging run with no money left must still stop",
+    file: "dist/orchestrator/loop.js",
+    find: "                    const canExtend = (input.cycleExtensionsGranted ?? 0) < (input.maxCycleExtensions ?? 0) &&\n                        input.budgetHeadroomOk === true &&",
+    replace: "                    const canExtend = (input.cycleExtensionsGranted ?? 0) < (input.maxCycleExtensions ?? 0) &&",
+    tests: ["tests/beta119-cycles-push-scope.test.mjs"],
+  },
+  {
+    name: "granted extensions raise the ceiling (b119): without this the grant is issued every cycle and never spent",
+    file: "dist/orchestrator/loop.js",
+    find: "if (input.cyclesRan >= input.maxCycles + (input.cycleExtensionsGranted ?? 0)) {",
+    replace: "if (input.cyclesRan >= input.maxCycles) {",
+    tests: ["tests/beta119-cycles-push-scope.test.mjs"],
+  },
+  {
+    name: "a regressing last cycle is not converging (b119): 13 -> 8 -> 12 is the arc we refuse to buy a fourth cycle for",
+    file: "dist/orchestrator/loop.js",
+    find: "    return last <= prev; // and the most recent cycle did not regress",
+    replace: "    return true;",
+    tests: ["tests/beta119-cycles-push-scope.test.mjs"],
+  },
+  {
+    name: "a failed push preserves the worktree (b119): the commits exist ONLY on local disk at this terminal",
+    // Source-side: the guard is a pin against src/orchestrator/loop.ts, so a
+    // dist mutation would be invisible to it by construction.
+    file: "src/orchestrator/loop.ts",
+    find: "      return this.finaliseFailedPreserveWorktree(\n        sessionId,\n        `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({",
+    replace: "      return this.finaliseFailed(\n        sessionId,\n        `pr_error (${diagnosis.kind}): ${describePreservedPushFailure({",
+    tests: ["tests/beta119-cycles-push-scope.test.mjs"],
+  },
+  {
+    name: "an unclassified push failure is still recoverable (b119): deleting the work to save a worktree is never the right trade",
+    file: "dist/orchestrator/push-failure.js",
+    find: "        kind: \"unknown\",\n        // Unknown does NOT mean unrecoverable. The work is on disk either way, and\n        // deleting it to save a worktree is never the right trade.\n        recoverable: true,",
+    replace: '        kind: "unknown",\n        recoverable: false,',
+    tests: ["tests/beta119-cycles-push-scope.test.mjs"],
+  },
+  {
+    name: "only a PROVEN missing scope stops the run (b119): fine-grained PATs report no scope header and are perfectly capable",
+    file: "src/orchestrator/loop.ts",
+    find: "        if (verdict === false) {",
+    replace: "                if (!verdict) {",
+    tests: ["tests/beta119-cycles-push-scope.test.mjs"],
+  },
+  {
+    name: "an absent scope header is unknown, not a refusal (b119): App installation tokens return it empty",
+    file: "dist/orchestrator/workflow-scope.js",
+    find: "    if (!scopes || scopes.length === 0)\n        return null;",
+    replace: "    if (!scopes || scopes.length === 0)\n        return false;",
+    tests: ["tests/beta119-cycles-push-scope.test.mjs"],
+  },
+
   // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every
   // mutation here rewrites a `dist/` file, but the assertion that guards this
   // property is a SOURCE pin against `src/orchestrator/loop.ts`, so a dist-side

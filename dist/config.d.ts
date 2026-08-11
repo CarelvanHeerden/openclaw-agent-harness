@@ -688,6 +688,46 @@ export interface LoopConfig {
      */
     revise_max_adoptions_per_cycle?: number;
     /**
+     * beta.119: also route a finding to the owners of the OTHER files its fix
+     * needs (`relatedFiles`, plus any repo path the finding's prose names).
+     *
+     * The b118 smoke raised "the upload route discards the kind/title fields the
+     * drawer sends" in all three cycles and fixed it in none. Routing was
+     * correct -- the route file's owner was targeted every cycle -- but that
+     * worker could not act alone: persisting the fields needed a Prisma column it
+     * did not own, and deleting the now-dead dropdown needed the drawer it did
+     * not own. It reported no-change, which the loop cannot distinguish from
+     * "already correct", so the finding was re-raised until the cycle ceiling.
+     * Default true. Set false for the pre-b119 single-owner routing.
+     */
+    revise_route_co_fix_owners?: boolean;
+    /**
+     * beta.119: extra execute+review cycles the loop may grant ITSELF past
+     * `max_cycles` when the adversary's finding count is trending down and the
+     * budget covers another cycle.
+     *
+     * b97 already detected this arc and wrote the operator a note asking them to
+     * run `harness_revise` by hand -- the same cycle the harness could have run
+     * while the worktree was still warm. The b118 smoke went 16 -> 8 -> 9 and
+     * stopped on the ceiling having spent $12.90 of $30, shipping four blocking
+     * findings its own report called "small and mechanical". Both conditions must
+     * hold, so a stuck run (flat or rising findings) still stops on time.
+     * Default 1. Set 0 to restore the pre-b119 hard ceiling.
+     */
+    max_cycle_extensions?: number;
+    /**
+     * beta.119: when the plan intends to edit `.github/workflows/**`, verify the
+     * routed token has the `workflow` scope BEFORE running any sub-task.
+     *
+     * The CI-optimisation run planned a one-line ci.yml change, executed it,
+     * reviewed it, and discovered only at the push that GitHub refuses workflow
+     * writes without that scope -- a question answerable from the plan and a
+     * response header before the first worker started. Only a token that
+     * PROVABLY lacks the scope stops a run; fine-grained PATs and App tokens
+     * report no scope header and are waved through. Default true.
+     */
+    workflow_scope_precheck?: boolean;
+    /**
      * beta.108: end a revise cycle that moved the branch tip nowhere, instead of
      * paying for an adversary pass over a diff that did not change. The b106
      * revise's cycle 3 dispatched five sub-tasks, four returned

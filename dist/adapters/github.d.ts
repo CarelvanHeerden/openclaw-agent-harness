@@ -79,16 +79,75 @@ export declare function getPullRequest(input: {
     mergeable: boolean | null;
     baseBranch: string;
 }>;
+export type CiState = "success" | "failure" | "pending" | "none" | "unknown";
 /**
- * beta.34: combined CI status for a commit SHA. Merges the legacy Statuses
- * API and the Check Runs API into one verdict: "success" | "failure" |
- * "pending" | "none" (no checks configured).
+ * beta.119: the structured evidence behind a CI verdict. `getCombinedStatus`
+ * collapses this to a bare state for the merge-time gate; the polling loop
+ * consumes the whole snapshot so it can apply the check-count high-water mark
+ * (see `pollCiStatus`) that a single reading cannot.
  */
+export interface CiSnapshot {
+    state: CiState;
+    /** Both API reads succeeded. When false the state is always "unknown". */
+    statusReadable: boolean;
+    checksReadable: boolean;
+    /** Legacy Statuses API. */
+    statusState: string;
+    statusCount: number;
+    /** Check Runs API. */
+    checkTotal: number;
+    checkIncomplete: number;
+    checkFailed: number;
+    /** Completed with a conclusion we affirmatively recognise as non-red. */
+    checkPassed: number;
+    /** Which rule produced `state`, for the audit trail. */
+    reason: string;
+}
+/**
+ * beta.34: combined CI status for a commit SHA, merging the legacy Statuses API
+ * and the Check Runs API into one verdict.
+ *
+ * beta.119: this gate used to FAIL OPEN, and the b118 smoke shipped on it.
+ * ProjectThanos PR #986 was declared green at 21:10:45 while Lint had failed at
+ * 21:10:17 and Tests failed at 21:13:39. The old code read both APIs but guarded
+ * the check-runs branch with a bare `if (cRes.ok)` and no else, so an
+ * unreadable -- or transiently empty, which the Check Runs API genuinely does
+ * return under eventual consistency -- check-run list was indistinguishable
+ * from "this repo has no check runs". The "nothing configured" guard then
+ * required BOTH sources to be empty, and ProjectThanos has exactly one legacy
+ * status (Vercel). So the moment Vercel's deploy went green the function fell
+ * through `anySuccess` and reported the whole commit green, blind to all ten
+ * Actions checks. The old body also ENDED in `return "success"`, making success
+ * the default for every state not explicitly matched.
+ *
+ * The rules below invert that: success requires positive evidence from every
+ * signal, and anything we could not read is "unknown", never a pass.
+ */
+export declare function getCiSnapshot(input: {
+    repoFullName: string;
+    sha: string;
+    ghToken: string;
+    apiBase?: string;
+}): Promise<CiSnapshot>;
+/**
+ * beta.119: the OAuth scopes GitHub reports for this token.
+ *
+ * GitHub returns `x-oauth-scopes` on any authenticated request, but ONLY for
+ * classic PATs and OAuth tokens. Fine-grained PATs and GitHub App installation
+ * tokens return it absent or empty while being perfectly capable, so `null`
+ * here means "cannot tell" and must never be read as "cannot do". Never throws.
+ */
+export declare function getTokenScopes(input: {
+    ghToken: string;
+    apiBase?: string;
+}): Promise<string[] | null>;
+/** beta.34 / beta.119: the bare state. Prefer `getCiSnapshot` where the evidence matters. */
 export declare function getCombinedStatus(input: {
     repoFullName: string;
     sha: string;
     ghToken: string;
-}): Promise<"success" | "failure" | "pending" | "none">;
+    apiBase?: string;
+}): Promise<CiState>;
 /**
  * beta.81 (Track B / B2): fetch a short excerpt of the FAILING check-runs for a
  * commit SHA -- each failed run's name, conclusion, and output title/summary --

@@ -38,6 +38,7 @@
  * cycle with path-match and stays trivially unit-testable.
  */
 import { isRoutable, normaliseDimension } from "./finding-dimension.js";
+import { coFixFiles, findingKey } from "./cross-cutting-findings.js";
 /** Diff-addressable dimensions (must carry a `.file` per beta.91). */
 export const DIFF_ADDRESSABLE = new Set(["spec", "quality", "security"]);
 /** Meta dimensions: cross-cutting, `.file` optional, broadcast to all. */
@@ -320,11 +321,60 @@ opts = {}) {
         if (!a.targetedFiles.includes(ad.file))
             a.targetedFiles.push(ad.file);
     }
+    // beta.119: bring in the OTHER sub-tasks a fix needs. Routing the b118
+    // upload finding to sub-task 5 was correct and useless: the remedy lived in
+    // the drawer and the Prisma model, which sub-task 5 does not own and cannot
+    // touch. Targeting every owner of the fix means the coordinated change can
+    // actually happen in one cycle instead of being declined in three.
+    const coFixRoutings = [];
+    if (opts.routeCoFixOwners) {
+        const ownedOf = (st) => [...(st.filesLikelyTouched ?? []), ...(st.contextPaths ?? [])]
+            .map((p) => (typeof p === "string" ? p.trim() : ""))
+            .filter(Boolean);
+        for (const f of list) {
+            if (isMetaFinding(f))
+                continue;
+            const file = fileOf(f);
+            const extras = coFixFiles(f);
+            if (extras.length === 0)
+                continue;
+            const seqs = [];
+            const matchedFiles = [];
+            for (const st of subTasks) {
+                const owned = ownedOf(st);
+                if (owned.length === 0)
+                    continue;
+                const hit = extras.filter((p) => !!match(owned, p));
+                if (hit.length === 0)
+                    continue;
+                const a = bySeq.get(st.seq);
+                if (!a)
+                    continue;
+                // Already carrying this finding (it owns the finding's own file, or a
+                // prior rule targeted it) -> nothing to widen.
+                if (a.targeted.includes(f) && !opts.stuckKeys?.has(findingKey(f)))
+                    continue;
+                if (!a.targeted.includes(f))
+                    a.targeted.push(f);
+                for (const p of hit) {
+                    if (!a.targetedFiles.includes(p))
+                        a.targetedFiles.push(p);
+                    if (!matchedFiles.includes(p))
+                        matchedFiles.push(p);
+                }
+                if (!seqs.includes(st.seq))
+                    seqs.push(st.seq);
+                anyTargeted = true;
+            }
+            if (seqs.length > 0)
+                coFixRoutings.push({ finding: f, file, matchedFiles, seqs });
+        }
+    }
     // Broadcast meta + misses to every sub-task.
     const broadcastAll = [...meta, ...misses];
     for (const a of assignments)
         a.broadcast = broadcastAll;
-    return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted, orphanAdoptions, orphanRefusals };
+    return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted, orphanAdoptions, orphanRefusals, coFixRoutings };
 }
 /**
  * Build the per-sub-task revise dispatch hint from a deterministic assignment.
@@ -348,7 +398,14 @@ export function buildScopedReviseHint(verdict, summary, a) {
     if (broadcastLines.length > 0) {
         parts.push(``, `Cross-cutting guidance (applies across the change; apply the parts that fall in THIS sub-task's files):`, ...broadcastLines);
     }
-    parts.push(``, `Address ONLY the findings above that fall inside THIS sub-task's files/scope. If none of them apply to this sub-task, make NO changes and end your turn -- do not redo work that is already correct.`);
+    parts.push(``, `Address ONLY the findings above that fall inside THIS sub-task's files/scope. If none of them apply to this sub-task, make NO changes and end your turn -- do not redo work that is already correct.`, 
+    // beta.119: the b118 upload/kind finding was raised three times and fixed
+    // never. Sub-task 5 owned the file and was targeted correctly every cycle,
+    // but the remedy needed a Prisma column and a drawer change it did not own,
+    // so it silently made no change -- indistinguishable, from the loop's side,
+    // from "already correct". Saying so out loud is what makes the difference
+    // observable in ONE cycle instead of being re-raised until the ceiling.
+    `If a finding above IS about your files but you CANNOT fully resolve it within them -- because the fix also needs a schema/migration change, a different component, or a file another sub-task owns -- do NOT silently make no change. Make whatever part IS yours, then state on its own line:`, `BLOCKED: <finding title> — needs <repo-relative paths you cannot touch> — <one sentence on what must change there>`);
     return parts.join("\n");
 }
 //# sourceMappingURL=revise-mapping.js.map

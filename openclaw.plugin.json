@@ -568,6 +568,23 @@
             "minimum": 0,
             "description": "beta.108: ceiling on orphan-finding adoptions per revise cycle. Adoption widens a sub-task's file scope, and scope is what a revise cycle costs. The b106 revise on PR #932 fired 21 mapping misses across two cycles against the original smoke's two, because the adversary re-reads the whole branch each cycle and keeps surfacing adjacent issues; uncapped adoption would pull most of the branch back into every cycle. Candidates are taken in severity order, and info-severity findings are never adopted -- info is how the adversary records that a PRIOR finding was verified fixed."
           },
+          "revise_route_co_fix_owners": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.119: also route a finding to the owners of the OTHER files its fix needs (the adversary's `relatedFiles`, plus any repo path the finding's prose names). The b118 smoke raised 'the upload route discards the kind/title fields the drawer sends' in all three cycles and fixed it in none: routing was correct, but the route file's owner could not act alone -- persisting the fields needed a Prisma column it did not own, and removing the dead dropdown needed the drawer it did not own. It reported no-change, indistinguishable from 'already correct', and the finding was re-raised until the cycle ceiling. Set false for pre-b119 single-owner routing."
+          },
+          "max_cycle_extensions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "default": 1,
+            "description": "beta.119: extra execute+review cycles the loop may grant itself past max_cycles when the adversary's finding count is trending DOWN and this run's own average cycle cost still fits inside the session ceiling and the per-user daily cap. b97 already detected this arc and merely asked the operator to re-run harness_revise by hand; the b118 smoke went 16 -> 8 -> 9 findings and stopped on the ceiling having spent $12.90 of $30, shipping four blocking findings its own report called small and mechanical. Both conditions must hold, so a stuck run (flat or rising findings) still stops on time. Set 0 to restore the pre-b119 hard ceiling."
+          },
+          "workflow_scope_precheck": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.119: when the plan intends to edit .github/workflows/**, verify the routed token carries the `workflow` scope BEFORE running any sub-task. The CI-optimisation run planned a one-line ci.yml change, executed it, reviewed it, and learned only at the push that GitHub refuses workflow writes without that scope -- answerable from the plan and a response header before the first worker started. Only a token that PROVABLY lacks the scope stops a run; fine-grained PATs and GitHub App tokens report no scope header and are waved through, since 'cannot tell' must not read as 'cannot do'."
+          },
           "scope_blowout_file_threshold": {
             "type": "number",
             "default": 500,

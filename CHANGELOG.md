@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.1.0-beta.119
+
+### The run that reported CI green while CI was red
+
+The b118 OpenClaw smoke shipped ProjectThanos PR #986 and told the operator
+"CI green". Nine of its ten GitHub Actions checks were failing at the time.
+
+`getCombinedStatus` read two APIs — the legacy combined-status endpoint and the
+Check Runs list — and then made a decision that only one of them had to
+support. Vercel posts a legacy status; Actions posts check runs. When the Check
+Runs read came back unreadable or momentarily empty (that API is eventually
+consistent and will briefly return fewer runs than it did a second earlier),
+the function saw a lone green Vercel status, no visible checks to contradict
+it, and fell through to `success`. Every ambiguous branch in that function
+ended at `success`, so *any* gap in the evidence resolved as health.
+
+The gate now collects evidence and refuses to guess:
+
+- **A signal that could not be read is never evidence of health.** Either API
+  unreadable — HTTP error, thrown fetch, or a check-run list truncated past one
+  page — yields `unknown`, which is the b115 principle ("a gate that could not
+  run must not read as a pass") applied to the gate that decides whether to
+  ship at all.
+- **Success demands positive evidence from both signals.** Every check run must
+  have concluded with a conclusion we recognise as passing; an unrecognised one
+  counts for nothing. `stale` joins the failing set.
+- **There is no fall-through to green.** A combination with no rule is
+  `unknown`.
+- **A shrinking check list cannot end the wait.** The poller keeps a high-water
+  mark of checks seen on the sha; a poll reporting fewer while claiming
+  `success` or `none` is a stale read and is refused (`loop.ci_check_count_regressed`).
+- **An unresolved read is `indeterminate`, not a pass.** It is retried inside
+  the wait budget and, if it never resolves, drives `needs_human_review`.
+- `harness_merge_pr` refuses on `unknown` and on `pending`, not just on
+  `failure`. The same blind spot that faked a green ship would have waved the
+  merge through.
+
+### The finding no single worker was able to fix
+
+b118 raised "the upload route discards the `kind`/`title` fields the drawer
+sends" in all three cycles and fixed it in none. Routing was correct every
+time. The route file's owner simply could not act alone: persisting the fields
+needed a Prisma column it did not own, and the dead `kind` dropdown lived in a
+drawer it did not own. It reported no change — indistinguishable from "already
+correct" — and the finding came back until the ceiling stopped the run.
+
+The adversary is now asked for `relatedFiles` when a fix spans files, and a
+finding is routed to the owners of *those* files too, alongside any repo path
+its prose names. Recruited sub-tasks get the co-fix path in their scope, so the
+coordinated change can happen in one cycle. A worker that still cannot complete
+a fix is told to say so explicitly rather than silently doing nothing.
+
+Findings that survive a revise cycle are tracked across cycles — through the
+adversary's rewording, which defeats any exact-string key — and one that
+survives every cycle is stated plainly on the PR instead of being buried in a
+finding list that looks like cycle 1's.
+
+### The fourth cycle nobody had to pay for
+
+b118 went 16 → 8 → 9 findings, stopped dead on `max_cycles: 3`, and shipped
+four blocking findings its own report called "small and mechanical", having
+spent $12.90 of a $30 budget. b97 already detected this arc; it wrote a note
+asking the operator to run `harness_revise` by hand — the same cycle the
+harness could have run itself while the worktree was still warm.
+
+The loop now grants itself up to `max_cycle_extensions` (default 1) further
+cycles, and only when both hold: the **blocking** finding count is genuinely
+converging, and this run's own average cycle cost still fits inside the session
+ceiling and the daily cap. Blocking counts, not totals, because totals rise as
+the adversary files `info` notes recording prior fixes, and blocking findings
+are what another cycle would actually be buying. A run that is flat, rising, or
+that regressed on its most recent cycle earns nothing. Set 0 for the pre-b119
+hard ceiling.
+
+### The push that failed and took the work with it
+
+The CI-optimisation run did its job: one line in `.github/workflows/ci.yml`,
+committed. GitHub then refused the push because the token lacked the `workflow`
+scope. The loop routed that to `finaliseFailed`, which releases the worktree —
+so the branch and the only copy of the commit were deleted while the operator
+was still reading the error.
+
+A push failure is the one terminal where the run's commits provably exist only
+on local disk. It now preserves the worktree and prints the branch, the path,
+the classified cause, and the command to push it by hand. b62 built
+`finaliseFailedPreserveWorktree` for exactly this ("discarded 8 good commits
+precisely because the crash path released the worktree") and wired it only to
+review crashes.
+
+That failure was also answerable before the first worker started: the plan
+named the workflow file, and GitHub reports a token's scopes on any response
+header. When a plan intends to edit `.github/workflows/**`, the scope is now
+checked up front. Only a token that *provably* lacks it stops the run —
+fine-grained PATs and App installation tokens report no scope header, and
+"cannot tell" must not read as "cannot do".
+
 ## 0.1.0-beta.118
 
 ### The finding that was routed to the wrong worker, and looked like a success

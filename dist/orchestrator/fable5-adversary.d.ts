@@ -66,6 +66,15 @@ export interface ReviewFinding {
      * (medium+ spec/quality/security); meta findings set null explicitly. */
     file?: string | null;
     line?: number;
+    /**
+     * beta.119: the OTHER repo-relative paths that must change for this finding
+     * to be resolved. Set when the fix spans files -- a route that cannot persist
+     * a field until the Prisma model gains a column, a dead UI control whose
+     * removal belongs to the component that renders it. The router targets the
+     * owners of these paths too, so every worker the fix needs is asked in the
+     * same cycle.
+     */
+    relatedFiles?: string[] | null;
 }
 export interface ReviewReport {
     verdict: "pass" | "revise" | "block";

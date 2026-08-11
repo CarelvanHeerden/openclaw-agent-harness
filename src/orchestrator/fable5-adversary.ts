@@ -70,6 +70,15 @@ export interface ReviewFinding {
    * (medium+ spec/quality/security); meta findings set null explicitly. */
   file?: string | null;
   line?: number;
+  /**
+   * beta.119: the OTHER repo-relative paths that must change for this finding
+   * to be resolved. Set when the fix spans files -- a route that cannot persist
+   * a field until the Prisma model gains a column, a dead UI control whose
+   * removal belongs to the component that renders it. The router targets the
+   * owners of these paths too, so every worker the fix needs is asked in the
+   * same cycle.
+   */
+  relatedFiles?: string[] | null;
 }
 
 export interface ReviewReport {
@@ -183,6 +192,16 @@ export function buildAdversarySystemPrompt(input: AdversaryInput): string {
     // refuses that tie; naming the trigger here is what restores a real owner.
     "- REGISTRY findings ('you added X, now register it in Y'): when `file` is a shared registry file that the diff does NOT modify, `detail` MUST quote the EXACT repo-relative path of the diff file that TRIGGERED the requirement -- the new page, route or component that needs registering. Write it as a full path, e.g. \"src/app/(portal)/grc/continuity-resilience/page.tsx introduces a new UI surface, so src/lib/help/help-content.ts needs an entry\". Naming only the registry file, or describing the trigger in words ('the new UI surface'), leaves the finding with no owner and it will NOT be fixed.",
     "- `detail` is NEVER empty for a `medium`+ finding. A title alone is not a finding: state what is wrong, where, and what would resolve it.",
+    // beta.119: the b118 smoke raised "the upload route discards the kind/title
+    // fields the drawer sends" in all three cycles and never fixed it. Routing
+    // was correct -- the route file's owner was targeted every time -- but that
+    // worker could not act: persisting the fields needed a Prisma column it did
+    // not own, and removing the dead dropdown needed the drawer it did not own.
+    // It declined, the loop read the no-change as "already correct", and the
+    // run hit the ceiling. Whoever must ALSO change has to be named structurally
+    // (prose is parsed as a fallback, but the field is what routing trusts).
+    "- `relatedFiles` (CRITICAL for multi-file fixes): if resolving the finding requires editing files BEYOND `file`, list their exact repo-relative paths in `relatedFiles`. A route that cannot persist a field until the Prisma model gains a column: `relatedFiles: [\"prisma/schema.prisma\"]`. A dead UI control that should be removed from the component rendering it: `relatedFiles: [\"src/components/grc/continuity-exercise-drawer.tsx\"]`. Leave it out ONLY when the fix is genuinely contained in `file`. A finding whose fix spans files but names only one of them is handed to a worker who CANNOT complete it, and it will be re-raised unfixed every cycle.",
+    "- When a finding offers a CHOICE of remedies ('either drop the UI, or add the column'), put the paths for BOTH options in `relatedFiles` and state the trade-off in `detail`. Every worker involved needs to see the same choice.",
     "",
     "## Runtime banner",
     runtimeBanner(input),

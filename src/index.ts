@@ -54,7 +54,8 @@ import {
   SCOUT_DENIED_TOOLS,
   SCOUT_MAX_TURNS,
 } from "./orchestrator/lead-scout.js";
-import { createPullRequest, getPullRequest, getCombinedStatus, getFailingCheckLogs, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getTokenScopes, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { canPushWorkflows } from "./orchestrator/workflow-scope.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import {
@@ -906,6 +907,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                   detail: f.detail ?? "",
                   file: f.file,
                   line: f.line,
+                  // beta.119: the other paths the fix needs. This mapper picks
+                  // fields explicitly, so an unlisted one is silently dropped
+                  // however well the prompt asks for it.
+                  relatedFiles: Array.isArray(f.relatedFiles)
+                    ? f.relatedFiles.filter((p: unknown): p is string => typeof p === "string" && p.trim().length > 0)
+                    : undefined,
                 })),
                 summary: r.parsed.summary,
               },
@@ -1067,7 +1074,26 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const [owner] = repoFullName.split("/");
       const resolution = pat.resolve({ slackUserId: requester ?? "", gitHubUser: owner!, repoFullName });
       const ghToken = await resolveGitToken(resolution).catch(() => "");
-      return getCombinedStatus({ repoFullName, sha, ghToken });
+      return getCombinedStatus({ repoFullName, sha, ghToken, apiBase: resolution.apiBase });
+    },
+    // beta.119: the structured read behind the verdict. The polling loop needs
+    // the check-run COUNT (not just the state) to reject a stale, shrunken
+    // check list that would otherwise read as green.
+    ciSnapshot: async ({ repoFullName, sha, requester }) => {
+      const [owner] = repoFullName.split("/");
+      const resolution = pat.resolve({ slackUserId: requester ?? "", gitHubUser: owner!, repoFullName });
+      const ghToken = await resolveGitToken(resolution).catch(() => "");
+      return getCiSnapshot({ repoFullName, sha, ghToken, apiBase: resolution.apiBase });
+    },
+    // beta.119: can this repo's token push workflow files? Resolved through the
+    // same pat.resolve path as the push, so the answer is about the token that
+    // will actually do the pushing.
+    tokenScopes: async ({ repoFullName, requester }) => {
+      const [owner] = repoFullName.split("/");
+      const resolution = pat.resolve({ slackUserId: requester ?? "", gitHubUser: owner!, repoFullName });
+      const ghToken = await resolveGitToken(resolution).catch(() => "");
+      if (!ghToken) return null;
+      return canPushWorkflows(await getTokenScopes({ ghToken, apiBase: resolution.apiBase }));
     },
     // beta.81 (Track B / B2): on CI failure, fetch the failing check-run logs
     // (names + output summaries) as the revise finding source. Best-effort.
@@ -1878,12 +1904,33 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           state.db.prepare(`UPDATE sessions SET pr_merged = 1, pr_merged_at = ?, updated_at = ? WHERE id = ?`).run(Date.now(), Date.now(), sessionId);
           return { ok: true, merged: true, recommendation: rec, message: `PR #${row.pr_number} was already merged on GitHub.` };
         }
-        const ci = await getCombinedStatus({ repoFullName: row.repo, sha: pr.headSha, ghToken });
+        const ciSnap = await getCiSnapshot({ repoFullName: row.repo, sha: pr.headSha, ghToken });
+        const ci = ciSnap.state;
         if (ci === "failure") {
-          state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "ci_failure" }, sessionId);
+          state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "ci_failure", ciReason: ciSnap.reason }, sessionId);
           return {
             ok: false, refused: true, recommendation: rec,
-            message: `Refusing to merge PR #${row.pr_number}: CI is FAILING on the head commit. Hard gate — fix CI or merge from the GitHub UI.`,
+            message: `Refusing to merge PR #${row.pr_number}: CI is FAILING on the head commit (${ciSnap.reason}). Hard gate — fix CI or merge from the GitHub UI.`,
+          };
+        }
+        // beta.119: an unreadable CI state is not a green one. Pre-b119 this
+        // gate only refused on an explicit "failure", so the same unreadable
+        // check-run list that faked a green ship would also have waved the
+        // merge through. Refuse and make a human look.
+        if (ci === "unknown") {
+          state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "ci_indeterminate", ciReason: ciSnap.reason }, sessionId);
+          return {
+            ok: false, refused: true, recommendation: rec,
+            message: `Refusing to merge PR #${row.pr_number}: could not determine CI state on the head commit (${ciSnap.reason}). Hard gate — check the PR's checks tab, or merge from the GitHub UI.`,
+          };
+        }
+        // beta.119: still-running checks are likewise not a pass. The b118
+        // false-green shipped while Tests was mid-flight and Tests later failed.
+        if (ci === "pending") {
+          state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "ci_pending", ciReason: ciSnap.reason }, sessionId);
+          return {
+            ok: false, refused: true, recommendation: rec,
+            message: `Refusing to merge PR #${row.pr_number}: CI is still running on the head commit (${ciSnap.reason}). Hard gate — wait for CI, then retry.`,
           };
         }
         const merged = await mergePullRequest({ repoFullName: row.repo, prNumber: row.pr_number, ghToken, method: "squash" });
