@@ -448,7 +448,26 @@ export interface OrchestratorDeps {
         repoFullName: string;
         sha: string;
         requester: string;
-    }) => Promise<"success" | "failure" | "pending" | "none">;
+    }) => Promise<"success" | "failure" | "pending" | "none" | "unknown">;
+    /**
+     * beta.119: the structured evidence behind the CI verdict (counts of check
+     * runs seen / running / failed, and whether each API was readable at all).
+     * `pollCiStatus` prefers this over `ciCombinedStatus` because a single bare
+     * verdict cannot express "the check list SHRANK since the last poll", which
+     * is what the b118 false-green needed to be caught. Optional; when absent the
+     * loop falls back to the bare status and skips the high-water-mark rule.
+     */
+    ciSnapshot?: (input: {
+        repoFullName: string;
+        sha: string;
+        requester: string;
+    }) => Promise<{
+        state: "success" | "failure" | "pending" | "none" | "unknown";
+        checkTotal: number;
+        checksReadable: boolean;
+        statusReadable: boolean;
+        reason: string;
+    }>;
     /**
      * beta.81 (Track B / B2): on CI `failure`, fetch a short excerpt of the
      * failing check-run logs so they can be surfaced as the revise finding
@@ -459,6 +478,16 @@ export interface OrchestratorDeps {
         sha: string;
         requester: string;
     }) => Promise<string>;
+    /**
+     * beta.119: can the token routed to this repo push GitHub Actions workflow
+     * files? `true`/`false` when GitHub reported the token's scopes, `null` when
+     * it did not (fine-grained PATs and App tokens report none, and are capable).
+     * Only a definite `false` stops a run. Optional; absent disables the check.
+     */
+    tokenScopes?: (input: {
+        repoFullName: string;
+        requester: string;
+    }) => Promise<boolean | null>;
     /**
      * beta.81 (Track B / B3): when a repo has NO CI (`ciCombinedStatus === "none"`),
      * AUTHOR a `.github/workflows/*.yml` running the repo's declared check
@@ -543,6 +572,27 @@ export interface OrchestratorDeps {
  * Pure + unit-tested. Empty/single-cycle input returns false (no signal).
  */
 export declare function isConvergingFindingTrend(counts: number[] | undefined): boolean;
+/**
+ * beta.119: is the run converging hard enough to be worth BUYING another cycle?
+ *
+ * Deliberately stricter than `isConvergingFindingTrend`, and measured on a
+ * different quantity. That predicate drives an advisory note, so it is
+ * generous on purpose -- its own doc cites 13 -> 8 -> 12 as converging, on the
+ * grounds that a late bump is "new code introduced new findings". Fine for a
+ * sentence on a PR; not a basis for spending several dollars and ten minutes.
+ *
+ * It also counts the wrong things. TOTAL findings include the `info` notes the
+ * adversary emits to record that a PRIOR finding was fixed, so the number can
+ * rise precisely BECAUSE the run is succeeding. b118's totals went 16 -> 8 -> 9
+ * and that final rise is mostly bookkeeping; its BLOCKING counts went 9 -> 5 ->
+ * 4, monotonically down. Blocking findings are also the only ones that keep the
+ * PR from merging, so they are what another cycle would be buying.
+ *
+ * Requires: something still blocking (otherwise the run ships anyway), a net
+ * improvement over the run, and no regression in the latest cycle -- a run that
+ * just went backwards has not earned another turn.
+ */
+export declare function isConvergingBlockingTrend(blocking: number[] | undefined): boolean;
 export declare class OrchestratorLoop {
     private readonly deps;
     /**
@@ -575,6 +625,23 @@ export declare class OrchestratorLoop {
         blockingFindings?: number;
         /** beta.109: `loop.ship_when_no_blocking_findings`, default on. */
         shipWhenNoBlockingFindings?: boolean;
+        /**
+         * beta.119: per-cycle BLOCKING finding counts, in cycle order. Drives the
+         * cycle extension. Deliberately not `findingCountsByCycle`, which includes
+         * the `info` notes the adversary emits to record prior fixes and so can
+         * rise because a run is succeeding.
+         */
+        blockingCountsByCycle?: number[];
+        /** beta.119: extra cycles already granted beyond `maxCycles` this run. */
+        cycleExtensionsGranted?: number;
+        /** beta.119: `loop.max_cycle_extensions`. 0 disables extension entirely. */
+        maxCycleExtensions?: number;
+        /**
+         * beta.119: whether the remaining budget comfortably covers another cycle.
+         * The caller computes it from real per-cycle spend; an extension must never
+         * be the thing that runs a session out of money.
+         */
+        budgetHeadroomOk?: boolean;
     }): {
         nextStatus: LoopStatus;
         reason: string;
@@ -812,6 +879,11 @@ export declare class OrchestratorLoop {
         sha: string;
         waitedSeconds: number;
     } | {
+        outcome: "indeterminate";
+        sha: string;
+        waitedSeconds: number;
+        reason: string;
+    } | {
         outcome: "skipped";
     }>;
     /**
@@ -867,6 +939,22 @@ export declare class OrchestratorLoop {
      * Never throws.
      */
     private safeDailySpend;
+    /**
+     * beta.119: can this run genuinely afford one more execute+review cycle?
+     *
+     * Gate for the converging-trend cycle extension. "Converging" says another
+     * cycle would HELP; this says we can PAY for it, and the two together are
+     * what make an automatic extension safe. The estimate comes from this run's
+     * own average cycle cost rather than a guess, and is padded, because the
+     * failure mode to avoid is an extension that runs a session out of money
+     * mid-cycle -- strictly worse than shipping on the ceiling, which at least
+     * leaves a reviewable PR.
+     *
+     * Checked against BOTH the session ceiling and the per-user daily cap, since
+     * either can be the binding constraint. Never throws; on any doubt it
+     * returns false and the run ships as it did pre-b119.
+     */
+    private hasBudgetHeadroomForAnotherCycle;
     /**
      * beta.78 (Feature 1+2): daily-AWARE soft session-budget warning. When a
      * run crosses its SOFT session budget, warn the user via Slack (best-effort,

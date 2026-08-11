@@ -45,6 +45,8 @@ export interface MapFinding {
     detail?: string;
     file?: string | null;
     line?: number;
+    /** beta.119: other paths that must ALSO change for the fix to be complete. */
+    relatedFiles?: string[] | null;
 }
 /** Sub-task shape we read for mapping. */
 export interface MapSubTask {
@@ -102,6 +104,22 @@ export interface ReviseMappingResult {
     orphanAdoptions: OrphanAdoption[];
     /** beta.118: orphans that had candidates but no single strongest one. */
     orphanRefusals: OrphanAdoptionRefusal[];
+    /** beta.119: findings routed to additional owners because the fix spans sub-tasks. */
+    coFixRoutings: CoFixRouting[];
+}
+/**
+ * beta.119: one finding, and the EXTRA sub-tasks brought in because the fix
+ * needs files they own. The owner of the finding's own `file` is not listed
+ * here -- it was already targeted by the normal path.
+ */
+export interface CoFixRouting {
+    finding: MapFinding;
+    /** the finding's own file. */
+    file: string;
+    /** the co-fix paths that resolved to an owner. */
+    matchedFiles: string[];
+    /** the additional sub-tasks now asked to participate. */
+    seqs: number[];
 }
 /** beta.107: one orphan finding, and the sub-task made responsible for it. */
 export interface OrphanAdoption {
@@ -190,6 +208,18 @@ export declare function adoptOrphanFindings(subTasks: MapSubTask[], misses: MapF
 export declare function mapFindingsToSubTasks(subTasks: MapSubTask[], findings: MapFinding[] | undefined, match: StructuralMatch, opts?: {
     adoptOrphans?: boolean;
     maxAdoptionsPerCycle?: number;
+    /**
+     * beta.119: also target a finding at the owners of the OTHER files its fix
+     * needs (`relatedFiles`, plus any repo path its prose names). Off leaves
+     * pre-b119 behaviour byte-identical.
+     */
+    routeCoFixOwners?: boolean;
+    /**
+     * beta.119: keys of findings the previous cycle also raised. A stuck
+     * finding widens even when it is already targeted somewhere -- being
+     * targeted is precisely what did not work for it last cycle.
+     */
+    stuckKeys?: Set<string>;
 }): ReviseMappingResult;
 /**
  * Build the per-sub-task revise dispatch hint from a deterministic assignment.

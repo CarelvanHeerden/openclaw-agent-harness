@@ -144,6 +144,9 @@ import { isInfraCrash } from "./infra-crash.js";
 import { computeReviseScope } from "./revise-scope.js";
 import { mapFindingsToSubTasks, buildScopedReviseHint, } from "./revise-mapping.js";
 import { detectWorkerConfab } from "./worker-confab-detect.js";
+import { detectStuckFindings, findingKey, coFixFiles, describeUnresolvable, } from "./cross-cutting-findings.js";
+import { diagnosePushFailure, describePreservedPushFailure } from "./push-failure.js";
+import { planTouchesWorkflows, describeMissingWorkflowScope } from "./workflow-scope.js";
 import { selectWorkerModel } from "./worker-model-select.js";
 import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
 import { WorktreePool } from "./worktree-pool.js";
@@ -452,6 +455,38 @@ export function isConvergingFindingTrend(counts) {
     const min = Math.min(...counts);
     return min < first;
 }
+/**
+ * beta.119: is the run converging hard enough to be worth BUYING another cycle?
+ *
+ * Deliberately stricter than `isConvergingFindingTrend`, and measured on a
+ * different quantity. That predicate drives an advisory note, so it is
+ * generous on purpose -- its own doc cites 13 -> 8 -> 12 as converging, on the
+ * grounds that a late bump is "new code introduced new findings". Fine for a
+ * sentence on a PR; not a basis for spending several dollars and ten minutes.
+ *
+ * It also counts the wrong things. TOTAL findings include the `info` notes the
+ * adversary emits to record that a PRIOR finding was fixed, so the number can
+ * rise precisely BECAUSE the run is succeeding. b118's totals went 16 -> 8 -> 9
+ * and that final rise is mostly bookkeeping; its BLOCKING counts went 9 -> 5 ->
+ * 4, monotonically down. Blocking findings are also the only ones that keep the
+ * PR from merging, so they are what another cycle would be buying.
+ *
+ * Requires: something still blocking (otherwise the run ships anyway), a net
+ * improvement over the run, and no regression in the latest cycle -- a run that
+ * just went backwards has not earned another turn.
+ */
+export function isConvergingBlockingTrend(blocking) {
+    if (!blocking || blocking.length < 2)
+        return false;
+    const first = blocking[0];
+    const last = blocking[blocking.length - 1];
+    const prev = blocking[blocking.length - 2];
+    if (last <= 0)
+        return false; // nothing blocking -> the run ships regardless
+    if (last >= first)
+        return false; // no net progress across the run
+    return last <= prev; // and the most recent cycle did not regress
+}
 export class OrchestratorLoop {
     deps;
     /**
@@ -509,7 +544,23 @@ export class OrchestratorLoop {
                 // (max_cycles: 3 ran only 2 execute/review cycles -- the check fired at
                 // the END of cycle 2 with cyclesRan=2 >= 3-1). A config that promises N
                 // cycles now runs N.
-                if (input.cyclesRan >= input.maxCycles) {
+                if (input.cyclesRan >= input.maxCycles + (input.cycleExtensionsGranted ?? 0)) {
+                    // beta.119: BUY THE CYCLE THE EVIDENCE SAYS IS WORTH BUYING. The b118
+                    // OpenClaw smoke went 16 -> 8 -> 9 findings and stopped dead on the
+                    // ceiling, having spent $12.90 of a $30 budget. b97 already detects
+                    // this exact arc -- it just wrote a note asking the operator to run
+                    // `harness_revise` by hand, which is the same cycle the harness could
+                    // have run itself while the worktree was still warm. Four blocking
+                    // findings, all described by the report as "small and mechanical",
+                    // shipped unfixed for want of a fourth cycle nobody had to pay extra
+                    // for. Bounded twice over: a hard extension count, and real budget
+                    // headroom measured from this run's own per-cycle spend.
+                    const canExtend = (input.cycleExtensionsGranted ?? 0) < (input.maxCycleExtensions ?? 0) &&
+                        input.budgetHeadroomOk === true &&
+                        isConvergingBlockingTrend(input.blockingCountsByCycle);
+                    if (canExtend) {
+                        return { nextStatus: "executing", reason: "max_cycles_extended_converging" };
+                    }
                     // beta.35 fix #3: cycles exhausted with a `revise` (NOT `block`)
                     // verdict. `revise` means "improvable", not "broken" -- and on a
                     // repo with no in-loop preview-deploy the adversary structurally
@@ -1172,6 +1223,28 @@ export class OrchestratorLoop {
             this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
             return this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd);
         }
+        // beta.119: ASK THE QUESTION BEFORE SPENDING THE MONEY. The CI-optimisation
+        // run planned a one-line `.github/workflows/ci.yml` edit, executed it,
+        // reviewed it, and learned only at the push that the token cannot write
+        // workflow files at all. The plan named the file and GitHub reports token
+        // scopes on any request header, so this was answerable before the first
+        // worker started. Only a token that PROVABLY lacks the scope stops the run:
+        // fine-grained PATs and App tokens report no scope header and are waved
+        // through, since "cannot tell" must never read as "cannot do".
+        if (this.deps.tokenScopes && this.deps.config.loop.workflow_scope_precheck !== false) {
+            const workflowFiles = planTouchesWorkflows(plan.subTasks);
+            if (workflowFiles.length > 0) {
+                const verdict = await this.deps
+                    .tokenScopes({ repoFullName: plan.repo, requester: row.requester })
+                    .catch(() => null);
+                this.deps.state.audit("loop.workflow_scope_precheck", { sessionId, files: workflowFiles, scopesKnown: verdict !== null, canPush: verdict }, sessionId);
+                if (verdict === false) {
+                    this.deps.logger.error("[loop] the plan edits GitHub Actions workflows but the routed token lacks the `workflow` scope; stopping before any sub-task runs", { sessionId, files: workflowFiles });
+                    this.deps.interactionLog?.log(sessionId, { event: "workflow_scope_missing", phase: "plan", files: workflowFiles });
+                    return this.finaliseFailed(sessionId, `workflow_scope_missing: ${describeMissingWorkflowScope(workflowFiles)}`, 0, row.cost_usd);
+                }
+            }
+        }
         let cycle = 0;
         let totalCost = row.cost_usd;
         let lastReview;
@@ -1183,6 +1256,20 @@ export class OrchestratorLoop {
         // do_not_merge on a 13 -> 8 -> 12 arc; 13 -> 8 was real convergence the
         // operator was never told about.
         const findingCountsByCycle = [];
+        // beta.119: the findings themselves, per cycle, so a finding that SURVIVES
+        // a revise cycle can be recognised. The b118 upload/kind finding was raised
+        // in all three cycles and fixed in none, and nothing in the loop could tell
+        // that apart from three unrelated findings that happened to look similar.
+        const findingsByCycle = [];
+        // Findings still open at the end, that were raised in consecutive cycles
+        // and never resolved -- surfaced on the PR rather than silently re-raised.
+        let unresolvedAcrossCycles = [];
+        // beta.119: extra cycles granted past `max_cycles` because the finding
+        // trend was converging and the budget covered them.
+        let cycleExtensionsGranted = 0;
+        // beta.119: BLOCKING findings per cycle -- what the extension decision is
+        // actually made on. See isConvergingBlockingTrend.
+        const blockingCountsByCycle = [];
         // beta.97 (Fix #7): the reason the loop left the review cycle for a terminal
         // "done", so the ship path can surface the converging ask-to-extend note.
         let terminalDoneReason = "";
@@ -1240,9 +1327,23 @@ export class OrchestratorLoop {
                     filesLikelyTouched: s.filesLikelyTouched,
                     contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
                 }));
+                // beta.119: which of this review's findings the PREVIOUS cycle also
+                // raised. A stuck finding is re-widened even where it is already
+                // targeted -- being targeted is exactly what failed for it last time.
+                const stuck = detectStuckFindings(findingsByCycle.slice(0, -1), lastReview.findings);
+                const stuckKeys = new Set(stuck.map((s) => s.key));
+                for (const s of stuck) {
+                    this.deps.state.audit("loop.finding_stuck", {
+                        sessionId, cycle, occurrences: s.occurrences, title: s.finding.title,
+                        file: (s.finding.file ?? "").trim() || null, severity: s.finding.severity,
+                        coFixFiles: coFixFiles(s.finding),
+                    }, sessionId);
+                }
                 reviseMapping = mapFindingsToSubTasks(mapSubTasks, lastReview.findings, (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }), {
                     adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
                     maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
+                    routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
+                    stuckKeys,
                 });
                 for (const a of reviseMapping.assignments)
                     reviseAssignmentBySeq.set(a.seq, a);
@@ -1302,6 +1403,48 @@ export class OrchestratorLoop {
                 }
                 if (reviseMapping.mappingMisses.length > 0) {
                     this.deps.logger.info("[loop] revise-mapping: filed finding(s) matched no sub-task -> broadcast to all as context (never dropped)", { sessionId, cycle, misses: reviseMapping.mappingMisses.length });
+                }
+                // beta.119: a fix that spans sub-tasks now brings in every sub-task it
+                // needs. Put the co-fix paths into their scope too, for the same reason
+                // orphan adoption does above: b91 scoping keeps a sub-task only when
+                // its files intersect a finding file, so without this the extra owners
+                // are recruited and then immediately skipped.
+                for (const cf of reviseMapping.coFixRoutings) {
+                    this.deps.state.audit("loop.finding_co_fix_routed", {
+                        sessionId, cycle, file: cf.file, matchedFiles: cf.matchedFiles,
+                        seqs: cf.seqs, title: cf.finding.title,
+                        stuck: stuckKeys.has(findingKey(cf.finding)),
+                    }, sessionId);
+                    for (const seq of cf.seqs) {
+                        const st = plan.subTasks.find((s) => s.seq === seq);
+                        if (!st)
+                            continue;
+                        st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
+                        for (const p of cf.matchedFiles) {
+                            if (!st.filesLikelyTouched.includes(p))
+                                st.filesLikelyTouched.push(p);
+                        }
+                    }
+                }
+                if (reviseMapping.coFixRoutings.length > 0) {
+                    this.deps.logger.info("[loop] beta.119: finding(s) whose fix spans sub-tasks routed to every owner the fix needs", { sessionId, cycle, routed: reviseMapping.coFixRoutings.length });
+                }
+                // A stuck finding that co-fix routing could NOT widen is one nobody in
+                // this plan can resolve. Record it for the PR body instead of letting
+                // it be re-raised identically until the cycle ceiling.
+                const widened = new Set(reviseMapping.coFixRoutings.map((c) => findingKey(c.finding)));
+                unresolvedAcrossCycles = stuck
+                    .filter((s) => !widened.has(s.key))
+                    .map((s) => ({
+                    key: s.key,
+                    title: s.finding.title ?? "(untitled)",
+                    file: (s.finding.file ?? "").trim(),
+                    severity: s.finding.severity ?? "low",
+                    occurrences: s.occurrences,
+                    coFixFiles: coFixFiles(s.finding),
+                }));
+                for (const u of unresolvedAcrossCycles) {
+                    this.deps.state.audit("loop.finding_unresolvable_across_cycles", { sessionId, cycle, ...u }, sessionId);
                 }
             }
             const ordered = topoSortSubTasks(plan.subTasks);
@@ -2976,8 +3119,11 @@ export class OrchestratorLoop {
             });
             // beta.97 (Fix #7): record this cycle's finding count for the convergence check.
             findingCountsByCycle.push(report.findings?.length ?? 0);
+            // beta.119: keep the findings themselves, not just how many there were.
+            findingsByCycle.push([...(report.findings ?? [])]);
             const reactions = await this.deps.readReactions(sessionId);
             const blockingFindings = this.countBlockingFindings(report.findings);
+            blockingCountsByCycle.push(blockingFindings);
             this.deps.state.audit("loop.blocking_findings", { sessionId, cycle, verdict: report.verdict, findings: report.findings?.length ?? 0, blockingFindings }, sessionId);
             const decision = OrchestratorLoop.advance({
                 currentStatus: "reviewing",
@@ -2987,6 +3133,12 @@ export class OrchestratorLoop {
                 cyclesRan: cycle,
                 maxCycles: this.deps.config.loop.max_cycles,
                 findingCountsByCycle,
+                // beta.119: one more cycle, when the trend says it will land and the
+                // budget can genuinely absorb it. See `advance`.
+                blockingCountsByCycle,
+                cycleExtensionsGranted,
+                maxCycleExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
+                budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle),
                 reactions,
                 // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
                 // per-user DAILY cap, not the (now-soft) session budget. Crossing the
@@ -3007,6 +3159,16 @@ export class OrchestratorLoop {
             }
             if (decision.nextStatus === "aborted") {
                 return this.finaliseAbort(sessionId, decision.reason, cycle, totalCost);
+            }
+            if (decision.reason === "max_cycles_extended_converging") {
+                cycleExtensionsGranted += 1;
+                this.deps.state.audit("loop.max_cycles_extended", {
+                    sessionId, cycle, granted: cycleExtensionsGranted,
+                    maxExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
+                    arc: [...findingCountsByCycle], blockingArc: [...blockingCountsByCycle],
+                    spentUsd: Number(totalCost.toFixed(4)),
+                }, sessionId);
+                this.deps.logger.info("[loop] beta.119: findings are converging and the budget covers another cycle -- extending rather than shipping on the ceiling", { sessionId, cycle, arc: findingCountsByCycle.join(" -> "), granted: cycleExtensionsGranted });
             }
             // else "executing": continue the outer while
         }
@@ -3053,9 +3215,27 @@ export class OrchestratorLoop {
             prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
         }
         catch (err) {
-            this.deps.state.audit("loop.pr_open_failed", { sessionId, cycle, branch: plan.branch, error: String(err) }, sessionId);
-            this.deps.interactionLog?.log(sessionId, { event: "pr_open_failed", phase: "finalize", cycle, error: String(err) });
-            return this.finaliseFailed(sessionId, `pr_error: ${String(err)}`, cycle, totalCost);
+            // beta.119: PRESERVE THE WORKTREE. A push failure is the one terminal
+            // where the run's commits provably exist ONLY on local disk -- failing to
+            // push means nothing reached the remote. Releasing it here deleted a
+            // finished, correct, one-line CI change whose push was rejected purely
+            // for a missing `workflow` token scope. b62 built
+            // finaliseFailedPreserveWorktree for this exact class ("discarded 8 good
+            // commits precisely because the crash path released the worktree") and
+            // wired it only to review crashes.
+            const diagnosis = diagnosePushFailure(err);
+            this.deps.state.audit("loop.pr_open_failed", {
+                sessionId, cycle, branch: plan.branch, error: String(err),
+                failureKind: diagnosis.kind, recoverable: diagnosis.recoverable,
+                worktreePreserved: true, worktreePath: plan.worktreePath,
+            }, sessionId);
+            this.deps.interactionLog?.log(sessionId, {
+                event: "pr_open_failed", phase: "finalize", cycle, error: String(err), failureKind: diagnosis.kind,
+            });
+            this.deps.logger.error("[loop] push/PR-open failed; PRESERVING the worktree so the commits can be recovered", { sessionId, branch: plan.branch, worktreePath: plan.worktreePath, kind: diagnosis.kind });
+            return this.finaliseFailedPreserveWorktree(sessionId, `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({
+                diagnosis, branch: plan.branch, worktreePath: plan.worktreePath, error: String(err),
+            })}`, cycle, totalCost);
         }
         // beta.63 (Part A): PR opened -- mark progress before the terminal write.
         this.markProgress(sessionId, "pr_opened", "finalize", { cycle });
@@ -3079,7 +3259,7 @@ export class OrchestratorLoop {
             catch {
                 headSha = "";
             }
-            if (headSha && this.deps.ciCombinedStatus) {
+            if (headSha && (this.deps.ciCombinedStatus || this.deps.ciSnapshot)) {
                 this.setStatus(sessionId, "reviewing");
                 this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
                 const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
@@ -3095,6 +3275,19 @@ export class OrchestratorLoop {
                         recommendation: "needs_human_review",
                         reason: `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
                             `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via harness_progress -- this is a soft checkpoint, not a failure.`,
+                    };
+                }
+                else if (ci.outcome === "indeterminate") {
+                    // beta.119: we never got a readable verdict out of GitHub for this
+                    // sha. Pre-b119 this path did not exist -- an unreadable check-run
+                    // list collapsed into "success" and the run shipped a merge
+                    // recommendation over failing checks (ProjectThanos PR #986). An
+                    // unverifiable commit is now blocking, exactly like a red one.
+                    ciOverride = {
+                        recommendation: "needs_human_review",
+                        reason: `Could NOT determine CI state for ${headSha} after ${ci.waitedSeconds}s of polling` +
+                            `${ci.reason ? ` (${ci.reason})` : ""}. ` +
+                            `The harness will not call an unverifiable commit green. Check the PR's checks tab before merging.`,
                     };
                 }
                 else if (ci.outcome === "authored_workflow_never_registered") {
@@ -3131,6 +3324,13 @@ export class OrchestratorLoop {
         // (merge still recommended, but the human sees CI did not verify the SHA).
         if (ciNeverRegisteredCaveat)
             finalReason = `${finalReason}\n\n${ciNeverRegisteredCaveat}`;
+        // beta.119: findings the reviewer raised in consecutive cycles that nobody
+        // resolved. On b118 three of these shipped inside a 9-finding list that
+        // looked no different from cycle 1's, so "raised three times, fixed never"
+        // was invisible to the reader. Say it plainly.
+        if (unresolvedAcrossCycles.length > 0) {
+            finalReason = `${finalReason}\n\n${describeUnresolvable(unresolvedAcrossCycles)}`;
+        }
         // beta.97 (Fix #7): if we shipped on max-cycles with a CONVERGING finding
         // trend, append an explicit ask-to-extend note. The merge recommendation is
         // UNCHANGED (still do_not_merge / needs_human_review); this is purely the
@@ -3682,7 +3882,7 @@ export class OrchestratorLoop {
      */
     async pollCiStatus(input) {
         const { sessionId, repoFullName, sha, requester } = input;
-        if (!this.deps.ciCombinedStatus)
+        if (!this.deps.ciCombinedStatus && !this.deps.ciSnapshot)
             return { outcome: "skipped" };
         const cfg = this.deps.config.ci ?? { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 };
         const waitMs = Math.max(30, cfg.wait_timeout_seconds ?? 900) * 1000;
@@ -3717,12 +3917,31 @@ export class OrchestratorLoop {
         this.deps.state.audit("loop.ci_poll_started", { sessionId, sha, waitTimeoutSeconds: cfg.wait_timeout_seconds, pollIntervalSeconds: cfg.poll_interval_seconds }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "ci_poll_started", phase: "finalize", sha });
         let polls = 0;
+        // beta.119: the highest check-run count seen across polls on this sha. The
+        // Check Runs API is eventually consistent and can transiently return fewer
+        // runs -- or none -- than it did a moment earlier. A shrinking list is the
+        // signature of the b118 false-green: ProjectThanos PR #986 was declared
+        // green off a lone passing Vercel legacy status while its ten Actions
+        // checks were momentarily invisible. Once we have seen N checks on a sha,
+        // a poll reporting fewer is a stale read, not progress.
+        let maxChecksSeen = 0;
+        let lastIndeterminateReason = "";
         // First read is immediate (no leading sleep) so a repo with no CI resolves
         // fast and a fast CI is not needlessly waited on.
         for (;;) {
             let status;
+            let checkTotal;
             try {
-                status = await this.deps.ciCombinedStatus({ repoFullName, sha, requester });
+                if (this.deps.ciSnapshot) {
+                    const snap = await this.deps.ciSnapshot({ repoFullName, sha, requester });
+                    status = snap.state;
+                    checkTotal = snap.checkTotal;
+                    if (snap.state === "unknown")
+                        lastIndeterminateReason = snap.reason;
+                }
+                else {
+                    status = await this.deps.ciCombinedStatus({ repoFullName, sha, requester });
+                }
             }
             catch (err) {
                 // Transient fetch error -> treat as pending + re-poll (never throw).
@@ -3730,8 +3949,33 @@ export class OrchestratorLoop {
                 status = "pending";
             }
             polls++;
+            if (typeof checkTotal === "number") {
+                if (checkTotal > maxChecksSeen)
+                    maxChecksSeen = checkTotal;
+                else if (checkTotal < maxChecksSeen && (status === "success" || status === "none")) {
+                    // The list regressed AND this poll wants to end the wait on a
+                    // non-red note. Refuse it and keep polling.
+                    this.deps.state.audit("loop.ci_check_count_regressed", { sessionId, sha, polls, checkTotal, maxChecksSeen, rejectedStatus: status }, sessionId);
+                    status = "pending";
+                }
+            }
+            if (status === "unknown") {
+                // beta.119: we could not read one of the two APIs (or read a state we
+                // have no rule for). That is NOT a pass. Re-poll inside the budget; if
+                // it never resolves, the caller flags the PR for a human.
+                const elapsedUnknown = now() - started;
+                if (elapsedUnknown + pollMs <= waitMs) {
+                    this.deps.state.audit("loop.ci_unknown_retry", { sessionId, sha, polls, reason: lastIndeterminateReason }, sessionId);
+                    await sleep(pollMs);
+                    continue;
+                }
+                const waitedSeconds = Math.round(elapsedUnknown / 1000);
+                this.deps.state.audit("loop.ci_indeterminate", { sessionId, sha, polls, waitedSeconds, reason: lastIndeterminateReason }, sessionId);
+                this.deps.interactionLog?.log(sessionId, { event: "ci_indeterminate", phase: "finalize", sha });
+                return { outcome: "indeterminate", sha, waitedSeconds, reason: lastIndeterminateReason };
+            }
             if (status === "success") {
-                this.deps.state.audit("loop.ci_success", { sessionId, sha, polls }, sessionId);
+                this.deps.state.audit("loop.ci_success", { sessionId, sha, polls, checkTotal: checkTotal ?? null, maxChecksSeen }, sessionId);
                 this.deps.interactionLog?.log(sessionId, { event: "ci_success", phase: "finalize", sha, polls });
                 return { outcome: "success" };
             }
@@ -4132,6 +4376,40 @@ export class OrchestratorLoop {
         }
         catch {
             return 0;
+        }
+    }
+    /**
+     * beta.119: can this run genuinely afford one more execute+review cycle?
+     *
+     * Gate for the converging-trend cycle extension. "Converging" says another
+     * cycle would HELP; this says we can PAY for it, and the two together are
+     * what make an automatic extension safe. The estimate comes from this run's
+     * own average cycle cost rather than a guess, and is padded, because the
+     * failure mode to avoid is an extension that runs a session out of money
+     * mid-cycle -- strictly worse than shipping on the ceiling, which at least
+     * leaves a reviewable PR.
+     *
+     * Checked against BOTH the session ceiling and the per-user daily cap, since
+     * either can be the binding constraint. Never throws; on any doubt it
+     * returns false and the run ships as it did pre-b119.
+     */
+    hasBudgetHeadroomForAnotherCycle(requester, spentUsd, cyclesRan) {
+        try {
+            if (cyclesRan < 1 || !(spentUsd > 0))
+                return false;
+            const projected = (spentUsd / cyclesRan) * 1.25;
+            const ceiling = this.deps.config.budgets?.session_hard_ceiling_usd;
+            if (typeof ceiling === "number" && ceiling > 0 && spentUsd + projected > ceiling)
+                return false;
+            const daily = this.dailyMaxUsd();
+            if (daily > 0 && this.safeDailySpend(requester) + projected > daily)
+                return false;
+            // With no ceiling configured at all we have nothing to measure against,
+            // so decline rather than extend into an unbounded spend.
+            return typeof ceiling === "number" && ceiling > 0;
+        }
+        catch {
+            return false;
         }
     }
     /**
