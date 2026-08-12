@@ -115,6 +115,42 @@ export interface BriefConfig {
    * clarify pause. Default 2.
    */
   bimodal_min_interpretations: number;
+  /**
+   * beta.120 (brief fidelity): directories `harness_run`'s `requestPath` may
+   * read a specification from. EMPTY BY DEFAULT, which disables file reads --
+   * the harness holds GitHub tokens and a brief's contents reach model prompts
+   * and PR bodies, so an operator must name the safe directories explicitly.
+   * Point this at wherever the calling runtime stores user-uploaded files.
+   * `~` is expanded; symlinks are resolved before the check.
+   */
+  request_file_roots: string[];
+  /** beta.120: hard cap on a `requestPath` file. Default 262144 (256 KB). */
+  request_file_max_bytes: number;
+  /**
+   * beta.120: pause for a human to confirm the crystallised brief BEFORE any
+   * planning or worker spend.
+   *
+   * "off"       - never pause (pre-beta.120 behaviour).
+   * "high_risk" - pause when the brief's riskLevel is at or above
+   *               confirm_min_risk. Default.
+   * "always"    - pause on every run.
+   *
+   * Motivation: two b119 smokes spent ~$18 and ~2h each building a feature
+   * whose brief had been paraphrased upstream (`performedAt` became
+   * `scheduledAt`). The error was obvious on sight; nothing showed it to
+   * anyone. Crystallising costs cents, so this gate is nearly free.
+   */
+  confirm_before_spend: "off" | "high_risk" | "always";
+  /**
+   * beta.120: lowest riskLevel that triggers a confirmation under "high_risk"
+   * mode. Default "high".
+   *
+   * There is deliberately NO budget threshold here: `estimated_usd` is derived
+   * from the session budget rather than from the task, so gating on it would
+   * silently make "high_risk" behave as "always". Set this to "medium" if you
+   * want a wider net, or the mode to "always" if you want every run gated.
+   */
+  confirm_min_risk: "medium" | "high";
 }
 
 export interface VerifyConfig {
@@ -457,6 +493,28 @@ export interface LoopConfig {
    * a near-done deliverable is not evaporated. Default true.
    */
   stall_graceful_pr?: boolean;
+  /**
+   * beta.120 (fix 1): when a run ABORTS on a resource ceiling (wall clock,
+   * session budget, daily cap) and the branch has commits, push them and open a
+   * needs_human_review PR instead of discarding the worktree. Default true.
+   *
+   * A resource ceiling says nothing about the quality of the code: the b119
+   * take-2 smoke hit its 120-minute wall clock at 121.6 minutes and deleted 27
+   * commits, 15 files, a clean typecheck and a converging review. Setting this
+   * false restores that behaviour for resource aborts, but the worktree is
+   * still PRESERVED whenever commits exist -- an abort never deletes work.
+   */
+  abort_salvage_pr?: boolean;
+  /**
+   * beta.120 (fix 4): stop starting new revise cycles once fewer than this many
+   * seconds remain before `session_hard_timeout_seconds`, and ship what exists
+   * instead. Default 600 (10 min). Set 0 to disable.
+   *
+   * The b119 take-2 run was killed at a review boundary with no runway left to
+   * push, because the deadline was only ever consulted to decide whether to
+   * ABORT -- never to decide whether there was still time to finish properly.
+   */
+  ship_time_reserve_seconds?: number;
   /**
    * beta.67 (Bug A): EXTERNAL stall-sweep cadence (seconds). beta.63's
    * `checkStalls` runs IN-PROCESS, so a dead loop-runner process cannot
@@ -1227,6 +1285,8 @@ const DEFAULTS: HarnessConfig = {
     session_stall_seconds: 1800,
     stall_auto_terminal: true,
     stall_graceful_pr: true,
+    abort_salvage_pr: true,
+    ship_time_reserve_seconds: 600,
     stall_sweep_interval_seconds: 60,
     enforce_worker_context: true,
     revise_spec_turn_enabled: true,
@@ -1360,6 +1420,10 @@ const DEFAULTS: HarnessConfig = {
     repo_only_invariant: true,
     bimodal_clarify: true,
     bimodal_min_interpretations: 2,
+    request_file_roots: [],
+    request_file_max_bytes: 262144,
+    confirm_before_spend: "high_risk",
+    confirm_min_risk: "high",
   },
   verify: {
     // beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the

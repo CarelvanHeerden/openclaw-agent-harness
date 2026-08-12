@@ -151,6 +151,15 @@ export interface LeadPlanSubTask {
   title: string;
   intent: string;                    // what the worker should do
   filesLikelyTouched: string[];      // narrow scope
+  /**
+   * beta.120 (fix 2): paths a co-fix routing decision granted this sub-task
+   * permission to edit in a revise cycle. Mirrored into `filesLikelyTouched`
+   * so the scope gate passes, and tracked here so the finding router can tell
+   * a granted path from an owned one -- without this the two are
+   * indistinguishable and ownership compounds every cycle. Never set by the
+   * lead planner.
+   */
+  coFixGrantedFiles?: string[];
   successCriteria: string[];         // observable / testable outcomes
   estimatedTokens: number;           // rough cost forecast
   dependsOn?: number[];              // seq numbers this depends on

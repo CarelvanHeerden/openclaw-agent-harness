@@ -642,6 +642,11 @@ export declare class OrchestratorLoop {
          * be the thing that runs a session out of money.
          */
         budgetHeadroomOk?: boolean;
+        /**
+         * beta.120 (fix 4): true when too little wall clock remains to run another
+         * cycle AND still push. Stops revising and lands what exists.
+         */
+        shipTimeReserved?: boolean;
     }): {
         nextStatus: LoopStatus;
         reason: string;
@@ -970,6 +975,39 @@ export declare class OrchestratorLoop {
      */
     private warnDailyMaxHit;
     private finaliseAbort;
+    /**
+     * beta.120 (fix 1, CRITICAL): an abort must never destroy work.
+     *
+     * WHAT HAPPENED. The b119 take-2 smoke ran 121.6 minutes against a 120-minute
+     * `session_hard_timeout_seconds`. At the cycle-3 review boundary the deadline
+     * had passed, `advance` returned `aborted/hard_timeout`, and `finaliseAbort`
+     * scheduled a worktree release. Gone: 27 commits, 15 files, ~1,900 lines, a
+     * clean typecheck and a converging review (14 -> 10 -> 8 findings). The work
+     * was recoverable only because git had not yet GC'd the objects in a cached
+     * clone. Nothing about that was by design.
+     *
+     * THE RULE. A resource ceiling is not a verdict on the code. Hitting one means
+     * "stop spending", not "throw it away". So:
+     *
+     *   - resource aborts (timeout / budget / daily cap) SHIP what they have, as
+     *     a needs_human_review PR -- exactly what `finaliseStalled` has always
+     *     done for a stalled-but-committed branch;
+     *   - a USER abort does not open a PR (they said stop), but still preserves
+     *     the worktree when commits exist;
+     *   - only an abort with genuinely nothing committed releases the worktree,
+     *     and it says so in the audit.
+     *
+     * Never throws: on any failure the worktree is preserved, which is the safe
+     * direction.
+     */
+    private finaliseAbortSalvaging;
+    /**
+     * beta.120: does this aborting session have commits worth protecting? Mirrors
+     * the stall path's probe. Fails CLOSED -- any doubt reports "yes", because a
+     * false positive costs a preserved directory and a false negative costs the
+     * work.
+     */
+    private abortHasSalvageableCommits;
     /**
      * beta.16 fix #3 + beta.17 correctness: schedule a best-effort worktree
      * release for a session that has already reached a terminal status.

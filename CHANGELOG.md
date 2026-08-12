@@ -1,5 +1,121 @@
 # Changelog
 
+## 0.1.0-beta.120
+
+### The run that built the wrong thing, then threw it away
+
+The b119 take-2 smoke spent $18.46 and 121.6 minutes and delivered nothing. It
+is worth being precise about how, because b120 is nine fixes and every one of
+them is a step in that sequence.
+
+The operator handed OpenClaw a 10,710-byte specification for a **BCP/DR
+artefact library** — a store for dated reports of disaster-recovery tests that
+had already been run. OpenClaw passed the harness a ~40-line summary it had
+written itself. `performedAt` (when a test was run) became `scheduledAt` (when
+one is planned). The status vocabulary changed. `exerciseType`, `nextDueAt`,
+`period`, `results` and `relatedControlId` disappeared, along with the entire
+storage section. The harness then built that summary correctly — a system for
+scheduling upcoming exercises — and the adversary reviewed the code against it
+and found it faithful, because it was.
+
+The harness's crystalliser was never the lossy step: the same file, read off
+disk and passed as bytes, crystallises with every field intact. The loss
+happened in the hop between the user's file and the tool call, because that hop
+was an LLM's recollection.
+
+Then, at 121.6 minutes against a 120-minute ceiling, the run aborted and
+**deleted its own worktree** — 27 commits, 15 files, ~1,900 lines, a clean
+typecheck and a review that was converging 14 → 10 → 8 findings. The work
+survived only because git had not yet garbage-collected the objects in a cached
+clone.
+
+### Brief fidelity: three ways to stop building the wrong thing
+
+- **The `harness_run` contract now says it in the tool description.** Pass the
+  user's words verbatim, in full, byte for byte. Do not summarise, do not
+  rename fields, do not condense a spec into acceptance criteria — that is this
+  tool's job and it is good at it. A 10KB spec is normal and welcome.
+- **`harness_run` accepts `requestPath`.** When the request came from a file,
+  the harness reads the bytes itself and the paraphrasing hop disappears
+  entirely. Reads are confined to operator-configured
+  `brief.request_file_roots` (the feature is off until those are set), symlinks
+  are resolved before the root check, and credential-shaped filenames are
+  refused. Supply both `request` and `requestPath` and the file wins — the
+  harness records how far the paraphrase drifted from it.
+- **A pre-spend confirmation gate.** For a high-risk brief the harness
+  crystallises (cents), then pauses and shows the human the acceptance criteria
+  it is about to build against, before any planning or worker spend. An
+  unqualified "confirm" starts the run; anything else — including "confirm, but
+  use `performedAt`" — is folded in as an authoritative correction first,
+  because reading a qualified reply as approval would start a run that ignores
+  the correction. Configured by `brief.confirm_before_spend` and
+  `brief.confirm_min_risk`.
+
+A new shipped skill, **harness-brief-intake**, carries the same rules to the
+calling agent and asks it to echo the premise of the change back to the user in
+two to four sentences before firing the run. Had OpenClaw said "a module for
+scheduling upcoming DR exercises" out loud, the operator would have corrected
+it in five seconds.
+
+### An abort must never destroy work
+
+A resource ceiling says nothing about the quality of the code. Hitting one
+means "stop spending", not "throw it away". So:
+
+- **Resource aborts** (wall clock, session budget, daily cap) now push the
+  branch and open a `needs_human_review` PR — the same graceful landing an
+  unrecoverable stall has had since beta.63. The PR body says plainly that
+  nothing signed off on it, names the ceiling that stopped it, and points at
+  `harness_revise` as the cheap way to continue.
+- **A user abort** does not open a PR — they asked for it to stop — but the
+  worktree is preserved and the terminal reason tells the operator where the
+  commits are.
+- **Only an abort with nothing committed releases anything**, and it now says
+  so in the audit stream. The commit probe fails closed: "I cannot tell whether
+  there is work here" resolves to keeping it, because a false positive costs a
+  directory and a false negative cost 27 commits.
+
+`loop.ship_time_reserve_seconds` (default 600) stops the loop starting a revise
+cycle it cannot finish. The deadline used to be consulted only to decide
+whether to abort, never whether there was still runway to ship — which is
+exactly how the take-2 run died at a review boundary with nothing pushed. The
+reserve is clamped to 25% of the session timeout, so a short timeout cannot
+invert the feature into "ship after cycle 1 and never revise".
+
+### Cross-cutting findings: one owner, and no compounding
+
+beta.119 taught the router to recruit every sub-task a fix needs. It worked,
+and then two things went wrong with it.
+
+- **Grants were being written into the ownership map.** Co-fix paths went into
+  `filesLikelyTouched`, which is simultaneously the scope gate and the record
+  of who owns what — on a plan object that outlives the cycle. Each routing
+  decision widened the input to the next one: the take-2 smoke fanned out to a
+  mean of 1.9 sub-tasks in cycle 2 and 5.0 (peak 9) in cycle 3, for the same
+  two-file fix. Grants are now tracked separately, so a worker can edit the
+  file without becoming its owner.
+- **Everyone was told to drive.** Nine co-owners each received an identical
+  "fix this", each could see others had been asked, and the finding was routed
+  perfectly for two consecutive cycles and fixed by nobody. A cross-cutting
+  finding now names exactly one answerable sub-task — the owner of the file it
+  was filed against — and everyone else is told, in as many words, that they
+  are a supporting owner who should make only the minimal change their own
+  files need.
+
+### Two more
+
+- **Nothing about a worktree happens in silence.** Both release paths had early
+  returns that deleted or skipped with no audit event, which is why the take-2
+  worktree vanished with nothing in the stream explaining it. Every path now
+  records what it did and why.
+- **A cycle extension may not spend money the requester did not authorise.**
+  beta.119's extension checked the operator's global ceiling and the daily cap,
+  but not `budget_usd` — the number the human actually set for this run. The
+  take-2 run finished at $18.46 against an $18 session budget and, on a
+  converging trend, would still have qualified for another cycle. An ordinary
+  cycle crossing a soft budget stays deliberate (beta.78); the harness electing
+  to buy itself extra work does not.
+
 ## 0.1.0-beta.119
 
 ### The run that reported CI green while CI was red

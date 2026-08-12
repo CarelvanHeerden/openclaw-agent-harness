@@ -54,6 +54,19 @@ export interface MapSubTask {
     filesLikelyTouched?: string[];
     /** codeExcerpts[].path from workerContext, flattened by the caller. */
     contextPaths?: string[];
+    /**
+     * beta.120 (fix 2): paths a PREVIOUS cycle's co-fix routing granted this
+     * sub-task permission to edit. Deliberately NOT ownership.
+     *
+     * b119 wrote co-fix paths straight into `filesLikelyTouched` so recruited
+     * workers would pass the scope gate. But `filesLikelyTouched` is also what
+     * decides who OWNS a path, and the plan object survives across cycles, so
+     * every routing decision permanently widened the ownership map the next
+     * routing decision would read. On the b119 take-2 smoke the co-fix fan-out
+     * went from mean 1.9 (max 5) in cycle 2 to mean 5.0 (max 9) in cycle 3: two
+     * files, eight owners, each of whom assumed one of the others had it.
+     */
+    coFixGrantedFiles?: string[];
 }
 /**
  * A structural path matcher: returns a truthy matched path when `candidate`
@@ -90,6 +103,12 @@ export interface SubTaskAssignment {
     broadcast: MapFinding[];
     /** the union of file paths this sub-task should treat as its targeted set. */
     targetedFiles: string[];
+    /**
+     * beta.120 (fix 3): findings this sub-task is a SUPPORTING owner of -- it
+     * holds one of the files the fix touches, but another sub-task is answerable
+     * for the finding. Rendered with different instructions from `targeted`.
+     */
+    assisting?: MapFinding[];
 }
 export interface ReviseMappingResult {
     /** per-sub-task assignment, keyed by seq (in the sub-tasks' input order). */
@@ -120,6 +139,17 @@ export interface CoFixRouting {
     matchedFiles: string[];
     /** the additional sub-tasks now asked to participate. */
     seqs: number[];
+    /**
+     * beta.120 (fix 3): the ONE sub-task answerable for this finding. Everyone
+     * else on `seqs` is a supporting owner.
+     *
+     * b119 broadcast a cross-cutting finding to every owner as an equal. Nine
+     * workers each received "fix this" for the same finding, each could see that
+     * others had been asked, and the b119 take-2 smoke shows the predictable
+     * result: it was routed perfectly for two consecutive cycles and fixed by
+     * nobody. Naming one owner converts a diffuse request into an assignment.
+     */
+    primarySeq: number;
 }
 /** beta.107: one orphan finding, and the sub-task made responsible for it. */
 export interface OrphanAdoption {

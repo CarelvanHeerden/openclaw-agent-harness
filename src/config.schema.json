@@ -420,6 +420,19 @@
           "default": true,
           "description": "beta.119: when the plan intends to edit .github/workflows/**, verify the routed token carries the `workflow` scope BEFORE running any sub-task. The CI-optimisation run planned a one-line ci.yml change, executed it, reviewed it, and learned only at the push that GitHub refuses workflow writes without that scope -- answerable from the plan and a response header before the first worker started. Only a token that PROVABLY lacks the scope stops a run; fine-grained PATs and GitHub App tokens report no scope header and are waved through, since 'cannot tell' must not read as 'cannot do'."
         },
+        "abort_salvage_pr": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.120 (fix 1): when a run ABORTS on a resource ceiling (wall clock, session budget, daily cap) and the branch has commits, push them and open a needs_human_review PR instead of discarding the worktree. A ceiling says nothing about the quality of the code -- the b119 take-2 smoke ran 121.6 minutes against a 120-minute limit and deleted 27 commits, 15 files, ~1900 lines, a clean typecheck and a review that was converging 14 -> 10 -> 8; the work survived only because git had not yet GC'd a cached clone. Set false to restore the old behaviour for resource aborts. The worktree is still PRESERVED whenever commits exist: an abort never deletes work."
+        },
+        "ship_time_reserve_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 600,
+          "description": "beta.120 (fix 4): stop starting new revise cycles once fewer than this many seconds remain before session_hard_timeout_seconds, and ship what exists instead. The b119 take-2 run was killed at a review boundary with no runway left to push, because the deadline was only ever consulted to decide whether to ABORT, never whether there was still time to finish properly. Clamped to 25% of session_hard_timeout_seconds so a short timeout cannot ship after cycle 1 and disable revising. Set 0 to disable.",
+          "$comment": "Clamp lives in shouldReserveTimeToShip (MAX_RESERVE_FRACTION)."
+        },
         "scope_blowout_file_threshold": {
           "type": "number",
           "default": 500,

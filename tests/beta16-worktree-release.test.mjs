@@ -136,14 +136,16 @@ test(
 );
 
 test(
-  "beta.16: releaseWorktree called on loop.aborted (user_abort_reaction)",
+  "beta.120: a user abort with commits PRESERVES the worktree instead of releasing it",
   { skip: OrchestratorLoop === null },
   async () => {
+    // beta.16 asserted the opposite: an abort always released. beta.120 fix 1
+    // reverses that for any abort that could be holding work. The b119 take-2
+    // smoke is why -- an abort deleted 27 commits, and the only reason they
+    // survived was that git had not yet GC'd a cached clone. A user abort still
+    // does NOT open a PR (they asked for it to stop), but the commits stay.
     const state = makeStore();
     insertSession(state.db, "S_ABORT");
-    // Pre-populate repo + worktree_path so scheduleWorktreeReleaseForSession
-    // can find both. beta.17: worktree_path is now required (release() no
-    // longer reconstructs it from sessionId).
     state.db.prepare(`UPDATE sessions SET repo = 'o/r', worktree_path = '/tmp/wt/s_abort' WHERE id = 'S_ABORT'`).run();
     const releaseCalls = [];
 
@@ -153,14 +155,78 @@ test(
     const loop = new OrchestratorLoop(deps);
     const outcome = await loop.run("S_ABORT", brief);
     assert.equal(outcome.status, "aborted");
-    assert.equal(outcome.reason, "user_abort_reaction");
+    assert.match(outcome.reason, /^user_abort_reaction\b/);
+    // The operator is told where the work is, in the field they actually read.
+    assert.match(outcome.reason, /PRESERVED/);
+    assert.match(outcome.reason, /\/tmp\/wt\/s/);
 
-    // finaliseAbort schedules the release with `void`; wait for the microtask queue to drain.
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
-    assert.equal(releaseCalls.length, 1, `expected exactly one releaseWorktree call, got ${releaseCalls.length}`);
-    assert.equal(releaseCalls[0].reason, "aborted");
+    assert.equal(releaseCalls.length, 0, "an abort holding commits must NOT release the worktree");
+    const preserved = state.audits.filter((e) => e.event === "loop.abort_worktree_preserved");
+    assert.equal(preserved.length, 1, "the preservation must be auditable, not just implied by silence");
+    assert.equal(preserved[0].payload.worktreePath, "/tmp/wt/s");
+  },
+);
+
+test(
+  "beta.120: when the commit probe FAILS, the abort protects the worktree anyway",
+  { skip: OrchestratorLoop === null },
+  async () => {
+    // The probe shells out to git in a worktree that may already be wedged --
+    // exactly the conditions an abort happens under. "I could not tell whether
+    // there is work here" must resolve to keeping it. A false positive costs a
+    // directory; a false negative cost 27 commits on the b119 take-2 smoke.
+    const state = makeStore();
+    insertSession(state.db, "S_ABORT_PROBE_ERR");
+    const releaseCalls = [];
+    const deps = baseDeps(state, plan(), releaseCalls);
+    deps.readReactions = async () => ({ shipIt: false, abort: true, pause: false, budgetBump: false });
+    deps.worktreeHeadSha = async () => "abc123";
+    deps.buildVerifyProbes = () => {
+      throw new Error("git: index.lock exists");
+    };
+
+    const loop = new OrchestratorLoop(deps);
+    const outcome = await loop.run("S_ABORT_PROBE_ERR", brief);
+    assert.equal(outcome.status, "aborted");
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(releaseCalls.length, 0, "a probe failure must never be read as 'nothing to lose'");
+    assert.equal(state.audits.filter((e) => e.event === "loop.abort_worktree_preserved").length, 1);
+    assert.equal(state.audits.filter((e) => e.event === "loop.abort_nothing_to_salvage").length, 0);
+  },
+);
+
+test(
+  "beta.120: an abort with NOTHING committed still releases the worktree",
+  { skip: OrchestratorLoop === null },
+  async () => {
+    // The counterweight to the test above: preserving is for protecting work.
+    // With no worktree there is nothing to protect and nothing to leak, and the
+    // pre-beta.120 release behaviour is correct -- but it now says so out loud.
+    const state = makeStore();
+    insertSession(state.db, "S_ABORT_EMPTY");
+    const releaseCalls = [];
+
+    const deps = baseDeps(state, plan(), releaseCalls);
+    deps.readReactions = async () => ({ shipIt: false, abort: true, pause: false, budgetBump: false });
+    // An empty HEAD is the real "nothing was ever committed" signal.
+    deps.worktreeHeadSha = async () => "";
+    deps.buildVerifyProbes = () => ({ commitMadeSince: async () => ({ made: false, detail: "" }) });
+
+    const loop = new OrchestratorLoop(deps);
+    const outcome = await loop.run("S_ABORT_EMPTY", brief);
+    assert.equal(outcome.status, "aborted");
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    const nothing = state.audits.filter((e) => e.event === "loop.abort_nothing_to_salvage");
+    assert.equal(nothing.length, 1, "an abort that deletes must record that there was nothing to lose");
   },
 );
 
