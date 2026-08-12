@@ -213,6 +213,17 @@ export interface OrchestratorDeps {
          */
         sessionId?: string;
         /**
+         * beta.122: the branch this session is ALREADY on. When set it is used
+         * verbatim, so a re-plan cannot rename the branch out from under commits
+         * that are already on it (the b121 dash-vs-slash commit loss).
+         */
+        pinnedSessionBranch?: string;
+        /**
+         * beta.122: the session's last recorded commit. Lets allocation re-attach
+         * a missing branch to real work instead of resetting to base.
+         */
+        recoverBranchFromSha?: string;
+        /**
          * beta.105: called when allocation chooses its checkout path. The loop
          * turns it into `loop.branch_allocation`, because the b103 smoke could
          * not tell from the trail whether a resume preserved the branch or reset
@@ -1155,6 +1166,22 @@ export declare class OrchestratorLoop {
      * BLOCKING_SEVERITIES.
      */
     private countBlockingFindings;
+    /**
+     * beta.122: the most recent commit this session is known to have made, or
+     * undefined when it has made none.
+     *
+     * Feeds the allocator's re-attach path. The b121 smoke lost two commits
+     * because a resume could not find the branch by name and reset to base; the
+     * ledger knew the tip the whole time, so a rename can no longer cost the
+     * work even when it happens.
+     */
+    lastLedgerCommitSha(sessionId: string): string | undefined;
+    /**
+     * The commits this session has recorded, oldest first. Shared by the
+     * reachability guard and the allocator's re-attach so the two can never
+     * disagree about what "this session's work" means.
+     */
+    private readLedgerCommits;
     private checkLedgerReachability;
     private getPlanJson;
     /** beta.63: read the most recent completed review for a session (or undefined). */

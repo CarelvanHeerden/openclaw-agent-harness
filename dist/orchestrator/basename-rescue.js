@@ -85,11 +85,62 @@ export function proposeBasenameRescue(input) {
     if (!input.repoDirs.has(toDir))
         return undefined;
     return {
+        kind: "basename",
         from,
         to,
         via: { from: fromDir, to: toDir, basename: base },
         reason: `single-file mismatch on basename '${base}'; planned directory '${fromDir}' does not exist in the repo ` +
             `and committed directory '${toDir}' does`,
+    };
+}
+/**
+ * beta.122: the plan named a DIRECTORY where the contract needs a file.
+ *
+ * On the b121 smoke the lead planned sub-task 3 with
+ * `verify: [{file_written, "prisma/migrations"}, {file_committed, ...}]`. The
+ * worker did the work correctly and committed
+ * `prisma/migrations/20260812120000_continuity_resilience/migration.sql` --
+ * which is the only thing it COULD have committed, since a migration's
+ * timestamped directory does not exist until the migration is created, so the
+ * lead could not have named the file in advance. `file_written` stats the
+ * contract path and requires a regular file, so a directory can never pass.
+ *
+ * The escalation that followed was a question with one possible answer: the
+ * audit event already held `expected: [prisma/migrations]` and
+ * `actual: [prisma/migrations/2026..._continuity_resilience/migration.sql]`,
+ * a 1:1 mapping needing no human judgement. Worse, asking cost the run: the
+ * operator's reply took the resume path, which renamed the branch and orphaned
+ * the work.
+ *
+ * Conditions, all load-bearing:
+ *
+ * 1. Exactly one expected path -- with several, there is no unambiguous
+ *    directory to attribute a committed file to.
+ * 2. Exactly one committed file sits UNDER that path. Other files may have been
+ *    committed (a migration sub-task legitimately touches the schema too); what
+ *    must be unique is the candidate inside the named directory.
+ * 3. The candidate is strictly nested (`expected + "/"`), so `src/app` never
+ *    rescues to `src/app.tsx` -- a sibling with a suffix is a different file,
+ *    not a file inside a directory.
+ * 4. The expected path is not itself the committed file. Nothing to rescue.
+ */
+export function proposeDirectoryRescue(input) {
+    const expected = (input.expected ?? []).map(normalise).filter(Boolean);
+    const actual = (input.actual ?? []).map(normalise).filter(Boolean);
+    if (expected.length !== 1)
+        return undefined;
+    const dir = expected[0];
+    const under = actual.filter((a) => a !== dir && a.startsWith(`${dir}/`));
+    if (under.length !== 1)
+        return undefined;
+    const to = under[0];
+    return {
+        kind: "directory",
+        from: dir,
+        to,
+        via: { from: dir, to: dirnameOf(to), basename: basenameOf(to) },
+        reason: `the contract named the directory '${dir}' and exactly one committed file sits inside it ` +
+            `('${to}'), so the contract path is the thing that was wrong`,
     };
 }
 /** The set of directories implied by a tracked-file listing, including "". */

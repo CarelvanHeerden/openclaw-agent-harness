@@ -315,6 +315,18 @@ export interface LeadDeps {
      * tests that predate b108, which keeps their branch names unchanged.
      */
     sessionId?: string;
+    /**
+     * beta.122: the branch this session is already on, used VERBATIM.
+     *
+     * b108 appended a session-derived suffix to make the name reproducible
+     * across re-plans, but the stem stayed whatever the lead invented on that
+     * call. On the b121 smoke plan 1 said `feat-grc-continuity-resilience` and
+     * the post-clarification re-plan said `feat/grc-continuity-resilience`; the
+     * suffix matched and the name still did not. b101's preservation looked for
+     * the new name, missed, and the allocator reset to origin/main over two
+     * commits. Pinning the whole name removes the class.
+     */
+    pinnedSessionBranch?: string;
     logger: {
         info: (m: string, meta?: unknown) => void;
         warn?: (m: string, meta?: unknown) => void;

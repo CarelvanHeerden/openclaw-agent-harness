@@ -1,5 +1,98 @@
 # Changelog
 
+## 0.1.0-beta.122
+
+### A branch is not a name the planner gets to change its mind about
+
+The b121 smoke is the release these fixes come from, and it is worth being
+precise about what it proved before describing what it broke. For the first
+time across ten attempts at the same DR/BCP brief, the crystallised version
+kept `performedAt` rather than inventing `scheduledAt`, kept all five members
+of the `exerciseType` enum, kept `nextDueAt`, `results` and `relatedControlId`,
+and kept the out-of-scope block intact — read verbatim from the operator's file
+through b120's `requestPath`. The brief-fidelity work is done.
+
+The run then died at $2.39 with two correct commits orphaned, and it took four
+separate defects lined up end to end to manage it.
+
+**The lead planned a contract path that could never pass.** Sub-task 3 was to
+generate a Prisma migration, and its contract named `prisma/migrations` — a
+directory. `file_written` stats the path and requires a regular file, so no
+amount of correct work could satisfy it. Nor could the lead have named the real
+file: `prisma/migrations/20260812120000_continuity_resilience/migration.sql`
+does not have a name until the migration is created. The worker did the right
+thing (Prisma 7's `--from-migrations` needs a shadow database no worktree has,
+so it used a two-way `--from-schema` diff), committed engine-generated SQL, and
+was told it had failed.
+
+So the run stopped and asked a human a question with exactly one possible
+answer. The audit event already held `expected: [prisma/migrations]` and
+`actual: [.../migration.sql]`. beta.122 resolves that mapping itself: when a
+contract names a directory and exactly one committed file sits inside it, the
+contract path was the thing that was wrong. This joins b105's basename rescue
+under the same discipline — the corrected contract must actually verify before
+the sub-task is allowed to pass.
+
+**The answer on offer was described as the opposite of what it did.** The
+prompt read `skip — accept that this sub-task is done and carry on`. The
+implementation writes *"Do NOT perform the following work under ANY
+circumstances"* into the brief and strips the owning requirement, so the
+re-plan came back with seven sub-tasks and no migration at all. There are now
+two answers, and they say what they mean: `accept` keeps the commit and leaves
+the work in scope for review, `skip` drops it. Where the branch history shows
+the change is already present, the suggestion is now `accept` — the evidence
+argued for keeping the work while the prompt recommended forbidding it.
+
+**A re-plan renamed the branch.** beta.108 set out to make branch names "stable
+across re-plans" and pinned only the *suffix*; the stem stayed whatever the
+lead model emitted on that call. Plan 1 said `harness/feat-grc-continuity-
+resilience-1ef99186`, and the post-clarification re-plan said
+`harness/feat/grc-...` — dash against slash, same session, same suffix. The
+b108 comment describes this exact failure and then fixes half of it. Once a
+session has a branch recorded, that is now the branch, used verbatim, exactly
+as a revise's `pinnedBranch` already worked.
+
+**And "no branch by that name" was read as "start over".** b101's preservation
+is a lookup by name. The name had changed, the lookup missed, and allocation
+reset the worktree to `origin/main` — over two commits whose SHAs the ledger
+could have produced on request. The warning printed at this moment has existed
+since b105 and did nothing but narrate the loss. Allocation now re-creates the
+missing branch *on the last recorded commit* instead, after verifying the SHA
+is a commit this repository actually has; if recovery fails it degrades to the
+old behaviour, where the reachability guard still refuses to ship an incomplete
+diff. This fix alone would have saved the run with the naming bug left intact,
+which is why both are pinned by separate mutations.
+
+The guard, for its part, did its job: it caught the unreachable commits and
+refused to open a pull request over a partial diff. The bug was never that it
+failed to notice — it was that the reset should not have happened.
+
+### Three things the same run said out loud
+
+**A budget named at the confirmation gate is now applied.** The gate told the
+operator to reply "confirm, budget $30" if the cap looked low. He replied
+"Confirm, Budget $40" — and because that is a *qualified* reply, it was
+correctly refused as an approval and then filed as an authoritative correction
+to the specification. Acceptance criterion #16 became "Confirm, Budget $40.
+This supersedes anything above that contradicts it", and the run started at the
+$10 default regardless. The gate was soliciting an instruction it could not
+obey and corrupting the brief with it. The reply is now parsed: the budget goes
+to the session (still clamped by `session_hard_ceiling_usd`), and what remains
+decides approval — so "confirm, budget $40" approves, while "budget $40, and
+use performedAt" is still the correction it plainly is.
+
+**The confirmation names its own session.** `harness_run` returns the id
+correctly, but the relaying agent showed the operator `9f4b8..` for a session
+called `1ef99186-...`. The id now appears in the question text, which the skill
+already requires be relayed verbatim.
+
+**The sub-task counter counts the plan.** The denominator was the number of
+`sub_tasks` rows, and rows are created as each sub-task starts — so it read
+"1/1", then "2/2", then "3/3". An operator watching a ten-part plan was told at
+every moment that the run was on its last sub-task. Cycle 1 now counts the
+persisted plan; a revise still counts rows, because the targeted subset is not
+something the plan can size.
+
 ## 0.1.0-beta.121
 
 ### The path that only exists for one turn

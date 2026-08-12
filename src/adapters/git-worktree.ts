@@ -254,12 +254,30 @@ export interface GitContext {
    * Optional; the adapter always logs the same information regardless.
    */
   onBranchDecision?: (d: BranchAllocationDecision) => void;
+  /**
+   * beta.122: the session's last recorded commit, for when preservation was
+   * requested but no local branch of that name exists.
+   *
+   * b101 preserves a resume's branch by looking it up BY NAME. On the b121
+   * smoke a re-plan renamed the branch (`feat-grc-...` -> `feat/grc-...`), the
+   * lookup missed, and allocation resolved "not found" as "reset to base" --
+   * orphaning two commits that the ledger could name the whole time. When the
+   * ledger has a tip, a missing branch is re-created ON that commit instead.
+   *
+   * Ignored unless `preserveLocalBranch` is set and the branch is genuinely
+   * absent; a branch that exists is always preferred to a recorded SHA.
+   */
+  recoverBranchFromSha?: string;
 }
 
 /** beta.105: the checkout path allocation took, and the inputs that chose it. */
 export interface BranchAllocationDecision {
-  /** `preserve_local` never moves the ref; the other two reset it. */
-  path: "preserve_local" | "reuse_remote" | "reset_to_base";
+  /**
+   * `preserve_local` never moves the ref, and neither does beta.122's
+   * `recovered_local` -- it CREATES the ref on work that already existed. The
+   * other two reset it.
+   */
+  path: "preserve_local" | "recovered_local" | "reuse_remote" | "reset_to_base";
   branch: string;
   /** The ref the branch was pointed at (empty for `preserve_local`). */
   startPoint: string;
@@ -466,7 +484,7 @@ esac
       const preserveRequested = !!ctx.preserveLocalBranch;
       const localExists = preserveRequested ? await this.localBranchExists(bare, ctx.sessionBranch) : false;
       const tipBefore = localExists ? await this.branchTipSha(bare, ctx.sessionBranch) : "";
-      const decide = (path: "preserve_local" | "reuse_remote" | "reset_to_base", startPoint: string) => {
+      const decide = (path: BranchAllocationDecision["path"], startPoint: string) => {
         this.opts.logger.info("[git] branch allocation", {
           branch: ctx.sessionBranch, worktree: wt, path, startPoint,
           preserveRequested, localBranchExists: localExists, tipBefore,
@@ -484,6 +502,44 @@ esac
         this.opts.logger.warn("[git] preserveLocalBranch requested but no LOCAL branch of that name exists; falling through to a resetting checkout", {
           branch: ctx.sessionBranch, worktree: wt, reuseExistingBranch: !!ctx.reuseExistingBranch,
         });
+      }
+
+      // beta.122 (CRITICAL): a missing branch is not the same as no work.
+      //
+      // The warning above has existed since b105 and did nothing but narrate
+      // the loss. On b121 preservation was requested, the branch had been
+      // RENAMED by a re-plan, the lookup missed, and the reset below orphaned
+      // two commits -- while the ledger held their SHAs the entire time. When
+      // the caller can name the session's tip, re-create the branch there and
+      // preserve it. Recovery is attempted BEFORE any resetting path so no
+      // ordering change can quietly reintroduce the loss.
+      const recoverSha = (ctx.recoverBranchFromSha ?? "").trim();
+      if (preserveRequested && !localExists && recoverSha) {
+        try {
+          // Refuse to invent a branch on a commit this repo does not have --
+          // `worktree add` would fail anyway, and resetting is better than
+          // dying when the SHA is genuinely unknown.
+          const type = (await this.run(["-C", bare, "cat-file", "-t", recoverSha]).catch(() => "")).trim();
+          if (type === "commit") {
+            await this.run(["-C", bare, "branch", ctx.sessionBranch, recoverSha], undefined, ask.path, ctx.ghToken);
+            await this.run(["-C", bare, "worktree", "add", wt, ctx.sessionBranch], undefined, ask.path, ctx.ghToken);
+            this.opts.logger.warn("[git] beta.122: the session's branch was missing; re-created it on the last recorded commit rather than resetting over the work", {
+              branch: ctx.sessionBranch, worktree: wt, recoveredFrom: recoverSha,
+            });
+            decide("recovered_local", recoverSha);
+            return wt;
+          }
+          this.opts.logger.warn("[git] beta.122: recovery SHA is not a commit in this repo; falling through", {
+            branch: ctx.sessionBranch, recoverBranchFromSha: recoverSha, type: type || "unknown",
+          });
+        } catch (err) {
+          // A failed recovery must not fail the allocation outright: the
+          // resetting paths below still produce a usable worktree, and the
+          // ledger-reachability guard will refuse to ship an incomplete diff.
+          this.opts.logger.warn("[git] beta.122: branch recovery failed; falling through to the normal checkout paths", {
+            branch: ctx.sessionBranch, recoverBranchFromSha: recoverSha, err: String(err),
+          });
+        }
       }
       if (preserveRequested && localExists) {
         await this.run(["-C", bare, "worktree", "add", wt, ctx.sessionBranch], undefined, ask.path, ctx.ghToken);

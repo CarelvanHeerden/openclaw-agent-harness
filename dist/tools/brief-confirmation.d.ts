@@ -67,6 +67,15 @@ export interface RenderConfirmationInput {
     effectiveBudget: number;
     /** Set when the request was read from disk rather than retyped by an agent. */
     sourcePath?: string;
+    /**
+     * beta.122: the session the confirmation belongs to, printed in the body.
+     *
+     * `harness_run` returns the id correctly, but on the b121 smoke the relaying
+     * agent showed the operator `9f4b8..` for a session actually called
+     * `1ef99186-...`. Putting it in the text the skill already requires be
+     * relayed VERBATIM means a correct id survives a careless retelling.
+     */
+    sessionId?: string;
 }
 /**
  * The text a human reads before any money is spent. Leads with the fields that
@@ -75,4 +84,30 @@ export interface RenderConfirmationInput {
  */
 export declare function renderBriefConfirmation(input: RenderConfirmationInput): string;
 export declare function isBriefConfirmation(answer: string): boolean;
+/**
+ * beta.122: pull a budget out of the confirmation reply, and decide what is
+ * left over.
+ *
+ * On the b121 smoke the relaying agent told the operator to reply
+ * "confirm, budget $30" if the cap looked low. He replied "Confirm, Budget
+ * $40". `isBriefConfirmation` correctly refused to read a qualified reply as
+ * approval, so the whole string was filed as an authoritative correction to
+ * the SPEC -- acceptance criterion #16 became "Confirm, Budget $40. This
+ * supersedes anything above that contradicts it" -- and the run started at the
+ * $10 default anyway. The gate was soliciting an instruction it could not obey
+ * and then corrupting the brief with it.
+ *
+ * The budget clause is removed from the remaining text, so what is left can be
+ * judged on its own: "confirm, budget $40" is an approval with a new cap, while
+ * "budget $40, and use performedAt" is a real correction that also raises it.
+ */
+export interface ParsedConfirmationReply {
+    /** A cap in whole dollars, when the reply named one. */
+    budgetUsd?: number;
+    /** The reply with the budget clause removed. */
+    remainder: string;
+    /** True when nothing but the budget clause (and politeness) remained. */
+    approves: boolean;
+}
+export declare function parseConfirmationReply(answer: string): ParsedConfirmationReply;
 //# sourceMappingURL=brief-confirmation.d.ts.map

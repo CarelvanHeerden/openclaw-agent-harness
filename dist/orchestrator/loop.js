@@ -136,7 +136,7 @@ import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedger
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-validate.js";
 import { applyPathCorrections, describePathCorrections } from "./plan-path-writeback.js";
-import { proposeBasenameRescue, repoDirsFromFiles, describeBasenameRescue } from "./basename-rescue.js";
+import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, describeBasenameRescue } from "./basename-rescue.js";
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
@@ -1005,7 +1005,7 @@ export class OrchestratorLoop {
     }
     async runInner(sessionId, brief) {
         const row = this.deps.state.db
-            .prepare(`SELECT id, requester, cost_usd, budget_usd, cycles_ran, status FROM sessions WHERE id = ?`)
+            .prepare(`SELECT id, requester, cost_usd, budget_usd, cycles_ran, status, branch FROM sessions WHERE id = ?`)
             .get(sessionId);
         if (!row)
             throw new Error(`session ${sessionId} not found`);
@@ -1056,6 +1056,25 @@ export class OrchestratorLoop {
             plan = await withTimeout(this.deps.runLead(brief, {
                 requester: row.requester,
                 sessionId,
+                // beta.122 (CRITICAL): a re-plan may not RENAME the session's branch.
+                //
+                // b108 made the branch name session-unique by appending a suffix
+                // derived from the session id, and its own comment says the point is
+                // to be "reproducible across every re-plan". It is not: only the
+                // SUFFIX is pinned, while the stem is whatever the lead model
+                // invented on that call. On the b121 smoke the first plan produced
+                // `harness/feat-grc-continuity-resilience-1ef99186` and the re-plan
+                // after a clarification produced `harness/feat/grc-...` -- dash
+                // versus slash, same session. The b101 preservation machinery then
+                // looked for a branch under the NEW name, did not find it, and the
+                // allocator reset the worktree to origin/main, orphaning two commits.
+                //
+                // Once a branch is recorded for the session it is the branch, full
+                // stop. `pinnedBranch` already does exactly this for a revise.
+                pinnedSessionBranch: (row.branch ?? "").trim() || undefined,
+                // beta.122: and if the name somehow still misses, the allocator gets
+                // the ledger tip so it can re-attach instead of resetting over work.
+                recoverBranchFromSha: this.lastLedgerCommitSha(sessionId),
                 // beta.105: make the checkout path durable. `preserveLocalBranch` is
                 // a REQUEST that falls through silently when no local branch of that
                 // name exists, so the flag being set proves nothing about what ran.
@@ -2522,7 +2541,16 @@ export class OrchestratorLoop {
                                 const expected = [...new Set(failedResults.map((x) => x.path).filter(Boolean))];
                                 const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && !!f.trim());
                                 const repoFiles = await this.deps.listRepoFiles(workerWorktree);
-                                const rescue = proposeBasenameRescue({ expected, actual, repoDirs: repoDirsFromFiles(repoFiles) });
+                                // beta.122: the same idea, one condition further out. A
+                                // contract that names a DIRECTORY can never pass `file_written`
+                                // (it stats for a regular file), and for a Prisma migration the
+                                // lead could not have named the file -- the timestamped
+                                // directory does not exist until the migration is created. The
+                                // b121 escalation over `prisma/migrations` had exactly one
+                                // possible answer and cost the run, because answering it took
+                                // the resume path that then orphaned the commits.
+                                const rescue = proposeBasenameRescue({ expected, actual, repoDirs: repoDirsFromFiles(repoFiles) }) ??
+                                    proposeDirectoryRescue({ expected, actual });
                                 if (rescue) {
                                     const rescued = contract.map((v) => "path" in v && v.path === rescue.from ? { ...v, path: rescue.to } : v);
                                     const rescueProbes = this.deps.buildVerifyProbes({
@@ -2537,6 +2565,7 @@ export class OrchestratorLoop {
                                     }, rescueProbes);
                                     this.deps.state.audit("loop.contract_path_basename_rescued", {
                                         sessionId, seq: st.seq, cycle,
+                                        kind: rescue.kind ?? "basename",
                                         from: rescue.from, to: rescue.to, via: rescue.via, reason: rescue.reason,
                                         verified: reverified.ok, summary: reverified.summary,
                                     }, sessionId);
@@ -5066,40 +5095,67 @@ export class OrchestratorLoop {
             return 0;
         return findings.filter((f) => isBlockingFinding(f, classifyFinding(f, { repoHasTestScript: true }))).length;
     }
+    /**
+     * beta.122: the most recent commit this session is known to have made, or
+     * undefined when it has made none.
+     *
+     * Feeds the allocator's re-attach path. The b121 smoke lost two commits
+     * because a resume could not find the branch by name and reset to base; the
+     * ledger knew the tip the whole time, so a rename can no longer cost the
+     * work even when it happens.
+     */
+    lastLedgerCommitSha(sessionId) {
+        try {
+            const ledger = this.readLedgerCommits(sessionId);
+            return ledger.length > 0 ? ledger[ledger.length - 1].commitSha : undefined;
+        }
+        catch {
+            // Never block an allocation on a bookkeeping read.
+            return undefined;
+        }
+    }
+    /**
+     * The commits this session has recorded, oldest first. Shared by the
+     * reachability guard and the allocator's re-attach so the two can never
+     * disagree about what "this session's work" means.
+     */
+    readLedgerCommits(sessionId) {
+        const rows = this.deps.state.db
+            .prepare(`SELECT seq, commit_sha, description FROM sub_tasks WHERE session_id = ? AND commit_sha IS NOT NULL AND commit_sha != '' ORDER BY cycle, seq`)
+            .all(sessionId);
+        // beta.102: union with the append-only audit log. sub_tasks rows are
+        // keyed by (cycle, seq) and REPLACED, so a clarification re-plan -- which
+        // restarts at cycle 1 -- erases the commit_sha of any row whose seq the
+        // new plan reuses. Reading only that table would blind this guard on
+        // precisely the runs it exists to protect. See mergeLedgerCommits.
+        const auditRows = this.deps.state.db
+            .prepare(`SELECT payload FROM audit_log WHERE session_id = ? AND event = 'loop.worker_end_turn' ORDER BY created_at`)
+            .all(sessionId);
+        const fromAudit = [];
+        for (const a of auditRows) {
+            try {
+                const p = JSON.parse(a.payload);
+                const seq = Number(p?.seq ?? -1);
+                // beta.103: prefer the full per-turn tip list; fall back to the single
+                // `commitSha` for turns recorded before b103.
+                const many = Array.isArray(p?.commitShas) ? p.commitShas : [];
+                for (const s of many) {
+                    if (typeof s === "string" && s.trim())
+                        fromAudit.push({ seq, commitSha: s.trim() });
+                }
+                if (many.length === 0 && p?.commitSha)
+                    fromAudit.push({ seq, commitSha: String(p.commitSha) });
+            }
+            catch { /* a malformed payload must not break the guard */ }
+        }
+        return mergeLedgerCommits(rows.map((r) => ({ seq: r.seq, commitSha: r.commit_sha, title: r.description ?? undefined })), fromAudit);
+    }
     async checkLedgerReachability(sessionId, worktreePath, cycle, phase) {
         const none = { failed: false, unreachable: [], headSha: "", detail: "" };
         if (!this.deps.unreachableCommits)
             return none;
         try {
-            const rows = this.deps.state.db
-                .prepare(`SELECT seq, commit_sha, description FROM sub_tasks WHERE session_id = ? AND commit_sha IS NOT NULL AND commit_sha != '' ORDER BY cycle, seq`)
-                .all(sessionId);
-            // beta.102: union with the append-only audit log. sub_tasks rows are
-            // keyed by (cycle, seq) and REPLACED, so a clarification re-plan -- which
-            // restarts at cycle 1 -- erases the commit_sha of any row whose seq the
-            // new plan reuses. Reading only that table would blind this guard on
-            // precisely the runs it exists to protect. See mergeLedgerCommits.
-            const auditRows = this.deps.state.db
-                .prepare(`SELECT payload FROM audit_log WHERE session_id = ? AND event = 'loop.worker_end_turn' ORDER BY created_at`)
-                .all(sessionId);
-            const fromAudit = [];
-            for (const a of auditRows) {
-                try {
-                    const p = JSON.parse(a.payload);
-                    const seq = Number(p?.seq ?? -1);
-                    // beta.103: prefer the full per-turn tip list; fall back to the single
-                    // `commitSha` for turns recorded before b103.
-                    const many = Array.isArray(p?.commitShas) ? p.commitShas : [];
-                    for (const s of many) {
-                        if (typeof s === "string" && s.trim())
-                            fromAudit.push({ seq, commitSha: s.trim() });
-                    }
-                    if (many.length === 0 && p?.commitSha)
-                        fromAudit.push({ seq, commitSha: String(p.commitSha) });
-                }
-                catch { /* a malformed payload must not break the guard */ }
-            }
-            const ledger = mergeLedgerCommits(rows.map((r) => ({ seq: r.seq, commitSha: r.commit_sha, title: r.description ?? undefined })), fromAudit);
+            const ledger = this.readLedgerCommits(sessionId);
             // A fresh run has recorded nothing yet, so there is nothing to lose. This
             // is what makes the resume call site safe to make unconditionally.
             if (ledger.length === 0)

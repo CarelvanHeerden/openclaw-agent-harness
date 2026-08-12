@@ -173,8 +173,30 @@ the brief as an authoritative correction first. That is deliberate: passing a
 qualified reply through as an approval would start a run that ignores the
 correction.
 
+A budget named in the reply is the one exception, and it is handled for you:
+"confirm, budget $40" both approves the brief and raises the cap to $40. You do
+not need to re-fire anything, and you must not translate it into a `budgetUsd`
+on a fresh `harness_run` — that would start a second session.
+
 Once the run is going, resume the normal duty: poll `harness_progress` every
 ~45s and relay `headline` until `terminal`.
+
+### Mid-run clarifications: `accept` and `skip` are opposites
+
+A run can also pause with a real question — most often that a sub-task committed
+work the plan did not expect. The offered answers are not interchangeable:
+
+- **`accept`** — the commit is fine and the plan's expected path was wrong. The
+  work is kept and still gets reviewed.
+- **`skip`** — drop this sub-task. The harness writes "do not do this under any
+  circumstances" into the brief and no later cycle will build it.
+- **`<a file path>`** — the work belongs somewhere else; the harness re-plans.
+- **`abort`** — stop the run.
+
+Relay the question verbatim and pass back exactly what the user chose. Do not
+map one onto another because they sound similar. On the b121 run an operator
+answered `skip` meaning "the file is there, carry on", and a correct, committed
+database migration was dropped from every subsequent plan.
 
 ## Anti-patterns
 

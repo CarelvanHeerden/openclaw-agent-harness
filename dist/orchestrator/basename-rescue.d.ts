@@ -28,6 +28,12 @@
  */
 /** A remap this module is willing to vouch for, in rederive's own shape. */
 export interface BasenameRescue {
+    /**
+     * beta.122: which producer vouched for this, since they justify themselves
+     * differently -- `basename` matches the same file in another directory,
+     * `directory` matches a file inside the directory the contract named.
+     */
+    kind?: "basename" | "directory";
     /** The fictional contract path. */
     from: string;
     /** The real path, taken from what the sub-task actually committed. */
@@ -67,6 +73,41 @@ export declare function proposeBasenameRescue(input: {
     expected: string[];
     actual: string[];
     repoDirs: Set<string>;
+}): BasenameRescue | undefined;
+/**
+ * beta.122: the plan named a DIRECTORY where the contract needs a file.
+ *
+ * On the b121 smoke the lead planned sub-task 3 with
+ * `verify: [{file_written, "prisma/migrations"}, {file_committed, ...}]`. The
+ * worker did the work correctly and committed
+ * `prisma/migrations/20260812120000_continuity_resilience/migration.sql` --
+ * which is the only thing it COULD have committed, since a migration's
+ * timestamped directory does not exist until the migration is created, so the
+ * lead could not have named the file in advance. `file_written` stats the
+ * contract path and requires a regular file, so a directory can never pass.
+ *
+ * The escalation that followed was a question with one possible answer: the
+ * audit event already held `expected: [prisma/migrations]` and
+ * `actual: [prisma/migrations/2026..._continuity_resilience/migration.sql]`,
+ * a 1:1 mapping needing no human judgement. Worse, asking cost the run: the
+ * operator's reply took the resume path, which renamed the branch and orphaned
+ * the work.
+ *
+ * Conditions, all load-bearing:
+ *
+ * 1. Exactly one expected path -- with several, there is no unambiguous
+ *    directory to attribute a committed file to.
+ * 2. Exactly one committed file sits UNDER that path. Other files may have been
+ *    committed (a migration sub-task legitimately touches the schema too); what
+ *    must be unique is the candidate inside the named directory.
+ * 3. The candidate is strictly nested (`expected + "/"`), so `src/app` never
+ *    rescues to `src/app.tsx` -- a sibling with a suffix is a different file,
+ *    not a file inside a directory.
+ * 4. The expected path is not itself the committed file. Nothing to rescue.
+ */
+export declare function proposeDirectoryRescue(input: {
+    expected: string[];
+    actual: string[];
 }): BasenameRescue | undefined;
 /** The set of directories implied by a tracked-file listing, including "". */
 export declare function repoDirsFromFiles(files: readonly string[]): Set<string>;

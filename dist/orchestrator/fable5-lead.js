@@ -346,6 +346,16 @@ export async function runLeadPlanner(brief, deps) {
                     raw.repo = brief.repoHint;
                 deps.logger.info("[lead] revise: branch pinned", { branch: raw.branch, repo: raw.repo, reviseOf: brief.reviseOfSessionId });
             }
+            else if (deps.pinnedSessionBranch) {
+                // beta.122: the session is already on a branch, so the lead does not
+                // get to name it again. See LeadDeps.pinnedSessionBranch.
+                if (raw.branch !== deps.pinnedSessionBranch) {
+                    deps.logger.info("[lead] re-plan: keeping the session's existing branch", {
+                        leadProposed: raw.branch, using: deps.pinnedSessionBranch,
+                    });
+                }
+                raw.branch = deps.pinnedSessionBranch;
+            }
             else if (deps.sessionId) {
                 raw.branch = sessionScopedBranch(raw.branch, deps.sessionId);
             }

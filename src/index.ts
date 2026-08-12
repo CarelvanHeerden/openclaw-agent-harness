@@ -607,6 +607,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // beta.108: lets the planner make the branch name session-unique and
         // reproducible across re-plans. See sessionScopedBranch.
         sessionId: ctx?.sessionId,
+        // beta.122: b108 pinned only the SUFFIX; the stem still came from the
+        // model on every call, so a re-plan could rename the branch. Once the
+        // session has a branch, that is the branch.
+        pinnedSessionBranch: ctx?.pinnedSessionBranch,
         logger: api.logger,
         // beta.67 (P0a): callLeadModel genuinely (re-)invokes the lead SDK so
         // the ONE bounded re-ask actually re-plans with the corrective note.
@@ -733,6 +737,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             // its commits are never pushed, so reuseExistingBranch (which
             // resolves origin/<branch>) cannot save them either.
             preserveLocalBranch: !!brief.resumeFromClarification,
+            // beta.122: b101's preservation is a lookup BY NAME, and on the
+            // b121 smoke the name had changed, so it silently fell through to
+            // a reset that orphaned two commits. The ledger tip lets the
+            // allocator re-create the missing branch on top of the real work
+            // rather than resolving "not found" as "start over".
+            recoverBranchFromSha: ctx?.recoverBranchFromSha,
             onBranchDecision,
           });
         },

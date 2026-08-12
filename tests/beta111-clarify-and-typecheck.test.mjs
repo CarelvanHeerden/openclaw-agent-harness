@@ -143,6 +143,9 @@ test("beta111: every answer the resume path accepts is still offered", () => {
   assert.match(q, /\bskip\b/);
   assert.match(q, /\babort\b/);
   assert.match(q, /a file path/);
+  // beta.122: `accept` is a fourth answer the resume path now handles, so it
+  // has to be offered too -- an operator cannot choose what they are not shown.
+  assert.match(q, /\baccept\b/);
 });
 
 test("beta111: a recommendation is made only on evidence, and carries it", () => {
@@ -150,7 +153,16 @@ test("beta111: a recommendation is made only on evidence, and carries it", () =>
     ...SUBTASK_5,
     changedOnBranch: ["src/app/api/grc/continuity-exercises/route.ts"],
   });
-  assert.match(withEvidence, /Suggestion: "skip" looks right/);
+  // beta.122: the recommendation moved from "skip" to "accept". The evidence
+  // is that an earlier commit already made the change, which argues for
+  // KEEPING the work -- while "skip" now writes "never do this" into the brief.
+  // Recommending it here was recommending the opposite of what the evidence
+  // supports, which is how the b121 migration sub-task got dropped.
+  assert.match(withEvidence, /Suggestion: "accept" looks right/);
+  assert.ok(
+    !/Suggestion: "skip"/.test(withEvidence),
+    "must not recommend the drop-it answer on evidence that the work is already present",
+  );
   assert.match(withEvidence, /already changed by an earlier commit/);
   assert.match(withEvidence, /route\.ts/);
 

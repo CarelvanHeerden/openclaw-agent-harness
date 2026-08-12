@@ -22,6 +22,7 @@ import {
   decideBriefConfirmation,
   isBriefConfirmation,
   isBriefConfirmationPause,
+  parseConfirmationReply,
   renderBriefConfirmation,
   type RiskLevel,
 } from "./brief-confirmation.js";
@@ -237,6 +238,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           estimatedUsd: rec.recommended,
           effectiveBudget,
           sourcePath: params.sourcePath,
+          // beta.122: so a verbatim relay carries the REAL id. See
+          // RenderConfirmationInput.sessionId.
+          sessionId,
         })
       : "";
     try {
@@ -1389,7 +1393,10 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         "Answer a harness session that is paused in 'awaiting_clarification' and resume it. " +
         "The answer is folded into the brief as a directive and the loop re-drives, building on any " +
         "work already committed. Special answers: 'abort' (or 'cancel') terminates the session; 'skip' " +
-        "instructs the loop to drop the blocked sub-task and continue. " +
+        "instructs the loop to DROP the blocked sub-task and never attempt it again; beta.122's 'accept' " +
+        "(or 'keep-commit') says the commit is fine and only the plan's contract path was wrong, so the " +
+        "work is kept and stays in scope for review. Relay the operator's choice verbatim -- 'skip' and " +
+        "'accept' are opposites and picking the wrong one silently changes what gets built. " +
         "beta.120: also answers a pre-spend brief confirmation (harness_run returned awaitingConfirmation). " +
         "There, an approval ('confirm', 'yes', 'go ahead', ...) starts the run as-is and ANY other reply is " +
         "folded in as an authoritative correction to the brief first. Pass the user's reply verbatim and " +
@@ -1441,11 +1448,30 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         // worktree to preserve. An approval starts the run untouched; anything
         // else is a correction to the brief itself.
         if (isBriefConfirmationPause(row.clarification_subtask)) {
-          const approved = isBriefConfirmation(trimmed);
+          // beta.122: a budget named in the reply is an instruction to the
+          // SESSION, not a change to the spec. b121 filed "Confirm, Budget $40"
+          // as an authoritative acceptance criterion and ran at $10 regardless.
+          const parsed = parseConfirmationReply(trimmed);
+          const approved = parsed.approves;
+          let budgetApplied: number | undefined;
+          if (typeof parsed.budgetUsd === "number") {
+            // The advertised ceiling still binds -- this is the operator asking
+            // for more room, not an escape from the operator's own cap.
+            const ceiling = liveConfig().budgets?.session_hard_ceiling_usd;
+            const applied = typeof ceiling === "number" && ceiling > 0 ? Math.min(parsed.budgetUsd, ceiling) : parsed.budgetUsd;
+            liveDb().prepare(`UPDATE sessions SET budget_usd = ?, updated_at = ? WHERE id = ?`).run(applied, Date.now(), sessionId);
+            budgetApplied = applied;
+            liveState().audit(
+              "tool.answer_brief_budget_set",
+              { sessionId, requested: parsed.budgetUsd, applied, clampedByCeiling: applied < parsed.budgetUsd },
+              sessionId,
+            );
+          }
           if (!approved) {
             brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
             brief.acceptanceCriteria.push(
-              `OPERATOR CORRECTION TO THIS BRIEF (given before any work began, after reviewing the crystallised version): ${trimmed}. This supersedes anything above that contradicts it -- the operator is describing what they actually asked for, so treat it as the authoritative reading.`,
+              // Only the non-budget part is a statement about the work.
+              `OPERATOR CORRECTION TO THIS BRIEF (given before any work began, after reviewing the crystallised version): ${parsed.remainder || trimmed}. This supersedes anything above that contradicts it -- the operator is describing what they actually asked for, so treat it as the authoritative reading.`,
             );
           }
           liveDb()
@@ -1453,7 +1479,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             .run(JSON.stringify(brief), Date.now(), sessionId);
           liveState().audit(
             approved ? "tool.answer_brief_confirmed" : "tool.answer_brief_corrected",
-            { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null },
+            { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, budgetApplied: budgetApplied ?? null },
             sessionId,
           );
           void liveRuntime().loop.run(sessionId, brief).catch((err) => {
@@ -1462,18 +1488,38 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           return {
             content: [{
               type: "text",
-              text: approved
-                ? `Brief confirmed; session ${sessionId} is running. Poll harness_progress every ~45s and relay \`headline\` until terminal.`
-                : `Correction folded into the brief; session ${sessionId} is running with it. Poll harness_progress every ~45s and relay \`headline\` until terminal.`,
+              text: `${approved
+                ? `Brief confirmed; session ${sessionId} is running.`
+                : `Correction folded into the brief; session ${sessionId} is running with it.`}${
+                budgetApplied !== undefined ? ` Budget set to $${budgetApplied.toFixed(2)}.` : ""
+              } Poll harness_progress every ~45s and relay \`headline\` until terminal.`,
             }],
-            details: { ok: true, sessionId, resumed: true, briefConfirmed: approved, briefCorrected: !approved },
+            details: { ok: true, sessionId, resumed: true, briefConfirmed: approved, briefCorrected: !approved, budgetUsd: budgetApplied ?? null },
           };
         }
 
         // Fold the decision into the brief so the re-plan honours it. For a
         // 'skip' answer we phrase it as an out-of-scope directive; otherwise as
         // an acceptance-criteria directive pinned to the blocked sub-task.
-        if (/^skip\b/i.test(trimmed)) {
+        // beta.122: `accept` keeps the work; `skip` forbids it. Until now the
+        // prompt offered only `skip`, described as the former and implemented
+        // as the latter. On the b121 smoke the migration SQL was committed and
+        // correct -- only the contract path named a directory -- and `skip`
+        // stripped the requirement from the brief so the re-plan built no
+        // migration at all. `accept` records that the work is already done
+        // WITHOUT removing it from what the adversary reviews against.
+        if (/^accept\b/i.test(trimmed) || /^keep(-|\s)?commit\b/i.test(trimmed)) {
+          let paused: { title?: string; intent?: string } = {};
+          try { if (row.clarification_subtask) paused = JSON.parse(row.clarification_subtask); } catch { /* ignore */ }
+          const what = ((paused.title ?? "") || (paused.intent ?? "")).trim();
+          brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
+          brief.acceptanceCriteria.push(
+            what
+              ? `ALREADY DONE (operator-confirmed): "${what.slice(0, 300)}" was completed and COMMITTED on this branch; the plan's contract path for it was wrong, not the work. Do not redo it and do not plan it again. It remains in scope for review -- the change must still be present and correct in the final diff.`
+              : `ALREADY DONE (operator-confirmed): the previously-blocked sub-task ${seq} was completed and committed on this branch. Do not redo it; it remains in scope for review.`,
+          );
+          liveState().audit("tool.answer_contract_accepted", { sessionId, seq, what: what.slice(0, 120) }, sessionId);
+        } else if (/^skip\b/i.test(trimmed)) {
           // beta.58 (D1/D2): DURABLE skip. The prior beta.55 form phrased the
           // prohibition by seq number and only appended to outOfScope -- but
           // harness_answer re-drives via a FULL re-plan (status='planning' ->
