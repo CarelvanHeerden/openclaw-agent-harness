@@ -80,6 +80,32 @@ If the read is refused, the error says why (the path must sit inside a
 configured `brief.request_file_roots` directory). Fix the path or ask the
 operator to configure the root — do **not** work around it by pasting a summary.
 
+### The attachment path lives for exactly one turn
+
+A file the user attaches is staged on disk at
+
+```
+~/.openclaw/workspace/media/inbound/openclaw-staged-<envelope-uuid>/<file-uuid>
+```
+
+— a bare UUID with **no extension**, which the harness reads without complaint.
+That path reaches you in the inbound-media envelope on the message that carried
+the attachment, and **it is not in your context on any later turn.**
+
+- **Call `harness_run` in the same turn the file arrives.** When the user
+  attaches a spec and says "build this" in one message, you have the path. Use
+  it.
+- **When they attach in one message and say "go" in the next, you do not have
+  it.** Ask them to re-attach or to paste the path. That costs them five
+  seconds.
+- **Do not go looking for it.** Listing `media/inbound` and taking the newest
+  entry is not recovery: it can read a different attachment entirely, and the
+  run proceeds looking perfectly normal because nothing downstream knows which
+  file you meant.
+- **Above all, do not fall back to retyping the spec from memory.** That is the
+  b119 failure reached by a new route. A run that does not start costs nothing;
+  a run built on a recollection cost $18 and two hours, twice.
+
 ## Rule 2 — echo the premise back before you spend anything
 
 In the same message where you fire the run, state in **two to four sentences**
@@ -159,6 +185,8 @@ Once the run is going, resume the normal duty: poll `harness_progress` every
 | Rename fields to something you find clearer | Preserve every identifier exactly |
 | Drop the out-of-scope section as boilerplate | Pass it; it is what keeps the run in its lane |
 | Read a spec file, then retype it from memory | Pass `requestPath` |
+| Lost the path a turn later, so summarise instead | Ask for a re-attach |
+| Guess the path by taking the newest file in `media/inbound` | Ask for a re-attach |
 | Answer the confirmation pause yourself | Relay it and wait |
 | Skip the echo because the request seemed clear | Echo anyway; it is one paragraph |
 
@@ -166,6 +194,8 @@ Once the run is going, resume the normal duty: poll `harness_progress` every
 
 - [ ] Is `request` the user's text **in full**, or did I write it?
 - [ ] If a spec file exists, am I passing `requestPath`?
+- [ ] Did the attachment arrive on **this** turn? If not, have I asked for a
+      re-attach rather than guessing the path or working from memory?
 - [ ] Have I preserved every field name, path and status value?
 - [ ] Is the out-of-scope section still in there?
 - [ ] Have I echoed the premise back in 2–4 sentences?

@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.1.0-beta.121
+
+### The path that only exists for one turn
+
+beta.120 gave `harness_run` a `requestPath` so the harness could read a
+specification off disk instead of trusting an agent's recollection of it. Asked
+where an attached file actually lives, OpenClaw answered precisely, and the
+answer contained a fragility worth shipping a release for.
+
+An attachment is staged at
+`~/.openclaw/workspace/media/inbound/openclaw-staged-<envelope-uuid>/<file-uuid>`
+— a bare UUID with no extension, which the reader accepts (nothing in it ever
+required a `.md`, and the layout is now covered by a test that reproduces it
+exactly). The path arrives in the inbound-media envelope **on the message that
+carried the attachment, and on no later turn.**
+
+So attaching a spec in one message and saying "go" in the next leaves the
+calling agent with no path — and its two plausible recoveries are both worse
+than useless. Listing `media/inbound` and taking the newest entry reads whatever
+file happens to be there, and the run then proceeds looking entirely normal.
+Reconstructing the brief from memory is the b119 failure exactly, reached by a
+new route.
+
+`harness-brief-intake` now states the on-disk shape, says the path is
+turn-scoped, and gives the only correct recovery: ask the user to re-attach. A
+run that never starts costs nothing.
+
+### The skill is now a tested artefact
+
+Nothing in the repository tested the shipped skill, which meant a skill that
+stopped shipping — dropped from the manifest, excluded from the package, or
+quietly stripped of the rule that matters — would have looked exactly like a
+healthy release. It is the only artefact that reaches the calling agent, and it
+carries the most expensive lesson the harness has learned. Six tests now hold it
+to that: registered in `openclaw.plugin.json`, present in `package.json` files,
+valid front-matter, and still carrying the verbatim demand, the `requestPath`
+route, the premise echo, the "relay the confirmation, never answer it" rule, and
+the concrete `performedAt` → `scheduledAt` story that stops an agent talking
+itself out of the rule.
+
 ## 0.1.0-beta.120
 
 ### The run that built the wrong thing, then threw it away
