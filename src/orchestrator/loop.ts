@@ -5636,7 +5636,22 @@ export class OrchestratorLoop {
     if (!row?.worktree_path || !row?.repo) return false;
     if (!this.deps.buildVerifyProbes || !this.deps.worktreeHeadSha) return true;
     try {
-      const head = await this.deps.worktreeHeadSha(row.worktree_path).catch(() => "");
+      // Distinguish "HEAD says there are no commits" from "we could not ask".
+      // Collapsing a throw into "" would read as nothing-to-salvage and delete
+      // the worktree -- fail-OPEN, and precisely the b119 outcome this whole
+      // path exists to prevent. An unborn HEAD resolves to "" without throwing.
+      let head: string;
+      try {
+        head = await this.deps.worktreeHeadSha(row.worktree_path);
+      } catch (probeErr) {
+        this.deps.logger.warn("[loop] abort HEAD probe threw; assuming there IS work to protect", { sessionId, err: String(probeErr) });
+        this.deps.state.audit(
+          "loop.abort_commit_probe_indeterminate",
+          { sessionId, worktreePath: row.worktree_path, probe: "worktreeHeadSha", error: String((probeErr as Error)?.message ?? probeErr) },
+          sessionId,
+        );
+        return true;
+      }
       if (!head) return false;
       const planJson = this.getPlanJson(sessionId);
       if (!planJson) return true;

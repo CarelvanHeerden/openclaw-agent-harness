@@ -1077,6 +1077,32 @@ const MUTATIONS = [
     replace: "      if (false) return false;",
     tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
   },
+  {
+    // The probe that decides whether an abort may delete the worktree. Collapsing
+    // a thrown HEAD read into "" reads as "no commits" and releases -- fail-OPEN,
+    // and the precise shape of the b119 take-2 loss.
+    name: "the abort commit probe fails CLOSED (b120): an unanswerable probe must protect the work, not delete it",
+    file: "src/orchestrator/loop.ts",
+    find: "        return true;\n      }\n      if (!head) return false;",
+    replace: "        return false;\n      }\n      if (!head) return false;",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    // Preserving the branch is only half the fix; the operator has to be told.
+    // Behavioural test => mutate the compiled file the suite actually loads.
+    name: "a preserved abort SAYS so (b120): work saved but never mentioned is work the operator redoes",
+    file: "dist/orchestrator/progress.js",
+    find: "                if (ev.event === \"loop.abort_worktree_preserved\")\n                    worktreePreserved = true;",
+    replace: "                if (false)\n                    worktreePreserved = true;",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    name: "an abort headline names its cause (b120): 'Aborted $18.46.' was the entire account of a two-hour run",
+    file: "dist/orchestrator/progress.js",
+    find: "    if (input.status === \"aborted\") {\n        const why = input.failureDetail ? ` — ${input.failureDetail}` : \"\";",
+    replace: "    if (input.status === \"aborted\") {\n        const why = \"\";",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
 
   // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every
   // mutation here rewrites a `dist/` file, but the assertion that guards this

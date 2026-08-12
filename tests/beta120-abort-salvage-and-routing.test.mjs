@@ -34,6 +34,39 @@ try {
 const skip = { skip: salvage === null ? "dist not built" : false };
 const skipLoop = { skip: loopMod === null ? "dist not built" : false };
 
+let progressMod = null;
+let openStateStoreSync = null;
+try {
+  progressMod = await import("../dist/orchestrator/progress.js");
+  ({ openStateStoreSync } = await import("../dist/state/store.js"));
+} catch {
+  /* dist not built */
+}
+const skipProgress = { skip: progressMod === null ? "dist not built" : false };
+
+/** A terminal, aborted session plus the audit trail an abort leaves behind. */
+async function abortedSession(id, costUsd, events) {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "b120-"));
+  const store = openStateStoreSync(join(dir, "h.db"));
+  const now = Date.now();
+  store.db
+    .prepare(
+      `INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
+         status, cost_usd, budget_usd, cycles_ran, created_at, updated_at)
+       VALUES (?, '', '', 'U1', '', 'acme/repo', 'harness/feat-x', ?, 'aborted', ?, 18, 3, ?, ?)`,
+    )
+    .run(id, join(dir, "wt"), costUsd, now, now);
+  for (const [event, payload] of events) {
+    store.db
+      .prepare(`INSERT INTO audit_log (session_id, event, payload, created_at) VALUES (?, ?, ?, ?)`)
+      .run(id, event, JSON.stringify(payload), Date.now());
+  }
+  return { db: store.db };
+}
+
 // ---------------------------------------------------------------------------
 // Fix 1: an abort must never destroy work
 // ---------------------------------------------------------------------------
@@ -250,6 +283,59 @@ test("the salvage path preserves rather than releases when the push fails", () =
   const relIdx = body.indexOf("tryReleaseWorktree");
   const failIdx = body.indexOf("loop.abort_salvage_pr_failed");
   assert.ok(relIdx < failIdx, "the only release must sit on the shipped branch, above the failure handling");
+});
+
+test("a commit probe that cannot answer protects the work instead of deleting it", () => {
+  const src = S("src/orchestrator/loop.ts");
+  const i = src.indexOf("private async abortHasSalvageableCommits");
+  assert.ok(i > 0);
+  const body = src.slice(i, src.indexOf("\n  }", i));
+
+  // The HEAD probe must not collapse a thrown error into "no commits": that
+  // reads as nothing-to-salvage and releases the worktree, which is fail-OPEN
+  // and is exactly how b119 take-2 lost 27 commits.
+  assert.ok(
+    !/worktreeHeadSha\([^)]*\)\.catch\(\(\) => ""\)/.test(body),
+    "a throwing HEAD probe must not be indistinguishable from an unborn HEAD",
+  );
+  assert.match(body, /loop\.abort_commit_probe_indeterminate/, "an unanswerable probe is recorded");
+
+  // Both probes resolve doubt towards keeping the work.
+  const headCatch = body.indexOf("catch (probeErr)");
+  assert.ok(headCatch > 0, "the HEAD probe has its own catch");
+  // Bound the slice to THAT catch block, or a `return true` belonging to the
+  // outer catch further down would satisfy this even when the probe fails open.
+  const catchBody = body.slice(headCatch, body.indexOf("\n      }", headCatch));
+  assert.match(catchBody, /return true;/, "the HEAD-probe catch itself must protect the work");
+  assert.ok(!/return false;/.test(catchBody), "and must not resolve doubt towards deletion");
+  assert.match(body, /made: true, detail: "probe failed/, "the commitMadeSince probe already failed closed");
+  assert.match(body, /assuming there IS work to protect/);
+});
+
+test("the abort headline names the cause and says the work survived", skipProgress, async () => {
+  // Preserving 27 commits is only half a fix if the operator's one-line summary
+  // still reads "Aborted $18.46." and nothing else, which is what the b119
+  // take-2 run actually reported.
+  const { db } = await abortedSession("s-abort", 18.46, [
+    ["loop.aborted", { reason: "hard_timeout", worktreePreserved: true }],
+    ["loop.abort_worktree_preserved", { reason: "hard_timeout", worktreePath: "/wt/s-abort", branch: "harness/feat-x" }],
+  ]);
+
+  const snap = progressMod.buildProgressSnapshot(db, "s-abort");
+  assert.match(snap.headline, /hard_timeout/, "the cause must be named, not left blank");
+  assert.match(snap.headline, /NOT lost/i, "and the operator must learn the commits survived");
+  assert.match(snap.headline, /harness_revise/, "with the route to continue from them");
+});
+
+test("an abort with nothing to preserve does not promise work that isn't there", skipProgress, async () => {
+  const { db } = await abortedSession("s-empty", 0.2, [
+    ["loop.aborted", { reason: "user_abort_reaction" }],
+    ["loop.abort_nothing_to_salvage", { reason: "user_abort_reaction" }],
+  ]);
+
+  const snap = progressMod.buildProgressSnapshot(db, "s-empty");
+  assert.match(snap.headline, /user_abort_reaction/);
+  assert.ok(!/NOT lost/i.test(snap.headline), "no false promise of preserved commits");
 });
 
 test("the operator is told where preserved work lives", () => {

@@ -102,6 +102,21 @@ and then two things went wrong with it.
   are a supporting owner who should make only the minimal change their own
   files need.
 
+### Two gaps the pre-release audit found
+
+- **The commit probe was documented as fail-closed and was not.** The HEAD read
+  collapsed a thrown error into `""`, which the caller read as "no commits" and
+  answered by releasing the worktree — fail-*open*, in the one place that must
+  never be. An unborn HEAD still resolves to `""` without throwing, so the two
+  cases are now told apart and an unanswerable probe keeps the work and records
+  `loop.abort_commit_probe_indeterminate`.
+- **A preserved branch nobody hears about is a branch that gets redone.** An
+  aborted run's headline was `Aborted $18.46.` — no cause, and after this
+  release, no mention that 27 commits were sitting safe on disk. `failureDetail`
+  was only ever computed for `failed`, never for `aborted`. The abort headline
+  now names the ceiling that stopped the run and, when the branch survived, says
+  so and points at `harness_revise`.
+
 ### Two more
 
 - **Nothing about a worktree happens in silence.** Both release paths had early

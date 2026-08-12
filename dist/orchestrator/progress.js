@@ -244,6 +244,34 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
             }
         }
     }
+    // beta.120 (fix 1, reporting half): an ABORT had no detail at all, so the
+    // headline read "Aborted $18.46." and nothing else. On the b119 take-2 smoke
+    // that single line was the operator's entire account of a run that hit a
+    // wall-clock ceiling -- it named no cause, and (once b120 started preserving
+    // the branch) it would not have said that 27 commits were sitting safe on
+    // disk. Preserving work the operator is never told about is only half a fix.
+    let worktreePreserved = false;
+    if (status === "aborted") {
+        try {
+            const ar = db
+                .prepare(`SELECT event, payload FROM audit_log
+             WHERE session_id = ? AND event IN ('loop.aborted','loop.abort_worktree_preserved','loop.abort_nothing_to_salvage')
+             ORDER BY created_at DESC, id DESC LIMIT 6`)
+                .all(sessionId);
+            for (const ev of ar) {
+                if (ev.event === "loop.abort_worktree_preserved")
+                    worktreePreserved = true;
+                if (!failureDetail && ev.payload) {
+                    const p = JSON.parse(ev.payload);
+                    if (typeof p.reason === "string" && p.reason.trim())
+                        failureDetail = p.reason.slice(0, 300);
+                }
+            }
+        }
+        catch {
+            /* best-effort */
+        }
+    }
     // beta.83 (#1): surface the revise-spec raw-findings fallback for the CURRENT
     // cycle so the reduced-fidelity degradation is no longer silent. The
     // fallback fires when `loop.revise_spec_failed`, `loop.revise_spec_empty`, or
@@ -294,6 +322,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
             prNumber: row.pr_number ?? null,
             deployStatus: row.deploy_status ?? null,
             failureDetail,
+            worktreePreserved,
             estimatedUsd: typeof row.estimated_usd === "number" ? row.estimated_usd : null,
             // beta.108: so the terminal headline can say whether to merge.
             mergeRecommendation: row.merge_recommendation ?? null,
@@ -377,10 +406,16 @@ export function buildHeadline(input) {
         return `Failed during ${input.phase.toLowerCase()}${why}${cost}.${reserveHint}`;
     }
     if (input.status === "aborted") {
+        const why = input.failureDetail ? ` — ${input.failureDetail}` : "";
         const reserveHint = input.failureDetail && /budget|reserve|would exceed|projection|daily_max|exhaust/i.test(input.failureDetail)
             ? ` Re-run at a higher cap to finish.`
             : "";
-        return `Aborted${cost}.${reserveHint}`;
+        // beta.120: the whole point of preserving the branch is that a person
+        // learns it exists. Say it in the one line they actually read.
+        const preserved = input.worktreePreserved
+            ? ` Your commits are NOT lost — the branch is preserved on disk; run harness_revise to continue from it rather than starting again.`
+            : "";
+        return `Aborted${cost}${why}.${preserved}${reserveHint}`;
     }
     if (input.status === "executing" && input.total > 0) {
         const n = Math.min(input.done + 1, input.total);
