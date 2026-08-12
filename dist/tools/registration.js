@@ -12,6 +12,8 @@ import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
 import { findingText, isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
 import { OnboardingSlack, resolveOnboardVaultService, validateGitToken } from "../slack/onboarding.js";
+import { measureParaphraseDrift, readRequestFile } from "./brief-source.js";
+import { BRIEF_CONFIRMATION_KIND, BRIEF_CONFIRMATION_SEQ, decideBriefConfirmation, isBriefConfirmation, isBriefConfirmationPause, renderBriefConfirmation, } from "./brief-confirmation.js";
 function toDispose(x) {
     return () => {
         if (typeof x === "function")
@@ -145,16 +147,37 @@ export function registerHarnessTools(api, runtime) {
                 liveState().audit("tool.run.thread_reclaimed", { channel: slackChannel, thread: slackThread, retired: info.changes, priorIds: prior.map((p) => p.id) });
             }
         }
+        // beta.120 (brief fidelity): decide BEFORE the insert whether a human sees
+        // the brief first. Crystallising has already happened and cost cents; every
+        // expensive thing (planning, workers, review, CI) is still ahead of us, so
+        // this is the last cheap moment to catch a brief that says `scheduledAt`
+        // where the user wrote `performedAt`.
+        const briefCfg = liveConfig().brief;
+        const decision = decideBriefConfirmation({
+            mode: (briefCfg?.confirm_before_spend ?? "high_risk"),
+            riskLevel: params.brief.riskLevel,
+            minRisk: (briefCfg?.confirm_min_risk ?? "high"),
+            waived: params.confirmWaived,
+        });
+        const confirmationQuestion = decision.confirm
+            ? renderBriefConfirmation({
+                brief: params.brief,
+                estimatedUsd: rec.recommended,
+                effectiveBudget,
+                sourcePath: params.sourcePath,
+            })
+            : "";
         try {
             liveDb()
                 .prepare(`INSERT INTO sessions (
              id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
-             status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran, estimated_usd
-           ) VALUES (?, ?, ?, ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0, ?)`)
-                .run(sessionId, slackThread, slackChannel, params.requester, params.requester, JSON.stringify(params.brief), Date.now(), Date.now(), effectiveBudget, 
+             status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran, estimated_usd,
+             clarification_question, clarification_seq, clarification_subtask
+           ) VALUES (?, ?, ?, ?, ?, '', '', '', ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`)
+                .run(sessionId, slackThread, slackChannel, params.requester, params.requester, decision.confirm ? "awaiting_clarification" : "planning", JSON.stringify(params.brief), Date.now(), Date.now(), effectiveBudget, 
             // beta.81 (Track A / A1): persist the harness-owned session estimate
             // so harness_progress / terminal / loop.start surface it reliably.
-            rec.recommended);
+            rec.recommended, decision.confirm ? confirmationQuestion : null, decision.confirm ? BRIEF_CONFIRMATION_SEQ : null, decision.confirm ? JSON.stringify({ kind: BRIEF_CONFIRMATION_KIND }) : null);
         }
         catch (err) {
             if (String(err).includes("UNIQUE") || String(err).includes("SQLITE_CONSTRAINT")) {
@@ -163,6 +186,10 @@ export function registerHarnessTools(api, runtime) {
             throw err;
         }
         liveState().audit(params.auditEvent, { sessionId, requester: params.requester }, sessionId);
+        if (decision.confirm) {
+            liveState().audit("tool.run.awaiting_brief_confirmation", { sessionId, requester: params.requester, reason: decision.reason, riskLevel: params.brief.riskLevel ?? null, effectiveBudget, fromFile: params.sourcePath ?? null }, sessionId);
+            return { ok: true, sessionId, awaitingConfirmation: true, question: confirmationQuestion, budgetNote: rec.note, effectiveBudget, recommendedBudget: rec.recommended, estimatedUsd: rec.recommended };
+        }
         void liveRuntime().loop.run(sessionId, params.brief).catch((err) => {
             api.logger.error(`[${params.auditEvent}] loop crashed`, { sessionId, err: String(err) });
         });
@@ -601,6 +628,27 @@ export function registerHarnessTools(api, runtime) {
             if (!res.ok) {
                 return { content: [{ type: "text", text: res.reason }], details: { ok: false, unauthorised: res.unauthorised, duplicateThread: res.duplicateThread } };
             }
+            // beta.120: a caller-built brief is MORE exposed to paraphrase drift
+            // than harness_run's, not less -- the caller wrote the acceptance
+            // criteria itself. Same gate.
+            if (res.awaitingConfirmation === true) {
+                return {
+                    content: [{ type: "text", text: res.question }],
+                    details: {
+                        ok: true,
+                        sessionId: res.sessionId,
+                        awaitingConfirmation: true,
+                        question: res.question,
+                        estimatedUsd: res.estimatedUsd,
+                        effectiveBudget: res.effectiveBudget,
+                        feedback: {
+                            instruction: "STOP and show `question` to the user verbatim before anything is spent. Do NOT confirm on their behalf. Relay their reply to harness_answer with this sessionId.",
+                            answerWith: "harness_answer",
+                            args: { sessionId: res.sessionId, answer: "<the user's reply, verbatim>" },
+                        },
+                    },
+                };
+            }
             const feedback = {
                 poll: "harness_progress",
                 args: { sessionId: res.sessionId },
@@ -623,6 +671,16 @@ export function registerHarnessTools(api, runtime) {
         name: "harness_run",
         description: [
             "PRIMARY entry point. Hand the harness a raw natural-language coding request; it classifies + crystallises it into a brief and starts a session (plan -> parallel workers -> adversarial review -> PR). Returns either a started sessionId, a clarifying question to relay to the user, or a rejection. Use this instead of harness_start_session unless you have already built a structured brief. Slack channel/thread are optional; omit them for pure agent-orchestrated runs and poll harness_status for the outcome.",
+            "",
+            // beta.120: the b119 take-2 smoke lost the feature between the
+            // user's file and this parameter. The caller had a 10,710-byte
+            // spec and sent a ~40-line summary it wrote itself; `performedAt`
+            // became `scheduledAt` and five model fields vanished. The harness
+            // built the summary faithfully, twice, at ~$18 and ~2h each. The
+            // crystalliser was never the problem -- the same file read off
+            // disk crystallises with every field intact.
+            "PASS THE USER'S WORDS VERBATIM. `request` must be the user's request text IN FULL, exactly as they wrote it. If the user supplied a spec, a markdown file, a ticket body or a long message, pass ALL of it, byte for byte. Do NOT summarise it, do NOT condense it into acceptance criteria, do NOT rename or invent field names, and do NOT 'tidy up' the structure. Crystallising the request into a brief is THIS TOOL'S job and it is good at it; a paraphrase silently changes what gets built, and neither you nor the user will see the substitution until a PR arrives hours later. Length is not a problem -- a 10KB spec is normal and welcome. If you are tempted to shorten it, don't.",
+            "IF THE REQUEST CAME FROM A FILE, pass `requestPath` (absolute) INSTEAD of retyping it and the harness reads the bytes itself. This is the safest option and is strongly preferred whenever a path exists. You may pass both: the file always wins, and the harness records how far your `request` text drifted from it.",
             "AUTOMATIC PROGRESS (REQUIRED): the harness NEVER posts to Slack itself. AFTER this returns ok:true, you MUST immediately begin surfacing progress: poll harness_progress with the returned sessionId every ~45s and relay its headline to the user, stopping when terminal is true. The success result carries a details.feedback directive with the exact poll target, interval, field, and stop condition -- follow it. Prefer scheduling a ~45s cron that calls harness_progress and posts each new headline, so progress surfaces even across turns. Do NOT fire-and-forget and leave the user in silence.",
             "",
             // beta.22: explicit OKF forwarding instruction. The OKF plugin
@@ -643,7 +701,16 @@ export function registerHarnessTools(api, runtime) {
             type: "object",
             properties: {
                 requester: { type: "string", minLength: 1, description: "Slack user id of the requester (must be in slack.authorised_users)" },
-                request: { type: "string", minLength: 10, description: "The raw natural-language coding request to crystallise and run." },
+                request: {
+                    type: "string",
+                    minLength: 10,
+                    description: "The user's coding request, VERBATIM AND COMPLETE. Copy their text exactly -- full spec, all sections, all field names. Never summarise, condense into acceptance criteria, or reword: the harness crystallises it for you, and a paraphrase silently builds a different feature. Optional only when `requestPath` is given.",
+                },
+                requestPath: {
+                    type: "string",
+                    minLength: 1,
+                    description: "beta.120. Optional but PREFERRED when the request came from a file: an absolute path to the user's specification. The harness reads the bytes itself, which removes any chance of the text being paraphrased in transit. The file must sit inside a configured `brief.request_file_roots` directory. If both this and `request` are supplied, the file wins.",
+                },
                 slackChannel: { type: "string", minLength: 1, description: "Optional. Slack channel to post progress into." },
                 slackThread: { type: "string", minLength: 1, description: "Optional. Thread ts to reply into." },
                 budgetUsd: {
@@ -669,17 +736,64 @@ export function registerHarnessTools(api, runtime) {
                     },
                 },
             },
-            required: ["requester", "request"],
+            required: ["requester"],
             additionalProperties: false,
         },
         execute: async (_callId, input) => {
-            const { requester, request, slackChannel, slackThread, budgetUsd, relevantConcepts } = input;
+            const { requester, request, requestPath, slackChannel, slackThread, budgetUsd, relevantConcepts } = input;
             if (!liveConfig().slack.authorised_users.includes(requester)) {
                 return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
+            // beta.120 (brief fidelity): prefer bytes on disk over a calling
+            // agent's retelling of them. When both arrive, the file wins and the
+            // drift is measured into the audit log -- on the b119 take-2 smoke
+            // that record would have shown a 0.19 size ratio and a dropped
+            // `performedAt`, which is the entire bug in one event.
+            let effectiveRequest = typeof request === "string" ? request : "";
+            let requestSourcePath;
+            if (typeof requestPath === "string" && requestPath.trim().length > 0) {
+                const read = readRequestFile(requestPath.trim(), {
+                    allowedRoots: liveConfig().brief?.request_file_roots ?? [],
+                    maxBytes: liveConfig().brief?.request_file_max_bytes ?? 262144,
+                });
+                if (!read.ok) {
+                    liveState().audit("tool.run.request_file_rejected", { requester, requestPath, code: read.code });
+                    // Fall back to the supplied text only if there IS usable text;
+                    // otherwise this is a hard, actionable failure.
+                    if (effectiveRequest.trim().length < 10) {
+                        return {
+                            content: [{ type: "text", text: `${read.message}\n\nEither fix the path, configure brief.request_file_roots, or pass the full text as \`request\`.` }],
+                            details: { ok: false, requestFileError: true, code: read.code },
+                        };
+                    }
+                }
+                else {
+                    if (effectiveRequest.trim().length >= 10) {
+                        const drift = measureParaphraseDrift(read.text, effectiveRequest);
+                        liveState().audit("tool.run.paraphrase_discarded", {
+                            requester,
+                            path: read.resolvedPath,
+                            fileBytes: drift.fileBytes,
+                            paraphraseBytes: drift.paraphraseBytes,
+                            ratio: drift.ratio,
+                            material: drift.material,
+                            droppedTerms: drift.droppedTerms,
+                        });
+                    }
+                    effectiveRequest = read.text;
+                    requestSourcePath = read.resolvedPath;
+                    liveState().audit("tool.run.request_from_file", { requester, path: read.resolvedPath, bytes: read.bytes });
+                }
+            }
+            if (effectiveRequest.trim().length < 10) {
+                return {
+                    content: [{ type: "text", text: "Supply the user's request as `request` (verbatim, in full) or point `requestPath` at their spec file." }],
+                    details: { ok: false, missingRequest: true },
+                };
+            }
             let cResult;
             try {
-                cResult = await liveRuntime().crystallise(request, relevantConcepts);
+                cResult = await liveRuntime().crystallise(effectiveRequest, relevantConcepts);
             }
             catch (err) {
                 // beta.24: log the error inline in the message string so it
@@ -721,9 +835,33 @@ export function registerHarnessTools(api, runtime) {
             const res = startSessionFromBrief({
                 requester, brief: cResult.brief, slackChannel, slackThread, budgetUsd,
                 auditEvent: "tool.run",
+                sourcePath: requestSourcePath,
             });
             if (!res.ok) {
                 return { content: [{ type: "text", text: res.reason }], details: { ok: false, unauthorised: res.unauthorised, duplicateThread: res.duplicateThread } };
+            }
+            // beta.120: paused for a human to confirm the brief. Nothing has been
+            // spent beyond crystallisation and nothing will be until an answer
+            // arrives, so the caller must PUT THE QUESTION TO THE USER rather
+            // than poll or answer on their behalf.
+            if (res.awaitingConfirmation === true) {
+                return {
+                    content: [{ type: "text", text: res.question }],
+                    details: {
+                        ok: true,
+                        sessionId: res.sessionId,
+                        awaitingConfirmation: true,
+                        question: res.question,
+                        brief: cResult.brief,
+                        estimatedUsd: res.estimatedUsd,
+                        effectiveBudget: res.effectiveBudget,
+                        feedback: {
+                            instruction: "STOP and show `question` to the user verbatim -- it is the brief the harness is about to build, and this is the last cheap moment to catch a misunderstanding. Do NOT confirm on the user's behalf, do NOT poll harness_progress yet, and do NOT start another run. When they reply, call harness_answer with this sessionId and their reply as `answer`: an approval starts the run, anything else is folded in as a correction first.",
+                            answerWith: "harness_answer",
+                            args: { sessionId: res.sessionId, answer: "<the user's reply, verbatim>" },
+                        },
+                    },
+                };
             }
             const feedback = {
                 poll: "harness_progress",
@@ -1037,7 +1175,11 @@ export function registerHarnessTools(api, runtime) {
         description: "Answer a harness session that is paused in 'awaiting_clarification' and resume it. " +
             "The answer is folded into the brief as a directive and the loop re-drives, building on any " +
             "work already committed. Special answers: 'abort' (or 'cancel') terminates the session; 'skip' " +
-            "instructs the loop to drop the blocked sub-task and continue.",
+            "instructs the loop to drop the blocked sub-task and continue. " +
+            "beta.120: also answers a pre-spend brief confirmation (harness_run returned awaitingConfirmation). " +
+            "There, an approval ('confirm', 'yes', 'go ahead', ...) starts the run as-is and ANY other reply is " +
+            "folded in as an authoritative correction to the brief first. Pass the user's reply verbatim and " +
+            "never approve on their behalf.",
         parameters: {
             type: "object",
             properties: {
@@ -1076,11 +1218,38 @@ export function registerHarnessTools(api, runtime) {
                 liveState().audit("tool.answer_aborted", { sessionId, seq }, sessionId);
                 return { content: [{ type: "text", text: `Session ${sessionId} aborted per your instruction.` }], details: { ok: true, sessionId, aborted: true } };
             }
+            const brief = JSON.parse(row.crystallised_prompt);
+            const q = row.clarification_question ?? `sub-task ${seq}`;
+            // beta.120 (brief fidelity): this pause happened BEFORE any planning or
+            // worker spend, so there is no blocked sub-task to phrase around and no
+            // worktree to preserve. An approval starts the run untouched; anything
+            // else is a correction to the brief itself.
+            if (isBriefConfirmationPause(row.clarification_subtask)) {
+                const approved = isBriefConfirmation(trimmed);
+                if (!approved) {
+                    brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
+                    brief.acceptanceCriteria.push(`OPERATOR CORRECTION TO THIS BRIEF (given before any work began, after reviewing the crystallised version): ${trimmed}. This supersedes anything above that contradicts it -- the operator is describing what they actually asked for, so treat it as the authoritative reading.`);
+                }
+                liveDb()
+                    .prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', clarification_question = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ?`)
+                    .run(JSON.stringify(brief), Date.now(), sessionId);
+                liveState().audit(approved ? "tool.answer_brief_confirmed" : "tool.answer_brief_corrected", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null }, sessionId);
+                void liveRuntime().loop.run(sessionId, brief).catch((err) => {
+                    api.logger.error("[tool.answer] loop.run failed", { sessionId, err: String(err) });
+                });
+                return {
+                    content: [{
+                            type: "text",
+                            text: approved
+                                ? `Brief confirmed; session ${sessionId} is running. Poll harness_progress every ~45s and relay \`headline\` until terminal.`
+                                : `Correction folded into the brief; session ${sessionId} is running with it. Poll harness_progress every ~45s and relay \`headline\` until terminal.`,
+                        }],
+                    details: { ok: true, sessionId, resumed: true, briefConfirmed: approved, briefCorrected: !approved },
+                };
+            }
             // Fold the decision into the brief so the re-plan honours it. For a
             // 'skip' answer we phrase it as an out-of-scope directive; otherwise as
             // an acceptance-criteria directive pinned to the blocked sub-task.
-            const brief = JSON.parse(row.crystallised_prompt);
-            const q = row.clarification_question ?? `sub-task ${seq}`;
             if (/^skip\b/i.test(trimmed)) {
                 // beta.58 (D1/D2): DURABLE skip. The prior beta.55 form phrased the
                 // prohibition by seq number and only appended to outOfScope -- but
@@ -1524,6 +1693,10 @@ export function registerHarnessTools(api, runtime) {
                 brief: cleanBrief,
                 budgetUsd,
                 auditEvent: "tool.revise",
+                // beta.120: a revise continues a brief the human already accepted,
+                // against findings the harness itself raised. Re-confirming it
+                // would gate the fix loop behind a round-trip for no new signal.
+                confirmWaived: true,
             });
             if (!started.ok) {
                 return { content: [{ type: "text", text: `Could not start revise: ${started.reason}` }], details: { ...started, ok: false } };

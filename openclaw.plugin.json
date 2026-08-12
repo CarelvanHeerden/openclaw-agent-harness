@@ -6,6 +6,7 @@
     "onStartup": true
   },
   "skills": [
+    "skills/harness-brief-intake",
     "skills/harness-credentials",
     "skills/harness-pr-steward"
   ],
@@ -353,6 +354,18 @@
             "type": "boolean",
             "default": true,
             "description": "beta.63 (Part A): on an UNRECOVERABLE stall with commits on the branch, attempt a graceful push + PR flagged needs_human_review (beta.62 pattern) so a near-done deliverable is not evaporated. Set false to fail-and-preserve-worktree only."
+          },
+          "abort_salvage_pr": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.120 (fix 1): when a run ABORTS on a resource ceiling (wall clock, session budget, daily cap) and the branch has commits, push them and open a needs_human_review PR instead of discarding the worktree. A ceiling says nothing about code quality: the b119 take-2 smoke hit its 120-minute limit at 121.6 minutes and deleted 27 commits, 15 files and a clean typecheck. Set false to restore the old behaviour for resource aborts -- the worktree is still PRESERVED whenever commits exist, because an abort never deletes work."
+          },
+          "ship_time_reserve_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "default": 600,
+            "description": "beta.120 (fix 4): stop starting new revise cycles once fewer than this many seconds remain before session_hard_timeout_seconds, and ship what exists instead. Turns 'out of time' from a cliff into a landing. Automatically clamped to 25% of session_hard_timeout_seconds so a short timeout cannot disable revising altogether. Set 0 to disable."
           },
           "stall_sweep_interval_seconds": {
             "type": "integer",
@@ -927,6 +940,31 @@
             "maximum": 10,
             "default": 2,
             "description": "beta.80 (F2): how many distinct crystalliser interpretations force a clarify pause. Default 2."
+          },
+          "request_file_roots": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "beta.120 (brief fidelity): directories harness_run's `requestPath` may read a specification from. EMPTY BY DEFAULT, which disables file reads -- the harness holds GitHub tokens and a brief's contents reach model prompts and PR bodies, so an operator must name the safe directories explicitly. Point this at wherever the calling runtime stores user-uploaded files. `~` is expanded and symlinks are resolved before the check. Motivation: on the b119 smoke the calling agent retyped a 10,710-byte spec as a 40-line summary and the feature changed (`performedAt` became `scheduledAt`); reading the bytes removes that hop."
+          },
+          "request_file_max_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 5242880,
+            "default": 262144,
+            "description": "beta.120: hard cap on a file read via harness_run's `requestPath`. Default 262144 (256 KB)."
+          },
+          "confirm_before_spend": {
+            "type": "string",
+            "enum": ["off", "high_risk", "always"],
+            "default": "high_risk",
+            "description": "beta.120 (brief fidelity): pause for a human to confirm the CRYSTALLISED brief before any planning or worker spend. 'off' = never (pre-beta.120). 'high_risk' = pause when the brief's riskLevel is at or above confirm_min_risk (default). 'always' = every run. Motivation: two b119 smokes spent ~$18 and ~2h each building a feature whose brief had been paraphrased upstream; the error was obvious on sight but nothing ever showed it to anyone. Crystallising costs cents, so the gate is nearly free. The session is created in awaiting_clarification and resumed with harness_answer: an unqualified approval runs it as-is, anything else is folded in as a correction first."
+          },
+          "confirm_min_risk": {
+            "type": "string",
+            "enum": ["medium", "high"],
+            "default": "high",
+            "description": "beta.120: lowest riskLevel that triggers a confirmation under confirm_before_spend:'high_risk'. Default 'high'; set 'medium' for a wider net. There is deliberately NO budget threshold: estimated_usd is derived from the session budget rather than the task, so gating on it would silently turn 'high_risk' into 'always'."
           }
         }
       },

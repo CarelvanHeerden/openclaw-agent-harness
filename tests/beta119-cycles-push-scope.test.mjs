@@ -165,7 +165,8 @@ test("the loop counts grants and audits the extension", () => {
   const src = S("src/orchestrator/loop.ts");
   assert.match(src, /cycleExtensionsGranted \+= 1;/);
   assert.match(src, /"loop\.max_cycles_extended"/);
-  assert.match(src, /hasBudgetHeadroomForAnotherCycle\(row\.requester, totalCost, cycle\)/);
+  // beta.120 (fix 6): the session's OWN budget is now the fourth constraint.
+  assert.match(src, /hasBudgetHeadroomForAnotherCycle\(row\.requester, totalCost, cycle, row\.budget_usd\)/);
   assert.match(src, /blockingCountsByCycle\.push\(blockingFindings\)/);
 });
 

@@ -970,6 +970,140 @@ const MUTATIONS = [
     tests: ["tests/beta119-cycles-push-scope.test.mjs"],
   },
 
+  // --- beta.120 fix 1: an abort must never destroy work --------------------
+  {
+    name: "a user abort is not a resource ceiling (b120): shipping a PR someone asked you to stop is an override, not a rescue",
+    file: "dist/orchestrator/abort-salvage.js",
+    find: '    "ship_time_reserved",\n]);',
+    replace: '    "ship_time_reserved",\n    "user_abort_reaction",\n]);',
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    name: "a salvaged PR must not read as approved (b120): it carries no verdict and 27 commits of unreviewed work",
+    file: "dist/orchestrator/abort-salvage.js",
+    find: "`NOT machine-approved -- ",
+    replace: "`Reviewed and ready -- ",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    name: "the salvage gate is the only way in (b120): one raw finaliseAbort call is one worktree deleted",
+    file: "src/orchestrator/loop.ts",
+    find: 'if (failed.err === "hard_timeout") return await this.finaliseAbortSalvaging(sessionId, "hard_timeout", cycle, totalCost);',
+    replace: 'if (failed.err === "hard_timeout") return this.finaliseAbort(sessionId, "hard_timeout", cycle, totalCost);',
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    name: "a failed salvage push preserves (b120): falling through to release turns a bad push into lost work",
+    file: "dist/orchestrator/loop.js",
+    find: 'this.deps.state.audit("loop.abort_worktree_preserved"',
+    replace: 'this.scheduleWorktreeReleaseForSession(sessionId, "aborted"), this.deps.state.audit("loop.abort_worktree_preserved"',
+    tests: ["tests/beta16-worktree-release.test.mjs"],
+  },
+  {
+    name: "the commit probe fails CLOSED (b120): 'I cannot tell' must mean 'protect it', not 'delete it'",
+    file: "dist/orchestrator/loop.js",
+    find: "            this.deps.logger.warn(\"[loop] abort commit probe failed; assuming there IS work to protect\", { sessionId, err: String(err) });\n            return true;",
+    replace: "            this.deps.logger.warn(\"[loop] abort commit probe failed; assuming there IS work to protect\", { sessionId, err: String(err) });\n            return false;",
+    tests: ["tests/beta16-worktree-release.test.mjs"],
+  },
+
+  // --- beta.120 fix 2: co-fix grants are not ownership ----------------------
+  {
+    name: "a granted path is not an owned path (b120): conflating them is what took the fan-out from 1.9 to 5.0 per finding",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: ".filter((p) => p.length > 0 && !granted.has(p));",
+    replace: ".filter((p) => p.length > 0);",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+  {
+    name: "the grant is recorded separately (b120): without its own field the router cannot tell a grant from an owner next cycle",
+    file: "src/orchestrator/loop.ts",
+    find: "if (!st.coFixGrantedFiles.includes(p)) st.coFixGrantedFiles.push(p);",
+    replace: "if (false) st.coFixGrantedFiles.push(p);",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+
+  // --- beta.120 fix 3: one finding, one answerable owner --------------------
+  {
+    name: "supporting owners are not told to drive (b120): nine equal 'fix this' messages produced zero fixes across two cycles",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "        else {\n                    a.assisting = a.assisting ?? [];",
+    replace: "        else if (a.targeted.includes(f)) {\n                    a.assisting = a.assisting ?? [];",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+  {
+    name: "the file's own owner is the primary (b120): picking a recruit instead hands the fix to someone who can only assist",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "const primarySeq = priorOwners.length > 0 ? Math.min(...priorOwners) : Math.min(...recruited);",
+    replace: "const primarySeq = Math.min(...recruited);",
+    tests: ["tests/beta119-cross-cutting-findings.test.mjs"],
+  },
+
+  // --- beta.120 fix 4: reserve time to land ---------------------------------
+  {
+    name: "the reserve is clamped (b120): unclamped, a session shorter than the reserve ships after cycle 1 and never revises",
+    file: "dist/orchestrator/abort-salvage.js",
+    find: "    if (totalMs > 0)\n        reserveMs = Math.min(reserveMs, totalMs * MAX_RESERVE_FRACTION);",
+    replace: "    if (false)\n        reserveMs = Math.min(reserveMs, totalMs * MAX_RESERVE_FRACTION);",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    name: "a passed deadline is the abort path's job (b120): treating it as a reserve would ship instead of salvaging",
+    file: "dist/orchestrator/abort-salvage.js",
+    find: "    if (remaining <= 0)\n        return false;",
+    replace: "    if (remaining <= 0)\n        return true;",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    name: "the reserve fires only when explicitly ON (b120): a loose truthiness check would end every run at cycle 1",
+    file: "dist/orchestrator/loop.js",
+    find: '                if (input.shipTimeReserved === true) {',
+    replace: '                if (input.shipTimeReserved !== false) {',
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+
+  // --- beta.120 fix 5 + 6: silence and unauthorised spend -------------------
+  {
+    name: "an absent releaseWorktree dep still audits (b120): the b119 take-2 worktree vanished with no event explaining it",
+    file: "src/orchestrator/loop.ts",
+    find: '        { sessionId, reason, reason_skipped: "no releaseWorktree dependency wired", path: worktreePath },',
+    replace: '        { sessionId, reason, path: worktreePath },',
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    name: "an extension may not spend past the SESSION budget (b120): the operator ceiling is not the number the requester agreed to",
+    file: "src/orchestrator/loop.ts",
+    find: "      if (typeof sessionBudgetUsd === \"number\" && sessionBudgetUsd > 0 && spentUsd + projected > sessionBudgetUsd) return false;",
+    replace: "      if (false) return false;",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    // The probe that decides whether an abort may delete the worktree. Collapsing
+    // a thrown HEAD read into "" reads as "no commits" and releases -- fail-OPEN,
+    // and the precise shape of the b119 take-2 loss.
+    name: "the abort commit probe fails CLOSED (b120): an unanswerable probe must protect the work, not delete it",
+    file: "src/orchestrator/loop.ts",
+    find: "        return true;\n      }\n      if (!head) return false;",
+    replace: "        return false;\n      }\n      if (!head) return false;",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    // Preserving the branch is only half the fix; the operator has to be told.
+    // Behavioural test => mutate the compiled file the suite actually loads.
+    name: "a preserved abort SAYS so (b120): work saved but never mentioned is work the operator redoes",
+    file: "dist/orchestrator/progress.js",
+    find: "                if (ev.event === \"loop.abort_worktree_preserved\")\n                    worktreePreserved = true;",
+    replace: "                if (false)\n                    worktreePreserved = true;",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+  {
+    name: "an abort headline names its cause (b120): 'Aborted $18.46.' was the entire account of a two-hour run",
+    file: "dist/orchestrator/progress.js",
+    find: "    if (input.status === \"aborted\") {\n        const why = input.failureDetail ? ` — ${input.failureDetail}` : \"\";",
+    replace: "    if (input.status === \"aborted\") {\n        const why = \"\";",
+    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
+  },
+
   // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every
   // mutation here rewrites a `dist/` file, but the assertion that guards this
   // property is a SOURCE pin against `src/orchestrator/loop.ts`, so a dist-side

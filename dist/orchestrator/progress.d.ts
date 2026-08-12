@@ -171,6 +171,8 @@ export declare function buildHeadline(input: {
     prNumber: number | null;
     deployStatus: string | null;
     failureDetail?: string;
+    /** beta.120: an aborted run whose commits are still on disk. */
+    worktreePreserved?: boolean;
     /** beta.81 (Track A / A2): up-front session estimate, for the terminal line. */
     estimatedUsd?: number | null;
     /** beta.108: `merge` | `do_not_merge` | `needs_human_review`. */

@@ -176,15 +176,49 @@ test("b118 REGRESSION: the upload finding reaches the drawer and schema owners t
     relatedFiles: [SCHEMA, DRAWER],
   };
   const r = mapFindingsToSubTasks(subTasks(), [finding], match, { routeCoFixOwners: true });
-  const targeted = (seq) => r.assignments.find((a) => a.seq === seq).targeted.length;
+  const at = (seq) => r.assignments.find((a) => a.seq === seq);
+  const carries = (seq) => at(seq).targeted.length + (at(seq).assisting ?? []).length;
 
-  assert.equal(targeted(5), 1, "the file's own owner is still targeted");
-  assert.equal(targeted(1), 1, "the Prisma model owner must be recruited");
-  assert.equal(targeted(8), 1, "the drawer owner must be recruited");
-  assert.equal(targeted(2), 0, "an unrelated sub-task is not dragged in");
+  assert.equal(carries(5), 1, "the file's own owner is still involved");
+  assert.equal(carries(1), 1, "the Prisma model owner must be recruited");
+  assert.equal(carries(8), 1, "the drawer owner must be recruited");
+  assert.equal(carries(2), 0, "an unrelated sub-task is not dragged in");
+
+  // beta.120 (fix 3): recruited is not the same as answerable. b119 handed all
+  // three owners an identical "fix this" and the b119 take-2 smoke shows what
+  // that produces -- perfect routing for two cycles running, and nobody fixing
+  // it. The owner of the finding's own file drives; the rest assist.
+  assert.equal(at(5).targeted.length, 1, "the file's own owner is the primary");
+  assert.equal(at(1).targeted.length, 0, "a supporting owner is not told to drive");
+  assert.equal(at(8).targeted.length, 0, "a supporting owner is not told to drive");
+  assert.equal((at(1).assisting ?? []).length, 1);
+  assert.equal((at(8).assisting ?? []).length, 1);
 
   assert.equal(r.coFixRoutings.length, 1);
   assert.deepEqual(r.coFixRoutings[0].seqs.sort(), [1, 8]);
+  assert.equal(r.coFixRoutings[0].primarySeq, 5, "exactly one sub-task is answerable, and it owns the file");
+});
+
+test("beta.120: a co-fix grant does NOT make the assistant an owner next cycle", skip, () => {
+  // The accretion bug. b119 wrote co-fix paths into `filesLikelyTouched`, which
+  // is simultaneously the scope gate and the ownership map, on a plan object
+  // that outlives the cycle. So cycle N's routing widened the input to cycle
+  // N+1's routing: on the b119 take-2 smoke the fan-out went from mean 1.9
+  // (max 5) to mean 5.0 (max 9) for the same two-file fix.
+  const finding = {
+    dimension: "quality", severity: "medium", file: UPLOAD_ROUTE,
+    title: "discards kind/title", detail: "", relatedFiles: [DRAWER],
+  };
+  const withGrant = subTasks().map((s) =>
+    // Sub-task 8 owns the drawer; sub-task 2 was GRANTED it by a previous cycle.
+    s.seq === 2 ? { ...s, filesLikelyTouched: [...(s.filesLikelyTouched ?? []), DRAWER], coFixGrantedFiles: [DRAWER] } : s,
+  );
+  const r = mapFindingsToSubTasks(withGrant, [finding], match, { routeCoFixOwners: true });
+  assert.ok(
+    !r.coFixRoutings[0].seqs.includes(2),
+    "a path granted last cycle must not be read as ownership this cycle -- that is what compounds the fan-out",
+  );
+  assert.deepEqual(r.coFixRoutings[0].seqs.sort(), [8], "only the genuine owner is recruited");
 });
 
 test("co-fix routing puts the co-fix path in the recruited sub-task's targeted files", skip, () => {
@@ -302,5 +336,15 @@ test("co-fix routing recruits sub-tasks into revise SCOPE, not just the hint", (
   const src = S("src/orchestrator/loop.ts");
   const i = src.indexOf('"loop.finding_co_fix_routed"');
   assert.ok(i > 0);
-  assert.match(src.slice(i, i + 800), /st\.filesLikelyTouched\.push\(p\)/);
+  const block = src.slice(i, i + 2000);
+  assert.match(block, /st\.filesLikelyTouched\.push\(p\)/);
+  // beta.120 (fix 2): the grant is ALSO recorded separately, because the scope
+  // gate and the ownership map read the same field and only one of them should
+  // be widened by a routing decision.
+  // Pin the guarded write, not just the presence of the call: neutering the
+  // condition leaves the line in place while recording nothing.
+  assert.match(block, /if \(!st\.coFixGrantedFiles\.includes\(p\)\) st\.coFixGrantedFiles\.push\(p\);/);
+  // And the grant must be threaded to the router, or the exclusion it powers
+  // can never fire.
+  assert.match(S("src/orchestrator/loop.ts"), /coFixGrantedFiles: s\.coFixGrantedFiles,/);
 });

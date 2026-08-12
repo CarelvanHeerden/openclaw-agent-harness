@@ -372,8 +372,27 @@ const regSrc = S("src/tools/registration.ts");
 test("beta101: harness_answer marks the resume so allocation preserves the branch", () => {
   assert.match(regSrc, /brief\.resumeFromClarification = true/);
   const i = regSrc.indexOf("brief.resumeFromClarification = true");
-  const j = regSrc.indexOf("UPDATE sessions SET crystallised_prompt = ?, status = 'planning'");
+  // Search from the flag onwards: beta.120 added an EARLIER persist for the
+  // pre-spend brief-confirmation resume, which deliberately does not set the
+  // flag (nothing has run, so there is no branch to preserve). The guarantee
+  // under test is that the MID-RUN resume persists after setting it.
+  const j = regSrc.indexOf("UPDATE sessions SET crystallised_prompt = ?, status = 'planning'", i);
   assert.ok(i > 0 && j > i, "the flag is set BEFORE the brief is persisted, so recovery re-drives keep it");
+});
+
+test("beta120: the pre-spend confirmation resume does NOT claim a branch to preserve", () => {
+  // A brief-confirmation pause happens before planning, so there are no commits
+  // and no worktree. Setting resumeFromClarification there would ask allocation
+  // to preserve a local branch that does not exist.
+  const i = regSrc.indexOf("isBriefConfirmationPause(row.clarification_subtask)");
+  assert.ok(i > 0, "the confirmation branch exists");
+  const j = regSrc.indexOf("// Fold the decision into the brief", i);
+  assert.ok(j > i, "and is followed by the mid-run path");
+  const confirmationBranch = regSrc.slice(i, j);
+  assert.ok(
+    !confirmationBranch.includes("resumeFromClarification"),
+    "the pre-spend confirmation path must not set resumeFromClarification",
+  );
 });
 
 test("beta101: index threads resumeFromClarification into preserveLocalBranch", () => {

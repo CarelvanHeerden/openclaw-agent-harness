@@ -152,7 +152,9 @@ test("loop: user abort reaction short-circuits",
     });
     const outcome = await loop.run("S3", brief);
     assert.equal(outcome.status, "aborted");
-    assert.equal(outcome.reason, "user_abort_reaction");
+    // beta.120 (fix 1): the reason now also tells the operator their commits
+    // survived and where to find them, so match the machine token as a prefix.
+    assert.match(outcome.reason, /^user_abort_reaction\b/);
     const row = state.db.prepare(`SELECT status FROM sessions WHERE id = 'S3'`).get();
     assert.equal(row.status, "aborted");
   });
@@ -184,8 +186,13 @@ test("loop: budget exhaustion aborts unless budget_bump",
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
     const outcome = await loop.run("S4", brief);
-    assert.equal(outcome.status, "aborted");
-    assert.equal(outcome.reason, "daily_max_exhausted");
+    // beta.120 (fix 1): the spend gate still fires at exactly the same point --
+    // what changed is that hitting a ceiling no longer destroys the branch. The
+    // run ships what it has for a human to judge.
+    assert.equal(outcome.status, "shipped");
+    const salvaged = state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr");
+    assert.equal(salvaged.length, 1);
+    assert.equal(salvaged[0].payload.abortReason, "daily_max_exhausted");
     // Should have run the first sub-task, then noticed daily-cap over on the second check
     assert.equal(workerCalls, 1);
   });
@@ -372,8 +379,13 @@ test("loop: projected-cost gating aborts BEFORE starting an unaffordable sub-tas
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
     const outcome = await loop.run("SB1", brief);
-    assert.equal(outcome.status, "aborted");
-    assert.equal(outcome.reason, "daily_max_exhausted");
+    // beta.120 (fix 1): the spend gate still fires at exactly the same point --
+    // what changed is that hitting a ceiling no longer destroys the branch. The
+    // run ships what it has for a human to judge.
+    assert.equal(outcome.status, "shipped");
+    const salvaged = state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr");
+    assert.equal(salvaged.length, 1);
+    assert.equal(salvaged[0].payload.abortReason, "daily_max_exhausted");
     // Sub-task 1 ran (0.10), sub-task 2 projected daily 0.20+ > 0.15 -> gated.
     assert.deepEqual(workerSeqs, [1], "second sub-task must be gated out before execution");
     const gate = state.audits.find((a) => a.event === "loop.daily_max_abort");
@@ -408,8 +420,13 @@ test("loop: review is skipped + cycle aborts when remaining budget < review esti
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
     const outcome = await loop.run("SB2", brief);
-    assert.equal(outcome.status, "aborted");
-    assert.equal(outcome.reason, "daily_max_exhausted");
+    // beta.120 (fix 1): the spend gate still fires at exactly the same point --
+    // what changed is that hitting a ceiling no longer destroys the branch. The
+    // run ships what it has for a human to judge.
+    assert.equal(outcome.status, "shipped");
+    const salvaged = state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr");
+    assert.equal(salvaged.length, 1);
+    assert.equal(salvaged[0].payload.abortReason, "daily_max_exhausted");
     assert.equal(adversaryCalled, false, "adversary must not run when the daily cap can't afford it");
     const gate = state.audits.find((a) => a.event === "loop.review_budget_abort");
     assert.ok(gate, "review budget abort should be audited");

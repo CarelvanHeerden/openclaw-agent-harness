@@ -328,9 +328,16 @@ opts = {}) {
     // actually happen in one cycle instead of being declined in three.
     const coFixRoutings = [];
     if (opts.routeCoFixOwners) {
-        const ownedOf = (st) => [...(st.filesLikelyTouched ?? []), ...(st.contextPaths ?? [])]
-            .map((p) => (typeof p === "string" ? p.trim() : ""))
-            .filter(Boolean);
+        // beta.120 (fix 2): ownership is what the PLAN declared, plus what the
+        // worker actually read. A path granted by a previous cycle's co-fix routing
+        // is permission to edit, never a claim of ownership -- otherwise routing
+        // feeds itself and the fan-out compounds every cycle.
+        const ownedOf = (st) => {
+            const granted = new Set((st.coFixGrantedFiles ?? []).map((p) => (typeof p === "string" ? p.trim() : "")).filter(Boolean));
+            return [...(st.filesLikelyTouched ?? []), ...(st.contextPaths ?? [])]
+                .map((p) => (typeof p === "string" ? p.trim() : ""))
+                .filter((p) => p.length > 0 && !granted.has(p));
+        };
         for (const f of list) {
             if (isMetaFinding(f))
                 continue;
@@ -340,6 +347,12 @@ opts = {}) {
                 continue;
             const seqs = [];
             const matchedFiles = [];
+            // Who already carries this finding by the normal path? That sub-task owns
+            // the file the finding was filed against, so it is the natural primary.
+            const priorOwners = subTasks
+                .filter((st) => bySeq.get(st.seq)?.targeted.includes(f))
+                .map((st) => st.seq);
+            const recruited = [];
             for (const st of subTasks) {
                 const owned = ownedOf(st);
                 if (owned.length === 0)
@@ -354,8 +367,6 @@ opts = {}) {
                 // prior rule targeted it) -> nothing to widen.
                 if (a.targeted.includes(f) && !opts.stuckKeys?.has(findingKey(f)))
                     continue;
-                if (!a.targeted.includes(f))
-                    a.targeted.push(f);
                 for (const p of hit) {
                     if (!a.targetedFiles.includes(p))
                         a.targetedFiles.push(p);
@@ -364,10 +375,36 @@ opts = {}) {
                 }
                 if (!seqs.includes(st.seq))
                     seqs.push(st.seq);
-                anyTargeted = true;
+                if (!recruited.includes(st.seq))
+                    recruited.push(st.seq);
             }
-            if (seqs.length > 0)
-                coFixRoutings.push({ finding: f, file, matchedFiles, seqs });
+            if (seqs.length === 0)
+                continue;
+            // beta.120 (fix 3): exactly one sub-task is answerable. Prefer whoever
+            // already owned the finding's own file; failing that, the lowest-seq
+            // recruit, which is deterministic and tends to be the earliest layer
+            // (schema/route before UI) that the rest build on.
+            const primarySeq = priorOwners.length > 0 ? Math.min(...priorOwners) : Math.min(...recruited);
+            for (const seq of seqs) {
+                const a = bySeq.get(seq);
+                if (!a)
+                    continue;
+                if (seq === primarySeq) {
+                    if (!a.targeted.includes(f))
+                        a.targeted.push(f);
+                }
+                else {
+                    a.assisting = a.assisting ?? [];
+                    if (!a.assisting.includes(f))
+                        a.assisting.push(f);
+                }
+            }
+            // The primary may be a prior owner that was not re-listed in `seqs`.
+            const primaryAssignment = bySeq.get(primarySeq);
+            if (primaryAssignment && !primaryAssignment.targeted.includes(f))
+                primaryAssignment.targeted.push(f);
+            anyTargeted = true;
+            coFixRoutings.push({ finding: f, file, matchedFiles, seqs, primarySeq });
         }
     }
     // Broadcast meta + misses to every sub-task.
@@ -385,6 +422,7 @@ opts = {}) {
 export function buildScopedReviseHint(verdict, summary, a) {
     const targetedLines = a.targeted.map(renderFindingLine);
     const broadcastLines = a.broadcast.map(renderFindingLine);
+    const assistingLines = (a.assisting ?? []).map(renderFindingLine);
     const parts = [
         `REVISION CYCLE: an adversarial reviewer examined the previous cycle's diff and returned verdict "${verdict}".`,
         `Reviewer summary: ${(summary ?? "").slice(0, 800)}`,
@@ -394,6 +432,13 @@ export function buildScopedReviseHint(verdict, summary, a) {
     }
     else {
         parts.push(`No finding targets this sub-task's files directly.`);
+    }
+    if (assistingLines.length > 0) {
+        // beta.120 (fix 3): a supporting owner used to receive these worded
+        // identically to its own findings. Nine sub-tasks each read "fix this",
+        // each assumed one of the other eight would, and the finding survived every
+        // cycle. You are told plainly that it is not yours to drive.
+        parts.push(``, `You are a SUPPORTING owner for the following. Another sub-task is answerable for each one and will make the primary change:`, ...assistingLines, `For these: make ONLY the minimal change your own files need so the primary fix works (e.g. pass a field through, accept a new prop, export a type). Do NOT attempt the whole fix, do NOT redesign, and do NOT assume it is unowned because you can see it is broken. If your files need NO change for it, say so in one line and move on.`);
     }
     if (broadcastLines.length > 0) {
         parts.push(``, `Cross-cutting guidance (applies across the change; apply the parts that fall in THIS sub-task's files):`, ...broadcastLines);

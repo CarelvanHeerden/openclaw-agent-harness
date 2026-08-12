@@ -173,6 +173,7 @@ import {
 } from "./cross-cutting-findings.js";
 import { diagnosePushFailure, describePreservedPushFailure } from "./push-failure.js";
 import { planTouchesWorkflows, describeMissingWorkflowScope } from "./workflow-scope.js";
+import { ABORT_REASONS_WORTH_SHIPPING, describeAbortSalvage, shouldReserveTimeToShip } from "./abort-salvage.js";
 import { selectWorkerModel } from "./worker-model-select.js";
 import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
 import { WorktreePool, type PooledWorktree } from "./worktree-pool.js";
@@ -928,6 +929,11 @@ export class OrchestratorLoop {
      * be the thing that runs a session out of money.
      */
     budgetHeadroomOk?: boolean;
+    /**
+     * beta.120 (fix 4): true when too little wall clock remains to run another
+     * cycle AND still push. Stops revising and lands what exists.
+     */
+    shipTimeReserved?: boolean;
   }): { nextStatus: LoopStatus; reason: string } {
     if (input.reactions.abort) return { nextStatus: "aborted", reason: "user_abort_reaction" };
     if (input.budgetExhausted) return { nextStatus: "aborted", reason: "budget_exhausted" };
@@ -942,6 +948,15 @@ export class OrchestratorLoop {
       case "reviewing":
         if (input.verdict === "pass") return { nextStatus: "done", reason: "adversary_pass" };
         if (input.verdict === "block") return { nextStatus: "failed", reason: "adversary_block" };
+        // beta.120 (fix 4): out of runway, but not yet out of time. Another
+        // cycle would run into the wall clock and the run would be killed
+        // mid-flight with nothing pushed -- which is exactly how the b119
+        // take-2 smoke ended. Land it instead. This deliberately sits ABOVE the
+        // revise decision and BELOW the verdict checks: a `block` is still a
+        // failure and a `pass` is still a pass.
+        if (input.shipTimeReserved === true) {
+          return { nextStatus: "done", reason: "ship_time_reserved" };
+        }
         // beta.109: a `revise` carrying nothing blocking has nothing left for
         // another cycle to do that would change the answer.
         //
@@ -1867,6 +1882,10 @@ export class OrchestratorLoop {
           seq: s.seq,
           filesLikelyTouched: s.filesLikelyTouched,
           contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
+          // beta.120 (fix 2): without this the router cannot tell a path a
+          // previous cycle GRANTED from one the plan OWNS, and the fan-out
+          // compounds. See MapSubTask.coFixGrantedFiles.
+          coFixGrantedFiles: s.coFixGrantedFiles,
         }));
         // beta.119: which of this review's findings the PREVIOUS cycle also
         // raised. A stuck finding is re-widened even where it is already
@@ -1986,7 +2005,8 @@ export class OrchestratorLoop {
             "loop.finding_co_fix_routed",
             {
               sessionId, cycle, file: cf.file, matchedFiles: cf.matchedFiles,
-              seqs: cf.seqs, title: cf.finding.title,
+              seqs: cf.seqs, primarySeq: cf.primarySeq, assisting: cf.seqs.filter((s) => s !== cf.primarySeq),
+              title: cf.finding.title,
               stuck: stuckKeys.has(findingKey(cf.finding)),
             },
             sessionId,
@@ -1994,9 +2014,21 @@ export class OrchestratorLoop {
           for (const seq of cf.seqs) {
             const st = plan.subTasks.find((s) => s.seq === seq);
             if (!st) continue;
+            // beta.120 (fix 2): grant edit scope WITHOUT granting ownership.
+            //
+            // b119 pushed these paths into `filesLikelyTouched`, which is both
+            // the scope gate AND the ownership map the next cycle's router
+            // reads -- and `plan` outlives the cycle. So each routing decision
+            // widened the input to the following one: cycle 2 fanned out to a
+            // mean of 1.9 sub-tasks, cycle 3 to 5.0, peaking at 9 owners for a
+            // two-file fix. Recording the grant separately keeps the worker
+            // able to edit the file while leaving ownership as the plan
+            // declared it.
+            st.coFixGrantedFiles = [...(st.coFixGrantedFiles ?? [])];
             st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
             for (const p of cf.matchedFiles) {
               if (!st.filesLikelyTouched.includes(p)) st.filesLikelyTouched.push(p);
+              if (!st.coFixGrantedFiles.includes(p)) st.coFixGrantedFiles.push(p);
             }
           }
         }
@@ -3560,11 +3592,15 @@ export class OrchestratorLoop {
           const bePr = this.deps.state.db.prepare(`SELECT final_pr_url FROM sessions WHERE id = ?`).get(sessionId) as { final_pr_url: string | null } | undefined;
           return { status: "shipped", sessionId, prUrl: bePr?.final_pr_url ?? "", cycles: cycle, totalCostUsd: totalCost };
         }
-        if (failed.err === "user_abort_reaction") return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
-        if (failed.err === "hard_timeout") return this.finaliseAbort(sessionId, "hard_timeout", cycle, totalCost);
-        if (failed.err === "budget_exhausted") return this.finaliseAbort(sessionId, "budget_exhausted", cycle, totalCost);
+        // beta.120 (fix 1): every abort that could be holding commits goes
+        // through the salvaging path -- it ships resource aborts and preserves
+        // the worktree for the rest. Only an abort with nothing committed ends
+        // up deleting anything.
+        if (failed.err === "user_abort_reaction") return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
+        if (failed.err === "hard_timeout") return await this.finaliseAbortSalvaging(sessionId, "hard_timeout", cycle, totalCost);
+        if (failed.err === "budget_exhausted") return await this.finaliseAbortSalvaging(sessionId, "budget_exhausted", cycle, totalCost);
         // beta.78 (Feature 2): per-user daily hard-cap abort.
-        if (failed.err === "daily_max_exhausted") return this.finaliseAbort(sessionId, "daily_max_exhausted", cycle, totalCost);
+        if (failed.err === "daily_max_exhausted") return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
         return this.finaliseFailed(sessionId, String(failed.err), cycle, totalCost);
       }
 
@@ -3599,7 +3635,7 @@ export class OrchestratorLoop {
             sessionId,
           );
           this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
-          return this.finaliseAbort(sessionId, "daily_max_exhausted", cycle, totalCost);
+          return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
         }
       }
       // beta.81 (Track B / B4): the beta.63 LOCAL check-script runner is RETIRED
@@ -3818,7 +3854,7 @@ export class OrchestratorLoop {
         if (postReviewReactions.abort) {
           this.deps.state.audit("loop.review_discarded_post_cancel", { sessionId, cycle, verdict: report.verdict }, sessionId);
           this.deps.logger.info("[loop] adversary review completed after user cancel; discarding verdict and aborting", { sessionId, cycle });
-          return this.finaliseAbort(sessionId, "user_abort_reaction", cycle, totalCost);
+          return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
         }
       } catch (err) {
         // beta.43: a hung reviewer is a distinct, already-audited class.
@@ -3940,7 +3976,15 @@ export class OrchestratorLoop {
         blockingCountsByCycle,
         cycleExtensionsGranted,
         maxCycleExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
-        budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle),
+        budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd),
+        // beta.120 (fix 4): only meaningful once there is something to land.
+        shipTimeReserved: shouldReserveTimeToShip({
+          now: Date.now(),
+          hardDeadlineMs,
+          reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
+          totalBudgetSeconds: this.deps.config.loop.session_hard_timeout_seconds,
+          hasWork: cycle >= 1,
+        }),
         reactions,
         // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
         // per-user DAILY cap, not the (now-soft) session budget. Crossing the
@@ -3962,7 +4006,7 @@ export class OrchestratorLoop {
         return this.finaliseFailed(sessionId, decision.reason, cycle, totalCost);
       }
       if (decision.nextStatus === "aborted") {
-        return this.finaliseAbort(sessionId, decision.reason, cycle, totalCost);
+        return await this.finaliseAbortSalvaging(sessionId, decision.reason, cycle, totalCost);
       }
       if (decision.reason === "max_cycles_extended_converging") {
         cycleExtensionsGranted += 1;
@@ -4259,7 +4303,16 @@ export class OrchestratorLoop {
    * the underlying release() silently no-op'd (see releaseByPath docs).
    */
   private async tryReleaseWorktree(sessionId: string, repoFullName: string, worktreePath: string, reason: "shipped" | "aborted" | "failed"): Promise<void> {
-    if (!this.deps.releaseWorktree) return;
+    if (!this.deps.releaseWorktree) {
+      // beta.120 (fix 5): a silent return here is how "the worktree is gone and
+      // nothing says why" happens. Whatever the outcome, the stream records it.
+      this.deps.state.audit(
+        "loop.worktree_release_skipped",
+        { sessionId, reason, reason_skipped: "no releaseWorktree dependency wired", path: worktreePath },
+        sessionId,
+      );
+      return;
+    }
     try {
       const outcome = await this.deps.releaseWorktree({ sessionId, repoFullName, worktreePath, reason });
       if (outcome.ok) {
@@ -5337,10 +5390,26 @@ export class OrchestratorLoop {
    * either can be the binding constraint. Never throws; on any doubt it
    * returns false and the run ships as it did pre-b119.
    */
-  private hasBudgetHeadroomForAnotherCycle(requester: string, spentUsd: number, cyclesRan: number): boolean {
+  private hasBudgetHeadroomForAnotherCycle(
+    requester: string,
+    spentUsd: number,
+    cyclesRan: number,
+    sessionBudgetUsd?: number,
+  ): boolean {
     try {
       if (cyclesRan < 1 || !(spentUsd > 0)) return false;
       const projected = (spentUsd / cyclesRan) * 1.25;
+      // beta.120 (fix 6): respect the budget the REQUESTER set for this run.
+      //
+      // b119 checked only the global ceiling and the daily cap. Those are
+      // operator limits; `budget_usd` is the number the human typed for this
+      // session. An ordinary cycle crossing it is deliberate (beta.78 made the
+      // session budget soft: it warns, it does not stop). But an EXTENSION is
+      // the harness electing to buy itself more work, and doing that with money
+      // the requester did not authorise is a different act. The b119 take-2 run
+      // finished at $18.46 against an $18 session budget -- with a converging
+      // trend it would have qualified for another cycle on ceiling/daily alone.
+      if (typeof sessionBudgetUsd === "number" && sessionBudgetUsd > 0 && spentUsd + projected > sessionBudgetUsd) return false;
       const ceiling = this.deps.config.budgets?.session_hard_ceiling_usd;
       if (typeof ceiling === "number" && ceiling > 0 && spentUsd + projected > ceiling) return false;
       const daily = this.dailyMaxUsd();
@@ -5417,8 +5486,183 @@ export class OrchestratorLoop {
     // synchronous. Instead, kick off the release and let it settle on the
     // event loop; the failure path is logged and audited inside
     // tryReleaseWorktree.
+    //
+    // beta.120: this raw form is now reserved for aborts with NOTHING to lose.
+    // Every caller that could be holding commits goes through
+    // `finaliseAbortSalvaging`, which ships or preserves first. See the b119
+    // take-2 smoke: a hard timeout landed here holding 27 commits and a clean
+    // typecheck, and deleted all of it.
     this.scheduleWorktreeReleaseForSession(sessionId, "aborted");
     return { status: "aborted", sessionId, reason, cycles, totalCostUsd };
+  }
+
+  /**
+   * beta.120 (fix 1, CRITICAL): an abort must never destroy work.
+   *
+   * WHAT HAPPENED. The b119 take-2 smoke ran 121.6 minutes against a 120-minute
+   * `session_hard_timeout_seconds`. At the cycle-3 review boundary the deadline
+   * had passed, `advance` returned `aborted/hard_timeout`, and `finaliseAbort`
+   * scheduled a worktree release. Gone: 27 commits, 15 files, ~1,900 lines, a
+   * clean typecheck and a converging review (14 -> 10 -> 8 findings). The work
+   * was recoverable only because git had not yet GC'd the objects in a cached
+   * clone. Nothing about that was by design.
+   *
+   * THE RULE. A resource ceiling is not a verdict on the code. Hitting one means
+   * "stop spending", not "throw it away". So:
+   *
+   *   - resource aborts (timeout / budget / daily cap) SHIP what they have, as
+   *     a needs_human_review PR -- exactly what `finaliseStalled` has always
+   *     done for a stalled-but-committed branch;
+   *   - a USER abort does not open a PR (they said stop), but still preserves
+   *     the worktree when commits exist;
+   *   - only an abort with genuinely nothing committed releases the worktree,
+   *     and it says so in the audit.
+   *
+   * Never throws: on any failure the worktree is preserved, which is the safe
+   * direction.
+   */
+  private async finaliseAbortSalvaging(
+    sessionId: string,
+    reason: string,
+    cycles: number,
+    totalCostUsd: number,
+  ): Promise<LoopOutcome> {
+    const row = this.deps.state.db
+      .prepare(`SELECT repo, branch, worktree_path, requester, crystallised_prompt FROM sessions WHERE id = ?`)
+      .get(sessionId) as
+      | { repo: string | null; branch: string | null; worktree_path: string | null; requester: string; crystallised_prompt: string | null }
+      | undefined;
+
+    const hasCommits = await this.abortHasSalvageableCommits(sessionId, row);
+
+    if (!hasCommits) {
+      // Nothing committed: the pre-beta.120 path is correct here, but say so
+      // explicitly so "the worktree vanished" is never again unexplained.
+      this.deps.state.audit(
+        "loop.abort_nothing_to_salvage",
+        { sessionId, reason, worktreePath: row?.worktree_path ?? null },
+        sessionId,
+      );
+      return this.finaliseAbort(sessionId, reason, cycles, totalCostUsd);
+    }
+
+    const salvageEligible =
+      ABORT_REASONS_WORTH_SHIPPING.has(reason) && this.deps.config.loop.abort_salvage_pr !== false;
+
+    if (salvageEligible && row?.repo && row?.worktree_path) {
+      const planJson = this.getPlanJson(sessionId);
+      if (planJson) {
+        try {
+          const plan = JSON.parse(planJson) as LeadPlan;
+          const brief: CrystallisedBrief = row.crystallised_prompt
+            ? (JSON.parse(row.crystallised_prompt) as CrystallisedBrief)
+            : {
+                title: `aborted session ${sessionId}`,
+                motivation: "Recovered from a harness session that hit a resource ceiling.",
+                acceptanceCriteria: ["(recovered)"],
+                filesLikelyTouched: [],
+                outOfScope: [],
+                riskLevel: "low",
+              };
+          const lastReview = this.getLastReview(sessionId);
+          const reviewReport: ReviewReport = lastReview ?? {
+            verdict: "revise",
+            findings: [],
+            summary: `Session hit ${reason} before a final adversary verdict; opened so the work is not lost.`,
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+          };
+          const prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester: row.requester });
+          const recReason = describeAbortSalvage(reason, cycles, lastReview);
+          const prNumber = parsePrNumber(prUrl);
+          this.setStatus(sessionId, "done");
+          this.deps.state.db
+            .prepare(
+              `UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`,
+            )
+            .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
+          this.deps.state.audit(
+            "loop.shipped",
+            { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaAbortSalvage: true, abortReason: reason },
+            sessionId,
+          );
+          this.deps.state.audit("loop.abort_salvaged_to_pr", { sessionId, abortReason: reason, prUrl, prNumber, cycles }, sessionId);
+          this.deps.interactionLog?.log(sessionId, { event: "abort_salvage_pr", phase: "finalize", prUrl, prNumber, reason });
+          await this.tryReleaseWorktree(sessionId, row.repo, row.worktree_path, "shipped");
+          return { status: "shipped", sessionId, prUrl, cycles, totalCostUsd };
+        } catch (pushErr) {
+          this.deps.state.audit(
+            "loop.abort_salvage_pr_failed",
+            { sessionId, abortReason: reason, error: String((pushErr as Error)?.message ?? pushErr) },
+            sessionId,
+          );
+          // fall through to preserve
+        }
+      } else {
+        this.deps.state.audit("loop.abort_salvage_skipped", { sessionId, abortReason: reason, why: "no lead plan persisted" }, sessionId);
+      }
+    }
+
+    // Could not (or must not) open a PR, but there ARE commits: keep every one
+    // of them on disk and tell the operator how to get at them.
+    this.setStatus(sessionId, "aborted");
+    this.deps.state.audit("loop.aborted", { sessionId, reason, worktreePreserved: true }, sessionId);
+    this.deps.state.audit(
+      "loop.abort_worktree_preserved",
+      { sessionId, reason, worktreePath: row?.worktree_path ?? null, branch: row?.branch ?? null, repo: row?.repo ?? null },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, { event: "abort_worktree_preserved", phase: "finalize", reason });
+    return {
+      status: "aborted",
+      sessionId,
+      reason: `${reason} (worktree PRESERVED at ${row?.worktree_path ?? "unknown path"} on branch ${row?.branch ?? "unknown"} -- commits are intact; push them or re-run harness_revise rather than re-doing the work)`,
+      cycles,
+      totalCostUsd,
+    };
+  }
+
+  /**
+   * beta.120: does this aborting session have commits worth protecting? Mirrors
+   * the stall path's probe. Fails CLOSED -- any doubt reports "yes", because a
+   * false positive costs a preserved directory and a false negative costs the
+   * work.
+   */
+  private async abortHasSalvageableCommits(
+    sessionId: string,
+    row: { repo: string | null; branch: string | null; worktree_path: string | null; requester: string } | undefined,
+  ): Promise<boolean> {
+    if (!row?.worktree_path || !row?.repo) return false;
+    if (!this.deps.buildVerifyProbes || !this.deps.worktreeHeadSha) return true;
+    try {
+      // Distinguish "HEAD says there are no commits" from "we could not ask".
+      // Collapsing a throw into "" would read as nothing-to-salvage and delete
+      // the worktree -- fail-OPEN, and precisely the b119 outcome this whole
+      // path exists to prevent. An unborn HEAD resolves to "" without throwing.
+      let head: string;
+      try {
+        head = await this.deps.worktreeHeadSha(row.worktree_path);
+      } catch (probeErr) {
+        this.deps.logger.warn("[loop] abort HEAD probe threw; assuming there IS work to protect", { sessionId, err: String(probeErr) });
+        this.deps.state.audit(
+          "loop.abort_commit_probe_indeterminate",
+          { sessionId, worktreePath: row.worktree_path, probe: "worktreeHeadSha", error: String((probeErr as Error)?.message ?? probeErr) },
+          sessionId,
+        );
+        return true;
+      }
+      if (!head) return false;
+      const planJson = this.getPlanJson(sessionId);
+      if (!planJson) return true;
+      const plan = JSON.parse(planJson) as LeadPlan;
+      const probes = this.deps.buildVerifyProbes({ plan, requester: row.requester, worktreePath: row.worktree_path, baseSha: "" });
+      const made = await probes.commitMadeSince("").catch(() => ({ made: true, detail: "probe failed -- assuming work exists" }));
+      return !!made.made;
+    } catch (err) {
+      this.deps.logger.warn("[loop] abort commit probe failed; assuming there IS work to protect", { sessionId, err: String(err) });
+      return true;
+    }
   }
 
   /**
@@ -5429,13 +5673,37 @@ export class OrchestratorLoop {
    * Never throws.
    */
   private scheduleWorktreeReleaseForSession(sessionId: string, reason: "shipped" | "aborted" | "failed"): void {
-    if (!this.deps.releaseWorktree) return;
+    if (!this.deps.releaseWorktree) {
+      // beta.120 (fix 5): see tryReleaseWorktree -- no path exits unrecorded.
+      this.deps.state.audit(
+        "loop.worktree_release_skipped",
+        { sessionId, reason, reason_skipped: "no releaseWorktree dependency wired" },
+        sessionId,
+      );
+      return;
+    }
     try {
       const row = this.deps.state.db
         .prepare(`SELECT repo, worktree_path FROM sessions WHERE id = ?`)
         .get(sessionId) as { repo: string | null; worktree_path: string | null } | undefined;
       if (row?.repo && row?.worktree_path) {
         void this.tryReleaseWorktree(sessionId, row.repo, row.worktree_path, reason);
+      } else if (!row) {
+        // beta.120 (fix 5): previously fell through in silence.
+        this.deps.state.audit(
+          "loop.worktree_release_skipped",
+          { sessionId, reason, reason_skipped: "no session row found" },
+          sessionId,
+        );
+      } else if (!row.repo) {
+        // beta.120 (fix 5): a row with a path but no repo also fell through in
+        // silence, and a path with no repo is exactly the state a half-allocated
+        // session dies in.
+        this.deps.state.audit(
+          "loop.worktree_release_skipped",
+          { sessionId, reason, reason_skipped: "session row has no repo", path: row.worktree_path ?? null },
+          sessionId,
+        );
       } else if (row?.repo) {
         // No worktree_path yet (session died before allocation completed):
         // there's nothing to release, but audit the skip so the stream

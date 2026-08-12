@@ -65,6 +65,8 @@ const DEFAULTS = {
         session_stall_seconds: 1800,
         stall_auto_terminal: true,
         stall_graceful_pr: true,
+        abort_salvage_pr: true,
+        ship_time_reserve_seconds: 600,
         stall_sweep_interval_seconds: 60,
         enforce_worker_context: true,
         revise_spec_turn_enabled: true,
@@ -198,6 +200,10 @@ const DEFAULTS = {
         repo_only_invariant: true,
         bimodal_clarify: true,
         bimodal_min_interpretations: 2,
+        request_file_roots: [],
+        request_file_max_bytes: 262144,
+        confirm_before_spend: "high_risk",
+        confirm_min_risk: "high",
     },
     verify: {
         // beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the
