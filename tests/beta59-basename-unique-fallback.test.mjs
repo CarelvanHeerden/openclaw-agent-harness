@@ -96,17 +96,12 @@ test("beta.59: exact match short-circuits, fallback never consulted", () => {
 });
 
 // ---- wiring / safety-boundary source assertions ----
-test("beta.59 wiring: the per-sub-task probes opt into the fallback", () => {
-  const idx = S("src/index.ts");
-  // beta.84 (#1): fileCommittedSince MOVED OFF the fuzzy fallback to
-  // strictContract:true, so the opt-in count dropped 3 -> 2 (fileWrittenSince
-  // + the fileExistsOnDisk committed-fallback still opt in; the contract
-  // check no longer does -- that's the cyc2-seq7 false-positive fix).
-  const n = (idx.match(/allowBasenameFallback:\s*true/g) ?? []).length;
-  assert.ok(n >= 2, `expected >=2 opt-in call sites, found ${n}`);
-  // fileCommittedSince now resolves with strictContract:true (no fuzzy fallback).
-  assert.match(idx, /resolveContractPath\(files, path, \{ strictContract: true \}\)/);
-});
+// beta.123 (prune): the "fallback opt-in call sites" grep of index.ts lived here and was deleted.
+// It asserted the probe's SOURCE TEXT, never its behaviour, so it broke the
+// moment b123 lifted the probes into src/orchestrator/verify-probes.ts -- and
+// it had stayed green throughout the period when file_committed could not read
+// a git mv. The property it described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.
 
 test("beta.59 safety: file_in_pr uses repo-wide anyPathMatches, which NEVER enables the fallback", () => {
   const verify = S("src/orchestrator/verify.ts");

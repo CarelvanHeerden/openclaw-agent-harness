@@ -1142,9 +1142,11 @@ const MUTATIONS = [
   {
     name: "a budget at the gate is applied (b122): 'Confirm, Budget $40' became an acceptance criterion and the run stayed at $10",
     file: "dist/tools/brief-confirmation.js",
-    find: "    const m = BUDGET_CLAUSE.exec(raw);",
+    // beta.123: the anchor moved from `raw` to `working` when the time clause
+    // started being cut out before money is matched.
+    find: "    const m = BUDGET_CLAUSE.exec(working);",
     replace: "    const m = null;",
-    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs", "tests/beta123-confirmation-clauses.test.mjs"],
   },
   {
     // Fail the OTHER way too: a parser that swallows the whole reply would
@@ -1161,6 +1163,65 @@ const MUTATIONS = [
     find: "    const plannedOrStarted = Math.max(all.length, plannedTotal);",
     replace: "    const plannedOrStarted = all.length;",
     tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+  },
+
+  // ---- beta.123 -------------------------------------------------------------
+  // These four are the point of the release. Each names a mechanism that WAS
+  // already covered by unit and structural tests, and each was broken anyway,
+  // because nothing asked what the RUN did afterwards. The mutations therefore
+  // point at the scenario suite: if breaking the mechanism does not change a
+  // terminal outcome somewhere, the coverage is decorative again.
+  {
+    name: "a rescue retracts its failure (b123): both self-heal paths marked the sub-task fixed and killed the run anyway",
+    file: "dist/orchestrator/loop.js",
+    find: "                    retractFailure(st.seq, `basename_rescue:${rescue.kind}`);",
+    replace: "                    ;",
+    tests: ["tests/beta123-scenario-terminal-outcomes.test.mjs"],
+  },
+  {
+    name: "the auto-resolve retracts its failure (b123): 'the branch satisfies the contract' still ended in subtask_N_failed_verification",
+    file: "dist/orchestrator/loop.js",
+    find: '                retractFailure(st.seq, "contract_auto_resolved");',
+    replace: "                ;",
+    tests: ["tests/beta123-scenario-contract-recovery.test.mjs"],
+  },
+  {
+    name: "a pure rename satisfies file_committed (b123): 0 changed lines is what a git mv IS, not evidence of no work",
+    file: "dist/orchestrator/verify-probes.js",
+    find: "                const movedUnmatched = await renamedAway(path, files);",
+    replace: "                const movedUnmatched = null;",
+    tests: ["tests/beta123-verify-probes.test.mjs"],
+  },
+  {
+    name: "a rename must SURVIVE the window (b123): renamed-then-deleted is work that is gone, not work that moved",
+    file: "dist/orchestrator/verify-probes.js",
+    find: "                        if (!st.isFile() || st.size === 0)\n                            return null;",
+    replace: "                        if (false)\n                            return null;",
+    tests: ["tests/beta123-verify-probes.test.mjs"],
+  },
+  // NOT a mutation: `failed.seq !== seq` in the b123 retraction guard.
+  //
+  // The guard stops a rescue on one sub-task from clearing a DIFFERENT
+  // sub-task's genuine failure -- possible only under b117 parallelism, where
+  // several sub-tasks share the one `failed` slot. Reproducing it needs a
+  // rescue to be mid-flight at the moment another seq records a failure, and
+  // the scenario harness can force that interleaving with a gate but cannot
+  // reliably make the pooled slot produce a rescuable mismatch: the b100
+  // reconciler settles the path first, so no rescue fires and there is nothing
+  // to retract. A mutation here would therefore survive for want of a fixture,
+  // reporting a coverage gap that is really a harness limitation.
+  //
+  // What IS covered: "the retraction is recorded against the seq that recorded
+  // the failure" pins the audit payload, and "a rescue on one sub-task cannot
+  // bury another's real failure" pins the outcome under concurrency 2. Neither
+  // distinguishes a targeted clear from a blanket one. Left deliberately, and
+  // named here so the gap is visible rather than assumed closed.
+  {
+    name: "time and money are parsed separately (b123): 'a time budget of 3 hours' read as a $3 cap",
+    file: "dist/tools/brief-confirmation.js",
+    find: "    const t = TIME_CLAUSE.exec(working);",
+    replace: "    const t = null;",
+    tests: ["tests/beta123-confirmation-clauses.test.mjs"],
   },
 
   // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every

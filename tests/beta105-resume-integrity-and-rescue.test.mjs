@@ -511,7 +511,11 @@ test("beta105: a throwing rescue leaves the pre-b105 escalation intact", { skip 
 test("beta105: file_written's rename fallback is wired end to end", { skip }, () => {
   assert.match(S("src/orchestrator/verify.ts"), /filePathIntroducedSince\?: \(/);
   assert.match(S("src/orchestrator/verify.ts"), /ctx\.acceptRenameAsWrite && probes\.filePathIntroducedSince/);
-  assert.match(S("src/index.ts"), /filePathIntroducedSince: async \(path: string, baseSha: string\)/);
+  // beta.123: the probes moved out of index.ts into their own module so tests
+  // could reach the real ones. The three-call-site invariant below is the part
+  // of this test worth keeping -- behaviour cannot easily assert "all three
+  // places agree" -- so it is repointed rather than pruned.
+  assert.match(S("src/orchestrator/verify-probes.ts"), /filePathIntroducedSince: async \(path: string, baseSha: string\)/);
   assert.match(S("src/adapters/git-worktree.ts"), /--diff-filter=AR/);
   const loop = S("src/orchestrator/loop.ts");
   assert.equal(

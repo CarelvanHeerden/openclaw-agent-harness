@@ -245,11 +245,42 @@ export function isBriefConfirmation(answer: string): boolean {
 export interface ParsedConfirmationReply {
   /** A cap in whole dollars, when the reply named one. */
   budgetUsd?: number;
-  /** The reply with the budget clause removed. */
+  /** A wall-clock ceiling in seconds, when the reply named one. */
+  timeoutSeconds?: number;
+  /** The reply with the budget and time clauses removed. */
   remainder: string;
-  /** True when nothing but the budget clause (and politeness) remained. */
+  /** True when nothing but those clauses (and politeness) remained. */
   approves: boolean;
 }
+
+/**
+ * beta.123: the TIME half of the same sentence.
+ *
+ * b122 shipped the money parser and the very next reply was "confirm, set the
+ * Budget to $40 with a time budget of 3 hours". Two things went wrong at once.
+ * The money regex matches `\bbudget\b` followed by a number, and "time budget
+ * of 3 hours" is exactly that shape -- reorder the clauses and the run would
+ * have been capped at $3. And the time clause it left behind meant the
+ * remainder was never empty, so a plain approval was filed as a spec
+ * correction for the second release running.
+ *
+ * So time is parsed FIRST and cut out of the string, and money is matched on
+ * what remains. A unit is required, which is what keeps this away from money:
+ * no bare number is ever read as a duration.
+ */
+const TIME_CLAUSE = new RegExp(
+  [
+    String.raw`(?:\b(?:set|make|change|raise|bump|increase|extend|put|give|allow|with|and)\b\s+)?`,
+    // "give IT A time budget" stacks two of these, so repeat rather than allow one.
+    String.raw`(?:\b(?:the|a|an|it|us|my|this)\b\s+)*`,
+    String.raw`(?:time\s*(?:budget|limit|cap|box|out)|wall[-\s]?clock(?:\s+(?:budget|limit|cap))?|timebox|deadline)`,
+    String.raw`\s*(?:to|of|is|=|:|at)?\s*`,
+    String.raw`(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b`,
+  ].join(""),
+  "i",
+);
+
+const MAX_TIMEOUT_SECONDS = 24 * 60 * 60;
 
 /**
  * The precision here is deliberately lopsided.
@@ -261,8 +292,16 @@ export interface ParsedConfirmationReply {
  * which in a reply to a prompt about the budget cannot mean anything else.
  * "set the retry limit to 3" therefore stays entirely in the correction.
  */
+// beta.123: swallow the imperative that introduces the clause. Without this,
+// "confirm, set the Budget to $40" leaves "confirm, set the" behind -- not an
+// affirmation by any reading, so the approval was lost even once the money was
+// understood.
+const BUDGET_VERB = String.raw`(?:\b(?:set|make|change|raise|bump|increase|put|use|give)\b\s+(?:\b(?:the|a|an|it|us|my|this)\b\s+)*)?`;
+
 const BUDGET_CLAUSE = new RegExp(
-  [
+  BUDGET_VERB +
+    "(?:" +
+    [
     // "budget $40", "budget: 40", "budget of 40 usd" -- bare number allowed.
     String.raw`\bbudget\b\s*(?:to|of|is|=|:)?\s*\$?\s*(\d+(?:\.\d{1,2})?)\s*(?:usd|dollars?)?`,
     // "cap $30", "ceiling of 30 dollars" -- these words have domain meanings,
@@ -272,32 +311,60 @@ const BUDGET_CLAUSE = new RegExp(
     String.raw`\$\s*(\d+(?:\.\d{1,2})?)\s*(?:usd|dollars?)?\s*(?:budget|cap|limit)\b`,
     // "bump to $40".
     String.raw`\b(?:bump|raise|increase)\b[^.,;]*?\$\s*(\d+(?:\.\d{1,2})?)`,
-  ].join("|"),
+    ].join("|") +
+    ")",
   "i",
 );
 
-export function parseConfirmationReply(answer: string): ParsedConfirmationReply {
-  const raw = (answer ?? "").trim();
-  const m = BUDGET_CLAUSE.exec(raw);
-  if (!m) return { budgetUsd: undefined, remainder: raw, approves: isBriefConfirmation(raw) };
-  const captured = m.slice(1).find((g) => typeof g === "string" && g.length > 0);
-  const value = Number(captured);
-  // A nonsense or non-positive number is not a budget; leave the reply alone
-  // and let it be treated as an ordinary correction.
-  if (!Number.isFinite(value) || value <= 0) {
-    return { budgetUsd: undefined, remainder: raw, approves: isBriefConfirmation(raw) };
-  }
-  const remainder = raw
-    .replace(m[0], " ")
+/** Tidy the sentence left behind once a clause has been cut out of it. */
+function tidyRemainder(text: string): string {
+  return text
     // The conjunction that joined the two clauses is now dangling.
     .replace(/\s*(?:,|;|\band\b|\bbut\b|\bwith\b)\s*$/i, "")
     .replace(/^\s*(?:,|;|\band\b|\bbut\b|\bwith\b)\s*/i, "")
+    .replace(/\s+([,.;])/g, "$1")
     .replace(/\s{2,}/g, " ")
     .trim();
+}
+
+export function parseConfirmationReply(answer: string): ParsedConfirmationReply {
+  const raw = (answer ?? "").trim();
+
+  // Time first, and cut it out before money is looked for: "a time budget of 3
+  // hours" is `budget`-followed-by-a-number, and would otherwise be read as $3.
+  let working = raw;
+  let timeoutSeconds: number | undefined;
+  const t = TIME_CLAUSE.exec(working);
+  if (t) {
+    const qty = Number(t[1]);
+    const unit = (t[2] ?? "").toLowerCase();
+    const seconds = Math.round(qty * (unit.startsWith("h") ? 3600 : 60));
+    // A duration that is zero, negative, absurd or unparseable is not an
+    // instruction we can act on -- leave the words in the correction rather
+    // than silently applying a nonsense ceiling.
+    if (Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_TIMEOUT_SECONDS) {
+      timeoutSeconds = seconds;
+      working = tidyRemainder(working.replace(t[0], " "));
+    }
+  }
+
+  const m = BUDGET_CLAUSE.exec(working);
+  const captured = m ? m.slice(1).find((g) => typeof g === "string" && g.length > 0) : undefined;
+  const value = Number(captured);
+  let budgetUsd: number | undefined;
+  // A nonsense or non-positive number is not a budget; leave the reply alone
+  // and let it be treated as an ordinary correction.
+  if (m && Number.isFinite(value) && value > 0) {
+    budgetUsd = value;
+    working = tidyRemainder(working.replace(m[0], " "));
+  }
+
+  const remainder = working === raw ? raw : tidyRemainder(working);
   return {
-    budgetUsd: value,
+    budgetUsd,
+    timeoutSeconds,
     remainder,
-    // Nothing left, or only an affirmation left, means the budget was the
+    // Nothing left, or only an affirmation left, means those clauses were the
     // entire qualification -- so this IS an approval.
     approves: remainder.length === 0 || isBriefConfirmation(remainder),
   };

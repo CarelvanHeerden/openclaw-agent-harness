@@ -1246,6 +1246,18 @@ export function registerHarnessTools(api, runtime) {
                     budgetApplied = applied;
                     liveState().audit("tool.answer_brief_budget_set", { sessionId, requested: parsed.budgetUsd, applied, clampedByCeiling: applied < parsed.budgetUsd }, sessionId);
                 }
+                // beta.123: the time half of the same sentence. b122 read the money
+                // out of "confirm, budget $40 with a time budget of 3 hours" and left
+                // the hours in the remainder, which both lost the instruction and
+                // demoted a plain approval to a correction.
+                let timeoutApplied;
+                if (typeof parsed.timeoutSeconds === "number") {
+                    liveDb()
+                        .prepare(`UPDATE sessions SET hard_timeout_seconds = ?, updated_at = ? WHERE id = ?`)
+                        .run(parsed.timeoutSeconds, Date.now(), sessionId);
+                    timeoutApplied = parsed.timeoutSeconds;
+                    liveState().audit("tool.answer_brief_timeout_set", { sessionId, seconds: parsed.timeoutSeconds, configured: liveConfig().loop?.session_hard_timeout_seconds }, sessionId);
+                }
                 if (!approved) {
                     brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
                     brief.acceptanceCriteria.push(
@@ -1255,7 +1267,7 @@ export function registerHarnessTools(api, runtime) {
                 liveDb()
                     .prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', clarification_question = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ?`)
                     .run(JSON.stringify(brief), Date.now(), sessionId);
-                liveState().audit(approved ? "tool.answer_brief_confirmed" : "tool.answer_brief_corrected", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, budgetApplied: budgetApplied ?? null }, sessionId);
+                liveState().audit(approved ? "tool.answer_brief_confirmed" : "tool.answer_brief_corrected", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, budgetApplied: budgetApplied ?? null, timeoutApplied: timeoutApplied ?? null }, sessionId);
                 void liveRuntime().loop.run(sessionId, brief).catch((err) => {
                     api.logger.error("[tool.answer] loop.run failed", { sessionId, err: String(err) });
                 });
@@ -1264,9 +1276,9 @@ export function registerHarnessTools(api, runtime) {
                             type: "text",
                             text: `${approved
                                 ? `Brief confirmed; session ${sessionId} is running.`
-                                : `Correction folded into the brief; session ${sessionId} is running with it.`}${budgetApplied !== undefined ? ` Budget set to $${budgetApplied.toFixed(2)}.` : ""} Poll harness_progress every ~45s and relay \`headline\` until terminal.`,
+                                : `Correction folded into the brief; session ${sessionId} is running with it.`}${budgetApplied !== undefined ? ` Budget set to $${budgetApplied.toFixed(2)}.` : ""}${timeoutApplied !== undefined ? ` Wall clock set to ${(timeoutApplied / 3600).toFixed(timeoutApplied % 3600 === 0 ? 0 : 1)}h.` : ""} Poll harness_progress every ~45s and relay \`headline\` until terminal.`,
                         }],
-                    details: { ok: true, sessionId, resumed: true, briefConfirmed: approved, briefCorrected: !approved, budgetUsd: budgetApplied ?? null },
+                    details: { ok: true, sessionId, resumed: true, briefConfirmed: approved, briefCorrected: !approved, budgetUsd: budgetApplied ?? null, hardTimeoutSeconds: timeoutApplied ?? null },
                 };
             }
             // Fold the decision into the brief so the re-plan honours it. For a
