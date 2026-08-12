@@ -1104,6 +1104,65 @@ const MUTATIONS = [
     tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
   },
 
+  // --- beta.122: the b121 smoke lost two correct commits to a rename ---
+  {
+    // The root cause. Without this the lead renames the branch on every
+    // re-plan and b101's preservation looks up a name that no longer exists.
+    name: "the session's branch is pinned (b122): a re-plan that renames the branch orphans everything committed to it",
+    file: "src/orchestrator/fable5-lead.ts",
+    find: "        raw.branch = deps.pinnedSessionBranch;",
+    replace: "        raw.branch = raw.branch;",
+    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+  },
+  {
+    // The fail-safe. This alone would have saved the b121 run even with the
+    // naming bug intact, so it has to be independently protected.
+    name: "allocation re-attaches to the ledger tip (b122): 'no branch by that name' must not resolve to 'reset over the work'",
+    file: "src/adapters/git-worktree.ts",
+    find: "      if (preserveRequested && !localExists && recoverSha) {",
+    replace: "      if (false) {",
+    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+  },
+  {
+    // Behavioural: the rescue is a pure function the suite calls directly.
+    name: "a directory contract resolves itself (b122): escalating a 1:1 mapping cost the run that asked the question",
+    file: "dist/orchestrator/basename-rescue.js",
+    find: "    if (under.length !== 1)\n        return undefined;",
+    replace: "    if (under.length !== 1)\n        return undefined;\n    return undefined;",
+    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+  },
+  {
+    // The prompt promised the gentler reading and delivered the harsher one.
+    name: "accept and skip read differently (b122): 'accept that this sub-task is done' deleted a committed migration",
+    file: "dist/orchestrator/contract-clarify.js",
+    find: '    lines.push(bullet("accept", "the commit is fine and the contract path was wrong -- keep the work and carry on"));',
+    replace: "",
+    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs", "tests/beta111-clarify-and-typecheck.test.mjs"],
+  },
+  {
+    name: "a budget at the gate is applied (b122): 'Confirm, Budget $40' became an acceptance criterion and the run stayed at $10",
+    file: "dist/tools/brief-confirmation.js",
+    find: "    const m = BUDGET_CLAUSE.exec(raw);",
+    replace: "    const m = null;",
+    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+  },
+  {
+    // Fail the OTHER way too: a parser that swallows the whole reply would
+    // approve corrections it should have surfaced.
+    name: "a budget plus a correction is still a correction (b122): approving on a stripped clause would start the wrong build",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        approves: remainder.length === 0 || isBriefConfirmation(remainder),",
+    replace: "        approves: true,",
+    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+  },
+  {
+    name: "the sub-task counter counts the plan (b122): 'Executing sub-task 1/1' described a ten-part plan",
+    file: "dist/orchestrator/progress.js",
+    find: "    const plannedOrStarted = Math.max(all.length, plannedTotal);",
+    replace: "    const plannedOrStarted = all.length;",
+    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+  },
+
   // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every
   // mutation here rewrites a `dist/` file, but the assertion that guards this
   // property is a SOURCE pin against `src/orchestrator/loop.ts`, so a dist-side

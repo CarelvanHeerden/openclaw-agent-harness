@@ -190,11 +190,29 @@ export interface GitContext {
      * Optional; the adapter always logs the same information regardless.
      */
     onBranchDecision?: (d: BranchAllocationDecision) => void;
+    /**
+     * beta.122: the session's last recorded commit, for when preservation was
+     * requested but no local branch of that name exists.
+     *
+     * b101 preserves a resume's branch by looking it up BY NAME. On the b121
+     * smoke a re-plan renamed the branch (`feat-grc-...` -> `feat/grc-...`), the
+     * lookup missed, and allocation resolved "not found" as "reset to base" --
+     * orphaning two commits that the ledger could name the whole time. When the
+     * ledger has a tip, a missing branch is re-created ON that commit instead.
+     *
+     * Ignored unless `preserveLocalBranch` is set and the branch is genuinely
+     * absent; a branch that exists is always preferred to a recorded SHA.
+     */
+    recoverBranchFromSha?: string;
 }
 /** beta.105: the checkout path allocation took, and the inputs that chose it. */
 export interface BranchAllocationDecision {
-    /** `preserve_local` never moves the ref; the other two reset it. */
-    path: "preserve_local" | "reuse_remote" | "reset_to_base";
+    /**
+     * `preserve_local` never moves the ref, and neither does beta.122's
+     * `recovered_local` -- it CREATES the ref on work that already existed. The
+     * other two reset it.
+     */
+    path: "preserve_local" | "recovered_local" | "reuse_remote" | "reset_to_base";
     branch: string;
     /** The ref the branch was pointed at (empty for `preserve_local`). */
     startPoint: string;

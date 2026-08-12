@@ -187,6 +187,8 @@ interface SessionRow {
   /** beta.108: `merge` | `do_not_merge` | `needs_human_review` | null. */
   merge_recommendation: string | null;
   merge_recommendation_reason: string | null;
+  /** beta.122: read only for the sub-task denominator. See plannedOrStarted. */
+  lead_plan_json: string | null;
 }
 
 function round(n: number, dp = 4): number {
@@ -251,7 +253,8 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
       `SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
               pr_number, final_pr_url, deploy_status,
               clarification_question, clarification_seq, last_progress_at,
-              estimated_usd, merge_recommendation, merge_recommendation_reason
+              estimated_usd, merge_recommendation, merge_recommendation_reason,
+              lead_plan_json
          FROM sessions WHERE id = ?`,
     )
     .get(sessionId) as SessionRow | undefined;
@@ -293,6 +296,30 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
     startedAt: r.startedAt ?? null,
     completedAt: r.completedAt ?? null,
   }));
+
+  // beta.122: how many sub-tasks this cycle is actually going to run.
+  //
+  // The denominator was `all.length` -- the number of sub_tasks ROWS that
+  // exist -- and rows are created as each sub-task starts. So the count read
+  // "1/1", then "2/2", then "3/3", and an operator watching a 10-sub-task plan
+  // was told at every moment that it was on its last one. On the b121 smoke
+  // that display sat at "Executing sub-task 1/1" for six minutes of a ten-part
+  // plan; it is why the run looked trivially small from the outside.
+  //
+  // Only cycle 1 runs the whole plan. A revise re-runs a targeted subset that
+  // the plan cannot tell us the size of, so there the row count is still the
+  // honest number -- and taking the max means a stale or short plan can never
+  // make the denominator smaller than the work already visible.
+  let plannedTotal = 0;
+  if (latestCycle <= 1 && row.lead_plan_json) {
+    try {
+      const parsedPlan = JSON.parse(row.lead_plan_json) as { subTasks?: unknown };
+      if (Array.isArray(parsedPlan?.subTasks)) plannedTotal = parsedPlan.subTasks.length;
+    } catch {
+      /* a plan we cannot read just leaves the row count in charge */
+    }
+  }
+  const plannedOrStarted = Math.max(all.length, plannedTotal);
 
   const DONE_STATES = new Set(["done", "completed_no_change"]);
   const FAIL_STATES = new Set(["failed", "failed_verification"]);
@@ -492,7 +519,7 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
         phase,
         status,
         terminal,
-        total: all.length,
+        total: plannedOrStarted,
         done,
         current,
         spentUsd,
@@ -533,7 +560,7 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
       estimatedUsd: typeof row.estimated_usd === "number" ? round(row.estimated_usd) : null,
       pctOfCap: budgetUsd > 0 ? Math.min(999, Math.round((spentUsd / budgetUsd) * 100)) : 0,
     },
-    subTasks: { total: all.length, done, running, failed, current, all },
+    subTasks: { total: plannedOrStarted, done, running, failed, current, all },
     prNumber: row.pr_number ?? null,
     prUrl: row.final_pr_url ?? null,
     deployStatus: row.deploy_status ?? null,

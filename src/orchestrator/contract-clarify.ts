@@ -116,7 +116,15 @@ export function buildContractClarification(m: ContractMismatch): string {
   if (m.statedReason) lines.push(`The worker's explanation: ${m.statedReason}`);
   lines.push("");
   lines.push("How should I proceed?");
-  lines.push(bullet("skip", "accept that this sub-task is done and carry on"));
+  // beta.122: these two used to be one option, described as the gentler of the
+  // pair and implemented as the harsher one. On the b121 smoke the migration
+  // SQL was committed and correct -- only the contract path was wrong -- and
+  // the operator read "accept that this sub-task is done and carry on" and
+  // answered `skip`. That wrote "Do NOT perform this work under ANY
+  // circumstances" into the brief, and the re-plan dropped the migration
+  // entirely. The words now match what each answer does.
+  lines.push(bullet("accept", "the commit is fine and the contract path was wrong -- keep the work and carry on"));
+  lines.push(bullet("skip", "drop this sub-task; do not attempt this work again in this run"));
   lines.push(bullet("<a file path>", "the work belongs somewhere else -- tell me where and I will re-plan"));
   lines.push(bullet("abort", "stop the run"));
 
@@ -126,7 +134,7 @@ export function buildContractClarification(m: ContractMismatch): string {
   if (auto.coveredEarlier.length > 0) {
     lines.push("");
     lines.push(
-      `Suggestion: "skip" looks right. ${auto.coveredEarlier.join(" and ")} ` +
+      `Suggestion: "accept" looks right. ${auto.coveredEarlier.join(" and ")} ` +
         `${auto.coveredEarlier.length === 1 ? "was" : "were"} already changed by an earlier commit on this ` +
         `branch, which supports the worker's account that the change was already in place.`,
     );
