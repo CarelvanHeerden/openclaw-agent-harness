@@ -50,15 +50,26 @@ const okChecks = () => json({ total_count: 1, check_runs: [{ status: "completed"
 // 1. The snapshot tells permanent from transient.
 // ---------------------------------------------------------------------------
 
-test("the exact b123 shape: readable statuses, 403 check-runs, names the missing permission", { skip }, async () => {
-  const restore = stubFetch([["/status", okStatus], ["/check-runs", () => httpErr(403)]]);
+// beta.125 rewrote this test. It used to assert that the remedy names the
+// permission "the operator has to grant" -- Checks: read. There is no such
+// permission for a fine-grained PAT and there never has been, so the test was
+// pinning a sentence that sent its reader on an hour-long hunt through the
+// token UI. What b124 actually got right, and what this test now guards, is
+// the TIMING: a 403 is classified as settled on sight rather than re-polled
+// for fifteen minutes. The wording is pinned in the b125 suite.
+test("the exact b123 shape: readable statuses, 403 check-runs, classified as settled", { skip }, async () => {
+  const restore = stubFetch([
+    ["/status", okStatus],
+    ["/check-runs", () => httpErr(403)],
+    // b125 will now try this; deny it too, to isolate b124's behaviour.
+    ["/actions/runs", () => httpErr(403)],
+  ]);
   try {
     const snap = await getCiSnapshot({ repoFullName: "Stitch-Vercel/ProjectThanos", sha: "02299b20", ghToken: "t" });
     assert.equal(snap.state, "unknown", "b119 still holds: unreadable is never a pass");
     assert.ok(snap.permanentDenial, "a 403 is a denial, not a delay");
-    assert.match(snap.permanentDenial, /Checks: read/, "name the permission the operator has to grant");
-    assert.match(snap.permanentDenial, /check-runs/);
-    assert.match(snap.permanentDenial, /Waiting will not change this/);
+    assert.match(snap.permanentDenial, /check-runs/, "say which endpoint shut the door");
+    assert.match(snap.permanentDenial, /unfixable|classic PAT|GitHub App/, "hand back something actionable");
   } finally { restore(); }
 });
 
@@ -67,7 +78,9 @@ test("a 403 on the STATUSES api names the other permission", { skip }, async () 
   try {
     const snap = await getCiSnapshot({ repoFullName: "o/r", sha: "s", ghToken: "t" });
     assert.match(snap.permanentDenial, /Commit statuses: read/);
-    assert.doesNotMatch(snap.permanentDenial, /Checks: read/, "do not send someone after the wrong permission");
+    // b125: "Commit statuses" is a real fine-grained permission. Say nothing
+    // here about the check-runs endpoint, which was readable.
+    assert.doesNotMatch(snap.permanentDenial, /check-runs/, "do not send someone after the wrong endpoint");
   } finally { restore(); }
 });
 

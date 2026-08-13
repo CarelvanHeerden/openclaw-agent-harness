@@ -775,6 +775,13 @@ export interface OrchestratorDeps {
      * absent simply means "keep polling", the pre-b124 behaviour.
      */
     permanentDenial?: string;
+    /**
+     * beta.125: which endpoint the check counts came from. `workflow_runs`
+     * means the Checks API was denied and the Actions fallback answered
+     * instead -- a real verdict over everything Actions ran, blind to any
+     * third-party GitHub App check run. Absent is treated as `check_runs`.
+     */
+    checksSource?: "check_runs" | "workflow_runs" | "";
   }>;
 
   /**
@@ -4312,6 +4319,16 @@ export class OrchestratorLoop {
           this.deps.logger.warn("[loop] authored a CI workflow but GitHub never registered a run within the grace window; shipping with a visible caveat (CI did NOT verify this SHA)", { sessionId, sha: headSha, waitedSeconds: ci.waitedSeconds });
           ciNeverRegisteredCaveat =
             `NOTE: the harness authored a CI workflow but GitHub did not register a run on ${headSha} within ${ci.waitedSeconds}s. CI did NOT verify this commit -- confirm the workflow ran (or re-run it) before relying on a green check.`;
+        } else if (ci.outcome === "success" && ci.degradedSource) {
+          // beta.125: a real green, from a narrower window than usual. NOT
+          // blocking -- every Actions run and every legacy status on this sha
+          // passed, which is the whole of CI on most repos, and the pre-b125
+          // alternative was needs_human_review carrying no information at all.
+          // But it is stated, because the one thing this green does not cover
+          // is a third-party App's check run, and a reader who assumes
+          // otherwise is making the b118 mistake with better inputs.
+          this.deps.state.audit("loop.ci_green_via_workflow_runs", { sessionId, cycle, sha: headSha }, sessionId);
+          ciNeverRegisteredCaveat = `NOTE: ${ci.degradedSource}`;
         }
       }
     }
@@ -4998,7 +5015,12 @@ export class OrchestratorLoop {
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
   }): Promise<
-    | { outcome: "success" }
+    // beta.125: `degradedSource` is set when the green came from the Actions
+    // workflow-runs fallback rather than the Checks API. Still a success --
+    // every Actions run and every legacy status was read and passed -- but the
+    // caller must be able to say so on the PR, because a third-party GitHub
+    // App's check run is invisible to that endpoint.
+    | { outcome: "success"; degradedSource?: string }
     | { outcome: "failure"; logs: string }
     | { outcome: "timeout"; sha: string; waitedSeconds: number }
     | { outcome: "none" }
@@ -5058,6 +5080,10 @@ export class OrchestratorLoop {
     // secondary or a mid-rotation token; two in a row is a configuration fact.
     let consecutivePermanentDenials = 0;
     let lastPermanentDenial = "";
+    // beta.125: set when the verdict came from the Actions workflow-runs
+    // fallback rather than the Checks API. Carried onto a GREEN so the PR body
+    // says which signal it is a green from.
+    let degradedChecksSource = false;
     // First read is immediate (no leading sleep) so a repo with no CI resolves
     // fast and a fast CI is not needlessly waited on.
     for (;;) {
@@ -5074,6 +5100,14 @@ export class OrchestratorLoop {
             lastPermanentDenial = snap.permanentDenial;
           } else {
             consecutivePermanentDenials = 0;
+          }
+          if (snap.checksSource === "workflow_runs" && !degradedChecksSource) {
+            degradedChecksSource = true;
+            this.deps.state.audit(
+              "loop.ci_read_via_workflow_runs",
+              { sessionId, sha, polls, checkTotal: snap.checkTotal, reason: snap.reason },
+              sessionId,
+            );
           }
         } else {
           status = await this.deps.ciCombinedStatus!({ repoFullName, sha, requester });
@@ -5138,9 +5172,23 @@ export class OrchestratorLoop {
       }
 
       if (status === "success") {
-        this.deps.state.audit("loop.ci_success", { sessionId, sha, polls, checkTotal: checkTotal ?? null, maxChecksSeen }, sessionId);
+        this.deps.state.audit(
+          "loop.ci_success",
+          { sessionId, sha, polls, checkTotal: checkTotal ?? null, maxChecksSeen, viaWorkflowRuns: degradedChecksSource },
+          sessionId,
+        );
         this.deps.interactionLog?.log(sessionId, { event: "ci_success", phase: "finalize", sha, polls });
-        return { outcome: "success" };
+        return {
+          outcome: "success",
+          ...(degradedChecksSource
+            ? {
+                degradedSource:
+                  `CI passed, but read via the Actions workflow-runs API: this token cannot call the Checks API ` +
+                  `(a fine-grained PAT never can). Every GitHub Actions run on ${sha.slice(0, 8)} and every legacy ` +
+                  `commit status passed. A check run posted by a third-party GitHub App would not have been seen.`,
+              }
+            : {}),
+        };
       }
       if (status === "failure") {
         let logs = "";

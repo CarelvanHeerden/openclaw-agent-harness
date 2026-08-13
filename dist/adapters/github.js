@@ -163,14 +163,69 @@ const PERMANENT_HTTP = new Set([401, 403, 404]);
  * nor the permission.
  */
 function denialRemedy(api, status) {
-    const permission = api === "check-runs" ? "Checks: read" : "Commit statuses: read";
     if (status === 401) {
         return `the ${api} API rejected the token (HTTP 401 — bad or expired credentials). CI cannot be read until it is replaced.`;
     }
     if (status === 404) {
         return `the ${api} API returned HTTP 404, which for an authenticated call usually means the token cannot see this repository at all (wrong account, or the repo was not granted to a fine-grained PAT).`;
     }
-    return `the token cannot read the ${api} API (HTTP 403). A fine-grained PAT needs the "${permission}" repository permission; a classic PAT needs the "repo" scope. Waiting will not change this.`;
+    // beta.125: b124 said a fine-grained PAT needs the "Checks: read" permission
+    // here. No such permission exists. GitHub's REST reference names it on every
+    // Checks endpoint, and the token UI has never offered it -- "there is no
+    // 'checks' permission in FG PATs at all. Not for read or write." (GitHub, on
+    // github/rest-api-description#4290). It is on their own published list of
+    // fine-grained limitations: "Using fine-grained personal access token to call
+    // the Checks API."
+    //
+    // So a 403 here is not a misconfiguration an operator can fix by ticking a
+    // box, and telling them to go and find one wastes their afternoon. Say what
+    // is actually true, and point at the fallback that needs no new grant.
+    if (api === "check-runs") {
+        return ("the token cannot read the check-runs API (HTTP 403). If this is a fine-grained PAT, that is expected and unfixable: " +
+            'fine-grained tokens cannot call the Checks API at all — there is no "Checks" permission to grant, and GitHub lists this ' +
+            "as a known limitation. The options are a classic PAT with the \"repo\" scope, a GitHub App installation with Checks: read, " +
+            'or the Actions workflow-runs fallback (needs only "Actions: read", which fine-grained tokens do support).');
+    }
+    return ('the token cannot read the statuses API (HTTP 403). A fine-grained PAT needs the "Commit statuses: read" repository ' +
+        'permission; a classic PAT needs the "repo" scope. Waiting will not change this.');
+}
+/**
+ * beta.125: read a commit's CI state from the Actions workflow-runs API.
+ *
+ * The b123 smoke could not read check runs and therefore could not read CI --
+ * on a repo whose CI is GitHub Actions, with a token that already held
+ * `Actions: read`. The information was one endpoint away the entire time.
+ *
+ * Workflow runs carry the same `status` / `conclusion` vocabulary as check
+ * runs, so the caller's existing rules apply unchanged. What this CANNOT see
+ * is a check run created by a third-party GitHub App: those are not workflow
+ * runs and do not appear here. That blind spot is why the snapshot records
+ * where its answer came from.
+ */
+async function readWorkflowRuns(input) {
+    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, reason: "" };
+    try {
+        const res = await fetch(`${input.base}/repos/${input.repoFullName}/actions/runs?head_sha=${input.sha}&per_page=100`, { headers: GH_HEADERS(input.ghToken) });
+        if (!res.ok)
+            return { ...miss, reason: `workflow-runs API HTTP ${res.status}` };
+        const body = (await res.json());
+        const runs = body.workflow_runs ?? [];
+        // Same refusal as the check-runs path: a truncated list looks complete.
+        if ((body.total_count ?? runs.length) > runs.length) {
+            return { ...miss, reason: `workflow-runs truncated (${body.total_count} total, ${runs.length} read)` };
+        }
+        return {
+            ok: true,
+            total: runs.length,
+            incomplete: runs.filter((r) => r.status !== "completed").length,
+            failed: runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length,
+            passed: runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length,
+            reason: "",
+        };
+    }
+    catch (err) {
+        return { ...miss, reason: `workflow-runs API threw: ${String(err).slice(0, 120)}` };
+    }
 }
 /**
  * beta.34: combined CI status for a commit SHA, merging the legacy Statuses API
@@ -198,6 +253,7 @@ export async function getCiSnapshot(input) {
         state: "unknown", statusReadable: false, checksReadable: false,
         statusState: "", statusCount: 0, checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, reason: "",
         permanentDenial: "",
+        checksSource: "",
     };
     const denials = [];
     try {
@@ -227,6 +283,7 @@ export async function getCiSnapshot(input) {
             const cj = (await cRes.json());
             const runs = cj.check_runs ?? [];
             snap.checksReadable = true;
+            snap.checksSource = "check_runs";
             snap.checkTotal = runs.length;
             snap.checkIncomplete = runs.filter((r) => r.status !== "completed").length;
             snap.checkFailed = runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length;
@@ -247,6 +304,25 @@ export async function getCiSnapshot(input) {
     catch (err) {
         const m = `check-runs API threw: ${String(err).slice(0, 120)}`;
         snap.reason = snap.reason ? `${snap.reason}; ${m}` : m;
+    }
+    // beta.125: the Checks API is closed to this token, but the commit's CI may
+    // not be. Ask the Actions workflow-runs endpoint, which a fine-grained PAT
+    // CAN reach with `Actions: read`. Only on a permanent denial -- a transient
+    // 5xx should be re-polled against the real endpoint, not routed around.
+    if (!snap.checksReadable && denials.length > 0 && input.workflowRunsFallback !== false) {
+        const wf = await readWorkflowRuns({ repoFullName: input.repoFullName, sha: input.sha, ghToken: input.ghToken, base });
+        if (wf.ok) {
+            snap.checksReadable = true;
+            snap.checksSource = "workflow_runs";
+            snap.checkTotal = wf.total;
+            snap.checkIncomplete = wf.incomplete;
+            snap.checkFailed = wf.failed;
+            snap.checkPassed = wf.passed;
+            snap.reason = `${snap.reason}; read ${wf.total} Actions workflow run(s) instead`;
+        }
+        else if (wf.reason) {
+            snap.reason = `${snap.reason}; ${wf.reason}`;
+        }
     }
     // A signal we could not read is never evidence of health. This is the b115
     // principle ("a gate that could not run must not read as a pass") applied to
@@ -298,7 +374,15 @@ export async function getCiSnapshot(input) {
     const legacyGood = snap.statusCount === 0 || snap.statusState === "success";
     if (legacyGood && allChecksGood) {
         snap.state = "success";
-        snap.reason = `${snap.checkTotal} check run(s) passed; legacy state=${snap.statusState || "absent"}`;
+        // beta.125: name the source on a GREEN. A pass read from workflow runs is
+        // a pass over everything GitHub Actions ran and the legacy statuses, and
+        // is blind to check runs posted by a third-party GitHub App. Saying "12
+        // check runs passed" when we never read a check run is the kind of small
+        // untruth the b118 false-green was made of.
+        snap.reason = snap.checksSource === "workflow_runs"
+            ? `${snap.checkTotal} Actions workflow run(s) passed; legacy state=${snap.statusState || "absent"} ` +
+                `(read via the workflow-runs fallback: the Checks API was denied, so any third-party check run is unverified)`
+            : `${snap.checkTotal} check run(s) passed; legacy state=${snap.statusState || "absent"}`;
         return snap;
     }
     // Anything left is a combination we do not have a rule for. Refuse to call

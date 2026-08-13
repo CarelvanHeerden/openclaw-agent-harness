@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.1.0-beta.125
+
+### A permission that does not exist
+
+b124 fixed the symptom in front of it. The b123 smoke had polled the check-runs
+API 44 times across 896 seconds, been told HTTP 403 every time, and finished on
+"Could NOT determine CI state" — 12% of the run's wall clock spent re-reading an
+answer that had settled on the first call. So b124 classified 401/403/404 as
+permanent, stopped after two, and handed back a remedy naming the permission the
+operator needed to grant:
+
+> A fine-grained PAT needs the "Checks: read" repository permission.
+
+The operator went to grant it. It isn't there. It has never been there.
+
+> "there is no 'checks' permission in FG PATs at all. Not for read or write.
+> This has been causing confusion for a long time now."
+> — GitHub, on [github/rest-api-description#4290](https://github.com/github/rest-api-description/issues/4290)
+
+It is on GitHub's own published list of fine-grained token limitations: *"Using
+fine-grained personal access token to call the Checks API."* The REST reference
+still names a `Checks` permission on every Checks endpoint because those docs
+are generated from a schema that is wrong about this, which is how the sentence
+got written in the first place.
+
+So b124 turned fifteen wasted minutes into forty wasted seconds and a wild goose
+chase. The run still ended blind, and now it ended blind while confidently
+instructing someone to go and tick a box that has never appeared in any GitHub
+token UI.
+
+### The answer was one endpoint away
+
+The token in that smoke already held `Actions: read` — a permission fine-grained
+PATs *do* support — and ProjectThanos runs its CI on GitHub Actions.
+`GET /repos/{owner}/{repo}/actions/runs?head_sha={sha}` lists every workflow run
+on the commit, with the same `status` and `conclusion` vocabulary check runs
+use. Every one of those 44 polls was asking a question that a different endpoint
+would have answered immediately, with the credentials already in hand.
+
+When the Checks API returns a permanent denial, the harness now reads the commit
+from the workflow-runs API instead. On a repo whose CI is GitHub Actions, held
+by a fine-grained token, this is the difference between a verdict and a shrug.
+
+The fallback is deliberately narrow:
+
+- **Only on a permanent denial.** A transient 5xx is still re-polled against the
+  real endpoint. Routing around a bad gateway would trade a complete answer for
+  a partial one to save twenty seconds.
+- **Truncation is still refused.** 100 workflow runs read out of 140 that exist
+  is refused exactly as a truncated check-runs page is, because the 40 unread
+  could hold the failure. This is the precise shape of the b118 false green.
+- **The statuses API is not replaced.** It gates the verdict as before, so a red
+  Vercel status still beats a green Actions read.
+- **A green says where it came from.** The reason reads "3 Actions workflow
+  run(s) passed … (read via the workflow-runs fallback: the Checks API was
+  denied, so any third-party check run is unverified)", and the PR carries the
+  caveat. A check run posted by a third-party GitHub App is not a workflow run
+  and is invisible here. That blind spot is small, but b118 shipped a false
+  green by trusting one narrow signal and calling it CI, so this one names
+  itself. It does **not** downgrade the merge recommendation: everything Actions
+  ran and every legacy status passed, and the pre-b125 alternative was
+  `needs_human_review` carrying no information at all.
+
+`ci.workflow_runs_fallback` (default `true`) restores b124 behaviour when set to
+`false`.
+
+### The b124 test that pinned the wrong sentence
+
+`beta124-ci-permanent-denial.test.mjs` asserted the remedy matched
+`/Checks: read/`, with the comment "name the permission the operator has to
+grant". The test was green for a release while guarding a falsehood — and it
+would have stayed green through this change, because the corrected text happens
+to contain "a GitHub App installation with Checks: read". It now pins the timing
+behaviour b124 actually got right, and the wording lives in the b125 suite
+behind an assertion precise enough to fail on the old sentence.
+
+One more structural grep went the same way. `beta119-ci-gate-fails-closed`
+pinned the production call site as an exact source string including its argument
+order, so adding one option to the call broke a test about the fail-closed gate.
+It now asserts the substance — that the wiring reaches `getCiSnapshot` and hands
+over the resolved token, base and sha — rather than the commas.
+
+**14 new tests, 5 new mutations, 1875 tests passing, 162/162 mutations caught.**
+
 ## 0.1.0-beta.124
 
 ### A cycle the harness paid for, authorised, and never took

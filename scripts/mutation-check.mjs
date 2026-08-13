@@ -1249,6 +1249,46 @@ const MUTATIONS = [
     replace: "const PERMANENT_HTTP = new Set([]);",
     tests: ["tests/beta124-ci-permanent-denial.test.mjs"],
   },
+  // --- beta.125 -----------------------------------------------------------
+  // b124 detected the denial and stopped. It then told the operator to grant a
+  // permission that does not exist for the token class they were using, so the
+  // fast answer was fast and unusable. These pin the fallback that turns the
+  // denial into a verdict, and the honesty that keeps it from becoming b118.
+  {
+    name: "the fallback actually fires (b125): without it a fine-grained PAT can never read CI on an Actions repo",
+    file: "dist/adapters/github.js",
+    find: "if (!snap.checksReadable && denials.length > 0 && input.workflowRunsFallback !== false) {",
+    replace: "if (false) {",
+    tests: ["tests/beta125-workflow-runs-fallback.test.mjs"],
+  },
+  {
+    name: "the fallback only fires on a PERMANENT denial (b125): routing around a 503 hides a real check-runs read",
+    file: "dist/adapters/github.js",
+    find: "if (!snap.checksReadable && denials.length > 0 && input.workflowRunsFallback !== false) {",
+    replace: "if (!snap.checksReadable && input.workflowRunsFallback !== false) {",
+    tests: ["tests/beta125-workflow-runs-fallback.test.mjs"],
+  },
+  {
+    name: "a truncated workflow-runs page is refused (b125): 100 green of 140 is exactly the b118 false green",
+    file: "dist/adapters/github.js",
+    find: "if ((body.total_count ?? runs.length) > runs.length) {",
+    replace: "if (false) {",
+    tests: ["tests/beta125-workflow-runs-fallback.test.mjs"],
+  },
+  {
+    name: "a fallback green admits its source (b125): claiming to have read check runs we never read is how b118 read",
+    file: "dist/adapters/github.js",
+    find: 'snap.reason = snap.checksSource === "workflow_runs"',
+    replace: 'snap.reason = false',
+    tests: ["tests/beta125-workflow-runs-fallback.test.mjs"],
+  },
+  {
+    name: "the remedy no longer names a permission that does not exist (b125)",
+    file: "dist/adapters/github.js",
+    find: "cannot call the Checks API at all",
+    replace: 'needs the "Checks: read" repository permission',
+    tests: ["tests/beta125-workflow-runs-fallback.test.mjs"],
+  },
   {
     name: "an unreadable gate is still never a pass (b119, re-pinned by b124's denial path)",
     file: "dist/adapters/github.js",

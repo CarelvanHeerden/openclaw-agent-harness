@@ -524,6 +524,10 @@
           "minimum": 1,
           "maximum": 20,
           "default": 2
+        },
+        "workflow_runs_fallback": {
+          "type": "boolean",
+          "default": true
         }
       }
     },
