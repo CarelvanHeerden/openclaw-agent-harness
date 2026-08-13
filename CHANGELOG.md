@@ -1,5 +1,142 @@
 # Changelog
 
+## 0.1.0-beta.126
+
+### A plan that was cut off, and an error that blamed the model's manners
+
+The b125 smoke died in planning. The lead's reply began:
+
+```
+{"repo":"Stitch-Vercel/ProjectThanos","branch":"harness/feat/grc-continuity-resilience","riskLevel":"high","subTasks":[{"seq":1,...
+```
+
+That is the contract, cut off mid-write. The harness reported:
+
+```
+no JSON in output (model returned prose, not the JSON contract —
+check that structured calls run with tools: [] to disable built-in tools)
+```
+
+Not prose. Nowhere near prose. And the advice sent the operator to inspect a
+tool-disabling mechanism that was working correctly.
+
+The wrong sentence was the smaller half. The same misreading picked the wrong
+recovery. There are three rungs on the lead's retry ladder: b81 re-asserts the
+output contract when the model drifts into prose, b97 asks for a mechanically
+smaller plan when the reply was truncated, and b99 salvages the well-formed
+prefix when both attempts fail. Which rung runs is decided by one flag, and that
+flag was set from `stop_reason === "max_tokens"` alone. No stop reason arrived,
+so the flag was false, so the harness told a model whose reply was being cut at
+a fixed length to "begin your reply with '{'". It began with '{' and was cut at
+the same length. Six minutes, two Opus calls, no plan.
+
+b126 reads the document instead of waiting to be told about it. A reply that
+opens a JSON container and never closes it was cut off — there is no other way
+to produce one. Prose never opens a container; prose wrapped around a complete
+object balances and never reaches the check. The flag is now that fact OR the
+stop reason, so an SDK that reports truncation is still believed and an SDK that
+says nothing no longer gets the last word.
+
+The error message now distinguishes the two failures, and shows the *tail* of a
+truncated reply rather than the first 200 characters — on a document that was
+cut off, the opening is the part that worked.
+
+b97 diagnosed all of this correctly and wrote it in a comment:
+
+> Confirms our diagnosis that the cause is truncation, NOT a missing `tools: []`.
+
+Two lines below, its test asserted the message saying otherwise. Twenty-eight
+releases later an operator followed that message and spent an afternoon on a
+subsystem that was fine.
+
+### A diagnosis that was wrong, recorded here so it is not repeated
+
+The first explanation for b125 was that `models.max_output_tokens` was declared
+in the manifest, in `config.schema.json` and in a doc comment, but missing from
+`DEFAULTS` — so the ceiling reached the SDK as `undefined` and the SDK capped a
+model id it did not recognise at some invisible limit.
+
+That was wrong, and the fix it implied — have the operator set the key by hand —
+would have changed nothing. `buildSdkEnv` already substitutes
+`DEFAULT_SDK_MAX_OUTPUT_TOKENS` (the same 64000) whenever the parameter is
+undefined. The subprocess was capped at 64000 the whole time.
+
+What was true is that `config.models.max_output_tokens` read back as `undefined`
+for anyone inspecting the effective config, which is exactly what a diagnosis
+does. One value with two independent defaults in two files, only one of which
+the config object reflects, is the actual defect. `DEFAULTS` now carries it and
+a test pins it to the SDK constant so they cannot drift.
+
+**So what did cut the plan off?** Still unknown. The reply was unbalanced — that
+much is certain — but nothing recorded how long it was, so there is no way to
+tell whether it reached the 64000-token ceiling or something ended the stream
+early. That gap is closed below. On the next occurrence the audit trail answers
+it directly, and either way b126 now takes the compaction rung, which is the
+right response to a plan too large for one reply.
+
+### Defaults that are only descriptions
+
+b124 built a test asking "is every key the harness ships actually accepted by
+the gateway". b126 adds its mirror: "is every default the manifest *promises*
+actually delivered". The `max_output_tokens` gap sat in the one shape b124's
+test could not see — present in the manifest, absent from `DEFAULTS`.
+
+It found five more on its first run. Four are honest: they supply their
+documented value at the point of use (`?? 15000`, `?? []`, `=== true`,
+`!== false`) and are recorded as such with the expression that does it.
+
+The fifth was real. `src/config.schema.json` advertised
+`loop.scripted_verify_fallback` as defaulting to **true**, while the manifest and
+the code both said **false**. b85 set it false deliberately: it is the last
+local-execution path, and verification has been CI-only since b81. An operator
+reading that schema would have concluded the harness runs the repo suite locally
+by default. Corrected, with the reason attached.
+
+### Two Opus calls, $0.00
+
+The b125 session recorded a cost of zero for six minutes of Opus planning across
+two attempts. A structured call that throws still burned tokens, and nothing
+carried that number out of the failure, so no caller could charge for it.
+
+The cost now rides on the error. A retried plan bills for both attempts rather
+than only the second, and a salvaged plan is no longer free.
+
+This is partial. Tracing it turned up something larger: the lead planner's cost
+is not credited to the session on the *success* path either. There are three
+cost-credit sites in the orchestrator — worker, worker retry, review — and the
+lead is not among them. `runLeadSdk` returns a real `costUsd` that the
+dependency signature discards, and `approxCostUsd` on the plan is an estimate
+from a price table, not the spend. Every session has been under-billed by its
+planning cost, and budget enforcement has never seen it. Left for its own
+release rather than changed hastily underneath a budget ceiling.
+
+### What the failure record says now
+
+The b125 lead failure left one line: `finishReason: "error"`, a duration, and
+nothing else. Reconstructing it took the manifest, the schema, `DEFAULTS`, two
+config greps and the container logs — and still produced the wrong answer first.
+
+The record now carries the output size, the cost, the tail of what came back,
+and `finishReason: "truncated"` where that applies. A truncation also raises a
+`loop.plan_truncated` audit event naming the size against the ceiling, because
+that single comparison is what separates "the plan is too big for one reply"
+from "something ended the stream early" — the question this release could not
+answer about its own smoke.
+
+### Testing the ladder instead of its rungs
+
+Nothing below `runLeadSdk` could be tested without a real subprocess and a real
+API key, so the retry ladder had only structural greps: assertions that certain
+lines exist. Every rung passed those greps on b125 while the ladder as a whole
+took the wrong one. This is the third release running where a mechanism was
+correct and the wiring around it was not.
+
+b126 adds a seam to substitute the SDK, and eighteen tests that drive
+`runLeadSdk` end to end against scripted replies and assert which rung ran, what
+the retry prompt actually said, what reached the subprocess, and what was billed.
+Three structural greps were replaced by the behaviour they were standing in for,
+including one whose assertion was pinning the wrong error message in place.
+
 ## 0.1.0-beta.125
 
 ### A permission that does not exist

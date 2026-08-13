@@ -25,15 +25,26 @@ import { extractJson } from "../dist/adapters/claude-sdk.js";
 
 // ---- Fix #8: plan-JSON truncation is the `no JSON in output` root cause ------
 
-test("extractJson: a TRUNCATED plan (valid head, missing tail) throws `no JSON in output`", () => {
-  // This is the exact shape that killed revise a8ba76d5 + the b95 smoke: the
-  // payload starts with a well-formed object but the closing braces never
-  // arrived (output hit the token ceiling mid-JSON). scanBalanced never returns
-  // to depth 0 → zero candidates → the `no JSON in output` throw. Confirms our
-  // diagnosis that the cause is truncation, NOT a missing `tools: []`.
+test("extractJson: a TRUNCATED plan (valid head, missing tail) says TRUNCATED", () => {
+  // This is the exact shape that killed revise a8ba76d5, the b95 smoke, and
+  // then the b125 smoke: the payload starts with a well-formed object but the
+  // closing braces never arrived. scanBalanced never returns to depth 0 → zero
+  // candidates → a throw.
+  //
+  // b126 changed which throw. This test used to assert `no JSON in output`,
+  // whose full text reads "model returned prose, not the JSON contract — check
+  // that structured calls run with tools: []". Two lines above, b97's own
+  // comment said the cause was truncation and NOT a missing `tools: []` -- and
+  // the assertion pinned the sentence saying otherwise anyway. Thirty releases
+  // later the b125 operator followed that sentence and spent an afternoon on a
+  // subsystem that was working.
   const truncated =
     '{"repo":"Stitch-Vercel/ProjectThanos","branch":"harness/feat","riskLevel":"high","subTasks":[{"seq":1,"title":"probe","intent":"look';
-  assert.throws(() => extractJson(truncated), /no JSON in output/);
+  assert.throws(() => extractJson(truncated), /truncated JSON in output/);
+  assert.throws(() => extractJson(truncated), (err) => {
+    assert.doesNotMatch(err.message, /returned prose/, "b97 diagnosed this correctly in a comment; now the error says it too");
+    return true;
+  });
 });
 
 test("extractJson: a COMPLETE plan (closed braces) parses fine", () => {

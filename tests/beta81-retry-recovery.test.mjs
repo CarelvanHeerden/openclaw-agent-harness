@@ -231,10 +231,16 @@ test("beta81/C4: recoverSessions HARD-STOPS a bouncing session (marks failed, re
   });
 
 // ---- lead JSON retry ----
+// b126 rewrote the middle of this. It pinned the guard's regex as a literal
+// source string, so adding `truncated JSON in output` to the set of admitted
+// errors broke a test about b81's retry existing at all. The guard's CONTENT is
+// now covered behaviourally in beta126-lead-retry-ladder, which drives
+// runLeadSdk against a fake SDK and asserts a second call actually happens and
+// which rung it takes. What is left here is the wiring b81 was about.
 test("beta81: runLeadSdk has a retry-once-on-extractJson-failure guard threaded from config", () => {
   const sdk = S("src/adapters/claude-sdk.ts");
   assert.match(sdk, /jsonRetryEnabled\?: boolean/);
-  assert.match(sdk, /extractJson failed\|no JSON in output\|validation failed\|JSON\\\.parse/);
+  assert.match(sdk, /if \(params\.jsonRetryEnabled === false\) throw err;/, "the config gate must still short-circuit the retry");
   assert.match(sdk, /retrying ONCE with a terse output-contract re-assertion/);
   const idx = S("src/index.ts");
   assert.match(idx, /jsonRetryEnabled: config\.loop\.lead_json_retry_enabled !== false/);

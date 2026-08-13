@@ -314,7 +314,8 @@
         },
         "scripted_verify_fallback": {
           "type": "boolean",
-          "default": true
+          "default": false,
+          "description": "beta.126: corrected from true. b85 set this false on purpose -- it is the last local-execution path, and verification has been CI-only since b81. The manifest and the code both said false; only this schema said true, advertising a default that would run the repo suite locally."
         },
         "recovery_max_resumes": {
           "type": "integer",
