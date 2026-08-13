@@ -406,8 +406,19 @@ test("getCiSnapshot has no bare fall-through to success", () => {
     "the unclassified fall-through must be unknown");
 });
 
-test("ciSnapshot is wired in production", () => {
+// b125 rewrote this. It used to pin the production call site as an exact
+// source string, including its argument order and whitespace, so adding one
+// option to the call broke a test that has nothing to do with the CI gate --
+// the same brittleness that cost b124 ten broken greps when the verify probes
+// moved file. What actually matters is that the real wiring reaches
+// getCiSnapshot rather than the pre-b119 getCombinedStatus, and that it hands
+// over the resolved token, base and sha. Assert the substance, not the commas.
+test("ciSnapshot is wired in production, and reaches the b119 gate rather than the old combined status", () => {
   const src = S("src/index.ts");
   assert.match(src, /ciSnapshot: async \(\{ repoFullName, sha, requester \}\)/);
-  assert.match(src, /getCiSnapshot\(\{ repoFullName, sha, ghToken, apiBase: resolution\.apiBase \}\)/);
+  const call = src.slice(src.indexOf("ciSnapshot: async"), src.indexOf("ciSnapshot: async") + 900);
+  assert.match(call, /getCiSnapshot\(/, "must use the fail-closed snapshot, not getCombinedStatus");
+  for (const arg of ["repoFullName", "sha", "ghToken", "apiBase"]) {
+    assert.match(call, new RegExp(`\\b${arg}\\b`), `the production call must pass ${arg}`);
+  }
 });

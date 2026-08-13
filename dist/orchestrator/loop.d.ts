@@ -494,6 +494,13 @@ export interface OrchestratorDeps {
          * absent simply means "keep polling", the pre-b124 behaviour.
          */
         permanentDenial?: string;
+        /**
+         * beta.125: which endpoint the check counts came from. `workflow_runs`
+         * means the Checks API was denied and the Actions fallback answered
+         * instead -- a real verdict over everything Actions ran, blind to any
+         * third-party GitHub App check run. Absent is treated as `check_runs`.
+         */
+        checksSource?: "check_runs" | "workflow_runs" | "";
     }>;
     /**
      * beta.81 (Track B / B2): on CI `failure`, fetch a short excerpt of the
@@ -897,6 +904,7 @@ export declare class OrchestratorLoop {
         now?: () => number;
     }): Promise<{
         outcome: "success";
+        degradedSource?: string;
     } | {
         outcome: "failure";
         logs: string;

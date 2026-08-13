@@ -114,6 +114,15 @@ export interface CiSnapshot {
      * the remedy, phrased for whoever has to go and fix the token.
      */
     permanentDenial: string;
+    /**
+     * beta.125: which endpoint the check counts came from.
+     *
+     * `check_runs` is the full picture. `workflow_runs` is the Actions-only
+     * fallback taken when the Checks API is denied -- everything GitHub Actions
+     * ran is accounted for, and a check run created by a third-party GitHub App
+     * is not visible. Callers that report a green must say which one they had.
+     */
+    checksSource: "check_runs" | "workflow_runs" | "";
 }
 /**
  * beta.34: combined CI status for a commit SHA, merging the legacy Statuses API
@@ -140,6 +149,8 @@ export declare function getCiSnapshot(input: {
     sha: string;
     ghToken: string;
     apiBase?: string;
+    /** beta.125: `ci.workflow_runs_fallback`. false restores b124 behaviour. */
+    workflowRunsFallback?: boolean;
 }): Promise<CiSnapshot>;
 /**
  * beta.119: the OAuth scopes GitHub reports for this token.

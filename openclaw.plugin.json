@@ -680,7 +680,12 @@
           "permanent_denial_polls": {
             "type": "number",
             "default": 2,
-            "description": "beta.124: how many CONSECUTIVE polls answered 401/403/404 before the harness stops polling CI and reports the denial as the outcome. A denial is an answer, not a delay: the b123 smoke asked the check-runs API 44 times over 896 seconds (12% of the run's wall clock), was told 403 every time, and ended on 'could NOT determine CI state' -- which does not tell anyone what to fix. Stopping early instead reports the remedy, naming the missing fine-grained-PAT permission ('Checks: read' or 'Commit statuses: read'). Not 1, because a lone 403 can be a secondary rate limit or a token mid-rotation; two in a row is a fact about the configuration. The merge recommendation is unchanged -- an unreadable gate is still needs_human_review, never a pass. Minimum 1."
+            "description": "beta.124: how many CONSECUTIVE polls answered 401/403/404 before the harness stops polling CI and reports the denial as the outcome. A denial is an answer, not a delay: the b123 smoke asked the check-runs API 44 times over 896 seconds (12% of the run's wall clock), was told 403 every time, and ended on 'could NOT determine CI state' -- which does not tell anyone what to fix. Stopping early instead reports the remedy. Not 1, because a lone 403 can be a secondary rate limit or a token mid-rotation; two in a row is a fact about the configuration. The merge recommendation is unchanged -- an unreadable gate is still needs_human_review, never a pass. Minimum 1."
+          },
+          "workflow_runs_fallback": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.125: when the Checks API is permanently denied (401/403/404), read the commit's CI from the Actions workflow-runs API instead of giving up. b124 reported the denial and told the operator to grant 'Checks: read' -- a permission that does not exist. Fine-grained PATs cannot call the Checks API at all; GitHub lists it as a known limitation and its own REST reference is wrong on this point. The same token's 'Actions: read', which IS supported, lists every workflow run on the sha with the same status/conclusion vocabulary, so on any repo whose CI is GitHub Actions the verdict was always one endpoint away. Only fires on a permanent denial -- a transient 5xx is still re-polled against the real endpoint. A green obtained this way is reported as a green WITH a caveat naming the source, because a check run posted by a third-party GitHub App is invisible to this endpoint. Set false to restore b124 behaviour."
           }
         }
       },

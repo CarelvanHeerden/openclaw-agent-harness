@@ -804,7 +804,10 @@ export function bootstrapHarnessSync(api) {
             const [owner] = repoFullName.split("/");
             const resolution = pat.resolve({ slackUserId: requester ?? "", gitHubUser: owner, repoFullName });
             const ghToken = await resolveGitToken(resolution).catch(() => "");
-            return getCiSnapshot({ repoFullName, sha, ghToken, apiBase: resolution.apiBase });
+            return getCiSnapshot({
+                repoFullName, sha, ghToken, apiBase: resolution.apiBase,
+                workflowRunsFallback: config.ci?.workflow_runs_fallback !== false,
+            });
         },
         // beta.119: can this repo's token push workflow files? Resolved through the
         // same pat.resolve path as the push, so the answer is about the token that

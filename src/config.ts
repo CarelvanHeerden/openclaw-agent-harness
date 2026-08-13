@@ -90,6 +90,23 @@ export interface CiConfig {
    * configuration. Minimum 1. Default 2.
    */
   permanent_denial_polls?: number;
+  /**
+   * beta.125: when the Checks API is permanently denied, read the commit's CI
+   * from the Actions workflow-runs API instead.
+   *
+   * b124 detected the denial quickly and then gave up, on the theory that an
+   * operator would go and grant the missing permission. There is no permission
+   * to grant: fine-grained PATs cannot call the Checks API at all, GitHub says
+   * so in its own list of limitations, and the "Checks: read" b124 told people
+   * to look for has never existed. Meanwhile the same token's `Actions: read`
+   * -- which IS supported -- can list every workflow run on the sha, with the
+   * same status/conclusion vocabulary.
+   *
+   * Only fires on a permanent denial. A transient 5xx is still re-polled
+   * against the real endpoint rather than routed around. Set false to restore
+   * b124 behaviour. Default true.
+   */
+  workflow_runs_fallback?: boolean;
 }
 
 export interface BriefConfig {
@@ -1381,6 +1398,7 @@ const DEFAULTS: HarnessConfig = {
     poll_interval_seconds: 20,
     none_grace_seconds: 45,
     permanent_denial_polls: 2,
+    workflow_runs_fallback: true,
   },
   vercel: {
     api_key_env: "VERCEL_TOKEN",
