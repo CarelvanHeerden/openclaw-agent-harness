@@ -63,10 +63,52 @@ console.log(`wall clock ${dur(session.updated_at - session.created_at)}`);
 console.log(`merge rec  ${session.merge_recommendation || "(none)"} ${trim(session.merge_recommendation_reason, 200)}`);
 
 // ---------------------------------------------------------------------------
+// b126 headline. The b125 run never got past planning: the lead's reply was cut
+// off mid-JSON, the harness called it prose, and the retry re-truncated at the
+// same wall. Two questions here. Did the plan get cut off at all, and if so did
+// the harness recognise it as a cut rather than as bad manners.
+// ---------------------------------------------------------------------------
+rule("1. PLANNER TRUNCATION  (the b126 headline)");
+const truncEv = of("loop.plan_truncated");
+const planReady = of("loop.plan_ready");
+const planFail = of("loop.plan_failed");
+const failText = planFail.at(-1) ? JSON.stringify(planFail.at(-1).p) : "";
+
+console.log(`   plan reached the loop:  ${planReady.length ? "YES" : "no"}`);
+console.log(`   truncation detected:    ${truncEv.length ? `YES (${truncEv.length}x)` : "no"}`);
+if (truncEv.length) {
+  for (const t of truncEv) {
+    console.log(`   - ${t.p.outputChars ?? "?"} chars against a ${t.p.maxOutputTokens ?? "(unset)"}-token ceiling on ${t.p.model ?? "?"}`);
+  }
+  console.log("     Compare those two numbers. At the ceiling means the plan is too big for one");
+  console.log("     reply and the compaction retry is the right answer. Well under it means");
+  console.log("     something ended the stream early and the ceiling is a red herring. b125");
+  console.log("     could not answer this because the size was never recorded.");
+}
+
+if (/model returned prose/.test(failText)) {
+  console.log("   >>> VERDICT: b126 REGRESSED, or this really was prose. The run died with the");
+  console.log("       'model returned prose / check tools: []' message. If the raw reply starts");
+  console.log("       with '{' it is the b125 bug back again — report it with the raw text.");
+} else if (/truncated JSON in output/.test(failText)) {
+  console.log("   >>> VERDICT: b126 named the failure correctly (truncated, not prose) but the");
+  console.log("       run still died in planning. The compaction retry was not enough. Report");
+  console.log("       the output size above — the plan may be genuinely too large for one reply.");
+} else if (truncEv.length && planReady.length) {
+  console.log("   >>> VERDICT: b126 WORKED. A reply was cut off, the harness recognised it as a");
+  console.log("       cut, retried with a smaller plan, and planning succeeded. This is the fix.");
+} else if (planReady.length) {
+  console.log("   >>> Planning succeeded first time, so b126 was not exercised — that is fine,");
+  console.log("       but it means this run did NOT test the truncation path.");
+} else {
+  console.log("   >>> No plan and no truncation recorded. See section 5 for what stopped it.");
+}
+
+// ---------------------------------------------------------------------------
 // b125 headline. The check-runs API is closed to a fine-grained PAT and always
 // will be; the question is whether the Actions fallback picked up the slack.
 // ---------------------------------------------------------------------------
-rule("1. CI SIGNAL PATH  (the b125 headline)");
+rule("2. CI SIGNAL PATH  (the b125 headline)");
 const denied = of("loop.ci_permanently_denied");
 const viaWf = of("loop.ci_read_via_workflow_runs");
 const greenWf = of("loop.ci_green_via_workflow_runs");
@@ -90,14 +132,14 @@ if (denied.length && viaWf.length) {
   // normally" about a run that died before opening a PR is the same species of
   // confident-and-wrong that this script exists to catch.
   console.log("   >>> The run never reached CI, so nothing here is a statement about the CI gate.");
-  console.log("       See section 4 for what stopped it first.");
+  console.log("       See section 5 for what stopped it first.");
 } else {
   console.log("   >>> The Checks API answered normally. b125 was not exercised — that is fine,");
   console.log("       but it means this run did NOT test the fallback.");
 }
 
 // ---------------------------------------------------------------------------
-rule("2. CYCLE EXTENSION  (b124)");
+rule("3. CYCLE EXTENSION  (b124)");
 const suggested = of("loop.max_cycles_extend_suggested");
 const extended = of("loop.max_cycles_extended");
 console.log(`   extension suggested: ${suggested.length}`);
@@ -112,7 +154,7 @@ if (extended.length && session.cycles_ran <= (extended[0].p?.maxCycles ?? 2)) {
 }
 
 // ---------------------------------------------------------------------------
-rule("3. RESCUE -> RETRACTION PAIRING  (b123)");
+rule("4. RESCUE -> RETRACTION PAIRING  (b123)");
 const rescues = of("loop.contract_auto_resolved", "loop.contract_path_basename_rescued");
 const retractions = of("loop.subtask_failure_retracted");
 console.log(`   rescues fired: ${rescues.length} | retractions: ${retractions.length}`);
@@ -126,7 +168,7 @@ if (rescues.length > retractions.length) {
 }
 
 // ---------------------------------------------------------------------------
-rule("4. TERMINAL CAUSE");
+rule("5. TERMINAL CAUSE");
 const term = of("loop.failed", "loop.shipped", "loop.plan_failed").at(-1);
 console.log(`   ${term ? `${term.event} ${trim(JSON.stringify(term.p), 400)}` : "(no terminal event recorded)"}`);
 const verifyFails = events.filter((e) => e.event.endsWith("_verify_failed"));
@@ -136,7 +178,7 @@ if (verifyFails.length) {
 }
 
 // ---------------------------------------------------------------------------
-rule("5. SUB-TASKS");
+rule("6. SUB-TASKS");
 const subs = db.prepare("SELECT cycle, seq, status, cost_usd, commit_sha, description FROM sub_tasks WHERE session_id = ? ORDER BY cycle, seq").all(session.id);
 for (const s of subs) {
   console.log(`   c${s.cycle} #${s.seq} ${String(s.status).padEnd(11)} ${money(s.cost_usd).padStart(7)} ${(s.commit_sha || "").slice(0, 8).padEnd(9)} ${trim(s.description, 70)}`);
@@ -145,7 +187,7 @@ const failed = subs.filter((s) => s.status === "failed");
 console.log(`   ${subs.length} sub-task(s), ${failed.length} failed`);
 
 // ---------------------------------------------------------------------------
-rule("6. TIME AND MONEY");
+rule("7. TIME AND MONEY");
 const first = events[0]?.created_at ?? session.created_at;
 const ciStart = of("loop.ci_poll_started")[0]?.created_at;
 const ciDone = ciEnd.at(-1)?.created_at;
