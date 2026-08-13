@@ -85,7 +85,13 @@ if (denied.length && viaWf.length) {
 } else if (denied.length && !viaWf.length) {
   console.log("   >>> VERDICT: b125 DID NOT ENGAGE. Denied, and no fallback. Most likely the token");
   console.log("       lacks `Actions: read`, or ci.workflow_runs_fallback is false. Report this.");
-} else if (!denied.length && !viaWf.length) {
+} else if (!ciEnd.length) {
+  // Do not report on a gate that never ran. Saying "the Checks API answered
+  // normally" about a run that died before opening a PR is the same species of
+  // confident-and-wrong that this script exists to catch.
+  console.log("   >>> The run never reached CI, so nothing here is a statement about the CI gate.");
+  console.log("       See section 4 for what stopped it first.");
+} else {
   console.log("   >>> The Checks API answered normally. b125 was not exercised — that is fine,");
   console.log("       but it means this run did NOT test the fallback.");
 }
