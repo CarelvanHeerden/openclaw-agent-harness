@@ -82,10 +82,9 @@ test("beta.87 [2]: targeted set is per-sub-task when reviseSpecApplied (workerCo
     "falls back to review-wide findings when no per-sub-task signal");
 });
 
-test("beta.87 [3]: fileCommittedInBranch uses strictContract (no basename fuzzy on the relaxed probe)", () => {
-  const src = readSrc("src/index.ts");
-  const block = src.slice(src.indexOf("fileCommittedInBranch: async"), src.indexOf("fileCommittedInBranch: async") + 900);
-  assert.ok(/resolveContractPath\(files, path, \{ strictContract: true \}\)/.test(block),
-    "fileCommittedInBranch must resolve strictContract");
-  assert.ok(!/allowBasenameFallback/.test(block), "no basename fallback on the relaxed probe");
-});
+// beta.123 (prune): the "strictContract on the relaxed probe" grep of index.ts lived here and was deleted.
+// It asserted the probe's SOURCE TEXT, never its behaviour, so it broke the
+// moment b123 lifted the probes into src/orchestrator/verify-probes.ts -- and
+// it had stayed green throughout the period when file_committed could not read
+// a git mv. The property it described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.

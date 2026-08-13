@@ -60,7 +60,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- front (from recommendBudget). Persisted so harness_progress / terminal /
   -- the loop.start audit echo "Estimated ~$X; cap $Y" independent of whether
   -- the agent relays the harness_run note.
-  estimated_usd            REAL               -- session cost estimate (USD) at start
+  estimated_usd            REAL,              -- session cost estimate (USD) at start
+  -- beta.123: a per-session wall-clock ceiling, set when the operator answers
+  -- the confirmation gate with something like "confirm, budget $40 with a time
+  -- budget of 3 hours". NULL means "use loop.session_hard_timeout_seconds".
+  hard_timeout_seconds     INTEGER            -- per-session wall-clock override, seconds
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

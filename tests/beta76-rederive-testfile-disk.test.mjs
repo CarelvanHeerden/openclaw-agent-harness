@@ -155,15 +155,12 @@ test("Defect B: looksLikeDiskExhaustion catches the real signatures", () => {
 // ─────────────────────────────────────────────────────────────────────────
 // Wiring source-assertions.
 // ─────────────────────────────────────────────────────────────────────────
-test("wiring: index.ts enables allowTestFileFallback at the scoped call sites", () => {
-  const idx = src("index.ts");
-  const hits = idx.match(/allowTestFileFallback:\s*true/g) ?? [];
-  // beta.84 (#1): fileCommittedSince MOVED to strictContract:true (no fuzzy
-  // fallback) to kill the cyc2-seq7 sibling false-positive, so the count
-  // dropped 3 -> 2 (fileWrittenSince + the fileExistsOnDisk committed-fallback
-  // still use the fallback; the contract check no longer does).
-  assert.ok(hits.length >= 2, `expected >=2 allowTestFileFallback:true, found ${hits.length}`);
-});
+// beta.123 (prune): the "allowTestFileFallback call sites" grep of index.ts lived here and was deleted.
+// It asserted the probe's SOURCE TEXT, never its behaviour, so it broke the
+// moment b123 lifted the probes into src/orchestrator/verify-probes.ts -- and
+// it had stayed green throughout the period when file_committed could not read
+// a git mv. The property it described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.
 
 test("wiring: loop.ts re-derives contract paths + accumulates discovered paths", () => {
   const loop = src("orchestrator/loop.ts");

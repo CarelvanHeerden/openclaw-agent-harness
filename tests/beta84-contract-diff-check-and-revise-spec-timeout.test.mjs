@@ -182,23 +182,12 @@ test("beta.84 #1: file_committed FAILS when probe reports diffLines=0, and echoe
 // #1d — index.ts probe wiring source-asserts
 // ---------------------------------------------------------------------------
 
-test("beta.84 #1: fileCommittedSince wiring uses strictContract + numstat gate", skip, () => {
-  const src = readSrc("src/index.ts");
-  // strict-contract resolution (no fuzzy fallback) for the contract check.
-  assert.ok(
-    /fileCommittedSince[\s\S]{0,900}resolveContractPath\([^)]*\{\s*strictContract:\s*true\s*\}/.test(src),
-    "fileCommittedSince must resolve with strictContract:true (no basename-unique/test-file fallback)",
-  );
-  // non-zero diff gate via the new git helper.
-  assert.ok(
-    /fileCommittedSince[\s\S]{0,1400}fileDiffLineCount\(worktreePath,\s*base,\s*matchedFile\)/.test(src),
-    "fileCommittedSince must gate on git.fileDiffLineCount for the matched path",
-  );
-  assert.ok(
-    /fileCommittedSince[\s\S]{0,1600}diffLines\s*>\s*0/.test(src),
-    "committed must require diffLines > 0",
-  );
-});
+// beta.123 (prune): the "strictContract + numstat gate" grep of index.ts lived here and was deleted.
+// It asserted the probe's SOURCE TEXT, never its behaviour, so it broke the
+// moment b123 lifted the probes into src/orchestrator/verify-probes.ts -- and
+// it had stayed green throughout the period when file_committed could not read
+// a git mv. The property it described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.
 
 test("beta.84 #1: verify.ts echoes the contract path on file_committed + file_written results", skip, () => {
   const src = readSrc("src/orchestrator/verify.ts");

@@ -86,27 +86,26 @@ test("beta51/59: index.ts imports resolveContractPath (pathMatchRule no longer u
 // retry/clarification machinery by pre-failing results). The loop-path
 // factory is now the single verification site, so exactly ONE occurrence of
 // each structural-matching pattern is correct.
-test("beta51/56/59: the (single) fileWrittenSince factory resolves via resolveContractPath with basename fallback", () => {
-  const src = S("src/index.ts");
-  const uses = src.match(/resolveContractPath\(changed, path, \{ allowBasenameFallback: true, allowTestFileFallback: true \}\)/g) ?? [];
-  assert.equal(uses.length, 1, `exactly one fileWrittenSince factory must use resolveContractPath+fallback (found ${uses.length})`);
-  // the old exact-equality diff match must be gone
-  assert.doesNotMatch(src, /changed\.some\(\(f\) => resolve\(worktreePath, f\) === abs\)/);
-});
+// beta.123 (prune): the "basename fallback on file_written" grep of index.ts lived here and was deleted.
+// It asserted the probe's SOURCE TEXT, never its behaviour, so it broke the
+// moment b123 lifted the probes into src/orchestrator/verify-probes.ts -- and
+// it had stayed green throughout the period when file_committed could not read
+// a git mv. The property it described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.
 
-test("beta51/56/59: the (single) fileExistsOnDisk factory has a structural committed-file fallback (with basename fallback)", () => {
-  const src = S("src/index.ts");
-  const fallbacks = src.match(/resolveContractPath\(committed, path, \{ allowBasenameFallback: true, allowTestFileFallback: true \}\)/g) ?? [];
-  assert.equal(fallbacks.length, 1, `exactly one fileExistsOnDisk factory needs the committed-file fallback (found ${fallbacks.length})`);
-});
+// beta.123 (prune): the "committed-file fallback on fileExistsOnDisk" grep of index.ts lived here and was deleted.
+// It asserted the probe's SOURCE TEXT, never its behaviour, so it broke the
+// moment b123 lifted the probes into src/orchestrator/verify-probes.ts -- and
+// it had stayed green throughout the period when file_committed could not read
+// a git mv. The property it described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.
 
-test("beta51/56/59: fileCommittedSince resolves via resolveContractPath (no longer a hand-rolled pathMatchRule loop)", () => {
-  const src = S("src/index.ts");
-  // beta.84 (#1): fileCommittedSince resolves with strictContract:true now.
-  assert.match(src, /resolveContractPath\(files, path, \{ strictContract: true \}\)/);
-  // the old hand-rolled loop must be gone
-  assert.doesNotMatch(src, /const rule = pathMatchRule\(f, path\)/);
-});
+// beta.123 (prune): the "strictContract on file_committed" grep of index.ts lived here and was deleted.
+// It asserted the probe's SOURCE TEXT, never its behaviour, so it broke the
+// moment b123 lifted the probes into src/orchestrator/verify-probes.ts -- and
+// it had stayed green throughout the period when file_committed could not read
+// a git mv. The property it described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.
 
 test("beta51: file_in_pr uses anyPathMatches (route-group tolerant PR file match)", () => {
   const src = S("src/orchestrator/verify.ts");

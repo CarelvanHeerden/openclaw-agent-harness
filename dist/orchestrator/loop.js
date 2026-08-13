@@ -1013,7 +1013,23 @@ export class OrchestratorLoop {
             throw new Error(`session ${sessionId} is already terminal (${row.status})`);
         }
         const startedAt = Date.now();
-        const hardDeadlineMs = startedAt + this.deps.config.loop.session_hard_timeout_seconds * 1000;
+        // beta.123: a per-session ceiling, when the operator set one at the
+        // confirmation gate, otherwise the configured default. Clamped to the
+        // config value's order of magnitude at the top end by the parser, so this
+        // cannot be used to disable the wall clock outright.
+        const sessionTimeoutSeconds = (() => {
+            const raw = this.deps.state.db
+                .prepare(`SELECT hard_timeout_seconds AS s FROM sessions WHERE id = ?`)
+                .get(sessionId);
+            const s = raw?.s;
+            return typeof s === "number" && Number.isFinite(s) && s > 0
+                ? s
+                : this.deps.config.loop.session_hard_timeout_seconds;
+        })();
+        const hardDeadlineMs = startedAt + sessionTimeoutSeconds * 1000;
+        if (sessionTimeoutSeconds !== this.deps.config.loop.session_hard_timeout_seconds) {
+            this.deps.state.audit("loop.session_timeout_override", { sessionId, seconds: sessionTimeoutSeconds, configured: this.deps.config.loop.session_hard_timeout_seconds }, sessionId);
+        }
         this.deps.state.audit("loop.start", { sessionId, brief }, sessionId);
         // beta.101: plan paths the repo tree says are fictional (see the
         // plan_paths_suspect block below). Consulted at dispatch so each worker is
@@ -1530,6 +1546,44 @@ export class OrchestratorLoop {
             const inFlightSubTasks = new Map();
             const done = new Set();
             const failed = { seq: -1, err: null };
+            /**
+             * beta.123: RETRACT a failure a recovery path has just healed.
+             *
+             * `failed` is the cycle-scoped accumulator the terminal decision reads at
+             * the end of the cycle. Every write to it before b123 was a SET; nothing
+             * ever cleared it. So the two paths that exist precisely to heal a
+             * verification failure without bothering a human -- the b105 basename
+             * rescue and the b111 auto-resolve -- both marked their sub-task
+             * `completed`, called `done.add`, returned... and left `failed.err`
+             * standing. The cycle then ended and the run terminated with
+             * `subtask_N_failed_verification` for a sub-task the harness had already
+             * decided was fine.
+             *
+             * That is the b122 smoke kill (session 215c1bf3, cycle-2 seq-10: a pure
+             * `git mv` the adversary had explicitly asked for), and it is why both
+             * rescues have never once let a run finish since they shipped. It was
+             * read at the time as a 30ms race between the resolve event and the
+             * terminal decision. It is not a race -- there is no timing in it. The
+             * flag is simply never unset.
+             *
+             * Retraction is keyed to the SEQ THAT RECORDED THE FAILURE. Under b117
+             * parallelism several sub-tasks share this one slot, so a blanket clear
+             * would let a rescue on seq 10 silently erase a genuine failure on seq 4.
+             * If the slot no longer belongs to this seq we leave it entirely alone:
+             * some other sub-task's failure is the live one and it must still stop
+             * the run.
+             */
+            const retractFailure = (seq, why) => {
+                if (failed.seq !== seq || failed.err === null)
+                    return;
+                const retracted = failed.err;
+                failed.seq = -1;
+                failed.err = null;
+                this.deps.state.audit("loop.subtask_failure_retracted", { sessionId, seq, cycle, why, retracted: String(retracted).slice(0, 300) }, sessionId);
+                this.deps.logger.info("[loop] sub-task failure retracted by a recovery path; the run continues", {
+                    sessionId, seq, why,
+                });
+            };
             /**
              * beta.117: isolated checkouts for concurrent workers.
              *
@@ -2590,6 +2644,7 @@ export class OrchestratorLoop {
                                         });
                                         this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run("completed", JSON.stringify(result.filesChanged ?? []), result.commitSha ?? null, result.sdkSessionId ?? null, `basename-rescued contract path (${rescue.from} -> ${rescue.to}): ${reverified.summary}`, Date.now(), Date.now(), subTaskId);
                                         this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                                        retractFailure(st.seq, `basename_rescue:${rescue.kind}`);
                                         done.add(st.seq);
                                         return;
                                     }
@@ -2651,6 +2706,7 @@ export class OrchestratorLoop {
                                 this.deps.state.db
                                     .prepare(`UPDATE sub_tasks SET status = 'completed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
                                     .run(`contract satisfied by the branch: ${auto.reason}`, Date.now(), sessionId, cycle, st.seq);
+                                retractFailure(st.seq, "contract_auto_resolved");
                                 done.add(st.seq);
                                 return;
                             }
@@ -2752,8 +2808,25 @@ export class OrchestratorLoop {
             // Dispatcher: greedily fill up to `concurrency` in-flight, respecting dependsOn.
             let idx = 0;
             while (idx < ordered.length || inFlight.length > 0) {
-                if (failed.err)
+                if (failed.err) {
+                    // beta.123 (sweep): the same class as the retraction above, one level
+                    // up. A sub-task records its failure BEFORE its rescue has run, and
+                    // the rescue awaits git IO. Under b117 parallelism a sibling
+                    // finishing in that window hands control back here, we observe a
+                    // failure that is about to be retracted, and we stop dispatching the
+                    // rest of the cycle. The run then reviews a partial cycle and calls
+                    // it done -- silent under-delivery rather than a visible failure,
+                    // which is the worse shape of the two.
+                    //
+                    // Draining first costs nothing when there is nothing in flight (the
+                    // serial default), and turns the guess into an answer.
+                    if (inFlight.length > 0) {
+                        await Promise.allSettled([...inFlight]);
+                        if (!failed.err)
+                            continue;
+                    }
                     break;
+                }
                 // Fill
                 while (idx < ordered.length &&
                     inFlight.length < concurrency &&

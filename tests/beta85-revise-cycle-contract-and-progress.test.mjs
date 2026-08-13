@@ -151,11 +151,12 @@ test("beta.85: loop marks not-targeted revise files reviseRelaxed off review fin
   assert.ok(/planBaseShaForVerify/.test(src) && /branchBaseSha: planBaseShaForVerify/.test(src), "threads branch base into verify ctx");
 });
 
-test("beta.85: index wires fileCommittedInBranch probe (present + committed-in-branch)", skip, () => {
-  const src = readSrc("src/index.ts");
-  assert.ok(/fileCommittedInBranch:\s*async/.test(src), "fileCommittedInBranch probe wired");
-  assert.ok(/listCommittedFiles\(worktreePath,\s*branchBaseSha\)/.test(src), "uses branch-range listCommittedFiles");
-});
+// beta.123 (prune): the "fileCommittedInBranch wiring" grep of index.ts lived here and was deleted.
+// It asserted the probe's SOURCE TEXT, never its behaviour, so it broke the
+// moment b123 lifted the probes into src/orchestrator/verify-probes.ts -- and
+// it had stayed green throughout the period when file_committed could not read
+// a git mv. The property it described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.
 
 test("beta.85: scripted_verify_fallback defaults OFF (no local suite runs)", skip, () => {
   const src = readSrc("src/config.ts");

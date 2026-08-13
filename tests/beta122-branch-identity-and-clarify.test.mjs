@@ -293,7 +293,11 @@ test("the applied budget is written to the session and clamped by the ceiling", 
   const src = S("src/tools/registration.ts");
   const i = src.indexOf("parseConfirmationReply(trimmed)");
   assert.ok(i > 0);
-  const window = src.slice(i, i + 1600);
+  // beta.123: widened from 1600. The window is a character count, so adding
+  // the time-budget clause beside the money one pushed the last assertion out
+  // of range and failed a test about behaviour that had not changed -- the
+  // recurring cost of pinning source text by offset rather than by meaning.
+  const window = src.slice(i, i + 2600);
   assert.match(window, /UPDATE sessions SET budget_usd = \?/, "it must reach the column the loop enforces against");
   assert.match(window, /session_hard_ceiling_usd/, "the advertised ceiling still binds");
   assert.match(window, /tool\.answer_brief_budget_set/);

@@ -106,6 +106,11 @@ export function openStateStoreSync(pathHint: string): StateStore {
     // beta.81 (Track A / A1): harness-owned session cost estimate (USD) surfaced
     // up front. Persisted so progress/terminal/loop.start echo it reliably.
     { table: "sessions", column: "estimated_usd",                type: "REAL" },    // session cost estimate at start
+    // beta.123: a per-session wall-clock ceiling. The confirmation gate lets an
+    // operator answer "confirm, budget $40 with a time budget of 3 hours"; the
+    // money half landed in b122 and the time half had nowhere to go, because
+    // the ceiling was config-only. NULL means "use loop.session_hard_timeout_seconds".
+    { table: "sessions", column: "hard_timeout_seconds",         type: "INTEGER" }, // per-session wall-clock override
   ];
   for (const m of additiveMigrations) {
     try {

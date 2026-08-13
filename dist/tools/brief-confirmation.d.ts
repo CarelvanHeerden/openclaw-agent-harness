@@ -104,9 +104,11 @@ export declare function isBriefConfirmation(answer: string): boolean;
 export interface ParsedConfirmationReply {
     /** A cap in whole dollars, when the reply named one. */
     budgetUsd?: number;
-    /** The reply with the budget clause removed. */
+    /** A wall-clock ceiling in seconds, when the reply named one. */
+    timeoutSeconds?: number;
+    /** The reply with the budget and time clauses removed. */
     remainder: string;
-    /** True when nothing but the budget clause (and politeness) remained. */
+    /** True when nothing but those clauses (and politeness) remained. */
     approves: boolean;
 }
 export declare function parseConfirmationReply(answer: string): ParsedConfirmationReply;

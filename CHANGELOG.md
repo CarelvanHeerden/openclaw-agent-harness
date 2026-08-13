@@ -1,5 +1,123 @@
 # Changelog
 
+## 0.1.0-beta.123
+
+### Two rescues that never once let a run finish
+
+The b122 smoke built the right feature. Fourteen commits, 1917 lines across
+fourteen files, every one of them inside the declared surface, a clean typecheck
+on the diff, and a cycle-2 pass that resolved all three of the adversary's
+blocking findings. It then failed on its last sub-task, which had done exactly
+what the review asked it to do.
+
+Sub-task 10 was told, in the finding text, to rename a test file. It committed a
+clean `R100` and nothing else. `file_committed` asked git how many lines the
+contract path had changed, got zero — which is what a pure rename IS — and
+reported that the commit had not modified the file. The b111 auto-resolve then
+looked at the branch, concluded correctly that the work existed and the contract
+was satisfied, marked the sub-task complete, and returned. Thirty milliseconds
+later the run terminated with `subtask_10_failed_verification`.
+
+That was read at the time as a race between the resolve and the terminal
+decision. It is not a race. There is no timing in it.
+
+**The cycle's failure flag was only ever set, never cleared.** `failed.err` is a
+single accumulator the terminal decision reads at the end of the cycle. Eleven
+places in the loop write to it. Nothing anywhere unset it. So the two paths that
+exist precisely to heal a verification failure without stopping to ask a
+human — the b105 basename rescue and the b111 auto-resolve — both marked their
+sub-task `completed`, called `done.add`, returned, and left the failure standing
+for the terminal decision to find. Both had been doing that since the day each
+shipped: seventeen releases during which a rescue that fired was a run that
+died. b123 retracts the failure the healed sub-task recorded, keyed to that
+sub-task's own seq so that under b117 parallelism one rescue cannot bury
+another sub-task's genuine failure, and writes a `loop.subtask_failure_retracted`
+event so the next smoke log says so out loud.
+
+**The dispatcher had the same bug one level up.** It breaks out of the cycle the
+moment it observes a failure — including one an in-flight rescue is about to
+retract. Under parallelism that stops the remaining sub-tasks from ever being
+dispatched, and the run then reviews a partial cycle and ships it: silent
+under-delivery, which is the worse shape. It now drains what is in flight before
+deciding, which costs nothing in the serial default.
+
+**And a rename is no longer read as an absence of work.** `file_committed` asks
+git whether the contract path was renamed away inside the window to a
+destination that is committed and still non-empty at HEAD. Both halves matter:
+the source-side question had no probe at all (`pathIntroducedSince` answers only
+for the destination), and requiring survival is what stops a rename-then-delete
+from passing as work that merely moved.
+
+### The reply to the confirmation gate is a sentence, not a field
+
+Three releases running, an operator approved the pre-spend gate and attached an
+instruction, and the harness got it wrong a different way each time. b121 filed
+"Confirm, Budget $40" verbatim as acceptance criterion #16 and ran at the $10
+default. b122 shipped the money parser, and the next reply was "confirm, set the
+Budget to $40 with a time budget of 3 hours" — the money landed, the leftover
+hours meant the remainder was not empty, and a plain approval was filed as a
+spec correction again. Reverse the two clauses and it would have been worse:
+`\bbudget\b` followed by a number matches "time budget of 3" and would have
+capped the run at three dollars.
+
+Time is now parsed first and cut out before money is looked for, the imperative
+that introduces either clause is swallowed with it, and a session carries its
+own wall-clock ceiling (`sessions.hard_timeout_seconds`) so "3 hours" is
+something the loop can actually honour rather than something to apologise for.
+A duration still needs a unit, so no bare number is ever read as one, and a
+reply carrying a real spec change stays a correction no matter what else is in
+it.
+
+### The layer the test suite did not have
+
+None of the above is a hard defect to find. All of it is invisible to the kind
+of test this repository had 1808 of.
+
+The b105 basename rescue shipped with 33 tests. Seven cover the decision
+function in isolation, including every negative case. Six cover the underlying
+file probes. Twelve assert structurally that the rescue is wired in ahead of the
+escalation, that it audits, that it writes back to the plan. Four drive the real
+loop, and all four assert on failure paths. Across all 157 test files, the
+question "what did the RUN terminate as" was asked four times.
+
+So every defect that reached a smoke since b118 has been the same species:
+correct components, wrong composition. The abort probe was right and its caller
+collapsed a throw into "no commits". The slug logic was right and the pinning
+sat one layer too low. The rescue decided perfectly and the run died anyway.
+
+b123 adds `tests/helpers/scenario.mjs`: the real orchestrator, the real git
+adapter against a real bare repository, the real verification probes, real
+SQLite, and fakes only at the edges a test cannot own — the model calls and the
+GitHub API. A scripted worker genuinely writes files and genuinely commits them,
+so verification is answering questions about a real history. The default
+scenario ships; each test changes one thing and asserts what that does to the
+outcome. Parallel slots are wired to the real adapter, so a scenario that asks
+for concurrency gets it rather than silently degrading to serial.
+
+The probes moved out of `createRuntime` into `src/orchestrator/verify-probes.ts`
+to make this possible. They had been closed over `git`/`pat`/`config` inside
+index.ts and were unreachable from any test, which is why the code that decides
+whether a sub-task did its work was covered by eleven greps of index.ts and
+nothing else — all eleven green throughout the period when `file_committed`
+could not read a rename.
+
+Those eleven are gone. Ten were deleted outright and the eleventh repointed,
+each replaced by a behavioural test of the property it described: a
+same-basename sibling does not satisfy a contract, an untouched file still
+fails, an ordinary edit passes on its line count, the relaxed probe is strict
+about which file, a drifted directory still resolves. They cost a test-suite
+failure on every refactor and had never once caught a defect. Deleting them is
+part of the fix, not tidying afterwards.
+
+Five new mutations pin the mechanisms above, and writing them caught two of the
+new tests being decorative — a rename scenario that passed because a reconciler
+upstream masked the probe, and a survival check whose case was already handled
+by a try/catch. Both were rewritten until breaking the code broke the test.
+One guard is deliberately left unpinned and named in `scripts/mutation-check.mjs`
+rather than assumed covered: the retraction's seq-keying can only be
+distinguished from a blanket clear under a parallel interleaving the harness
+cannot yet produce a rescue for.
+
 ## 0.1.0-beta.122
 
 ### A branch is not a name the planner gets to change its mind about

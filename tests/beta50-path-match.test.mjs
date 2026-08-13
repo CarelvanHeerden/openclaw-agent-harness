@@ -130,19 +130,13 @@ test("beta50: anyPathMatches finds the route-group file among many committed", (
 // beta.56 (P0-5): the worker-path factory was removed (it duplicated the
 // loop-path factory with an empty-branch bug), so exactly ONE occurrence.
 // ---------------------------------------------------------------------------
-test("beta50/56/59: the (single) fileCommittedSince factory resolves structurally (not exact resolve equality)", () => {
-  const indexSrc = S("src/index.ts");
-  // beta.59: fileCommittedSince now routes through resolveContractPath (shared
-  // with fileWrittenSince) instead of a hand-rolled pathMatchRule loop, and the
-  // import no longer pulls pathMatchRule directly.
-  assert.match(indexSrc, /import \{ resolveContractPath \} from "\.\/orchestrator\/path-match\.js"/);
-  // beta.84 (#1): fileCommittedSince MOVED to strictContract:true (no fuzzy
-  // fallback) to kill the cyc2-seq7 sibling false-positive; it still routes
-  // through resolveContractPath (structural rules only).
-  assert.match(indexSrc, /resolveContractPath\(files, path, \{ strictContract: true \}\)/);
-  // the old exact-resolve equality match must be gone from fileCommittedSince
-  assert.doesNotMatch(indexSrc, /resolve\(worktreePath, f\) === absTarget \|\| f === path/);
-});
+// beta.123 (prune): the "fileCommittedSince resolves structurally" grep of
+// index.ts lived here and was deleted. It asserted the probe's SOURCE TEXT,
+// never its behaviour, so it broke the moment b123 lifted the probes into
+// src/orchestrator/verify-probes.ts -- and it had stayed green throughout the
+// period when file_committed could not read a git mv. The property it
+// described is now asserted against a real repo in
+// tests/beta123-verify-probes.test.mjs.
 
 test("beta50: headline enriches path-mismatch failures", () => {
   const progSrc = S("src/orchestrator/progress.ts");

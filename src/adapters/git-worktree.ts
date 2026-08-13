@@ -1187,6 +1187,56 @@ esac
   }
 
   /**
+   * beta.123: the mirror of `pathIntroducedSince` -- was this path renamed AWAY
+   * to somewhere else inside the window?
+   *
+   * `pathIntroducedSince` matches the DESTINATION of a rename, which answers
+   * "did this sub-task author the file now sitting here". The b122 smoke needed
+   * the opposite question and nothing could ask it. Cycle-2 seq-10 was told by
+   * the adversary, in as many words, to rename `continuity-exercises.test.ts`
+   * to `continuity-exercises-download.test.ts`. The worker did exactly that and
+   * committed a clean `R100`. `file_committed` then asked for the contract
+   * path's diff, got 0 changed lines -- which is what a pure rename IS -- and
+   * concluded "the commit did not modify this file". The run died holding 14
+   * good commits, on the one sub-task that had done precisely what it was
+   * asked.
+   *
+   * `--diff-filter=R` with `--name-status` reports `R<score><TAB>old<TAB>new`,
+   * so here we match the SOURCE (first path) and hand back the destination.
+   */
+  async pathRenamedAwaySince(
+    worktreePath: string,
+    base: string,
+    path: string,
+  ): Promise<{ renamed: boolean; to: string; score: string; detail: string }> {
+    const miss = { renamed: false, to: "", score: "", detail: "" };
+    if (!base) return { ...miss, detail: "no base sha" };
+    const out = await this.run([
+      "-C", worktreePath, "log", `${base}..HEAD`, "--diff-filter=R", "--name-status", "-M", "--pretty=format:",
+    ]).catch(() => "");
+    const want = path.replace(/^\.?\//, "");
+    for (const line of out.split("\n")) {
+      const parts = line.trim().split("\t").filter(Boolean);
+      // R<score> <old> <new> -- anything shorter is not a rename record.
+      if (parts.length < 3) continue;
+      const status = parts[0] ?? "";
+      if (!status.startsWith("R")) continue;
+      const from = parts[1] ?? "";
+      const to = parts[parts.length - 1] ?? "";
+      if (!from || !to) continue;
+      if (from === want || from.endsWith(`/${want}`) || want.endsWith(`/${from}`)) {
+        return {
+          renamed: true,
+          to,
+          score: status,
+          detail: `renamed to ${to} in ${base.slice(0, 7)}..HEAD (${status})`,
+        };
+      }
+    }
+    return { ...miss, detail: `not renamed away in ${base.slice(0, 7)}..HEAD` };
+  }
+
+  /**
    * beta.10: query the remote for a branch's tip SHA via `git ls-remote`.
    * Returns `undefined` when the branch does not exist on the remote (or the
    * lookup errors out; the caller treats those the same).
