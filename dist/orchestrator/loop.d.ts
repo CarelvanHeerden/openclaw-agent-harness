@@ -6,7 +6,9 @@
  *
  *   crystallising -> planning -> executing -> reviewing -> {done|revise}
  *
- * Up to `config.loop.max_cycles` cycles of executing+reviewing. Early exits:
+ * Up to `config.loop.max_cycles` cycles of executing+reviewing, plus any
+ * extension `advance()` grants for a converging finding trend (b119). Early
+ * exits:
  *   - Adversary verdict "pass"
  *   - User ship-it reaction
  *   - User abort reaction
@@ -15,6 +17,13 @@
  *
  * The loop is deliberately structured as pure decision helpers + an outer
  * driver, so `advance()` can be unit-tested standalone.
+ *
+ * That split has a failure mode worth naming, because it cost b119 through
+ * b123: a decision helper can be provably correct and still have no effect,
+ * because the driver never acts on what it returned. Unit tests on the helper
+ * pass, a grep for the handler passes, and the feature is dead. Anything that
+ * changes what `advance()` returns needs a SCENARIO test that asserts the run
+ * behaved differently, not a unit test that asserts the decision differed.
  */
 import type { HarnessConfig } from "../config.js";
 import type { BudgetEnforcer } from "../budgets/enforcer.js";
@@ -478,6 +487,13 @@ export interface OrchestratorDeps {
         checksReadable: boolean;
         statusReadable: boolean;
         reason: string;
+        /**
+         * beta.124: non-empty when the read failed for a reason waiting will not
+         * fix (401/403/404), carrying the remedy rather than the status code.
+         * Optional so an older or hand-rolled snapshot source still type-checks;
+         * absent simply means "keep polling", the pre-b124 behaviour.
+         */
+        permanentDenial?: string;
     }>;
     /**
      * beta.81 (Track B / B2): on CI `failure`, fetch a short excerpt of the

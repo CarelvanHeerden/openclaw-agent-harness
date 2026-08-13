@@ -132,6 +132,7 @@ const DEFAULTS = {
         wait_timeout_seconds: 900,
         poll_interval_seconds: 20,
         none_grace_seconds: 45,
+        permanent_denial_polls: 2,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",

@@ -154,6 +154,24 @@ export async function getPullRequest(input) {
 const FAILED_CONCLUSIONS = ["failure", "timed_out", "cancelled", "action_required", "stale"];
 /** Check-run conclusions that are not red and do not block a green verdict. */
 const PASSING_CONCLUSIONS = ["success", "neutral", "skipped"];
+/** HTTP codes that mean "no", not "not yet". */
+const PERMANENT_HTTP = new Set([401, 403, 404]);
+/**
+ * What an operator should actually go and do about a denial on one of the two
+ * CI APIs. GitHub's own message for a missing fine-grained-PAT permission is
+ * "Resource not accessible by integration", which names neither the resource
+ * nor the permission.
+ */
+function denialRemedy(api, status) {
+    const permission = api === "check-runs" ? "Checks: read" : "Commit statuses: read";
+    if (status === 401) {
+        return `the ${api} API rejected the token (HTTP 401 — bad or expired credentials). CI cannot be read until it is replaced.`;
+    }
+    if (status === 404) {
+        return `the ${api} API returned HTTP 404, which for an authenticated call usually means the token cannot see this repository at all (wrong account, or the repo was not granted to a fine-grained PAT).`;
+    }
+    return `the token cannot read the ${api} API (HTTP 403). A fine-grained PAT needs the "${permission}" repository permission; a classic PAT needs the "repo" scope. Waiting will not change this.`;
+}
 /**
  * beta.34: combined CI status for a commit SHA, merging the legacy Statuses API
  * and the Check Runs API into one verdict.
@@ -179,7 +197,9 @@ export async function getCiSnapshot(input) {
     const snap = {
         state: "unknown", statusReadable: false, checksReadable: false,
         statusState: "", statusCount: 0, checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, reason: "",
+        permanentDenial: "",
     };
+    const denials = [];
     try {
         const sRes = await fetch(`${base}/repos/${input.repoFullName}/commits/${input.sha}/status`, {
             headers: GH_HEADERS(input.ghToken),
@@ -192,6 +212,8 @@ export async function getCiSnapshot(input) {
         }
         else {
             snap.reason = `statuses API HTTP ${sRes.status}`;
+            if (PERMANENT_HTTP.has(sRes.status))
+                denials.push(denialRemedy("statuses", sRes.status));
         }
     }
     catch (err) {
@@ -218,6 +240,8 @@ export async function getCiSnapshot(input) {
         }
         else {
             snap.reason = snap.reason ? `${snap.reason}; check-runs API HTTP ${cRes.status}` : `check-runs API HTTP ${cRes.status}`;
+            if (PERMANENT_HTTP.has(cRes.status))
+                denials.push(denialRemedy("check-runs", cRes.status));
         }
     }
     catch (err) {
@@ -229,6 +253,9 @@ export async function getCiSnapshot(input) {
     // the CI gate itself.
     if (!snap.statusReadable || !snap.checksReadable) {
         snap.state = "unknown";
+        // b124: still unknown, still never a pass -- but now the caller can tell
+        // "come back in twenty seconds" from "go and fix the token".
+        snap.permanentDenial = denials.join(" ");
         return snap;
     }
     // Red beats everything, and beats it EARLY: a failed check is already

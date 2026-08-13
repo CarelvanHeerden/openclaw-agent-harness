@@ -1224,6 +1224,52 @@ const MUTATIONS = [
     tests: ["tests/beta123-confirmation-clauses.test.mjs"],
   },
 
+  {
+    name: "a granted cycle is actually RUN (b124): b119's extension was authorised and discarded on every run for four releases",
+    file: "dist/orchestrator/loop.js",
+    // The pre-b124 bound. `advance()` still decides to extend, the counter is
+    // still incremented and audited -- and the driver still stops, which is
+    // exactly the shape of the shipped bug. A test that only watches the
+    // decision or greps for the increment survives this untouched.
+    find: "while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted) {",
+    replace: "while (cycle < this.deps.config.loop.max_cycles) {",
+    tests: ["tests/beta124-scenario-cycle-extension.test.mjs"],
+  },
+  {
+    name: "a denial stops the poll (b124): 44 polls over 896s re-asking a 403 that answered on the first call",
+    file: "dist/orchestrator/loop.js",
+    find: "if (consecutivePermanentDenials >= denialCeiling) {",
+    replace: "if (false) {",
+    tests: ["tests/beta124-ci-permanent-denial.test.mjs"],
+  },
+  {
+    name: "401/403/404 are told apart from 5xx (b124): treating a permission denial as transient is what cost the 896s",
+    file: "dist/adapters/github.js",
+    find: "const PERMANENT_HTTP = new Set([401, 403, 404]);",
+    replace: "const PERMANENT_HTTP = new Set([]);",
+    tests: ["tests/beta124-ci-permanent-denial.test.mjs"],
+  },
+  {
+    name: "an unreadable gate is still never a pass (b119, re-pinned by b124's denial path)",
+    file: "dist/adapters/github.js",
+    find: "if (!snap.statusReadable || !snap.checksReadable) {",
+    replace: "if (false) {",
+    tests: [
+      "tests/beta119-ci-gate-fails-closed.test.mjs",
+      "tests/beta124-ci-permanent-denial.test.mjs",
+    ],
+  },
+
+  // NOT a mutation: the `cycleExtensionsGranted < maxCycleExtensions` cap in
+  // `advance()`. Neutering it to `true` does not make the b124 tests fail --
+  // it makes them HANG. Now that the driver honours a grant, every cycle would
+  // grant another and raise its own bound, and a converging arc keeps
+  // qualifying forever; the run never terminates and the harness never gets to
+  // report anything. A mutation that hangs the suite tells us less than the
+  // test already does, and costs four minutes to find out. "the extension is
+  // spent once, not compounded into an unbounded run" pins the property
+  // directly by counting cycles on an arc that qualifies at every ceiling.
+  //
   // NOT a mutation: the emitted finding's `severity: "high"` in loop.ts. Every
   // mutation here rewrites a `dist/` file, but the assertion that guards this
   // property is a SOURCE pin against `src/orchestrator/loop.ts`, so a dist-side

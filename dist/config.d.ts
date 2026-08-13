@@ -75,6 +75,18 @@ export interface CiConfig {
      * (restores beta.90 terminate-on-first-none). Default 45. Clamped [0, 300].
      */
     none_grace_seconds?: number;
+    /**
+     * beta.124: consecutive polls answered with 401/403/404 before the harness
+     * stops polling and reports the denial as the outcome.
+     *
+     * The b123 smoke asked the check-runs API 44 times over 896 seconds and was
+     * told 403 every time -- 12% of the run's wall clock spent re-reading a
+     * settled answer, ending in "could NOT determine CI state", which does not
+     * tell anyone what to fix. Not 1, because a lone 403 can be a secondary
+     * rate limit or a token mid-rotation; 2 in a row is a fact about the
+     * configuration. Minimum 1. Default 2.
+     */
+    permanent_denial_polls?: number;
 }
 export interface BriefConfig {
     /**
@@ -346,6 +358,22 @@ export interface ModelsAuthConfig {
 }
 export interface LoopConfig {
     max_cycles: number;
+    /**
+     * beta.124 INERT: declared, schema'd, defaulted -- and never read. A `pass`
+     * verdict ends the loop unconditionally (`advance()`, case "reviewing"), so
+     * setting this to false has never done anything.
+     *
+     * Left declared rather than deleted, because `additionalProperties: false`
+     * in the manifest means removing it would hard-fail every existing config
+     * that sets it. Not wired up either: the honest implementation of "false"
+     * is "keep cycling after a clean pass", which would then hit the ceiling
+     * carrying a `pass` verdict and ship as `shipped_max_cycles_revise` --
+     * do_not_merge on a run the adversary approved. That is a worse lie than the
+     * inert flag, for a mode nobody has asked for.
+     *
+     * `tests/beta124-config-keys-are-live.test.mjs` pins this list, so the next
+     * dead key fails CI instead of being discovered by a smoke test.
+     */
     adversarial_pass_ends_early: boolean;
     worker_timeout_seconds: number;
     adversary_timeout_seconds: number;

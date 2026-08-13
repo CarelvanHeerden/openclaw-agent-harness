@@ -102,6 +102,18 @@ export interface CiSnapshot {
     checkPassed: number;
     /** Which rule produced `state`, for the audit trail. */
     reason: string;
+    /**
+     * beta.124: set when a signal was unreadable for a reason that WAITING WILL
+     * NOT FIX -- 401/403/404 from GitHub, which mean the token is wrong, lacks a
+     * permission, or cannot see the repo. Empty when the failure is transient
+     * (5xx, rate limit, network) or when nothing failed.
+     *
+     * The b123 smoke burned 896 seconds across 44 polls on a check-runs 403 and
+     * then reported "could NOT determine CI state", which is true and useless:
+     * the answer had arrived, unchanged, on the first poll. The value here is
+     * the remedy, phrased for whoever has to go and fix the token.
+     */
+    permanentDenial: string;
 }
 /**
  * beta.34: combined CI status for a commit SHA, merging the legacy Statuses API

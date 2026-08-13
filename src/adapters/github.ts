@@ -225,6 +225,38 @@ export interface CiSnapshot {
   checkPassed: number;
   /** Which rule produced `state`, for the audit trail. */
   reason: string;
+  /**
+   * beta.124: set when a signal was unreadable for a reason that WAITING WILL
+   * NOT FIX -- 401/403/404 from GitHub, which mean the token is wrong, lacks a
+   * permission, or cannot see the repo. Empty when the failure is transient
+   * (5xx, rate limit, network) or when nothing failed.
+   *
+   * The b123 smoke burned 896 seconds across 44 polls on a check-runs 403 and
+   * then reported "could NOT determine CI state", which is true and useless:
+   * the answer had arrived, unchanged, on the first poll. The value here is
+   * the remedy, phrased for whoever has to go and fix the token.
+   */
+  permanentDenial: string;
+}
+
+/** HTTP codes that mean "no", not "not yet". */
+const PERMANENT_HTTP = new Set([401, 403, 404]);
+
+/**
+ * What an operator should actually go and do about a denial on one of the two
+ * CI APIs. GitHub's own message for a missing fine-grained-PAT permission is
+ * "Resource not accessible by integration", which names neither the resource
+ * nor the permission.
+ */
+function denialRemedy(api: "statuses" | "check-runs", status: number): string {
+  const permission = api === "check-runs" ? "Checks: read" : "Commit statuses: read";
+  if (status === 401) {
+    return `the ${api} API rejected the token (HTTP 401 — bad or expired credentials). CI cannot be read until it is replaced.`;
+  }
+  if (status === 404) {
+    return `the ${api} API returned HTTP 404, which for an authenticated call usually means the token cannot see this repository at all (wrong account, or the repo was not granted to a fine-grained PAT).`;
+  }
+  return `the token cannot read the ${api} API (HTTP 403). A fine-grained PAT needs the "${permission}" repository permission; a classic PAT needs the "repo" scope. Waiting will not change this.`;
 }
 
 /**
@@ -257,7 +289,9 @@ export async function getCiSnapshot(input: {
   const snap: CiSnapshot = {
     state: "unknown", statusReadable: false, checksReadable: false,
     statusState: "", statusCount: 0, checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, reason: "",
+    permanentDenial: "",
   };
+  const denials: string[] = [];
 
   try {
     const sRes = await fetch(`${base}/repos/${input.repoFullName}/commits/${input.sha}/status`, {
@@ -270,6 +304,7 @@ export async function getCiSnapshot(input: {
       snap.statusCount = sj.total_count ?? 0;
     } else {
       snap.reason = `statuses API HTTP ${sRes.status}`;
+      if (PERMANENT_HTTP.has(sRes.status)) denials.push(denialRemedy("statuses", sRes.status));
     }
   } catch (err) {
     snap.reason = `statuses API threw: ${String(err).slice(0, 120)}`;
@@ -298,6 +333,7 @@ export async function getCiSnapshot(input: {
       }
     } else {
       snap.reason = snap.reason ? `${snap.reason}; check-runs API HTTP ${cRes.status}` : `check-runs API HTTP ${cRes.status}`;
+      if (PERMANENT_HTTP.has(cRes.status)) denials.push(denialRemedy("check-runs", cRes.status));
     }
   } catch (err) {
     const m = `check-runs API threw: ${String(err).slice(0, 120)}`;
@@ -309,6 +345,9 @@ export async function getCiSnapshot(input: {
   // the CI gate itself.
   if (!snap.statusReadable || !snap.checksReadable) {
     snap.state = "unknown";
+    // b124: still unknown, still never a pass -- but now the caller can tell
+    // "come back in twenty seconds" from "go and fix the token".
+    snap.permanentDenial = denials.join(" ");
     return snap;
   }
 
