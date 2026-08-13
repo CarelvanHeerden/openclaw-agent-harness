@@ -1249,6 +1249,53 @@ const MUTATIONS = [
     replace: "const PERMANENT_HTTP = new Set([]);",
     tests: ["tests/beta124-ci-permanent-denial.test.mjs"],
   },
+  // --- beta.126 -----------------------------------------------------------
+  // Every rung of the b81/b97/b99 lead ladder was correct on b125 and the run
+  // died in planning regardless, because the signal that PICKS a rung was
+  // wrong. These pin the signal.
+  {
+    name: "truncation is read off the DOCUMENT (b126): b125 waited for a stop_reason the SDK never sent",
+    file: "dist/adapters/claude-sdk.js",
+    find: 'const wasTruncated = stopReason === "max_tokens" || looksTruncatedJson(raw);',
+    replace: 'const wasTruncated = stopReason === "max_tokens";',
+    tests: ["tests/beta126-lead-retry-ladder.test.mjs", "tests/beta126-truncation-by-shape.test.mjs"],
+  },
+  {
+    name: "an unclosed container is truncation, not prose (b126): the sentence that sent an operator after tools: []",
+    file: "dist/adapters/claude-sdk.js",
+    find: "if (looksTruncatedJson(text)) {",
+    replace: "if (false) {",
+    tests: ["tests/beta126-truncation-by-shape.test.mjs", "tests/beta97-blocker-fixes.test.mjs"],
+  },
+  {
+    name: "the shape check respects string state (b126): a brace inside a string would fake every truncation",
+    file: "dist/adapters/claude-sdk.js",
+    find: "if (!/[{[]/.test(text))",
+    replace: "if (false)",
+    tests: ["tests/beta126-truncation-by-shape.test.mjs"],
+  },
+  {
+    name: "a failed attempt is still billed (b126): two Opus calls were recorded as $0.00",
+    file: "dist/adapters/claude-sdk.js",
+    find: "err.costUsd = costUsd;",
+    replace: "err.costUsd = 0;",
+    tests: ["tests/beta126-lead-retry-ladder.test.mjs"],
+  },
+  {
+    name: "a retry bills for BOTH attempts (b126): attempt 1's spend vanished on every retried plan",
+    file: "dist/adapters/claude-sdk.js",
+    find: "costUsd: spentSoFar + r2.costUsd,",
+    replace: "costUsd: r2.costUsd,",
+    tests: ["tests/beta126-lead-retry-ladder.test.mjs"],
+  },
+  {
+    name: "the declared default is really applied (b126): three files promised 64000 and DEFAULTS did not carry it",
+    file: "dist/config.js",
+    find: "max_output_tokens: 64000,",
+    replace: "",
+    tests: ["tests/beta126-declared-defaults-are-applied.test.mjs"],
+  },
+
   // --- beta.125 -----------------------------------------------------------
   // b124 detected the denial and stopped. It then told the operator to grant a
   // permission that does not exist for the token class they were using, so the

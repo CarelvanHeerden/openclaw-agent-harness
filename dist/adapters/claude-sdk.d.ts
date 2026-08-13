@@ -57,6 +57,19 @@ export declare function buildSdkEnv(apiKey?: string, maxOutputTokens?: number): 
  *      `error_max_structured_output_retries` subtype (b97's original check).
  */
 export declare function messageIndicatesTruncation(message: unknown): boolean;
+/**
+ * beta.126: test seam for the retry ladder.
+ *
+ * Every rung of the b81/b97/b99 lead ladder was individually correct on b125
+ * and the run still died, because the signal that chooses between the rungs was
+ * wrong. That is a wiring failure, and a wiring failure is only visible to a
+ * test that drives the whole ladder. Nothing below `runLeadSdk` could be
+ * exercised without a real subprocess and a real API key, so nothing was.
+ *
+ * Replaces the cached SDK module and returns a restore function. Production
+ * never calls this; `loadSdk` behaves exactly as before when it is unused.
+ */
+export declare function __setSdkForTests(fake: unknown): () => void;
 export interface RunWorkerParams {
     worktreePath: string;
     systemPrompt: string;
@@ -314,6 +327,13 @@ export declare function runLeadScoutSdk(params: {
 export interface StructuredCallError extends Error {
     rawText?: string;
     truncated?: boolean;
+    /**
+     * beta.126: what the failed call cost. A call that throws still burned
+     * tokens -- the b125 planning failure spent six minutes of Opus across two
+     * attempts and the session recorded $0.00 -- and a caller cannot charge for
+     * what it is never told.
+     */
+    costUsd?: number;
 }
 /**
  * beta.99 (P0-6): repair a JSON document that was cut off mid-write.

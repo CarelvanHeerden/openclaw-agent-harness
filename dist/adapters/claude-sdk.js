@@ -123,6 +123,23 @@ export function messageIndicatesTruncation(message) {
     return false;
 }
 let sdkCache;
+/**
+ * beta.126: test seam for the retry ladder.
+ *
+ * Every rung of the b81/b97/b99 lead ladder was individually correct on b125
+ * and the run still died, because the signal that chooses between the rungs was
+ * wrong. That is a wiring failure, and a wiring failure is only visible to a
+ * test that drives the whole ladder. Nothing below `runLeadSdk` could be
+ * exercised without a real subprocess and a real API key, so nothing was.
+ *
+ * Replaces the cached SDK module and returns a restore function. Production
+ * never calls this; `loadSdk` behaves exactly as before when it is unused.
+ */
+export function __setSdkForTests(fake) {
+    const previous = sdkCache;
+    sdkCache = fake;
+    return () => { sdkCache = previous; };
+}
 async function loadSdk() {
     if (sdkCache)
         return sdkCache;
@@ -728,7 +745,11 @@ async function structuredCall(params) {
             // beta.97 (Fix #8): annotate a JSON-extraction failure that coincides
             // with a truncation stop_reason so the caller's retry path can raise the
             // compaction pressure instead of blindly re-asserting the contract.
-            if (stopReason === "max_tokens" && err instanceof Error && !/\[truncated:max_tokens\]/.test(err.message)) {
+            // beta.126: OR-in the shape verdict. `stop_reason` is authoritative when
+            // it arrives; when the SDK does not know the model it never does, and an
+            // unbalanced document is the truncation telling us itself.
+            const wasTruncated = stopReason === "max_tokens" || looksTruncatedJson(raw);
+            if (wasTruncated && err instanceof Error && !/\[truncated:max_tokens\]/.test(err.message)) {
                 err.message = `[truncated:max_tokens] ${err.message}`;
             }
             // beta.99 (P0-6): attach the FULL raw reply (the message embeds only the
@@ -737,7 +758,8 @@ async function structuredCall(params) {
             // instead of losing the entire call.
             if (err instanceof Error) {
                 err.rawText = raw;
-                err.truncated = stopReason === "max_tokens";
+                err.truncated = wasTruncated;
+                err.costUsd = costUsd;
             }
             throw err;
         }
@@ -805,6 +827,30 @@ function parsesAsJson(s) {
     catch {
         return false;
     }
+}
+/**
+ * beta.126: is this reply a JSON document that was cut off?
+ *
+ * Until now the only evidence of truncation the harness would accept was
+ * `stop_reason === "max_tokens"` from the SDK. That works when the SDK knows
+ * the model. When it does not -- a model id newer than the pinned SDK, which
+ * is the b125 lead configuration -- the output stops at a ceiling the SDK
+ * never names, no stop reason arrives, and the b97 compaction retry never
+ * fires. The b81 anti-prose rung runs instead and re-truncates identically,
+ * because telling a model "you returned prose, begin with '{'" does nothing
+ * about a reply being cut at a fixed length. That is 6m15s and $0 for nothing.
+ *
+ * The document itself is better evidence than the metadata. A reply that opens
+ * a JSON container and never closes it was cut off -- there is no other way to
+ * produce one. Prose has no opening container; prose wrapped around a complete
+ * object balances and never reaches here.
+ */
+function looksTruncatedJson(text) {
+    if (!text)
+        return false;
+    if (!/[{[]/.test(text))
+        return false; // no container was ever opened: prose
+    return scanBalanced(text) === null; // opened and never closed: cut off
 }
 /**
  * beta.99 (P0-6): repair a JSON document that was cut off mid-write.
@@ -986,6 +1032,19 @@ export function extractJson(text) {
     // diagnostic), or throw the prose error if we found nothing JSON-shaped.
     if (candidates.length > 0)
         return candidates[0];
+    // beta.126: tell the two failures apart before naming a cause.
+    //
+    // There was one message here, and it said the model returned prose and to
+    // check `tools: []`. On the b125 planning failure the reply began
+    // `{"repo":"Stitch-Vercel/ProjectThanos","branch":...` -- unmistakably the
+    // contract, cut off mid-write -- and the error still called it prose and
+    // pointed at built-in tools. An operator following that advice is debugging
+    // a subsystem that is working. Confidently wrong is worse than silent.
+    if (looksTruncatedJson(text)) {
+        throw new Error(`truncated JSON in output (the reply opened a JSON container and never closed it — ` +
+            `it was cut off, most likely at an output-token ceiling; this is NOT prose drift): ` +
+            `${text.length} chars, ending "...${text.slice(-120)}"`);
+    }
     throw new Error(`no JSON in output (model returned prose, not the JSON contract — ` +
         `check that structured calls run with tools: [] to disable built-in tools): ${text.slice(0, 200)}`);
 }
@@ -1368,7 +1427,10 @@ export async function runLeadSdk(params) {
         // beta.99 (P0-7): a stream-open wedge joins this set. It is not a model
         // failure at all -- the subprocess never got going -- so a fresh call is
         // exactly the right remedy, and it is bounded to the same single retry.
-        if (!/extractJson failed|no JSON in output|validation failed|JSON\.parse|\[stream_open_timeout\]/i.test(msg))
+        // beta.126: `truncated JSON in output` joins the set. The wrapper already
+        // prefixes `extractJson failed`, so it would be admitted anyway -- naming
+        // it keeps the guard readable against the message it is guarding.
+        if (!/extractJson failed|no JSON in output|truncated JSON in output|validation failed|JSON\.parse|\[stream_open_timeout\]/i.test(msg))
             throw err;
         // beta.97 (Fix #8): a TRUNCATED plan (stop_reason max_tokens -> annotated
         // `[truncated:max_tokens]` by structuredCall) will re-truncate identically
@@ -1396,11 +1458,21 @@ export async function runLeadSdk(params) {
         params.logger?.warn?.(truncated
             ? "[lead] plan JSON TRUNCATED (output ceiling hit); retrying ONCE with a MECHANICAL size reduction (beta.99)"
             : "[lead] plan JSON parse/validation failed; retrying ONCE with a terse output-contract re-assertion (beta.81 anti-prose-drift)", { error: msg.slice(0, 300), truncated });
+        // beta.126: attempt 1 cost real money whether or not it parsed. Carrying it
+        // forward means a plan that took two goes is billed for two goes, and a
+        // plan that never landed is still billed. Pre-b126 both attempts vanished.
+        const spentSoFar = err.costUsd ?? 0;
         try {
             const r2 = await call(retryMsg);
-            return { ...r2.parsed, costUsd: r2.costUsd, tokensIn: r2.tokensIn, tokensOut: r2.tokensOut };
+            return {
+                ...r2.parsed,
+                costUsd: spentSoFar + r2.costUsd,
+                tokensIn: r2.tokensIn,
+                tokensOut: r2.tokensOut,
+            };
         }
         catch (err2) {
+            err2.costUsd = spentSoFar + (err2.costUsd ?? 0);
             // beta.99 (P0-6): LAST RESORT. Both attempts were cut off. Rather than
             // end the session with nothing, salvage the longest well-formed prefix.
             // The result is a REAL but INCOMPLETE plan (trailing sub-tasks are gone),
@@ -1412,7 +1484,14 @@ export async function runLeadSdk(params) {
             if (salvaged) {
                 params.logger?.warn?.("[lead] both plan attempts were TRUNCATED; SALVAGED the well-formed prefix of the reply (beta.99). " +
                     "This plan is INCOMPLETE -- trailing sub-tasks were cut off. Review the PR with that in mind.", { subTasks: salvaged.subTasks?.length ?? 0 });
-                return { ...salvaged, costUsd: 0, tokensIn: 0, tokensOut: 0 };
+                // beta.126: a salvaged plan is not a free plan. Both attempts were paid
+                // for; reporting 0 here is how two Opus calls became $0.00 on the ledger.
+                return {
+                    ...salvaged,
+                    costUsd: err2.costUsd ?? spentSoFar,
+                    tokensIn: 0,
+                    tokensOut: 0,
+                };
             }
             throw err2;
         }

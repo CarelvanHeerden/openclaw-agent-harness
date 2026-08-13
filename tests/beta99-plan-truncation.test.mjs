@@ -209,7 +209,14 @@ test("beta.99: a structuredCall failure carries the FULL raw reply for salvage",
   // The error MESSAGE embeds only the first 4000 chars -- far too little to
   // rebuild a plan from -- so the untruncated text rides on the error object.
   assert.match(src, /\(err as StructuredCallError\)\.rawText = raw;/);
-  assert.match(src, /\(err as StructuredCallError\)\.truncated = stopReason === "max_tokens";/);
+  // b126: was pinned as `truncated = stopReason === "max_tokens"`. That is now
+  // OR-ed with the document's own shape, because on b125 the SDK never sent a
+  // stop reason for a reply it had plainly cut off, `truncated` came back
+  // false, and the ladder took the anti-prose rung and re-truncated. The
+  // behaviour is covered end to end in beta126-lead-retry-ladder; what this
+  // still guards is that the flag is set from SOMETHING at this site.
+  assert.match(src, /\(err as StructuredCallError\)\.truncated = wasTruncated;/);
+  assert.match(src, /stopReason === "max_tokens" \|\| looksTruncatedJson\(raw\)/);
 });
 
 test("beta.99: salvage only accepts a plan with the required keys and >=1 sub-task", () => {

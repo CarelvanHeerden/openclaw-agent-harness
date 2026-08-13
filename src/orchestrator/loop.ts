@@ -1824,10 +1824,41 @@ export class OrchestratorLoop {
       if (err instanceof WorkerTimeoutError) {
         this.deps.state.audit("loop.lead_timeout", { sessionId, lead_timeout_seconds: this.deps.config.loop.lead_timeout_seconds }, sessionId);
       }
+      // beta.126: record WHY, not just "error".
+      //
+      // The b125 planning failure left one line in the interaction log:
+      // `finishReason: "error", durationMs: 375276`. No output size, no
+      // truncation verdict, no cost. Working out that the plan had been cut
+      // off at an invisible ceiling took the manifest, the schema, DEFAULTS,
+      // two config greps and the container logs. All of it was knowable here.
+      const e = err as { truncated?: boolean; rawText?: string; costUsd?: number };
       this.deps.interactionLog?.logSdkResponse(sessionId, {
         role: "lead", model: this.deps.config.models.lead, phase: "plan",
-        finishReason: err instanceof WorkerTimeoutError ? "timeout" : "error", durationMs: Date.now() - leadStart,
+        finishReason: err instanceof WorkerTimeoutError
+          ? "timeout"
+          : e?.truncated === true ? "truncated" : "error",
+        durationMs: Date.now() - leadStart,
+        outputChars: e?.rawText?.length,
+        costUsd: e?.costUsd,
+        finalMessageTail: e?.rawText ? e.rawText.slice(-200) : undefined,
       });
+      if (e?.truncated === true) {
+        this.deps.state.audit(
+          "loop.plan_truncated",
+          {
+            sessionId,
+            outputChars: e.rawText?.length ?? 0,
+            maxOutputTokens: this.deps.config.models.max_output_tokens ?? null,
+            model: this.deps.config.models.lead,
+            note:
+              "the plan opened a JSON container and never closed it, so it was cut off. Compare outputChars " +
+              "against the ceiling: if it is at the ceiling the plan is too large for one reply (the compaction " +
+              "retry handles that); if it is well under, something ended the stream early and the ceiling is a " +
+              "red herring. b125 lost an hour to not having this number.",
+          },
+          sessionId,
+        );
+      }
       this.deps.interactionLog?.log(sessionId, { event: "plan_failed", phase: "plan", error: String(err) });
       this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
       return this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd);

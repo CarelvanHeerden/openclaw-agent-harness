@@ -1306,6 +1306,26 @@ const DEFAULTS: HarnessConfig = {
     worker: "claude-sonnet-5",
     adversary: "claude-fable-5",
     classifier: "claude-haiku-4-5",
+    // beta.126: make the declared default true in the config object too.
+    //
+    // b99 declared `"default": 64000` in the manifest, again in
+    // config.schema.json, and a third time in the doc comment here ("Default
+    // here: 64000"), but never put it in DEFAULTS. A JSON Schema `default` is
+    // an annotation -- it describes a value, it does not supply one.
+    //
+    // In practice the ceiling still reached the subprocess, because
+    // `buildSdkEnv` falls back to DEFAULT_SDK_MAX_OUTPUT_TOKENS (the same
+    // 64000) when the parameter is undefined. So this was a consistency bug,
+    // not an outage: `config.models.max_output_tokens` read back as undefined
+    // for anyone inspecting the effective config, logging it, or reasoning
+    // about it -- which is exactly what happened while diagnosing the b125
+    // planning failure, and it cost an hour chasing the wrong cause.
+    //
+    // Two defaults for one value, in two files, is the actual defect. Kept as
+    // a literal because config.ts imports nothing (importing the adapter here
+    // would close a cycle); the b126 guard test asserts this equals
+    // DEFAULT_SDK_MAX_OUTPUT_TOKENS so the pair cannot drift apart.
+    max_output_tokens: 64000,
     auth: {
       credential_service: "",
       api_key_env: "ANTHROPIC_API_KEY",
