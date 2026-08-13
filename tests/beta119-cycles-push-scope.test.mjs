@@ -161,13 +161,28 @@ test("isConvergingBlockingTrend is stricter than the b97 advisory predicate", sk
   assert.equal(isConvergingFindingTrend([13, 8, 12]), true);
 });
 
-test("the loop counts grants and audits the extension", () => {
-  const src = S("src/orchestrator/loop.ts");
-  assert.match(src, /cycleExtensionsGranted \+= 1;/);
-  assert.match(src, /"loop\.max_cycles_extended"/);
-  // beta.120 (fix 6): the session's OWN budget is now the fourth constraint.
-  assert.match(src, /hasBudgetHeadroomForAnotherCycle\(row\.requester, totalCost, cycle, row\.budget_usd\)/);
-  assert.match(src, /blockingCountsByCycle\.push\(blockingFindings\)/);
+// beta.124 — the test that used to sit here was called "the loop counts grants
+// and audits the extension", and it asserted that loop.ts CONTAINED the string
+// `cycleExtensionsGranted += 1;`. It did. It always did. And for four releases
+// the loop incremented that counter, audited `loop.max_cycles_extended`,
+// logged its reasoning, and then exited anyway, because the driver's bound was
+// `while (cycle < max_cycles)` and the grant is made on the cycle that
+// exhausts the ceiling. The b123 OpenClaw smoke granted an extension at cycle
+// 3 with $21 of a $40 budget unspent and shipped three cycles with three
+// blocking findings open.
+//
+// A grep for the increment cannot see that. Neither can any of the
+// `advance()` tests above, which are correct and worth keeping -- the decision
+// was never the broken part. What sees it is counting the cycles a real run
+// executed, so the coverage moved to
+// tests/beta124-scenario-cycle-extension.test.mjs. Every property the grep
+// gestured at (the grant, the audit, the budget-headroom wiring, the blocking
+// arc feeding the decision) is implied by that scenario: none of it can be
+// disconnected without the extra cycle failing to run.
+test("the extension's end-to-end coverage exists and is behavioural", () => {
+  const scenario = S("tests/beta124-scenario-cycle-extension.test.mjs");
+  assert.match(scenario, /cycles_ran, 3/, "something must assert the extra cycle actually ran");
+  assert.match(scenario, /loop\.max_cycles_extended/);
 });
 
 test("budget headroom is measured from this run's own per-cycle spend", () => {

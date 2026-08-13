@@ -1,5 +1,126 @@
 # Changelog
 
+## 0.1.0-beta.124
+
+### A cycle the harness paid for, authorised, and never took
+
+b123 shipped. That is worth saying plainly, because it had been a while: the
+smoke ran three cycles, opened PR #1022, spent $18.97 of $40, and terminated
+cleanly with no lost work. The rescue-retraction fix b123 was built for never
+fired, because no contract mismatch came up — so it is untested rather than
+disproven.
+
+What the run did surface was written in its own audit log:
+
+```
+loop.max_cycles_extended {"cycle":3,"granted":1,"maxExtensions":1,
+                          "blockingArc":[4,4,3],"spentUsd":18.9663}
+```
+
+The fourth cycle was granted. It never ran.
+
+b119 added an extension: when the adversary's blocking findings trend down and
+the budget has room, buy one more cycle rather than shipping on the ceiling.
+`advance()` implemented it exactly right. The driver that acts on its answer
+did not:
+
+```js
+while (cycle < this.deps.config.loop.max_cycles) {
+```
+
+The grant is made *on* the cycle that exhausts the ceiling. So the loop
+incremented `cycleExtensionsGranted`, wrote the audit event, logged its
+reasoning — and then evaluated `3 < 3`, exited, and shipped. The counter is
+read back only on the next call to `advance()`, which never comes. **b119's
+extension has never run, in any release, since it shipped.**
+
+It cost this run its best chance at the finding that stayed open: a tenant
+scoping gap on `[id]/route.ts`. Routed to the owning sub-task in both revise
+cycles, and fixed sideways each time — cycle 2 applied it to the upload route,
+cycle 3 found the original still unscoped. One more cycle had a real chance,
+the trend qualified for it, and $21 was sitting unspent.
+
+The fix is the bound. Still capped by `max_cycle_extensions`, so an extended
+run buys exactly the cycles it was granted and no more.
+
+### Why seven green tests said otherwise
+
+Six of the b119 tests call `OrchestratorLoop.advance(...)` directly and assert
+the decision. All six were right, and all six still pass unchanged — the
+decision was never the broken part. The seventh was this:
+
+```js
+assert.match(src, /cycleExtensionsGranted \+= 1;/);
+```
+
+Its name was "the loop counts grants and audits the extension". The string was
+present. The feature was dead. That is the b123 lesson arriving one layer up:
+a decision helper can be provably correct and have no effect, because the
+driver ignores what it returned, and neither a unit test on the helper nor a
+grep for the handler can tell the difference.
+
+`tests/beta124-scenario-cycle-extension.test.mjs` counts the cycles a real run
+executes. The grep is gone, and `loop.ts`'s header now says out loud that
+anything changing what `advance()` returns needs a scenario test rather than a
+unit test.
+
+### The same species, swept for
+
+If a computed decision can be discarded, so can a configured one. Two more
+were:
+
+- **`ci.none_grace_seconds`** and **`repos.draft_pr_on_nonpass`** and
+  **`loop.revise_targeted_planbase_window`** were read by the code and shipped
+  as defaults, but absent from the manifest the gateway validates against —
+  and every section sets `additionalProperties: false`. Setting any of them
+  did not change behaviour; it rejected the entire config. One of them is
+  documented as a kill-switch. It could not be pulled.
+- **`loop.adversarial_pass_ends_early`** is read by nothing. A `pass` has
+  always ended the loop unconditionally. It stays declared for config
+  compatibility, now marked INERT where someone editing the config will meet
+  it, rather than reading as a live knob.
+
+`tests/beta124-config-keys-are-live.test.mjs` makes both permanent: every
+shipped loop default must be read somewhere or listed as inert with a reason,
+and every shipped default must be a key the gateway would actually accept.
+
+### A denial is an answer
+
+The b123 run spent 896 seconds — 12% of its wall clock — polling the GitHub
+check-runs API 44 times. Every call returned HTTP 403. It then reported:
+
+> Could NOT determine CI state for 02299b20 after 896s of polling
+> (check-runs API HTTP 403)
+
+True, and useless. A 403 is a permissions answer, and it had arrived,
+unchanged, on the first poll. The reason names neither what is missing nor how
+to fix it — and the shape of the failure says exactly what it is: the statuses
+API read fine and only check-runs was denied, which is a fine-grained PAT
+without the **Checks: read** permission.
+
+`getCiSnapshot` now distinguishes codes that mean *no* (401, 403, 404) from
+codes that mean *not yet* (5xx, 429, network), and carries the remedy rather
+than the status number. The poller stops after
+`ci.permanent_denial_polls` consecutive denials — two by default, not one,
+because a lone 403 can be a secondary rate limit or a token mid-rotation.
+
+The gate itself is unchanged. b119 made it fail closed and it stays closed: an
+unreadable signal is never a pass, and the merge recommendation is still
+`needs_human_review`. b124 only changes how long it takes to say so, and
+whether what it says is actionable.
+
+### Also
+
+- The converging-ship note quoted `max_cycles` from config even on a run that
+  had been extended past it, telling an operator who had just watched four
+  cycles that the run "hit the 3-cycle ceiling". It now reports the ceiling the
+  run actually hit, and says how much of it was granted.
+- Two mutation candidates were considered and deliberately not added: removing
+  the extension cap, and removing the poller's early stop, both of which make
+  the suite *hang* rather than fail. Each is documented in
+  `scripts/mutation-check.mjs` next to the property that covers it behaviourally.
+- 1861 tests, 157 mutations, all caught.
+
 ## 0.1.0-beta.123
 
 ### Two rescues that never once let a run finish

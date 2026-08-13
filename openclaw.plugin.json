@@ -175,6 +175,11 @@
             },
             "default": [],
             "description": "beta.114: pathspecs whose changes are reverted instead of committed -- generated trees that belong to the repo's tooling, not to any feature (e.g. [\"okf/**\"]). Empty by default."
+          },
+          "draft_pr_on_nonpass": {
+            "type": "boolean",
+            "default": false,
+            "description": "beta.32: when the adversary verdict is not a clean pass, open the PR as a GitHub draft. Default false, because draft PRs are rejected with HTTP 422 on repos that do not support them (private repos on free plans), which would kill the run at the very last step; even when true the live path retries as a non-draft PR on a 422 rather than failing. The verdict warning goes in the PR body either way. Added to the manifest in b124: the key was read by the code and defaulted in config since b32, but was absent here, so the gateway rejected any config that tried to set it."
           }
         }
       },
@@ -644,6 +649,11 @@
             "maximum": 1800,
             "default": 300,
             "description": "beta.113: ceiling for the escalated first-token window."
+          },
+          "revise_targeted_planbase_window": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.95: on a revise cycle, verify a TARGETED contract file against the branch fork-point window (plan_base_sha..HEAD) rather than the worker-session-start window. Without it, a file cycle 1 already touched has an mtime older than cycle 2's sub-task start and its cycle-1 commit sits outside the narrower range, so file_written and file_committed both false-fail on a genuine cycle-2 edit. false restores the b94 window. Added to the manifest in b124: this was documented as a kill-switch since b95 and read in three places, but the gateway would reject any config that pulled it."
           }
         }
       },
@@ -666,6 +676,11 @@
             "type": "number",
             "default": 45,
             "description": "beta.91 (F4): grace window (seconds) for an authored-this-cycle CI workflow to REGISTER on GitHub before the harness concludes 'no CI'. Fixes the b90 bug where the harness shipped a merge recommendation 0.5s after push, before its own workflow registered, then CI later caught a real typecheck error. Only applies when a workflow was authored this cycle; a genuine no-CI repo still returns none fast. A still-none result after the grace window is a distinct NON-blocking authored_workflow_never_registered outcome (merge still recommended, but the human sees CI did not verify the SHA). 0 disables (beta.90 terminate-on-first-none). Clamped [0, 300]."
+          },
+          "permanent_denial_polls": {
+            "type": "number",
+            "default": 2,
+            "description": "beta.124: how many CONSECUTIVE polls answered 401/403/404 before the harness stops polling CI and reports the denial as the outcome. A denial is an answer, not a delay: the b123 smoke asked the check-runs API 44 times over 896 seconds (12% of the run's wall clock), was told 403 every time, and ended on 'could NOT determine CI state' -- which does not tell anyone what to fix. Stopping early instead reports the remedy, naming the missing fine-grained-PAT permission ('Checks: read' or 'Commit statuses: read'). Not 1, because a lone 403 can be a secondary rate limit or a token mid-rotation; two in a row is a fact about the configuration. The merge recommendation is unchanged -- an unreadable gate is still needs_human_review, never a pass. Minimum 1."
           }
         }
       },

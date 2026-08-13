@@ -6,7 +6,9 @@
  *
  *   crystallising -> planning -> executing -> reviewing -> {done|revise}
  *
- * Up to `config.loop.max_cycles` cycles of executing+reviewing. Early exits:
+ * Up to `config.loop.max_cycles` cycles of executing+reviewing, plus any
+ * extension `advance()` grants for a converging finding trend (b119). Early
+ * exits:
  *   - Adversary verdict "pass"
  *   - User ship-it reaction
  *   - User abort reaction
@@ -15,6 +17,13 @@
  *
  * The loop is deliberately structured as pure decision helpers + an outer
  * driver, so `advance()` can be unit-tested standalone.
+ *
+ * That split has a failure mode worth naming, because it cost b119 through
+ * b123: a decision helper can be provably correct and still have no effect,
+ * because the driver never acts on what it returned. Unit tests on the helper
+ * pass, a grep for the handler passes, and the feature is dead. Anything that
+ * changes what `advance()` returns needs a SCENARIO test that asserts the run
+ * behaved differently, not a unit test that asserts the decision differed.
  */
 import { elideFinalScopeSubTask } from "./fable5-lead.js";
 import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
@@ -1335,7 +1344,18 @@ export class OrchestratorLoop {
         // one more tolerant match rule. Accumulated across sub-tasks within the run.
         const discoveredRealPaths = new Set();
         // 2. Execute/review cycles
-        while (cycle < this.deps.config.loop.max_cycles) {
+        //
+        // beta.124: the bound includes `cycleExtensionsGranted`, and that is the
+        // whole reason b119's extension does anything at all. `advance()` decided
+        // to extend, this body incremented the counter and audited
+        // `loop.max_cycles_extended` -- and then the old bound (`cycle <
+        // max_cycles`) ended the loop anyway, because the grant happened on the
+        // very cycle that exhausted the ceiling. The extension was authorised and
+        // discarded on every run since b119; the b123 OpenClaw smoke granted one
+        // at cycle 3 with $21 unspent and shipped three cycles anyway. Still
+        // bounded: `canExtend` refuses past `max_cycle_extensions`, so this can
+        // only ever run that many extra cycles.
+        while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted) {
             cycle += 1;
             this.deps.state.db.prepare(`UPDATE sessions SET cycles_ran = ? WHERE id = ?`).run(cycle, sessionId);
             this.checkpoint(sessionId, cycle);
@@ -3480,10 +3500,22 @@ export class OrchestratorLoop {
         // rather than a bare do_not_merge with no context.
         if (terminalDoneReason === "shipped_max_cycles_revise_converging") {
             const arc = findingCountsByCycle.join(" → ");
+            // beta.124: the ceiling this run actually hit, not the configured one --
+            // an extended run stops at max_cycles + the grants it was given, and
+            // quoting the config number at an operator who watched four cycles go by
+            // reads as a bug in the report.
+            const effectiveCeiling = this.deps.config.loop.max_cycles + cycleExtensionsGranted;
+            const extended = cycleExtensionsGranted > 0
+                ? ` (${this.deps.config.loop.max_cycles} configured, +${cycleExtensionsGranted} granted for converging findings)`
+                : "";
             finalReason =
-                `${finalReason}\n\nCONVERGING: adversary findings were trending down across cycles (${arc}) but the run hit the ${this.deps.config.loop.max_cycles}-cycle ceiling before a clean pass. ` +
+                `${finalReason}\n\nCONVERGING: adversary findings were trending down across cycles (${arc}) but the run hit the ${effectiveCeiling}-cycle ceiling${extended} before a clean pass. ` +
                     `This looks worth extending: re-run \`harness_revise\` on this PR to continue from the current findings — a clean sign-off was plausibly one or two cycles away.`;
-            this.deps.state.audit("loop.max_cycles_extend_suggested", { sessionId, findingCountsByCycle, maxCycles: this.deps.config.loop.max_cycles }, sessionId);
+            this.deps.state.audit("loop.max_cycles_extend_suggested", {
+                sessionId, findingCountsByCycle,
+                maxCycles: this.deps.config.loop.max_cycles,
+                cycleExtensionsGranted, effectiveCeiling,
+            }, sessionId);
         }
         const prNumber = parsePrNumber(prUrl);
         this.deps.state.db
@@ -4072,6 +4104,14 @@ export class OrchestratorLoop {
         // a poll reporting fewer is a stale read, not progress.
         let maxChecksSeen = 0;
         let lastIndeterminateReason = "";
+        // beta.124: consecutive polls whose failure was 401/403/404 -- a denial,
+        // not a delay. The b123 smoke spent 896s and 44 polls re-asking a
+        // check-runs 403 that answered identically every time, then reported
+        // nothing more useful than "could not determine". Counted rather than
+        // tripped on the first sighting, because a single 403 can be a rate-limit
+        // secondary or a mid-rotation token; two in a row is a configuration fact.
+        let consecutivePermanentDenials = 0;
+        let lastPermanentDenial = "";
         // First read is immediate (no leading sleep) so a repo with no CI resolves
         // fast and a fast CI is not needlessly waited on.
         for (;;) {
@@ -4084,6 +4124,13 @@ export class OrchestratorLoop {
                     checkTotal = snap.checkTotal;
                     if (snap.state === "unknown")
                         lastIndeterminateReason = snap.reason;
+                    if (snap.permanentDenial) {
+                        consecutivePermanentDenials += 1;
+                        lastPermanentDenial = snap.permanentDenial;
+                    }
+                    else {
+                        consecutivePermanentDenials = 0;
+                    }
                 }
                 else {
                     status = await this.deps.ciCombinedStatus({ repoFullName, sha, requester });
@@ -4106,6 +4153,21 @@ export class OrchestratorLoop {
                 }
             }
             if (status === "unknown") {
+                // beta.124: a denial is an answer. Stop asking, and hand back the
+                // remedy instead of the elapsed time.
+                const denialCeiling = Math.max(1, cfg.permanent_denial_polls ?? 2);
+                if (consecutivePermanentDenials >= denialCeiling) {
+                    const waitedSeconds = Math.round((now() - started) / 1000);
+                    this.deps.state.audit("loop.ci_permanently_denied", { sessionId, sha, polls, waitedSeconds, denial: lastPermanentDenial, reason: lastIndeterminateReason }, sessionId);
+                    this.deps.interactionLog?.log(sessionId, { event: "ci_permanently_denied", phase: "finalize", sha });
+                    this.deps.logger.warn("[loop] beta.124: CI is unreadable for a reason waiting cannot fix -- abandoning the poll", { sessionId, sha, polls, denial: lastPermanentDenial });
+                    return {
+                        outcome: "indeterminate",
+                        sha,
+                        waitedSeconds,
+                        reason: `CI could not be read: ${lastPermanentDenial}`,
+                    };
+                }
                 // beta.119: we could not read one of the two APIs (or read a state we
                 // have no rule for). That is NOT a pass. Re-poll inside the budget; if
                 // it never resolves, the caller flags the PR for a human.
