@@ -212,6 +212,8 @@ export async function runLeadPlanner(brief, deps) {
     // (but a plan with no mutate/mixed sub-tasks trivially passes the gate).
     const enforceContext = deps.config.loop?.enforce_worker_context !== false;
     const maxAttempts = enforceContext ? 2 : 1;
+    // beta.127 (#157): `& { costUsd? }` so the adapter's reported spend survives
+    // the assignment. Typed as the bare Omit, TypeScript erased it here.
     let raw;
     let correctiveNote;
     // beta.73 (D2): when the brief carries a `branchHint` that names an EXISTING
@@ -336,9 +338,15 @@ export async function runLeadPlanner(brief, deps) {
     // valid plan we already held. A run must never die holding a usable plan.
     let lastValid;
     let lastValidMissing = [];
+    // beta.127 (#157): every attempt is billed, including the ones whose plan we
+    // throw away. Accumulated across the loop rather than read off the winner,
+    // because the b67 re-ask can double the planning bill and a failed run's
+    // spend is exactly the number nobody could see.
+    let leadCallCostUsd = 0;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             raw = await deps.callLeadModel(brief, deps.config.repos.allowed, correctiveNote);
+            leadCallCostUsd += raw.costUsd ?? 0;
             // beta.44: revise flow. Override the lead branch/repo BEFORE validation.
             if (brief.pinnedBranch) {
                 raw.branch = brief.pinnedBranch;
@@ -455,11 +463,16 @@ export async function runLeadPlanner(brief, deps) {
     }
     const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch, deps.onBranchDecision);
     const approxCostUsd = deps.estimateCost(raw);
-    const plan = { ...raw, worktreePath, approxCostUsd, scout: scoutOutcome };
+    // beta.127 (#157): planning attempts plus the scout that preceded them. The
+    // scout's cost was already recorded on the outcome and also never reached the
+    // ledger, so it joins the same total.
+    const actualCostUsd = Number((leadCallCostUsd + (scoutOutcome?.costUsd ?? 0)).toFixed(6));
+    const plan = { ...raw, worktreePath, approxCostUsd, actualCostUsd, scout: scoutOutcome };
     deps.logger.info("[lead] plan", {
         subTaskCount: plan.subTasks.length,
         risk: plan.riskLevel,
         approxCostUsd,
+        actualCostUsd,
     });
     return plan;
 }

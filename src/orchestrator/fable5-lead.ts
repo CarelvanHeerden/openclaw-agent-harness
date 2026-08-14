@@ -217,6 +217,16 @@ export interface LeadPlan {
   riskLevel: "low" | "medium" | "high";
   approxCostUsd: number;             // sum of estimatedTokens converted via price table
   /**
+   * beta.127 (#157): what planning ACTUALLY cost -- every lead attempt plus the
+   * repo scout. Distinct from `approxCostUsd`, which is a forecast of what the
+   * PLAN will cost to execute, derived from estimated tokens. The two were
+   * easy to confuse and only one of them was ever a real number.
+   *
+   * Undefined on plans built by callers that do not report cost (tests, and the
+   * revise paths that synthesise a plan without calling a model).
+   */
+  actualCostUsd?: number;
+  /**
    * beta.104: what the pre-planning repo scout did. Carried on the plan so the
    * loop can audit it, because the question "did the lead actually see the
    * repo?" must be answerable from the trail alone. b102's post-mortem could
@@ -329,11 +339,31 @@ export interface LeadDeps {
    */
   pinnedSessionBranch?: string;
   logger: { info: (m: string, meta?: unknown) => void; warn?: (m: string, meta?: unknown) => void };
+  /**
+   * beta.127 (#157): the return type now admits what the implementation has
+   * always returned. `runLeadSdk` reports `costUsd` on every call; this
+   * signature declared `Omit<LeadPlan, ...>`, so TypeScript erased the field at
+   * the assignment and the lead's spend was dropped on the floor between the
+   * adapter and the planner.
+   *
+   * The effect was not a rounding error. On the b126 smoke the lead spent 311
+   * seconds on Opus across two attempts and the session reported $18.78, with
+   * the lead contributing $0.00 -- every worker and every adversary call
+   * carried a cost, and the most expensive model in the run carried none. A
+   * budget ceiling cannot bound spend it is not shown, and a run that fails IN
+   * planning still reported $0.00 having burned real tokens.
+   */
   callLeadModel: (
     brief: CrystallisedBrief,
     repos: string[],
     correctiveNote?: string,
-  ) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
+  ) => Promise<
+    Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
+      costUsd?: number;
+      tokensIn?: number;
+      tokensOut?: number;
+    }
+  >;
   allocateWorktree: (
     repo: string,
     branch: string,
@@ -560,7 +590,9 @@ export async function runLeadPlanner(
   // (but a plan with no mutate/mixed sub-tasks trivially passes the gate).
   const enforceContext = deps.config.loop?.enforce_worker_context !== false;
   const maxAttempts = enforceContext ? 2 : 1;
-  let raw: Omit<LeadPlan, "worktreePath" | "approxCostUsd"> | undefined;
+  // beta.127 (#157): `& { costUsd? }` so the adapter's reported spend survives
+  // the assignment. Typed as the bare Omit, TypeScript erased it here.
+  let raw: (Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & { costUsd?: number }) | undefined;
   let correctiveNote: string | undefined;
 
   // beta.73 (D2): when the brief carries a `branchHint` that names an EXISTING
@@ -684,10 +716,16 @@ export async function runLeadPlanner(
   // valid plan we already held. A run must never die holding a usable plan.
   let lastValid: Omit<LeadPlan, "worktreePath" | "approxCostUsd"> | undefined;
   let lastValidMissing: number[] = [];
+  // beta.127 (#157): every attempt is billed, including the ones whose plan we
+  // throw away. Accumulated across the loop rather than read off the winner,
+  // because the b67 re-ask can double the planning bill and a failed run's
+  // spend is exactly the number nobody could see.
+  let leadCallCostUsd = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       raw = await deps.callLeadModel(brief, deps.config.repos.allowed, correctiveNote);
+      leadCallCostUsd += raw.costUsd ?? 0;
       // beta.44: revise flow. Override the lead branch/repo BEFORE validation.
       if (brief.pinnedBranch) {
         raw.branch = brief.pinnedBranch;
@@ -804,11 +842,16 @@ export async function runLeadPlanner(
   }
   const worktreePath = await deps.allocateWorktree(raw.repo, raw.branch, deps.onBranchDecision);
   const approxCostUsd = deps.estimateCost(raw);
-  const plan: LeadPlan = { ...raw, worktreePath, approxCostUsd, scout: scoutOutcome };
+  // beta.127 (#157): planning attempts plus the scout that preceded them. The
+  // scout's cost was already recorded on the outcome and also never reached the
+  // ledger, so it joins the same total.
+  const actualCostUsd = Number((leadCallCostUsd + (scoutOutcome?.costUsd ?? 0)).toFixed(6));
+  const plan: LeadPlan = { ...raw, worktreePath, approxCostUsd, actualCostUsd, scout: scoutOutcome };
   deps.logger.info("[lead] plan", {
     subTaskCount: plan.subTasks.length,
     risk: plan.riskLevel,
     approxCostUsd,
+    actualCostUsd,
   });
   return plan;
 }

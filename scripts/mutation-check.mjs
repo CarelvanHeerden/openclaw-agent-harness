@@ -1366,6 +1366,86 @@ const MUTATIONS = [
   // merge recommendation", is covered behaviourally by "an unavailable gate
   // blocks the merge but does not drive revise cycles", which exercises the
   // real deriveMergeRecommendation.
+
+  // ---------------------------------------------------------------- beta.127
+  {
+    // THE b124 SHAPE, ON A NEW COUNTER. b119 through b123 all granted an extra
+    // cycle correctly, audited it correctly, and never ran it, because the
+    // loop bound did not include the grant. If this mutation survives, the
+    // repair cycle is decorative in exactly the same way.
+    name: "a granted CI repair cycle is one the loop bound knows about (b127)",
+    file: "dist/orchestrator/loop.js",
+    find: "this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted",
+    replace: "this.deps.config.loop.max_cycles + cycleExtensionsGranted",
+    tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
+  },
+  {
+    name: "a red build actually buys the cycle rather than only auditing it (b127)",
+    file: "dist/orchestrator/loop.js",
+    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;",
+    replace: "const canRepair = false;",
+    tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
+  },
+  // NOT a mutation: removing the repair ceiling (`ciRepairCyclesGranted <
+  // repairCeiling`). This is the same trap the b124 note above describes, and
+  // it was walked into anyway while writing b127 -- the run hung for 56
+  // minutes before it was killed. Without the ceiling, a permanently-red build
+  // grants itself a cycle at every ship gate and each grant raises the loop's
+  // own bound, so the mutation does not fail the test, it makes the test never
+  // terminate. A mutation that hangs the suite tells us strictly less than the
+  // test already does and costs an hour to find out. The property is pinned
+  // directly by "the ceiling holds: a build that stays red does not buy cycles
+  // forever", which counts grants on a build that never goes green.
+  {
+    // A timeout or an unreadable verdict means we do not know what to fix, and
+    // a worker sent after an unknown produces plausible noise for a full cycle.
+    name: "only a PARSEABLE failure buys a cycle, never a bare timeout (b127)",
+    file: "dist/orchestrator/loop.js",
+    find: "const wantsRepair = ciOverride !== null && lastCiFindings.length > 0;",
+    replace: "const wantsRepair = ciOverride !== null;",
+    tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
+  },
+  {
+    // The exact b126 defect: a check run that answers with a name and no
+    // output is non-empty, so any fallback keyed on emptiness never fires and
+    // the PR ships "- Tests [failure]" as its diagnosis.
+    name: "a check-runs answer with no diagnosis does not block the job-log fallback (b127)",
+    file: "dist/adapters/github.js",
+    // Anchored on the condition alone: tsc puts the `return` on its own line.
+    find: "if (viaChecks.hasDetail)",
+    replace: "if (viaChecks.text)",
+    tests: ["tests/beta127-failing-logs.test.mjs"],
+  },
+  {
+    name: "a CI finding is never downgraded by keywords in the log it quotes (b127)",
+    file: "dist/orchestrator/finding-classify.js",
+    find: 'if (f.source === "ci")',
+    replace: "if (false)",
+    tests: ["tests/beta127-ci-findings.test.mjs"],
+  },
+  {
+    name: "CI findings carry the source marker that keeps them blocking (b127)",
+    file: "dist/orchestrator/ci-findings.js",
+    find: 'source: "ci",\n            dimension: "quality",',
+    replace: 'dimension: "quality",',
+    tests: ["tests/beta127-ci-findings.test.mjs"],
+  },
+  {
+    // #157. The planner's spend is what the budget ceiling is checked against,
+    // so dropping it does not merely under-report -- it under-bounds.
+    name: "the lead's spend reaches the ledger (b127 / #157)",
+    file: "dist/orchestrator/loop.js",
+    find: "let totalCost = row.cost_usd + leadPlanningCostUsd;",
+    replace: "let totalCost = row.cost_usd;",
+    tests: ["tests/beta127-lead-cost.test.mjs"],
+  },
+  {
+    name: "every lead attempt is billed, including the ones whose plan we discard (b127 / #157)",
+    file: "dist/orchestrator/fable5-lead.js",
+    find: "leadCallCostUsd += raw.costUsd ?? 0;",
+    replace: "leadCallCostUsd += 0;",
+    tests: ["tests/beta127-lead-cost.test.mjs"],
+  },
 ];
 
 function runTests(files) {

@@ -153,6 +153,7 @@ const DEFAULTS = {
         poll_interval_seconds: 20,
         none_grace_seconds: 45,
         permanent_denial_polls: 2,
+        max_repair_cycles: 1,
         workflow_runs_fallback: true,
     },
     vercel: {

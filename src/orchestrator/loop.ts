@@ -162,6 +162,7 @@ import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./ve
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult, type CheckScript } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
+import { buildCiFailureFindings, describeCiFindings } from "./ci-findings.js";
 import { isInfraCrash } from "./infra-crash.js";
 import { computeReviseScope } from "./revise-scope.js";
 import {
@@ -1594,6 +1595,11 @@ export class OrchestratorLoop {
       role: "lead", model: this.deps.config.models.lead, phase: "plan",
       prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
     });
+    // beta.127 (#157): planning happens before the cycle ledger opens, so the
+    // lead's spend is parked here and folded into `totalCost` at its
+    // declaration. Stays 0 on a resumed run that skips planning, so a resume
+    // cannot bill the same plan twice.
+    let leadPlanningCostUsd = 0;
     try {
       // beta.43: bound the lead-planner SDK call by lead_timeout_seconds. The
       // lead await was UNBOUNDED (beta.42 only bounded the worker). A hung
@@ -1656,6 +1662,13 @@ export class OrchestratorLoop {
         role: "lead", model: this.deps.config.models.lead, phase: "plan",
         finishReason: "end_turn", durationMs: Date.now() - leadStart,
         outputChars: JSON.stringify(plan).length, toolCalls: [],
+        // beta.127 (#157): the second half of the same omission. Every worker
+        // and adversary `sdk_response` in the interaction log carries a cost;
+        // the lead's carried `costUsd: null`, which reads as "this call was
+        // free" rather than "nobody passed the number through". The b126 smoke
+        // was diagnosed off this log, and the lead's 311 seconds on Opus
+        // appeared as null next to a worker's 0.5299.
+        costUsd: plan.actualCostUsd ?? 0,
       });
       // beta.94 (Feature 1a): elide the idle-prone trailing PURE-OBSERVE scope
       // "final verification" sub-task (the b93 seq-12 stall). It has nothing to
@@ -1685,7 +1698,30 @@ export class OrchestratorLoop {
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
         .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
-      this.deps.state.audit("loop.plan_ready", { sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel }, sessionId);
+      // beta.127 (#157): CREDIT THE PLANNER'S SPEND TO THE SESSION.
+      //
+      // Every other role's cost was added to `totalCost` -- worker, worker
+      // retry, adversary -- and the lead's never was. Not rounded, not
+      // approximated: absent. On the b126 smoke the lead ran 311 seconds on
+      // Opus across two attempts and the session's ledger attributed $0.00 to
+      // it, so the reported $18.78 was a lower bound by however much the most
+      // expensive model in the run had cost.
+      //
+      // This is not only a reporting problem. `totalCost` is what the budget
+      // ceiling is checked against and what `advance()` reads when deciding
+      // whether another cycle is affordable, so planning spend was invisible
+      // to every one of those decisions -- and a run that died IN planning
+      // reported $0.00 having burned real tokens.
+      leadPlanningCostUsd = plan.actualCostUsd ?? 0;
+      this.deps.state.audit(
+        "loop.plan_ready",
+        {
+          sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel,
+          leadCostUsd: Number(leadPlanningCostUsd.toFixed(4)),
+          scoutCostUsd: Number((plan.scout?.costUsd ?? 0).toFixed(4)),
+        },
+        sessionId,
+      );
       // beta.104: record whether the lead actually SAW the repo before it
       // planned. Emitted on both outcomes -- a smoke report must be able to
       // attribute a plan full of fictional paths to a scout that never ran,
@@ -1900,7 +1936,11 @@ export class OrchestratorLoop {
     }
 
     let cycle = 0;
-    let totalCost = row.cost_usd;
+    // beta.127 (#157): + the planner. Every other role was already counted
+    // here; the lead was the one that never arrived, so the ceiling this is
+    // checked against and the affordability test in `advance()` were both
+    // reading a number that excluded the most expensive model in the run.
+    let totalCost = row.cost_usd + leadPlanningCostUsd;
     let lastReview: ReviewReport | undefined;
     // beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order, so
     // the max-cycles terminal path can distinguish CONVERGING (findings
@@ -1945,7 +1985,26 @@ export class OrchestratorLoop {
     // one more tolerant match rule. Accumulated across sub-tasks within the run.
     const discoveredRealPaths = new Set<string>();
 
-    // 2. Execute/review cycles
+    // 2. Execute/review cycles, then the ship gate, then possibly back again.
+    //
+    // beta.127: the cycle loop is wrapped in a ship-attempt loop. Before b127
+    // the sequence ran once and in one direction -- cycles, then push, then PR,
+    // then CI -- so CI's verdict arrived after the last opportunity to act on
+    // it had passed. A red build became a sentence in the merge recommendation.
+    //
+    // Now a red build at the gate can send the run back through a cycle with
+    // the failures as blocking findings. The `for` exists purely to make that
+    // edge expressible; when CI is green, or repair is disabled or exhausted,
+    // it breaks after one pass and the flow is exactly what b126 did.
+    let prUrl: string;
+    let ciOverride: { recommendation: "needs_human_review"; reason: string } | null = null;
+    let ciNeverRegisteredCaveat: string | null = null;
+    let ciRepairCyclesGranted = 0;
+    let lastCiFindings: ReviewFinding[] = [];
+    // Measured across every ship attempt, so the timing reflects what the run
+    // actually spent getting to a shippable state.
+    const shipStart = Date.now();
+    shipAttempts: for (;;) {
     //
     // beta.124: the bound includes `cycleExtensionsGranted`, and that is the
     // whole reason b119's extension does anything at all. `advance()` decided
@@ -1957,7 +2016,11 @@ export class OrchestratorLoop {
     // at cycle 3 with $21 unspent and shipped three cycles anyway. Still
     // bounded: `canExtend` refuses past `max_cycle_extensions`, so this can
     // only ever run that many extra cycles.
-    while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted) {
+    // beta.127: `ciRepairCyclesGranted` joins the bound for the same reason
+    // b124 had to add `cycleExtensionsGranted` -- a grant the bound does not
+    // know about is not a grant. Getting this wrong is silent: the counter goes
+    // up, the audit event fires, and nothing runs.
+    while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted) {
       cycle += 1;
       this.deps.state.db.prepare(`UPDATE sessions SET cycles_ran = ? WHERE id = ?`).run(cycle, sessionId);
       this.checkpoint(sessionId, cycle);
@@ -4215,18 +4278,18 @@ export class OrchestratorLoop {
       // else "executing": continue the outer while
     }
 
-    // 3. Push + PR
+    // 3. Push + PR (the ship gate; may send us back for a repair cycle)
     if (!lastReview) {
       return this.finaliseFailed(sessionId, "no_review_produced", cycle, totalCost);
     }
-    let prUrl: string;
+    // beta.127: reset per attempt. A green second attempt must not inherit the
+    // first attempt's red verdict.
+    ciOverride = null;
+    ciNeverRegisteredCaveat = null;
     // beta.63 (Part A): mark finalize START so the watchdog sees the push/PR
     // phase as live (this is exactly the b60 gap: quiet AFTER the last sub-task
     // deadline but BEFORE/at finalize, with no watchdog covering it).
     this.markProgress(sessionId, "finalize_start", "finalize", { cycle });
-    // beta.108: everything from here to `loop.shipped` -- push, PR open/update,
-    // review comment, CI polling -- was untimed. See emitPhaseTiming.
-    const shipStart = Date.now();
     // beta.73 (D3): instrument the push/PR-open step. Pre-beta.73 there was NO
     // audit event between the transition->done and the terminal worktree
     // release, so a push/PR failure (422 branch collision, missing GH token, a
@@ -4301,9 +4364,7 @@ export class OrchestratorLoop {
     // continue-watch (never a hard fail). none/skipped -> ship on the review
     // verdict (a no-CI repo just got a workflow authored above but its FIRST
     // status may not exist yet on this SHA; do not block the deliverable).
-    let ciOverride: { recommendation: "needs_human_review"; reason: string } | null = null;
-    // beta.91 (F4): non-blocking caveat when an authored workflow never registered.
-    let ciNeverRegisteredCaveat: string | null = null;
+    // beta.127: declared outside the ship-attempt loop, above.
     {
       let headSha = "";
       try {
@@ -4314,11 +4375,16 @@ export class OrchestratorLoop {
         this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
         const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
         if (ci.outcome === "failure") {
+          // beta.127: the excerpt now comes from the Actions job log when the
+          // check run carries no output of its own, so this is the failing
+          // assertion rather than the word "failure". 1500 chars was sized for
+          // a check-run title; a real excerpt needs room to name the test.
+          lastCiFindings = buildCiFailureFindings(ci.logs ?? "", { sha: headSha });
           ciOverride = {
             recommendation: "needs_human_review",
             reason:
               `GitHub CI FAILED on ${headSha}. Do NOT merge until CI is green. Failing check logs (excerpt):\n` +
-              `${(ci.logs || "(no log excerpt available)").slice(0, 1500)}`,
+              `${(ci.logs || "(no log excerpt available)").slice(0, 3000)}`,
           };
         } else if (ci.outcome === "timeout") {
           ciOverride = {
@@ -4363,6 +4429,76 @@ export class OrchestratorLoop {
         }
       }
     }
+
+    // beta.127: CI IS RED AND THERE IS STILL A CYCLE TO BE HAD.
+    //
+    // This is the edge the ship-attempt loop exists for. Everything above ran
+    // in b126 too; the difference is that b126's only move from here was to
+    // write "Do NOT merge" and stop.
+    //
+    // Deliberately narrow. Only `failure` qualifies -- a timeout or an
+    // indeterminate verdict means we do not KNOW what is wrong, and sending a
+    // worker to fix an unknown is how a run burns a cycle producing noise.
+    // Only findings we could actually build from the log qualify, for the same
+    // reason: without the failing assertion there is nothing to hand a worker.
+    {
+      const repairCeiling = Math.max(0, this.deps.config.ci?.max_repair_cycles ?? 1);
+      const budgetOk = this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd);
+      const wantsRepair = ciOverride !== null && lastCiFindings.length > 0;
+      const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;
+
+      if (wantsRepair && !canRepair) {
+        // Say why the run is shipping over a red build. "Do NOT merge" with no
+        // account of what was tried reads as the harness not having noticed.
+        this.deps.state.audit(
+          "loop.ci_repair_declined",
+          {
+            sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
+            budgetOk, spentUsd: Number(totalCost.toFixed(4)),
+            reason: repairCeiling === 0 ? "disabled" : !budgetOk ? "budget" : "ceiling",
+            findings: describeCiFindings(lastCiFindings),
+          },
+          sessionId,
+        );
+      }
+
+      if (canRepair) {
+        ciRepairCyclesGranted += 1;
+        // Fold the CI findings into the review the next cycle maps from. They
+        // carry `file`, so mapFindingsToSubTasks routes each one to whoever
+        // owns that path; an unroutable one becomes a mapping miss and is
+        // broadcast, which for a red build is the right failure mode.
+        lastReview = {
+          ...lastReview,
+          verdict: "revise",
+          findings: [...(lastReview.findings ?? []), ...lastCiFindings],
+        };
+        this.deps.state.audit(
+          "loop.ci_repair_cycle_granted",
+          {
+            sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
+            spentUsd: Number(totalCost.toFixed(4)),
+            findings: describeCiFindings(lastCiFindings),
+            files: lastCiFindings.map((f) => f.file).filter(Boolean),
+          },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, {
+          event: "ci_repair_cycle_granted", phase: "finalize", cycle,
+          findings: lastCiFindings.length,
+        });
+        this.deps.logger.info(
+          "[loop] beta.127: CI is red and the budget covers another cycle -- routing the failures back as blocking findings instead of shipping over them",
+          { sessionId, cycle, granted: ciRepairCyclesGranted, findings: describeCiFindings(lastCiFindings) },
+        );
+        await this.deps.reportProgress?.(sessionId, "executing", { cycle });
+        lastCiFindings = [];
+        continue shipAttempts;
+      }
+      break shipAttempts;
+    }
+    } // end shipAttempts
+
     // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
     // the final review + whether we reached a clean pass. Persist it + the PR
     // number for the harness_merge_pr hard gate.

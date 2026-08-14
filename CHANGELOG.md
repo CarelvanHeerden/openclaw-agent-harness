@@ -1,5 +1,168 @@
 # Changelog
 
+## 0.1.0-beta.127
+
+### Four cycles spent on opinions, while the only gate that blocks a merge went unread
+
+The b126 smoke worked. 33 sub-tasks, zero verification failures, four cycles —
+including one the b124 machinery correctly granted for converging findings —
+107 minutes, $18.78. It opened PR #1028 and CI failed it.
+
+Two tests, out of 8836:
+
+```
+FAIL src/__tests__/components/sidebar-nav-placement.test.ts
+  ● InfoSec GRC ordering › groups the AI system register with the other inventories
+    Expected: 2
+    Received: 3
+
+FAIL src/__tests__/api/grc/continuity-exercises.test.ts
+  ● POST /api/grc/continuity-exercises › creates a metadata-only exercise
+    -   "performedAt": 2026-08-01T00:00:00.000Z,
+    +   "performedAt": "2026-08-01T00:00:00.000Z",
+```
+
+The first is a pre-existing test the run broke by inserting a nav entry into the
+middle of a group the test asserts is contiguous. The second is a test the run
+wrote itself, comparing a `Date` against the string it becomes after JSON
+serialisation. Both are one-liners. Neither is subtle. Neither was visible to
+any of the four cycles, because the only thing that runs the repository's suite
+is CI, and CI ran after the last cycle had ended.
+
+That is the whole defect. The loop verified what it could see — each sub-task's
+own file contract, the convention checks, the adversary's reading of the diff —
+and spent four cycles improving against those. The gate that actually decides
+whether the work can merge sat outside the loop, was consulted once, and its
+answer arrived when there was nothing left that could act on it.
+
+**A red build now buys a cycle.** At the ship gate, a CI failure is parsed into
+blocking findings and routed back through the existing revise machinery: the
+failing test file becomes the finding's `file`, so the sub-task that owns that
+path is targeted; source paths named in the failure become `relatedFiles` for
+co-fix routing; a failure nothing owns is broadcast, which for a red build is
+the right default. Then the run re-pushes and re-checks.
+
+The cycle is granted **on top of** `loop.max_cycles` and of any b124 converging
+extension, and only when the budget covers it. Hitting the cycle ceiling means
+the harness ran out of opinions to act on, which is not the same thing as the
+build being broken — and a broken build is the one finding that is never a
+matter of taste. `ci.max_repair_cycles` (default 1) bounds it; 0 restores b126.
+
+It is deliberately narrow. Only a definite `failure` qualifies — never a timeout
+and never an unreadable verdict, because those mean we do not know what is
+wrong, and a worker dispatched after an unknown spends a full cycle producing
+plausible noise. And only a failure whose log could be parsed into findings
+qualifies, for the same reason.
+
+### "(no log excerpt available)"
+
+That string is what b126 wrote onto the PR where the diagnosis belonged. Two
+independent causes, and the second survives having the right token.
+
+The first is b125's finding: a fine-grained PAT cannot call the Checks API at
+all, so the request 403s and the excerpt is empty.
+
+The second only showed up when this was tested against the real failing commit
+with a token that *can* read check-runs. It returned:
+
+```
+- Tests [failure]
+```
+
+Seventeen characters. GitHub Actions check runs routinely carry no
+`output.title` and no `output.summary`, so the excerpt is a name and a verdict.
+Non-empty — which means any fallback keyed on emptiness would never have fired,
+and the fix for the first cause alone would have changed nothing on a correctly
+configured token.
+
+So a check-runs answer is now only accepted if it carries an actual diagnosis.
+Otherwise the harness reads the failing job's log through the Actions API, which
+needs only `Actions: read` — the same permission that makes the b125 fallback
+work. Timestamps and ANSI colour are stripped (the colour codes sit between a
+path and its extension, which is enough to hide a path from a path matcher), and
+the runner's own failure summary is preferred over the tail. Against the real
+commit that is 3023 characters containing both failing files, their line
+numbers, and the assertion diffs, in place of the 17 above.
+
+Bounded at two runs and two jobs each: ten red jobs are one cause and nine
+consequences, and a fixed-size excerpt spread across all of them says nothing
+about any of them.
+
+### A CI failure is not an opinion
+
+`classifyFinding` routes every finding through keyword buckets, and non-blocking
+buckets exist for good reasons — a missing binary is the bootstrap's problem, a
+stale generated bundle is the convention phase's.
+
+But a CI finding's text is a raw job log. A jest failure that happens to contain
+"Cannot find module" would classify as `env`; one mentioning "regenerate" would
+classify as `process`. Both non-blocking. The red build would be filed as
+advisory and the run would ship over it — silently, and only on the runs unlucky
+enough to fail with the wrong words in them.
+
+Findings now carry `source`, and a CI-sourced finding short-circuits
+classification. It is the strongest evidence the harness ever holds: a job that
+ran the repository's own suite against this exact commit and returned non-zero.
+It was executed, not argued.
+
+### #157: the planner's bill
+
+From the b126 interaction log:
+
+```
+phase=plan model=claude-opus-5 finishReason=end_turn outputChars=52025
+costUsd=null durationMs=311497
+```
+
+`null`, not zero. Every worker `sdk_response` in the same log carried a cost;
+every adversary one did too. Only the lead — 311 seconds of Opus, the most
+expensive model in the run — reported nothing.
+
+Two independent omissions. `callLeadModel` was *declared* as returning
+`Omit<LeadPlan, ...>`; the implementation had been returning `costUsd` all
+along, and the type erased it at the assignment. And `totalCost` accumulated
+worker, worker-retry and adversary costs and never the lead's.
+
+The second is not a reporting bug. `totalCost` is what the budget ceiling is
+checked against and what `advance()` reads when deciding whether another cycle
+is affordable, so planning spend was invisible to every one of those decisions.
+A run that died *in* planning reported $0.00 having burned real tokens.
+
+Planning now reports `actualCostUsd` — every attempt, including the ones whose
+plan is discarded, plus the repo scout — and it reaches the ledger, the budget
+and the interaction log. Distinct from `approxCostUsd`, which is a forecast of
+what the plan will cost to *execute* and was easy to mistake for the same thing.
+
+### The report told you two contradictory things
+
+The b126 smoke report printed `workflow-runs fallback: FIRED — read 0 run(s)`
+and, three lines below it, `The Checks API answered normally. b125 was not
+exercised`. Both came off the same events; the verdict branch only tested
+whether a denial had occurred, so a fallback that fired for any other reason
+fell through to the everything-is-fine text. It now names what actually
+happened, and points out that zero runs on a commit is an absence of evidence
+rather than evidence of passing.
+
+Section 1 also claimed "planning succeeded first time" on a run where planning
+had failed once and taken a retry rung. The script could not have known — a
+lead retry that recovers leaves no audit event — so it now states the weaker
+thing it can support and names the blind spot.
+
+The report leads with the CI repair cycle, and the money section reports the
+planner's share so #157 staying fixed is visible on every run.
+
+### Tests
+
+36 new, 1940 total. The load-bearing one is that a granted repair cycle
+*actually runs* — b119 through b123 all incremented their counter correctly,
+audited it correctly, and ran no extra cycle, because the loop bound did not
+include the grant. A test asserting the grant would have passed for four
+releases. The scenario tests assert a worker was dispatched, because a
+revise-scope skip writes `completed_no_change` without one and looks identical
+in the `sub_tasks` table.
+
+Nine mutations, including that bound.
+
 ## 0.1.0-beta.126
 
 ### A plan that was cut off, and an error that blamed the model's manners

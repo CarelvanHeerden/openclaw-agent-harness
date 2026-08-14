@@ -50,6 +50,20 @@ const GENERATED_ARTIFACT_RE = /\b(okf[- ]?bundle|okf[:-]?check|keep[- ]?okf[- ]?
  */
 export function classifyFinding(f, ctx = {}) {
     const text = `${f.title ?? ""} ${f.detail ?? ""}`;
+    // beta.127: a CI failure is not an opinion to be triaged. It is a job that
+    // ran the repo's own suite against this exact commit and returned non-zero,
+    // which is the strongest evidence the harness ever holds -- stronger than
+    // anything the adversary says, because it was executed rather than argued.
+    //
+    // It must short-circuit, because every bucket below matches on KEYWORDS in
+    // the finding text, and a CI finding's text is a raw job log. A jest failure
+    // whose message happens to contain "Cannot find module" would classify as
+    // `env`; one mentioning "regenerate" would classify as `process`. Both are
+    // non-blocking, so the red build would be filed as advisory and the run
+    // would ship over it -- silently, and only on the runs unlucky enough to
+    // fail with the wrong words in them.
+    if (f.source === "ci")
+        return "diff_addressable";
     // Runtime dimension with no live deploy evidence: the harness decides whether
     // to push; the worker cannot conjure runtime data in a code cycle.
     if (f.dimension === "runtime" && (ctx.runtimeUnavailable || UNPROVEN_RUNTIME_RE.test(text))) {

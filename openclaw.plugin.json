@@ -686,6 +686,13 @@
             "type": "boolean",
             "default": true,
             "description": "beta.125: when the Checks API is permanently denied (401/403/404), read the commit's CI from the Actions workflow-runs API instead of giving up. b124 reported the denial and told the operator to grant 'Checks: read' -- a permission that does not exist. Fine-grained PATs cannot call the Checks API at all; GitHub lists it as a known limitation and its own REST reference is wrong on this point. The same token's 'Actions: read', which IS supported, lists every workflow run on the sha with the same status/conclusion vocabulary, so on any repo whose CI is GitHub Actions the verdict was always one endpoint away. Only fires on a permanent denial -- a transient 5xx is still re-polled against the real endpoint. A green obtained this way is reported as a green WITH a caveat naming the source, because a check run posted by a third-party GitHub App is invisible to this endpoint. Set false to restore b124 behaviour."
+          },
+          "max_repair_cycles": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "default": 1,
+            "description": "beta.127: how many extra revise cycles a RED CI may buy at the ship gate. Before b127 CI ran once, after the loop had already decided to finish, and its only effect was to stamp needs_human_review on the recommendation -- nothing was fixed, because there was no cycle left to fix it in. The b126 smoke ran 33 sub-tasks with zero verification failures across four cycles, 107 minutes and $18.78, and shipped a PR failing 2 of 8836 tests: one pre-existing test it broke by inserting a nav entry into a group asserted to be contiguous, and one it wrote itself comparing a Date to the string it becomes after JSON serialisation. Both one-liners, neither visible to any cycle, because the only thing that runs the repo's suite is CI and CI ran after the last cycle ended. These cycles are granted ON TOP of max_cycles and any beta.124 converging extension, and only when the budget covers another cycle -- hitting the cycle ceiling means the harness ran out of opinions, which is not the same as the build being broken. Only a definite CI failure qualifies (never a timeout or an unreadable verdict), and only when the failing log could be parsed into findings, because a worker sent after an unknown failure produces noise. Each granted cycle re-pushes and re-checks. 0 disables and restores b126 behaviour."
           }
         }
       },
