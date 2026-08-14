@@ -1231,8 +1231,11 @@ const MUTATIONS = [
     // still incremented and audited -- and the driver still stops, which is
     // exactly the shape of the shipped bug. A test that only watches the
     // decision or greps for the increment survives this untouched.
-    find: "while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted) {",
-    replace: "while (cycle < this.deps.config.loop.max_cycles) {",
+    // b127 added `+ ciRepairCyclesGranted` to the same bound, so the anchor is
+    // the whole expression. Dropping only `cycleExtensionsGranted` keeps this
+    // aimed at b124's grant and leaves b127's alone.
+    find: "while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted) {",
+    replace: "while (cycle < this.deps.config.loop.max_cycles + ciRepairCyclesGranted) {",
     tests: ["tests/beta124-scenario-cycle-extension.test.mjs"],
   },
   {
@@ -1453,6 +1456,39 @@ function runTests(files) {
   return r.status === 0;
 }
 
+/**
+ * beta.127: find an anchor whose INDENTATION may have moved.
+ *
+ * Anchors are matched against `dist/`, which tsc re-indents from the AST, so
+ * nesting a block anywhere above an anchor shifts every line inside it. b127
+ * wrapped the cycle loop in a ship-attempt loop and broke three unrelated
+ * multi-line anchors that way -- b110, b118 and b124 -- all reported as "the
+ * code was renamed or removed", none of which had been touched. It cost a full
+ * CI round trip to find out.
+ *
+ * So: exact match first, and if that misses, retry with the leading whitespace
+ * of each continuation line treated as elastic. Only leading whitespace is
+ * relaxed; everything else, including which lines follow which, still has to
+ * match exactly, so an anchor cannot silently start matching different code.
+ */
+function locate(src, find) {
+  const at = src.indexOf(find);
+  if (at >= 0) return { text: find, elastic: false };
+  if (!find.includes("\n")) return null;
+
+  const pattern = find
+    .split("\n")
+    .map((line, i) => {
+      const body = line.replace(/^[ \t]+/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return i === 0 ? body : `[ \\t]*${body}`;
+    })
+    .join("\n");
+  const re = new RegExp(pattern, "g");
+  const hits = [...src.matchAll(re)];
+  if (hits.length !== 1) return null; // ambiguous or absent: refuse to guess
+  return { text: hits[0][0], elastic: true };
+}
+
 let failures = 0;
 for (const m of MUTATIONS) {
   const path = join(root, m.file);
@@ -1464,7 +1500,8 @@ for (const m of MUTATIONS) {
   if (FILTER && !m.name.includes(FILTER)) continue;
   ran++;
 
-  if (!original.includes(m.find)) {
+  const found = locate(original, m.find);
+  if (!found) {
     console.error(`FAIL  ${m.name}`);
     console.error(`      anchor not found in ${m.file}. The code was renamed or removed, so this`);
     console.error(`      mutation no longer tests anything. Update scripts/mutation-check.mjs.`);
@@ -1472,9 +1509,18 @@ for (const m of MUTATIONS) {
     failures++;
     continue;
   }
+  if (found.elastic) {
+    // Not a failure -- the anchor still identifies exactly one site -- but say
+    // so, because a drifting anchor is worth noticing before it drifts onto
+    // something else.
+    console.error(`note  ${m.name}`);
+    console.error(`      anchor matched with relaxed indentation; the code around it moved.`);
+  }
 
   try {
-    writeFileSync(path, original.replace(m.find, m.replace), "utf8");
+    // Replace the text as it appears on disk, so an elastic match rewrites the
+    // real indentation rather than the anchor's stale copy of it.
+    writeFileSync(path, original.replace(found.text, m.replace), "utf8");
     const stillPasses = runTests(m.tests);
     if (stillPasses) {
       console.error(`FAIL  ${m.name}`);
