@@ -182,7 +182,17 @@ export declare function getFailingCheckLogs(input: {
     sha: string;
     ghToken: string;
     apiBase?: string;
+    /** beta.127: set false to test the check-runs path in isolation. */
+    jobLogsFallback?: boolean;
 }): Promise<string>;
+/**
+ * Pull the part of a job log that says what broke.
+ *
+ * Prefers a test runner's own failure summary, falls back to the lines the
+ * runner marked as errors, and finally to the tail. Always returns text a
+ * human or a model can act on, never the whole log.
+ */
+export declare function extractFailureExcerpt(raw: string): string;
 /** beta.34: merge a PR (squash by default). Returns the merge commit SHA. */
 export declare function mergePullRequest(input: {
     repoFullName: string;

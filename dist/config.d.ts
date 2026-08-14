@@ -104,6 +104,32 @@ export interface CiConfig {
      * b124 behaviour. Default true.
      */
     workflow_runs_fallback?: boolean;
+    /**
+     * beta.127: how many extra cycles a RED CI may buy, at the ship gate.
+     *
+     * Before b127, CI ran once, after the loop had already decided to finish, and
+     * its only effect was to stamp `needs_human_review` on the recommendation.
+     * Nothing was fixed, because there was no cycle left to fix it in.
+     *
+     * The b126 smoke: 33 sub-tasks, zero verification failures, four cycles
+     * including one granted for converging findings, 107 minutes, $18.78, and a
+     * PR failing 2 of 8836 tests. One test the run broke by inserting a nav item
+     * into a group asserted to be contiguous; one it wrote itself, comparing a
+     * Date against the string it becomes after JSON serialisation. The revise
+     * loop was optimising against the adversary's opinion while the only gate
+     * that actually blocks a merge was invisible to it.
+     *
+     * These cycles are granted ON TOP of max_cycles and of any b124 converging
+     * extension, and only when the budget covers another cycle. That is
+     * deliberate: hitting the cycle ceiling means the harness ran out of opinions
+     * to act on, which is a different thing from the build being broken, and a
+     * broken build is the one finding that is never a matter of taste.
+     *
+     * Each granted cycle re-pushes and re-checks, so the ceiling also bounds how
+     * many CI round-trips a session can spend. 0 disables and restores b126
+     * behaviour. Default 1.
+     */
+    max_repair_cycles?: number;
 }
 export interface BriefConfig {
     /**

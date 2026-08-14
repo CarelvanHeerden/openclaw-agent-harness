@@ -298,6 +298,14 @@ export async function runScenario(opts = {}) {
     runLead: opts.runLead ?? (async () => {
       calls.lead++;
       const wt = await allocate();
+      // beta.127 (#157): `leadCostUsd` / `scoutCostUsd` let a scenario express a
+      // planner that costs money. Default 0, so every existing scenario is
+      // unchanged. `actualCostUsd` is planning + scout, matching what
+      // runLeadPlanner computes -- the real spend, as opposed to
+      // `approxCostUsd`, which is a forecast of what the plan will cost to
+      // EXECUTE and was easy to mistake for the same thing.
+      const scoutCostUsd = opts.scoutCostUsd ?? 0;
+      const leadCostUsd = opts.leadCostUsd ?? 0;
       return {
         repo: "o/r",
         branch,
@@ -305,6 +313,8 @@ export async function runScenario(opts = {}) {
         reviewChecklist: [],
         riskLevel: "low",
         approxCostUsd: 0,
+        actualCostUsd: leadCostUsd + scoutCostUsd,
+        ...(scoutCostUsd ? { scout: { ran: true, reportChars: 128, costUsd: scoutCostUsd } } : {}),
         subTasks,
       };
     }),

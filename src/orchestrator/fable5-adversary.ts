@@ -62,6 +62,13 @@ export interface AdversaryInput {
 }
 
 export interface ReviewFinding {
+  /**
+   * beta.127: where this finding came from. Absent means the adversary, which
+   * is everything before b127. `"ci"` marks a finding synthesised from a real
+   * GitHub CI failure, which the classifier must not downgrade -- see
+   * classifyFinding.
+   */
+  source?: "ci";
   dimension: "spec" | "fit" | "quality" | "security" | "runtime";
   severity: "info" | "low" | "medium" | "high" | "critical";
   title: string;

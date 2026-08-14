@@ -236,6 +236,16 @@ export interface LeadPlan {
     riskLevel: "low" | "medium" | "high";
     approxCostUsd: number;
     /**
+     * beta.127 (#157): what planning ACTUALLY cost -- every lead attempt plus the
+     * repo scout. Distinct from `approxCostUsd`, which is a forecast of what the
+     * PLAN will cost to execute, derived from estimated tokens. The two were
+     * easy to confuse and only one of them was ever a real number.
+     *
+     * Undefined on plans built by callers that do not report cost (tests, and the
+     * revise paths that synthesise a plan without calling a model).
+     */
+    actualCostUsd?: number;
+    /**
      * beta.104: what the pre-planning repo scout did. Carried on the plan so the
      * loop can audit it, because the question "did the lead actually see the
      * repo?" must be answerable from the trail alone. b102's post-mortem could
@@ -331,7 +341,25 @@ export interface LeadDeps {
         info: (m: string, meta?: unknown) => void;
         warn?: (m: string, meta?: unknown) => void;
     };
-    callLeadModel: (brief: CrystallisedBrief, repos: string[], correctiveNote?: string) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>;
+    /**
+     * beta.127 (#157): the return type now admits what the implementation has
+     * always returned. `runLeadSdk` reports `costUsd` on every call; this
+     * signature declared `Omit<LeadPlan, ...>`, so TypeScript erased the field at
+     * the assignment and the lead's spend was dropped on the floor between the
+     * adapter and the planner.
+     *
+     * The effect was not a rounding error. On the b126 smoke the lead spent 311
+     * seconds on Opus across two attempts and the session reported $18.78, with
+     * the lead contributing $0.00 -- every worker and every adversary call
+     * carried a cost, and the most expensive model in the run carried none. A
+     * budget ceiling cannot bound spend it is not shown, and a run that fails IN
+     * planning still reported $0.00 having burned real tokens.
+     */
+    callLeadModel: (brief: CrystallisedBrief, repos: string[], correctiveNote?: string) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
+        costUsd?: number;
+        tokensIn?: number;
+        tokensOut?: number;
+    }>;
     allocateWorktree: (repo: string, branch: string, 
     /** beta.105: forwarded to GitContext.onBranchDecision so the loop can audit it. */
     onBranchDecision?: (d: BranchAllocationDecision) => void) => Promise<string>;

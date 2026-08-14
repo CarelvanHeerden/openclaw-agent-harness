@@ -526,6 +526,13 @@
           "maximum": 20,
           "default": 2
         },
+        "max_repair_cycles": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 1,
+          "description": "beta.127: extra revise cycles a red CI may buy at the ship gate, on top of max_cycles and any beta.124 extension. Only a definite failure with a parseable log qualifies. 0 restores b126 behaviour."
+        },
         "workflow_runs_fallback": {
           "type": "boolean",
           "default": true

@@ -424,18 +424,46 @@ export async function getCombinedStatus(input) {
  * throws; returns "" on any error or when nothing failed.
  */
 export async function getFailingCheckLogs(input) {
+    const viaChecks = await readFailingCheckRuns(input);
+    // beta.127: only a check-runs answer that CARRIES A DIAGNOSIS is allowed to
+    // stand. Two separate things were producing "(no log excerpt available)" on a
+    // red PR, and the second is the one that survives having the right token:
+    //
+    //   1. A fine-grained PAT cannot read check-runs at all (the `Checks`
+    //      permission does not exist for them -- the b125 finding), so this
+    //      returned "".
+    //   2. Even when the API answers, GitHub Actions check runs routinely carry
+    //      no `output.title` or `output.summary`. On the b126 smoke this produced
+    //      the string "- Tests [failure]" -- non-empty, so it short-circuited any
+    //      fallback, and worth nothing to the human told not to merge.
+    //
+    // Verified against Stitch-Vercel/ProjectThanos@1dd2fcb1 with a token that
+    // CAN read check-runs: the entire excerpt was 17 characters.
+    if (viaChecks.hasDetail)
+        return viaChecks.text;
+    if (input.jobLogsFallback === false)
+        return viaChecks.text;
+    // The Actions jobs API answers the same question, carries the actual test
+    // output, and needs only `Actions: read` -- which is why the b125
+    // workflow-runs fallback works on the same token.
+    const viaJobs = await readFailingJobLogs(input);
+    return viaJobs || viaChecks.text;
+}
+/** The pre-b127 path: failed check runs and their output summaries. */
+async function readFailingCheckRuns(input) {
     const base = input.apiBase ?? "https://api.github.com";
     try {
         const cRes = await fetch(`${base}/repos/${input.repoFullName}/commits/${input.sha}/check-runs`, {
             headers: GH_HEADERS(input.ghToken),
         });
         if (!cRes.ok)
-            return "";
+            return { text: "", hasDetail: false };
         const cj = (await cRes.json());
         const failed = (cj.check_runs ?? []).filter((r) => ["failure", "timed_out", "cancelled", "action_required"].includes(r.conclusion ?? ""));
         if (failed.length === 0)
-            return "";
-        return failed
+            return { text: "", hasDetail: false };
+        const hasDetail = failed.some((r) => Boolean(r.output?.title || r.output?.summary));
+        const text = failed
             .map((r) => {
             const title = r.output?.title ? `: ${r.output.title}` : "";
             const summary = r.output?.summary ? `\n  ${r.output.summary.slice(0, 500)}` : "";
@@ -443,10 +471,106 @@ export async function getFailingCheckLogs(input) {
         })
             .join("\n")
             .slice(0, 2000);
+        return { text, hasDetail };
+    }
+    catch {
+        return { text: "", hasDetail: false };
+    }
+}
+/** How much of one job's log we are willing to pull into memory. */
+const JOB_LOG_MAX_BYTES = 4_000_000;
+/**
+ * beta.127: read the failing job logs through the Actions API.
+ *
+ * Three hops, all on `Actions: read`: runs for the sha, jobs in the failed
+ * runs, then the log text for each failed job. The log is a plain-text blob
+ * behind a redirect, prefixed with an RFC3339 timestamp per line and full of
+ * ANSI colour -- both are stripped, because the point of this text is that a
+ * model reads it and finds the file that broke.
+ */
+async function readFailingJobLogs(input) {
+    const base = input.apiBase ?? "https://api.github.com";
+    try {
+        const rRes = await fetch(`${base}/repos/${input.repoFullName}/actions/runs?head_sha=${encodeURIComponent(input.sha)}&per_page=100`, { headers: GH_HEADERS(input.ghToken) });
+        if (!rRes.ok)
+            return "";
+        const rj = (await rRes.json());
+        const failedRuns = (rj.workflow_runs ?? []).filter((r) => ["failure", "timed_out", "cancelled", "action_required"].includes(r.conclusion ?? ""));
+        if (failedRuns.length === 0)
+            return "";
+        const chunks = [];
+        // Two runs, two jobs each. A repo with ten red jobs has one cause and nine
+        // consequences, and a 2000-char excerpt spread over ten of them says
+        // nothing about any of them.
+        for (const run of failedRuns.slice(0, 2)) {
+            const jRes = await fetch(`${base}/repos/${input.repoFullName}/actions/runs/${run.id}/jobs?per_page=100`, {
+                headers: GH_HEADERS(input.ghToken),
+            });
+            if (!jRes.ok)
+                continue;
+            const jj = (await jRes.json());
+            const failedJobs = (jj.jobs ?? []).filter((j) => ["failure", "timed_out", "cancelled", "action_required"].includes(j.conclusion ?? ""));
+            for (const job of failedJobs.slice(0, 2)) {
+                const text = await readJobLogText(base, input.repoFullName, job.id, input.ghToken);
+                const excerpt = extractFailureExcerpt(text);
+                chunks.push(excerpt
+                    ? `- ${run.name ? `${run.name} / ` : ""}${job.name} [${job.conclusion}]\n${excerpt}`
+                    : `- ${run.name ? `${run.name} / ` : ""}${job.name} [${job.conclusion}] (log unreadable)`);
+            }
+        }
+        return chunks.join("\n\n").slice(0, 4000);
     }
     catch {
         return "";
     }
+}
+async function readJobLogText(base, repo, jobId, token) {
+    try {
+        const res = await fetch(`${base}/repos/${repo}/actions/jobs/${jobId}/logs`, { headers: GH_HEADERS(token) });
+        if (!res.ok || !res.body)
+            return "";
+        const declared = Number(res.headers.get("content-length") ?? 0);
+        if (declared > JOB_LOG_MAX_BYTES) {
+            // Only the end matters and we cannot range-request a signed blob, so
+            // stream and keep a trailing window rather than buffering the whole file.
+            const dec = new TextDecoder();
+            let tail = "";
+            for await (const part of res.body) {
+                tail = (tail + dec.decode(part, { stream: true })).slice(-200_000);
+            }
+            return tail;
+        }
+        return await res.text();
+    }
+    catch {
+        return "";
+    }
+}
+/**
+ * Pull the part of a job log that says what broke.
+ *
+ * Prefers a test runner's own failure summary, falls back to the lines the
+ * runner marked as errors, and finally to the tail. Always returns text a
+ * human or a model can act on, never the whole log.
+ */
+export function extractFailureExcerpt(raw) {
+    if (!raw)
+        return "";
+    const clean = raw
+        .split("\n")
+        // GitHub prefixes every line with an RFC3339 timestamp.
+        .map((l) => l.replace(/^\S*\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?/, ""))
+        // ANSI colour, which also hides file paths from a path matcher.
+        // eslint-disable-next-line no-control-regex
+        .map((l) => l.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/\^\[\[[0-9;]*[A-Za-z]/g, ""))
+        .filter((l) => l.trim() !== "");
+    const summaryAt = clean.findIndex((l) => /Summary of all failing tests|Failed tests:|=== FAILURES ===/i.test(l));
+    if (summaryAt >= 0)
+        return clean.slice(summaryAt, summaryAt + 80).join("\n").slice(0, 3000);
+    const marked = clean.filter((l) => /##\[error\]|^\s*FAIL\s|^\s*✕|^\s*●|\bAssertionError\b|\bError:/.test(l));
+    if (marked.length > 0)
+        return marked.slice(0, 60).join("\n").slice(0, 3000);
+    return clean.slice(-40).join("\n").slice(0, 3000);
 }
 /** beta.34: merge a PR (squash by default). Returns the merge commit SHA. */
 export async function mergePullRequest(input) {

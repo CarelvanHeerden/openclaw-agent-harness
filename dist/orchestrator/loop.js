@@ -149,6 +149,7 @@ import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, descr
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
+import { buildCiFailureFindings, describeCiFindings } from "./ci-findings.js";
 import { isInfraCrash } from "./infra-crash.js";
 import { computeReviseScope } from "./revise-scope.js";
 import { mapFindingsToSubTasks, buildScopedReviseHint, } from "./revise-mapping.js";
@@ -1056,6 +1057,11 @@ export class OrchestratorLoop {
             role: "lead", model: this.deps.config.models.lead, phase: "plan",
             prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
         });
+        // beta.127 (#157): planning happens before the cycle ledger opens, so the
+        // lead's spend is parked here and folded into `totalCost` at its
+        // declaration. Stays 0 on a resumed run that skips planning, so a resume
+        // cannot bill the same plan twice.
+        let leadPlanningCostUsd = 0;
         try {
             // beta.43: bound the lead-planner SDK call by lead_timeout_seconds. The
             // lead await was UNBOUNDED (beta.42 only bounded the worker). A hung
@@ -1114,6 +1120,13 @@ export class OrchestratorLoop {
                 role: "lead", model: this.deps.config.models.lead, phase: "plan",
                 finishReason: "end_turn", durationMs: Date.now() - leadStart,
                 outputChars: JSON.stringify(plan).length, toolCalls: [],
+                // beta.127 (#157): the second half of the same omission. Every worker
+                // and adversary `sdk_response` in the interaction log carries a cost;
+                // the lead's carried `costUsd: null`, which reads as "this call was
+                // free" rather than "nobody passed the number through". The b126 smoke
+                // was diagnosed off this log, and the lead's 311 seconds on Opus
+                // appeared as null next to a worker's 0.5299.
+                costUsd: plan.actualCostUsd ?? 0,
             });
             // beta.94 (Feature 1a): elide the idle-prone trailing PURE-OBSERVE scope
             // "final verification" sub-task (the b93 seq-12 stall). It has nothing to
@@ -1140,7 +1153,26 @@ export class OrchestratorLoop {
             this.deps.state.db
                 .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
                 .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
-            this.deps.state.audit("loop.plan_ready", { sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel }, sessionId);
+            // beta.127 (#157): CREDIT THE PLANNER'S SPEND TO THE SESSION.
+            //
+            // Every other role's cost was added to `totalCost` -- worker, worker
+            // retry, adversary -- and the lead's never was. Not rounded, not
+            // approximated: absent. On the b126 smoke the lead ran 311 seconds on
+            // Opus across two attempts and the session's ledger attributed $0.00 to
+            // it, so the reported $18.78 was a lower bound by however much the most
+            // expensive model in the run had cost.
+            //
+            // This is not only a reporting problem. `totalCost` is what the budget
+            // ceiling is checked against and what `advance()` reads when deciding
+            // whether another cycle is affordable, so planning spend was invisible
+            // to every one of those decisions -- and a run that died IN planning
+            // reported $0.00 having burned real tokens.
+            leadPlanningCostUsd = plan.actualCostUsd ?? 0;
+            this.deps.state.audit("loop.plan_ready", {
+                sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel,
+                leadCostUsd: Number(leadPlanningCostUsd.toFixed(4)),
+                scoutCostUsd: Number((plan.scout?.costUsd ?? 0).toFixed(4)),
+            }, sessionId);
             // beta.104: record whether the lead actually SAW the repo before it
             // planned. Emitted on both outcomes -- a smoke report must be able to
             // attribute a plan full of fictional paths to a scout that never ran,
@@ -1326,7 +1358,11 @@ export class OrchestratorLoop {
             }
         }
         let cycle = 0;
-        let totalCost = row.cost_usd;
+        // beta.127 (#157): + the planner. Every other role was already counted
+        // here; the lead was the one that never arrived, so the ceiling this is
+        // checked against and the affordability test in `advance()` were both
+        // reading a number that excluded the most expensive model in the run.
+        let totalCost = row.cost_usd + leadPlanningCostUsd;
         let lastReview;
         // beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order, so
         // the max-cycles terminal path can distinguish CONVERGING (findings
@@ -1369,2139 +1405,2220 @@ export class OrchestratorLoop {
         // verified -- killing the path-drift class at the source instead of adding
         // one more tolerant match rule. Accumulated across sub-tasks within the run.
         const discoveredRealPaths = new Set();
-        // 2. Execute/review cycles
+        // 2. Execute/review cycles, then the ship gate, then possibly back again.
         //
-        // beta.124: the bound includes `cycleExtensionsGranted`, and that is the
-        // whole reason b119's extension does anything at all. `advance()` decided
-        // to extend, this body incremented the counter and audited
-        // `loop.max_cycles_extended` -- and then the old bound (`cycle <
-        // max_cycles`) ended the loop anyway, because the grant happened on the
-        // very cycle that exhausted the ceiling. The extension was authorised and
-        // discarded on every run since b119; the b123 OpenClaw smoke granted one
-        // at cycle 3 with $21 unspent and shipped three cycles anyway. Still
-        // bounded: `canExtend` refuses past `max_cycle_extensions`, so this can
-        // only ever run that many extra cycles.
-        while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted) {
-            cycle += 1;
-            this.deps.state.db.prepare(`UPDATE sessions SET cycles_ran = ? WHERE id = ?`).run(cycle, sessionId);
-            this.checkpoint(sessionId, cycle);
-            // 2a. Executing sub-tasks in dependency order, with bounded concurrency.
-            this.setStatus(sessionId, "executing");
-            await this.deps.reportProgress?.(sessionId, "executing", { cycle });
-            const executeStart = Date.now();
-            // beta.108: branch tip before this cycle's workers run, so a cycle that
-            // changed nothing can be recognised as such. See the early-exit below.
-            const cycleBaseSha = this.deps.worktreeHeadSha
-                ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
-                : "";
-            // beta.92: DETERMINISTIC finding -> sub-task mapping REPLACES the deleted
-            // LLM revise-spec turn (beta.67). The revise-spec turn kept exceeding its
-            // lane-cap timeout (b73 signature) across THREE smokes (b89/b90/b91) and
-            // falling back to a raw 10-finding dump handed to every sub-task, which
-            // starved F1 scoping and induced worker confabulation. We now map each
-            // diff-addressable finding (spec|quality|security, `.file` required) onto
-            // the sub-task(s) that own its file via the SAME strict resolveContractPath
-            // machinery b87/b88 use, broadcast meta (fit|runtime) findings to all, and
-            // attach any mapping-miss to all (never dropped). No LLM turn => no
-            // timeout => no raw-dump => no confab. `reviseSpecApplied` now means
-            // "deterministic per-sub-task targeting is available"; downstream
-            // consumers (per-sub-task contract relaxation, observe-reprobe skip, raw-
-            // hint suppression) read the SAME flag, now driven by deterministic data.
-            let reviseSpecApplied = false;
-            let reviseMapping;
-            const reviseAssignmentBySeq = new Map();
-            if (cycle > 1 &&
-                lastReview?.findings &&
-                this.deps.config.loop.deterministic_revise_mapping !== false) {
-                const mapSubTasks = plan.subTasks.map((s) => ({
-                    seq: s.seq,
-                    filesLikelyTouched: s.filesLikelyTouched,
-                    contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
-                    // beta.120 (fix 2): without this the router cannot tell a path a
-                    // previous cycle GRANTED from one the plan OWNS, and the fan-out
-                    // compounds. See MapSubTask.coFixGrantedFiles.
-                    coFixGrantedFiles: s.coFixGrantedFiles,
-                }));
-                // beta.119: which of this review's findings the PREVIOUS cycle also
-                // raised. A stuck finding is re-widened even where it is already
-                // targeted -- being targeted is exactly what failed for it last time.
-                const stuck = detectStuckFindings(findingsByCycle.slice(0, -1), lastReview.findings);
-                const stuckKeys = new Set(stuck.map((s) => s.key));
-                for (const s of stuck) {
-                    this.deps.state.audit("loop.finding_stuck", {
-                        sessionId, cycle, occurrences: s.occurrences, title: s.finding.title,
-                        file: (s.finding.file ?? "").trim() || null, severity: s.finding.severity,
-                        coFixFiles: coFixFiles(s.finding),
-                    }, sessionId);
-                }
-                reviseMapping = mapFindingsToSubTasks(mapSubTasks, lastReview.findings, (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }), {
-                    adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
-                    maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
-                    routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
-                    stuckKeys,
-                });
-                for (const a of reviseMapping.assignments)
-                    reviseAssignmentBySeq.set(a.seq, a);
-                reviseSpecApplied = reviseMapping.anyTargeted;
-                this.deps.state.audit("loop.revise_mapping", {
-                    sessionId, cycle,
-                    subTasks: plan.subTasks.length,
-                    targetedSubTasks: reviseMapping.assignments.filter((a) => a.targeted.length > 0).length,
-                    metaBroadcast: reviseMapping.metaBroadcast.length,
-                    mappingMisses: reviseMapping.mappingMisses.length,
-                }, sessionId);
-                this.deps.interactionLog?.log(sessionId, {
-                    event: "revise_mapping", phase: "plan", cycle,
-                    targetedSubTasks: reviseMapping.assignments.filter((a) => a.targeted.length > 0).length,
-                });
-                // Charter guardrail: a filed diff-addressable finding that matched NO
-                // sub-task is a MAPPING MISS -- it is attached to every sub-task as
-                // context (never dropped, never run-all), and surfaced so we can see it.
-                const adoptedBySeq = new Map(reviseMapping.orphanAdoptions.map((a) => [a.finding, a]));
-                const refusedFor = new Map(reviseMapping.orphanRefusals.map((r) => [r.finding, r]));
-                for (const miss of reviseMapping.mappingMisses) {
-                    const adopted = adoptedBySeq.get(miss);
-                    const refused = refusedFor.get(miss);
-                    this.deps.state.audit("loop.finding_mapping_miss", {
-                        sessionId, cycle, dimension: miss.dimension, severity: miss.severity,
-                        file: (miss.file ?? "").trim() || null, title: miss.title,
-                        // beta.107: a miss that found an owner is a different animal from
-                        // one that stayed unactionable. b106 could not tell them apart,
-                        // because before b107 there was only the one kind.
-                        adoptedBySeq: adopted?.seq ?? null,
-                        adoptionReason: adopted?.reason ?? null,
-                        // beta.118: and "nobody could claim it" is different again from
-                        // "several could, equally". Only the latter is worth a router fix.
-                        refusedReason: refused?.reason ?? null,
-                        refusedSeqs: refused?.seqs ?? null,
-                    }, sessionId);
-                }
-                for (const ad of reviseMapping.orphanAdoptions) {
-                    this.deps.state.audit("loop.orphan_finding_adopted", { sessionId, cycle, seq: ad.seq, file: ad.file, reason: ad.reason, score: ad.score, title: ad.finding.title }, sessionId);
-                }
-                if (reviseMapping.orphanAdoptions.length > 0) {
-                    // Put the adopted file into the sub-task's SCOPE as well. b91 scoping
-                    // (which runs just below) keeps a sub-task only when its
-                    // `filesLikelyTouched` intersects a finding file, so without this the
-                    // adopting sub-task can still be skipped -- and the one worker asked
-                    // to fix the finding never runs. `filesLikelyTouched` is a scope hint,
-                    // not a contract, and b103's path writeback already rewrites it.
-                    for (const ad of reviseMapping.orphanAdoptions) {
-                        const st = plan.subTasks.find((s) => s.seq === ad.seq);
-                        if (!st)
-                            continue;
-                        st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
-                        if (!st.filesLikelyTouched.includes(ad.file))
-                            st.filesLikelyTouched.push(ad.file);
+        // beta.127: the cycle loop is wrapped in a ship-attempt loop. Before b127
+        // the sequence ran once and in one direction -- cycles, then push, then PR,
+        // then CI -- so CI's verdict arrived after the last opportunity to act on
+        // it had passed. A red build became a sentence in the merge recommendation.
+        //
+        // Now a red build at the gate can send the run back through a cycle with
+        // the failures as blocking findings. The `for` exists purely to make that
+        // edge expressible; when CI is green, or repair is disabled or exhausted,
+        // it breaks after one pass and the flow is exactly what b126 did.
+        let prUrl;
+        let ciOverride = null;
+        let ciNeverRegisteredCaveat = null;
+        let ciRepairCyclesGranted = 0;
+        let lastCiFindings = [];
+        // Measured across every ship attempt, so the timing reflects what the run
+        // actually spent getting to a shippable state.
+        const shipStart = Date.now();
+        shipAttempts: for (;;) {
+            //
+            // beta.124: the bound includes `cycleExtensionsGranted`, and that is the
+            // whole reason b119's extension does anything at all. `advance()` decided
+            // to extend, this body incremented the counter and audited
+            // `loop.max_cycles_extended` -- and then the old bound (`cycle <
+            // max_cycles`) ended the loop anyway, because the grant happened on the
+            // very cycle that exhausted the ceiling. The extension was authorised and
+            // discarded on every run since b119; the b123 OpenClaw smoke granted one
+            // at cycle 3 with $21 unspent and shipped three cycles anyway. Still
+            // bounded: `canExtend` refuses past `max_cycle_extensions`, so this can
+            // only ever run that many extra cycles.
+            // beta.127: `ciRepairCyclesGranted` joins the bound for the same reason
+            // b124 had to add `cycleExtensionsGranted` -- a grant the bound does not
+            // know about is not a grant. Getting this wrong is silent: the counter goes
+            // up, the audit event fires, and nothing runs.
+            while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted) {
+                cycle += 1;
+                this.deps.state.db.prepare(`UPDATE sessions SET cycles_ran = ? WHERE id = ?`).run(cycle, sessionId);
+                this.checkpoint(sessionId, cycle);
+                // 2a. Executing sub-tasks in dependency order, with bounded concurrency.
+                this.setStatus(sessionId, "executing");
+                await this.deps.reportProgress?.(sessionId, "executing", { cycle });
+                const executeStart = Date.now();
+                // beta.108: branch tip before this cycle's workers run, so a cycle that
+                // changed nothing can be recognised as such. See the early-exit below.
+                const cycleBaseSha = this.deps.worktreeHeadSha
+                    ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
+                    : "";
+                // beta.92: DETERMINISTIC finding -> sub-task mapping REPLACES the deleted
+                // LLM revise-spec turn (beta.67). The revise-spec turn kept exceeding its
+                // lane-cap timeout (b73 signature) across THREE smokes (b89/b90/b91) and
+                // falling back to a raw 10-finding dump handed to every sub-task, which
+                // starved F1 scoping and induced worker confabulation. We now map each
+                // diff-addressable finding (spec|quality|security, `.file` required) onto
+                // the sub-task(s) that own its file via the SAME strict resolveContractPath
+                // machinery b87/b88 use, broadcast meta (fit|runtime) findings to all, and
+                // attach any mapping-miss to all (never dropped). No LLM turn => no
+                // timeout => no raw-dump => no confab. `reviseSpecApplied` now means
+                // "deterministic per-sub-task targeting is available"; downstream
+                // consumers (per-sub-task contract relaxation, observe-reprobe skip, raw-
+                // hint suppression) read the SAME flag, now driven by deterministic data.
+                let reviseSpecApplied = false;
+                let reviseMapping;
+                const reviseAssignmentBySeq = new Map();
+                if (cycle > 1 &&
+                    lastReview?.findings &&
+                    this.deps.config.loop.deterministic_revise_mapping !== false) {
+                    const mapSubTasks = plan.subTasks.map((s) => ({
+                        seq: s.seq,
+                        filesLikelyTouched: s.filesLikelyTouched,
+                        contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
+                        // beta.120 (fix 2): without this the router cannot tell a path a
+                        // previous cycle GRANTED from one the plan OWNS, and the fan-out
+                        // compounds. See MapSubTask.coFixGrantedFiles.
+                        coFixGrantedFiles: s.coFixGrantedFiles,
+                    }));
+                    // beta.119: which of this review's findings the PREVIOUS cycle also
+                    // raised. A stuck finding is re-widened even where it is already
+                    // targeted -- being targeted is exactly what failed for it last time.
+                    const stuck = detectStuckFindings(findingsByCycle.slice(0, -1), lastReview.findings);
+                    const stuckKeys = new Set(stuck.map((s) => s.key));
+                    for (const s of stuck) {
+                        this.deps.state.audit("loop.finding_stuck", {
+                            sessionId, cycle, occurrences: s.occurrences, title: s.finding.title,
+                            file: (s.finding.file ?? "").trim() || null, severity: s.finding.severity,
+                            coFixFiles: coFixFiles(s.finding),
+                        }, sessionId);
                     }
-                    this.deps.logger.info("[loop] beta.107: orphan finding(s) adopted by the nearest sub-task -- now targeted, not just broadcast", { sessionId, cycle, adopted: reviseMapping.orphanAdoptions.length });
-                }
-                if (reviseMapping.mappingMisses.length > 0) {
-                    this.deps.logger.info("[loop] revise-mapping: filed finding(s) matched no sub-task -> broadcast to all as context (never dropped)", { sessionId, cycle, misses: reviseMapping.mappingMisses.length });
-                }
-                // beta.119: a fix that spans sub-tasks now brings in every sub-task it
-                // needs. Put the co-fix paths into their scope too, for the same reason
-                // orphan adoption does above: b91 scoping keeps a sub-task only when
-                // its files intersect a finding file, so without this the extra owners
-                // are recruited and then immediately skipped.
-                for (const cf of reviseMapping.coFixRoutings) {
-                    this.deps.state.audit("loop.finding_co_fix_routed", {
-                        sessionId, cycle, file: cf.file, matchedFiles: cf.matchedFiles,
-                        seqs: cf.seqs, primarySeq: cf.primarySeq, assisting: cf.seqs.filter((s) => s !== cf.primarySeq),
-                        title: cf.finding.title,
-                        stuck: stuckKeys.has(findingKey(cf.finding)),
+                    reviseMapping = mapFindingsToSubTasks(mapSubTasks, lastReview.findings, (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }), {
+                        adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
+                        maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
+                        routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
+                        stuckKeys,
+                    });
+                    for (const a of reviseMapping.assignments)
+                        reviseAssignmentBySeq.set(a.seq, a);
+                    reviseSpecApplied = reviseMapping.anyTargeted;
+                    this.deps.state.audit("loop.revise_mapping", {
+                        sessionId, cycle,
+                        subTasks: plan.subTasks.length,
+                        targetedSubTasks: reviseMapping.assignments.filter((a) => a.targeted.length > 0).length,
+                        metaBroadcast: reviseMapping.metaBroadcast.length,
+                        mappingMisses: reviseMapping.mappingMisses.length,
                     }, sessionId);
-                    for (const seq of cf.seqs) {
-                        const st = plan.subTasks.find((s) => s.seq === seq);
-                        if (!st)
-                            continue;
-                        // beta.120 (fix 2): grant edit scope WITHOUT granting ownership.
-                        //
-                        // b119 pushed these paths into `filesLikelyTouched`, which is both
-                        // the scope gate AND the ownership map the next cycle's router
-                        // reads -- and `plan` outlives the cycle. So each routing decision
-                        // widened the input to the following one: cycle 2 fanned out to a
-                        // mean of 1.9 sub-tasks, cycle 3 to 5.0, peaking at 9 owners for a
-                        // two-file fix. Recording the grant separately keeps the worker
-                        // able to edit the file while leaving ownership as the plan
-                        // declared it.
-                        st.coFixGrantedFiles = [...(st.coFixGrantedFiles ?? [])];
-                        st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
-                        for (const p of cf.matchedFiles) {
-                            if (!st.filesLikelyTouched.includes(p))
-                                st.filesLikelyTouched.push(p);
-                            if (!st.coFixGrantedFiles.includes(p))
-                                st.coFixGrantedFiles.push(p);
+                    this.deps.interactionLog?.log(sessionId, {
+                        event: "revise_mapping", phase: "plan", cycle,
+                        targetedSubTasks: reviseMapping.assignments.filter((a) => a.targeted.length > 0).length,
+                    });
+                    // Charter guardrail: a filed diff-addressable finding that matched NO
+                    // sub-task is a MAPPING MISS -- it is attached to every sub-task as
+                    // context (never dropped, never run-all), and surfaced so we can see it.
+                    const adoptedBySeq = new Map(reviseMapping.orphanAdoptions.map((a) => [a.finding, a]));
+                    const refusedFor = new Map(reviseMapping.orphanRefusals.map((r) => [r.finding, r]));
+                    for (const miss of reviseMapping.mappingMisses) {
+                        const adopted = adoptedBySeq.get(miss);
+                        const refused = refusedFor.get(miss);
+                        this.deps.state.audit("loop.finding_mapping_miss", {
+                            sessionId, cycle, dimension: miss.dimension, severity: miss.severity,
+                            file: (miss.file ?? "").trim() || null, title: miss.title,
+                            // beta.107: a miss that found an owner is a different animal from
+                            // one that stayed unactionable. b106 could not tell them apart,
+                            // because before b107 there was only the one kind.
+                            adoptedBySeq: adopted?.seq ?? null,
+                            adoptionReason: adopted?.reason ?? null,
+                            // beta.118: and "nobody could claim it" is different again from
+                            // "several could, equally". Only the latter is worth a router fix.
+                            refusedReason: refused?.reason ?? null,
+                            refusedSeqs: refused?.seqs ?? null,
+                        }, sessionId);
+                    }
+                    for (const ad of reviseMapping.orphanAdoptions) {
+                        this.deps.state.audit("loop.orphan_finding_adopted", { sessionId, cycle, seq: ad.seq, file: ad.file, reason: ad.reason, score: ad.score, title: ad.finding.title }, sessionId);
+                    }
+                    if (reviseMapping.orphanAdoptions.length > 0) {
+                        // Put the adopted file into the sub-task's SCOPE as well. b91 scoping
+                        // (which runs just below) keeps a sub-task only when its
+                        // `filesLikelyTouched` intersects a finding file, so without this the
+                        // adopting sub-task can still be skipped -- and the one worker asked
+                        // to fix the finding never runs. `filesLikelyTouched` is a scope hint,
+                        // not a contract, and b103's path writeback already rewrites it.
+                        for (const ad of reviseMapping.orphanAdoptions) {
+                            const st = plan.subTasks.find((s) => s.seq === ad.seq);
+                            if (!st)
+                                continue;
+                            st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
+                            if (!st.filesLikelyTouched.includes(ad.file))
+                                st.filesLikelyTouched.push(ad.file);
+                        }
+                        this.deps.logger.info("[loop] beta.107: orphan finding(s) adopted by the nearest sub-task -- now targeted, not just broadcast", { sessionId, cycle, adopted: reviseMapping.orphanAdoptions.length });
+                    }
+                    if (reviseMapping.mappingMisses.length > 0) {
+                        this.deps.logger.info("[loop] revise-mapping: filed finding(s) matched no sub-task -> broadcast to all as context (never dropped)", { sessionId, cycle, misses: reviseMapping.mappingMisses.length });
+                    }
+                    // beta.119: a fix that spans sub-tasks now brings in every sub-task it
+                    // needs. Put the co-fix paths into their scope too, for the same reason
+                    // orphan adoption does above: b91 scoping keeps a sub-task only when
+                    // its files intersect a finding file, so without this the extra owners
+                    // are recruited and then immediately skipped.
+                    for (const cf of reviseMapping.coFixRoutings) {
+                        this.deps.state.audit("loop.finding_co_fix_routed", {
+                            sessionId, cycle, file: cf.file, matchedFiles: cf.matchedFiles,
+                            seqs: cf.seqs, primarySeq: cf.primarySeq, assisting: cf.seqs.filter((s) => s !== cf.primarySeq),
+                            title: cf.finding.title,
+                            stuck: stuckKeys.has(findingKey(cf.finding)),
+                        }, sessionId);
+                        for (const seq of cf.seqs) {
+                            const st = plan.subTasks.find((s) => s.seq === seq);
+                            if (!st)
+                                continue;
+                            // beta.120 (fix 2): grant edit scope WITHOUT granting ownership.
+                            //
+                            // b119 pushed these paths into `filesLikelyTouched`, which is both
+                            // the scope gate AND the ownership map the next cycle's router
+                            // reads -- and `plan` outlives the cycle. So each routing decision
+                            // widened the input to the following one: cycle 2 fanned out to a
+                            // mean of 1.9 sub-tasks, cycle 3 to 5.0, peaking at 9 owners for a
+                            // two-file fix. Recording the grant separately keeps the worker
+                            // able to edit the file while leaving ownership as the plan
+                            // declared it.
+                            st.coFixGrantedFiles = [...(st.coFixGrantedFiles ?? [])];
+                            st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
+                            for (const p of cf.matchedFiles) {
+                                if (!st.filesLikelyTouched.includes(p))
+                                    st.filesLikelyTouched.push(p);
+                                if (!st.coFixGrantedFiles.includes(p))
+                                    st.coFixGrantedFiles.push(p);
+                            }
                         }
                     }
+                    if (reviseMapping.coFixRoutings.length > 0) {
+                        this.deps.logger.info("[loop] beta.119: finding(s) whose fix spans sub-tasks routed to every owner the fix needs", { sessionId, cycle, routed: reviseMapping.coFixRoutings.length });
+                    }
+                    // A stuck finding that co-fix routing could NOT widen is one nobody in
+                    // this plan can resolve. Record it for the PR body instead of letting
+                    // it be re-raised identically until the cycle ceiling.
+                    const widened = new Set(reviseMapping.coFixRoutings.map((c) => findingKey(c.finding)));
+                    unresolvedAcrossCycles = stuck
+                        .filter((s) => !widened.has(s.key))
+                        .map((s) => ({
+                        key: s.key,
+                        title: s.finding.title ?? "(untitled)",
+                        file: (s.finding.file ?? "").trim(),
+                        severity: s.finding.severity ?? "low",
+                        occurrences: s.occurrences,
+                        coFixFiles: coFixFiles(s.finding),
+                    }));
+                    for (const u of unresolvedAcrossCycles) {
+                        this.deps.state.audit("loop.finding_unresolvable_across_cycles", { sessionId, cycle, ...u }, sessionId);
+                    }
                 }
-                if (reviseMapping.coFixRoutings.length > 0) {
-                    this.deps.logger.info("[loop] beta.119: finding(s) whose fix spans sub-tasks routed to every owner the fix needs", { sessionId, cycle, routed: reviseMapping.coFixRoutings.length });
+                const ordered = topoSortSubTasks(plan.subTasks);
+                // beta.91 (Fix 1): revise-cycle scoping. On cycle > 1, skip sub-tasks whose
+                // file scope does not intersect any finding -- they are already-correct
+                // from a prior cycle (the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks).
+                // Conservative: any unfiled finding => run everything; never skip a dep of
+                // a kept sub-task. Feature-gated (default on). Cycle 1 is never scoped.
+                const reviseScopeSkip = new Set();
+                if (cycle > 1 && this.deps.config.loop.revise_scoping_enabled !== false && lastReview?.findings) {
+                    const scope = computeReviseScope(plan.subTasks, lastReview.findings, cycle);
+                    if (scope.scoped) {
+                        for (const s of scope.skipSeqs)
+                            reviseScopeSkip.add(s);
+                        this.deps.state.audit("loop.revise_scoped", { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length, skipSeqs: scope.skipSeqs, findingFiles: scope.findingFiles }, sessionId);
+                        this.deps.logger.info("[loop] revise-scoping: skipping sub-tasks not targeted by any finding (already correct from a prior cycle)", { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
+                        this.deps.interactionLog?.log(sessionId, { event: "revise_scoped", phase: "plan", cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
+                    }
+                    else {
+                        // beta.91 NIT-6: count unfiled findings so we can measure over time
+                        // whether the adversary `.file`-required fix is populating file paths
+                        // (an unscopable cycle with a high unfiled count = the prompt fix not
+                        // landing; a low count = genuinely file-less meta findings).
+                        const unfiledFindingCount = (lastReview.findings ?? []).filter((f) => !(f.file ?? "").trim()).length;
+                        this.deps.state.audit("loop.revise_scope_skipped", { sessionId, cycle, reason: scope.reason, findingCount: (lastReview.findings ?? []).length, unfiledFindingCount }, sessionId);
+                    }
                 }
-                // A stuck finding that co-fix routing could NOT widen is one nobody in
-                // this plan can resolve. Record it for the PR body instead of letting
-                // it be re-raised identically until the cycle ceiling.
-                const widened = new Set(reviseMapping.coFixRoutings.map((c) => findingKey(c.finding)));
-                unresolvedAcrossCycles = stuck
-                    .filter((s) => !widened.has(s.key))
-                    .map((s) => ({
-                    key: s.key,
-                    title: s.finding.title ?? "(untitled)",
-                    file: (s.finding.file ?? "").trim(),
-                    severity: s.finding.severity ?? "low",
-                    occurrences: s.occurrences,
-                    coFixFiles: coFixFiles(s.finding),
-                }));
-                for (const u of unresolvedAcrossCycles) {
-                    this.deps.state.audit("loop.finding_unresolvable_across_cycles", { sessionId, cycle, ...u }, sessionId);
-                }
-            }
-            const ordered = topoSortSubTasks(plan.subTasks);
-            // beta.91 (Fix 1): revise-cycle scoping. On cycle > 1, skip sub-tasks whose
-            // file scope does not intersect any finding -- they are already-correct
-            // from a prior cycle (the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks).
-            // Conservative: any unfiled finding => run everything; never skip a dep of
-            // a kept sub-task. Feature-gated (default on). Cycle 1 is never scoped.
-            const reviseScopeSkip = new Set();
-            if (cycle > 1 && this.deps.config.loop.revise_scoping_enabled !== false && lastReview?.findings) {
-                const scope = computeReviseScope(plan.subTasks, lastReview.findings, cycle);
-                if (scope.scoped) {
-                    for (const s of scope.skipSeqs)
-                        reviseScopeSkip.add(s);
-                    this.deps.state.audit("loop.revise_scoped", { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length, skipSeqs: scope.skipSeqs, findingFiles: scope.findingFiles }, sessionId);
-                    this.deps.logger.info("[loop] revise-scoping: skipping sub-tasks not targeted by any finding (already correct from a prior cycle)", { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
-                    this.deps.interactionLog?.log(sessionId, { event: "revise_scoped", phase: "plan", cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
-                }
-                else {
-                    // beta.91 NIT-6: count unfiled findings so we can measure over time
-                    // whether the adversary `.file`-required fix is populating file paths
-                    // (an unscopable cycle with a high unfiled count = the prompt fix not
-                    // landing; a low count = genuinely file-less meta findings).
-                    const unfiledFindingCount = (lastReview.findings ?? []).filter((f) => !(f.file ?? "").trim()).length;
-                    this.deps.state.audit("loop.revise_scope_skipped", { sessionId, cycle, reason: scope.reason, findingCount: (lastReview.findings ?? []).length, unfiledFindingCount }, sessionId);
-                }
-            }
-            // beta.91 (Fix 2): effective concurrency. Serial (1) unless the feature is
-            // on AND subtask_concurrency > 1. The dispatcher additionally enforces a
-            // file-overlap guard (canDispatchConcurrently) below.
-            const concurrency = resolveEffectiveConcurrency({
-                subtaskConcurrency: this.deps.config.loop.subtask_concurrency ?? 1,
-                parallelEnabled: this.deps.config.loop.parallel_independent_subtasks === true,
-            });
-            const inFlight = [];
-            const inFlightSubTasks = new Map();
-            const done = new Set();
-            const failed = { seq: -1, err: null };
-            /**
-             * beta.123: RETRACT a failure a recovery path has just healed.
-             *
-             * `failed` is the cycle-scoped accumulator the terminal decision reads at
-             * the end of the cycle. Every write to it before b123 was a SET; nothing
-             * ever cleared it. So the two paths that exist precisely to heal a
-             * verification failure without bothering a human -- the b105 basename
-             * rescue and the b111 auto-resolve -- both marked their sub-task
-             * `completed`, called `done.add`, returned... and left `failed.err`
-             * standing. The cycle then ended and the run terminated with
-             * `subtask_N_failed_verification` for a sub-task the harness had already
-             * decided was fine.
-             *
-             * That is the b122 smoke kill (session 215c1bf3, cycle-2 seq-10: a pure
-             * `git mv` the adversary had explicitly asked for), and it is why both
-             * rescues have never once let a run finish since they shipped. It was
-             * read at the time as a 30ms race between the resolve event and the
-             * terminal decision. It is not a race -- there is no timing in it. The
-             * flag is simply never unset.
-             *
-             * Retraction is keyed to the SEQ THAT RECORDED THE FAILURE. Under b117
-             * parallelism several sub-tasks share this one slot, so a blanket clear
-             * would let a rescue on seq 10 silently erase a genuine failure on seq 4.
-             * If the slot no longer belongs to this seq we leave it entirely alone:
-             * some other sub-task's failure is the live one and it must still stop
-             * the run.
-             */
-            const retractFailure = (seq, why) => {
-                if (failed.seq !== seq || failed.err === null)
-                    return;
-                const retracted = failed.err;
-                failed.seq = -1;
-                failed.err = null;
-                this.deps.state.audit("loop.subtask_failure_retracted", { sessionId, seq, cycle, why, retracted: String(retracted).slice(0, 300) }, sessionId);
-                this.deps.logger.info("[loop] sub-task failure retracted by a recovery path; the run continues", {
-                    sessionId, seq, why,
+                // beta.91 (Fix 2): effective concurrency. Serial (1) unless the feature is
+                // on AND subtask_concurrency > 1. The dispatcher additionally enforces a
+                // file-overlap guard (canDispatchConcurrently) below.
+                const concurrency = resolveEffectiveConcurrency({
+                    subtaskConcurrency: this.deps.config.loop.subtask_concurrency ?? 1,
+                    parallelEnabled: this.deps.config.loop.parallel_independent_subtasks === true,
                 });
-            };
-            /**
-             * beta.117: isolated checkouts for concurrent workers.
-             *
-             * Built only when concurrency > 1 AND the adapter can actually create
-             * slots. Everything below tolerates a null pool by running serially, so a
-             * stubbed orchestrator or a repo the adapter cannot pool degrades to
-             * pre-b117 behaviour instead of failing.
-             *
-             * Sized to `concurrency`, not `concurrency - 1`. Letting one worker keep
-             * using the session worktree looks like a free slot and is not: that
-             * checkout is the MERGE TARGET, and a merge into a tree another worker is
-             * actively editing either aborts on a dirty tree or mixes that worker's
-             * uncommitted edits into someone else's merge. Once parallel, the session
-             * worktree is an integration checkout only, and every worker gets a slot.
-             *
-             * Slots are created lazily, so a cycle whose sub-tasks never actually
-             * overlap still pays for just one.
-             */
-            const canPool = concurrency > 1 &&
-                !!this.deps.allocatePooledWorktree &&
-                !!this.deps.resetPooledWorktree &&
-                !!this.deps.gitRun &&
-                !!plan.branch;
-            const pool = canPool
-                ? new WorktreePool({
-                    size: concurrency,
-                    sessionBranch: plan.branch,
-                    deps: {
-                        create: async (slot, slotBranch) => this.deps.allocatePooledWorktree({
-                            sessionId, repoFullName: plan.repo, sessionBranch: plan.branch, slotBranch, slot,
-                        }),
-                        reset: async (wt, sha) => this.deps.resetPooledWorktree(wt.path, sha),
-                        destroy: async (wt) => {
-                            await this.deps.releasePooledWorktree?.({
-                                repoFullName: plan.repo, worktreePath: wt.path, slotBranch: wt.branch,
-                            });
+                const inFlight = [];
+                const inFlightSubTasks = new Map();
+                const done = new Set();
+                const failed = { seq: -1, err: null };
+                /**
+                 * beta.123: RETRACT a failure a recovery path has just healed.
+                 *
+                 * `failed` is the cycle-scoped accumulator the terminal decision reads at
+                 * the end of the cycle. Every write to it before b123 was a SET; nothing
+                 * ever cleared it. So the two paths that exist precisely to heal a
+                 * verification failure without bothering a human -- the b105 basename
+                 * rescue and the b111 auto-resolve -- both marked their sub-task
+                 * `completed`, called `done.add`, returned... and left `failed.err`
+                 * standing. The cycle then ended and the run terminated with
+                 * `subtask_N_failed_verification` for a sub-task the harness had already
+                 * decided was fine.
+                 *
+                 * That is the b122 smoke kill (session 215c1bf3, cycle-2 seq-10: a pure
+                 * `git mv` the adversary had explicitly asked for), and it is why both
+                 * rescues have never once let a run finish since they shipped. It was
+                 * read at the time as a 30ms race between the resolve event and the
+                 * terminal decision. It is not a race -- there is no timing in it. The
+                 * flag is simply never unset.
+                 *
+                 * Retraction is keyed to the SEQ THAT RECORDED THE FAILURE. Under b117
+                 * parallelism several sub-tasks share this one slot, so a blanket clear
+                 * would let a rescue on seq 10 silently erase a genuine failure on seq 4.
+                 * If the slot no longer belongs to this seq we leave it entirely alone:
+                 * some other sub-task's failure is the live one and it must still stop
+                 * the run.
+                 */
+                const retractFailure = (seq, why) => {
+                    if (failed.seq !== seq || failed.err === null)
+                        return;
+                    const retracted = failed.err;
+                    failed.seq = -1;
+                    failed.err = null;
+                    this.deps.state.audit("loop.subtask_failure_retracted", { sessionId, seq, cycle, why, retracted: String(retracted).slice(0, 300) }, sessionId);
+                    this.deps.logger.info("[loop] sub-task failure retracted by a recovery path; the run continues", {
+                        sessionId, seq, why,
+                    });
+                };
+                /**
+                 * beta.117: isolated checkouts for concurrent workers.
+                 *
+                 * Built only when concurrency > 1 AND the adapter can actually create
+                 * slots. Everything below tolerates a null pool by running serially, so a
+                 * stubbed orchestrator or a repo the adapter cannot pool degrades to
+                 * pre-b117 behaviour instead of failing.
+                 *
+                 * Sized to `concurrency`, not `concurrency - 1`. Letting one worker keep
+                 * using the session worktree looks like a free slot and is not: that
+                 * checkout is the MERGE TARGET, and a merge into a tree another worker is
+                 * actively editing either aborts on a dirty tree or mixes that worker's
+                 * uncommitted edits into someone else's merge. Once parallel, the session
+                 * worktree is an integration checkout only, and every worker gets a slot.
+                 *
+                 * Slots are created lazily, so a cycle whose sub-tasks never actually
+                 * overlap still pays for just one.
+                 */
+                const canPool = concurrency > 1 &&
+                    !!this.deps.allocatePooledWorktree &&
+                    !!this.deps.resetPooledWorktree &&
+                    !!this.deps.gitRun &&
+                    !!plan.branch;
+                const pool = canPool
+                    ? new WorktreePool({
+                        size: concurrency,
+                        sessionBranch: plan.branch,
+                        deps: {
+                            create: async (slot, slotBranch) => this.deps.allocatePooledWorktree({
+                                sessionId, repoFullName: plan.repo, sessionBranch: plan.branch, slotBranch, slot,
+                            }),
+                            reset: async (wt, sha) => this.deps.resetPooledWorktree(wt.path, sha),
+                            destroy: async (wt) => {
+                                await this.deps.releasePooledWorktree?.({
+                                    repoFullName: plan.repo, worktreePath: wt.path, slotBranch: wt.branch,
+                                });
+                            },
+                            logger: this.deps.logger,
                         },
-                        logger: this.deps.logger,
-                    },
-                })
-                : null;
-            if (pool) {
-                this.deps.state.audit("loop.parallel_enabled", { sessionId, cycle, concurrency, poolSize: concurrency }, sessionId);
-            }
-            // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
-            // instead of hard-failing. Carries the ONE question to surface + the
-            // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
-            const clarify = { question: null, seq: -1, subtask: null };
-            const runOneInner = async (st, workerWorktree) => {
-                // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
-                // intersect any finding -> its prior-cycle commit is already correct and
-                // part of the branch. Mark completed_no_change without a worker turn.
-                if (reviseScopeSkip.has(st.seq)) {
-                    this.deps.state.db
-                        .prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
-                        .run("revise-scoped: not targeted by any review finding (unchanged from prior cycle)", Date.now(), sessionId, cycle, st.seq);
-                    this.deps.state.audit("loop.subtask_revise_scoped_skip", { sessionId, cycle, seq: st.seq }, sessionId);
-                    this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_scoped_skip", phase: "worker", seq: st.seq, cycle });
-                    done.add(st.seq);
-                    return;
+                    })
+                    : null;
+                if (pool) {
+                    this.deps.state.audit("loop.parallel_enabled", { sessionId, cycle, concurrency, poolSize: concurrency }, sessionId);
                 }
-                // beta.53 (P1b): at most ONE env-wait retry per sub-task.
-                let envWaitRetried = false;
-                // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
-                // review's findings or it will simply replay cycle 1's work.
-                // beta.92: the deterministic mapping now produces a PER-SUB-TASK scoped
-                // hint (only THIS sub-task's targeted findings + cross-cutting broadcast
-                // guidance) -- never the full untargeted 10-finding dump that overwhelmed
-                // workers and induced confabs (b91). Fall back to the beta.56 whole-
-                // review raw hint only if mapping was unavailable/disabled.
-                const reviseAssignment = reviseAssignmentBySeq.get(st.seq);
-                const baseReviseHint = cycle > 1 && lastReview
-                    ? reviseAssignment
-                        ? buildScopedReviseHint(lastReview.verdict, lastReview.summary, reviseAssignment)
-                        : buildReviseDispatchHint(lastReview)
-                    : undefined;
-                // beta.101: warn this worker about ITS OWN fictional plan paths only,
-                // so the note stays short and unambiguous rather than a plan-wide dump.
-                const mine = new Set((st.filesLikelyTouched ?? []).map((p) => p.trim().replace(/^\.\//, "")));
-                const mySuspects = planPathSuspects.filter((s) => mine.has(s.path));
-                const reviseHint = mySuspects.length
-                    ? `${baseReviseHint ? `${baseReviseHint}\n\n` : ""}${describeSuspectPlanPaths(mySuspects)}`
-                    : baseReviseHint;
-                // beta.103: attaching a hint emitted NO audit event, so "did the worker
-                // actually get told?" was unanswerable after the fact. The b102 smoke
-                // report concluded the b101 plan-path warning was observability-only
-                // and never reached a worker -- an unsound inference, but one the audit
-                // trail gave no way to refute. Record the attachment itself.
-                if (reviseHint) {
-                    this.deps.state.audit("loop.dispatch_hint_attached", {
-                        sessionId, seq: st.seq, cycle,
-                        chars: reviseHint.length,
-                        sources: [
-                            ...(baseReviseHint ? ["revise"] : []),
-                            ...(mySuspects.length ? ["plan_path_suspect"] : []),
-                        ],
-                        suspectPaths: mySuspects.map((s) => s.path),
-                    }, sessionId);
-                }
-                // beta.70 (F5): skip observe-only RE-PROBE on a revise cycle. In
-                // PR #870 the cycle-2 plan re-listed seq-1 as taskMode:'observe'
-                // ("already completed and requires no changes; do not modify any
-                // files") yet the loop re-ran it -- 58s + $0.29 to re-emit the same
-                // probe report. On a revise cycle (cycle > 1), when THIS observe
-                // sub-task already completed cleanly in a PRIOR cycle, mark it done and
-                // skip the SDK call. Guard is conservative on THREE axes:
-                //   (1) observe-only (never a mutate);
-                //   (2) the prior-cycle row for this seq is a completed/no-change observe;
-                //   (3) reviseSpecApplied -- the Fable revise-spec turn ran and
-                //       re-listed this observe as an unchanged probe. We ONLY skip in
-                //       that case, because without a revise-spec the observe sub-task is
-                //       carrying the raw revise hint and IS meant to re-run (an observe
-                //       step can apply a fix and the beta.56 hint targets it). This
-                //       matches PR #870 exactly (it had a revise-spec) without breaking
-                //       the raw-findings fallback path.
-                // Config-gated (default on).
-                if (cycle > 1 &&
-                    st.taskMode === "observe" &&
-                    reviseSpecApplied &&
-                    this.deps.config.loop.skip_observe_reprobe_on_revise !== false) {
-                    const prior = this.priorObserveCompleted(sessionId, cycle, st.seq);
-                    if (prior) {
-                        this.deps.state.audit("loop.observe_reprobe_skipped", { sessionId, cycle, seq: st.seq, priorCycle: prior.cycle, priorStatus: prior.status }, sessionId);
-                        this.deps.interactionLog?.log(sessionId, { event: "observe_reprobe_skipped", phase: "worker", seq: st.seq, cycle });
+                // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
+                // instead of hard-failing. Carries the ONE question to surface + the
+                // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
+                const clarify = { question: null, seq: -1, subtask: null };
+                const runOneInner = async (st, workerWorktree) => {
+                    // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
+                    // intersect any finding -> its prior-cycle commit is already correct and
+                    // part of the branch. Mark completed_no_change without a worker turn.
+                    if (reviseScopeSkip.has(st.seq)) {
+                        this.deps.state.db
+                            .prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
+                            .run("revise-scoped: not targeted by any review finding (unchanged from prior cycle)", Date.now(), sessionId, cycle, st.seq);
+                        this.deps.state.audit("loop.subtask_revise_scoped_skip", { sessionId, cycle, seq: st.seq }, sessionId);
+                        this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_scoped_skip", phase: "worker", seq: st.seq, cycle });
                         done.add(st.seq);
                         return;
                     }
-                }
-                const reactions = await this.deps.readReactions(sessionId);
-                if (reactions.abort) {
-                    failed.err = "user_abort_reaction";
-                    failed.seq = st.seq;
-                    return;
-                }
-                if (Date.now() > hardDeadlineMs) {
-                    failed.err = "hard_timeout";
-                    failed.seq = st.seq;
-                    return;
-                }
-                // beta.78 (Feature 2): the SESSION budget is now SOFT. Crossing it
-                // WARNS once and the run CONTINUES (was a hard abort). The true HARD
-                // stop is the per-user daily_max_usd, checked below. This matches
-                // Carel's spec: "When hitting the budget limit, the harness should
-                // warn, but not stop, unless it crosses the max daily for the user."
-                if (totalCost > row.budget_usd && !sessionBudgetWarned) {
-                    sessionBudgetWarned = true;
-                    this.deps.state.audit("loop.session_budget_warn", { sessionId, seq: st.seq, totalCost, sessionBudget: row.budget_usd }, sessionId);
-                    // Surface a daily-aware Slack warning (Feature 1 + 2 fused).
-                    this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
-                }
-                // beta.78 (Feature 2): HARD daily stop. Aborts when the user's total
-                // spend TODAY (persistent budgets_daily ledger + the next sub-task's
-                // estimate + the beta.61 review/push reserve) would cross daily_max.
-                // budgets_daily already includes this session's recorded spend, so we
-                // must NOT add totalCost again (avoid double-count). budgetBump lets a
-                // user blow past caps deliberately (:moneybag: reaction).
-                {
-                    const subEst = this.estimateSubTaskCost(st, subTaskCosts);
-                    const dailyMax = this.dailyMaxUsd();
-                    if (!reactions.budgetBump && dailyMax > 0) {
-                        const dailySoFar = this.safeDailySpend(row.requester);
-                        // beta.61 reserve: keep headroom for the pending adversary review +
-                        // push so a daily-cap abort doesn't strand committed work one
-                        // review short of a PR. Reserve is a fraction of the SESSION budget
-                        // (covers the same review/push tail as before).
-                        const reserveRatio = this.deps.config.loop.budget_reserve_ratio ?? 0.15;
-                        const reserve = row.budget_usd * Math.max(0, Math.min(0.9, reserveRatio));
-                        const dailyProjected = dailySoFar + subEst;
-                        if (dailyProjected + reserve > dailyMax) {
-                            this.deps.state.audit("loop.daily_max_abort", { sessionId, seq: st.seq, user: row.requester, dailySoFar, subEst, reserve, dailyMax }, sessionId);
-                            this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
-                            failed.err = "daily_max_exhausted";
-                            failed.seq = st.seq;
+                    // beta.53 (P1b): at most ONE env-wait retry per sub-task.
+                    let envWaitRetried = false;
+                    // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
+                    // review's findings or it will simply replay cycle 1's work.
+                    // beta.92: the deterministic mapping now produces a PER-SUB-TASK scoped
+                    // hint (only THIS sub-task's targeted findings + cross-cutting broadcast
+                    // guidance) -- never the full untargeted 10-finding dump that overwhelmed
+                    // workers and induced confabs (b91). Fall back to the beta.56 whole-
+                    // review raw hint only if mapping was unavailable/disabled.
+                    const reviseAssignment = reviseAssignmentBySeq.get(st.seq);
+                    const baseReviseHint = cycle > 1 && lastReview
+                        ? reviseAssignment
+                            ? buildScopedReviseHint(lastReview.verdict, lastReview.summary, reviseAssignment)
+                            : buildReviseDispatchHint(lastReview)
+                        : undefined;
+                    // beta.101: warn this worker about ITS OWN fictional plan paths only,
+                    // so the note stays short and unambiguous rather than a plan-wide dump.
+                    const mine = new Set((st.filesLikelyTouched ?? []).map((p) => p.trim().replace(/^\.\//, "")));
+                    const mySuspects = planPathSuspects.filter((s) => mine.has(s.path));
+                    const reviseHint = mySuspects.length
+                        ? `${baseReviseHint ? `${baseReviseHint}\n\n` : ""}${describeSuspectPlanPaths(mySuspects)}`
+                        : baseReviseHint;
+                    // beta.103: attaching a hint emitted NO audit event, so "did the worker
+                    // actually get told?" was unanswerable after the fact. The b102 smoke
+                    // report concluded the b101 plan-path warning was observability-only
+                    // and never reached a worker -- an unsound inference, but one the audit
+                    // trail gave no way to refute. Record the attachment itself.
+                    if (reviseHint) {
+                        this.deps.state.audit("loop.dispatch_hint_attached", {
+                            sessionId, seq: st.seq, cycle,
+                            chars: reviseHint.length,
+                            sources: [
+                                ...(baseReviseHint ? ["revise"] : []),
+                                ...(mySuspects.length ? ["plan_path_suspect"] : []),
+                            ],
+                            suspectPaths: mySuspects.map((s) => s.path),
+                        }, sessionId);
+                    }
+                    // beta.70 (F5): skip observe-only RE-PROBE on a revise cycle. In
+                    // PR #870 the cycle-2 plan re-listed seq-1 as taskMode:'observe'
+                    // ("already completed and requires no changes; do not modify any
+                    // files") yet the loop re-ran it -- 58s + $0.29 to re-emit the same
+                    // probe report. On a revise cycle (cycle > 1), when THIS observe
+                    // sub-task already completed cleanly in a PRIOR cycle, mark it done and
+                    // skip the SDK call. Guard is conservative on THREE axes:
+                    //   (1) observe-only (never a mutate);
+                    //   (2) the prior-cycle row for this seq is a completed/no-change observe;
+                    //   (3) reviseSpecApplied -- the Fable revise-spec turn ran and
+                    //       re-listed this observe as an unchanged probe. We ONLY skip in
+                    //       that case, because without a revise-spec the observe sub-task is
+                    //       carrying the raw revise hint and IS meant to re-run (an observe
+                    //       step can apply a fix and the beta.56 hint targets it). This
+                    //       matches PR #870 exactly (it had a revise-spec) without breaking
+                    //       the raw-findings fallback path.
+                    // Config-gated (default on).
+                    if (cycle > 1 &&
+                        st.taskMode === "observe" &&
+                        reviseSpecApplied &&
+                        this.deps.config.loop.skip_observe_reprobe_on_revise !== false) {
+                        const prior = this.priorObserveCompleted(sessionId, cycle, st.seq);
+                        if (prior) {
+                            this.deps.state.audit("loop.observe_reprobe_skipped", { sessionId, cycle, seq: st.seq, priorCycle: prior.cycle, priorStatus: prior.status }, sessionId);
+                            this.deps.interactionLog?.log(sessionId, { event: "observe_reprobe_skipped", phase: "worker", seq: st.seq, cycle });
+                            done.add(st.seq);
                             return;
                         }
                     }
-                }
-                const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
-                // beta.19 fix: populate `started_at` on insert. The schema has
-                // had this column since inception but nothing wrote to it, so
-                // every sub_task row had `started_at IS NULL`. Now set it to the
-                // same instant as `created_at` — for restart / recovery paths
-                // (INSERT OR REPLACE) this deliberately overwrites any earlier
-                // start time, which matches the previous cycle semantics (a
-                // re-executed sub-task started NOW, not when it was first
-                // scheduled).
-                {
-                    const now = Date.now();
-                    this.deps.state.db.prepare(`INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, started_at, created_at, updated_at)
+                    const reactions = await this.deps.readReactions(sessionId);
+                    if (reactions.abort) {
+                        failed.err = "user_abort_reaction";
+                        failed.seq = st.seq;
+                        return;
+                    }
+                    if (Date.now() > hardDeadlineMs) {
+                        failed.err = "hard_timeout";
+                        failed.seq = st.seq;
+                        return;
+                    }
+                    // beta.78 (Feature 2): the SESSION budget is now SOFT. Crossing it
+                    // WARNS once and the run CONTINUES (was a hard abort). The true HARD
+                    // stop is the per-user daily_max_usd, checked below. This matches
+                    // Carel's spec: "When hitting the budget limit, the harness should
+                    // warn, but not stop, unless it crosses the max daily for the user."
+                    if (totalCost > row.budget_usd && !sessionBudgetWarned) {
+                        sessionBudgetWarned = true;
+                        this.deps.state.audit("loop.session_budget_warn", { sessionId, seq: st.seq, totalCost, sessionBudget: row.budget_usd }, sessionId);
+                        // Surface a daily-aware Slack warning (Feature 1 + 2 fused).
+                        this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
+                    }
+                    // beta.78 (Feature 2): HARD daily stop. Aborts when the user's total
+                    // spend TODAY (persistent budgets_daily ledger + the next sub-task's
+                    // estimate + the beta.61 review/push reserve) would cross daily_max.
+                    // budgets_daily already includes this session's recorded spend, so we
+                    // must NOT add totalCost again (avoid double-count). budgetBump lets a
+                    // user blow past caps deliberately (:moneybag: reaction).
+                    {
+                        const subEst = this.estimateSubTaskCost(st, subTaskCosts);
+                        const dailyMax = this.dailyMaxUsd();
+                        if (!reactions.budgetBump && dailyMax > 0) {
+                            const dailySoFar = this.safeDailySpend(row.requester);
+                            // beta.61 reserve: keep headroom for the pending adversary review +
+                            // push so a daily-cap abort doesn't strand committed work one
+                            // review short of a PR. Reserve is a fraction of the SESSION budget
+                            // (covers the same review/push tail as before).
+                            const reserveRatio = this.deps.config.loop.budget_reserve_ratio ?? 0.15;
+                            const reserve = row.budget_usd * Math.max(0, Math.min(0.9, reserveRatio));
+                            const dailyProjected = dailySoFar + subEst;
+                            if (dailyProjected + reserve > dailyMax) {
+                                this.deps.state.audit("loop.daily_max_abort", { sessionId, seq: st.seq, user: row.requester, dailySoFar, subEst, reserve, dailyMax }, sessionId);
+                                this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
+                                failed.err = "daily_max_exhausted";
+                                failed.seq = st.seq;
+                                return;
+                            }
+                        }
+                    }
+                    const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
+                    // beta.19 fix: populate `started_at` on insert. The schema has
+                    // had this column since inception but nothing wrote to it, so
+                    // every sub_task row had `started_at IS NULL`. Now set it to the
+                    // same instant as `created_at` — for restart / recovery paths
+                    // (INSERT OR REPLACE) this deliberately overwrites any earlier
+                    // start time, which matches the previous cycle semantics (a
+                    // re-executed sub-task started NOW, not when it was first
+                    // scheduled).
+                    {
+                        const now = Date.now();
+                        this.deps.state.db.prepare(`INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, started_at, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, now, now, now);
+                    }
+                    // beta.63 (Part A): mark forward progress at sub-task START so a long
+                    // executing phase (many sub-tasks) reads as live to the watchdog.
+                    this.markProgress(sessionId, "subtask_start", "worker", { seq: st.seq, cycle, title: String(st.title).slice(0, 120) });
+                    // Capture the worktree HEAD BEFORE the worker runs, so commit_made
+                    // verification (HEAD != base) is meaningful.
+                    const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(workerWorktree).catch(() => "") : "";
+                    // beta.85: the BRANCH fork-point (plan_base_sha, persisted at plan time)
+                    // -- the base for "committed anywhere in this branch" used by the
+                    // revise-relaxed acceptance. Falls back to subTaskBaseSha when unset.
+                    const planBaseShaForVerify = (() => {
+                        try {
+                            const r = this.deps.state.db
+                                .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+                                .get(sessionId);
+                            return r?.plan_base_sha || subTaskBaseSha;
+                        }
+                        catch {
+                            return subTaskBaseSha;
+                        }
+                    })();
+                    // beta.57 (P1): capture the sub-task start time so file_written can
+                    // reject a file that merely pre-existed (mtime/diff freshness check).
+                    // Previously hard-coded to 0, which disabled the freshness check and
+                    // let a stale file vacuously satisfy the contract.
+                    const subTaskStartedAtMs = Date.now();
+                    let result;
+                    // beta.63 (Part B): worker SDK call boundary logging. seq + cycle carried
+                    // so a stall's sdk_request-without-sdk_response points at the exact
+                    // sub-task that hung.
+                    const workerStart = Date.now();
+                    this.deps.interactionLog?.logSdkRequest(sessionId, {
+                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        prompt: `subtask ${st.seq}: ${st.title}\nintent: ${st.intent ?? ""}\n${reviseHint ?? ""}`,
+                    });
+                    // beta.64 (P0-2): the worker call is now wrapped so a first_token_timeout
+                    // (returned by the inner watchdog) OR a worker timeout (thrown by the
+                    // outer withTimeout) is RETRIED ONCE on a fresh SDK session before we
+                    // flip the run terminal. beta.63's watchdogs were blind to a hang INSIDE
+                    // a single worker turn; beta.63 smoke #2's verify sub-task streamed zero
+                    // tokens and sat the full 1800s. runWorkerCallWithRetry emits the P0-1
+                    // sdk_stream_opened/sdk_first_token events + owns the retry.
+                    const call = await this.runWorkerCallWithRetry({
+                        workerWorktree,
+                        sessionId, st, cycle, brief, plan, requester: row.requester,
+                        dispatchHint: reviseHint, workerStart, subTaskId,
+                    });
+                    if (call.outcome === "timeout") {
+                        // beta.64 (P0-2): retry (if any) is exhausted and the worker still
+                        // timed out with no usable result. For an observe-mode VERIFY sub-task
+                        // we do NOT hard-fail: attempt P0-4 (scripted verifier fallback), then
+                        // P0-3 (best-effort verify => graceful reviewable PR). Only if BOTH
+                        // decline do we fall through to terminal.
+                        const isVerifySubTask = st.taskMode === "observe";
+                        if (isVerifySubTask) {
+                            const scripted = await this.tryScriptedVerifyFallback(sessionId, plan, st, cycle, subTaskBaseSha);
+                            if (scripted === "pass") {
+                                this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`).run(`scripted verifier fallback PASS (LLM verify sub-task timed out)`, Date.now(), subTaskId);
+                                done.add(st.seq);
+                                return;
+                            }
+                            if (scripted !== "fail") {
+                                // scripted fallback disabled or unrunnable -> try best-effort verify.
+                                const shipped = await this.tryBestEffortVerify(sessionId, plan, brief, st, cycle, totalCost, row.requester, subTaskBaseSha);
+                                if (shipped) {
+                                    failed.err = "__best_effort_shipped__";
+                                    failed.seq = st.seq;
+                                    return;
+                                }
+                            }
+                        }
+                        this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`).run(call.summary, Date.now(), subTaskId);
+                        failed.err = call.failErr;
+                        failed.seq = st.seq;
+                        return;
+                    }
+                    result = call.result;
+                    totalCost += result.costUsd;
+                    if (result.costUsd > 0)
+                        subTaskCosts.push(result.costUsd);
+                    this.addCost(sessionId, result.costUsd);
+                    await this.deps.budget.recordSpend(row.requester, result.costUsd, sessionId);
+                    this.deps.state.db.prepare(`UPDATE sub_tasks
+           SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
+           WHERE id = ?`).run(result.status, result.costUsd, JSON.stringify(result.filesChanged), result.commitSha ?? null, result.sdkSessionId ?? null, result.reason ?? null, Date.now(), Date.now(), subTaskId);
+                    this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                    // beta.48 (C1): always emit the worker's final message as a
+                    // breadcrumb, on EVERY sub-task (not just failures). This eliminates
+                    // the "opaque worker turn" blind spot (session dca2f3b5) where a
+                    // zero-side-effect end_turn was indistinguishable from a crash in the
+                    // harness log. Truncated; empty string when the worker produced only
+                    // tool calls and no concluding text.
+                    {
+                        const fm = (result.finalMessage ?? "").trim();
+                        this.deps.state.audit("loop.worker_end_turn", {
+                            sessionId,
+                            seq: st.seq,
+                            cycle,
+                            status: result.status,
+                            commitSha: result.commitSha ?? null,
+                            // beta.103: every commit tip this turn produced. `commitSha` is a
+                            // single value and `sub_tasks.commit_sha` a single column, so a
+                            // turn where the worker committed its own work AND the harness
+                            // committed the remainder recorded only the harness commit -- the
+                            // worker's own commit entered no ledger at all and so could never
+                            // be reachability-checked. This array is what the guard reads.
+                            commitShas: result.commitShas ?? (result.commitSha ? [result.commitSha] : []),
+                            filesTouched: result.filesChanged,
+                            hasFinalMessage: fm.length > 0,
+                            finalMessage: fm.slice(0, 4000),
+                        }, sessionId);
+                        // beta.85: PER-SUB-TASK native progress. Pre-beta.85, native
+                        // deliverProgress fired ONLY from setStatus = phase transitions
+                        // (planning/executing/reviewing/done), so a long `executing` phase
+                        // with N sequential sub-tasks went SILENT between phase changes
+                        // (session 696226e4: 16 min, 4 sub-tasks, zero in-thread updates --
+                        // exactly what makes a team think it's hung). buildProgressSnapshot's
+                        // headline is already sub-task-granular ("Executing sub-task N/M --
+                        // title"), so firing deliverProgress on each worker_end_turn emits a
+                        // per-sub-task headline directly from the harness, with NO dependency
+                        // on the poll relay / a wake cron (both of which broke on 696226e4).
+                        // Best-effort + throw-guarded (same contract as the setStatus fire);
+                        // a no-op for agent-orchestrated runs (no real Slack binding).
+                        try {
+                            this.deps.deliverProgress?.(sessionId, "executing");
+                        }
+                        catch { /* best-effort: a progress post must never fail the run */ }
+                    }
+                    // If the worker itself failed/timed out, halt now.
+                    if (result.status !== "completed") {
+                        failed.err = `subtask_${st.seq}_${result.status}: ${result.reason ?? "no reason"}`;
+                        failed.seq = st.seq;
+                        return;
+                    }
+                    // beta.76 (Option 1): record the REAL paths this sub-task touched into
+                    // the run-level ground-truth set. These correct downstream (and this
+                    // sub-task's own) stale contract paths via rederiveContractPath. Both
+                    // committed and uncommitted-but-written files count as evidence of the
+                    // repo's real layout.
+                    for (const f of [...(result.filesChanged ?? []), ...(result.uncommittedFiles ?? [])]) {
+                        if (typeof f === "string" && f.trim())
+                            discoveredRealPaths.add(f.trim());
+                    }
+                    // ---- beta.8 fix #1: HARNESS-SIDE verification ----
+                    // Regardless of the worker's `end_turn: completed`, the harness
+                    // independently verifies any observable side-effect the sub-task
+                    // CLAIMS (inferred from its own language, not from the model). This
+                    // is what catches a confabulated "I pushed / I opened a PR": we hit
+                    // git / the provider API ourselves. Runs even for `completed`.
+                    // beta.67 (Bug C): compute the EFFECTIVE task-mode for THIS pass. On a
+                    // revise cycle (cycle > 1) a plan-time `mutate` sub-task that correctly
+                    // makes NO change (the worker made no commit) is a legal no-op -- the
+                    // beta.66 loop.subtask_revise_no_change handler already recognises this
+                    // AFTER a verify failure, but the verifier still built the contract off
+                    // the plan-time `mutate` and hard-failed commit_made/file_committed
+                    // because HEAD didn't move. Demote the mode up-front so those kinds are
+                    // never included in the contract this pass -> the no-op verifies as a
+                    // PASS instead of a false-fail. A real cycle-1 mutate (or a revise pass
+                    // that DID commit) keeps effectiveTaskMode === taskMode, so it still
+                    // requires commit_made.
+                    const effectiveTaskMode = cycle > 1 && st.taskMode === "mutate" && !result.commitSha ? "observe" : st.taskMode;
+                    if (effectiveTaskMode !== st.taskMode) {
+                        this.deps.state.audit("loop.subtask_revise_no_change", { sessionId, seq: st.seq, cycle, taskMode: st.taskMode ?? "unspecified", effectiveTaskMode: "observe", trigger: "contract_selection" }, sessionId);
+                        this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_no_change", phase: "worker", seq: st.seq, cycle, effectiveTaskMode: "observe" });
+                    }
+                    const rawContract = inferVerifyContract(st, effectiveTaskMode);
+                    // beta.76 (Option 1): RE-DERIVE each path-bearing contract kind against
+                    // the real paths this run has already touched, so a stale lead-guessed
+                    // directory prefix (e.g. `tests/api/grc` when the repo really uses
+                    // `src/__tests__/api/grc`) is corrected BEFORE verification -- the
+                    // structural cure for the drift class. No-op when no evidence-backed
+                    // remap applies (returns the path unchanged), so this never makes
+                    // verification stricter. Skips file_in_pr (repo-wide, not scoped).
+                    const rederiveEnabled = this.deps.config.loop.contract_rederive_enabled !== false;
+                    // beta.103: every evidence-backed correction made below is also folded
+                    // back into st.filesLikelyTouched after the contract is built, so a
+                    // later revise cycle scopes against the real path instead of the
+                    // lead's fiction. See plan-path-writeback.ts for the b102 failure.
+                    const pathCorrections = [];
+                    const contract = rawContract.map((v) => {
+                        if (!rederiveEnabled)
+                            return v;
+                        if (!("path" in v) || !v.path || v.kind === "file_in_pr")
+                            return v;
+                        const rd = rederiveContractPath(v.path, [...discoveredRealPaths]);
+                        if (!rd.remapped)
+                            return v;
+                        pathCorrections.push({ from: v.path, to: rd.path });
+                        this.deps.state.audit("loop.contract_path_rederived", { sessionId, seq: st.seq, cycle, kind: v.kind, from: v.path, to: rd.path, via: rd.via }, sessionId);
+                        this.deps.interactionLog?.log(sessionId, {
+                            event: "contract_path_rederived", phase: "worker", seq: st.seq, cycle,
+                            kind: v.kind, from: v.path, to: rd.path,
+                        });
+                        return { ...v, path: rd.path };
+                    });
+                    // beta.100: BOUNDED TEST-CONTRACT RECONCILIATION. The b76 prefix-remap
+                    // above only fires when the stale and real directories share a trailing
+                    // chain, so it cannot correct a test path that drifted on BOTH the
+                    // directory and the basename (b99 seq 3: contract
+                    // `.../continuity-exercises/route.test.ts` vs committed
+                    // `src/__tests__/api/grc/continuity-exercises-api.test.ts` -- no shared
+                    // dir suffix, so no remap was learned and a correct commit died on the
+                    // strict file_committed check). Reconcile that shape here, against THIS
+                    // sub-task's own touched files, under a 1:1 no-ambiguity constraint.
+                    // Scope matters: we pass the PER-SUB-TASK set, never discoveredRealPaths
+                    // (run-wide), which is what makes a lone unclaimed test file provably
+                    // this sub-task's. See contract-rederive.ts for the full argument.
+                    if (this.deps.config.loop.contract_test_path_reconcile !== false) {
+                        const subTaskTouched = [...(result.filesChanged ?? []), ...(result.uncommittedFiles ?? [])]
+                            .map((f) => (typeof f === "string" ? f.trim() : ""))
+                            .filter(Boolean);
+                        const pathEntryIdx = [];
+                        const pathEntryPaths = [];
+                        for (let i = 0; i < contract.length; i++) {
+                            const v = contract[i];
+                            if ((v.kind === "file_written" || v.kind === "file_committed") && v.path) {
+                                pathEntryIdx.push(i);
+                                pathEntryPaths.push(v.path);
+                            }
+                        }
+                        for (const rc of reconcileTestContractPaths(pathEntryPaths, subTaskTouched)) {
+                            const at = pathEntryPaths.indexOf(rc.from);
+                            if (at === -1)
+                                continue;
+                            const i = pathEntryIdx[at];
+                            const entry = contract[i];
+                            if (entry.kind !== "file_written" && entry.kind !== "file_committed")
+                                continue;
+                            contract[i] = { ...entry, path: rc.to };
+                            pathCorrections.push({ from: rc.from, to: rc.to });
+                            this.deps.state.audit("loop.contract_test_path_reconciled", { sessionId, seq: st.seq, cycle, kind: entry.kind, from: rc.from, to: rc.to, subTaskTouched }, sessionId);
+                            this.deps.logger.info("[loop] reconciled a drifted TEST contract path onto the file this sub-task committed", {
+                                sessionId, seq: st.seq, cycle, from: rc.from, to: rc.to,
+                            });
+                            this.deps.interactionLog?.log(sessionId, {
+                                event: "contract_test_path_reconciled", phase: "worker", seq: st.seq, cycle,
+                                from: rc.from, to: rc.to,
+                            });
+                        }
+                    }
+                    // beta.103: fold the proven corrections back into the PLAN. Until now a
+                    // remap only ever reached the local `contract` array, so
+                    // `st.filesLikelyTouched` kept the lead's fictional path for the rest
+                    // of the run -- and computeReviseScope / mapFindingsToSubTasks both key
+                    // off filesLikelyTouched. In the b102 smoke that made cycle 3 skip the
+                    // one sub-task that owned both of its own outstanding findings. The
+                    // corrections are evidence-backed (learned from paths this run really
+                    // touched, 1:1 for the test reconcile), and applyPathCorrections only
+                    // ever REWRITES an entry the plan already declared -- it never appends
+                    // -- so a sub-task's scope can be corrected but never widened.
+                    if (this.deps.config.loop.plan_path_writeback_enabled !== false && pathCorrections.length > 0) {
+                        const wb = applyPathCorrections(st.filesLikelyTouched, pathCorrections);
+                        if (wb.applied.length > 0) {
+                            const before = [...(st.filesLikelyTouched ?? [])];
+                            st.filesLikelyTouched = wb.files;
+                            this.deps.state.audit("loop.plan_path_written_back", { sessionId, seq: st.seq, cycle, applied: wb.applied, before, after: wb.files }, sessionId);
+                            this.deps.interactionLog?.log(sessionId, {
+                                event: "plan_path_written_back", phase: "worker", seq: st.seq, cycle,
+                                applied: wb.applied.map((c) => `${c.from} -> ${c.to}`),
+                            });
+                            this.deps.logger.info("[loop] corrected the plan's declared paths from verified evidence; revise scoping will use the real paths", {
+                                sessionId, seq: st.seq, cycle, corrections: describePathCorrections(wb.applied),
+                            });
+                        }
+                    }
+                    // beta.85: REVISE-CYCLE-AWARE CONTRACT RELAXATION -- the fix for the
+                    // revise verifier false-positive (session 696226e4 cyc2 seq7, and the
+                    // inverse-but-same-signature 1c744d70). On a revise cycle (cycle > 1)
+                    // the sub-task's contract still carries its CYCLE-1 shape (e.g. BOTH
+                    // route.ts AND download/route.ts), but a revise only needs to change
+                    // the file(s) the review actually FLAGGED. A contract file the current
+                    // review did NOT target was already shipped correctly in a prior cycle;
+                    // the worker correctly leaves it untouched (buildReviseDispatchHint even
+                    // TELLS it to: "if none apply, make NO changes"). Demanding a fresh
+                    // mtime/diff this sub-task then false-fails correct work. So: for a
+                    // NOT-TARGETED file_written/file_committed entry we set reviseRelaxed,
+                    // which makes verify.ts accept "present + committed anywhere in the
+                    // branch range" instead of a fresh write. A TARGETED file keeps the
+                    // strict fresh requirement -> 1c744d70 (worker skipped a TARGETED file)
+                    // still FAILS; 696226e4 (worker left a NOT-targeted correct file) PASSES.
+                    // Targeted set = files named by this cycle's review findings (file/line),
+                    // structurally matched against the contract path.
+                    if (cycle > 1 && lastReview?.findings?.length) {
+                        // beta.87 (Staging deep-dive [1]+[2]): build the TARGETED file set --
+                        // the files THIS revise sub-task is expected to change. A contract
+                        // file that is targeted keeps the STRICT fresh-write requirement; a
+                        // not-targeted file (already correct from a prior cycle) is relaxed.
+                        //
+                        // [2] PER-SUB-TASK SCOPE: when the revise-spec turn refreshed the
+                        // plan (reviseSpecApplied), this sub-task's OWN workerContext names
+                        // the files it should touch (filesLikelyTouched + codeExcerpts[].path)
+                        // -- use THAT, not the review-wide findings, so seq-4 doesn't inherit
+                        // strict mode from a finding about seq-7's file. Fall back to the
+                        // review-wide findings' `.file` only when there's no per-sub-task
+                        // signal (raw-findings path).
+                        // beta.92: prefer the DETERMINISTIC mapping's per-sub-task targeted
+                        // file set (the files THIS sub-task's findings actually name). Fall
+                        // back to filesLikelyTouched + codeExcerpts (per-sub-task signal), then
+                        // to the review-wide finding files (raw path) only if mapping is off.
+                        const mappedTargetedFiles = (reviseAssignment?.targetedFiles ?? [])
+                            .map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean);
+                        const perSubTaskFiles = mappedTargetedFiles.length > 0
+                            ? mappedTargetedFiles
+                            : reviseSpecApplied
+                                ? [
+                                    ...(st.filesLikelyTouched ?? []),
+                                    ...((st.workerContext?.codeExcerpts ?? []).map((e) => e.path)),
+                                ].map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean)
+                                : [];
+                        const reviewFindingFiles = lastReview.findings
+                            .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
+                            .filter(Boolean);
+                        const targetedFiles = perSubTaskFiles.length > 0 ? perSubTaskFiles : reviewFindingFiles;
+                        // beta.89 [F3] (Staging 3rd deep-dive): name WHICH target source drove
+                        // this sub-task's strict/relaxed decision. The revise-spec path uses
+                        // deterministic full-path workerContext (clean targeting); the raw-
+                        // findings fallback uses LLM `finding.file` (partial-path shorthand ->
+                        // likely `targets_unresolved` -> strict-everywhere -> a possible
+                        // false-fail of correct work). This one audit lets a post-mortem tell
+                        // from a single query which path a cycle-2 sub-task ran under, so the
+                        // one remaining semantic asymmetry is diagnosable instead of silent.
+                        this.deps.state.audit("loop.revise_target_source", {
+                            sessionId, seq: st.seq, cycle,
+                            source: perSubTaskFiles.length > 0 ? "revise_spec_worker_context" : "raw_findings",
+                            reviseSpecApplied,
+                            targetCount: targetedFiles.length,
+                        }, sessionId);
+                        // beta.88 [E1] (Staging 2nd deep-dive): a NON-EMPTY targeted set that
+                        // structurally resolves to ZERO contract paths is functionally
+                        // IDENTICAL to an empty set -- e.g. the adversary wrote a PARTIAL
+                        // path (`download/route.ts`) that is shorter than the full contract
+                        // path, so no structural rule matches (suffix needs the real/committed
+                        // side to be the LONGER one). Without this guard `isTargeted` returns
+                        // false for EVERY entry -> everything relaxes -> the same false-pass
+                        // the beta.86 empty-targets fix closed, re-entered through a different
+                        // LLM output shape. So: only enter the relaxation path when at least
+                        // one target actually resolves to a contract path in THIS sub-task;
+                        // otherwise fall through to the strict-no-targets branch (keep
+                        // everything strict, a revise can't relax on unresolvable targets).
+                        const anyTargetResolvable = targetedFiles.length > 0 &&
+                            contract.some((v) => (v.kind === "file_written" || v.kind === "file_committed") &&
+                                !!v.path &&
+                                !!resolveContractPath(targetedFiles, v.path, { strictContract: true }));
+                        if (anyTargetResolvable) {
+                            // [1] STRUCTURAL targeting only. A finding/spec path targets a
+                            // contract path ONLY via a real directory-context match
+                            // (exact/route-group/suffix/basename-dir), resolved through
+                            // resolveContractPath's strictContract mode. This kills the
+                            // beta.86 bidirectional bare-basename fuzzy match: an adversary
+                            // `file:"route.ts"` (bare) no longer force-strictens EVERY
+                            // `route.ts` sibling (which re-created the 696226e4 false-fail).
+                            // A bare-basename target that structurally resolves to >1 contract
+                            // file is genuinely ambiguous -> it targets NONE specifically
+                            // (resolveContractPath's strict mode returns no structural match
+                            // for a bare basename vs a dir'd path), so those siblings relax
+                            // rather than false-fail.
+                            const isTargeted = (p) => !!resolveContractPath(targetedFiles, p, { strictContract: true });
+                            for (let i = 0; i < contract.length; i++) {
+                                const v = contract[i];
+                                if ((v.kind === "file_written" || v.kind === "file_committed") && v.path && !isTargeted(v.path)) {
+                                    contract[i] = { ...v, reviseRelaxed: true };
+                                    this.deps.state.audit("loop.revise_contract_relaxed", { sessionId, seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles }, sessionId);
+                                    this.deps.interactionLog?.log(sessionId, {
+                                        event: "revise_contract_relaxed", phase: "worker", seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles,
+                                    });
+                                }
+                            }
+                        }
+                        else if (targetedFiles.length > 0) {
+                            // [E1] Non-empty targets that resolve to NOTHING -> keep strict.
+                            // Distinct audit so a partial-path adversary shorthand is visible.
+                            this.deps.state.audit("loop.revise_contract_targets_unresolved", { sessionId, seq: st.seq, cycle, targetedFiles, contractPaths: contract.filter((v) => "path" in v && v.path).map((v) => v.path) }, sessionId);
+                        }
+                        else {
+                            // Findings exist but none names a file -> keep strict, record why.
+                            this.deps.state.audit("loop.revise_contract_strict_no_targets", { sessionId, seq: st.seq, cycle, findingCount: lastReview.findings.length }, sessionId);
+                        }
+                    }
+                    // beta.92 (charter #3): LOG-ONLY worker self-contradiction detector. The
+                    // b91 seq-6 confab: the worker's final message admitted it "did not
+                    // touch" a contract-REQUIRED file (b84 caught it at verify; we can bark
+                    // earlier). REQUIRED = file_written/file_committed contract entries that
+                    // are NOT reviseRelaxed (a relaxed file is legitimately left alone). No
+                    // behaviour change in b92 -- emit the audit, verification still decides.
+                    if (this.deps.config.loop.worker_confab_detect !== false) {
+                        try {
+                            const requiredPaths = contract
+                                .filter((v) => (v.kind === "file_written" || v.kind === "file_committed") &&
+                                !!v.path &&
+                                !v.reviseRelaxed)
+                                .map((v) => v.path);
+                            const confab = detectWorkerConfab(result.finalMessage, requiredPaths, result.filesChanged ?? []);
+                            if (confab.suspected) {
+                                this.deps.state.audit("loop.worker_confab_suspected", { sessionId, seq: st.seq, cycle, offenders: confab.offenders, phrase: confab.phrase, requiredPaths }, sessionId);
+                                this.deps.logger.warn("[loop] worker self-contradiction suspected: finalMessage claims a contract-required file was left untouched (LOG-ONLY; verification still decides)", { sessionId, seq: st.seq, cycle, offenders: confab.offenders });
+                                this.deps.interactionLog?.log(sessionId, {
+                                    event: "worker_confab_suspected", phase: "worker", seq: st.seq, cycle, offenders: confab.offenders,
+                                });
+                            }
+                        }
+                        catch (err) {
+                            // Detector must never fail a run -- it's observability only.
+                            this.deps.logger.warn("[loop] worker_confab_detect threw (ignored)", { sessionId, seq: st.seq, err: String(err) });
+                        }
+                    }
+                    if (contract.length > 0 && this.deps.buildVerifyProbes) {
+                        const probes = this.deps.buildVerifyProbes({
+                            plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
+                        });
+                        const branchHint = contract.reduce((acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc), plan.branch);
+                        let verification;
+                        try {
+                            verification = await verifySubTaskOutput(contract, {
+                                defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                                baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                                // beta.95: revise-cycle TARGETED-file plan-base window.
+                                cycle,
+                                reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                                acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                            }, probes);
+                        }
+                        catch (err) {
+                            // A probe error is a verification FAILURE, not a pass. Never let
+                            // an exception silently green-light a confabulated success.
+                            verification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+                        }
+                        this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: verification.ok, contract, summary: verification.summary, results: verification.results }, sessionId);
+                        // beta.63 (Part B): mirror the verify probe into the durable log so a
+                        // stall trail shows which probes ran + passed before it froze.
+                        this.deps.interactionLog?.log(sessionId, {
+                            event: "verify_probe", phase: "worker", seq: st.seq, cycle,
+                            ok: verification.ok, contract, summary: verification.summary,
+                        });
+                        // beta.16 fix #2: also emit the observe-mode breadcrumb when
+                        // taskMode is 'observe' and verification passed. Keeps the audit
+                        // stream self-describing on observe sub-tasks (previously silent
+                        // because verify:[] means no checks fire, and inference filters
+                        // out mutation-scope kinds).
+                        if (verification.ok && (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate"))) {
+                            this.emitObserveCompleted(sessionId, st, result, contract);
+                        }
+                        if (!verification.ok) {
+                            // ---- beta.53 (P1b): retry-with-context on an env-wait hallucination ----
+                            // Staging beta.52 #858 seq-5: the worker WROTE the aria-label edit
+                            // (1145 bytes on disk) but never committed, then ended its turn with
+                            // "npm ci is still running. The Monitor will notify me when eslint is
+                            // installed. Waiting for that event." -- awaiting a mid-turn event
+                            // that does not exist. Rather than terminate the whole run on a
+                            // recoverable, well-understood hallucination, re-invoke the sub-task
+                            // ONCE with corrective context. Because P2 now captures
+                            // `uncommittedFiles`, we can branch the hint: for a PARTIAL-work turn
+                            // (wrote-but-didn't-commit) the fix is nearly free -- "you already
+                            // wrote X, just commit it"; for a ZERO-work turn -- "there is no such
+                            // event, do the work now, skip env verification if the tool is
+                            // missing". If the retry ALSO hallucinates (or otherwise fails
+                            // verification) we fall through to the normal terminal handling.
+                            const failedNow = verification.results.filter((x) => !x.passed);
+                            // beta.57 (P1): the retry trigger is now the OBSERVABLE STATE
+                            // INVARIANT, not the worker's phrasing. beta.52->53->54 each widened
+                            // a prose regex after a new wording escaped it; the state we
+                            // actually care about is directly checkable: a mutate-shaped
+                            // sub-task ended its turn with NO commit and ONLY local no-change
+                            // kinds failing. On cycle 1 that is never a legal outcome, so the
+                            // one-shot corrective retry fires unconditionally. On revise cycles
+                            // (cycle > 1) a no-commit turn IS often legal (the beta.35 no-op
+                            // downgrade below), so there the regex remains as the tiebreaker
+                            // between "legal nothing-to-do" and "confabulated wait".
+                            const phrasingMatched = matchesAsyncCoordConfabulation(result.finalMessage ?? "");
+                            const envWaitOnly = !envWaitRetried &&
+                                this.deps.config.loop.env_wait_retry_enabled !== false &&
+                                !result.commitSha &&
+                                failedNow.length > 0 &&
+                                failedNow.every((x) => ENV_WAIT_RETRYABLE_KINDS.has(x.kind)) &&
+                                (cycle === 1 || phrasingMatched);
+                            if (envWaitOnly) {
+                                envWaitRetried = true;
+                                const wrote = result.uncommittedFiles ?? [];
+                                const hint = wrote.length > 0
+                                    ? `IMPORTANT: your PREVIOUS turn wrote these files to the worktree but never committed them: ${wrote.join(", ")}. There is NO background watcher, NO "Monitor event", NO completion notification, and NO event stream -- harness dispatch is one-shot and NOTHING will ever notify or resume you. Do NOT wait for any install/build/lint/test to "notify" you. Simply \`git add\` and \`git commit\` the work you already did, complete any remaining success criteria INLINE (run any command -- including the test suite, tsc, or lint -- directly in a single BLOCKING Bash call and read its output in THIS turn; or skip a missing tool and note it in the commit message), and end your turn.`
+                                    : `IMPORTANT: your PREVIOUS turn ended waiting for something that does not exist (a "Monitor event", a "background watcher", a "completion notification", or similar). The harness has NO such mechanism -- dispatch is one-shot and nothing will notify or resume you. Complete this sub-task NOW without waiting for anything. To run tests/build/lint/install, execute the command DIRECTLY in a single blocking Bash call in THIS turn and read its output; do not background it and do not wait for a signal. If a tool (eslint/tsc/lint) is not installed, run \`npm ci\` INLINE first, OR skip that step and note it in the commit message. Make the required edit, commit it, and end your turn.`;
+                                this.deps.interactionLog?.log(sessionId, { event: "env_wait_retry", phase: "worker", seq: st.seq, cycle, partialWork: wrote.length > 0 });
+                                this.deps.state.audit("loop.worker_env_wait_retry", {
+                                    sessionId, seq: st.seq, cycle,
+                                    partialWork: wrote.length > 0,
+                                    uncommittedFiles: wrote,
+                                    // beta.57: the regex is now telemetry, not the gate.
+                                    phrasingMatched,
+                                    priorFinalMessage: (result.finalMessage ?? "").slice(0, 500),
+                                }, sessionId);
+                                this.deps.logger.warn("[loop] env-wait hallucination detected; retrying sub-task once with corrective context", {
+                                    sessionId, seq: st.seq, partialWork: wrote.length > 0,
+                                });
+                                try {
+                                    // beta.90 (Feature 2): stream-slow liveness on the retry too.
+                                    const onRetryStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
+                                    const retry = await withTimeout(this.deps.runWorker({
+                                        brief, subTask: st, plan, requester: row.requester,
+                                        // Compose the revise context (if any) with the corrective hint.
+                                        dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
+                                        // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
+                                        modelOverride: selectWorkerModel(st, this.deps.config.models),
+                                        onStreamSlow: onRetryStreamSlow,
+                                    }), this.deps.config.loop.worker_timeout_seconds);
+                                    this.addCost(sessionId, retry.costUsd);
+                                    await this.deps.budget.recordSpend(row.requester, retry.costUsd, sessionId);
+                                    totalCost += retry.costUsd;
+                                    if (retry.costUsd > 0)
+                                        subTaskCosts.push(retry.costUsd);
+                                    let retryVerification;
+                                    try {
+                                        const retryProbes = this.deps.buildVerifyProbes({
+                                            plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
+                                        });
+                                        retryVerification = await verifySubTaskOutput(contract, {
+                                            defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                                            // beta.95: the retry path dropped branchBaseSha -- a
+                                            // reviseRelaxed/targeted file on a revise-cycle retry lost
+                                            // its plan-base window. Thread both through here too.
+                                            baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                                            cycle,
+                                            reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                                            acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                                        }, retryProbes);
+                                    }
+                                    catch (err) {
+                                        retryVerification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+                                    }
+                                    this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: retryVerification.ok, contract, summary: retryVerification.summary, results: retryVerification.results, retry: true }, sessionId);
+                                    if (retryVerification.ok) {
+                                        this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, cost_usd = cost_usd + ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run(retry.status, retry.costUsd, JSON.stringify(retry.filesChanged), retry.commitSha ?? null, retry.sdkSessionId ?? null, `env-wait retry succeeded: ${retryVerification.summary}`, Date.now(), Date.now(), subTaskId);
+                                        this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId);
+                                        this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
+                                        done.add(st.seq);
+                                        return;
+                                    }
+                                    // Retry also failed verification -> fall through using the
+                                    // retry's result/verification so the terminal report reflects
+                                    // the second attempt.
+                                    this.deps.logger.warn("[loop] env-wait retry FAILED verification; terminating", {
+                                        sessionId, seq: st.seq, summary: retryVerification.summary,
+                                    });
+                                    result = retry;
+                                    verification = retryVerification;
+                                }
+                                catch (err) {
+                                    this.deps.logger.warn("[loop] env-wait retry threw; terminating", { sessionId, seq: st.seq, err: String(err) });
+                                    // keep original result/verification; fall through to terminal.
+                                }
+                            }
+                            // ---- beta.35 fix #1 + #2: legal no-op on a REVISE cycle ----
+                            // On a revise cycle (cycle > 1) the plan's mutate sub-task is
+                            // re-run against a base = the worker's current HEAD (the commit it
+                            // already produced on cycle 1). If the worker correctly concludes
+                            // there is nothing to change (the code already satisfies the
+                            // criteria; the adversary's revise findings were about runtime
+                            // evidence / PR-description text / accepted nits), it ends with
+                            // `end_turn` and NO new commit. The old code then failed the
+                            // `commit_made` contract (HEAD == base) and killed the whole
+                            // session -- even though the fix was already correct.
+                            //
+                            // A revise cycle that makes no change is a VALID outcome. So: if
+                            // this is a revise cycle, the worker completed cleanly, and the
+                            // ONLY failing checks are the "no new commit / no new file change"
+                            // kinds (i.e. the effective task-mode is 'observe' for this pass,
+                            // #2), downgrade the sub-task to `completed_no_change` and let the
+                            // loop proceed to ship. Any OTHER kind of failure (a real
+                            // confabulation: claimed a push/PR that didn't happen, wrote a
+                            // file that isn't there) still hard-fails -- we do NOT weaken the
+                            // trust-but-verify guarantee.
+                            const NO_CHANGE_KINDS = new Set(["commit_made", "file_committed", "file_written"]);
+                            const failedResults = verification.results.filter((x) => !x.passed);
+                            const onlyNoChangeFailures = failedResults.length > 0 &&
+                                failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
+                            const workerMadeNoCommit = !result.commitSha; // worker itself reports no commit
+                            if (cycle > 1 && onlyNoChangeFailures && workerMadeNoCommit) {
+                                this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`).run(`revise no-op: worker made no change (${verification.summary}); code already satisfies criteria`, Date.now(), subTaskId);
+                                this.deps.state.audit("loop.subtask_revise_no_change", {
+                                    sessionId,
+                                    seq: st.seq,
+                                    cycle,
+                                    taskMode: st.taskMode ?? "unspecified",
+                                    effectiveTaskMode: "observe",
+                                    baseRef: subTaskBaseSha ? subTaskBaseSha.slice(0, 12) : "(unknown)",
+                                    failedKinds: failedResults.map((x) => x.kind),
+                                    summary: verification.summary,
+                                }, sessionId);
+                                this.deps.logger.info("[loop] revise cycle no-op accepted (worker had nothing to change)", {
+                                    sessionId, seq: st.seq, cycle,
+                                });
+                                done.add(st.seq);
+                                return;
+                            }
+                            // Emit per-kind failure events so failures are greppable and
+                            // operators can debug from audit alone.
+                            // beta.9: new specific events + backward-compat old event names
+                            // both fire so consumers watching old names keep working.
+                            for (const r of verification.results.filter((x) => !x.passed)) {
+                                // beta.15: include base_ref on commit/file_committed audit events
+                                // for debugging clarity. The commit_made check compares HEAD vs
+                                // the worker-session-start SHA (`subTaskBaseSha`), not the
+                                // branch base. Making this explicit in the audit payload lets
+                                // operators tell the difference between "worker didn't commit"
+                                // and "no new commits since sub-task started, which is correct
+                                // for observation-only sub-tasks".
+                                const baseRef = (r.kind === "commit_made" || r.kind === "file_committed")
+                                    ? { baseRef: subTaskBaseSha ? subTaskBaseSha.slice(0, 12) : "(unknown)", baseSemantics: "worker-session-start" }
+                                    : {};
+                                const payload = { sessionId, seq: st.seq, detail: r.detail, ...baseRef };
+                                switch (r.kind) {
+                                    case "branch_pushed":
+                                        // beta.10: fire ONLY the backward-compat name here. The
+                                        // beta.9+ contract inference already emits
+                                        // `remote_branch_exists` alongside `branch_pushed` for push
+                                        // sub-tasks, and that kind fires `remote_branch_verify_failed`
+                                        // on its own case. Firing both here caused duplicate
+                                        // `remote_branch_verify_failed` events on the beta.10
+                                        // smoke test (one from `branch_pushed` -> HTTP 404, one
+                                        // from `remote_branch_exists` -> ls-remote empty).
+                                        this.deps.state.audit("loop.push_verify_failed", payload, sessionId);
+                                        break;
+                                    case "remote_branch_exists":
+                                        this.deps.state.audit("loop.remote_branch_verify_failed", payload, sessionId);
+                                        break;
+                                    case "commit_sha_matches":
+                                        this.deps.state.audit("loop.commit_sha_verify_failed", payload, sessionId);
+                                        break;
+                                    case "pr_opened":
+                                        this.deps.state.audit("loop.pr_verify_failed", payload, sessionId);
+                                        break;
+                                    case "pr_state":
+                                        // backward compat: also fire old pr_verify_failed
+                                        this.deps.state.audit("loop.pr_verify_failed", payload, sessionId);
+                                        this.deps.state.audit("loop.pr_state_verify_failed", payload, sessionId);
+                                        break;
+                                    case "file_written":
+                                        // backward compat name
+                                        this.deps.state.audit("loop.file_verify_failed", payload, sessionId);
+                                        // new specific name
+                                        this.deps.state.audit("loop.file_written_verify_failed", payload, sessionId);
+                                        break;
+                                    case "file_committed":
+                                        this.deps.state.audit("loop.file_committed_verify_failed", payload, sessionId);
+                                        break;
+                                    case "file_pushed":
+                                        this.deps.state.audit("loop.file_pushed_verify_failed", payload, sessionId);
+                                        break;
+                                    case "file_in_pr":
+                                        this.deps.state.audit("loop.file_in_pr_verify_failed", payload, sessionId);
+                                        break;
+                                    case "commit_made":
+                                        // backward compat name
+                                        this.deps.state.audit("loop.commit_verify_failed", payload, sessionId);
+                                        break;
+                                    default:
+                                        // fallback for any future kinds
+                                        this.deps.state.audit("loop.verify_failed", { ...payload, kind: r.kind }, sessionId);
+                                }
+                            }
+                            // ---- beta.48 (C1 + C2): reasoned-refusal observability ----
+                            // Session dca2f3b5 (beta.47 revise of #858) exposed a blind spot:
+                            // a worker can end its turn with `end_turn` + ZERO filesystem
+                            // side-effects because it made a REASONED REFUSAL (e.g. "the
+                            // sub-task's premise is factually false, renaming would regress
+                            // the repo"). The harness saw "0/N checks passed, worker did
+                            // nothing" and terminated, throwing away the worker's structured
+                            // explanation. The refusal was CORRECT but invisible. Detect the
+                            // shape (every failing check is a no-change kind AND the worker
+                            // made no commit AND it left a non-empty final message) and
+                            // surface that message so operators/downstream see WHY, instead
+                            // of an opaque empty turn. NOTE: this does NOT change the pass/
+                            // fail decision (the sub-task still fails verification) -- it only
+                            // makes the reason observable. We deliberately do NOT auto-accept
+                            // the refusal: a worker refusing on a false premise is a signal
+                            // that an UPSTREAM artefact (adversary finding / brief) was wrong,
+                            // which a human or a future replan loop should resolve.
+                            const NO_CHANGE_ONLY = failedResults.length > 0 && failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
+                            const refusalText = (result.finalMessage ?? "").trim();
+                            const looksLikeRefusal = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0;
+                            // ---- beta.52: distinguish a PROTOCOL-ASSUMPTION failure from a
+                            // reasoned refusal. Session fc64d8ea (beta.51 revise of #858) sub-
+                            // task 3: the worker ended its turn with 24 words -- "The install
+                            // is still completing. I'll await the Monitor event signaling tsc
+                            // is ready rather than polling further." -- and ZERO side-effects.
+                            // That is NOT a reasoned refusal (it did not dispute the task); it
+                            // HALLUCINATED a mid-turn event stream that does not exist in the
+                            // one-shot harness protocol, and exited waiting for a signal that
+                            // never comes. The beta.52 worker-prompt hardening kills the
+                            // behaviour; this tag makes the pattern greppable in metrics so we
+                            // can tell "worker was wrong about the harness" apart from "worker
+                            // correctly refused a bad task". Does NOT change pass/fail.
+                            const looksLikeProtocolAssumption = looksLikeRefusal && matchesAsyncCoordConfabulation(refusalText);
+                            if (looksLikeProtocolAssumption) {
+                                const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+                                this.deps.state.audit("loop.worker_env_wait_hallucination", {
+                                    sessionId,
+                                    seq: st.seq,
+                                    cycle,
+                                    reasonFirstLine: firstLine.slice(0, 300),
+                                    finalMessage: refusalText.slice(0, 4000),
+                                    failedKinds: failedResults.map((x) => x.kind),
+                                }, sessionId);
+                                this.deps.logger.warn("[loop] worker awaited a non-existent mid-turn event (env-wait hallucination) and did no work", {
+                                    sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200),
+                                });
+                            }
+                            if (looksLikeRefusal) {
+                                const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+                                // beta.58 (Bug B): split the audit event by semantics. A refusal
+                                // whose explanation references a contradicted/invalid premise is
+                                // a GOOD-FAITH skip, not a bad-faith refusal -- emit a distinct
+                                // event so breakdowns are diagnosable without reading the prose.
+                                // (Pass/fail is unchanged: both still escalate to clarification.)
+                                const invalidPremiseSkip = matchesInvalidPremiseSkip(refusalText) && failedResults.some((x) => x.kind === "commit_made");
+                                this.deps.interactionLog?.log(sessionId, {
+                                    event: invalidPremiseSkip ? "worker_skipped_invalid_premise" : "worker_refusal",
+                                    phase: "worker", seq: st.seq, cycle, reasonFirstLine: firstLine.slice(0, 300),
+                                });
+                                this.deps.state.audit(invalidPremiseSkip ? "loop.worker_skipped_invalid_premise" : "loop.worker_refusal", {
+                                    sessionId,
+                                    seq: st.seq,
+                                    cycle,
+                                    reasonFirstLine: firstLine.slice(0, 300),
+                                    finalMessage: refusalText.slice(0, 4000),
+                                    failedKinds: failedResults.map((x) => x.kind),
+                                    summary: verification.summary,
+                                }, sessionId);
+                                this.deps.logger.warn(invalidPremiseSkip
+                                    ? "[loop] worker skipped a sub-task on a contradicted premise (good-faith, structured)"
+                                    : "[loop] worker made a reasoned refusal (zero side-effects + explanation)", { sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200) });
+                            }
+                            // beta.48 (C2): fold the refusal first-line into the persisted
+                            // summary so harness_progress.headline and the terminal update
+                            // show "worker refused: <reason>" rather than a bare
+                            // verification-failed string.
+                            const failSummary = looksLikeProtocolAssumption
+                                ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+                                : looksLikeRefusal
+                                    ? `worker refused (no changes made): ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+                                    : `verification failed: ${verification.summary}`;
+                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`).run(failSummary, Date.now(), subTaskId);
+                            this.deps.logger.warn("[loop] harness-side verification FAILED (worker confabulated success)", {
+                                sessionId, seq: st.seq, costUsd: result.costUsd, summary: verification.summary,
+                            });
+                            failed.err = `subtask_${st.seq}_failed_verification: ${failSummary}`;
+                            failed.seq = st.seq;
+                            // ---- beta.55 (B2): escalate a reasoned refusal / surviving
+                            // confabulation to a HUMAN instead of hard-failing the run. ----
+                            // Precondition: this is a genuine refusal (looksLikeRefusal) that
+                            // has ALREADY had its beta.54 async-coord retry (envWaitRetried is
+                            // true if a retry was attempted; a refusal that reaches here after
+                            // the retry, OR one that never qualified for retry, is a real
+                            // blocking ambiguity). Rather than kill the whole run, surface the
+                            // worker's OWN explanation as a question and pause resumably. The
+                            // worktree is preserved (finaliseAwaitingClarification does NOT
+                            // release it) so harness_answer can re-drive from this seq in place.
+                            if (looksLikeRefusal &&
+                                this.deps.config.loop.clarification_escalation_enabled !== false) {
+                                const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+                                clarify.question =
+                                    `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ${firstLine.slice(0, 500)}. ` +
+                                        `How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, or "abort".)`;
+                                clarify.seq = st.seq;
+                                // beta.58 (D1/D2): capture the paused sub-task's title+intent so a
+                                // `skip` answer keys the prohibition by CONTENT (survives a re-plan's
+                                // seq renumbering) and can strip the owning finding line.
+                                clarify.subtask = { title: st.title, intent: st.intent };
+                            }
+                            // ---- beta.100: a CONTRACT-PATH MISMATCH pauses, it does not kill ----
+                            // b99 seq 3 (session 4420aa45): the worker committed d7cc9602 carrying
+                            // BOTH deliverables, but placed the test at the repo's real Jest
+                            // location rather than the co-located path the lead guessed pre-probe.
+                            // EVERY recovery path missed -- the b53 env-wait retry requires NO
+                            // commit, the b35 revise no-op requires cycle > 1, and the b55
+                            // escalation directly above requires `looksLikeRefusal`, which also
+                            // requires NO commit. So a run holding two good commits plus a correct
+                            // third one hard-failed at cycle 1, $3.94 spent, no PR, nothing to
+                            // resume from.
+                            //
+                            // The b100 reconciliation (see the contract build above) self-heals the
+                            // provable case. What reaches HERE is the genuinely ambiguous
+                            // remainder: the worker committed real work, but the harness cannot
+                            // prove whether the PLAN's path or the WORKER's placement is the wrong
+                            // one. That is a human decision, so pause resumably -- the worktree and
+                            // its commits survive and harness_answer re-drives from this seq.
+                            //
+                            // This does NOT weaken trust-but-verify. The sub-task still FAILS
+                            // (failed.err is set and the row is already `failed_verification`);
+                            // nothing is accepted and no check is relaxed. We change only the
+                            // TERMINAL DISPOSITION, from `failed` to `awaiting_clarification`. The
+                            // worker's prose is quoted as context but is never the evidence: the
+                            // expected paths come from the contract and the actual paths from git
+                            // via result.filesChanged.
+                            const PATH_MISMATCH_KINDS = new Set(["file_committed", "file_written"]);
+                            const contractPathMismatch = !!result.commitSha &&
+                                failedResults.length > 0 &&
+                                failedResults.every((x) => PATH_MISMATCH_KINDS.has(x.kind) && !!x.path);
+                            // ---- beta.105: BASENAME-ANCHORED RESCUE, before we bother a human ----
+                            // b103's rederive only corrects a path when an EARLIER sub-task
+                            // already taught the run the substitution. On the b103 smoke, seq 9
+                            // was the first sub-task to touch `src/components/`, so the lead's
+                            // fictional `components/layout/sidebar.tsx` met the worker's correct
+                            // `components/ui/sidebar.tsx` with no lesson to apply: no rederive
+                            // fired, and a mechanically-obvious correction escalated to a human
+                            // who took an hour to answer. Same basename, planned directory
+                            // absent from the repo, committed directory present -- the harness
+                            // had everything it needed to resolve this itself.
+                            //
+                            // So: propose the remap from the mismatch, re-verify against the
+                            // corrected contract, and only continue if verification ACTUALLY
+                            // passes. Nothing is waved through -- a rescue that does not verify
+                            // falls straight into the escalation below, unchanged. The strict
+                            // conditions live in basename-rescue.ts.
+                            if (!clarify.question &&
+                                contractPathMismatch &&
+                                this.deps.config.loop.basename_rescue_enabled !== false &&
+                                this.deps.listRepoFiles &&
+                                this.deps.buildVerifyProbes) {
+                                try {
+                                    const expected = [...new Set(failedResults.map((x) => x.path).filter(Boolean))];
+                                    const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && !!f.trim());
+                                    const repoFiles = await this.deps.listRepoFiles(workerWorktree);
+                                    // beta.122: the same idea, one condition further out. A
+                                    // contract that names a DIRECTORY can never pass `file_written`
+                                    // (it stats for a regular file), and for a Prisma migration the
+                                    // lead could not have named the file -- the timestamped
+                                    // directory does not exist until the migration is created. The
+                                    // b121 escalation over `prisma/migrations` had exactly one
+                                    // possible answer and cost the run, because answering it took
+                                    // the resume path that then orphaned the commits.
+                                    const rescue = proposeBasenameRescue({ expected, actual, repoDirs: repoDirsFromFiles(repoFiles) }) ??
+                                        proposeDirectoryRescue({ expected, actual });
+                                    if (rescue) {
+                                        const rescued = contract.map((v) => "path" in v && v.path === rescue.from ? { ...v, path: rescue.to } : v);
+                                        const rescueProbes = this.deps.buildVerifyProbes({
+                                            plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
+                                        });
+                                        const reverified = await verifySubTaskOutput(rescued, {
+                                            defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                                            baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                                            cycle,
+                                            reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                                            acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                                        }, rescueProbes);
+                                        this.deps.state.audit("loop.contract_path_basename_rescued", {
+                                            sessionId, seq: st.seq, cycle,
+                                            kind: rescue.kind ?? "basename",
+                                            from: rescue.from, to: rescue.to, via: rescue.via, reason: rescue.reason,
+                                            verified: reverified.ok, summary: reverified.summary,
+                                        }, sessionId);
+                                        if (reverified.ok) {
+                                            // Fold the correction into the plan through the same b103
+                                            // writeback path a learned remap uses, so a later revise
+                                            // cycle scopes against the real path too.
+                                            if (this.deps.config.loop.plan_path_writeback_enabled !== false) {
+                                                const before = st.filesLikelyTouched ?? [];
+                                                const wb = applyPathCorrections(before, [{ from: rescue.from, to: rescue.to }]);
+                                                if (wb.applied.length > 0) {
+                                                    st.filesLikelyTouched = wb.files;
+                                                    this.deps.state.audit("loop.plan_path_written_back", { sessionId, seq: st.seq, cycle, applied: wb.applied, before, after: wb.files, source: "basename_rescue" }, sessionId);
+                                                }
+                                            }
+                                            this.deps.interactionLog?.log(sessionId, {
+                                                event: "contract_path_basename_rescued", phase: "worker", seq: st.seq, cycle,
+                                                from: rescue.from, to: rescue.to,
+                                            });
+                                            this.deps.logger.info(`[loop] ${describeBasenameRescue(rescue)}; re-verified clean, continuing without a clarification`, {
+                                                sessionId, seq: st.seq, cycle,
+                                            });
+                                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run("completed", JSON.stringify(result.filesChanged ?? []), result.commitSha ?? null, result.sdkSessionId ?? null, `basename-rescued contract path (${rescue.from} -> ${rescue.to}): ${reverified.summary}`, Date.now(), Date.now(), subTaskId);
+                                            this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                                            retractFailure(st.seq, `basename_rescue:${rescue.kind}`);
+                                            done.add(st.seq);
+                                            return;
+                                        }
+                                    }
+                                }
+                                catch (err) {
+                                    // A rescue that throws must leave the run exactly where it was:
+                                    // escalating to a human, which is the pre-b105 behaviour.
+                                    this.deps.logger.warn("[loop] basename rescue failed (non-fatal; escalating as before)", {
+                                        sessionId, seq: st.seq, cycle, err: String(err),
+                                    });
+                                }
+                            }
+                            if (!clarify.question &&
+                                contractPathMismatch &&
+                                this.deps.config.loop.contract_mismatch_escalation_enabled !== false &&
+                                this.deps.config.loop.clarification_escalation_enabled !== false) {
+                                const expected = [...new Set(failedResults.map((x) => x.path).filter(Boolean))];
+                                const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && f.trim());
+                                // beta.101: select the worker's reason by RELEVANCE, not
+                                // position. b100 quoted the first line and showed the operator
+                                // "That's fine, it's a harmless temp file outside the repo" --
+                                // about an unrelated file -- while the real explanation sat lower
+                                // in the message. See extractStatedReason.
+                                const statedReason = extractStatedReason(result.finalMessage ?? "", expected, actual);
+                                this.deps.state.audit("loop.contract_path_mismatch_escalated", {
+                                    sessionId, seq: st.seq, cycle,
+                                    expected, actual,
+                                    commitSha: result.commitSha,
+                                    failedKinds: failedResults.map((x) => x.kind),
+                                    summary: verification.summary,
+                                }, sessionId);
+                                this.deps.interactionLog?.log(sessionId, {
+                                    event: "contract_path_mismatch_escalated", phase: "worker", seq: st.seq, cycle, expected, actual,
+                                });
+                                this.deps.logger.warn("[loop] contract-path mismatch on a REAL commit; pausing for a human instead of failing the run", {
+                                    sessionId, seq: st.seq, cycle, expected, actual,
+                                });
+                                // beta.111: before pausing a run for a human, check whether the
+                                // answer is already sitting in the branch. See contract-clarify.ts.
+                                const changedOnBranch = this.deps.worktreeCommittedFiles && workerWorktree
+                                    ? await this.deps
+                                        .worktreeCommittedFiles(workerWorktree, planBaseShaForVerify)
+                                        .catch(() => [])
+                                    : [];
+                                const mismatch = {
+                                    seq: st.seq, title: st.title, commitSha: result.commitSha,
+                                    expected, actual, statedReason, changedOnBranch,
+                                };
+                                const auto = autoResolveContract(mismatch);
+                                if (auto.resolved && this.deps.config.loop.auto_resolve_satisfied_contract !== false) {
+                                    this.deps.state.audit("loop.contract_auto_resolved", { sessionId, seq: st.seq, cycle, expected, actual, coveredEarlier: auto.coveredEarlier, reason: auto.reason }, sessionId);
+                                    this.deps.interactionLog?.log(sessionId, {
+                                        event: "contract_auto_resolved", phase: "worker", seq: st.seq, cycle, coveredEarlier: auto.coveredEarlier,
+                                    });
+                                    this.deps.logger.info("[loop] beta.111: contract mismatch settled from branch history; not pausing for a human", {
+                                        sessionId, seq: st.seq, coveredEarlier: auto.coveredEarlier,
+                                    });
+                                    this.deps.state.db
+                                        .prepare(`UPDATE sub_tasks SET status = 'completed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
+                                        .run(`contract satisfied by the branch: ${auto.reason}`, Date.now(), sessionId, cycle, st.seq);
+                                    retractFailure(st.seq, "contract_auto_resolved");
+                                    done.add(st.seq);
+                                    return;
+                                }
+                                clarify.question = buildContractClarification(mismatch);
+                                clarify.seq = st.seq;
+                                clarify.subtask = { title: st.title, intent: st.intent };
+                            }
+                            return;
+                        }
+                    }
+                    else if (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate")) {
+                        // beta.16 fix #2 + beta.18 fix: emit the observe-mode breadcrumb
+                        // when either:
+                        //   (a) taskMode is explicitly 'observe', or
+                        //   (b) the contract is empty AND taskMode is not explicitly
+                        //       'mutate' (defensive for pre-beta.15 plans without
+                        //       taskMode where inference just came up empty).
+                        //
+                        // Beta.16/17 shipped this branch without the `!== "mutate"`
+                        // guard, so a mutate sub-task whose inferred contract was empty
+                        // (or which took the buildVerifyProbes-absent test path) fired
+                        // `loop.subtask_observe_completed` with `taskMode:"mutate"` in
+                        // the payload — an incoherent event where the name says
+                        // "observe" but the payload admits it's a mutation. The inner
+                        // (verification-eligible) branch already had this guard; beta.18
+                        // brings this branch in line.
+                        this.emitObserveCompleted(sessionId, st, result, []);
+                    }
+                    // beta.55 (B3): the sub-task PASSED, but if the worker's own final
+                    // message signals it deviated from the literal wording (a judgment
+                    // call), make that a first-class audit signal so "guess-and-document"
+                    // is auditable rather than buried in prose. Does NOT change pass/fail.
+                    {
+                        const finalMsg = (result.finalMessage ?? "").trim();
+                        if (finalMsg && matchesWorkerDeviation(finalMsg)) {
+                            const firstLine = finalMsg.split("\n").map((l) => l.trim()).find(Boolean) ?? finalMsg.slice(0, 200);
+                            this.deps.state.audit("loop.worker_deviation", { sessionId, seq: st.seq, cycle, summary: firstLine.slice(0, 500), finalMessage: finalMsg.slice(0, 2000) }, sessionId);
+                            this.deps.logger.info("[loop] worker deviated from literal wording (passed verification, judgment call)", {
+                                sessionId, seq: st.seq, summary: firstLine.slice(0, 200),
+                            });
+                        }
+                    }
+                    done.add(st.seq);
+                };
+                /**
+                 * beta.117: run one sub-task, in its own checkout when running parallel.
+                 *
+                 * Serial runs (still the default) take the early path and are byte-for-byte
+                 * the pre-b117 behaviour: the sub-task works directly in the session
+                 * worktree and commits straight onto the session branch.
+                 *
+                 * When parallel, the sub-task gets a leased slot instead and its commits
+                 * are merged back afterwards. The merge-back sits in a `finally` on
+                 * purpose. `runOneInner` has more than a dozen early returns -- revise
+                 * skips, clarification pauses, contract mismatches, verification failures
+                 * -- and a worker can have committed real work before reaching any of
+                 * them. Merging back on the success path alone would strand those commits
+                 * on a slot branch that gets deleted at the end of the run, which is the
+                 * b100 lost-commit failure reintroduced by the back door.
+                 */
+                const runOne = async (st) => {
+                    // No pool, or nothing for a worker to do: use the session worktree.
+                    if (!pool?.enabled || reviseScopeSkip.has(st.seq)) {
+                        return runOneInner(st, plan.worktreePath);
+                    }
+                    const sessionTip = this.deps.worktreeHeadSha
+                        ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
+                        : "";
+                    if (!sessionTip) {
+                        // Without a start point we cannot position a slot, and a slot at the
+                        // wrong base produces a diff against the wrong tree. Degrade to
+                        // serial rather than guess.
+                        this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "session_tip_unavailable" }, sessionId);
+                        return runOneInner(st, plan.worktreePath);
+                    }
+                    let lease;
+                    try {
+                        lease = await pool.acquire(sessionTip);
+                    }
+                    catch (err) {
+                        // Disk, npm, or git trouble creating a slot must cost this sub-task
+                        // its parallelism, not the run.
+                        this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "acquire_failed", err: String(err) }, sessionId);
+                        this.deps.logger.warn("[loop] could not lease a parallel slot; running this sub-task in the session worktree", { sessionId, seq: st.seq, err: String(err) });
+                        return runOneInner(st, plan.worktreePath);
+                    }
+                    try {
+                        return await runOneInner(st, lease.path);
+                    }
+                    finally {
+                        try {
+                            await this.mergeBackSlot({ sessionId, cycle, st, lease, baseSha: sessionTip, plan, failed });
+                        }
+                        finally {
+                            pool.release(lease);
+                        }
+                    }
+                };
+                // Dispatcher: greedily fill up to `concurrency` in-flight, respecting dependsOn.
+                let idx = 0;
+                while (idx < ordered.length || inFlight.length > 0) {
+                    if (failed.err) {
+                        // beta.123 (sweep): the same class as the retraction above, one level
+                        // up. A sub-task records its failure BEFORE its rescue has run, and
+                        // the rescue awaits git IO. Under b117 parallelism a sibling
+                        // finishing in that window hands control back here, we observe a
+                        // failure that is about to be retracted, and we stop dispatching the
+                        // rest of the cycle. The run then reviews a partial cycle and calls
+                        // it done -- silent under-delivery rather than a visible failure,
+                        // which is the worse shape of the two.
+                        //
+                        // Draining first costs nothing when there is nothing in flight (the
+                        // serial default), and turns the guess into an answer.
+                        if (inFlight.length > 0) {
+                            await Promise.allSettled([...inFlight]);
+                            if (!failed.err)
+                                continue;
+                        }
+                        break;
+                    }
+                    // Fill
+                    while (idx < ordered.length &&
+                        inFlight.length < concurrency &&
+                        (ordered[idx].dependsOn ?? []).every((d) => done.has(d)) &&
+                        // beta.91 (Fix 2): only start a second worker when its file scope is
+                        // known-disjoint from every in-flight worker (shared worktree write
+                        // safety). With concurrency=1 this is always true (inFlight empty).
+                        canDispatchConcurrently(ordered[idx], [...inFlightSubTasks.values()])) {
+                        const st = ordered[idx];
+                        // beta.60: bound the ENTIRE runOne, not just the worker SDK call.
+                        // beta.42 wrapped runWorker in withTimeout, but runOne ALSO awaits
+                        // unbounded git/IO before and after the worker (worktreeHeadSha,
+                        // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
+                        // hang in ANY of those froze the dispatcher at `await
+                        // Promise.race(inFlight)` forever with the sub-task row stuck
+                        // `running`, sdk_session_id=null, cost_usd=0, and NO worker process
+                        // spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent, no
+                        // auto-recovery, because nothing re-called run() to arm the
+                        // stall-watchdog). Bounding runOne converts any such hang into a
+                        // clean SubTaskDeadlineError -> failed.err -> terminal.
+                        const p = withTimeout(runOne(st), this.deps.config.loop.subtask_deadline_seconds, "subtask_deadline_seconds")
+                            .catch((err) => {
+                            if (err instanceof WorkerTimeoutError) {
+                                this.deps.state.audit("loop.subtask_deadline_exceeded", { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds }, sessionId);
+                                this.deps.logger.error("[loop] sub-task exceeded subtask_deadline_seconds (dispatch hang, likely a stalled git/IO await before or after the worker); failing the run", { sessionId, seq: st.seq, seconds: this.deps.config.loop.subtask_deadline_seconds });
+                                // mark the stuck row failed so it doesn't linger as `running`
+                                this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`).run(`sub-task dispatch exceeded ${this.deps.config.loop.subtask_deadline_seconds}s (stalled IO)`, Date.now(), sessionId, cycle, st.seq);
+                                if (!failed.err) {
+                                    failed.err = `subtask_deadline_exceeded (seq ${st.seq})`;
+                                    failed.seq = st.seq;
+                                }
+                            }
+                            else {
+                                // runOne handles its own errors internally; a throw here is
+                                // unexpected -- surface it rather than silently dropping.
+                                if (!failed.err) {
+                                    failed.err = `subtask_dispatch_error: ${String(err)}`;
+                                    failed.seq = st.seq;
+                                }
+                            }
+                        })
+                            .finally(() => {
+                            const i = inFlight.indexOf(p);
+                            if (i >= 0)
+                                inFlight.splice(i, 1);
+                            inFlightSubTasks.delete(p);
+                        });
+                        inFlight.push(p);
+                        inFlightSubTasks.set(p, st);
+                        idx++;
+                    }
+                    if (inFlight.length === 0 && idx < ordered.length) {
+                        // Blocked -- dependency not met yet and no in-flight to unblock. Data bug.
+                        failed.err = `subtask ${ordered[idx].seq} has unresolved dependencies`;
+                        failed.seq = ordered[idx].seq;
+                        break;
+                    }
+                    if (inFlight.length > 0) {
+                        await Promise.race(inFlight);
+                    }
                 }
-                // beta.63 (Part A): mark forward progress at sub-task START so a long
-                // executing phase (many sub-tasks) reads as live to the watchdog.
-                this.markProgress(sessionId, "subtask_start", "worker", { seq: st.seq, cycle, title: String(st.title).slice(0, 120) });
-                // Capture the worktree HEAD BEFORE the worker runs, so commit_made
-                // verification (HEAD != base) is meaningful.
-                const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(workerWorktree).catch(() => "") : "";
-                // beta.85: the BRANCH fork-point (plan_base_sha, persisted at plan time)
-                // -- the base for "committed anywhere in this branch" used by the
-                // revise-relaxed acceptance. Falls back to subTaskBaseSha when unset.
-                const planBaseShaForVerify = (() => {
+                await Promise.allSettled(inFlight);
+                // beta.117: slots are per-cycle. A revise cycle re-plans which sub-tasks
+                // run, and a slot still holding the previous cycle's tree would start a
+                // worker from the wrong base. Draining here also means a run that fails
+                // mid-cycle does not leave checkouts behind for the reaper to find.
+                if (pool) {
+                    // beta.118: read the count BEFORE draining. `drain()` clears the slot
+                    // map, so reading after it always audited `slots: 0` -- and this line is
+                    // the only evidence of how much parallelism a run actually bought.
+                    const slots = pool.createdCount;
+                    await pool.drain();
+                    this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots }, sessionId);
+                }
+                if (failed.err) {
+                    // beta.55 (B2): a resumable clarification pause takes precedence over a
+                    // hard-fail. The sub-task DID fail verification (failed.err set), but
+                    // if we captured a clarification request we pause instead of dying, so
+                    // a human can unblock the exact sub-task rather than restart the run.
+                    if (clarify.question) {
+                        return this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
+                    }
+                    // beta.64 (P0-3): best-effort verify already pushed a graceful reviewable
+                    // PR (verify sub-task timed out but the prior probe was green + clean
+                    // diff). The session row is already terminal `done`; return shipped.
+                    if (failed.err === "__best_effort_shipped__") {
+                        const bePr = this.deps.state.db.prepare(`SELECT final_pr_url FROM sessions WHERE id = ?`).get(sessionId);
+                        return { status: "shipped", sessionId, prUrl: bePr?.final_pr_url ?? "", cycles: cycle, totalCostUsd: totalCost };
+                    }
+                    // beta.120 (fix 1): every abort that could be holding commits goes
+                    // through the salvaging path -- it ships resource aborts and preserves
+                    // the worktree for the rest. Only an abort with nothing committed ends
+                    // up deleting anything.
+                    if (failed.err === "user_abort_reaction")
+                        return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
+                    if (failed.err === "hard_timeout")
+                        return await this.finaliseAbortSalvaging(sessionId, "hard_timeout", cycle, totalCost);
+                    if (failed.err === "budget_exhausted")
+                        return await this.finaliseAbortSalvaging(sessionId, "budget_exhausted", cycle, totalCost);
+                    // beta.78 (Feature 2): per-user daily hard-cap abort.
+                    if (failed.err === "daily_max_exhausted")
+                        return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
+                    return this.finaliseFailed(sessionId, String(failed.err), cycle, totalCost);
+                }
+                // 2b. Reviewing
+                // beta.7 fix #2 (hard cap inside review): don't start the adversary if
+                // we can't afford it. Estimate review cost from the priciest observed
+                // sub-task (reviews scan the whole diff, so they scale with work done),
+                // falling back to a conservative reserve. Abort at the cycle boundary
+                // rather than blowing the budget by ~$0.83 on a review we can't pay for.
+                {
+                    const reactions = await this.deps.readReactions(sessionId);
+                    const reviewEstimate = this.estimateReviewCost(subTaskCosts);
+                    // beta.78 (Feature 2): the review-gate hard abort now keys off the
+                    // per-user DAILY cap, not the (soft) session budget. Crossing the
+                    // session budget only WARNS; a review is only skipped/aborted when
+                    // paying for it would blow the user's daily_max_usd. budgetBump
+                    // (:moneybag:) still overrides.
+                    const dailyMax = this.dailyMaxUsd();
+                    const dailySoFar = this.safeDailySpend(row.requester);
+                    const dailyWouldExceed = dailyMax > 0 && dailySoFar + reviewEstimate > dailyMax;
+                    if (!reactions.budgetBump && dailyWouldExceed) {
+                        // beta.8 (adversary point): the adversary was the only actor that
+                        // caught the beta.6 confabulation, and beta.7's review-budget abort
+                        // HID that failure by skipping review on cost. The observable-side-
+                        // effect check is ~$0 in tokens, so run it UNCONDITIONALLY before
+                        // aborting. This is the harness's own trust-but-verify guardrail;
+                        // it must never be bypassed purely on token budget.
+                        await this.runCheapObservableCheck(sessionId, plan, row.requester);
+                        this.deps.state.audit("loop.review_budget_abort", { sessionId, cycle, totalCost, reviewEstimate, dailySoFar, dailyMax, reason: "daily_max" }, sessionId);
+                        this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
+                        return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
+                    }
+                }
+                // beta.81 (Track B / B4): the beta.63 LOCAL check-script runner is RETIRED
+                // from the verification spine. Carel: "the harness should code, not try and
+                // run it locally ... I do not want it to run locally, ever." Verification
+                // is CI-only now (the post-push getCombinedStatus poll, B2). The runner is
+                // fully off by default (verify.run_repo_check_scripts defaults to false in
+                // beta.81); runFinalVerifyChecks early-returns [] in that case, so no local
+                // typecheck/lint/test/build runs here. The runCheckScripts plumbing is
+                // kept ONLY for the tryScriptedVerifyFallback rescue of a timed-out
+                // observe VERIFY sub-task (a deterministic diff/tsc rescue), NOT as a
+                // verify gate. An operator can still opt back in by setting
+                // verify.run_repo_check_scripts:true, but the default path is CI-only.
+                const conventionFindings = await this.runFinalVerifyChecks(sessionId, plan, cycle);
+                // beta.94 (Feature 1b): deterministic harness-side scope check -- replaces
+                // the elided LLM "final verification of scope boundaries" sub-task. Folds
+                // any out-of-scope committed file into the review as a `fit`/`medium`
+                // finding (never a hard fail). Same findings-return pattern.
+                // beta.110: ScopeBlowoutError is deliberately NOT caught here. It ends
+                // the run before the adversary is asked to review an unreviewable diff,
+                // and the outer handler preserves the worktree so the good commits that
+                // ARE in it stay recoverable. Ordinary scope creep is still a finding.
+                const scopeFindings = await this.runFinalScopeCheck(sessionId, plan, cycle);
+                if (scopeFindings.length > 0)
+                    conventionFindings.push(...scopeFindings);
+                // beta.111: a branch that does not compile must not reach a merge
+                // recommendation. The adversary reads the diff, not the compiler.
+                const typeFindings = await this.runTypecheckGate(sessionId, plan, cycle);
+                if (typeFindings.length > 0)
+                    conventionFindings.push(...typeFindings);
+                this.setStatus(sessionId, "reviewing");
+                await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
+                let runtime;
+                try {
+                    runtime = await this.deps.fetchRuntime?.({ plan, sessionId });
+                }
+                catch (err) {
+                    this.deps.logger.warn("[loop] fetchRuntime failed", { err: String(err) });
+                }
+                // beta.7 fix #1: if no external runtime is available, synthesise a
+                // "local" runtime snapshot from this cycle's verification audits so
+                // the adversary still gets observable-output ground truth.
+                if (!runtime) {
+                    const localVerification = this.readLocalVerification(sessionId);
+                    if (localVerification.length > 0) {
+                        const anyFailed = localVerification.some((v) => !v.ok);
+                        runtime = {
+                            provider: "local",
+                            status: anyFailed ? "unavailable" : "ok",
+                            logsExcerpt: localVerification
+                                .map((v) => `sub-task ${v.seq}: ${v.ok ? "VERIFIED" : "FAILED"} — ${v.summary}`)
+                                .join("\n"),
+                            errorCount: localVerification.filter((v) => !v.ok).length,
+                            localVerification,
+                        };
+                    }
+                }
+                // beta.101: LEDGER-COMMIT REACHABILITY GUARD. Runs BEFORE the adversary
+                // SDK call so a branch that has lost work costs nothing to detect.
+                //
+                // b100 (session 3c6c1608) shipped six recorded commits into the void and
+                // then paid for a review of a diff that contained none of them. The
+                // adversary had to infer the problem from absence and blocked with
+                // findings about "missing" work that had actually been written. Every
+                // input needed to catch this deterministically was already in the DB.
+                let ledgerUnreachable = [];
+                if (this.deps.config.loop.ledger_reachability_guard_enabled !== false) {
+                    const check = await this.checkLedgerReachability(sessionId, plan.worktreePath, cycle, "review");
+                    ledgerUnreachable = check.unreachable;
+                    if (check.failed) {
+                        this.deps.logger.error("[loop] recorded sub-task commits are unreachable from HEAD; refusing to review or ship an incomplete branch", {
+                            sessionId, cycle, headSha: check.headSha, unreachable: check.unreachable,
+                        });
+                        // Fail rather than pause: a text answer cannot restore a branch, and
+                        // reviewing or shipping this diff would silently omit work the run
+                        // already did. The commits survive under the rescue refs.
+                        return this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${check.detail}`, cycle, totalCost);
+                    }
+                }
+                this.emitPhaseTiming(sessionId, "executing", cycle, executeStart, {
+                    subTasks: plan.subTasks.length,
+                });
+                // beta.108: a revise cycle that moved the branch tip nowhere has nothing
+                // for the adversary to review, and re-reviewing an unchanged diff cannot
+                // do anything but re-emit the previous cycle's findings.
+                //
+                // The b106 revise (session 21c9c44e) closed exactly this way: cycle 3
+                // dispatched five sub-tasks, four came back `subtask_revise_no_change`,
+                // and the run still paid for a full adversary pass over the whole branch
+                // to change two files. When NOTHING commits, that pass is pure cost.
+                //
+                // Guarded tightly: only on a revise cycle (cycle > 1, so a first cycle
+                // that legitimately produced no diff still gets reviewed), only when we
+                // could actually read both shas (an unreadable sha must not be mistaken
+                // for "no change"), and only when a prior review exists to carry forward
+                // as the verdict.
+                if (this.deps.config.loop.early_exit_no_change_cycle !== false &&
+                    cycle > 1 &&
+                    lastReview &&
+                    cycleBaseSha &&
+                    this.deps.worktreeHeadSha) {
+                    const tipNow = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
+                    if (tipNow && tipNow === cycleBaseSha) {
+                        this.deps.state.audit("loop.cycle_no_change_early_exit", { sessionId, cycle, headSha: tipNow, carriedFindings: lastReview.findings?.length ?? 0 }, sessionId);
+                        this.deps.logger.info("[loop] revise cycle produced no commits; skipping a re-review of an unchanged diff and shipping on the prior verdict (beta.108)", { sessionId, cycle, headSha: tipNow });
+                        terminalDoneReason = "shipped_no_change_cycle";
+                        break;
+                    }
+                }
+                let report;
+                // beta.63 (Part B): adversary SDK call boundary logging.
+                const reviewStart = Date.now();
+                this.deps.interactionLog?.logSdkRequest(sessionId, {
+                    role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                    prompt: `adversary review cycle ${cycle} for ${brief.title}; checklist: ${(plan.reviewChecklist ?? []).join("; ")}`,
+                });
+                try {
+                    // beta.43: bound the adversary SDK call by adversary_timeout_seconds
+                    // (previously declared in config but UNENFORCED on this await). A hung
+                    // reviewer froze the run at the review phase with no timeout.
+                    // beta.67 (Bug B): read the persisted fork-point sha and hand it to the
+                    // adversary so its diff is `git diff <plan_base_sha>..HEAD` -- ONLY
+                    // this branch's own commits. Also emit the cheap sanity log
+                    // (loop.adversary_diff_base) with the base + HEAD sha and the branch's
+                    // commit count; warn when the count is suspiciously high vs the plan's
+                    // sub-task count (the beta.66 smoke #4 signature).
+                    let adversaryBaseSha;
                     try {
                         const r = this.deps.state.db
                             .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
                             .get(sessionId);
-                        return r?.plan_base_sha || subTaskBaseSha;
-                    }
-                    catch {
-                        return subTaskBaseSha;
-                    }
-                })();
-                // beta.57 (P1): capture the sub-task start time so file_written can
-                // reject a file that merely pre-existed (mtime/diff freshness check).
-                // Previously hard-coded to 0, which disabled the freshness check and
-                // let a stale file vacuously satisfy the contract.
-                const subTaskStartedAtMs = Date.now();
-                let result;
-                // beta.63 (Part B): worker SDK call boundary logging. seq + cycle carried
-                // so a stall's sdk_request-without-sdk_response points at the exact
-                // sub-task that hung.
-                const workerStart = Date.now();
-                this.deps.interactionLog?.logSdkRequest(sessionId, {
-                    role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
-                    prompt: `subtask ${st.seq}: ${st.title}\nintent: ${st.intent ?? ""}\n${reviseHint ?? ""}`,
-                });
-                // beta.64 (P0-2): the worker call is now wrapped so a first_token_timeout
-                // (returned by the inner watchdog) OR a worker timeout (thrown by the
-                // outer withTimeout) is RETRIED ONCE on a fresh SDK session before we
-                // flip the run terminal. beta.63's watchdogs were blind to a hang INSIDE
-                // a single worker turn; beta.63 smoke #2's verify sub-task streamed zero
-                // tokens and sat the full 1800s. runWorkerCallWithRetry emits the P0-1
-                // sdk_stream_opened/sdk_first_token events + owns the retry.
-                const call = await this.runWorkerCallWithRetry({
-                    workerWorktree,
-                    sessionId, st, cycle, brief, plan, requester: row.requester,
-                    dispatchHint: reviseHint, workerStart, subTaskId,
-                });
-                if (call.outcome === "timeout") {
-                    // beta.64 (P0-2): retry (if any) is exhausted and the worker still
-                    // timed out with no usable result. For an observe-mode VERIFY sub-task
-                    // we do NOT hard-fail: attempt P0-4 (scripted verifier fallback), then
-                    // P0-3 (best-effort verify => graceful reviewable PR). Only if BOTH
-                    // decline do we fall through to terminal.
-                    const isVerifySubTask = st.taskMode === "observe";
-                    if (isVerifySubTask) {
-                        const scripted = await this.tryScriptedVerifyFallback(sessionId, plan, st, cycle, subTaskBaseSha);
-                        if (scripted === "pass") {
-                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`).run(`scripted verifier fallback PASS (LLM verify sub-task timed out)`, Date.now(), subTaskId);
-                            done.add(st.seq);
-                            return;
-                        }
-                        if (scripted !== "fail") {
-                            // scripted fallback disabled or unrunnable -> try best-effort verify.
-                            const shipped = await this.tryBestEffortVerify(sessionId, plan, brief, st, cycle, totalCost, row.requester, subTaskBaseSha);
-                            if (shipped) {
-                                failed.err = "__best_effort_shipped__";
-                                failed.seq = st.seq;
-                                return;
+                        adversaryBaseSha = r?.plan_base_sha ?? undefined;
+                        if (adversaryBaseSha && this.deps.worktreeHeadSha) {
+                            const headSha = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
+                            const commitCount = this.deps.worktreeCommitCount
+                                ? await this.deps.worktreeCommitCount(plan.worktreePath, adversaryBaseSha).catch(() => -1)
+                                : -1;
+                            const subTaskCount = plan.subTasks.length;
+                            const tooManyCommits = commitCount >= 0 && commitCount > Math.max(subTaskCount * 3, subTaskCount + 5);
+                            // beta.101: the b67 heuristic only ever asked "too MANY commits?".
+                            // The b100 smoke was the mirror image -- a diff of ONE commit while
+                            // six recorded sub-task commits were missing from it -- and scored
+                            // `suspicious: false`. Missing recorded work is at least as strong
+                            // a signal that the diff base is wrong as excess commits are.
+                            const missingLedgerCommits = ledgerUnreachable.length > 0;
+                            const suspicious = tooManyCommits || missingLedgerCommits;
+                            this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha, headSha, commitCount, subTaskCount, suspicious, tooManyCommits, missingLedgerCommits, unreachableLedgerCommits: ledgerUnreachable }, sessionId);
+                            if (tooManyCommits) {
+                                this.deps.logger.warn("[loop] adversary diff commit count is suspiciously high vs sub-task count -- diff base may be wrong", { sessionId, commitCount, subTaskCount, baseSha: adversaryBaseSha });
                             }
-                        }
-                    }
-                    this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`).run(call.summary, Date.now(), subTaskId);
-                    failed.err = call.failErr;
-                    failed.seq = st.seq;
-                    return;
-                }
-                result = call.result;
-                totalCost += result.costUsd;
-                if (result.costUsd > 0)
-                    subTaskCosts.push(result.costUsd);
-                this.addCost(sessionId, result.costUsd);
-                await this.deps.budget.recordSpend(row.requester, result.costUsd, sessionId);
-                this.deps.state.db.prepare(`UPDATE sub_tasks
-           SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
-           WHERE id = ?`).run(result.status, result.costUsd, JSON.stringify(result.filesChanged), result.commitSha ?? null, result.sdkSessionId ?? null, result.reason ?? null, Date.now(), Date.now(), subTaskId);
-                this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
-                // beta.48 (C1): always emit the worker's final message as a
-                // breadcrumb, on EVERY sub-task (not just failures). This eliminates
-                // the "opaque worker turn" blind spot (session dca2f3b5) where a
-                // zero-side-effect end_turn was indistinguishable from a crash in the
-                // harness log. Truncated; empty string when the worker produced only
-                // tool calls and no concluding text.
-                {
-                    const fm = (result.finalMessage ?? "").trim();
-                    this.deps.state.audit("loop.worker_end_turn", {
-                        sessionId,
-                        seq: st.seq,
-                        cycle,
-                        status: result.status,
-                        commitSha: result.commitSha ?? null,
-                        // beta.103: every commit tip this turn produced. `commitSha` is a
-                        // single value and `sub_tasks.commit_sha` a single column, so a
-                        // turn where the worker committed its own work AND the harness
-                        // committed the remainder recorded only the harness commit -- the
-                        // worker's own commit entered no ledger at all and so could never
-                        // be reachability-checked. This array is what the guard reads.
-                        commitShas: result.commitShas ?? (result.commitSha ? [result.commitSha] : []),
-                        filesTouched: result.filesChanged,
-                        hasFinalMessage: fm.length > 0,
-                        finalMessage: fm.slice(0, 4000),
-                    }, sessionId);
-                    // beta.85: PER-SUB-TASK native progress. Pre-beta.85, native
-                    // deliverProgress fired ONLY from setStatus = phase transitions
-                    // (planning/executing/reviewing/done), so a long `executing` phase
-                    // with N sequential sub-tasks went SILENT between phase changes
-                    // (session 696226e4: 16 min, 4 sub-tasks, zero in-thread updates --
-                    // exactly what makes a team think it's hung). buildProgressSnapshot's
-                    // headline is already sub-task-granular ("Executing sub-task N/M --
-                    // title"), so firing deliverProgress on each worker_end_turn emits a
-                    // per-sub-task headline directly from the harness, with NO dependency
-                    // on the poll relay / a wake cron (both of which broke on 696226e4).
-                    // Best-effort + throw-guarded (same contract as the setStatus fire);
-                    // a no-op for agent-orchestrated runs (no real Slack binding).
-                    try {
-                        this.deps.deliverProgress?.(sessionId, "executing");
-                    }
-                    catch { /* best-effort: a progress post must never fail the run */ }
-                }
-                // If the worker itself failed/timed out, halt now.
-                if (result.status !== "completed") {
-                    failed.err = `subtask_${st.seq}_${result.status}: ${result.reason ?? "no reason"}`;
-                    failed.seq = st.seq;
-                    return;
-                }
-                // beta.76 (Option 1): record the REAL paths this sub-task touched into
-                // the run-level ground-truth set. These correct downstream (and this
-                // sub-task's own) stale contract paths via rederiveContractPath. Both
-                // committed and uncommitted-but-written files count as evidence of the
-                // repo's real layout.
-                for (const f of [...(result.filesChanged ?? []), ...(result.uncommittedFiles ?? [])]) {
-                    if (typeof f === "string" && f.trim())
-                        discoveredRealPaths.add(f.trim());
-                }
-                // ---- beta.8 fix #1: HARNESS-SIDE verification ----
-                // Regardless of the worker's `end_turn: completed`, the harness
-                // independently verifies any observable side-effect the sub-task
-                // CLAIMS (inferred from its own language, not from the model). This
-                // is what catches a confabulated "I pushed / I opened a PR": we hit
-                // git / the provider API ourselves. Runs even for `completed`.
-                // beta.67 (Bug C): compute the EFFECTIVE task-mode for THIS pass. On a
-                // revise cycle (cycle > 1) a plan-time `mutate` sub-task that correctly
-                // makes NO change (the worker made no commit) is a legal no-op -- the
-                // beta.66 loop.subtask_revise_no_change handler already recognises this
-                // AFTER a verify failure, but the verifier still built the contract off
-                // the plan-time `mutate` and hard-failed commit_made/file_committed
-                // because HEAD didn't move. Demote the mode up-front so those kinds are
-                // never included in the contract this pass -> the no-op verifies as a
-                // PASS instead of a false-fail. A real cycle-1 mutate (or a revise pass
-                // that DID commit) keeps effectiveTaskMode === taskMode, so it still
-                // requires commit_made.
-                const effectiveTaskMode = cycle > 1 && st.taskMode === "mutate" && !result.commitSha ? "observe" : st.taskMode;
-                if (effectiveTaskMode !== st.taskMode) {
-                    this.deps.state.audit("loop.subtask_revise_no_change", { sessionId, seq: st.seq, cycle, taskMode: st.taskMode ?? "unspecified", effectiveTaskMode: "observe", trigger: "contract_selection" }, sessionId);
-                    this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_no_change", phase: "worker", seq: st.seq, cycle, effectiveTaskMode: "observe" });
-                }
-                const rawContract = inferVerifyContract(st, effectiveTaskMode);
-                // beta.76 (Option 1): RE-DERIVE each path-bearing contract kind against
-                // the real paths this run has already touched, so a stale lead-guessed
-                // directory prefix (e.g. `tests/api/grc` when the repo really uses
-                // `src/__tests__/api/grc`) is corrected BEFORE verification -- the
-                // structural cure for the drift class. No-op when no evidence-backed
-                // remap applies (returns the path unchanged), so this never makes
-                // verification stricter. Skips file_in_pr (repo-wide, not scoped).
-                const rederiveEnabled = this.deps.config.loop.contract_rederive_enabled !== false;
-                // beta.103: every evidence-backed correction made below is also folded
-                // back into st.filesLikelyTouched after the contract is built, so a
-                // later revise cycle scopes against the real path instead of the
-                // lead's fiction. See plan-path-writeback.ts for the b102 failure.
-                const pathCorrections = [];
-                const contract = rawContract.map((v) => {
-                    if (!rederiveEnabled)
-                        return v;
-                    if (!("path" in v) || !v.path || v.kind === "file_in_pr")
-                        return v;
-                    const rd = rederiveContractPath(v.path, [...discoveredRealPaths]);
-                    if (!rd.remapped)
-                        return v;
-                    pathCorrections.push({ from: v.path, to: rd.path });
-                    this.deps.state.audit("loop.contract_path_rederived", { sessionId, seq: st.seq, cycle, kind: v.kind, from: v.path, to: rd.path, via: rd.via }, sessionId);
-                    this.deps.interactionLog?.log(sessionId, {
-                        event: "contract_path_rederived", phase: "worker", seq: st.seq, cycle,
-                        kind: v.kind, from: v.path, to: rd.path,
-                    });
-                    return { ...v, path: rd.path };
-                });
-                // beta.100: BOUNDED TEST-CONTRACT RECONCILIATION. The b76 prefix-remap
-                // above only fires when the stale and real directories share a trailing
-                // chain, so it cannot correct a test path that drifted on BOTH the
-                // directory and the basename (b99 seq 3: contract
-                // `.../continuity-exercises/route.test.ts` vs committed
-                // `src/__tests__/api/grc/continuity-exercises-api.test.ts` -- no shared
-                // dir suffix, so no remap was learned and a correct commit died on the
-                // strict file_committed check). Reconcile that shape here, against THIS
-                // sub-task's own touched files, under a 1:1 no-ambiguity constraint.
-                // Scope matters: we pass the PER-SUB-TASK set, never discoveredRealPaths
-                // (run-wide), which is what makes a lone unclaimed test file provably
-                // this sub-task's. See contract-rederive.ts for the full argument.
-                if (this.deps.config.loop.contract_test_path_reconcile !== false) {
-                    const subTaskTouched = [...(result.filesChanged ?? []), ...(result.uncommittedFiles ?? [])]
-                        .map((f) => (typeof f === "string" ? f.trim() : ""))
-                        .filter(Boolean);
-                    const pathEntryIdx = [];
-                    const pathEntryPaths = [];
-                    for (let i = 0; i < contract.length; i++) {
-                        const v = contract[i];
-                        if ((v.kind === "file_written" || v.kind === "file_committed") && v.path) {
-                            pathEntryIdx.push(i);
-                            pathEntryPaths.push(v.path);
-                        }
-                    }
-                    for (const rc of reconcileTestContractPaths(pathEntryPaths, subTaskTouched)) {
-                        const at = pathEntryPaths.indexOf(rc.from);
-                        if (at === -1)
-                            continue;
-                        const i = pathEntryIdx[at];
-                        const entry = contract[i];
-                        if (entry.kind !== "file_written" && entry.kind !== "file_committed")
-                            continue;
-                        contract[i] = { ...entry, path: rc.to };
-                        pathCorrections.push({ from: rc.from, to: rc.to });
-                        this.deps.state.audit("loop.contract_test_path_reconciled", { sessionId, seq: st.seq, cycle, kind: entry.kind, from: rc.from, to: rc.to, subTaskTouched }, sessionId);
-                        this.deps.logger.info("[loop] reconciled a drifted TEST contract path onto the file this sub-task committed", {
-                            sessionId, seq: st.seq, cycle, from: rc.from, to: rc.to,
-                        });
-                        this.deps.interactionLog?.log(sessionId, {
-                            event: "contract_test_path_reconciled", phase: "worker", seq: st.seq, cycle,
-                            from: rc.from, to: rc.to,
-                        });
-                    }
-                }
-                // beta.103: fold the proven corrections back into the PLAN. Until now a
-                // remap only ever reached the local `contract` array, so
-                // `st.filesLikelyTouched` kept the lead's fictional path for the rest
-                // of the run -- and computeReviseScope / mapFindingsToSubTasks both key
-                // off filesLikelyTouched. In the b102 smoke that made cycle 3 skip the
-                // one sub-task that owned both of its own outstanding findings. The
-                // corrections are evidence-backed (learned from paths this run really
-                // touched, 1:1 for the test reconcile), and applyPathCorrections only
-                // ever REWRITES an entry the plan already declared -- it never appends
-                // -- so a sub-task's scope can be corrected but never widened.
-                if (this.deps.config.loop.plan_path_writeback_enabled !== false && pathCorrections.length > 0) {
-                    const wb = applyPathCorrections(st.filesLikelyTouched, pathCorrections);
-                    if (wb.applied.length > 0) {
-                        const before = [...(st.filesLikelyTouched ?? [])];
-                        st.filesLikelyTouched = wb.files;
-                        this.deps.state.audit("loop.plan_path_written_back", { sessionId, seq: st.seq, cycle, applied: wb.applied, before, after: wb.files }, sessionId);
-                        this.deps.interactionLog?.log(sessionId, {
-                            event: "plan_path_written_back", phase: "worker", seq: st.seq, cycle,
-                            applied: wb.applied.map((c) => `${c.from} -> ${c.to}`),
-                        });
-                        this.deps.logger.info("[loop] corrected the plan's declared paths from verified evidence; revise scoping will use the real paths", {
-                            sessionId, seq: st.seq, cycle, corrections: describePathCorrections(wb.applied),
-                        });
-                    }
-                }
-                // beta.85: REVISE-CYCLE-AWARE CONTRACT RELAXATION -- the fix for the
-                // revise verifier false-positive (session 696226e4 cyc2 seq7, and the
-                // inverse-but-same-signature 1c744d70). On a revise cycle (cycle > 1)
-                // the sub-task's contract still carries its CYCLE-1 shape (e.g. BOTH
-                // route.ts AND download/route.ts), but a revise only needs to change
-                // the file(s) the review actually FLAGGED. A contract file the current
-                // review did NOT target was already shipped correctly in a prior cycle;
-                // the worker correctly leaves it untouched (buildReviseDispatchHint even
-                // TELLS it to: "if none apply, make NO changes"). Demanding a fresh
-                // mtime/diff this sub-task then false-fails correct work. So: for a
-                // NOT-TARGETED file_written/file_committed entry we set reviseRelaxed,
-                // which makes verify.ts accept "present + committed anywhere in the
-                // branch range" instead of a fresh write. A TARGETED file keeps the
-                // strict fresh requirement -> 1c744d70 (worker skipped a TARGETED file)
-                // still FAILS; 696226e4 (worker left a NOT-targeted correct file) PASSES.
-                // Targeted set = files named by this cycle's review findings (file/line),
-                // structurally matched against the contract path.
-                if (cycle > 1 && lastReview?.findings?.length) {
-                    // beta.87 (Staging deep-dive [1]+[2]): build the TARGETED file set --
-                    // the files THIS revise sub-task is expected to change. A contract
-                    // file that is targeted keeps the STRICT fresh-write requirement; a
-                    // not-targeted file (already correct from a prior cycle) is relaxed.
-                    //
-                    // [2] PER-SUB-TASK SCOPE: when the revise-spec turn refreshed the
-                    // plan (reviseSpecApplied), this sub-task's OWN workerContext names
-                    // the files it should touch (filesLikelyTouched + codeExcerpts[].path)
-                    // -- use THAT, not the review-wide findings, so seq-4 doesn't inherit
-                    // strict mode from a finding about seq-7's file. Fall back to the
-                    // review-wide findings' `.file` only when there's no per-sub-task
-                    // signal (raw-findings path).
-                    // beta.92: prefer the DETERMINISTIC mapping's per-sub-task targeted
-                    // file set (the files THIS sub-task's findings actually name). Fall
-                    // back to filesLikelyTouched + codeExcerpts (per-sub-task signal), then
-                    // to the review-wide finding files (raw path) only if mapping is off.
-                    const mappedTargetedFiles = (reviseAssignment?.targetedFiles ?? [])
-                        .map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean);
-                    const perSubTaskFiles = mappedTargetedFiles.length > 0
-                        ? mappedTargetedFiles
-                        : reviseSpecApplied
-                            ? [
-                                ...(st.filesLikelyTouched ?? []),
-                                ...((st.workerContext?.codeExcerpts ?? []).map((e) => e.path)),
-                            ].map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean)
-                            : [];
-                    const reviewFindingFiles = lastReview.findings
-                        .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
-                        .filter(Boolean);
-                    const targetedFiles = perSubTaskFiles.length > 0 ? perSubTaskFiles : reviewFindingFiles;
-                    // beta.89 [F3] (Staging 3rd deep-dive): name WHICH target source drove
-                    // this sub-task's strict/relaxed decision. The revise-spec path uses
-                    // deterministic full-path workerContext (clean targeting); the raw-
-                    // findings fallback uses LLM `finding.file` (partial-path shorthand ->
-                    // likely `targets_unresolved` -> strict-everywhere -> a possible
-                    // false-fail of correct work). This one audit lets a post-mortem tell
-                    // from a single query which path a cycle-2 sub-task ran under, so the
-                    // one remaining semantic asymmetry is diagnosable instead of silent.
-                    this.deps.state.audit("loop.revise_target_source", {
-                        sessionId, seq: st.seq, cycle,
-                        source: perSubTaskFiles.length > 0 ? "revise_spec_worker_context" : "raw_findings",
-                        reviseSpecApplied,
-                        targetCount: targetedFiles.length,
-                    }, sessionId);
-                    // beta.88 [E1] (Staging 2nd deep-dive): a NON-EMPTY targeted set that
-                    // structurally resolves to ZERO contract paths is functionally
-                    // IDENTICAL to an empty set -- e.g. the adversary wrote a PARTIAL
-                    // path (`download/route.ts`) that is shorter than the full contract
-                    // path, so no structural rule matches (suffix needs the real/committed
-                    // side to be the LONGER one). Without this guard `isTargeted` returns
-                    // false for EVERY entry -> everything relaxes -> the same false-pass
-                    // the beta.86 empty-targets fix closed, re-entered through a different
-                    // LLM output shape. So: only enter the relaxation path when at least
-                    // one target actually resolves to a contract path in THIS sub-task;
-                    // otherwise fall through to the strict-no-targets branch (keep
-                    // everything strict, a revise can't relax on unresolvable targets).
-                    const anyTargetResolvable = targetedFiles.length > 0 &&
-                        contract.some((v) => (v.kind === "file_written" || v.kind === "file_committed") &&
-                            !!v.path &&
-                            !!resolveContractPath(targetedFiles, v.path, { strictContract: true }));
-                    if (anyTargetResolvable) {
-                        // [1] STRUCTURAL targeting only. A finding/spec path targets a
-                        // contract path ONLY via a real directory-context match
-                        // (exact/route-group/suffix/basename-dir), resolved through
-                        // resolveContractPath's strictContract mode. This kills the
-                        // beta.86 bidirectional bare-basename fuzzy match: an adversary
-                        // `file:"route.ts"` (bare) no longer force-strictens EVERY
-                        // `route.ts` sibling (which re-created the 696226e4 false-fail).
-                        // A bare-basename target that structurally resolves to >1 contract
-                        // file is genuinely ambiguous -> it targets NONE specifically
-                        // (resolveContractPath's strict mode returns no structural match
-                        // for a bare basename vs a dir'd path), so those siblings relax
-                        // rather than false-fail.
-                        const isTargeted = (p) => !!resolveContractPath(targetedFiles, p, { strictContract: true });
-                        for (let i = 0; i < contract.length; i++) {
-                            const v = contract[i];
-                            if ((v.kind === "file_written" || v.kind === "file_committed") && v.path && !isTargeted(v.path)) {
-                                contract[i] = { ...v, reviseRelaxed: true };
-                                this.deps.state.audit("loop.revise_contract_relaxed", { sessionId, seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles }, sessionId);
-                                this.deps.interactionLog?.log(sessionId, {
-                                    event: "revise_contract_relaxed", phase: "worker", seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles,
-                                });
-                            }
-                        }
-                    }
-                    else if (targetedFiles.length > 0) {
-                        // [E1] Non-empty targets that resolve to NOTHING -> keep strict.
-                        // Distinct audit so a partial-path adversary shorthand is visible.
-                        this.deps.state.audit("loop.revise_contract_targets_unresolved", { sessionId, seq: st.seq, cycle, targetedFiles, contractPaths: contract.filter((v) => "path" in v && v.path).map((v) => v.path) }, sessionId);
-                    }
-                    else {
-                        // Findings exist but none names a file -> keep strict, record why.
-                        this.deps.state.audit("loop.revise_contract_strict_no_targets", { sessionId, seq: st.seq, cycle, findingCount: lastReview.findings.length }, sessionId);
-                    }
-                }
-                // beta.92 (charter #3): LOG-ONLY worker self-contradiction detector. The
-                // b91 seq-6 confab: the worker's final message admitted it "did not
-                // touch" a contract-REQUIRED file (b84 caught it at verify; we can bark
-                // earlier). REQUIRED = file_written/file_committed contract entries that
-                // are NOT reviseRelaxed (a relaxed file is legitimately left alone). No
-                // behaviour change in b92 -- emit the audit, verification still decides.
-                if (this.deps.config.loop.worker_confab_detect !== false) {
-                    try {
-                        const requiredPaths = contract
-                            .filter((v) => (v.kind === "file_written" || v.kind === "file_committed") &&
-                            !!v.path &&
-                            !v.reviseRelaxed)
-                            .map((v) => v.path);
-                        const confab = detectWorkerConfab(result.finalMessage, requiredPaths, result.filesChanged ?? []);
-                        if (confab.suspected) {
-                            this.deps.state.audit("loop.worker_confab_suspected", { sessionId, seq: st.seq, cycle, offenders: confab.offenders, phrase: confab.phrase, requiredPaths }, sessionId);
-                            this.deps.logger.warn("[loop] worker self-contradiction suspected: finalMessage claims a contract-required file was left untouched (LOG-ONLY; verification still decides)", { sessionId, seq: st.seq, cycle, offenders: confab.offenders });
-                            this.deps.interactionLog?.log(sessionId, {
-                                event: "worker_confab_suspected", phase: "worker", seq: st.seq, cycle, offenders: confab.offenders,
-                            });
-                        }
-                    }
-                    catch (err) {
-                        // Detector must never fail a run -- it's observability only.
-                        this.deps.logger.warn("[loop] worker_confab_detect threw (ignored)", { sessionId, seq: st.seq, err: String(err) });
-                    }
-                }
-                if (contract.length > 0 && this.deps.buildVerifyProbes) {
-                    const probes = this.deps.buildVerifyProbes({
-                        plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
-                    });
-                    const branchHint = contract.reduce((acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc), plan.branch);
-                    let verification;
-                    try {
-                        verification = await verifySubTaskOutput(contract, {
-                            defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
-                            baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
-                            // beta.95: revise-cycle TARGETED-file plan-base window.
-                            cycle,
-                            reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
-                            acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                        }, probes);
-                    }
-                    catch (err) {
-                        // A probe error is a verification FAILURE, not a pass. Never let
-                        // an exception silently green-light a confabulated success.
-                        verification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
-                    }
-                    this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: verification.ok, contract, summary: verification.summary, results: verification.results }, sessionId);
-                    // beta.63 (Part B): mirror the verify probe into the durable log so a
-                    // stall trail shows which probes ran + passed before it froze.
-                    this.deps.interactionLog?.log(sessionId, {
-                        event: "verify_probe", phase: "worker", seq: st.seq, cycle,
-                        ok: verification.ok, contract, summary: verification.summary,
-                    });
-                    // beta.16 fix #2: also emit the observe-mode breadcrumb when
-                    // taskMode is 'observe' and verification passed. Keeps the audit
-                    // stream self-describing on observe sub-tasks (previously silent
-                    // because verify:[] means no checks fire, and inference filters
-                    // out mutation-scope kinds).
-                    if (verification.ok && (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate"))) {
-                        this.emitObserveCompleted(sessionId, st, result, contract);
-                    }
-                    if (!verification.ok) {
-                        // ---- beta.53 (P1b): retry-with-context on an env-wait hallucination ----
-                        // Staging beta.52 #858 seq-5: the worker WROTE the aria-label edit
-                        // (1145 bytes on disk) but never committed, then ended its turn with
-                        // "npm ci is still running. The Monitor will notify me when eslint is
-                        // installed. Waiting for that event." -- awaiting a mid-turn event
-                        // that does not exist. Rather than terminate the whole run on a
-                        // recoverable, well-understood hallucination, re-invoke the sub-task
-                        // ONCE with corrective context. Because P2 now captures
-                        // `uncommittedFiles`, we can branch the hint: for a PARTIAL-work turn
-                        // (wrote-but-didn't-commit) the fix is nearly free -- "you already
-                        // wrote X, just commit it"; for a ZERO-work turn -- "there is no such
-                        // event, do the work now, skip env verification if the tool is
-                        // missing". If the retry ALSO hallucinates (or otherwise fails
-                        // verification) we fall through to the normal terminal handling.
-                        const failedNow = verification.results.filter((x) => !x.passed);
-                        // beta.57 (P1): the retry trigger is now the OBSERVABLE STATE
-                        // INVARIANT, not the worker's phrasing. beta.52->53->54 each widened
-                        // a prose regex after a new wording escaped it; the state we
-                        // actually care about is directly checkable: a mutate-shaped
-                        // sub-task ended its turn with NO commit and ONLY local no-change
-                        // kinds failing. On cycle 1 that is never a legal outcome, so the
-                        // one-shot corrective retry fires unconditionally. On revise cycles
-                        // (cycle > 1) a no-commit turn IS often legal (the beta.35 no-op
-                        // downgrade below), so there the regex remains as the tiebreaker
-                        // between "legal nothing-to-do" and "confabulated wait".
-                        const phrasingMatched = matchesAsyncCoordConfabulation(result.finalMessage ?? "");
-                        const envWaitOnly = !envWaitRetried &&
-                            this.deps.config.loop.env_wait_retry_enabled !== false &&
-                            !result.commitSha &&
-                            failedNow.length > 0 &&
-                            failedNow.every((x) => ENV_WAIT_RETRYABLE_KINDS.has(x.kind)) &&
-                            (cycle === 1 || phrasingMatched);
-                        if (envWaitOnly) {
-                            envWaitRetried = true;
-                            const wrote = result.uncommittedFiles ?? [];
-                            const hint = wrote.length > 0
-                                ? `IMPORTANT: your PREVIOUS turn wrote these files to the worktree but never committed them: ${wrote.join(", ")}. There is NO background watcher, NO "Monitor event", NO completion notification, and NO event stream -- harness dispatch is one-shot and NOTHING will ever notify or resume you. Do NOT wait for any install/build/lint/test to "notify" you. Simply \`git add\` and \`git commit\` the work you already did, complete any remaining success criteria INLINE (run any command -- including the test suite, tsc, or lint -- directly in a single BLOCKING Bash call and read its output in THIS turn; or skip a missing tool and note it in the commit message), and end your turn.`
-                                : `IMPORTANT: your PREVIOUS turn ended waiting for something that does not exist (a "Monitor event", a "background watcher", a "completion notification", or similar). The harness has NO such mechanism -- dispatch is one-shot and nothing will notify or resume you. Complete this sub-task NOW without waiting for anything. To run tests/build/lint/install, execute the command DIRECTLY in a single blocking Bash call in THIS turn and read its output; do not background it and do not wait for a signal. If a tool (eslint/tsc/lint) is not installed, run \`npm ci\` INLINE first, OR skip that step and note it in the commit message. Make the required edit, commit it, and end your turn.`;
-                            this.deps.interactionLog?.log(sessionId, { event: "env_wait_retry", phase: "worker", seq: st.seq, cycle, partialWork: wrote.length > 0 });
-                            this.deps.state.audit("loop.worker_env_wait_retry", {
-                                sessionId, seq: st.seq, cycle,
-                                partialWork: wrote.length > 0,
-                                uncommittedFiles: wrote,
-                                // beta.57: the regex is now telemetry, not the gate.
-                                phrasingMatched,
-                                priorFinalMessage: (result.finalMessage ?? "").slice(0, 500),
-                            }, sessionId);
-                            this.deps.logger.warn("[loop] env-wait hallucination detected; retrying sub-task once with corrective context", {
-                                sessionId, seq: st.seq, partialWork: wrote.length > 0,
-                            });
-                            try {
-                                // beta.90 (Feature 2): stream-slow liveness on the retry too.
-                                const onRetryStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
-                                const retry = await withTimeout(this.deps.runWorker({
-                                    brief, subTask: st, plan, requester: row.requester,
-                                    // Compose the revise context (if any) with the corrective hint.
-                                    dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
-                                    // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
-                                    modelOverride: selectWorkerModel(st, this.deps.config.models),
-                                    onStreamSlow: onRetryStreamSlow,
-                                }), this.deps.config.loop.worker_timeout_seconds);
-                                this.addCost(sessionId, retry.costUsd);
-                                await this.deps.budget.recordSpend(row.requester, retry.costUsd, sessionId);
-                                totalCost += retry.costUsd;
-                                if (retry.costUsd > 0)
-                                    subTaskCosts.push(retry.costUsd);
-                                let retryVerification;
-                                try {
-                                    const retryProbes = this.deps.buildVerifyProbes({
-                                        plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
-                                    });
-                                    retryVerification = await verifySubTaskOutput(contract, {
-                                        defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
-                                        // beta.95: the retry path dropped branchBaseSha -- a
-                                        // reviseRelaxed/targeted file on a revise-cycle retry lost
-                                        // its plan-base window. Thread both through here too.
-                                        baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
-                                        cycle,
-                                        reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
-                                        acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                                    }, retryProbes);
-                                }
-                                catch (err) {
-                                    retryVerification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
-                                }
-                                this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: retryVerification.ok, contract, summary: retryVerification.summary, results: retryVerification.results, retry: true }, sessionId);
-                                if (retryVerification.ok) {
-                                    this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, cost_usd = cost_usd + ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run(retry.status, retry.costUsd, JSON.stringify(retry.filesChanged), retry.commitSha ?? null, retry.sdkSessionId ?? null, `env-wait retry succeeded: ${retryVerification.summary}`, Date.now(), Date.now(), subTaskId);
-                                    this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId);
-                                    this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
-                                    done.add(st.seq);
-                                    return;
-                                }
-                                // Retry also failed verification -> fall through using the
-                                // retry's result/verification so the terminal report reflects
-                                // the second attempt.
-                                this.deps.logger.warn("[loop] env-wait retry FAILED verification; terminating", {
-                                    sessionId, seq: st.seq, summary: retryVerification.summary,
-                                });
-                                result = retry;
-                                verification = retryVerification;
-                            }
-                            catch (err) {
-                                this.deps.logger.warn("[loop] env-wait retry threw; terminating", { sessionId, seq: st.seq, err: String(err) });
-                                // keep original result/verification; fall through to terminal.
-                            }
-                        }
-                        // ---- beta.35 fix #1 + #2: legal no-op on a REVISE cycle ----
-                        // On a revise cycle (cycle > 1) the plan's mutate sub-task is
-                        // re-run against a base = the worker's current HEAD (the commit it
-                        // already produced on cycle 1). If the worker correctly concludes
-                        // there is nothing to change (the code already satisfies the
-                        // criteria; the adversary's revise findings were about runtime
-                        // evidence / PR-description text / accepted nits), it ends with
-                        // `end_turn` and NO new commit. The old code then failed the
-                        // `commit_made` contract (HEAD == base) and killed the whole
-                        // session -- even though the fix was already correct.
-                        //
-                        // A revise cycle that makes no change is a VALID outcome. So: if
-                        // this is a revise cycle, the worker completed cleanly, and the
-                        // ONLY failing checks are the "no new commit / no new file change"
-                        // kinds (i.e. the effective task-mode is 'observe' for this pass,
-                        // #2), downgrade the sub-task to `completed_no_change` and let the
-                        // loop proceed to ship. Any OTHER kind of failure (a real
-                        // confabulation: claimed a push/PR that didn't happen, wrote a
-                        // file that isn't there) still hard-fails -- we do NOT weaken the
-                        // trust-but-verify guarantee.
-                        const NO_CHANGE_KINDS = new Set(["commit_made", "file_committed", "file_written"]);
-                        const failedResults = verification.results.filter((x) => !x.passed);
-                        const onlyNoChangeFailures = failedResults.length > 0 &&
-                            failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
-                        const workerMadeNoCommit = !result.commitSha; // worker itself reports no commit
-                        if (cycle > 1 && onlyNoChangeFailures && workerMadeNoCommit) {
-                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`).run(`revise no-op: worker made no change (${verification.summary}); code already satisfies criteria`, Date.now(), subTaskId);
-                            this.deps.state.audit("loop.subtask_revise_no_change", {
-                                sessionId,
-                                seq: st.seq,
-                                cycle,
-                                taskMode: st.taskMode ?? "unspecified",
-                                effectiveTaskMode: "observe",
-                                baseRef: subTaskBaseSha ? subTaskBaseSha.slice(0, 12) : "(unknown)",
-                                failedKinds: failedResults.map((x) => x.kind),
-                                summary: verification.summary,
-                            }, sessionId);
-                            this.deps.logger.info("[loop] revise cycle no-op accepted (worker had nothing to change)", {
-                                sessionId, seq: st.seq, cycle,
-                            });
-                            done.add(st.seq);
-                            return;
-                        }
-                        // Emit per-kind failure events so failures are greppable and
-                        // operators can debug from audit alone.
-                        // beta.9: new specific events + backward-compat old event names
-                        // both fire so consumers watching old names keep working.
-                        for (const r of verification.results.filter((x) => !x.passed)) {
-                            // beta.15: include base_ref on commit/file_committed audit events
-                            // for debugging clarity. The commit_made check compares HEAD vs
-                            // the worker-session-start SHA (`subTaskBaseSha`), not the
-                            // branch base. Making this explicit in the audit payload lets
-                            // operators tell the difference between "worker didn't commit"
-                            // and "no new commits since sub-task started, which is correct
-                            // for observation-only sub-tasks".
-                            const baseRef = (r.kind === "commit_made" || r.kind === "file_committed")
-                                ? { baseRef: subTaskBaseSha ? subTaskBaseSha.slice(0, 12) : "(unknown)", baseSemantics: "worker-session-start" }
-                                : {};
-                            const payload = { sessionId, seq: st.seq, detail: r.detail, ...baseRef };
-                            switch (r.kind) {
-                                case "branch_pushed":
-                                    // beta.10: fire ONLY the backward-compat name here. The
-                                    // beta.9+ contract inference already emits
-                                    // `remote_branch_exists` alongside `branch_pushed` for push
-                                    // sub-tasks, and that kind fires `remote_branch_verify_failed`
-                                    // on its own case. Firing both here caused duplicate
-                                    // `remote_branch_verify_failed` events on the beta.10
-                                    // smoke test (one from `branch_pushed` -> HTTP 404, one
-                                    // from `remote_branch_exists` -> ls-remote empty).
-                                    this.deps.state.audit("loop.push_verify_failed", payload, sessionId);
-                                    break;
-                                case "remote_branch_exists":
-                                    this.deps.state.audit("loop.remote_branch_verify_failed", payload, sessionId);
-                                    break;
-                                case "commit_sha_matches":
-                                    this.deps.state.audit("loop.commit_sha_verify_failed", payload, sessionId);
-                                    break;
-                                case "pr_opened":
-                                    this.deps.state.audit("loop.pr_verify_failed", payload, sessionId);
-                                    break;
-                                case "pr_state":
-                                    // backward compat: also fire old pr_verify_failed
-                                    this.deps.state.audit("loop.pr_verify_failed", payload, sessionId);
-                                    this.deps.state.audit("loop.pr_state_verify_failed", payload, sessionId);
-                                    break;
-                                case "file_written":
-                                    // backward compat name
-                                    this.deps.state.audit("loop.file_verify_failed", payload, sessionId);
-                                    // new specific name
-                                    this.deps.state.audit("loop.file_written_verify_failed", payload, sessionId);
-                                    break;
-                                case "file_committed":
-                                    this.deps.state.audit("loop.file_committed_verify_failed", payload, sessionId);
-                                    break;
-                                case "file_pushed":
-                                    this.deps.state.audit("loop.file_pushed_verify_failed", payload, sessionId);
-                                    break;
-                                case "file_in_pr":
-                                    this.deps.state.audit("loop.file_in_pr_verify_failed", payload, sessionId);
-                                    break;
-                                case "commit_made":
-                                    // backward compat name
-                                    this.deps.state.audit("loop.commit_verify_failed", payload, sessionId);
-                                    break;
-                                default:
-                                    // fallback for any future kinds
-                                    this.deps.state.audit("loop.verify_failed", { ...payload, kind: r.kind }, sessionId);
-                            }
-                        }
-                        // ---- beta.48 (C1 + C2): reasoned-refusal observability ----
-                        // Session dca2f3b5 (beta.47 revise of #858) exposed a blind spot:
-                        // a worker can end its turn with `end_turn` + ZERO filesystem
-                        // side-effects because it made a REASONED REFUSAL (e.g. "the
-                        // sub-task's premise is factually false, renaming would regress
-                        // the repo"). The harness saw "0/N checks passed, worker did
-                        // nothing" and terminated, throwing away the worker's structured
-                        // explanation. The refusal was CORRECT but invisible. Detect the
-                        // shape (every failing check is a no-change kind AND the worker
-                        // made no commit AND it left a non-empty final message) and
-                        // surface that message so operators/downstream see WHY, instead
-                        // of an opaque empty turn. NOTE: this does NOT change the pass/
-                        // fail decision (the sub-task still fails verification) -- it only
-                        // makes the reason observable. We deliberately do NOT auto-accept
-                        // the refusal: a worker refusing on a false premise is a signal
-                        // that an UPSTREAM artefact (adversary finding / brief) was wrong,
-                        // which a human or a future replan loop should resolve.
-                        const NO_CHANGE_ONLY = failedResults.length > 0 && failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
-                        const refusalText = (result.finalMessage ?? "").trim();
-                        const looksLikeRefusal = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0;
-                        // ---- beta.52: distinguish a PROTOCOL-ASSUMPTION failure from a
-                        // reasoned refusal. Session fc64d8ea (beta.51 revise of #858) sub-
-                        // task 3: the worker ended its turn with 24 words -- "The install
-                        // is still completing. I'll await the Monitor event signaling tsc
-                        // is ready rather than polling further." -- and ZERO side-effects.
-                        // That is NOT a reasoned refusal (it did not dispute the task); it
-                        // HALLUCINATED a mid-turn event stream that does not exist in the
-                        // one-shot harness protocol, and exited waiting for a signal that
-                        // never comes. The beta.52 worker-prompt hardening kills the
-                        // behaviour; this tag makes the pattern greppable in metrics so we
-                        // can tell "worker was wrong about the harness" apart from "worker
-                        // correctly refused a bad task". Does NOT change pass/fail.
-                        const looksLikeProtocolAssumption = looksLikeRefusal && matchesAsyncCoordConfabulation(refusalText);
-                        if (looksLikeProtocolAssumption) {
-                            const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
-                            this.deps.state.audit("loop.worker_env_wait_hallucination", {
-                                sessionId,
-                                seq: st.seq,
-                                cycle,
-                                reasonFirstLine: firstLine.slice(0, 300),
-                                finalMessage: refusalText.slice(0, 4000),
-                                failedKinds: failedResults.map((x) => x.kind),
-                            }, sessionId);
-                            this.deps.logger.warn("[loop] worker awaited a non-existent mid-turn event (env-wait hallucination) and did no work", {
-                                sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200),
-                            });
-                        }
-                        if (looksLikeRefusal) {
-                            const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
-                            // beta.58 (Bug B): split the audit event by semantics. A refusal
-                            // whose explanation references a contradicted/invalid premise is
-                            // a GOOD-FAITH skip, not a bad-faith refusal -- emit a distinct
-                            // event so breakdowns are diagnosable without reading the prose.
-                            // (Pass/fail is unchanged: both still escalate to clarification.)
-                            const invalidPremiseSkip = matchesInvalidPremiseSkip(refusalText) && failedResults.some((x) => x.kind === "commit_made");
-                            this.deps.interactionLog?.log(sessionId, {
-                                event: invalidPremiseSkip ? "worker_skipped_invalid_premise" : "worker_refusal",
-                                phase: "worker", seq: st.seq, cycle, reasonFirstLine: firstLine.slice(0, 300),
-                            });
-                            this.deps.state.audit(invalidPremiseSkip ? "loop.worker_skipped_invalid_premise" : "loop.worker_refusal", {
-                                sessionId,
-                                seq: st.seq,
-                                cycle,
-                                reasonFirstLine: firstLine.slice(0, 300),
-                                finalMessage: refusalText.slice(0, 4000),
-                                failedKinds: failedResults.map((x) => x.kind),
-                                summary: verification.summary,
-                            }, sessionId);
-                            this.deps.logger.warn(invalidPremiseSkip
-                                ? "[loop] worker skipped a sub-task on a contradicted premise (good-faith, structured)"
-                                : "[loop] worker made a reasoned refusal (zero side-effects + explanation)", { sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200) });
-                        }
-                        // beta.48 (C2): fold the refusal first-line into the persisted
-                        // summary so harness_progress.headline and the terminal update
-                        // show "worker refused: <reason>" rather than a bare
-                        // verification-failed string.
-                        const failSummary = looksLikeProtocolAssumption
-                            ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
-                            : looksLikeRefusal
-                                ? `worker refused (no changes made): ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
-                                : `verification failed: ${verification.summary}`;
-                        this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`).run(failSummary, Date.now(), subTaskId);
-                        this.deps.logger.warn("[loop] harness-side verification FAILED (worker confabulated success)", {
-                            sessionId, seq: st.seq, costUsd: result.costUsd, summary: verification.summary,
-                        });
-                        failed.err = `subtask_${st.seq}_failed_verification: ${failSummary}`;
-                        failed.seq = st.seq;
-                        // ---- beta.55 (B2): escalate a reasoned refusal / surviving
-                        // confabulation to a HUMAN instead of hard-failing the run. ----
-                        // Precondition: this is a genuine refusal (looksLikeRefusal) that
-                        // has ALREADY had its beta.54 async-coord retry (envWaitRetried is
-                        // true if a retry was attempted; a refusal that reaches here after
-                        // the retry, OR one that never qualified for retry, is a real
-                        // blocking ambiguity). Rather than kill the whole run, surface the
-                        // worker's OWN explanation as a question and pause resumably. The
-                        // worktree is preserved (finaliseAwaitingClarification does NOT
-                        // release it) so harness_answer can re-drive from this seq in place.
-                        if (looksLikeRefusal &&
-                            this.deps.config.loop.clarification_escalation_enabled !== false) {
-                            const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
-                            clarify.question =
-                                `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ${firstLine.slice(0, 500)}. ` +
-                                    `How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, or "abort".)`;
-                            clarify.seq = st.seq;
-                            // beta.58 (D1/D2): capture the paused sub-task's title+intent so a
-                            // `skip` answer keys the prohibition by CONTENT (survives a re-plan's
-                            // seq renumbering) and can strip the owning finding line.
-                            clarify.subtask = { title: st.title, intent: st.intent };
-                        }
-                        // ---- beta.100: a CONTRACT-PATH MISMATCH pauses, it does not kill ----
-                        // b99 seq 3 (session 4420aa45): the worker committed d7cc9602 carrying
-                        // BOTH deliverables, but placed the test at the repo's real Jest
-                        // location rather than the co-located path the lead guessed pre-probe.
-                        // EVERY recovery path missed -- the b53 env-wait retry requires NO
-                        // commit, the b35 revise no-op requires cycle > 1, and the b55
-                        // escalation directly above requires `looksLikeRefusal`, which also
-                        // requires NO commit. So a run holding two good commits plus a correct
-                        // third one hard-failed at cycle 1, $3.94 spent, no PR, nothing to
-                        // resume from.
-                        //
-                        // The b100 reconciliation (see the contract build above) self-heals the
-                        // provable case. What reaches HERE is the genuinely ambiguous
-                        // remainder: the worker committed real work, but the harness cannot
-                        // prove whether the PLAN's path or the WORKER's placement is the wrong
-                        // one. That is a human decision, so pause resumably -- the worktree and
-                        // its commits survive and harness_answer re-drives from this seq.
-                        //
-                        // This does NOT weaken trust-but-verify. The sub-task still FAILS
-                        // (failed.err is set and the row is already `failed_verification`);
-                        // nothing is accepted and no check is relaxed. We change only the
-                        // TERMINAL DISPOSITION, from `failed` to `awaiting_clarification`. The
-                        // worker's prose is quoted as context but is never the evidence: the
-                        // expected paths come from the contract and the actual paths from git
-                        // via result.filesChanged.
-                        const PATH_MISMATCH_KINDS = new Set(["file_committed", "file_written"]);
-                        const contractPathMismatch = !!result.commitSha &&
-                            failedResults.length > 0 &&
-                            failedResults.every((x) => PATH_MISMATCH_KINDS.has(x.kind) && !!x.path);
-                        // ---- beta.105: BASENAME-ANCHORED RESCUE, before we bother a human ----
-                        // b103's rederive only corrects a path when an EARLIER sub-task
-                        // already taught the run the substitution. On the b103 smoke, seq 9
-                        // was the first sub-task to touch `src/components/`, so the lead's
-                        // fictional `components/layout/sidebar.tsx` met the worker's correct
-                        // `components/ui/sidebar.tsx` with no lesson to apply: no rederive
-                        // fired, and a mechanically-obvious correction escalated to a human
-                        // who took an hour to answer. Same basename, planned directory
-                        // absent from the repo, committed directory present -- the harness
-                        // had everything it needed to resolve this itself.
-                        //
-                        // So: propose the remap from the mismatch, re-verify against the
-                        // corrected contract, and only continue if verification ACTUALLY
-                        // passes. Nothing is waved through -- a rescue that does not verify
-                        // falls straight into the escalation below, unchanged. The strict
-                        // conditions live in basename-rescue.ts.
-                        if (!clarify.question &&
-                            contractPathMismatch &&
-                            this.deps.config.loop.basename_rescue_enabled !== false &&
-                            this.deps.listRepoFiles &&
-                            this.deps.buildVerifyProbes) {
-                            try {
-                                const expected = [...new Set(failedResults.map((x) => x.path).filter(Boolean))];
-                                const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && !!f.trim());
-                                const repoFiles = await this.deps.listRepoFiles(workerWorktree);
-                                // beta.122: the same idea, one condition further out. A
-                                // contract that names a DIRECTORY can never pass `file_written`
-                                // (it stats for a regular file), and for a Prisma migration the
-                                // lead could not have named the file -- the timestamped
-                                // directory does not exist until the migration is created. The
-                                // b121 escalation over `prisma/migrations` had exactly one
-                                // possible answer and cost the run, because answering it took
-                                // the resume path that then orphaned the commits.
-                                const rescue = proposeBasenameRescue({ expected, actual, repoDirs: repoDirsFromFiles(repoFiles) }) ??
-                                    proposeDirectoryRescue({ expected, actual });
-                                if (rescue) {
-                                    const rescued = contract.map((v) => "path" in v && v.path === rescue.from ? { ...v, path: rescue.to } : v);
-                                    const rescueProbes = this.deps.buildVerifyProbes({
-                                        plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
-                                    });
-                                    const reverified = await verifySubTaskOutput(rescued, {
-                                        defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
-                                        baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
-                                        cycle,
-                                        reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
-                                        acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                                    }, rescueProbes);
-                                    this.deps.state.audit("loop.contract_path_basename_rescued", {
-                                        sessionId, seq: st.seq, cycle,
-                                        kind: rescue.kind ?? "basename",
-                                        from: rescue.from, to: rescue.to, via: rescue.via, reason: rescue.reason,
-                                        verified: reverified.ok, summary: reverified.summary,
-                                    }, sessionId);
-                                    if (reverified.ok) {
-                                        // Fold the correction into the plan through the same b103
-                                        // writeback path a learned remap uses, so a later revise
-                                        // cycle scopes against the real path too.
-                                        if (this.deps.config.loop.plan_path_writeback_enabled !== false) {
-                                            const before = st.filesLikelyTouched ?? [];
-                                            const wb = applyPathCorrections(before, [{ from: rescue.from, to: rescue.to }]);
-                                            if (wb.applied.length > 0) {
-                                                st.filesLikelyTouched = wb.files;
-                                                this.deps.state.audit("loop.plan_path_written_back", { sessionId, seq: st.seq, cycle, applied: wb.applied, before, after: wb.files, source: "basename_rescue" }, sessionId);
-                                            }
-                                        }
-                                        this.deps.interactionLog?.log(sessionId, {
-                                            event: "contract_path_basename_rescued", phase: "worker", seq: st.seq, cycle,
-                                            from: rescue.from, to: rescue.to,
-                                        });
-                                        this.deps.logger.info(`[loop] ${describeBasenameRescue(rescue)}; re-verified clean, continuing without a clarification`, {
-                                            sessionId, seq: st.seq, cycle,
-                                        });
-                                        this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run("completed", JSON.stringify(result.filesChanged ?? []), result.commitSha ?? null, result.sdkSessionId ?? null, `basename-rescued contract path (${rescue.from} -> ${rescue.to}): ${reverified.summary}`, Date.now(), Date.now(), subTaskId);
-                                        this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
-                                        retractFailure(st.seq, `basename_rescue:${rescue.kind}`);
-                                        done.add(st.seq);
-                                        return;
-                                    }
-                                }
-                            }
-                            catch (err) {
-                                // A rescue that throws must leave the run exactly where it was:
-                                // escalating to a human, which is the pre-b105 behaviour.
-                                this.deps.logger.warn("[loop] basename rescue failed (non-fatal; escalating as before)", {
-                                    sessionId, seq: st.seq, cycle, err: String(err),
-                                });
-                            }
-                        }
-                        if (!clarify.question &&
-                            contractPathMismatch &&
-                            this.deps.config.loop.contract_mismatch_escalation_enabled !== false &&
-                            this.deps.config.loop.clarification_escalation_enabled !== false) {
-                            const expected = [...new Set(failedResults.map((x) => x.path).filter(Boolean))];
-                            const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && f.trim());
-                            // beta.101: select the worker's reason by RELEVANCE, not
-                            // position. b100 quoted the first line and showed the operator
-                            // "That's fine, it's a harmless temp file outside the repo" --
-                            // about an unrelated file -- while the real explanation sat lower
-                            // in the message. See extractStatedReason.
-                            const statedReason = extractStatedReason(result.finalMessage ?? "", expected, actual);
-                            this.deps.state.audit("loop.contract_path_mismatch_escalated", {
-                                sessionId, seq: st.seq, cycle,
-                                expected, actual,
-                                commitSha: result.commitSha,
-                                failedKinds: failedResults.map((x) => x.kind),
-                                summary: verification.summary,
-                            }, sessionId);
-                            this.deps.interactionLog?.log(sessionId, {
-                                event: "contract_path_mismatch_escalated", phase: "worker", seq: st.seq, cycle, expected, actual,
-                            });
-                            this.deps.logger.warn("[loop] contract-path mismatch on a REAL commit; pausing for a human instead of failing the run", {
-                                sessionId, seq: st.seq, cycle, expected, actual,
-                            });
-                            // beta.111: before pausing a run for a human, check whether the
-                            // answer is already sitting in the branch. See contract-clarify.ts.
-                            const changedOnBranch = this.deps.worktreeCommittedFiles && workerWorktree
-                                ? await this.deps
-                                    .worktreeCommittedFiles(workerWorktree, planBaseShaForVerify)
-                                    .catch(() => [])
-                                : [];
-                            const mismatch = {
-                                seq: st.seq, title: st.title, commitSha: result.commitSha,
-                                expected, actual, statedReason, changedOnBranch,
-                            };
-                            const auto = autoResolveContract(mismatch);
-                            if (auto.resolved && this.deps.config.loop.auto_resolve_satisfied_contract !== false) {
-                                this.deps.state.audit("loop.contract_auto_resolved", { sessionId, seq: st.seq, cycle, expected, actual, coveredEarlier: auto.coveredEarlier, reason: auto.reason }, sessionId);
-                                this.deps.interactionLog?.log(sessionId, {
-                                    event: "contract_auto_resolved", phase: "worker", seq: st.seq, cycle, coveredEarlier: auto.coveredEarlier,
-                                });
-                                this.deps.logger.info("[loop] beta.111: contract mismatch settled from branch history; not pausing for a human", {
-                                    sessionId, seq: st.seq, coveredEarlier: auto.coveredEarlier,
-                                });
-                                this.deps.state.db
-                                    .prepare(`UPDATE sub_tasks SET status = 'completed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
-                                    .run(`contract satisfied by the branch: ${auto.reason}`, Date.now(), sessionId, cycle, st.seq);
-                                retractFailure(st.seq, "contract_auto_resolved");
-                                done.add(st.seq);
-                                return;
-                            }
-                            clarify.question = buildContractClarification(mismatch);
-                            clarify.seq = st.seq;
-                            clarify.subtask = { title: st.title, intent: st.intent };
-                        }
-                        return;
-                    }
-                }
-                else if (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate")) {
-                    // beta.16 fix #2 + beta.18 fix: emit the observe-mode breadcrumb
-                    // when either:
-                    //   (a) taskMode is explicitly 'observe', or
-                    //   (b) the contract is empty AND taskMode is not explicitly
-                    //       'mutate' (defensive for pre-beta.15 plans without
-                    //       taskMode where inference just came up empty).
-                    //
-                    // Beta.16/17 shipped this branch without the `!== "mutate"`
-                    // guard, so a mutate sub-task whose inferred contract was empty
-                    // (or which took the buildVerifyProbes-absent test path) fired
-                    // `loop.subtask_observe_completed` with `taskMode:"mutate"` in
-                    // the payload — an incoherent event where the name says
-                    // "observe" but the payload admits it's a mutation. The inner
-                    // (verification-eligible) branch already had this guard; beta.18
-                    // brings this branch in line.
-                    this.emitObserveCompleted(sessionId, st, result, []);
-                }
-                // beta.55 (B3): the sub-task PASSED, but if the worker's own final
-                // message signals it deviated from the literal wording (a judgment
-                // call), make that a first-class audit signal so "guess-and-document"
-                // is auditable rather than buried in prose. Does NOT change pass/fail.
-                {
-                    const finalMsg = (result.finalMessage ?? "").trim();
-                    if (finalMsg && matchesWorkerDeviation(finalMsg)) {
-                        const firstLine = finalMsg.split("\n").map((l) => l.trim()).find(Boolean) ?? finalMsg.slice(0, 200);
-                        this.deps.state.audit("loop.worker_deviation", { sessionId, seq: st.seq, cycle, summary: firstLine.slice(0, 500), finalMessage: finalMsg.slice(0, 2000) }, sessionId);
-                        this.deps.logger.info("[loop] worker deviated from literal wording (passed verification, judgment call)", {
-                            sessionId, seq: st.seq, summary: firstLine.slice(0, 200),
-                        });
-                    }
-                }
-                done.add(st.seq);
-            };
-            /**
-             * beta.117: run one sub-task, in its own checkout when running parallel.
-             *
-             * Serial runs (still the default) take the early path and are byte-for-byte
-             * the pre-b117 behaviour: the sub-task works directly in the session
-             * worktree and commits straight onto the session branch.
-             *
-             * When parallel, the sub-task gets a leased slot instead and its commits
-             * are merged back afterwards. The merge-back sits in a `finally` on
-             * purpose. `runOneInner` has more than a dozen early returns -- revise
-             * skips, clarification pauses, contract mismatches, verification failures
-             * -- and a worker can have committed real work before reaching any of
-             * them. Merging back on the success path alone would strand those commits
-             * on a slot branch that gets deleted at the end of the run, which is the
-             * b100 lost-commit failure reintroduced by the back door.
-             */
-            const runOne = async (st) => {
-                // No pool, or nothing for a worker to do: use the session worktree.
-                if (!pool?.enabled || reviseScopeSkip.has(st.seq)) {
-                    return runOneInner(st, plan.worktreePath);
-                }
-                const sessionTip = this.deps.worktreeHeadSha
-                    ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
-                    : "";
-                if (!sessionTip) {
-                    // Without a start point we cannot position a slot, and a slot at the
-                    // wrong base produces a diff against the wrong tree. Degrade to
-                    // serial rather than guess.
-                    this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "session_tip_unavailable" }, sessionId);
-                    return runOneInner(st, plan.worktreePath);
-                }
-                let lease;
-                try {
-                    lease = await pool.acquire(sessionTip);
-                }
-                catch (err) {
-                    // Disk, npm, or git trouble creating a slot must cost this sub-task
-                    // its parallelism, not the run.
-                    this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "acquire_failed", err: String(err) }, sessionId);
-                    this.deps.logger.warn("[loop] could not lease a parallel slot; running this sub-task in the session worktree", { sessionId, seq: st.seq, err: String(err) });
-                    return runOneInner(st, plan.worktreePath);
-                }
-                try {
-                    return await runOneInner(st, lease.path);
-                }
-                finally {
-                    try {
-                        await this.mergeBackSlot({ sessionId, cycle, st, lease, baseSha: sessionTip, plan, failed });
-                    }
-                    finally {
-                        pool.release(lease);
-                    }
-                }
-            };
-            // Dispatcher: greedily fill up to `concurrency` in-flight, respecting dependsOn.
-            let idx = 0;
-            while (idx < ordered.length || inFlight.length > 0) {
-                if (failed.err) {
-                    // beta.123 (sweep): the same class as the retraction above, one level
-                    // up. A sub-task records its failure BEFORE its rescue has run, and
-                    // the rescue awaits git IO. Under b117 parallelism a sibling
-                    // finishing in that window hands control back here, we observe a
-                    // failure that is about to be retracted, and we stop dispatching the
-                    // rest of the cycle. The run then reviews a partial cycle and calls
-                    // it done -- silent under-delivery rather than a visible failure,
-                    // which is the worse shape of the two.
-                    //
-                    // Draining first costs nothing when there is nothing in flight (the
-                    // serial default), and turns the guess into an answer.
-                    if (inFlight.length > 0) {
-                        await Promise.allSettled([...inFlight]);
-                        if (!failed.err)
-                            continue;
-                    }
-                    break;
-                }
-                // Fill
-                while (idx < ordered.length &&
-                    inFlight.length < concurrency &&
-                    (ordered[idx].dependsOn ?? []).every((d) => done.has(d)) &&
-                    // beta.91 (Fix 2): only start a second worker when its file scope is
-                    // known-disjoint from every in-flight worker (shared worktree write
-                    // safety). With concurrency=1 this is always true (inFlight empty).
-                    canDispatchConcurrently(ordered[idx], [...inFlightSubTasks.values()])) {
-                    const st = ordered[idx];
-                    // beta.60: bound the ENTIRE runOne, not just the worker SDK call.
-                    // beta.42 wrapped runWorker in withTimeout, but runOne ALSO awaits
-                    // unbounded git/IO before and after the worker (worktreeHeadSha,
-                    // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
-                    // hang in ANY of those froze the dispatcher at `await
-                    // Promise.race(inFlight)` forever with the sub-task row stuck
-                    // `running`, sdk_session_id=null, cost_usd=0, and NO worker process
-                    // spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent, no
-                    // auto-recovery, because nothing re-called run() to arm the
-                    // stall-watchdog). Bounding runOne converts any such hang into a
-                    // clean SubTaskDeadlineError -> failed.err -> terminal.
-                    const p = withTimeout(runOne(st), this.deps.config.loop.subtask_deadline_seconds, "subtask_deadline_seconds")
-                        .catch((err) => {
-                        if (err instanceof WorkerTimeoutError) {
-                            this.deps.state.audit("loop.subtask_deadline_exceeded", { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds }, sessionId);
-                            this.deps.logger.error("[loop] sub-task exceeded subtask_deadline_seconds (dispatch hang, likely a stalled git/IO await before or after the worker); failing the run", { sessionId, seq: st.seq, seconds: this.deps.config.loop.subtask_deadline_seconds });
-                            // mark the stuck row failed so it doesn't linger as `running`
-                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`).run(`sub-task dispatch exceeded ${this.deps.config.loop.subtask_deadline_seconds}s (stalled IO)`, Date.now(), sessionId, cycle, st.seq);
-                            if (!failed.err) {
-                                failed.err = `subtask_deadline_exceeded (seq ${st.seq})`;
-                                failed.seq = st.seq;
+                            if (missingLedgerCommits) {
+                                this.deps.logger.warn("[loop] adversary diff is missing recorded sub-task commits -- diff base or branch may be wrong", { sessionId, unreachable: ledgerUnreachable, baseSha: adversaryBaseSha });
                             }
                         }
                         else {
-                            // runOne handles its own errors internally; a throw here is
-                            // unexpected -- surface it rather than silently dropping.
-                            if (!failed.err) {
-                                failed.err = `subtask_dispatch_error: ${String(err)}`;
-                                failed.seq = st.seq;
-                            }
-                        }
-                    })
-                        .finally(() => {
-                        const i = inFlight.indexOf(p);
-                        if (i >= 0)
-                            inFlight.splice(i, 1);
-                        inFlightSubTasks.delete(p);
-                    });
-                    inFlight.push(p);
-                    inFlightSubTasks.set(p, st);
-                    idx++;
-                }
-                if (inFlight.length === 0 && idx < ordered.length) {
-                    // Blocked -- dependency not met yet and no in-flight to unblock. Data bug.
-                    failed.err = `subtask ${ordered[idx].seq} has unresolved dependencies`;
-                    failed.seq = ordered[idx].seq;
-                    break;
-                }
-                if (inFlight.length > 0) {
-                    await Promise.race(inFlight);
-                }
-            }
-            await Promise.allSettled(inFlight);
-            // beta.117: slots are per-cycle. A revise cycle re-plans which sub-tasks
-            // run, and a slot still holding the previous cycle's tree would start a
-            // worker from the wrong base. Draining here also means a run that fails
-            // mid-cycle does not leave checkouts behind for the reaper to find.
-            if (pool) {
-                // beta.118: read the count BEFORE draining. `drain()` clears the slot
-                // map, so reading after it always audited `slots: 0` -- and this line is
-                // the only evidence of how much parallelism a run actually bought.
-                const slots = pool.createdCount;
-                await pool.drain();
-                this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots }, sessionId);
-            }
-            if (failed.err) {
-                // beta.55 (B2): a resumable clarification pause takes precedence over a
-                // hard-fail. The sub-task DID fail verification (failed.err set), but
-                // if we captured a clarification request we pause instead of dying, so
-                // a human can unblock the exact sub-task rather than restart the run.
-                if (clarify.question) {
-                    return this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
-                }
-                // beta.64 (P0-3): best-effort verify already pushed a graceful reviewable
-                // PR (verify sub-task timed out but the prior probe was green + clean
-                // diff). The session row is already terminal `done`; return shipped.
-                if (failed.err === "__best_effort_shipped__") {
-                    const bePr = this.deps.state.db.prepare(`SELECT final_pr_url FROM sessions WHERE id = ?`).get(sessionId);
-                    return { status: "shipped", sessionId, prUrl: bePr?.final_pr_url ?? "", cycles: cycle, totalCostUsd: totalCost };
-                }
-                // beta.120 (fix 1): every abort that could be holding commits goes
-                // through the salvaging path -- it ships resource aborts and preserves
-                // the worktree for the rest. Only an abort with nothing committed ends
-                // up deleting anything.
-                if (failed.err === "user_abort_reaction")
-                    return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
-                if (failed.err === "hard_timeout")
-                    return await this.finaliseAbortSalvaging(sessionId, "hard_timeout", cycle, totalCost);
-                if (failed.err === "budget_exhausted")
-                    return await this.finaliseAbortSalvaging(sessionId, "budget_exhausted", cycle, totalCost);
-                // beta.78 (Feature 2): per-user daily hard-cap abort.
-                if (failed.err === "daily_max_exhausted")
-                    return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
-                return this.finaliseFailed(sessionId, String(failed.err), cycle, totalCost);
-            }
-            // 2b. Reviewing
-            // beta.7 fix #2 (hard cap inside review): don't start the adversary if
-            // we can't afford it. Estimate review cost from the priciest observed
-            // sub-task (reviews scan the whole diff, so they scale with work done),
-            // falling back to a conservative reserve. Abort at the cycle boundary
-            // rather than blowing the budget by ~$0.83 on a review we can't pay for.
-            {
-                const reactions = await this.deps.readReactions(sessionId);
-                const reviewEstimate = this.estimateReviewCost(subTaskCosts);
-                // beta.78 (Feature 2): the review-gate hard abort now keys off the
-                // per-user DAILY cap, not the (soft) session budget. Crossing the
-                // session budget only WARNS; a review is only skipped/aborted when
-                // paying for it would blow the user's daily_max_usd. budgetBump
-                // (:moneybag:) still overrides.
-                const dailyMax = this.dailyMaxUsd();
-                const dailySoFar = this.safeDailySpend(row.requester);
-                const dailyWouldExceed = dailyMax > 0 && dailySoFar + reviewEstimate > dailyMax;
-                if (!reactions.budgetBump && dailyWouldExceed) {
-                    // beta.8 (adversary point): the adversary was the only actor that
-                    // caught the beta.6 confabulation, and beta.7's review-budget abort
-                    // HID that failure by skipping review on cost. The observable-side-
-                    // effect check is ~$0 in tokens, so run it UNCONDITIONALLY before
-                    // aborting. This is the harness's own trust-but-verify guardrail;
-                    // it must never be bypassed purely on token budget.
-                    await this.runCheapObservableCheck(sessionId, plan, row.requester);
-                    this.deps.state.audit("loop.review_budget_abort", { sessionId, cycle, totalCost, reviewEstimate, dailySoFar, dailyMax, reason: "daily_max" }, sessionId);
-                    this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
-                    return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
-                }
-            }
-            // beta.81 (Track B / B4): the beta.63 LOCAL check-script runner is RETIRED
-            // from the verification spine. Carel: "the harness should code, not try and
-            // run it locally ... I do not want it to run locally, ever." Verification
-            // is CI-only now (the post-push getCombinedStatus poll, B2). The runner is
-            // fully off by default (verify.run_repo_check_scripts defaults to false in
-            // beta.81); runFinalVerifyChecks early-returns [] in that case, so no local
-            // typecheck/lint/test/build runs here. The runCheckScripts plumbing is
-            // kept ONLY for the tryScriptedVerifyFallback rescue of a timed-out
-            // observe VERIFY sub-task (a deterministic diff/tsc rescue), NOT as a
-            // verify gate. An operator can still opt back in by setting
-            // verify.run_repo_check_scripts:true, but the default path is CI-only.
-            const conventionFindings = await this.runFinalVerifyChecks(sessionId, plan, cycle);
-            // beta.94 (Feature 1b): deterministic harness-side scope check -- replaces
-            // the elided LLM "final verification of scope boundaries" sub-task. Folds
-            // any out-of-scope committed file into the review as a `fit`/`medium`
-            // finding (never a hard fail). Same findings-return pattern.
-            // beta.110: ScopeBlowoutError is deliberately NOT caught here. It ends
-            // the run before the adversary is asked to review an unreviewable diff,
-            // and the outer handler preserves the worktree so the good commits that
-            // ARE in it stay recoverable. Ordinary scope creep is still a finding.
-            const scopeFindings = await this.runFinalScopeCheck(sessionId, plan, cycle);
-            if (scopeFindings.length > 0)
-                conventionFindings.push(...scopeFindings);
-            // beta.111: a branch that does not compile must not reach a merge
-            // recommendation. The adversary reads the diff, not the compiler.
-            const typeFindings = await this.runTypecheckGate(sessionId, plan, cycle);
-            if (typeFindings.length > 0)
-                conventionFindings.push(...typeFindings);
-            this.setStatus(sessionId, "reviewing");
-            await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
-            let runtime;
-            try {
-                runtime = await this.deps.fetchRuntime?.({ plan, sessionId });
-            }
-            catch (err) {
-                this.deps.logger.warn("[loop] fetchRuntime failed", { err: String(err) });
-            }
-            // beta.7 fix #1: if no external runtime is available, synthesise a
-            // "local" runtime snapshot from this cycle's verification audits so
-            // the adversary still gets observable-output ground truth.
-            if (!runtime) {
-                const localVerification = this.readLocalVerification(sessionId);
-                if (localVerification.length > 0) {
-                    const anyFailed = localVerification.some((v) => !v.ok);
-                    runtime = {
-                        provider: "local",
-                        status: anyFailed ? "unavailable" : "ok",
-                        logsExcerpt: localVerification
-                            .map((v) => `sub-task ${v.seq}: ${v.ok ? "VERIFIED" : "FAILED"} — ${v.summary}`)
-                            .join("\n"),
-                        errorCount: localVerification.filter((v) => !v.ok).length,
-                        localVerification,
-                    };
-                }
-            }
-            // beta.101: LEDGER-COMMIT REACHABILITY GUARD. Runs BEFORE the adversary
-            // SDK call so a branch that has lost work costs nothing to detect.
-            //
-            // b100 (session 3c6c1608) shipped six recorded commits into the void and
-            // then paid for a review of a diff that contained none of them. The
-            // adversary had to infer the problem from absence and blocked with
-            // findings about "missing" work that had actually been written. Every
-            // input needed to catch this deterministically was already in the DB.
-            let ledgerUnreachable = [];
-            if (this.deps.config.loop.ledger_reachability_guard_enabled !== false) {
-                const check = await this.checkLedgerReachability(sessionId, plan.worktreePath, cycle, "review");
-                ledgerUnreachable = check.unreachable;
-                if (check.failed) {
-                    this.deps.logger.error("[loop] recorded sub-task commits are unreachable from HEAD; refusing to review or ship an incomplete branch", {
-                        sessionId, cycle, headSha: check.headSha, unreachable: check.unreachable,
-                    });
-                    // Fail rather than pause: a text answer cannot restore a branch, and
-                    // reviewing or shipping this diff would silently omit work the run
-                    // already did. The commits survive under the rescue refs.
-                    return this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${check.detail}`, cycle, totalCost);
-                }
-            }
-            this.emitPhaseTiming(sessionId, "executing", cycle, executeStart, {
-                subTasks: plan.subTasks.length,
-            });
-            // beta.108: a revise cycle that moved the branch tip nowhere has nothing
-            // for the adversary to review, and re-reviewing an unchanged diff cannot
-            // do anything but re-emit the previous cycle's findings.
-            //
-            // The b106 revise (session 21c9c44e) closed exactly this way: cycle 3
-            // dispatched five sub-tasks, four came back `subtask_revise_no_change`,
-            // and the run still paid for a full adversary pass over the whole branch
-            // to change two files. When NOTHING commits, that pass is pure cost.
-            //
-            // Guarded tightly: only on a revise cycle (cycle > 1, so a first cycle
-            // that legitimately produced no diff still gets reviewed), only when we
-            // could actually read both shas (an unreadable sha must not be mistaken
-            // for "no change"), and only when a prior review exists to carry forward
-            // as the verdict.
-            if (this.deps.config.loop.early_exit_no_change_cycle !== false &&
-                cycle > 1 &&
-                lastReview &&
-                cycleBaseSha &&
-                this.deps.worktreeHeadSha) {
-                const tipNow = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
-                if (tipNow && tipNow === cycleBaseSha) {
-                    this.deps.state.audit("loop.cycle_no_change_early_exit", { sessionId, cycle, headSha: tipNow, carriedFindings: lastReview.findings?.length ?? 0 }, sessionId);
-                    this.deps.logger.info("[loop] revise cycle produced no commits; skipping a re-review of an unchanged diff and shipping on the prior verdict (beta.108)", { sessionId, cycle, headSha: tipNow });
-                    terminalDoneReason = "shipped_no_change_cycle";
-                    break;
-                }
-            }
-            let report;
-            // beta.63 (Part B): adversary SDK call boundary logging.
-            const reviewStart = Date.now();
-            this.deps.interactionLog?.logSdkRequest(sessionId, {
-                role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
-                prompt: `adversary review cycle ${cycle} for ${brief.title}; checklist: ${(plan.reviewChecklist ?? []).join("; ")}`,
-            });
-            try {
-                // beta.43: bound the adversary SDK call by adversary_timeout_seconds
-                // (previously declared in config but UNENFORCED on this await). A hung
-                // reviewer froze the run at the review phase with no timeout.
-                // beta.67 (Bug B): read the persisted fork-point sha and hand it to the
-                // adversary so its diff is `git diff <plan_base_sha>..HEAD` -- ONLY
-                // this branch's own commits. Also emit the cheap sanity log
-                // (loop.adversary_diff_base) with the base + HEAD sha and the branch's
-                // commit count; warn when the count is suspiciously high vs the plan's
-                // sub-task count (the beta.66 smoke #4 signature).
-                let adversaryBaseSha;
-                try {
-                    const r = this.deps.state.db
-                        .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
-                        .get(sessionId);
-                    adversaryBaseSha = r?.plan_base_sha ?? undefined;
-                    if (adversaryBaseSha && this.deps.worktreeHeadSha) {
-                        const headSha = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
-                        const commitCount = this.deps.worktreeCommitCount
-                            ? await this.deps.worktreeCommitCount(plan.worktreePath, adversaryBaseSha).catch(() => -1)
-                            : -1;
-                        const subTaskCount = plan.subTasks.length;
-                        const tooManyCommits = commitCount >= 0 && commitCount > Math.max(subTaskCount * 3, subTaskCount + 5);
-                        // beta.101: the b67 heuristic only ever asked "too MANY commits?".
-                        // The b100 smoke was the mirror image -- a diff of ONE commit while
-                        // six recorded sub-task commits were missing from it -- and scored
-                        // `suspicious: false`. Missing recorded work is at least as strong
-                        // a signal that the diff base is wrong as excess commits are.
-                        const missingLedgerCommits = ledgerUnreachable.length > 0;
-                        const suspicious = tooManyCommits || missingLedgerCommits;
-                        this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha, headSha, commitCount, subTaskCount, suspicious, tooManyCommits, missingLedgerCommits, unreachableLedgerCommits: ledgerUnreachable }, sessionId);
-                        if (tooManyCommits) {
-                            this.deps.logger.warn("[loop] adversary diff commit count is suspiciously high vs sub-task count -- diff base may be wrong", { sessionId, commitCount, subTaskCount, baseSha: adversaryBaseSha });
-                        }
-                        if (missingLedgerCommits) {
-                            this.deps.logger.warn("[loop] adversary diff is missing recorded sub-task commits -- diff base or branch may be wrong", { sessionId, unreachable: ledgerUnreachable, baseSha: adversaryBaseSha });
+                            this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha ?? null, headSha: null, commitCount: -1, subTaskCount: plan.subTasks.length, fallback: !adversaryBaseSha }, sessionId);
                         }
                     }
-                    else {
-                        this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha ?? null, headSha: null, commitCount: -1, subTaskCount: plan.subTasks.length, fallback: !adversaryBaseSha }, sessionId);
+                    catch (err) {
+                        this.deps.logger.warn("[loop] adversary_diff_base sanity log failed (non-fatal)", { sessionId, err: String(err) });
+                    }
+                    report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds");
+                    this.deps.interactionLog?.logSdkResponse(sessionId, {
+                        role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                        finishReason: report.verdict, costUsd: report.costUsd, durationMs: Date.now() - reviewStart,
+                        outputChars: report.summary ? report.summary.length : undefined, sdkSessionId: report.sdkSessionId,
+                    });
+                    // beta.62 (fix #1): the post-review persist awaits (recordSpend,
+                    // saveReview) were OUTSIDE any try/catch. A throw there propagated
+                    // uncaught out of runInner -> run()'s try/finally -> the external
+                    // fire-and-forget `.catch` which only logs to api.logger (NOT the
+                    // audit_log DB). Combined with the non-timeout review error below
+                    // emitting NO audit, this produced the b60-attempt-2 signature: no
+                    // `loop.review` event, no crash event, `status=failed` with a multi-
+                    // minute gap -- indistinguishable from a stall. Fold them into the
+                    // same try so any failure surfaces as `loop.review_failed`.
+                    totalCost += report.costUsd;
+                    this.addCost(sessionId, report.costUsd);
+                    await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
+                    this.saveReview(sessionId, cycle, report);
+                    // beta.83 (#2): the session-budget SOFT warn also fires here, after the
+                    // adversary review's cost lands. Pre-beta.83 the ONLY soft-warn check
+                    // was inside runOne (the sub-task loop), so a run that crossed its
+                    // session budget DURING the review (the DR/BCP run, session 37b01e86:
+                    // $11.62 -> $12.27 = 123% across the review) never warned -- the warn
+                    // path was simply never reached. Now the review path re-checks the
+                    // LIVE total and warns once if it just crossed. `sessionBudgetWarned`
+                    // is the same runInner-scoped latch, so we still warn at most once.
+                    if (totalCost > row.budget_usd && !sessionBudgetWarned) {
+                        sessionBudgetWarned = true;
+                        this.deps.state.audit("loop.session_budget_warn", { sessionId, phase: "review", cycle, totalCost, sessionBudget: row.budget_usd }, sessionId);
+                        this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
+                    }
+                    // beta.69 (F5): if the user cancelled while the adversary SDK call was
+                    // in flight (forensic 1f2e6642: cycle-3 review landed 2s AFTER the
+                    // cancel and was persisted + transitioned on), discard this review and
+                    // abort cleanly. We still record the spend already incurred (honest
+                    // accounting) but do NOT let a post-cancel verdict drive a transition.
+                    const postReviewReactions = await this.deps.readReactions(sessionId);
+                    if (postReviewReactions.abort) {
+                        this.deps.state.audit("loop.review_discarded_post_cancel", { sessionId, cycle, verdict: report.verdict }, sessionId);
+                        this.deps.logger.info("[loop] adversary review completed after user cancel; discarding verdict and aborting", { sessionId, cycle });
+                        return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
                     }
                 }
                 catch (err) {
-                    this.deps.logger.warn("[loop] adversary_diff_base sanity log failed (non-fatal)", { sessionId, err: String(err) });
+                    // beta.43: a hung reviewer is a distinct, already-audited class.
+                    const isTimeout = err instanceof WorkerTimeoutError;
+                    if (isTimeout) {
+                        this.deps.state.audit("loop.adversary_timeout", { sessionId, cycle, adversary_timeout_seconds: this.deps.config.loop.adversary_timeout_seconds }, sessionId);
+                    }
+                    // beta.62 (fix #1): ALWAYS emit a structured crash event so the audit
+                    // trail never just stops mid-review. This is the telemetry that was
+                    // missing -- without it a review crash is invisible until you read the
+                    // sessions row's status column directly.
+                    this.deps.interactionLog?.logSdkResponse(sessionId, {
+                        role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                        finishReason: isTimeout ? "timeout" : "error", durationMs: Date.now() - reviewStart,
+                    });
+                    this.deps.interactionLog?.log(sessionId, { event: "review_failed", phase: "review", cycle, isTimeout, error: String(err?.message ?? err) });
+                    this.deps.state.audit("loop.review_failed", { sessionId, cycle, isTimeout, error: String(err?.message ?? err) }, sessionId);
+                    this.deps.logger.error("[loop] adversary review crashed", { sessionId, cycle, isTimeout, err: String(err) });
+                    // beta.110: time the review even when it fails, especially then.
+                    //
+                    // On PR #932 session `9217236c` the adversary hung for a full 900s and
+                    // the session died -- and because phase_timing only fired on success,
+                    // the audit log shows one `executing` event and nothing else. The
+                    // single most expensive stretch of the run was the one stretch with no
+                    // number against it, and the 15 minutes had to be inferred by
+                    // subtracting timestamps.
+                    this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
+                        verdict: null,
+                        isTimeout,
+                        error: String(err?.message ?? err).slice(0, 200),
+                    });
+                    // beta.62 (fix #2/#3): try to salvage the run rather than discard the
+                    // completed, self-verified work. Returns a terminal outcome either way.
+                    return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
                 }
-                report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds");
-                this.deps.interactionLog?.logSdkResponse(sessionId, {
-                    role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
-                    finishReason: report.verdict, costUsd: report.costUsd, durationMs: Date.now() - reviewStart,
-                    outputChars: report.summary ? report.summary.length : undefined, sdkSessionId: report.sdkSessionId,
-                });
-                // beta.62 (fix #1): the post-review persist awaits (recordSpend,
-                // saveReview) were OUTSIDE any try/catch. A throw there propagated
-                // uncaught out of runInner -> run()'s try/finally -> the external
-                // fire-and-forget `.catch` which only logs to api.logger (NOT the
-                // audit_log DB). Combined with the non-timeout review error below
-                // emitting NO audit, this produced the b60-attempt-2 signature: no
-                // `loop.review` event, no crash event, `status=failed` with a multi-
-                // minute gap -- indistinguishable from a stall. Fold them into the
-                // same try so any failure surfaces as `loop.review_failed`.
-                totalCost += report.costUsd;
-                this.addCost(sessionId, report.costUsd);
-                await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
-                this.saveReview(sessionId, cycle, report);
-                // beta.83 (#2): the session-budget SOFT warn also fires here, after the
-                // adversary review's cost lands. Pre-beta.83 the ONLY soft-warn check
-                // was inside runOne (the sub-task loop), so a run that crossed its
-                // session budget DURING the review (the DR/BCP run, session 37b01e86:
-                // $11.62 -> $12.27 = 123% across the review) never warned -- the warn
-                // path was simply never reached. Now the review path re-checks the
-                // LIVE total and warns once if it just crossed. `sessionBudgetWarned`
-                // is the same runInner-scoped latch, so we still warn at most once.
-                if (totalCost > row.budget_usd && !sessionBudgetWarned) {
-                    sessionBudgetWarned = true;
-                    this.deps.state.audit("loop.session_budget_warn", { sessionId, phase: "review", cycle, totalCost, sessionBudget: row.budget_usd }, sessionId);
-                    this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
-                }
-                // beta.69 (F5): if the user cancelled while the adversary SDK call was
-                // in flight (forensic 1f2e6642: cycle-3 review landed 2s AFTER the
-                // cancel and was persisted + transitioned on), discard this review and
-                // abort cleanly. We still record the spend already incurred (honest
-                // accounting) but do NOT let a post-cancel verdict drive a transition.
-                const postReviewReactions = await this.deps.readReactions(sessionId);
-                if (postReviewReactions.abort) {
-                    this.deps.state.audit("loop.review_discarded_post_cancel", { sessionId, cycle, verdict: report.verdict }, sessionId);
-                    this.deps.logger.info("[loop] adversary review completed after user cancel; discarding verdict and aborting", { sessionId, cycle });
-                    return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
-                }
-            }
-            catch (err) {
-                // beta.43: a hung reviewer is a distinct, already-audited class.
-                const isTimeout = err instanceof WorkerTimeoutError;
-                if (isTimeout) {
-                    this.deps.state.audit("loop.adversary_timeout", { sessionId, cycle, adversary_timeout_seconds: this.deps.config.loop.adversary_timeout_seconds }, sessionId);
-                }
-                // beta.62 (fix #1): ALWAYS emit a structured crash event so the audit
-                // trail never just stops mid-review. This is the telemetry that was
-                // missing -- without it a review crash is invisible until you read the
-                // sessions row's status column directly.
-                this.deps.interactionLog?.logSdkResponse(sessionId, {
-                    role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
-                    finishReason: isTimeout ? "timeout" : "error", durationMs: Date.now() - reviewStart,
-                });
-                this.deps.interactionLog?.log(sessionId, { event: "review_failed", phase: "review", cycle, isTimeout, error: String(err?.message ?? err) });
-                this.deps.state.audit("loop.review_failed", { sessionId, cycle, isTimeout, error: String(err?.message ?? err) }, sessionId);
-                this.deps.logger.error("[loop] adversary review crashed", { sessionId, cycle, isTimeout, err: String(err) });
-                // beta.110: time the review even when it fails, especially then.
+                // beta.63 (Fix 2): fold the convention-check failures into the review as
+                // REVISE-worthy findings. If the adversary said `pass` but a declared
+                // check script failed, downgrade to `revise` so the worker gets another
+                // cycle to fix the convention violation (e.g. regenerate the OKF bundle).
+                // Never escalates to `block` (not a hard fail) -- max-cycles still ships.
                 //
-                // On PR #932 session `9217236c` the adversary hung for a full 900s and
-                // the session died -- and because phase_timing only fired on success,
-                // the audit log shows one `executing` event and nothing else. The
-                // single most expensive stretch of the run was the one stretch with no
-                // number against it, and the 15 minutes had to be inferred by
-                // subtracting timestamps.
+                // beta.70 (F2): only force `pass`->`revise` when a convention finding is
+                // actually BLOCKING (diff_addressable + medium+). A `process`-class
+                // convention finding -- e.g. "OKF bundle not regenerated" -- is enforced
+                // by the convention-check phase itself (it re-runs the regenerator) and
+                // must NOT force another expensive code cycle. In PR #870 this exact
+                // force-upgrade turned a clean `pass` into a 19-min cycle-2 that re-ran
+                // `npm run okf` over 1436 files for a zero diff. All findings still
+                // attach to the report (they ship on the PR body); only the verdict is
+                // gated. A real typecheck/lint failure or a persisted heap OOM stays
+                // blocking and still triggers the revise.
+                if (conventionFindings.length > 0) {
+                    const blockingConvention = conventionFindings.filter((f) => isBlockingFinding(f, classifyFinding(f, { repoHasTestScript: true })));
+                    report = {
+                        ...report,
+                        findings: [...report.findings, ...conventionFindings],
+                        verdict: report.verdict === "pass" && blockingConvention.length > 0
+                            ? "revise"
+                            : report.verdict,
+                    };
+                    if (report.verdict === "pass" && blockingConvention.length === 0 && conventionFindings.length > 0) {
+                        this.deps.state.audit("loop.convention_findings_nonblocking", { sessionId, cycle, total: conventionFindings.length }, sessionId);
+                    }
+                }
+                lastReview = report;
+                // beta.69 (F1): visibility for the convergence gate. When the adversary's
+                // raw verdict was `revise` but the final verdict is `pass` AND there were
+                // no real convention failures, the run converged on a green cycle whose
+                // only remaining findings were non-blocking (process/env/architectural/
+                // unproven-runtime). This is the fix for forensic 1f2e6642's cycle-2
+                // all-green revise. (The downgrade itself happens in runAdversary; here
+                // we just record that the loop is now shipping instead of churning.)
+                if (report.verdict === "pass" && conventionFindings.length === 0 && (report.findings?.length ?? 0) > 0) {
+                    this.deps.state.audit("loop.converged_on_green", { sessionId, cycle, findings: report.findings.length }, sessionId);
+                }
+                this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length, conventionFindings: conventionFindings.length }, sessionId);
+                // beta.108: the review phase is the largest UNMEASURED block in a run.
+                // The b106 revise (session 21c9c44e) reported a 55.2-minute wall clock of
+                // which planning (574s) and worker execution (1499s) account for 35
+                // minutes; the other ~20 were review, push, PR update and CI polling, and
+                // nothing timed any of them. We were optimising the two thirds we could
+                // see. Emit the phase duration so the next speed decision has a number
+                // behind it.
                 this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
-                    verdict: null,
-                    isTimeout,
-                    error: String(err?.message ?? err).slice(0, 200),
+                    verdict: report.verdict,
+                    findings: report.findings.length,
+                    costUsd: report.costUsd,
                 });
-                // beta.62 (fix #2/#3): try to salvage the run rather than discard the
-                // completed, self-verified work. Returns a terminal outcome either way.
-                return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
+                // beta.97 (Fix #7): record this cycle's finding count for the convergence check.
+                findingCountsByCycle.push(report.findings?.length ?? 0);
+                // beta.119: keep the findings themselves, not just how many there were.
+                findingsByCycle.push([...(report.findings ?? [])]);
+                const reactions = await this.deps.readReactions(sessionId);
+                const blockingFindings = this.countBlockingFindings(report.findings);
+                blockingCountsByCycle.push(blockingFindings);
+                this.deps.state.audit("loop.blocking_findings", { sessionId, cycle, verdict: report.verdict, findings: report.findings?.length ?? 0, blockingFindings }, sessionId);
+                const decision = OrchestratorLoop.advance({
+                    currentStatus: "reviewing",
+                    verdict: report.verdict,
+                    blockingFindings,
+                    shipWhenNoBlockingFindings: this.deps.config.loop.ship_when_no_blocking_findings !== false,
+                    cyclesRan: cycle,
+                    maxCycles: this.deps.config.loop.max_cycles,
+                    findingCountsByCycle,
+                    // beta.119: one more cycle, when the trend says it will land and the
+                    // budget can genuinely absorb it. See `advance`.
+                    blockingCountsByCycle,
+                    cycleExtensionsGranted,
+                    maxCycleExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
+                    budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd),
+                    // beta.120 (fix 4): only meaningful once there is something to land.
+                    shipTimeReserved: shouldReserveTimeToShip({
+                        now: Date.now(),
+                        hardDeadlineMs,
+                        reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
+                        totalBudgetSeconds: this.deps.config.loop.session_hard_timeout_seconds,
+                        hasWork: cycle >= 1,
+                    }),
+                    reactions,
+                    // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
+                    // per-user DAILY cap, not the (now-soft) session budget. Crossing the
+                    // session budget warns but does not stop; only the daily hard-cap
+                    // (or :moneybag: override) blocks a further cycle.
+                    budgetExhausted: !reactions.budgetBump &&
+                        this.dailyMaxUsd() > 0 &&
+                        this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
+                    hardTimeout: Date.now() > hardDeadlineMs,
+                });
+                this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
+                if (decision.nextStatus === "done") {
+                    terminalDoneReason = decision.reason;
+                    break;
+                }
+                if (decision.nextStatus === "failed") {
+                    return this.finaliseFailed(sessionId, decision.reason, cycle, totalCost);
+                }
+                if (decision.nextStatus === "aborted") {
+                    return await this.finaliseAbortSalvaging(sessionId, decision.reason, cycle, totalCost);
+                }
+                if (decision.reason === "max_cycles_extended_converging") {
+                    cycleExtensionsGranted += 1;
+                    this.deps.state.audit("loop.max_cycles_extended", {
+                        sessionId, cycle, granted: cycleExtensionsGranted,
+                        maxExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
+                        arc: [...findingCountsByCycle], blockingArc: [...blockingCountsByCycle],
+                        spentUsd: Number(totalCost.toFixed(4)),
+                    }, sessionId);
+                    this.deps.logger.info("[loop] beta.119: findings are converging and the budget covers another cycle -- extending rather than shipping on the ceiling", { sessionId, cycle, arc: findingCountsByCycle.join(" -> "), granted: cycleExtensionsGranted });
+                }
+                // else "executing": continue the outer while
             }
-            // beta.63 (Fix 2): fold the convention-check failures into the review as
-            // REVISE-worthy findings. If the adversary said `pass` but a declared
-            // check script failed, downgrade to `revise` so the worker gets another
-            // cycle to fix the convention violation (e.g. regenerate the OKF bundle).
-            // Never escalates to `block` (not a hard fail) -- max-cycles still ships.
-            //
-            // beta.70 (F2): only force `pass`->`revise` when a convention finding is
-            // actually BLOCKING (diff_addressable + medium+). A `process`-class
-            // convention finding -- e.g. "OKF bundle not regenerated" -- is enforced
-            // by the convention-check phase itself (it re-runs the regenerator) and
-            // must NOT force another expensive code cycle. In PR #870 this exact
-            // force-upgrade turned a clean `pass` into a 19-min cycle-2 that re-ran
-            // `npm run okf` over 1436 files for a zero diff. All findings still
-            // attach to the report (they ship on the PR body); only the verdict is
-            // gated. A real typecheck/lint failure or a persisted heap OOM stays
-            // blocking and still triggers the revise.
-            if (conventionFindings.length > 0) {
-                const blockingConvention = conventionFindings.filter((f) => isBlockingFinding(f, classifyFinding(f, { repoHasTestScript: true })));
-                report = {
-                    ...report,
-                    findings: [...report.findings, ...conventionFindings],
-                    verdict: report.verdict === "pass" && blockingConvention.length > 0
-                        ? "revise"
-                        : report.verdict,
-                };
-                if (report.verdict === "pass" && blockingConvention.length === 0 && conventionFindings.length > 0) {
-                    this.deps.state.audit("loop.convention_findings_nonblocking", { sessionId, cycle, total: conventionFindings.length }, sessionId);
+            // 3. Push + PR (the ship gate; may send us back for a repair cycle)
+            if (!lastReview) {
+                return this.finaliseFailed(sessionId, "no_review_produced", cycle, totalCost);
+            }
+            // beta.127: reset per attempt. A green second attempt must not inherit the
+            // first attempt's red verdict.
+            ciOverride = null;
+            ciNeverRegisteredCaveat = null;
+            // beta.63 (Part A): mark finalize START so the watchdog sees the push/PR
+            // phase as live (this is exactly the b60 gap: quiet AFTER the last sub-task
+            // deadline but BEFORE/at finalize, with no watchdog covering it).
+            this.markProgress(sessionId, "finalize_start", "finalize", { cycle });
+            // beta.73 (D3): instrument the push/PR-open step. Pre-beta.73 there was NO
+            // audit event between the transition->done and the terminal worktree
+            // release, so a push/PR failure (422 branch collision, missing GH token, a
+            // bare exception) was completely invisible (session 70341bc3). Emit an
+            // explicit start + failure event carrying the underlying error.
+            this.deps.state.audit("loop.pr_open_started", { sessionId, cycle, branch: plan.branch }, sessionId);
+            // beta.81 (Track B / B3): if the repo has NO CI, AUTHOR a GitHub Actions
+            // workflow running the repo's declared check scripts and COMMIT it into the
+            // worktree BEFORE the push, so verification runs on GitHub (Carel: build the
+            // CI, never run locally). ciAuthorWorkflow returns null when a workflow
+            // already exists or nothing is runnable. Best-effort: a failure here must
+            // not block the push (the PR + review already stand); it just means no CI.
+            let authoredWorkflowThisCycle = false;
+            if (this.deps.ciAuthorWorkflow) {
+                try {
+                    const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
+                    if (authored) {
+                        authoredWorkflowThisCycle = true;
+                        this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts }, sessionId);
+                        this.deps.interactionLog?.log(sessionId, { event: "ci_workflow_authored", phase: "finalize", cycle, path: authored.path, scripts: authored.scripts });
+                        this.deps.logger.info("[loop] authored a GitHub Actions workflow for a no-CI repo (beta.81 B3)", { sessionId, path: authored.path, scripts: authored.scripts });
+                    }
+                }
+                catch (err) {
+                    this.deps.logger.warn("[loop] CI workflow authoring failed (non-fatal; repo will simply have no CI)", { sessionId, err: String(err) });
                 }
             }
-            lastReview = report;
-            // beta.69 (F1): visibility for the convergence gate. When the adversary's
-            // raw verdict was `revise` but the final verdict is `pass` AND there were
-            // no real convention failures, the run converged on a green cycle whose
-            // only remaining findings were non-blocking (process/env/architectural/
-            // unproven-runtime). This is the fix for forensic 1f2e6642's cycle-2
-            // all-green revise. (The downgrade itself happens in runAdversary; here
-            // we just record that the loop is now shipping instead of churning.)
-            if (report.verdict === "pass" && conventionFindings.length === 0 && (report.findings?.length ?? 0) > 0) {
-                this.deps.state.audit("loop.converged_on_green", { sessionId, cycle, findings: report.findings.length }, sessionId);
-            }
-            this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length, conventionFindings: conventionFindings.length }, sessionId);
-            // beta.108: the review phase is the largest UNMEASURED block in a run.
-            // The b106 revise (session 21c9c44e) reported a 55.2-minute wall clock of
-            // which planning (574s) and worker execution (1499s) account for 35
-            // minutes; the other ~20 were review, push, PR update and CI polling, and
-            // nothing timed any of them. We were optimising the two thirds we could
-            // see. Emit the phase duration so the next speed decision has a number
-            // behind it.
-            this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
-                verdict: report.verdict,
-                findings: report.findings.length,
-                costUsd: report.costUsd,
-            });
-            // beta.97 (Fix #7): record this cycle's finding count for the convergence check.
-            findingCountsByCycle.push(report.findings?.length ?? 0);
-            // beta.119: keep the findings themselves, not just how many there were.
-            findingsByCycle.push([...(report.findings ?? [])]);
-            const reactions = await this.deps.readReactions(sessionId);
-            const blockingFindings = this.countBlockingFindings(report.findings);
-            blockingCountsByCycle.push(blockingFindings);
-            this.deps.state.audit("loop.blocking_findings", { sessionId, cycle, verdict: report.verdict, findings: report.findings?.length ?? 0, blockingFindings }, sessionId);
-            const decision = OrchestratorLoop.advance({
-                currentStatus: "reviewing",
-                verdict: report.verdict,
-                blockingFindings,
-                shipWhenNoBlockingFindings: this.deps.config.loop.ship_when_no_blocking_findings !== false,
-                cyclesRan: cycle,
-                maxCycles: this.deps.config.loop.max_cycles,
-                findingCountsByCycle,
-                // beta.119: one more cycle, when the trend says it will land and the
-                // budget can genuinely absorb it. See `advance`.
-                blockingCountsByCycle,
-                cycleExtensionsGranted,
-                maxCycleExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
-                budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd),
-                // beta.120 (fix 4): only meaningful once there is something to land.
-                shipTimeReserved: shouldReserveTimeToShip({
-                    now: Date.now(),
-                    hardDeadlineMs,
-                    reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
-                    totalBudgetSeconds: this.deps.config.loop.session_hard_timeout_seconds,
-                    hasWork: cycle >= 1,
-                }),
-                reactions,
-                // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
-                // per-user DAILY cap, not the (now-soft) session budget. Crossing the
-                // session budget warns but does not stop; only the daily hard-cap
-                // (or :moneybag: override) blocks a further cycle.
-                budgetExhausted: !reactions.budgetBump &&
-                    this.dailyMaxUsd() > 0 &&
-                    this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
-                hardTimeout: Date.now() > hardDeadlineMs,
-            });
-            this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
-            if (decision.nextStatus === "done") {
-                terminalDoneReason = decision.reason;
-                break;
-            }
-            if (decision.nextStatus === "failed") {
-                return this.finaliseFailed(sessionId, decision.reason, cycle, totalCost);
-            }
-            if (decision.nextStatus === "aborted") {
-                return await this.finaliseAbortSalvaging(sessionId, decision.reason, cycle, totalCost);
-            }
-            if (decision.reason === "max_cycles_extended_converging") {
-                cycleExtensionsGranted += 1;
-                this.deps.state.audit("loop.max_cycles_extended", {
-                    sessionId, cycle, granted: cycleExtensionsGranted,
-                    maxExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
-                    arc: [...findingCountsByCycle], blockingArc: [...blockingCountsByCycle],
-                    spentUsd: Number(totalCost.toFixed(4)),
-                }, sessionId);
-                this.deps.logger.info("[loop] beta.119: findings are converging and the budget covers another cycle -- extending rather than shipping on the ceiling", { sessionId, cycle, arc: findingCountsByCycle.join(" -> "), granted: cycleExtensionsGranted });
-            }
-            // else "executing": continue the outer while
-        }
-        // 3. Push + PR
-        if (!lastReview) {
-            return this.finaliseFailed(sessionId, "no_review_produced", cycle, totalCost);
-        }
-        let prUrl;
-        // beta.63 (Part A): mark finalize START so the watchdog sees the push/PR
-        // phase as live (this is exactly the b60 gap: quiet AFTER the last sub-task
-        // deadline but BEFORE/at finalize, with no watchdog covering it).
-        this.markProgress(sessionId, "finalize_start", "finalize", { cycle });
-        // beta.108: everything from here to `loop.shipped` -- push, PR open/update,
-        // review comment, CI polling -- was untimed. See emitPhaseTiming.
-        const shipStart = Date.now();
-        // beta.73 (D3): instrument the push/PR-open step. Pre-beta.73 there was NO
-        // audit event between the transition->done and the terminal worktree
-        // release, so a push/PR failure (422 branch collision, missing GH token, a
-        // bare exception) was completely invisible (session 70341bc3). Emit an
-        // explicit start + failure event carrying the underlying error.
-        this.deps.state.audit("loop.pr_open_started", { sessionId, cycle, branch: plan.branch }, sessionId);
-        // beta.81 (Track B / B3): if the repo has NO CI, AUTHOR a GitHub Actions
-        // workflow running the repo's declared check scripts and COMMIT it into the
-        // worktree BEFORE the push, so verification runs on GitHub (Carel: build the
-        // CI, never run locally). ciAuthorWorkflow returns null when a workflow
-        // already exists or nothing is runnable. Best-effort: a failure here must
-        // not block the push (the PR + review already stand); it just means no CI.
-        let authoredWorkflowThisCycle = false;
-        if (this.deps.ciAuthorWorkflow) {
             try {
-                const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
-                if (authored) {
-                    authoredWorkflowThisCycle = true;
-                    this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts }, sessionId);
-                    this.deps.interactionLog?.log(sessionId, { event: "ci_workflow_authored", phase: "finalize", cycle, path: authored.path, scripts: authored.scripts });
-                    this.deps.logger.info("[loop] authored a GitHub Actions workflow for a no-CI repo (beta.81 B3)", { sessionId, path: authored.path, scripts: authored.scripts });
-                }
+                prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
             }
             catch (err) {
-                this.deps.logger.warn("[loop] CI workflow authoring failed (non-fatal; repo will simply have no CI)", { sessionId, err: String(err) });
+                // beta.119: PRESERVE THE WORKTREE. A push failure is the one terminal
+                // where the run's commits provably exist ONLY on local disk -- failing to
+                // push means nothing reached the remote. Releasing it here deleted a
+                // finished, correct, one-line CI change whose push was rejected purely
+                // for a missing `workflow` token scope. b62 built
+                // finaliseFailedPreserveWorktree for this exact class ("discarded 8 good
+                // commits precisely because the crash path released the worktree") and
+                // wired it only to review crashes.
+                const diagnosis = diagnosePushFailure(err);
+                this.deps.state.audit("loop.pr_open_failed", {
+                    sessionId, cycle, branch: plan.branch, error: String(err),
+                    failureKind: diagnosis.kind, recoverable: diagnosis.recoverable,
+                    worktreePreserved: true, worktreePath: plan.worktreePath,
+                }, sessionId);
+                this.deps.interactionLog?.log(sessionId, {
+                    event: "pr_open_failed", phase: "finalize", cycle, error: String(err), failureKind: diagnosis.kind,
+                });
+                this.deps.logger.error("[loop] push/PR-open failed; PRESERVING the worktree so the commits can be recovered", { sessionId, branch: plan.branch, worktreePath: plan.worktreePath, kind: diagnosis.kind });
+                return this.finaliseFailedPreserveWorktree(sessionId, `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({
+                    diagnosis, branch: plan.branch, worktreePath: plan.worktreePath, error: String(err),
+                })}`, cycle, totalCost);
             }
-        }
-        try {
-            prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
-        }
-        catch (err) {
-            // beta.119: PRESERVE THE WORKTREE. A push failure is the one terminal
-            // where the run's commits provably exist ONLY on local disk -- failing to
-            // push means nothing reached the remote. Releasing it here deleted a
-            // finished, correct, one-line CI change whose push was rejected purely
-            // for a missing `workflow` token scope. b62 built
-            // finaliseFailedPreserveWorktree for this exact class ("discarded 8 good
-            // commits precisely because the crash path released the worktree") and
-            // wired it only to review crashes.
-            const diagnosis = diagnosePushFailure(err);
-            this.deps.state.audit("loop.pr_open_failed", {
-                sessionId, cycle, branch: plan.branch, error: String(err),
-                failureKind: diagnosis.kind, recoverable: diagnosis.recoverable,
-                worktreePreserved: true, worktreePath: plan.worktreePath,
-            }, sessionId);
-            this.deps.interactionLog?.log(sessionId, {
-                event: "pr_open_failed", phase: "finalize", cycle, error: String(err), failureKind: diagnosis.kind,
-            });
-            this.deps.logger.error("[loop] push/PR-open failed; PRESERVING the worktree so the commits can be recovered", { sessionId, branch: plan.branch, worktreePath: plan.worktreePath, kind: diagnosis.kind });
-            return this.finaliseFailedPreserveWorktree(sessionId, `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({
-                diagnosis, branch: plan.branch, worktreePath: plan.worktreePath, error: String(err),
-            })}`, cycle, totalCost);
-        }
-        // beta.63 (Part A): PR opened -- mark progress before the terminal write.
-        this.markProgress(sessionId, "pr_opened", "finalize", { cycle });
-        // beta.81 (Track B / B2): POST-PUSH CI VERIFICATION WAIT-STATE. Now that the
-        // branch is on GitHub, poll CI and fold the result into the terminal
-        // recommendation. success -> ship as normal (review verdict drives the
-        // merge rec below). failure -> flag needs_human_review with the failing CI
-        // logs as the recorded reason (the revise finding source). timeout ->
-        // SOFT checkpoint: keep the PR open, needs_human_review, offer a resumable
-        // continue-watch (never a hard fail). none/skipped -> ship on the review
-        // verdict (a no-CI repo just got a workflow authored above but its FIRST
-        // status may not exist yet on this SHA; do not block the deliverable).
-        let ciOverride = null;
-        // beta.91 (F4): non-blocking caveat when an authored workflow never registered.
-        let ciNeverRegisteredCaveat = null;
-        {
-            let headSha = "";
-            try {
-                headSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+            // beta.63 (Part A): PR opened -- mark progress before the terminal write.
+            this.markProgress(sessionId, "pr_opened", "finalize", { cycle });
+            // beta.81 (Track B / B2): POST-PUSH CI VERIFICATION WAIT-STATE. Now that the
+            // branch is on GitHub, poll CI and fold the result into the terminal
+            // recommendation. success -> ship as normal (review verdict drives the
+            // merge rec below). failure -> flag needs_human_review with the failing CI
+            // logs as the recorded reason (the revise finding source). timeout ->
+            // SOFT checkpoint: keep the PR open, needs_human_review, offer a resumable
+            // continue-watch (never a hard fail). none/skipped -> ship on the review
+            // verdict (a no-CI repo just got a workflow authored above but its FIRST
+            // status may not exist yet on this SHA; do not block the deliverable).
+            // beta.127: declared outside the ship-attempt loop, above.
+            {
+                let headSha = "";
+                try {
+                    headSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+                }
+                catch {
+                    headSha = "";
+                }
+                if (headSha && (this.deps.ciCombinedStatus || this.deps.ciSnapshot)) {
+                    this.setStatus(sessionId, "reviewing");
+                    this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
+                    const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
+                    if (ci.outcome === "failure") {
+                        // beta.127: the excerpt now comes from the Actions job log when the
+                        // check run carries no output of its own, so this is the failing
+                        // assertion rather than the word "failure". 1500 chars was sized for
+                        // a check-run title; a real excerpt needs room to name the test.
+                        lastCiFindings = buildCiFailureFindings(ci.logs ?? "", { sha: headSha });
+                        ciOverride = {
+                            recommendation: "needs_human_review",
+                            reason: `GitHub CI FAILED on ${headSha}. Do NOT merge until CI is green. Failing check logs (excerpt):\n` +
+                                `${(ci.logs || "(no log excerpt available)").slice(0, 3000)}`,
+                        };
+                    }
+                    else if (ci.outcome === "timeout") {
+                        ciOverride = {
+                            recommendation: "needs_human_review",
+                            reason: `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
+                                `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via harness_progress -- this is a soft checkpoint, not a failure.`,
+                        };
+                    }
+                    else if (ci.outcome === "indeterminate") {
+                        // beta.119: we never got a readable verdict out of GitHub for this
+                        // sha. Pre-b119 this path did not exist -- an unreadable check-run
+                        // list collapsed into "success" and the run shipped a merge
+                        // recommendation over failing checks (ProjectThanos PR #986). An
+                        // unverifiable commit is now blocking, exactly like a red one.
+                        ciOverride = {
+                            recommendation: "needs_human_review",
+                            reason: `Could NOT determine CI state for ${headSha} after ${ci.waitedSeconds}s of polling` +
+                                `${ci.reason ? ` (${ci.reason})` : ""}. ` +
+                                `The harness will not call an unverifiable commit green. Check the PR's checks tab before merging.`,
+                        };
+                    }
+                    else if (ci.outcome === "authored_workflow_never_registered") {
+                        // beta.91 (F4): we authored + pushed a workflow this cycle but GitHub
+                        // never registered a run within the grace window. NON-blocking: the
+                        // merge recommendation is NOT overridden to needs_human_review (that
+                        // would be too aggressive for a registration lag), but the caveat is
+                        // surfaced so a human knows CI never actually verified this SHA.
+                        this.deps.state.audit("loop.ci_authored_never_registered", { sessionId, cycle, sha: headSha, waitedSeconds: ci.waitedSeconds }, sessionId);
+                        this.deps.logger.warn("[loop] authored a CI workflow but GitHub never registered a run within the grace window; shipping with a visible caveat (CI did NOT verify this SHA)", { sessionId, sha: headSha, waitedSeconds: ci.waitedSeconds });
+                        ciNeverRegisteredCaveat =
+                            `NOTE: the harness authored a CI workflow but GitHub did not register a run on ${headSha} within ${ci.waitedSeconds}s. CI did NOT verify this commit -- confirm the workflow ran (or re-run it) before relying on a green check.`;
+                    }
+                    else if (ci.outcome === "success" && ci.degradedSource) {
+                        // beta.125: a real green, from a narrower window than usual. NOT
+                        // blocking -- every Actions run and every legacy status on this sha
+                        // passed, which is the whole of CI on most repos, and the pre-b125
+                        // alternative was needs_human_review carrying no information at all.
+                        // But it is stated, because the one thing this green does not cover
+                        // is a third-party App's check run, and a reader who assumes
+                        // otherwise is making the b118 mistake with better inputs.
+                        this.deps.state.audit("loop.ci_green_via_workflow_runs", { sessionId, cycle, sha: headSha }, sessionId);
+                        ciNeverRegisteredCaveat = `NOTE: ${ci.degradedSource}`;
+                    }
+                }
             }
-            catch {
-                headSha = "";
-            }
-            if (headSha && (this.deps.ciCombinedStatus || this.deps.ciSnapshot)) {
-                this.setStatus(sessionId, "reviewing");
-                this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
-                const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
-                if (ci.outcome === "failure") {
-                    ciOverride = {
-                        recommendation: "needs_human_review",
-                        reason: `GitHub CI FAILED on ${headSha}. Do NOT merge until CI is green. Failing check logs (excerpt):\n` +
-                            `${(ci.logs || "(no log excerpt available)").slice(0, 1500)}`,
+            // beta.127: CI IS RED AND THERE IS STILL A CYCLE TO BE HAD.
+            //
+            // This is the edge the ship-attempt loop exists for. Everything above ran
+            // in b126 too; the difference is that b126's only move from here was to
+            // write "Do NOT merge" and stop.
+            //
+            // Deliberately narrow. Only `failure` qualifies -- a timeout or an
+            // indeterminate verdict means we do not KNOW what is wrong, and sending a
+            // worker to fix an unknown is how a run burns a cycle producing noise.
+            // Only findings we could actually build from the log qualify, for the same
+            // reason: without the failing assertion there is nothing to hand a worker.
+            {
+                const repairCeiling = Math.max(0, this.deps.config.ci?.max_repair_cycles ?? 1);
+                const budgetOk = this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd);
+                const wantsRepair = ciOverride !== null && lastCiFindings.length > 0;
+                const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;
+                if (wantsRepair && !canRepair) {
+                    // Say why the run is shipping over a red build. "Do NOT merge" with no
+                    // account of what was tried reads as the harness not having noticed.
+                    this.deps.state.audit("loop.ci_repair_declined", {
+                        sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
+                        budgetOk, spentUsd: Number(totalCost.toFixed(4)),
+                        reason: repairCeiling === 0 ? "disabled" : !budgetOk ? "budget" : "ceiling",
+                        findings: describeCiFindings(lastCiFindings),
+                    }, sessionId);
+                }
+                if (canRepair) {
+                    ciRepairCyclesGranted += 1;
+                    // Fold the CI findings into the review the next cycle maps from. They
+                    // carry `file`, so mapFindingsToSubTasks routes each one to whoever
+                    // owns that path; an unroutable one becomes a mapping miss and is
+                    // broadcast, which for a red build is the right failure mode.
+                    lastReview = {
+                        ...lastReview,
+                        verdict: "revise",
+                        findings: [...(lastReview.findings ?? []), ...lastCiFindings],
                     };
+                    this.deps.state.audit("loop.ci_repair_cycle_granted", {
+                        sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
+                        spentUsd: Number(totalCost.toFixed(4)),
+                        findings: describeCiFindings(lastCiFindings),
+                        files: lastCiFindings.map((f) => f.file).filter(Boolean),
+                    }, sessionId);
+                    this.deps.interactionLog?.log(sessionId, {
+                        event: "ci_repair_cycle_granted", phase: "finalize", cycle,
+                        findings: lastCiFindings.length,
+                    });
+                    this.deps.logger.info("[loop] beta.127: CI is red and the budget covers another cycle -- routing the failures back as blocking findings instead of shipping over them", { sessionId, cycle, granted: ciRepairCyclesGranted, findings: describeCiFindings(lastCiFindings) });
+                    await this.deps.reportProgress?.(sessionId, "executing", { cycle });
+                    lastCiFindings = [];
+                    continue shipAttempts;
                 }
-                else if (ci.outcome === "timeout") {
-                    ciOverride = {
-                        recommendation: "needs_human_review",
-                        reason: `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
-                            `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via harness_progress -- this is a soft checkpoint, not a failure.`,
-                    };
-                }
-                else if (ci.outcome === "indeterminate") {
-                    // beta.119: we never got a readable verdict out of GitHub for this
-                    // sha. Pre-b119 this path did not exist -- an unreadable check-run
-                    // list collapsed into "success" and the run shipped a merge
-                    // recommendation over failing checks (ProjectThanos PR #986). An
-                    // unverifiable commit is now blocking, exactly like a red one.
-                    ciOverride = {
-                        recommendation: "needs_human_review",
-                        reason: `Could NOT determine CI state for ${headSha} after ${ci.waitedSeconds}s of polling` +
-                            `${ci.reason ? ` (${ci.reason})` : ""}. ` +
-                            `The harness will not call an unverifiable commit green. Check the PR's checks tab before merging.`,
-                    };
-                }
-                else if (ci.outcome === "authored_workflow_never_registered") {
-                    // beta.91 (F4): we authored + pushed a workflow this cycle but GitHub
-                    // never registered a run within the grace window. NON-blocking: the
-                    // merge recommendation is NOT overridden to needs_human_review (that
-                    // would be too aggressive for a registration lag), but the caveat is
-                    // surfaced so a human knows CI never actually verified this SHA.
-                    this.deps.state.audit("loop.ci_authored_never_registered", { sessionId, cycle, sha: headSha, waitedSeconds: ci.waitedSeconds }, sessionId);
-                    this.deps.logger.warn("[loop] authored a CI workflow but GitHub never registered a run within the grace window; shipping with a visible caveat (CI did NOT verify this SHA)", { sessionId, sha: headSha, waitedSeconds: ci.waitedSeconds });
-                    ciNeverRegisteredCaveat =
-                        `NOTE: the harness authored a CI workflow but GitHub did not register a run on ${headSha} within ${ci.waitedSeconds}s. CI did NOT verify this commit -- confirm the workflow ran (or re-run it) before relying on a green check.`;
-                }
-                else if (ci.outcome === "success" && ci.degradedSource) {
-                    // beta.125: a real green, from a narrower window than usual. NOT
-                    // blocking -- every Actions run and every legacy status on this sha
-                    // passed, which is the whole of CI on most repos, and the pre-b125
-                    // alternative was needs_human_review carrying no information at all.
-                    // But it is stated, because the one thing this green does not cover
-                    // is a third-party App's check run, and a reader who assumes
-                    // otherwise is making the b118 mistake with better inputs.
-                    this.deps.state.audit("loop.ci_green_via_workflow_runs", { sessionId, cycle, sha: headSha }, sessionId);
-                    ciNeverRegisteredCaveat = `NOTE: ${ci.degradedSource}`;
-                }
+                break shipAttempts;
             }
-        }
+        } // end shipAttempts
         // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
         // the final review + whether we reached a clean pass. Persist it + the PR
         // number for the harness_merge_pr hard gate.

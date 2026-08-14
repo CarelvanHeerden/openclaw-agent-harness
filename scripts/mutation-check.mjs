@@ -1231,8 +1231,11 @@ const MUTATIONS = [
     // still incremented and audited -- and the driver still stops, which is
     // exactly the shape of the shipped bug. A test that only watches the
     // decision or greps for the increment survives this untouched.
-    find: "while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted) {",
-    replace: "while (cycle < this.deps.config.loop.max_cycles) {",
+    // b127 added `+ ciRepairCyclesGranted` to the same bound, so the anchor is
+    // the whole expression. Dropping only `cycleExtensionsGranted` keeps this
+    // aimed at b124's grant and leaves b127's alone.
+    find: "while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted) {",
+    replace: "while (cycle < this.deps.config.loop.max_cycles + ciRepairCyclesGranted) {",
     tests: ["tests/beta124-scenario-cycle-extension.test.mjs"],
   },
   {
@@ -1366,11 +1369,124 @@ const MUTATIONS = [
   // merge recommendation", is covered behaviourally by "an unavailable gate
   // blocks the merge but does not drive revise cycles", which exercises the
   // real deriveMergeRecommendation.
+
+  // ---------------------------------------------------------------- beta.127
+  {
+    // THE b124 SHAPE, ON A NEW COUNTER. b119 through b123 all granted an extra
+    // cycle correctly, audited it correctly, and never ran it, because the
+    // loop bound did not include the grant. If this mutation survives, the
+    // repair cycle is decorative in exactly the same way.
+    name: "a granted CI repair cycle is one the loop bound knows about (b127)",
+    file: "dist/orchestrator/loop.js",
+    find: "this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted",
+    replace: "this.deps.config.loop.max_cycles + cycleExtensionsGranted",
+    tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
+  },
+  {
+    name: "a red build actually buys the cycle rather than only auditing it (b127)",
+    file: "dist/orchestrator/loop.js",
+    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;",
+    replace: "const canRepair = false;",
+    tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
+  },
+  // NOT a mutation: removing the repair ceiling (`ciRepairCyclesGranted <
+  // repairCeiling`). This is the same trap the b124 note above describes, and
+  // it was walked into anyway while writing b127 -- the run hung for 56
+  // minutes before it was killed. Without the ceiling, a permanently-red build
+  // grants itself a cycle at every ship gate and each grant raises the loop's
+  // own bound, so the mutation does not fail the test, it makes the test never
+  // terminate. A mutation that hangs the suite tells us strictly less than the
+  // test already does and costs an hour to find out. The property is pinned
+  // directly by "the ceiling holds: a build that stays red does not buy cycles
+  // forever", which counts grants on a build that never goes green.
+  {
+    // A timeout or an unreadable verdict means we do not know what to fix, and
+    // a worker sent after an unknown produces plausible noise for a full cycle.
+    name: "only a PARSEABLE failure buys a cycle, never a bare timeout (b127)",
+    file: "dist/orchestrator/loop.js",
+    find: "const wantsRepair = ciOverride !== null && lastCiFindings.length > 0;",
+    replace: "const wantsRepair = ciOverride !== null;",
+    tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
+  },
+  {
+    // The exact b126 defect: a check run that answers with a name and no
+    // output is non-empty, so any fallback keyed on emptiness never fires and
+    // the PR ships "- Tests [failure]" as its diagnosis.
+    name: "a check-runs answer with no diagnosis does not block the job-log fallback (b127)",
+    file: "dist/adapters/github.js",
+    // Anchored on the condition alone: tsc puts the `return` on its own line.
+    find: "if (viaChecks.hasDetail)",
+    replace: "if (viaChecks.text)",
+    tests: ["tests/beta127-failing-logs.test.mjs"],
+  },
+  {
+    name: "a CI finding is never downgraded by keywords in the log it quotes (b127)",
+    file: "dist/orchestrator/finding-classify.js",
+    find: 'if (f.source === "ci")',
+    replace: "if (false)",
+    tests: ["tests/beta127-ci-findings.test.mjs"],
+  },
+  {
+    name: "CI findings carry the source marker that keeps them blocking (b127)",
+    file: "dist/orchestrator/ci-findings.js",
+    find: 'source: "ci",\n            dimension: "quality",',
+    replace: 'dimension: "quality",',
+    tests: ["tests/beta127-ci-findings.test.mjs"],
+  },
+  {
+    // #157. The planner's spend is what the budget ceiling is checked against,
+    // so dropping it does not merely under-report -- it under-bounds.
+    name: "the lead's spend reaches the ledger (b127 / #157)",
+    file: "dist/orchestrator/loop.js",
+    find: "let totalCost = row.cost_usd + leadPlanningCostUsd;",
+    replace: "let totalCost = row.cost_usd;",
+    tests: ["tests/beta127-lead-cost.test.mjs"],
+  },
+  {
+    name: "every lead attempt is billed, including the ones whose plan we discard (b127 / #157)",
+    file: "dist/orchestrator/fable5-lead.js",
+    find: "leadCallCostUsd += raw.costUsd ?? 0;",
+    replace: "leadCallCostUsd += 0;",
+    tests: ["tests/beta127-lead-cost.test.mjs"],
+  },
 ];
 
 function runTests(files) {
   const r = spawnSync(process.execPath, ["--test", ...files], { cwd: root, encoding: "utf8" });
   return r.status === 0;
+}
+
+/**
+ * beta.127: find an anchor whose INDENTATION may have moved.
+ *
+ * Anchors are matched against `dist/`, which tsc re-indents from the AST, so
+ * nesting a block anywhere above an anchor shifts every line inside it. b127
+ * wrapped the cycle loop in a ship-attempt loop and broke three unrelated
+ * multi-line anchors that way -- b110, b118 and b124 -- all reported as "the
+ * code was renamed or removed", none of which had been touched. It cost a full
+ * CI round trip to find out.
+ *
+ * So: exact match first, and if that misses, retry with the leading whitespace
+ * of each continuation line treated as elastic. Only leading whitespace is
+ * relaxed; everything else, including which lines follow which, still has to
+ * match exactly, so an anchor cannot silently start matching different code.
+ */
+function locate(src, find) {
+  const at = src.indexOf(find);
+  if (at >= 0) return { text: find, elastic: false };
+  if (!find.includes("\n")) return null;
+
+  const pattern = find
+    .split("\n")
+    .map((line, i) => {
+      const body = line.replace(/^[ \t]+/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return i === 0 ? body : `[ \\t]*${body}`;
+    })
+    .join("\n");
+  const re = new RegExp(pattern, "g");
+  const hits = [...src.matchAll(re)];
+  if (hits.length !== 1) return null; // ambiguous or absent: refuse to guess
+  return { text: hits[0][0], elastic: true };
 }
 
 let failures = 0;
@@ -1384,7 +1500,8 @@ for (const m of MUTATIONS) {
   if (FILTER && !m.name.includes(FILTER)) continue;
   ran++;
 
-  if (!original.includes(m.find)) {
+  const found = locate(original, m.find);
+  if (!found) {
     console.error(`FAIL  ${m.name}`);
     console.error(`      anchor not found in ${m.file}. The code was renamed or removed, so this`);
     console.error(`      mutation no longer tests anything. Update scripts/mutation-check.mjs.`);
@@ -1392,9 +1509,18 @@ for (const m of MUTATIONS) {
     failures++;
     continue;
   }
+  if (found.elastic) {
+    // Not a failure -- the anchor still identifies exactly one site -- but say
+    // so, because a drifting anchor is worth noticing before it drifts onto
+    // something else.
+    console.error(`note  ${m.name}`);
+    console.error(`      anchor matched with relaxed indentation; the code around it moved.`);
+  }
 
   try {
-    writeFileSync(path, original.replace(m.find, m.replace), "utf8");
+    // Replace the text as it appears on disk, so an elastic match rewrites the
+    // real indentation rather than the anchor's stale copy of it.
+    writeFileSync(path, original.replace(found.text, m.replace), "utf8");
     const stillPasses = runTests(m.tests);
     if (stillPasses) {
       console.error(`FAIL  ${m.name}`);
