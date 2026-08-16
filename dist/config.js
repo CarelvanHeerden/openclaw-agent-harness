@@ -137,6 +137,10 @@ const DEFAULTS = {
         recovery_resume_window_seconds: 60,
         recovery_resume_at_subtask: true,
         lead_json_retry_enabled: true,
+        // beta.128: one more call when a COMPLETE plan fails JSON.parse. See the
+        // field doc -- this is the `"seq_note":undefined` class, which neither the
+        // truncation rung nor salvage can touch.
+        lead_syntax_retry_enabled: true,
         // beta.94 (Feature 1): elide the idle-prone trailing pure-observe scope
         // "final verification" sub-task + run a deterministic harness-side scope
         // check that folds out-of-scope commits into the review. Default ON.

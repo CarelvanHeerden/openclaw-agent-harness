@@ -1449,6 +1449,69 @@ const MUTATIONS = [
     replace: "leadCallCostUsd += 0;",
     tests: ["tests/beta127-lead-cost.test.mjs"],
   },
+
+  // -------------------------------------------------------------------------
+  // beta.128. A complete plan spoiled by one JavaScript literal, and the two
+  // places f75f7db6's spend went missing.
+  // -------------------------------------------------------------------------
+  {
+    // Without the rung the run dies holding a plan that is one token from
+    // usable -- which is exactly what f75f7db6 did.
+    name: "a complete-but-invalid plan gets its re-ask (b128): the seq_note:undefined death",
+    file: "dist/adapters/claude-sdk.js",
+    find: "if (fault && params.leadSyntaxRetryEnabled !== false) {",
+    replace: "if (false) {",
+    tests: ["tests/beta128-invalid-json-rung.test.mjs"],
+  },
+  {
+    // The whole point is telling the model WHAT is wrong. A correction that
+    // does not name the fault is the b127 message that gave it nothing to act
+    // on, dressed up as a new rung.
+    name: "the re-ask names the offending literal (b128): a correction with no fault in it is noise",
+    file: "dist/adapters/claude-sdk.js",
+    find: "lines.push(`The token \\`${located.token}\\` is a JavaScript literal, not a JSON value. JSON has no ` +",
+    replace: "lines.push(``.slice(0) +",
+    tests: ["tests/beta128-invalid-json-rung.test.mjs"],
+  },
+  {
+    // String-awareness. Blaming an `undefined` that lives inside a string
+    // sends the model to rewrite a healthy field.
+    name: "the fault scan respects string state (b128): prose is allowed to say 'undefined'",
+    file: "dist/adapters/claude-sdk.js",
+    find: "if (inString)\n            continue;\n        for (const token of NON_JSON_LITERALS) {",
+    replace: "if (false)\n            continue;\n        for (const token of NON_JSON_LITERALS) {",
+    tests: ["tests/beta128-invalid-json-rung.test.mjs"],
+  },
+  {
+    name: "every attempt is reported, not just the fatal one (b128): a recovered truncation left no trace",
+    file: "dist/adapters/claude-sdk.js",
+    find: "params.onAttempt?.(info);",
+    replace: "void info;",
+    tests: ["tests/beta128-invalid-json-rung.test.mjs"],
+  },
+  {
+    name: "a FAILED plan is billed (b128 / #157): ten minutes of Opus reported as $0.00",
+    file: "dist/orchestrator/loop.js",
+    find: "const failedPlanCostUsd = e?.costUsd ?? 0;",
+    replace: "const failedPlanCostUsd = 0;",
+    tests: ["tests/beta128-failed-plan-cost.test.mjs"],
+  },
+  {
+    // b127 fixed the in-memory total and left the ROW alone, so every report
+    // that reads sessions.cost_usd still billed the lead at zero.
+    name: "the lead's cost reaches the session ROW (b128 / #157): the half b127 missed",
+    file: "dist/orchestrator/loop.js",
+    find: "this.addCost(sessionId, leadPlanningCostUsd);",
+    replace: "void leadPlanningCostUsd;",
+    tests: ["tests/beta128-failed-plan-cost.test.mjs"],
+  },
+  {
+    name: "the planner carries its spend out on the throw (b128 / #157): the loop can only bank what it is handed",
+    file: "dist/orchestrator/fable5-lead.js",
+    find: "failed.costUsd = Number((leadCallCostUsd + (scoutOutcome?.costUsd ?? 0) + (failed.costUsd ?? 0)).toFixed(6));",
+    replace: "failed.costUsd = failed.costUsd ?? 0;",
+    tests: ["tests/beta128-failed-plan-cost.test.mjs"],
+  },
 ];
 
 function runTests(files) {
@@ -1489,6 +1552,42 @@ function locate(src, find) {
   return { text: hits[0][0], elastic: true };
 }
 
+/**
+ * beta.128: restore the mutated file even when this process does not get to
+ * run its `finally`.
+ *
+ * The try/finally below is correct and was still not enough. Piping this
+ * script into `head` closes stdout early; the next `console.log` raises EPIPE,
+ * node tears the process down, and `dist/` is left holding a deliberate bug.
+ * Every subsequent run then reads a corrupted tree -- anchors "not found" in
+ * files nobody touched, mutations "surviving" tests that would have caught
+ * them. The signal that tells us the suite is honest was itself dishonest, and
+ * it took three full runs to notice.
+ *
+ * So the restore is registered as a process-level obligation the moment a file
+ * is mutated, not only as a lexical one.
+ */
+let inFlight = null;
+const restoreInFlight = () => {
+  if (!inFlight) return;
+  writeFileSync(inFlight.path, inFlight.original, "utf8");
+  inFlight = null;
+};
+process.on("exit", restoreInFlight);
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    restoreInFlight();
+    process.exit(130);
+  });
+}
+// A closed stdout must not be the thing that corrupts the tree.
+process.stdout.on("error", (e) => {
+  if (e?.code === "EPIPE") {
+    restoreInFlight();
+    process.exit(0);
+  }
+});
+
 let failures = 0;
 for (const m of MUTATIONS) {
   const path = join(root, m.file);
@@ -1520,6 +1619,7 @@ for (const m of MUTATIONS) {
   try {
     // Replace the text as it appears on disk, so an elastic match rewrites the
     // real indentation rather than the anchor's stale copy of it.
+    inFlight = { path, original };
     writeFileSync(path, original.replace(found.text, m.replace), "utf8");
     const stillPasses = runTests(m.tests);
     if (stillPasses) {
@@ -1532,6 +1632,7 @@ for (const m of MUTATIONS) {
     }
   } finally {
     writeFileSync(path, original, "utf8");
+    inFlight = null;
   }
 }
 

@@ -1064,6 +1064,18 @@ export interface LoopConfig {
      */
     lead_salvage_truncated_plan?: boolean;
     /**
+     * beta.128: when a lead plan comes back COMPLETE but fails JSON.parse, spend
+     * one more call asking for the same plan with the fault corrected, quoting
+     * the parser's complaint and the text around it.
+     *
+     * Distinct from `lead_json_retry_enabled` (prose drift) and from the
+     * truncation rung: this one fires on a whole document spoiled by a token,
+     * which salvage cannot help with because there is nothing to close. Session
+     * f75f7db6 lost a 24k-char plan and two Opus calls to `"seq_note":undefined`.
+     * Default true. Set false to hard-fail instead of paying for a third call.
+     */
+    lead_syntax_retry_enabled?: boolean;
+    /**
      * beta.94 (Feature 1): DETERMINISTIC FINAL SCOPE CHECK. Two behaviours gated
      * together:
      *   (a) In the lead-plan normalisation, DROP a trailing PURE-OBSERVE sub-task

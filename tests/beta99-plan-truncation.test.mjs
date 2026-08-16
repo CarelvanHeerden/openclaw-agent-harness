@@ -135,7 +135,11 @@ test("beta.99: the truncation retry drops the corrective note that demanded MORE
   // The truncation branch must rebuild from baseMessage (brief only). Building
   // it from userMessage would re-inject the b67 "add more context" note into a
   // prompt whose entire purpose is to produce less.
-  const branch = src.slice(src.indexOf("const retryMsg = truncated"), src.indexOf("params.logger?.warn?.(\n      truncated"));
+  // b128 renamed this to `sizedRetryMsg`: `retryMsg` is now that message plus
+  // the parse fault, when the reply managed to be both cut off AND invalid.
+  // The property under test is unchanged -- the truncation branch is built from
+  // the brief alone, never from the note-carrying userMessage.
+  const branch = src.slice(src.indexOf("const sizedRetryMsg = truncated"), src.indexOf("params.logger?.warn?.(\n      truncated"));
   assert.match(branch, /\$\{baseMessage\}\\n\\nYOUR PREVIOUS REPLY WAS TRUNCATED/);
   assert.ok(
     !/\$\{userMessage\}\\n\\nYOUR PREVIOUS REPLY WAS TRUNCATED/.test(branch),

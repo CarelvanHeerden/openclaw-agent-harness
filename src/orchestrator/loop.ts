@@ -1713,6 +1713,16 @@ export class OrchestratorLoop {
       // to every one of those decisions -- and a run that died IN planning
       // reported $0.00 having burned real tokens.
       leadPlanningCostUsd = plan.actualCostUsd ?? 0;
+      // beta.128 (#157, second half): PERSIST it. b127 folded the lead into the
+      // in-memory `totalCost` -- which fixed the affordability arithmetic -- and
+      // stopped there, so `sessions.cost_usd` still counted only workers and
+      // reviews. Every report that reads the row (the smoke script, `harness
+      // status`, the monthly rollup) therefore billed Opus at zero. Recorded
+      // against the requester's ledger too, the same way a worker's spend is.
+      if (leadPlanningCostUsd > 0) {
+        this.addCost(sessionId, leadPlanningCostUsd);
+        await this.deps.budget.recordSpend(row.requester, leadPlanningCostUsd, sessionId);
+      }
       this.deps.state.audit(
         "loop.plan_ready",
         {
@@ -1895,9 +1905,24 @@ export class OrchestratorLoop {
           sessionId,
         );
       }
+      // beta.128 (#157, second half): a plan that FAILED still cost money.
+      // Session f75f7db6 spent ten minutes across two Opus calls and finalised
+      // at $0.00 -- the number an operator uses to decide whether a re-run is
+      // affordable, reported as free. runLeadPlanner attaches everything it
+      // spent to the error, including the scout, so bank it before finalising.
+      const failedPlanCostUsd = e?.costUsd ?? 0;
+      if (failedPlanCostUsd > 0) {
+        this.addCost(sessionId, failedPlanCostUsd);
+        await this.deps.budget.recordSpend(row.requester, failedPlanCostUsd, sessionId);
+        this.deps.state.audit(
+          "loop.plan_failed_cost",
+          { sessionId, costUsd: Number(failedPlanCostUsd.toFixed(4)) },
+          sessionId,
+        );
+      }
       this.deps.interactionLog?.log(sessionId, { event: "plan_failed", phase: "plan", error: String(err) });
       this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
-      return this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd);
+      return this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd + failedPlanCostUsd);
     }
 
     // beta.119: ASK THE QUESTION BEFORE SPENDING THE MONEY. The CI-optimisation

@@ -369,6 +369,12 @@ export function bootstrapHarnessSync(api) {
                     // beta.99 (P0-4/P0-6): explicit output ceiling + truncation salvage.
                     maxOutputTokens: config.models.max_output_tokens,
                     leadSalvageEnabled: config.loop.lead_salvage_truncated_plan !== false,
+                    // beta.128: one more call when a COMPLETE plan fails to parse.
+                    leadSyntaxRetryEnabled: config.loop.lead_syntax_retry_enabled !== false,
+                    // beta.128: record every attempt, including the ones we recovered
+                    // from. A truncation that the retry rung fixed used to leave no
+                    // trace, so the smoke report called a run clean that was not.
+                    onAttempt: (info) => state.audit("lead.plan_attempt", info, ctx?.sessionId),
                 }),
                 // beta.99 (P0-2): bounded workerContext top-up. Replaces the b67
                 // whole-plan re-ask as the FIRST remedy for thin context; the

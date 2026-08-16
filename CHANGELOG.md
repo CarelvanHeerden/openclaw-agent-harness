@@ -1,5 +1,115 @@
 # Changelog
 
+## 0.1.0-beta.128
+
+### A 24,000-character plan, thrown away over one token
+
+b127's truncation classifier worked. Session f75f7db6's first planning attempt
+hit the output ceiling mid-JSON, the harness recognised it as a cut-off rather
+than prose drift, and took the b99 mechanical size-reduction rung — exactly the
+misclassification b126 got wrong and b127 fixed. The retry came back complete,
+24,475 characters, comfortably under the ceiling.
+
+It contained this:
+
+```
+..."subTasks":[...,{"seq":2,...,"seq_note":undefined}]...
+```
+
+`undefined` is a JavaScript literal. JSON has no such value, so the parse
+failed, so the run died: `failed | cycles 0 | cost $0.00`. Ten minutes of Opus
+across two calls, no branch, no PR.
+
+Every rung we had was the wrong shape for it. The compaction rung answers a
+reply that was cut off; this one was not. Salvage repairs a document that stops
+mid-write by closing it; this one had closed itself. And the anti-prose rung
+would have told a model that had just emitted 24k characters of correct JSON
+that it "returned prose or an incomplete object" — a correction that describes
+neither the document nor the fault, leaving the model no move to make.
+
+**So b128 asks.** When a plan comes back whole and will not parse, the harness
+spends one more call quoting the parser's own complaint, the 360 characters
+either side of the fault with the position marked, and the rule that was
+broken. It does not repair the token itself: only the model knows whether
+`seq_note` should have held a value or been absent, and guessing `null` on its
+behalf writes a field nobody chose into a plan the run then executes.
+
+The scan for the offending literal is string-aware, so a plan whose prose
+legitimately says "the value is undefined" is not accused of the bug it is
+describing.
+
+One further case fell out of writing the tests. A reply can be *both* cut off
+and carrying a bad token — the model closes the JSON, then gets cut writing
+commentary underneath. That reads as truncated while the document itself is
+whole and one edit from valid. Sending only the size reduction would have it
+shrink a plan whose size was never the problem and hit the same token again, so
+when both faults are present the retry now names both.
+
+### #157, the half that was missed
+
+b127 credited the planner's cost to the session and closed #157. Reviewing this
+failure found two paths it never covered.
+
+The first is the one f75f7db6 hit: the credit happens at `loop.plan_ready`,
+which a run that dies *in* planning never reaches. b127's own changelog claimed
+"a run that died in planning reported $0.00 having burned real tokens" as
+something it had addressed. It had not — only the success path was fixed.
+
+The second is worse, because it affected runs that worked. b127 folded the lead
+into the in-memory `totalCost`, which corrected the affordability arithmetic
+that #157 was actually filed about, and stopped there. `sessions.cost_usd` — the
+row the smoke script, `harness status` and the monthly rollup all read — still
+counted only workers and reviews. Every session the harness has ever reported
+was short by the price of the most expensive model in the run.
+
+Both are now written to the row and to the requester's ledger. A planner that
+failed before reaching the model still records nothing, because a wedge that
+never spent anything is genuinely free.
+
+### The report was confidently wrong, again
+
+Section 1 of the smoke report read `truncation detected: no` for a session whose
+container log says `[lead] plan JSON TRUNCATED (output ceiling hit)`. The event
+it reads is only emitted on the terminal failure path, so a truncation the retry
+*recovered from* left no trace at all. b127 had added a caveat about this to one
+branch of the verdict and not the one that fired.
+
+The harness now audits every planning attempt as it happens — outcome, rung,
+size and cost, win or lose — and the report prints the ladder. The one piece of
+good news in this run, b127 selecting the correct rung, was invisible to the
+report that exists to measure it.
+
+### The mutation gate was lying
+
+While checking b128's coverage, three mutations "survived" and four anchors went
+"not found" in files nobody had touched. The cause was not the code. Piping
+`mutation-check.mjs` into `head` closes stdout, the next write raises EPIPE, and
+node tears the process down past the `finally` that restores the mutated file —
+leaving a deliberate bug in `dist/` for every later run to read. The signal that
+tells us the suite is honest was itself dishonest, and it took three full runs
+to notice. The restore is now a process-level obligation registered the moment a
+file is mutated, not only a lexical one.
+
+Two of the original three survivors were real and are fixed: a test asserting
+`>= 0.6` against an error that already carried 0.6 proved nothing about the
+accumulation it was meant to cover, and one guard was redundant. That guard —
+skipping the re-ask when the reply was flagged truncated — turned out to block
+the very case described above, where the document is closed and the stream is
+not. Removing it was the fix; the gate is the fault itself, which is only
+describable when a whole document failed to parse for a nameable reason.
+
+All 183 mutations are caught.
+
+### Not changed
+
+`estimated_usd` moved from $10 to $40 between the b126 and b127 smokes on an
+identical brief, which looked like an estimator regression. It is not: the value
+has always been `rec.recommended`, derived from the session budget rather than
+from the task, so it tracks whatever budget was named at intake. Same code in
+both releases. That an "estimate" which echoes the cap carries no information is
+a fair criticism of the design, but redesigning it quietly inside a bugfix
+release is not the way to answer it.
+
 ## 0.1.0-beta.127
 
 ### Four cycles spent on opinions, while the only gate that blocks a merge went unread
