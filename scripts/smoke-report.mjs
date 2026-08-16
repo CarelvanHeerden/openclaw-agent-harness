@@ -110,14 +110,36 @@ if (ciFail.length && excerptMissing) {
 // same wall. Two questions here. Did the plan get cut off at all, and if so did
 // the harness recognise it as a cut rather than as bad manners.
 // ---------------------------------------------------------------------------
-rule("2. PLANNER TRUNCATION  (the b126 headline)");
+rule("2. PLANNER ATTEMPTS  (b126 truncation classifier, b128 syntax repair)");
 const truncEv = of("loop.plan_truncated");
 const planReady = of("loop.plan_ready");
 const planFail = of("loop.plan_failed");
 const failText = planFail.at(-1) ? JSON.stringify(planFail.at(-1).p) : "";
+// b128: every attempt is audited now, win or lose. Before this the script could
+// only see attempts that killed the run, so a truncation the retry RECOVERED
+// from left no trace and section 2 printed "truncation detected: no" about a
+// session whose container log said the opposite (f75f7db6). Read the ladder.
+const attempts = of("lead.plan_attempt");
+const attemptTruncated = attempts.filter((a) => a.p?.outcome === "truncated");
+const attemptInvalid = attempts.filter((a) => a.p?.outcome === "invalid_json");
+const sawTruncation = truncEv.length > 0 || attemptTruncated.length > 0;
+
+if (attempts.length) {
+  console.log(`   lead attempts:          ${attempts.length}`);
+  for (const a of attempts) {
+    const p = a.p ?? {};
+    const rung = p.rung ? ` via ${p.rung}` : " (first attempt)";
+    const cost = typeof p.costUsd === "number" ? `$${p.costUsd.toFixed(4)}` : "$?";
+    console.log(`   - attempt ${p.attempt ?? "?"}: ${p.outcome ?? "?"}${rung}, ${p.outputChars ?? "?"} chars, ${cost}`);
+    if (p.error) console.log(`       ${trim(p.error, 160)}`);
+  }
+} else {
+  console.log("   lead attempts:          (not recorded — session predates b128)");
+}
 
 console.log(`   plan reached the loop:  ${planReady.length ? "YES" : "no"}`);
-console.log(`   truncation detected:    ${truncEv.length ? `YES (${truncEv.length}x)` : "no"}`);
+console.log(`   truncation detected:    ${sawTruncation ? `YES (${truncEv.length + attemptTruncated.length}x)` : "no"}`);
+console.log(`   invalid JSON detected:  ${attemptInvalid.length ? `YES (${attemptInvalid.length}x)` : "no"}`);
 if (truncEv.length) {
   for (const t of truncEv) {
     console.log(`   - ${t.p.outputChars ?? "?"} chars against a ${t.p.maxOutputTokens ?? "(unset)"}-token ceiling on ${t.p.model ?? "?"}`);
@@ -136,18 +158,33 @@ if (/model returned prose/.test(failText)) {
   console.log("   >>> VERDICT: b126 named the failure correctly (truncated, not prose) but the");
   console.log("       run still died in planning. The compaction retry was not enough. Report");
   console.log("       the output size above — the plan may be genuinely too large for one reply.");
-} else if (truncEv.length && planReady.length) {
+} else if (attemptInvalid.length && planReady.length) {
+  console.log("   >>> VERDICT: b128 WORKED. A reply came back COMPLETE but not valid JSON, the");
+  console.log("       harness quoted the parse error back, and planning succeeded on the re-ask.");
+} else if (attemptInvalid.length) {
+  console.log("   >>> A reply was complete but would not parse, and planning still died. Check");
+  console.log("       the attempt ladder above: if the syntax_repair rung never ran, either");
+  console.log("       loop.lead_syntax_retry_enabled is false or the fault was not describable.");
+} else if (sawTruncation && planReady.length) {
   console.log("   >>> VERDICT: b126 WORKED. A reply was cut off, the harness recognised it as a");
   console.log("       cut, retried with a smaller plan, and planning succeeded. This is the fix.");
 } else if (planReady.length) {
-  // b127: this used to read "planning succeeded first time", and on the b126
-  // smoke that was false -- planning DID fail once and take a retry rung, and
-  // the only trace was a container log line the script cannot see. Claim the
-  // thing the audit trail actually supports, and name the blind spot.
-  console.log("   >>> A plan reached the loop and no truncation was recorded. Note the limit of");
-  console.log("       this claim: a lead retry that recovers leaves no audit event, so this does");
-  console.log("       NOT mean planning succeeded first time. To be sure, grep the container log");
-  console.log("       for '[lead] plan JSON parse/validation failed' on this session's window.");
+  // b128: with the attempt ladder audited, "no truncation" is now a claim the
+  // trail actually supports -- but only for sessions that HAVE the ladder. Keep
+  // the caveat for older ones rather than reading their silence as success.
+  console.log(
+    attempts.length
+      ? "   >>> Planning succeeded and every attempt is listed above, so this is a complete"
+      : "   >>> A plan reached the loop and no truncation was recorded. This session predates",
+  );
+  console.log(
+    attempts.length
+      ? "       account of what the lead did — no inference required."
+      : "       the b128 attempt ladder, so a retry that recovered would leave no trace here.",
+  );
+} else if (attempts.length) {
+  console.log("   >>> No plan reached the loop. The attempt ladder above is the full account of");
+  console.log("       what the lead tried; section 5 has the error that ended it.");
 } else {
   console.log("   >>> No plan and no truncation recorded. See section 5 for what stopped it.");
 }
@@ -261,11 +298,41 @@ console.log(`   first event to last: ${dur((events.at(-1)?.created_at ?? session
 // cost the harness has ever reported was a lower bound by the price of the
 // most expensive model in the run. On the b126 smoke that was 311 seconds of
 // Opus reported as $0.00.
-const leadCost = of("loop.plan_ready").at(-1)?.p?.leadCostUsd;
+// b128 (#157, second half): b127 recorded the lead's cost only when planning
+// SUCCEEDED, and only in memory. A run that died in planning still reported
+// $0.00 (f75f7db6: two Opus calls, ten minutes, nothing on the ledger), and
+// even a good run left the lead out of sessions.cost_usd. Read both paths.
+const failedPlanCost = of("loop.plan_failed_cost").at(-1)?.p?.costUsd;
+const leadCost = of("loop.plan_ready").at(-1)?.p?.leadCostUsd ?? failedPlanCost;
+const attemptCost = attempts.reduce((sum, a) => sum + (Number(a.p?.costUsd) || 0), 0);
+if (attempts.length) {
+  console.log(`   lead attempts cost: $${attemptCost.toFixed(2)} across ${attempts.length} attempt(s)`);
+}
 if (leadCost === undefined) {
-  console.log("   lead planning cost: NOT RECORDED — the b127 #157 fix is missing from this build.");
+  console.log(
+    attemptCost > 0
+      ? "   lead planning cost: NOT BANKED — attempts cost real money (above) but neither"
+      : "   lead planning cost: NOT RECORDED — the #157 fix is missing from this build.",
+  );
+  if (attemptCost > 0) {
+    console.log("       plan_ready nor plan_failed_cost recorded it. The session total is short");
+    console.log("       by that amount. This is the #157 defect, still open.");
+  }
+} else if (failedPlanCost !== undefined && !of("loop.plan_ready").length) {
+  console.log(`   lead planning cost: $${Number(leadCost).toFixed(2)} — banked on a FAILED plan (b128).`);
+  console.log("       Planning died, so this bought nothing, but it is real spend and the");
+  console.log("       session total must show it. Pre-b128 this read $0.00.");
 } else {
   console.log(`   lead planning cost: $${Number(leadCost).toFixed(2)} of the ${money(session.cost_usd)} total`);
+  // b128: the planner cannot have spent more than the session did. If it reads
+  // that way the lead's cost never reached sessions.cost_usd -- which is the
+  // exact defect this release closed, so say so rather than printing the
+  // contradiction straight-faced.
+  if (Number(leadCost) > Number(session.cost_usd ?? 0) + 1e-6) {
+    console.log("   >>> The planner cost MORE than the session total, which cannot be true. The");
+    console.log("       lead's spend is not reaching sessions.cost_usd. Report this: it is the");
+    console.log("       #157 defect back again.");
+  }
   if (Number(leadCost) === 0) {
     console.log("   >>> The planner reported $0.00. If planning took more than a minute on Opus");
     console.log("       that is still wrong, and #157 is only half fixed. Report the duration.");

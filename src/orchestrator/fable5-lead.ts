@@ -757,6 +757,16 @@ export async function runLeadPlanner(
         raw = lastValid;
         break;
       }
+      // beta.128 (#157, second half): carry the planning spend OUT on the
+      // failure path. b127 credited the lead at plan_ready, which a run that
+      // dies IN planning never reaches -- session f75f7db6 burned two Opus
+      // calls over ten minutes and the ledger said $0.00. The failed call's own
+      // cost rides on the error; add the attempts and the scout that preceded
+      // it, so the total is everything this planner spent before giving up.
+      const failed = err as { costUsd?: number };
+      failed.costUsd = Number(
+        (leadCallCostUsd + (scoutOutcome?.costUsd ?? 0) + (failed.costUsd ?? 0)).toFixed(6),
+      );
       throw err;
     }
 

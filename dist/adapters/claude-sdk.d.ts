@@ -334,6 +334,13 @@ export interface StructuredCallError extends Error {
      * what it is never told.
      */
     costUsd?: number;
+    /**
+     * beta.128: the JSON we actually tried to parse, kept whole. `rawText` is the
+     * entire reply (prose, fences and all) and the message embeds only a 2000
+     * char slice; neither lets a caller point at the offending token. See
+     * `describeJsonSyntaxFault`.
+     */
+    extractedText?: string;
 }
 /**
  * beta.99 (P0-6): repair a JSON document that was cut off mid-write.
@@ -375,6 +382,45 @@ export declare function repairTruncatedJson(text: string): string | null;
  *   - JSON preceded/followed by prose.
  */
 export declare function extractJson(text: string): string;
+/**
+ * beta.128: turn a `JSON.parse failed` error into a correction a model can act
+ * on -- the parser's own complaint, the text either side of the fault, and the
+ * rule that was broken.
+ *
+ * WHY THIS EXISTS. Session f75f7db6 (b127) died on a complete plan carrying
+ * `"seq_note":undefined`. The retry it got said "you returned prose or an
+ * incomplete object" -- describing neither the document nor the fault, about a
+ * reply that was valid in every other respect. A model told what is wrong and
+ * where can fix one token; a model told it wrote prose when it did not has no
+ * move to make.
+ *
+ * Deliberately NOT a repair: we do not guess what `undefined` was meant to
+ * hold. Only the model knows whether that field should be a value or absent.
+ *
+ * Returns undefined when the error is not a parse fault we can describe, so
+ * callers fall back to their existing retry text.
+ */
+export declare function describeJsonSyntaxFault(err: unknown): string | undefined;
+/**
+ * beta.128: what one lead planning attempt did. Reported per attempt so the
+ * audit trail records the attempts that were survived, not only the one that
+ * ended the run. See `runLeadSdk.onAttempt`.
+ */
+export interface LeadAttemptInfo {
+    attempt: number;
+    /**
+     * `truncated` means cut off at the output ceiling; `invalid_json` means a
+     * COMPLETE document the parser rejected. Keeping them apart is the whole
+     * point -- b126 conflated them and retried a cut-off reply with a plea to
+     * stop writing prose.
+     */
+    outcome: "ok" | "truncated" | "invalid_json" | "error";
+    costUsd: number;
+    outputChars: number;
+    /** Which retry rung produced this attempt. Absent on the first attempt. */
+    rung?: "mechanical_size_reduction" | "contract_reassertion" | "syntax_repair";
+    error?: string;
+}
 export interface JsonValidationOptions<T> {
     /** Required top-level keys on the parsed object. Missing keys throw. */
     requiredKeys: readonly (keyof T)[];
@@ -475,6 +521,26 @@ export declare function runLeadSdk(params: {
      * pre-beta.99 hard-fail.
      */
     leadSalvageEnabled?: boolean;
+    /**
+     * beta.128: when true (default), a COMPLETE plan that fails JSON.parse buys
+     * one more call with the parse error quoted back. Distinct from
+     * `jsonRetryEnabled` (prose drift) and from the truncation rung. Threaded
+     * from loop.lead_syntax_retry_enabled.
+     */
+    leadSyntaxRetryEnabled?: boolean;
+    /**
+     * beta.128: called once per lead attempt, win or lose.
+     *
+     * WHY: two things were invisible without it. A truncation that RECOVERED left
+     * no audit trail at all -- the smoke report read the terminal failure and
+     * printed "truncation detected: no" about a run whose logs said the opposite,
+     * which is the confidently-wrong verdict class. And an attempt that failed
+     * was billed to nobody, so a planning failure that burned two Opus calls
+     * reported $0.00. Both are answered by telling the caller what happened on
+     * each attempt, at the moment it happens, rather than inferring it from
+     * whatever the last error looked like.
+     */
+    onAttempt?: (info: LeadAttemptInfo) => void;
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
     costUsd: number;
     tokensIn: number;

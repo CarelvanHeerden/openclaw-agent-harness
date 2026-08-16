@@ -1049,6 +1049,105 @@ export function extractJson(text) {
         `check that structured calls run with tools: [] to disable built-in tools): ${text.slice(0, 200)}`);
 }
 /**
+ * beta.128: the JS literals a language model reaches for when it is thinking in
+ * JavaScript instead of JSON. None of them are JSON values, so any one of them
+ * fails the whole document.
+ */
+const NON_JSON_LITERALS = ["undefined", "NaN", "Infinity"];
+/**
+ * beta.128: find the first non-JSON literal that sits OUTSIDE a string.
+ *
+ * String-aware on purpose: a plan whose prose legitimately says `the value is
+ * undefined` must not be reported as the fault. Only a bare token in value
+ * position breaks the parse.
+ */
+function findNonJsonLiteral(text) {
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (ch === "\\") {
+            if (inString)
+                escaped = true;
+            continue;
+        }
+        if (ch === '"') {
+            inString = !inString;
+            continue;
+        }
+        if (inString)
+            continue;
+        for (const token of NON_JSON_LITERALS) {
+            if (ch === token[0] && text.startsWith(token, i))
+                return { index: i, token };
+        }
+    }
+    return undefined;
+}
+/**
+ * beta.128: turn a `JSON.parse failed` error into a correction a model can act
+ * on -- the parser's own complaint, the text either side of the fault, and the
+ * rule that was broken.
+ *
+ * WHY THIS EXISTS. Session f75f7db6 (b127) died on a complete plan carrying
+ * `"seq_note":undefined`. The retry it got said "you returned prose or an
+ * incomplete object" -- describing neither the document nor the fault, about a
+ * reply that was valid in every other respect. A model told what is wrong and
+ * where can fix one token; a model told it wrote prose when it did not has no
+ * move to make.
+ *
+ * Deliberately NOT a repair: we do not guess what `undefined` was meant to
+ * hold. Only the model knows whether that field should be a value or absent.
+ *
+ * Returns undefined when the error is not a parse fault we can describe, so
+ * callers fall back to their existing retry text.
+ */
+export function describeJsonSyntaxFault(err) {
+    const e = err;
+    if (!e)
+        return undefined;
+    const message = String(e.message ?? "");
+    if (!/JSON\.parse failed/i.test(message))
+        return undefined;
+    // Prefer the document carried on the error; fall back to the copy embedded in
+    // the message for errors that crossed a boundary which dropped the property.
+    const embedded = /--- extracted ---\n([\s\S]*?)\n--- raw ---/.exec(message);
+    const text = e.extractedText ?? embedded?.[1];
+    if (!text)
+        return undefined;
+    // The parser reports a position on some runtimes and not others, so treat it
+    // as a hint and fall back to locating the offending literal ourselves.
+    const positionMatch = /at position (\d+)/.exec(message);
+    const located = findNonJsonLiteral(text);
+    const index = positionMatch ? Number(positionMatch[1]) : located?.index;
+    const reason = /(SyntaxError: [^\n]*)/.exec(message)?.[1] ?? "the document is not valid JSON";
+    const lines = [`The JSON parser rejected it with: ${reason}`];
+    if (index !== undefined && index >= 0 && index < text.length) {
+        const from = Math.max(0, index - 180);
+        const to = Math.min(text.length, index + 180);
+        const window = `${text.slice(from, index)}>>>HERE>>>${text.slice(index, to)}`;
+        lines.push(`Here is the text around the fault, with >>>HERE>>> marking the position:`, window);
+    }
+    if (located) {
+        lines.push(`The token \`${located.token}\` is a JavaScript literal, not a JSON value. JSON has no ` +
+            `\`undefined\`, \`NaN\` or \`Infinity\`, and permits no trailing commas.`, `If a field has no value, OMIT the key entirely or write null. Never emit the bare token \`${located.token}\`.`);
+    }
+    return lines.join("\n");
+}
+/** beta.128: which failure class an attempt landed in. See LeadAttemptInfo. */
+function classifyAttempt(err) {
+    const e = err;
+    if (e?.truncated === true)
+        return "truncated";
+    if (/JSON\.parse failed/i.test(String(e?.message ?? "")))
+        return "invalid_json";
+    return "error";
+}
+/**
  * Robust wrapper around `extractJson()`.
  *  - Extracts the first JSON object/array.
  *  - Parses it.
@@ -1072,7 +1171,13 @@ export function extractAndValidateJson(rawText, opts) {
         parsed = JSON.parse(extracted);
     }
     catch (err) {
-        throw new Error(`[${label}] JSON.parse failed: ${String(err)}\n--- extracted ---\n${extracted.slice(0, 2000)}\n--- raw ---\n${rawText.slice(0, 4000)}`);
+        // beta.128: keep the extracted document ON the error. The b127 planning
+        // failure was a complete, balanced, 24k-char plan containing one invalid
+        // token (`"seq_note":undefined`). Everything needed to ask the model to
+        // fix that one token was in this function and thrown away here.
+        const parseErr = new Error(`[${label}] JSON.parse failed: ${String(err)}\n--- extracted ---\n${extracted.slice(0, 2000)}\n--- raw ---\n${rawText.slice(0, 4000)}`);
+        parseErr.extractedText = extracted;
+        throw parseErr;
     }
     if (!parsed || typeof parsed !== "object") {
         throw new Error(`[${label}] JSON parsed to non-object: ${typeof parsed}\n--- extracted ---\n${extracted.slice(0, 2000)}`);
@@ -1412,11 +1517,28 @@ export async function runLeadSdk(params) {
     // transient prose-drift so a single bad turn does not hard-crash a plan.
     // Cheap defense-in-depth (C3's resume-at-subtask should mean a re-plan rarely
     // happens at all). Gated by loop.lead_json_retry_enabled (default on).
+    // beta.128: never let bookkeeping kill a planning run that is otherwise fine.
+    const report = (info) => {
+        try {
+            params.onAttempt?.(info);
+        }
+        catch {
+            /* an audit sink that throws must not cost us the plan */
+        }
+    };
     try {
         const r = await call(userMessage);
+        report({ attempt: 1, outcome: "ok", costUsd: r.costUsd, outputChars: r.raw?.length ?? 0 });
         return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
     }
     catch (err) {
+        report({
+            attempt: 1,
+            outcome: classifyAttempt(err),
+            costUsd: err.costUsd ?? 0,
+            outputChars: err.rawText?.length ?? 0,
+            error: String(err?.message ?? err).slice(0, 300),
+        });
         if (params.jsonRetryEnabled === false)
             throw err;
         const msg = String(err?.message ?? err);
@@ -1444,7 +1566,8 @@ export async function runLeadSdk(params) {
         // MECHANICAL size reduction (drop the largest field outright), not a
         // politely-worded plea to be terser. And never carry the corrective note
         // that asked for more prose into a retry whose whole purpose is less prose.
-        const retryMsg = truncated
+        const firstFault = describeJsonSyntaxFault(err);
+        const sizedRetryMsg = truncated
             ? `${baseMessage}\n\nYOUR PREVIOUS REPLY WAS TRUNCATED: the JSON was cut off before it closed (it hit the output length limit). ` +
                 `Re-plan with the SAME sub-task coverage and the SAME seq numbers, but apply these HARD limits so it fits:\n` +
                 `  - OMIT \`codeExcerpts\` ENTIRELY. Put the same information in \`changeSpec\` as a file:line reference.\n` +
@@ -1453,8 +1576,21 @@ export async function runLeadSdk(params) {
                 `  - No restated boilerplate, no commentary fields, nothing outside the schema.\n` +
                 `A COMPLETE terse plan is REQUIRED. A richer plan that gets cut off is a FAILED plan. ` +
                 `Return a SINGLE complete raw JSON object and NOTHING else -- no prose, no code fence. Begin with '{' and ensure it is fully closed.`
-            : `${userMessage}\n\nYOUR PREVIOUS REPLY WAS NOT VALID JSON (you returned prose or an incomplete object). ` +
-                `Return the plan as a SINGLE raw JSON object and NOTHING else -- no prose, no code fence, no narration. Begin your reply with '{'.`;
+            : // beta.128: when the reply WAS a document and one token spoiled it,
+                // quote the parser's complaint instead of accusing the model of prose.
+                // See describeJsonSyntaxFault.
+                firstFault
+                    ? `${userMessage}\n\nYOUR PREVIOUS REPLY WAS NOT VALID JSON.\n${firstFault}\n\n` +
+                        `Return the COMPLETE plan again, with the SAME sub-task coverage and the SAME seq numbers, as a ` +
+                        `SINGLE raw JSON object and NOTHING else -- no prose, no code fence, no narration. Begin your reply with '{'.`
+                    : `${userMessage}\n\nYOUR PREVIOUS REPLY WAS NOT VALID JSON (you returned prose or an incomplete object). ` +
+                        `Return the plan as a SINGLE raw JSON object and NOTHING else -- no prose, no code fence, no narration. Begin your reply with '{'.`;
+        // beta.128: the two faults are not exclusive. A model can close the JSON,
+        // put a bad token in it, and then get cut writing prose underneath -- which
+        // reads as truncated while the document itself is whole and one edit from
+        // valid. Sending only the size reduction would have it shrink a plan whose
+        // size was never the problem, and hit the same token again.
+        const retryMsg = truncated && firstFault ? `${sizedRetryMsg}\n\nIT ALSO WOULD NOT PARSE.\n${firstFault}` : sizedRetryMsg;
         params.logger?.warn?.(truncated
             ? "[lead] plan JSON TRUNCATED (output ceiling hit); retrying ONCE with a MECHANICAL size reduction (beta.99)"
             : "[lead] plan JSON parse/validation failed; retrying ONCE with a terse output-contract re-assertion (beta.81 anti-prose-drift)", { error: msg.slice(0, 300), truncated });
@@ -1462,8 +1598,10 @@ export async function runLeadSdk(params) {
         // forward means a plan that took two goes is billed for two goes, and a
         // plan that never landed is still billed. Pre-b126 both attempts vanished.
         const spentSoFar = err.costUsd ?? 0;
+        const rung = truncated ? "mechanical_size_reduction" : "contract_reassertion";
         try {
             const r2 = await call(retryMsg);
+            report({ attempt: 2, outcome: "ok", costUsd: r2.costUsd, outputChars: r2.raw?.length ?? 0, rung });
             return {
                 ...r2.parsed,
                 costUsd: spentSoFar + r2.costUsd,
@@ -1473,27 +1611,92 @@ export async function runLeadSdk(params) {
         }
         catch (err2) {
             err2.costUsd = spentSoFar + (err2.costUsd ?? 0);
+            report({
+                attempt: 2,
+                outcome: classifyAttempt(err2),
+                costUsd: err2.costUsd ?? 0,
+                outputChars: err2.rawText?.length ?? 0,
+                rung,
+                error: String(err2?.message ?? err2).slice(0, 300),
+            });
+            // beta.128: THE SYNTAX-REPAIR RUNG.
+            //
+            // Session f75f7db6: attempt 1 hit the output ceiling, b127 correctly took
+            // the mechanical size-reduction rung, and attempt 2 came back COMPLETE,
+            // under the ceiling, and carrying one invalid token -- `"seq_note":
+            // undefined` on sub-task 2. 24,475 characters of good plan, two Opus
+            // calls, ten minutes, thrown away over a token the model would have
+            // fixed if anyone had told it. Salvage could not help: it repairs a
+            // document that was CUT OFF, and this one was whole.
+            //
+            // So ask. Once. Quoting the parser's own complaint and the text around
+            // the fault, on top of whichever rung we just ran -- keeping that rung's
+            // size constraints, because a reply that fit must go on fitting.
+            // The gate is the FAULT, not the truncation flag. `describeJsonSyntaxFault`
+            // only answers when extractJson found a whole document that JSON.parse
+            // then rejected for a nameable reason -- which is precisely the condition
+            // a re-ask can fix, and precisely the one salvage cannot. A `max_tokens`
+            // stop reason alongside a balanced document (the model closed the JSON
+            // and was cut writing prose after it) belongs here too: closing a
+            // document that is already closed does nothing about a bad token in it.
+            let terminal = err2;
+            const fault = describeJsonSyntaxFault(err2);
+            if (fault && params.leadSyntaxRetryEnabled !== false) {
+                params.logger?.warn?.("[lead] plan was COMPLETE but not valid JSON; retrying ONCE with the parse error quoted back (beta.128)", { fault: fault.slice(0, 300) });
+                const spentBeforeRepair = err2.costUsd ?? spentSoFar;
+                try {
+                    const r3 = await call(`${retryMsg}\n\nYOUR PREVIOUS REPLY WAS STILL NOT VALID JSON.\n${fault}\n\n` +
+                        `Emit the SAME plan again with that fault corrected. Change NOTHING else: same sub-tasks, same seq ` +
+                        `numbers, same content. Return a SINGLE raw JSON object and NOTHING else, and verify before you ` +
+                        `answer that every value is a JSON value.`);
+                    report({ attempt: 3, outcome: "ok", costUsd: r3.costUsd, outputChars: r3.raw?.length ?? 0, rung: "syntax_repair" });
+                    return {
+                        ...r3.parsed,
+                        costUsd: spentBeforeRepair + r3.costUsd,
+                        tokensIn: r3.tokensIn,
+                        tokensOut: r3.tokensOut,
+                    };
+                }
+                catch (err3) {
+                    err3.costUsd = spentBeforeRepair + (err3.costUsd ?? 0);
+                    report({
+                        attempt: 3,
+                        outcome: classifyAttempt(err3),
+                        costUsd: err3.costUsd ?? 0,
+                        outputChars: err3.rawText?.length ?? 0,
+                        rung: "syntax_repair",
+                        error: String(err3?.message ?? err3).slice(0, 300),
+                    });
+                    terminal = err3;
+                }
+            }
             // beta.99 (P0-6): LAST RESORT. Both attempts were cut off. Rather than
             // end the session with nothing, salvage the longest well-formed prefix.
             // The result is a REAL but INCOMPLETE plan (trailing sub-tasks are gone),
             // so it is announced loudly and still has to pass validatePlan upstream.
             // Preferred over `plan_failed`, which costs the operator the entire run.
             if (params.leadSalvageEnabled === false)
-                throw err2;
-            const salvaged = salvageLeadPlan(err2) ?? salvageLeadPlan(err);
+                throw terminal;
+            // beta.128: `terminal` is the last thing that failed -- the syntax-repair
+            // attempt when it ran, otherwise attempt 2. Salvage the freshest reply
+            // first and keep attempt 1 as the final fallback.
+            const salvaged = salvageLeadPlan(terminal) ??
+                salvageLeadPlan(err2) ??
+                salvageLeadPlan(err);
             if (salvaged) {
                 params.logger?.warn?.("[lead] both plan attempts were TRUNCATED; SALVAGED the well-formed prefix of the reply (beta.99). " +
                     "This plan is INCOMPLETE -- trailing sub-tasks were cut off. Review the PR with that in mind.", { subTasks: salvaged.subTasks?.length ?? 0 });
                 // beta.126: a salvaged plan is not a free plan. Both attempts were paid
                 // for; reporting 0 here is how two Opus calls became $0.00 on the ledger.
+                // beta.128: charge for the syntax-repair attempt too when it ran.
                 return {
                     ...salvaged,
-                    costUsd: err2.costUsd ?? spentSoFar,
+                    costUsd: terminal.costUsd ?? err2.costUsd ?? spentSoFar,
                     tokensIn: 0,
                     tokensOut: 0,
                 };
             }
-            throw err2;
+            throw terminal;
         }
     }
 }
