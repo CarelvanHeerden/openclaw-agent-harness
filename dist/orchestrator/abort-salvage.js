@@ -59,6 +59,12 @@ export function describeAbortSalvage(reason, cycles, lastReview) {
  * 300s timeout does exactly that.
  */
 export const MAX_RESERVE_FRACTION = 0.25;
+/**
+ * beta.129: a single anomalous cycle (a retry storm, a stuck worker that later
+ * timed out) must not be able to convince the loop that no further cycle can
+ * ever fit. Cap what one observed cycle is allowed to claim.
+ */
+export const MAX_CYCLE_ALLOWANCE_FRACTION = 0.5;
 export function shouldReserveTimeToShip(input) {
     if (!input.hasWork)
         return false;
@@ -74,6 +80,9 @@ export function shouldReserveTimeToShip(input) {
     // Already past the deadline: that is the abort path's business, not ours.
     if (remaining <= 0)
         return false;
-    return remaining < reserveMs;
+    let cycleMs = Number.isFinite(input.observedCycleMs) ? Math.max(0, input.observedCycleMs ?? 0) : 0;
+    if (totalMs > 0)
+        cycleMs = Math.min(cycleMs, totalMs * MAX_CYCLE_ALLOWANCE_FRACTION);
+    return remaining < reserveMs + cycleMs;
 }
 //# sourceMappingURL=abort-salvage.js.map

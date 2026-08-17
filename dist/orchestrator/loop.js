@@ -158,6 +158,7 @@ import { detectStuckFindings, findingKey, coFixFiles, describeUnresolvable, } fr
 import { diagnosePushFailure, describePreservedPushFailure } from "./push-failure.js";
 import { planTouchesWorkflows, describeMissingWorkflowScope } from "./workflow-scope.js";
 import { ABORT_REASONS_WORTH_SHIPPING, describeAbortSalvage, shouldReserveTimeToShip } from "./abort-salvage.js";
+import { TIME_EXTENSION_SEQ, parseTimeExtensionReply, renderTimeExtensionMarker, renderTimeExtensionQuestion, } from "./time-extension.js";
 import { selectWorkerModel } from "./worker-model-select.js";
 import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
 import { WorktreePool } from "./worktree-pool.js";
@@ -514,10 +515,20 @@ export class OrchestratorLoop {
     static advance(input) {
         if (input.reactions.abort)
             return { nextStatus: "aborted", reason: "user_abort_reaction" };
-        if (input.budgetExhausted)
-            return { nextStatus: "aborted", reason: "budget_exhausted" };
-        if (input.hardTimeout)
-            return { nextStatus: "aborted", reason: "hard_timeout" };
+        // beta.129: a ceiling exists to stop us STARTING work we cannot finish. It
+        // must never discard work that IS finished. Session d48ba433 spent 122
+        // minutes, earned `verdict: pass` with zero blocking findings, and was
+        // aborted two milliseconds later because the wall-clock check outranked the
+        // verdict -- $21.55 and six commits thrown away one step short of the PR.
+        // Landing a passing review costs a push and an API call, no model spend, so
+        // neither the clock nor the daily cap is a reason to refuse it.
+        const terminalVerdictInHand = input.currentStatus === "reviewing" && (input.verdict === "pass" || input.reactions.shipIt === true);
+        if (!terminalVerdictInHand) {
+            if (input.budgetExhausted)
+                return { nextStatus: "aborted", reason: "budget_exhausted" };
+            if (input.hardTimeout)
+                return { nextStatus: "aborted", reason: "hard_timeout" };
+        }
         if (input.reactions.shipIt && input.currentStatus === "reviewing") {
             return { nextStatus: "done", reason: "user_ship_it_reaction" };
         }
@@ -1027,7 +1038,7 @@ export class OrchestratorLoop {
         // confirmation gate, otherwise the configured default. Clamped to the
         // config value's order of magnitude at the top end by the parser, so this
         // cannot be used to disable the wall clock outright.
-        const sessionTimeoutSeconds = (() => {
+        let sessionTimeoutSeconds = (() => {
             const raw = this.deps.state.db
                 .prepare(`SELECT hard_timeout_seconds AS s FROM sessions WHERE id = ?`)
                 .get(sessionId);
@@ -1036,7 +1047,9 @@ export class OrchestratorLoop {
                 ? s
                 : this.deps.config.loop.session_hard_timeout_seconds;
         })();
-        const hardDeadlineMs = startedAt + sessionTimeoutSeconds * 1000;
+        // beta.129: mutable, because an operator can now buy more of it mid-run.
+        // See askForTimeExtension.
+        let hardDeadlineMs = startedAt + sessionTimeoutSeconds * 1000;
         if (sessionTimeoutSeconds !== this.deps.config.loop.session_hard_timeout_seconds) {
             this.deps.state.audit("loop.session_timeout_override", { sessionId, seconds: sessionTimeoutSeconds, configured: this.deps.config.loop.session_hard_timeout_seconds }, sessionId);
         }
@@ -1404,6 +1417,20 @@ export class OrchestratorLoop {
         // beta.119: extra cycles granted past `max_cycles` because the finding
         // trend was converging and the budget covered them.
         let cycleExtensionsGranted = 0;
+        // beta.129: wall-clock accounting for the grant decisions. `maxCycleMs` is
+        // the longest cycle seen so far; the guards use it rather than the mean
+        // because the cost of underestimating is losing the whole run, while the
+        // cost of overestimating is shipping a cycle earlier than strictly needed.
+        let cycleStartedAtMs = 0;
+        let maxCycleMs = 0;
+        // beta.129: cycles unlocked by an operator buying more wall clock. Kept
+        // apart from `cycleExtensionsGranted` and `ciRepairCyclesGranted` for the
+        // same reason those are kept apart from each other -- three different
+        // reasons to run one more cycle, three different ceilings, and a report
+        // that can say which one paid for what.
+        let timeExtensionCyclesGranted = 0;
+        // Once the operator has said no (or said nothing), stop interrupting them.
+        let timeExtensionRefused = false;
         // beta.119: BLOCKING findings per cycle -- what the extension decision is
         // actually made on. See isConvergingBlockingTrend.
         const blockingCountsByCycle = [];
@@ -1461,8 +1488,13 @@ export class OrchestratorLoop {
             // b124 had to add `cycleExtensionsGranted` -- a grant the bound does not
             // know about is not a grant. Getting this wrong is silent: the counter goes
             // up, the audit event fires, and nothing runs.
-            while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted) {
+            while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted + timeExtensionCyclesGranted) {
                 cycle += 1;
+                // beta.129: how long cycles actually take on THIS run, so the wall-clock
+                // guards can ask "does another cycle fit?" instead of "is there a little
+                // time left?". Measured, not configured -- a cycle's cost depends on the
+                // repo, the plan size and how much CI polling it drags behind it.
+                cycleStartedAtMs = Date.now();
                 this.deps.state.db.prepare(`UPDATE sessions SET cycles_ran = ? WHERE id = ?`).run(cycle, sessionId);
                 this.checkpoint(sessionId, cycle);
                 // 2a. Executing sub-tasks in dependency order, with bounded concurrency.
@@ -3381,6 +3413,11 @@ export class OrchestratorLoop {
                 findingCountsByCycle.push(report.findings?.length ?? 0);
                 // beta.119: keep the findings themselves, not just how many there were.
                 findingsByCycle.push([...(report.findings ?? [])]);
+                // beta.129: this cycle is now as long as it is going to get before the
+                // decision that follows, so fold it into the observed cycle length the
+                // wall-clock guards reason with.
+                if (cycleStartedAtMs > 0)
+                    maxCycleMs = Math.max(maxCycleMs, Date.now() - cycleStartedAtMs);
                 const reactions = await this.deps.readReactions(sessionId);
                 const blockingFindings = this.countBlockingFindings(report.findings);
                 blockingCountsByCycle.push(blockingFindings);
@@ -3400,12 +3437,17 @@ export class OrchestratorLoop {
                     maxCycleExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
                     budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd),
                     // beta.120 (fix 4): only meaningful once there is something to land.
+                    // beta.129: now sized against a MEASURED cycle, and against the
+                    // session's own ceiling rather than the configured default -- an
+                    // operator who bought four hours at the confirmation gate was still
+                    // having the reserve clamped against the 2h default.
                     shipTimeReserved: shouldReserveTimeToShip({
                         now: Date.now(),
                         hardDeadlineMs,
                         reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
-                        totalBudgetSeconds: this.deps.config.loop.session_hard_timeout_seconds,
+                        totalBudgetSeconds: sessionTimeoutSeconds,
                         hasWork: cycle >= 1,
+                        observedCycleMs: maxCycleMs,
                     }),
                     reactions,
                     // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
@@ -3418,6 +3460,48 @@ export class OrchestratorLoop {
                     hardTimeout: Date.now() > hardDeadlineMs,
                 });
                 this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
+                // beta.129: the clock is about to land a branch that still has blocking
+                // findings on it, while the money to fix them is sitting unspent. That is
+                // the one case worth interrupting a human for, so ask before shipping
+                // short. Everything about this is bounded: only when work remains, only
+                // while the operator keeps saying yes, and only for as long as
+                // `time_extension_wait_seconds`. If the answer does not come, we ship
+                // exactly as b120 shipped and nothing is lost by having asked.
+                if (decision.nextStatus === "done" &&
+                    decision.reason === "ship_time_reserved" &&
+                    this.deps.config.loop.time_extension_ask_enabled !== false &&
+                    !timeExtensionRefused &&
+                    blockingFindings > 0 &&
+                    this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd)) {
+                    const grantedSeconds = await this.askForTimeExtension({
+                        sessionId,
+                        cycle,
+                        blockingFindings,
+                        spentUsd: totalCost,
+                        budgetUsd: row.budget_usd,
+                        remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
+                        observedCycleMs: maxCycleMs,
+                    });
+                    if (grantedSeconds > 0) {
+                        hardDeadlineMs += grantedSeconds * 1000;
+                        sessionTimeoutSeconds += grantedSeconds;
+                        timeExtensionCyclesGranted += 1;
+                        // Persist the new ceiling so a crash-recovery or a later resume
+                        // honours what the operator paid for instead of reverting to the
+                        // default and guillotining the run a second time.
+                        try {
+                            this.deps.state.db
+                                .prepare(`UPDATE sessions SET hard_timeout_seconds = ?, updated_at = ? WHERE id = ?`)
+                                .run(sessionTimeoutSeconds, Date.now(), sessionId);
+                        }
+                        catch (err) {
+                            this.deps.logger.warn("[loop] could not persist the extended wall clock", { sessionId, err: String(err) });
+                        }
+                        this.setStatus(sessionId, "executing");
+                        continue;
+                    }
+                    timeExtensionRefused = true;
+                }
                 if (decision.nextStatus === "done") {
                     terminalDoneReason = decision.reason;
                     break;
@@ -3481,6 +3565,23 @@ export class OrchestratorLoop {
             }
             try {
                 prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
+                // beta.129: record the PR the MOMENT it exists, not only if the run
+                // reaches a terminal `shipped`. b127 opens the PR here and can then
+                // re-enter the loop for a CI repair cycle, so a run that later aborted
+                // left `final_pr_url` NULL while a perfectly real PR sat on GitHub
+                // holding its commits. Session d48ba433 reported "PR (none)" about
+                // PR #1051 -- its own -- and an hour went into looking for work that was
+                // never lost. A row that knows about its PR also lets the abort salvage
+                // see it.
+                try {
+                    this.deps.state.db
+                        .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, updated_at = ? WHERE id = ?`)
+                        .run(prUrl, parsePrNumber(prUrl) ?? null, Date.now(), sessionId);
+                }
+                catch (dbErr) {
+                    this.deps.logger.warn("[loop] could not record the PR url at open time", { sessionId, err: String(dbErr) });
+                }
+                this.deps.state.audit("loop.pr_opened", { sessionId, cycle, prUrl, prNumber: parsePrNumber(prUrl) }, sessionId);
             }
             catch (err) {
                 // beta.119: PRESERVE THE WORKTREE. A push failure is the one terminal
@@ -3599,15 +3700,32 @@ export class OrchestratorLoop {
             {
                 const repairCeiling = Math.max(0, this.deps.config.ci?.max_repair_cycles ?? 1);
                 const budgetOk = this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd);
+                // beta.129: a repair cycle costs TIME as well as money, and b127 only
+                // ever priced the money. Session d48ba433 was granted one with roughly
+                // twenty minutes left on a clock that cycles were eating in twenty-five,
+                // and the run was guillotined during the review that would have shipped
+                // it. The same question `shipTimeReserved` asks at the review boundary
+                // has to be asked here, because this grant re-enters the loop behind its
+                // back.
+                const clockOk = !shouldReserveTimeToShip({
+                    now: Date.now(),
+                    hardDeadlineMs,
+                    reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
+                    totalBudgetSeconds: sessionTimeoutSeconds,
+                    hasWork: true,
+                    observedCycleMs: maxCycleMs,
+                });
                 const wantsRepair = ciOverride !== null && lastCiFindings.length > 0;
-                const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;
+                const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk && clockOk;
                 if (wantsRepair && !canRepair) {
                     // Say why the run is shipping over a red build. "Do NOT merge" with no
                     // account of what was tried reads as the harness not having noticed.
                     this.deps.state.audit("loop.ci_repair_declined", {
                         sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
-                        budgetOk, spentUsd: Number(totalCost.toFixed(4)),
-                        reason: repairCeiling === 0 ? "disabled" : !budgetOk ? "budget" : "ceiling",
+                        budgetOk, clockOk, spentUsd: Number(totalCost.toFixed(4)),
+                        remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
+                        observedCycleMs: maxCycleMs,
+                        reason: repairCeiling === 0 ? "disabled" : !budgetOk ? "budget" : !clockOk ? "wall_clock" : "ceiling",
                         findings: describeCiFindings(lastCiFindings),
                     }, sessionId);
                 }
@@ -4974,6 +5092,16 @@ export class OrchestratorLoop {
         // Could not (or must not) open a PR, but there ARE commits: keep every one
         // of them on disk and tell the operator how to get at them.
         this.setStatus(sessionId, "aborted");
+        // beta.129: mark the row so the startup self-heal leaves this directory
+        // alone. It reaps every worktree whose session is terminal, and `aborted`
+        // is terminal, so the preserved commits only survived until the next
+        // restart -- a promise with an uptime-shaped expiry date.
+        try {
+            this.deps.state.db.prepare(`UPDATE sessions SET worktree_preserved = 1 WHERE id = ?`).run(sessionId);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] could not mark worktree as preserved", { sessionId, err: String(err) });
+        }
         this.deps.state.audit("loop.aborted", { sessionId, reason, worktreePreserved: true }, sessionId);
         this.deps.state.audit("loop.abort_worktree_preserved", { sessionId, reason, worktreePath: row?.worktree_path ?? null, branch: row?.branch ?? null, repo: row?.repo ?? null }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "abort_worktree_preserved", phase: "finalize", reason });
@@ -4994,13 +5122,13 @@ export class OrchestratorLoop {
     async abortHasSalvageableCommits(sessionId, row) {
         if (!row?.worktree_path || !row?.repo)
             return false;
-        if (!this.deps.buildVerifyProbes || !this.deps.worktreeHeadSha)
+        if (!this.deps.worktreeHeadSha)
             return true;
         try {
             // Distinguish "HEAD says there are no commits" from "we could not ask".
             // Collapsing a throw into "" would read as nothing-to-salvage and delete
             // the worktree -- fail-OPEN, and precisely the b119 outcome this whole
-            // path exists to prevent. An unborn HEAD resolves to "" without throwing.
+            // path exists to prevent.
             let head;
             try {
                 head = await this.deps.worktreeHeadSha(row.worktree_path);
@@ -5010,19 +5138,140 @@ export class OrchestratorLoop {
                 this.deps.state.audit("loop.abort_commit_probe_indeterminate", { sessionId, worktreePath: row.worktree_path, probe: "worktreeHeadSha", error: String(probeErr?.message ?? probeErr) }, sessionId);
                 return true;
             }
-            if (!head)
-                return false;
-            const planJson = this.getPlanJson(sessionId);
-            if (!planJson)
+            // beta.129: an unreadable HEAD is "we could not ask", NOT "no commits".
+            // b120 shipped the opposite reading, and b128's wiring
+            // (`git.baseSha(...).catch(() => "")` in index.ts) fed it an empty string
+            // for every failure mode there is, so the throw-handler above was
+            // unreachable. Both halves deleted work; both are fixed.
+            if (!head) {
+                this.deps.state.audit("loop.abort_commit_probe_indeterminate", { sessionId, worktreePath: row.worktree_path, probe: "worktreeHeadSha", error: "empty sha" }, sessionId);
                 return true;
-            const plan = JSON.parse(planJson);
-            const probes = this.deps.buildVerifyProbes({ plan, requester: row.requester, worktreePath: row.worktree_path, baseSha: "" });
-            const made = await probes.commitMadeSince("").catch(() => ({ made: true, detail: "probe failed -- assuming work exists" }));
-            return !!made.made;
+            }
+            // beta.129: compare HEAD against the BRANCH FORK-POINT persisted at
+            // plan_ready. b120 asked the commit probe with an EMPTY base, and that
+            // probe computes `!!base && head !== base` -- against an empty base it
+            // can only ever answer false, so EVERY session holding a plan reported
+            // "nothing to salvage" and had its worktree deleted. That is the
+            // d48ba433 loss: six commits, a passing adversary verdict, and
+            // `loop.abort_nothing_to_salvage`.
+            const baseSha = this.planBaseSha(sessionId);
+            if (!baseSha)
+                return true;
+            return head !== baseSha;
         }
         catch (err) {
             this.deps.logger.warn("[loop] abort commit probe failed; assuming there IS work to protect", { sessionId, err: String(err) });
             return true;
+        }
+    }
+    /**
+     * beta.129: pause at the review boundary, ask the operator to buy more wall
+     * clock, and wait IN PLACE for the answer. Returns the seconds granted, or 0
+     * for a decline, an unreadable reply, or silence.
+     *
+     * Waiting in place rather than returning through `finaliseAwaitingClarification`
+     * is the whole trick. That path resumes via a fresh `loop.run`, which re-plans
+     * from scratch -- another lead call, and a plan that need not match the one
+     * the existing commits were written against. Polling the answer column keeps
+     * the cycle counter, the findings history, the worktree and the deadline
+     * arithmetic exactly where they are.
+     */
+    async askForTimeExtension(p) {
+        const waitSeconds = Math.max(0, this.deps.config.loop.time_extension_wait_seconds ?? 300);
+        const defaultSeconds = Math.max(0, this.deps.config.loop.time_extension_default_seconds ?? 1800);
+        if (waitSeconds <= 0 || defaultSeconds <= 0)
+            return 0;
+        const waitUntilMs = Date.now() + waitSeconds * 1000;
+        const question = renderTimeExtensionQuestion({
+            cycle: p.cycle,
+            blockingFindings: p.blockingFindings,
+            spentUsd: p.spentUsd,
+            budgetUsd: p.budgetUsd,
+            remainingSeconds: Math.round(p.remainingMs / 1000),
+            observedCycleSeconds: Math.round(p.observedCycleMs / 1000),
+            defaultSeconds,
+            waitSeconds,
+        });
+        try {
+            this.deps.state.db
+                .prepare(`UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, clarification_subtask = ?, updated_at = ? WHERE id = ?`)
+                .run(question, TIME_EXTENSION_SEQ, renderTimeExtensionMarker(waitUntilMs), Date.now(), p.sessionId);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] could not post the time-extension question; shipping instead", { sessionId: p.sessionId, err: String(err) });
+            return 0;
+        }
+        this.deps.state.audit("loop.time_extension_requested", {
+            sessionId: p.sessionId, cycle: p.cycle, blockingFindings: p.blockingFindings,
+            spentUsd: Number(p.spentUsd.toFixed(4)), budgetUsd: p.budgetUsd,
+            remainingMs: p.remainingMs, observedCycleMs: p.observedCycleMs,
+            waitSeconds, defaultSeconds,
+        }, p.sessionId);
+        this.deps.interactionLog?.log(p.sessionId, { event: "time_extension_requested", phase: "review", question });
+        // Drives the progress snapshot and the Slack post, which is how the
+        // operator finds out there is a question at all.
+        this.setStatus(p.sessionId, "awaiting_clarification");
+        const clearPause = () => {
+            try {
+                this.deps.state.db
+                    .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ?`)
+                    .run(Date.now(), p.sessionId);
+            }
+            catch (err) {
+                this.deps.logger.warn("[loop] could not clear the time-extension pause", { sessionId: p.sessionId, err: String(err) });
+            }
+        };
+        let answer = "";
+        while (Date.now() < waitUntilMs) {
+            const sliceMs = Math.min(5000, Math.max(250, waitUntilMs - Date.now()));
+            await new Promise((r) => setTimeout(r, sliceMs));
+            // The session is resting on a question, not wedged. Without this the
+            // stall watchdog reads a silent five minutes as a hang and fails it.
+            this.markProgress(p.sessionId, "time_extension_wait", "review", {
+                cycle: p.cycle,
+                remainingMs: Math.max(0, waitUntilMs - Date.now()),
+            });
+            try {
+                const r = this.deps.state.db
+                    .prepare(`SELECT clarification_answer AS a FROM sessions WHERE id = ?`)
+                    .get(p.sessionId);
+                if (r?.a && String(r.a).trim()) {
+                    answer = String(r.a).trim();
+                    break;
+                }
+            }
+            catch (err) {
+                this.deps.logger.warn("[loop] time-extension poll failed", { sessionId: p.sessionId, err: String(err) });
+            }
+            // An operator who reaches for :x: rather than answering has answered.
+            const reactions = await this.deps.readReactions(p.sessionId).catch(() => null);
+            if (reactions?.abort)
+                break;
+        }
+        clearPause();
+        this.setStatus(p.sessionId, "reviewing");
+        if (!answer) {
+            this.deps.state.audit("loop.time_extension_timeout", { sessionId: p.sessionId, cycle: p.cycle, waitSeconds }, p.sessionId);
+            return 0;
+        }
+        const parsed = parseTimeExtensionReply(answer, { defaultSeconds });
+        this.deps.state.audit(parsed.approved ? "loop.time_extension_granted" : "loop.time_extension_declined", {
+            sessionId: p.sessionId, cycle: p.cycle,
+            seconds: parsed.seconds, interpretation: parsed.interpretation,
+            answer: answer.slice(0, 300),
+        }, p.sessionId);
+        return parsed.approved ? parsed.seconds : 0;
+    }
+    /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
+    planBaseSha(sessionId) {
+        try {
+            const r = this.deps.state.db
+                .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+                .get(sessionId);
+            return r?.plan_base_sha ?? "";
+        }
+        catch {
+            return "";
         }
     }
     /**

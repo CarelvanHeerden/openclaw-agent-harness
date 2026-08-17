@@ -1385,7 +1385,8 @@ const MUTATIONS = [
   {
     name: "a red build actually buys the cycle rather than only auditing it (b127)",
     file: "dist/orchestrator/loop.js",
-    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;",
+    // b129 added `&& clockOk` to this condition.
+    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk && clockOk;",
     replace: "const canRepair = false;",
     tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
   },
@@ -1511,6 +1512,97 @@ const MUTATIONS = [
     find: "failed.costUsd = Number((leadCallCostUsd + (scoutOutcome?.costUsd ?? 0) + (failed.costUsd ?? 0)).toFixed(6));",
     replace: "failed.costUsd = failed.costUsd ?? 0;",
     tests: ["tests/beta128-failed-plan-cost.test.mjs"],
+  },
+
+  // -------------------------------------------------------------------------
+  // beta.129. Session d48ba433 needed four separate defects to line up: a
+  // salvage probe that could not say yes, a wiring that fed it silence, a
+  // ceiling that outranked a passing verdict, and two grant paths that priced
+  // cycles in dollars while the clock ran out. Each gets a mutant.
+  // -------------------------------------------------------------------------
+  {
+    name: "the salvage probe compares against a REAL base (b129): an empty base can only answer 'delete it'",
+    file: "dist/orchestrator/loop.js",
+    find: "return head !== baseSha;",
+    replace: "return false;",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs", "tests/beta16-worktree-release.test.mjs"],
+  },
+  {
+    name: "an unreadable HEAD protects the work (b129): b120 read silence as 'nothing committed'",
+    file: "dist/orchestrator/loop.js",
+    find: "if (!head) {",
+    replace: "if (false) {",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "a preserved worktree survives the self-heal (b129): the promise expired at the next restart",
+    file: "dist/state/worktree-heal.js",
+    find: "if (row?.worktree_preserved) {",
+    replace: "if (false) {",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "a pass verdict outranks the clock (b129): d48ba433 was aborted 2ms after earning one",
+    file: "dist/orchestrator/loop.js",
+    find: "if (!terminalVerdictInHand) {",
+    replace: "if (true) {",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "the reserve is sized against a MEASURED cycle (b129): reserving a constant answers the wrong question",
+    file: "dist/orchestrator/abort-salvage.js",
+    find: "return remaining < reserveMs + cycleMs;",
+    replace: "return remaining < reserveMs;",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "one slow cycle cannot disable revising (b129): the allowance needs its clamp",
+    file: "dist/orchestrator/abort-salvage.js",
+    find: "cycleMs = Math.min(cycleMs, totalMs * MAX_CYCLE_ALLOWANCE_FRACTION);",
+    replace: "cycleMs = cycleMs;",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "the CI repair grant pays for the clock (b129): b127 priced it in dollars only",
+    file: "dist/orchestrator/loop.js",
+    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk && clockOk;",
+    replace: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "a bare 'no' with a duration in it is still a grant (b129): 'no more than 20 minutes' is 20 minutes",
+    file: "dist/orchestrator/time-extension.js",
+    find: "if (!d && SOFT_NEGATIVE.test(raw))",
+    replace: "if (SOFT_NEGATIVE.test(raw))",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "an unreadable reply lands the work (b129): guessing 'keep spending' is the unrecoverable direction",
+    file: "dist/orchestrator/time-extension.js",
+    find: 'return { approved: false, seconds: 0, interpretation: "unrecognised" };\n}',
+    replace: 'return { approved: true, seconds: opts.defaultSeconds, interpretation: "unrecognised" };\n}',
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "the extension cycle joins the loop bound (b129): a grant the bound ignores is not a grant",
+    file: "dist/orchestrator/loop.js",
+    find: "+ ciRepairCyclesGranted + timeExtensionCyclesGranted)",
+    replace: "+ ciRepairCyclesGranted)",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "the PR is recorded when it is OPENED (b129): d48ba433 reported 'PR (none)' about its own PR",
+    file: "dist/orchestrator/loop.js",
+    find: 'this.deps.state.audit("loop.pr_opened"',
+    replace: 'void 0 && this.deps.state.audit("loop.pr_opened"',
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
+  },
+  {
+    name: "the confirmation gate names the clock (b129): b123 parsed the time clause and told nobody",
+    file: "dist/tools/brief-confirmation.js",
+    find: `"confirm, budget $40 with a time budget of 4 hours"`,
+    replace: `"confirm, budget $40"`,
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
   },
 ];
 

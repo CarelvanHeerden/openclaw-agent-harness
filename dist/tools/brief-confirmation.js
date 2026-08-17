@@ -95,7 +95,14 @@ export function renderBriefConfirmation(input) {
     // beta.122: the cap is the one number an operator most often wants to change
     // at this moment, and until now saying so did nothing -- "Confirm, Budget
     // $40" was filed as a correction to the SPEC and the run started at $10.
-    lines.push(`To change the cap at the same time, say it in the reply — e.g. "confirm, budget $30" — and the run starts at that number.`);
+    // beta.129: the time half of this has been parsed since b123 and advertised
+    // never, so nobody used it. Session d48ba433 was killed by the 2-hour default
+    // with $18 of its $40 unspent; "with a time budget of 4 hours" was accepted
+    // syntax at that moment and no message anywhere said so. A capability the
+    // operator cannot discover is a capability that does not exist.
+    lines.push(`To change the cap or the clock at the same time, say it in the reply — e.g. "confirm, budget $30" or ` +
+        `"confirm, budget $40 with a time budget of 4 hours" — and the run starts at those numbers. ` +
+        `The default wall clock is ${Math.round((input.hardTimeoutSeconds ?? 7200) / 3600)}h, and a run that hits it stops whether or not the budget is spent.`);
     if (input.sessionId) {
         lines.push("");
         lines.push(`Session \`${input.sessionId}\`.`);

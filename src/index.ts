@@ -1053,7 +1053,13 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     // runs these after every sub-task, independent of the worker. They hit
     // git / the provider REST API / disk directly so a confabulated
     // "I pushed" / "I opened a PR" is caught deterministically.
-    worktreeHeadSha: async (worktreePath: string) => git.baseSha(worktreePath).catch(() => ""),
+    // beta.129: this MUST throw rather than resolve to "". The abort-salvage
+    // guard reads an empty sha as "no commits to protect" and deletes the
+    // worktree, so swallowing here turned every probe failure into work loss
+    // (b119 in full, d48ba433 again). Every other call site applies its own
+    // `.catch(() => "")`, which is the right place for it -- they want a
+    // best-effort sha; only the salvage guard needs to know it failed.
+    worktreeHeadSha: async (worktreePath: string) => git.baseSha(worktreePath),
     // beta.67 (Bug B): fork-point + branch commit-count probes for the
     // plan_base_sha capture (at plan_ready) and the adversary diff-base sanity
     // log. The adversary review then diffs against the branch's own

@@ -68,6 +68,13 @@ export interface RenderConfirmationInput {
     /** Set when the request was read from disk rather than retyped by an agent. */
     sourcePath?: string;
     /**
+     * beta.129: the wall-clock ceiling this run will start with, so the gate can
+     * name it. It is the only limit that can stop a run with money still in the
+     * bank, and until now it was never mentioned at the one moment the operator
+     * could have changed it.
+     */
+    hardTimeoutSeconds?: number;
+    /**
      * beta.122: the session the confirmation belongs to, printed in the body.
      *
      * `harness_run` returns the id correctly, but on the b121 smoke the relaying

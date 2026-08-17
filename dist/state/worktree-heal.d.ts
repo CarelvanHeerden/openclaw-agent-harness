@@ -62,6 +62,8 @@ export interface WorktreeHealResult {
     protected_running: number;
     /** beta.45: dirs skipped because they were modified within the grace window. */
     protected_recent: number;
+    /** beta.129: dirs skipped because an abort deliberately preserved them. */
+    protected_preserved: number;
     errors: Array<{
         path: string;
         error: string;

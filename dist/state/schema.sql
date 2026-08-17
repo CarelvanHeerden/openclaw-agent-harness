@@ -64,7 +64,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- beta.123: a per-session wall-clock ceiling, set when the operator answers
   -- the confirmation gate with something like "confirm, budget $40 with a time
   -- budget of 3 hours". NULL means "use loop.session_hard_timeout_seconds".
-  hard_timeout_seconds     INTEGER            -- per-session wall-clock override, seconds
+  hard_timeout_seconds     INTEGER,           -- per-session wall-clock override, seconds
+  -- beta.129: 1 when an abort deliberately kept this worktree because it still
+  -- holds unpushed commits. The startup self-heal reaps every worktree whose
+  -- session is terminal, and `aborted` is terminal, so without this the
+  -- "preserved, go and get your commits" promise expired at the next restart.
+  worktree_preserved       INTEGER            -- 1 = abort kept this worktree on purpose
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);
