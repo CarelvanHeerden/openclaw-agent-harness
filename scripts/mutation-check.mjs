@@ -1400,8 +1400,9 @@ const MUTATIONS = [
   {
     name: "a red build actually buys the cycle rather than only auditing it (b127)",
     file: "dist/orchestrator/loop.js",
-    // b129 added `&& clockOk` to this condition.
-    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk && clockOk;",
+    // b129 added `&& clockOk`; b130 lifted the ceiling test out to `ceilingOk`
+    // so the ask above it could read the same answer.
+    find: "const canRepair = wantsRepair && ceilingOk && budgetOk && clockOk;",
     replace: "const canRepair = false;",
     tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
   },
@@ -1580,8 +1581,10 @@ const MUTATIONS = [
   {
     name: "the CI repair grant pays for the clock (b129): b127 priced it in dollars only",
     file: "dist/orchestrator/loop.js",
-    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk && clockOk;",
-    replace: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;",
+    // b130 renamed the ceiling term; the property under test is unchanged --
+    // dropping `clockOk` must still be caught.
+    find: "const canRepair = wantsRepair && ceilingOk && budgetOk && clockOk;",
+    replace: "const canRepair = wantsRepair && ceilingOk && budgetOk;",
     tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
   },
   {
@@ -1685,9 +1688,33 @@ const MUTATIONS = [
   },
 ];
 
+/**
+ * beta.130: every mutation gets a wall clock.
+ *
+ * Without one, a mutation that makes a test HANG rather than fail stalls the
+ * whole run. b130 shipped one: CI sat on this step for 90 minutes against a
+ * 4-to-7 minute baseline before anyone looked. We had already met this failure
+ * once and paid for it by RETIRING the mutation (see the ceiling note above) --
+ * which is backwards, because a hang and a failure both mean the tests did not
+ * pass under the mutation, and only the harness was unable to say so.
+ *
+ * So a timeout counts as caught, and is reported separately: a hang is a
+ * legitimate catch but a slow, uninformative one, and the test that hangs is
+ * worth fixing even though it did its job.
+ */
+const TEST_TIMEOUT_MS = Number(process.env.MUTATION_TEST_TIMEOUT_MS ?? 180_000);
+
 function runTests(files) {
-  const r = spawnSync(process.execPath, ["--test", ...files], { cwd: root, encoding: "utf8" });
-  return r.status === 0;
+  const r = spawnSync(process.execPath, ["--test", ...files], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: TEST_TIMEOUT_MS,
+    // SIGTERM leaves the node test runner's workers behind often enough that
+    // the next mutation inherits them; take the whole tree down.
+    killSignal: "SIGKILL",
+  });
+  const timedOut = r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL";
+  return { passed: !timedOut && r.status === 0, timedOut };
 }
 
 /**
@@ -1744,22 +1771,80 @@ const restoreInFlight = () => {
   writeFileSync(inFlight.path, inFlight.original, "utf8");
   inFlight = null;
 };
-process.on("exit", restoreInFlight);
+
+/**
+ * beta.130: the per-mutation restore above is necessary and was not sufficient.
+ *
+ * It leaked again -- a b129 mutation that strips `timeExtensionCyclesGranted`
+ * from the loop bound survived a run and sat in dist/ afterwards. The next run
+ * then reported that same mutation's anchor as "renamed or removed", because
+ * the mutation had eaten the text its own anchor was looking for. That reads
+ * exactly like a real regression and cost an hour to tell apart from one.
+ *
+ * Chasing the specific escape route is the wrong move; the previous two fixes
+ * were both correct and both incomplete. So the invariant is enforced instead
+ * of the mechanism: snapshot every mutable file up front, and refuse to finish
+ * without proving each one is byte-identical to how we found it. Anything that
+ * gets past the handlers is still caught here, and said out loud.
+ */
+const PRISTINE = new Map();
+for (const m of MUTATIONS) {
+  const p = join(root, m.file);
+  if (!PRISTINE.has(p)) PRISTINE.set(p, readFileSync(p, "utf8"));
+}
+
+const restoreAll = () => {
+  restoreInFlight();
+  const dirty = [];
+  for (const [p, original] of PRISTINE) {
+    let now;
+    try {
+      now = readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    if (now !== original) {
+      writeFileSync(p, original, "utf8");
+      dirty.push(p);
+    }
+  }
+  return dirty;
+};
+
+process.on("exit", () => {
+  const dirty = restoreAll();
+  if (dirty.length) {
+    // Deliberately loud. A silent repair here would hide the fact that some
+    // run in this session was working against a sabotaged tree.
+    console.error(`\nWARNING: restored ${dirty.length} file(s) left mutated: ${dirty.join(", ")}`);
+    console.error("Any result printed above may have been measured against a sabotaged tree. Re-run.");
+  }
+});
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(sig, () => {
-    restoreInFlight();
+    restoreAll();
     process.exit(130);
   });
 }
-// A closed stdout must not be the thing that corrupts the tree.
-process.stdout.on("error", (e) => {
-  if (e?.code === "EPIPE") {
-    restoreInFlight();
-    process.exit(0);
-  }
+process.on("uncaughtException", (e) => {
+  restoreAll();
+  console.error(e);
+  process.exit(1);
 });
+// A closed stdout must not be the thing that corrupts the tree -- and neither
+// must a closed stderr, which the previous version left unguarded even though
+// every failure this script reports is written there.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (e) => {
+    if (e?.code === "EPIPE") {
+      restoreAll();
+      process.exit(0);
+    }
+  });
+}
 
 let failures = 0;
+let timeouts = 0;
 for (const m of MUTATIONS) {
   const path = join(root, m.file);
   const original = readFileSync(path, "utf8");
@@ -1792,12 +1877,19 @@ for (const m of MUTATIONS) {
     // real indentation rather than the anchor's stale copy of it.
     inFlight = { path, original };
     writeFileSync(path, original.replace(found.text, m.replace), "utf8");
-    const stillPasses = runTests(m.tests);
-    if (stillPasses) {
+    const { passed, timedOut } = runTests(m.tests);
+    if (passed) {
       console.error(`FAIL  ${m.name}`);
       console.error(`      Broke it in ${m.file} and ${m.tests.join(", ")} STILL PASSED.`);
       console.error(`      Those tests do not actually verify this mechanism.`);
       failures++;
+    } else if (timedOut) {
+      // Caught, but by exhaustion rather than by an assertion. Worth naming:
+      // whichever test hangs here is a test that cannot explain itself.
+      console.log(`slow  ${m.name}`);
+      console.log(`      caught by TIMEOUT after ${Math.round(TEST_TIMEOUT_MS / 1000)}s, not by an assertion.`);
+      console.log(`      ${m.tests.join(", ")} hangs under this mutation instead of failing.`);
+      timeouts++;
     } else {
       console.log(`ok    ${m.name}`);
     }
@@ -1812,3 +1904,6 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log(`\nAll ${ran} mutations were caught${FILTER ? ` (filter: ${FILTER})` : ""}.`);
+if (timeouts > 0) {
+  console.log(`${timeouts} of them by timeout rather than by an assertion -- see the "slow" lines above.`);
+}

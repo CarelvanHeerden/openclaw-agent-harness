@@ -68,6 +68,41 @@ nothing about either counter, so inflating the bound changes no outcome. The
 source keeps the correct behaviour and says why; the cycle count is still
 asserted by a test, against the day the bound becomes load-bearing.
 
+### The mutation gate, again: a 90-minute step and a sabotaged tree
+
+The first CI run for this release sat on the mutation step for 90 minutes
+against a 4-to-7 minute baseline. The ask above is what caused it, by way of a
+default nobody had scaled down: `tests/helpers/scenario.mjs` shortens the
+worker, adversary, lead and session clocks for test time, but never set
+`time_extension_wait_seconds`, so it inherited the production 300s. That was
+harmless while only the review boundary could ask. Once the CI gate could ask
+too, any mutation that nudged a run onto the ask stopped *failing* and started
+*hanging* for five minutes. Eleven did. All eleven were still caught — by
+exhaustion rather than by an assertion, which is the slowest and least
+informative way to be right.
+
+**Mutations now run under a wall clock.** 180 seconds by default. A timeout
+counts as caught, because a hang and a failure both mean the tests did not pass
+under the mutation, and reports as `slow` with the hanging test named. We had
+met this before and paid for it by *retiring* a mutation for hanging, which was
+backwards: the property was real and only the harness could not say so.
+
+**And the restore leak is now an enforced invariant rather than a patched
+route.** A mutation that strips `timeExtensionCyclesGranted` from the loop bound
+survived a run and stayed in `dist/`. The next run reported that same mutation's
+anchor as "renamed or removed" — because the mutation had eaten the text its own
+anchor searched for — which is indistinguishable from a genuine regression until
+you go looking. Every measurement taken after it leaked was against a sabotaged
+tree. This is the third time this failure mode has cost an hour, and the two
+previous fixes were each correct and each incomplete, so the mechanism is no
+longer what is guarded: the script snapshots every mutable file up front and
+refuses to exit without proving each is byte-identical, repairing and saying so
+loudly if not. `stderr` also got the `EPIPE` handler `stdout` already had, which
+mattered because every failure this script reports is written there.
+
+With the wait scaled down the full gate runs 199 mutations in 15m22s, with no
+timeouts.
+
 ## 0.1.0-beta.129
 
 ### A converging run, guillotined one step short of the PR
