@@ -113,13 +113,21 @@ export function parseTimeExtensionReply(answer, opts) {
 }
 export function renderTimeExtensionQuestion(input) {
     const mins = (s) => `${Math.max(0, Math.round(s / 60))} min`;
+    const money = `$${input.spentUsd.toFixed(2)} of $${input.budgetUsd.toFixed(2)} spent`;
+    const ci = input.trigger === "ci_repair";
     const lines = [];
-    lines.push(`Out of time, not out of money: cycle ${input.cycle} finished with ${input.blockingFindings} blocking finding` +
-        `${input.blockingFindings === 1 ? "" : "s"} still open, $${input.spentUsd.toFixed(2)} of $${input.budgetUsd.toFixed(2)} spent, ` +
-        `and ${mins(input.remainingSeconds)} left on the wall clock.`);
-    lines.push(`Cycles on this run have been taking about ${mins(input.observedCycleSeconds)}, so another one does not fit inside the ceiling.`);
-    lines.push(`Reply with more time to keep going -- "1 hour", "30 minutes", or just "yes" for ${mins(input.defaultSeconds)}. ` +
-        `Reply "ship" to land what exists now with those findings open.`);
+    if (ci) {
+        lines.push(`Out of time, not out of money: the branch is reviewed and pushed, but CI came back red` +
+            `${input.ciSummary ? ` -- ${input.ciSummary}` : ""}. ${money}, and ${mins(input.remainingSeconds)} left on the wall clock.`);
+    }
+    else {
+        lines.push(`Out of time, not out of money: cycle ${input.cycle} finished with ${input.blockingFindings} blocking finding` +
+            `${input.blockingFindings === 1 ? "" : "s"} still open, ${money}, ` +
+            `and ${mins(input.remainingSeconds)} left on the wall clock.`);
+    }
+    lines.push(`Cycles on this run have been taking about ${mins(input.observedCycleSeconds)}, so ${ci ? "a repair cycle" : "another one"} does not fit inside the ceiling.`);
+    lines.push(`Reply with more time to ${ci ? "fix it" : "keep going"} -- "1 hour", "30 minutes", or just "yes" for ${mins(input.defaultSeconds)}. ` +
+        `Reply "ship" to land ${ci ? "the PR with CI still red, flagged do-not-merge" : "what exists now with those findings open"}.`);
     lines.push(`If nothing comes back within ${mins(input.waitSeconds)} the run ships anyway, so this question cannot strand the work.`);
     return lines.join(" ");
 }

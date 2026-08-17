@@ -1056,6 +1056,12 @@ export declare class OrchestratorLoop {
      * arithmetic exactly where they are.
      */
     private askForTimeExtension;
+    /**
+     * beta.130: persist an extended wall clock so a crash-recovery or a later
+     * resume honours what the operator granted instead of reverting to the
+     * default and guillotining the run a second time.
+     */
+    private persistExtendedDeadline;
     /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
     private planBaseSha;
     /**

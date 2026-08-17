@@ -1400,8 +1400,9 @@ const MUTATIONS = [
   {
     name: "a red build actually buys the cycle rather than only auditing it (b127)",
     file: "dist/orchestrator/loop.js",
-    // b129 added `&& clockOk` to this condition.
-    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk && clockOk;",
+    // b129 added `&& clockOk`; b130 lifted the ceiling test out to `ceilingOk`
+    // so the ask above it could read the same answer.
+    find: "const canRepair = wantsRepair && ceilingOk && budgetOk && clockOk;",
     replace: "const canRepair = false;",
     tests: ["tests/beta127-scenario-ci-repair.test.mjs"],
   },
@@ -1580,8 +1581,10 @@ const MUTATIONS = [
   {
     name: "the CI repair grant pays for the clock (b129): b127 priced it in dollars only",
     file: "dist/orchestrator/loop.js",
-    find: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk && clockOk;",
-    replace: "const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk;",
+    // b130 renamed the ceiling term; the property under test is unchanged --
+    // dropping `clockOk` must still be caught.
+    find: "const canRepair = wantsRepair && ceilingOk && budgetOk && clockOk;",
+    replace: "const canRepair = wantsRepair && ceilingOk && budgetOk;",
     tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
   },
   {
@@ -1619,11 +1622,99 @@ const MUTATIONS = [
     replace: `"confirm, budget $40"`,
     tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
   },
+
+  // --- beta.130: the refusal that never asked -------------------------------
+  {
+    // Delete the ask and b129's behaviour returns exactly: a correct refusal,
+    // silently, over a red build with the budget untouched. PR #1058 shipped
+    // do-not-merge for want of one assertion and $30 of unspent cap.
+    name: "a clock-only refusal ASKS first (b130): #1058 shipped red with $30 unspent and no question",
+    file: "dist/orchestrator/loop.js",
+    find: "trigger: \"ci_repair\",",
+    replace: "trigger: \"review\",",
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
+  {
+    // The ask must be reachable at all. Flipping the clock test makes the
+    // branch dead, which is the b129 status quo wearing b130's code.
+    name: "the b130 ask fires when the clock is the ONLY thing missing",
+    file: "dist/orchestrator/loop.js",
+    find: "budgetOk &&\n            !clockOk &&",
+    replace: "budgetOk &&\n            clockOk &&",
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
+  {
+    // shouldReserveTimeToShip answers "no need to reserve" once the deadline
+    // is behind us. Without this guard a run that earned its pass late reads
+    // a dead clock as unlimited and buys a cycle it cannot run.
+    name: "a dead clock cannot fund a repair (b130): remaining <= 0 is not 'plenty of time'",
+    file: "dist/orchestrator/loop.js",
+    find: "remainingMs > 0 &&",
+    replace: "true &&",
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
+  // NOT a mutation: bumping `timeExtensionCyclesGranted` in the CI-repair ask.
+  //
+  // The intent is real -- the repair grant raises the while-loop bound by one
+  // on its own, so counting the extension as well would ask for two. But it
+  // cannot be observed, because the bound is not what stops the run: at the
+  // next review `advance()` independently caps on `cyclesRan >= maxCycles +
+  // cycleExtensionsGranted`, which knows nothing about either the repair or
+  // the extension counter. Inflating the bound therefore changes no outcome,
+  // and a mutation that changes no outcome tests the test, not the code.
+  //
+  // Kept correct in the source with a comment saying why, and the cycle count
+  // is still asserted by "granting time for a repair buys ONE cycle, not two"
+  // -- which guards the property against a future change that DOES make the
+  // bound load-bearing (b124 is exactly that shape, on a different counter).
+  {
+    // Without this the report cannot tell "the clock said no" from "the clock
+    // said no and the operator agreed", which is the difference between a
+    // working feature and a silent one.
+    name: "the decline records whether the operator was ASKED (b130)",
+    file: "dist/orchestrator/loop.js",
+    find: "askedForTime: timeExtensionRefused,",
+    replace: "askedForTime: false,",
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
+  {
+    // shipStart is set outside the ship-attempt loop, so it spans every cycle.
+    // The live run reported 25 minutes of shipping for 6 minutes of pushing.
+    name: "the ship phase times SHIPPING (b130): anchored outside the loop it swallows every cycle",
+    file: "dist/orchestrator/loop.js",
+    find: 'this.emitPhaseTiming(sessionId, "ship", cycle, shipPhaseStart',
+    replace: 'this.emitPhaseTiming(sessionId, "ship", cycle, shipStart',
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
 ];
 
+/**
+ * beta.130: every mutation gets a wall clock.
+ *
+ * Without one, a mutation that makes a test HANG rather than fail stalls the
+ * whole run. b130 shipped one: CI sat on this step for 90 minutes against a
+ * 4-to-7 minute baseline before anyone looked. We had already met this failure
+ * once and paid for it by RETIRING the mutation (see the ceiling note above) --
+ * which is backwards, because a hang and a failure both mean the tests did not
+ * pass under the mutation, and only the harness was unable to say so.
+ *
+ * So a timeout counts as caught, and is reported separately: a hang is a
+ * legitimate catch but a slow, uninformative one, and the test that hangs is
+ * worth fixing even though it did its job.
+ */
+const TEST_TIMEOUT_MS = Number(process.env.MUTATION_TEST_TIMEOUT_MS ?? 180_000);
+
 function runTests(files) {
-  const r = spawnSync(process.execPath, ["--test", ...files], { cwd: root, encoding: "utf8" });
-  return r.status === 0;
+  const r = spawnSync(process.execPath, ["--test", ...files], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: TEST_TIMEOUT_MS,
+    // SIGTERM leaves the node test runner's workers behind often enough that
+    // the next mutation inherits them; take the whole tree down.
+    killSignal: "SIGKILL",
+  });
+  const timedOut = r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL";
+  return { passed: !timedOut && r.status === 0, timedOut };
 }
 
 /**
@@ -1680,22 +1771,80 @@ const restoreInFlight = () => {
   writeFileSync(inFlight.path, inFlight.original, "utf8");
   inFlight = null;
 };
-process.on("exit", restoreInFlight);
+
+/**
+ * beta.130: the per-mutation restore above is necessary and was not sufficient.
+ *
+ * It leaked again -- a b129 mutation that strips `timeExtensionCyclesGranted`
+ * from the loop bound survived a run and sat in dist/ afterwards. The next run
+ * then reported that same mutation's anchor as "renamed or removed", because
+ * the mutation had eaten the text its own anchor was looking for. That reads
+ * exactly like a real regression and cost an hour to tell apart from one.
+ *
+ * Chasing the specific escape route is the wrong move; the previous two fixes
+ * were both correct and both incomplete. So the invariant is enforced instead
+ * of the mechanism: snapshot every mutable file up front, and refuse to finish
+ * without proving each one is byte-identical to how we found it. Anything that
+ * gets past the handlers is still caught here, and said out loud.
+ */
+const PRISTINE = new Map();
+for (const m of MUTATIONS) {
+  const p = join(root, m.file);
+  if (!PRISTINE.has(p)) PRISTINE.set(p, readFileSync(p, "utf8"));
+}
+
+const restoreAll = () => {
+  restoreInFlight();
+  const dirty = [];
+  for (const [p, original] of PRISTINE) {
+    let now;
+    try {
+      now = readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    if (now !== original) {
+      writeFileSync(p, original, "utf8");
+      dirty.push(p);
+    }
+  }
+  return dirty;
+};
+
+process.on("exit", () => {
+  const dirty = restoreAll();
+  if (dirty.length) {
+    // Deliberately loud. A silent repair here would hide the fact that some
+    // run in this session was working against a sabotaged tree.
+    console.error(`\nWARNING: restored ${dirty.length} file(s) left mutated: ${dirty.join(", ")}`);
+    console.error("Any result printed above may have been measured against a sabotaged tree. Re-run.");
+  }
+});
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(sig, () => {
-    restoreInFlight();
+    restoreAll();
     process.exit(130);
   });
 }
-// A closed stdout must not be the thing that corrupts the tree.
-process.stdout.on("error", (e) => {
-  if (e?.code === "EPIPE") {
-    restoreInFlight();
-    process.exit(0);
-  }
+process.on("uncaughtException", (e) => {
+  restoreAll();
+  console.error(e);
+  process.exit(1);
 });
+// A closed stdout must not be the thing that corrupts the tree -- and neither
+// must a closed stderr, which the previous version left unguarded even though
+// every failure this script reports is written there.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (e) => {
+    if (e?.code === "EPIPE") {
+      restoreAll();
+      process.exit(0);
+    }
+  });
+}
 
 let failures = 0;
+let timeouts = 0;
 for (const m of MUTATIONS) {
   const path = join(root, m.file);
   const original = readFileSync(path, "utf8");
@@ -1728,12 +1877,19 @@ for (const m of MUTATIONS) {
     // real indentation rather than the anchor's stale copy of it.
     inFlight = { path, original };
     writeFileSync(path, original.replace(found.text, m.replace), "utf8");
-    const stillPasses = runTests(m.tests);
-    if (stillPasses) {
+    const { passed, timedOut } = runTests(m.tests);
+    if (passed) {
       console.error(`FAIL  ${m.name}`);
       console.error(`      Broke it in ${m.file} and ${m.tests.join(", ")} STILL PASSED.`);
       console.error(`      Those tests do not actually verify this mechanism.`);
       failures++;
+    } else if (timedOut) {
+      // Caught, but by exhaustion rather than by an assertion. Worth naming:
+      // whichever test hangs here is a test that cannot explain itself.
+      console.log(`slow  ${m.name}`);
+      console.log(`      caught by TIMEOUT after ${Math.round(TEST_TIMEOUT_MS / 1000)}s, not by an assertion.`);
+      console.log(`      ${m.tests.join(", ")} hangs under this mutation instead of failing.`);
+      timeouts++;
     } else {
       console.log(`ok    ${m.name}`);
     }
@@ -1748,3 +1904,6 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log(`\nAll ${ran} mutations were caught${FILTER ? ` (filter: ${FILTER})` : ""}.`);
+if (timeouts > 0) {
+  console.log(`${timeouts} of them by timeout rather than by an assertion -- see the "slow" lines above.`);
+}

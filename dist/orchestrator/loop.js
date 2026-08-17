@@ -1472,6 +1472,10 @@ export class OrchestratorLoop {
         // Measured across every ship attempt, so the timing reflects what the run
         // actually spent getting to a shippable state.
         const shipStart = Date.now();
+        // beta.130: and this one is the ship phase itself. Re-stamped on each
+        // attempt, so a repair cycle's ship is timed as its own push rather than
+        // as everything since the run began.
+        let shipPhaseStart = shipStart;
         shipAttempts: for (;;) {
             //
             // beta.124: the bound includes `cycleExtensionsGranted`, and that is the
@@ -3486,17 +3490,7 @@ export class OrchestratorLoop {
                         hardDeadlineMs += grantedSeconds * 1000;
                         sessionTimeoutSeconds += grantedSeconds;
                         timeExtensionCyclesGranted += 1;
-                        // Persist the new ceiling so a crash-recovery or a later resume
-                        // honours what the operator paid for instead of reverting to the
-                        // default and guillotining the run a second time.
-                        try {
-                            this.deps.state.db
-                                .prepare(`UPDATE sessions SET hard_timeout_seconds = ?, updated_at = ? WHERE id = ?`)
-                                .run(sessionTimeoutSeconds, Date.now(), sessionId);
-                        }
-                        catch (err) {
-                            this.deps.logger.warn("[loop] could not persist the extended wall clock", { sessionId, err: String(err) });
-                        }
+                        this.persistExtendedDeadline(sessionId, sessionTimeoutSeconds);
                         this.setStatus(sessionId, "executing");
                         continue;
                     }
@@ -3536,6 +3530,13 @@ export class OrchestratorLoop {
             // phase as live (this is exactly the b60 gap: quiet AFTER the last sub-task
             // deadline but BEFORE/at finalize, with no watchdog covering it).
             this.markProgress(sessionId, "finalize_start", "finalize", { cycle });
+            // beta.130: where SHIPPING starts. `shipStart` sits outside the
+            // ship-attempt loop, so it spans every cycle -- the first local b129 run
+            // reported `phase=ship 1518s` for six minutes of pushing and CI polling,
+            // and summing the phases came to 45 minutes of a 34-minute run. That
+            // contradicts the one property emitPhaseTiming promises. Keep the
+            // cross-attempt span, but report it as what it is.
+            shipPhaseStart = Date.now();
             // beta.73 (D3): instrument the push/PR-open step. Pre-beta.73 there was NO
             // audit event between the transition->done and the terminal worktree
             // release, so a push/PR failure (422 branch collision, missing GH token, a
@@ -3707,16 +3708,71 @@ export class OrchestratorLoop {
                 // it. The same question `shipTimeReserved` asks at the review boundary
                 // has to be asked here, because this grant re-enters the loop behind its
                 // back.
-                const clockOk = !shouldReserveTimeToShip({
-                    now: Date.now(),
-                    hardDeadlineMs,
-                    reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
-                    totalBudgetSeconds: sessionTimeoutSeconds,
-                    hasWork: true,
-                    observedCycleMs: maxCycleMs,
-                });
+                // beta.130: `shouldReserveTimeToShip` answers false once the deadline is
+                // behind us -- at the review boundary that is correct, because
+                // `hardTimeout` has already claimed the run by then. Here it is not:
+                // b129's own "a pass outranks the clock" rule is what carried us past
+                // that check, so a run that earned its verdict AFTER the deadline
+                // arrives holding `remaining <= 0` and would read it as all the time in
+                // the world. A dead clock cannot fund a repair cycle.
+                const remainingMs = hardDeadlineMs - Date.now();
+                let clockOk = remainingMs > 0 &&
+                    !shouldReserveTimeToShip({
+                        now: Date.now(),
+                        hardDeadlineMs,
+                        reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
+                        totalBudgetSeconds: sessionTimeoutSeconds,
+                        hasWork: true,
+                        observedCycleMs: maxCycleMs,
+                    });
                 const wantsRepair = ciOverride !== null && lastCiFindings.length > 0;
-                const canRepair = wantsRepair && ciRepairCyclesGranted < repairCeiling && budgetOk && clockOk;
+                const ceilingOk = ciRepairCyclesGranted < repairCeiling;
+                // beta.130: b129 taught this site to refuse a repair it could not
+                // finish, and refusing was right -- but refusing SILENTLY was not. The
+                // first local b129 run reached exactly here with $30.16 of its $40
+                // unspent, 15.6 minutes on the clock, and a CI failure that was one
+                // assertion out of 9,027 tests (a sidebar ordering index that the new
+                // nav entry had shifted). It shipped a do-not-merge PR without asking.
+                //
+                // This is a stronger case for interrupting a human than the b129 one:
+                // the branch is already pushed, so the cost of a "yes" is bounded and
+                // the prize is a green PR instead of one somebody has to finish by
+                // hand. Only the clock may be missing -- a ceiling or budget shortfall
+                // is a real no, and asking for time would not change either.
+                if (wantsRepair &&
+                    ceilingOk &&
+                    budgetOk &&
+                    !clockOk &&
+                    this.deps.config.loop.time_extension_ask_enabled !== false &&
+                    !timeExtensionRefused) {
+                    const grantedSeconds = await this.askForTimeExtension({
+                        sessionId,
+                        cycle,
+                        blockingFindings: lastCiFindings.length,
+                        spentUsd: totalCost,
+                        budgetUsd: row.budget_usd,
+                        remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
+                        observedCycleMs: maxCycleMs,
+                        trigger: "ci_repair",
+                        ciSummary: describeCiFindings(lastCiFindings),
+                        // The repair re-enters the loop as an execution cycle; the ship path
+                        // it was asked from is not a phase to be parked in.
+                        resumeStatus: "executing",
+                    });
+                    if (grantedSeconds > 0) {
+                        hardDeadlineMs += grantedSeconds * 1000;
+                        sessionTimeoutSeconds += grantedSeconds;
+                        // Deliberately NOT bumping `timeExtensionCyclesGranted`: the repair
+                        // grant below raises the loop bound by one on its own, and counting
+                        // it twice would buy a cycle nobody agreed to.
+                        this.persistExtendedDeadline(sessionId, sessionTimeoutSeconds);
+                        clockOk = true;
+                    }
+                    else {
+                        timeExtensionRefused = true;
+                    }
+                }
+                const canRepair = wantsRepair && ceilingOk && budgetOk && clockOk;
                 if (wantsRepair && !canRepair) {
                     // Say why the run is shipping over a red build. "Do NOT merge" with no
                     // account of what was tried reads as the harness not having noticed.
@@ -3725,6 +3781,10 @@ export class OrchestratorLoop {
                         budgetOk, clockOk, spentUsd: Number(totalCost.toFixed(4)),
                         remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
                         observedCycleMs: maxCycleMs,
+                        // beta.130: distinguishes "the clock said no" from "the clock said
+                        // no AND the operator was given the chance to overrule it". Only
+                        // the second is a complete account of why a red build shipped.
+                        askedForTime: timeExtensionRefused,
                         reason: repairCeiling === 0 ? "disabled" : !budgetOk ? "budget" : !clockOk ? "wall_clock" : "ceiling",
                         findings: describeCiFindings(lastCiFindings),
                     }, sessionId);
@@ -3815,9 +3875,12 @@ export class OrchestratorLoop {
             .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
             .run(prUrl, prNumber ?? null, finalRecommendation, finalReason, Date.now(), sessionId);
         this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: finalRecommendation, reason: finalReason, ciOverride: !!ciOverride }, sessionId);
-        this.emitPhaseTiming(sessionId, "ship", cycle, shipStart, {
+        this.emitPhaseTiming(sessionId, "ship", cycle, shipPhaseStart, {
             prNumber,
             mergeRecommendation: finalRecommendation,
+            // The whole run from the first ship attempt, kept because it is genuinely
+            // useful -- just not as the duration of the ship phase.
+            sinceFirstShipAttemptMs: Math.max(0, Date.now() - shipStart),
         });
         // beta.16 fix #3 + beta.17 correctness: prune the worktree on
         // `loop.shipped`. Beta.16 emitted the audit event but the underlying
@@ -5191,6 +5254,8 @@ export class OrchestratorLoop {
             observedCycleSeconds: Math.round(p.observedCycleMs / 1000),
             defaultSeconds,
             waitSeconds,
+            trigger: p.trigger,
+            ciSummary: p.ciSummary,
         });
         try {
             this.deps.state.db
@@ -5205,7 +5270,7 @@ export class OrchestratorLoop {
             sessionId: p.sessionId, cycle: p.cycle, blockingFindings: p.blockingFindings,
             spentUsd: Number(p.spentUsd.toFixed(4)), budgetUsd: p.budgetUsd,
             remainingMs: p.remainingMs, observedCycleMs: p.observedCycleMs,
-            waitSeconds, defaultSeconds,
+            waitSeconds, defaultSeconds, trigger: p.trigger ?? "review",
         }, p.sessionId);
         this.deps.interactionLog?.log(p.sessionId, { event: "time_extension_requested", phase: "review", question });
         // Drives the progress snapshot and the Slack post, which is how the
@@ -5249,18 +5314,34 @@ export class OrchestratorLoop {
                 break;
         }
         clearPause();
-        this.setStatus(p.sessionId, "reviewing");
+        this.setStatus(p.sessionId, p.resumeStatus ?? "reviewing");
         if (!answer) {
-            this.deps.state.audit("loop.time_extension_timeout", { sessionId: p.sessionId, cycle: p.cycle, waitSeconds }, p.sessionId);
+            this.deps.state.audit("loop.time_extension_timeout", { sessionId: p.sessionId, cycle: p.cycle, waitSeconds, trigger: p.trigger ?? "review" }, p.sessionId);
             return 0;
         }
         const parsed = parseTimeExtensionReply(answer, { defaultSeconds });
         this.deps.state.audit(parsed.approved ? "loop.time_extension_granted" : "loop.time_extension_declined", {
             sessionId: p.sessionId, cycle: p.cycle,
             seconds: parsed.seconds, interpretation: parsed.interpretation,
+            trigger: p.trigger ?? "review",
             answer: answer.slice(0, 300),
         }, p.sessionId);
         return parsed.approved ? parsed.seconds : 0;
+    }
+    /**
+     * beta.130: persist an extended wall clock so a crash-recovery or a later
+     * resume honours what the operator granted instead of reverting to the
+     * default and guillotining the run a second time.
+     */
+    persistExtendedDeadline(sessionId, totalSeconds) {
+        try {
+            this.deps.state.db
+                .prepare(`UPDATE sessions SET hard_timeout_seconds = ?, updated_at = ? WHERE id = ?`)
+                .run(totalSeconds, Date.now(), sessionId);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] could not persist the extended wall clock", { sessionId, err: String(err) });
+        }
     }
     /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
     planBaseSha(sessionId) {

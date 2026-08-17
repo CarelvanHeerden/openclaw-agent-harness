@@ -347,7 +347,11 @@ test("beta108: review and ship both emit a phase timing", () => {
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /private emitPhaseTiming\(/);
   assert.match(loop, /this\.emitPhaseTiming\(sessionId, "review", cycle, reviewStart/);
-  assert.match(loop, /this\.emitPhaseTiming\(sessionId, "ship", cycle, shipStart/);
+  // b130 re-anchored this to the start of the push rather than the start of
+  // the ship-attempt loop, which spanned every cycle and made the phases sum
+  // to more than the run. The property b108 cares about -- that shipping is
+  // timed at all -- is unchanged.
+  assert.match(loop, /this\.emitPhaseTiming\(sessionId, "ship", cycle, shipPhaseStart/);
   assert.match(loop, /this\.emitPhaseTiming\(sessionId, "executing", cycle, executeStart/);
   assert.match(loop, /"loop\.phase_timing"/);
 });

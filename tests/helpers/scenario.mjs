@@ -133,6 +133,15 @@ export function makeConfig(over = {}) {
       lead_timeout_seconds: 60,
       session_hard_timeout_seconds: 3600,
       subtask_deadline_seconds: 120,
+      // beta.130: the production default is 300s of polling for an operator
+      // who, in a scenario test, is never going to reply. Every other timeout
+      // here is already scaled down to test time; this one was missed, and it
+      // did not matter until b130 taught the CI gate to ask as well. Then any
+      // mutation that nudged a run onto the ask stopped FAILING and started
+      // HANGING for five minutes -- eleven of them, which is how a 7-minute
+      // CI step became a 90-minute one. Tests that exercise the ask set their
+      // own value; this is only the floor for tests that never meant to.
+      time_extension_wait_seconds: 2,
     },
     storage: {
       state_db_path: ":memory:",

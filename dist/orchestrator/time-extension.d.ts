@@ -48,6 +48,13 @@ export declare function parseTimeExtensionReply(answer: string, opts: {
     defaultSeconds: number;
     maxSeconds?: number;
 }): TimeExtensionReply;
+/**
+ * What made the harness run short of clock. The two cases read very
+ * differently to an operator: one is "the review still has objections", the
+ * other is "the branch is already pushed and the build is red", and answering
+ * the second wrongly leaves a do-not-merge PR sitting in the queue.
+ */
+export type TimeExtensionTrigger = "review" | "ci_repair";
 export declare function renderTimeExtensionQuestion(input: {
     cycle: number;
     blockingFindings: number;
@@ -57,5 +64,8 @@ export declare function renderTimeExtensionQuestion(input: {
     observedCycleSeconds: number;
     defaultSeconds: number;
     waitSeconds: number;
+    trigger?: TimeExtensionTrigger;
+    /** For `ci_repair`: what CI actually reported, e.g. "1 failing test". */
+    ciSummary?: string;
 }): string;
 //# sourceMappingURL=time-extension.d.ts.map

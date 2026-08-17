@@ -131,6 +131,20 @@ export interface RenderConfirmationInput {
 }
 
 /**
+ * Rounding to whole hours only ever reads correctly for the 2h default. A
+ * 50-minute ceiling rendered as "1h" on the first local b129 run, and anything
+ * under half an hour renders as "0h" -- a number that invites the operator to
+ * ignore a limit that is about to stop their run.
+ */
+function describeWallClock(seconds: number): string {
+  const totalMinutes = Math.max(1, Math.round(seconds / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (!hours) return `${minutes}m`;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+/**
  * The text a human reads before any money is spent. Leads with the fields that
  * actually catch drift -- the acceptance criteria and the files -- because that
  * is where `scheduledAt` would have stood out.
@@ -184,7 +198,7 @@ export function renderBriefConfirmation(input: RenderConfirmationInput): string 
   lines.push(
     `To change the cap or the clock at the same time, say it in the reply — e.g. "confirm, budget $30" or ` +
       `"confirm, budget $40 with a time budget of 4 hours" — and the run starts at those numbers. ` +
-      `The default wall clock is ${Math.round((input.hardTimeoutSeconds ?? 7200) / 3600)}h, and a run that hits it stops whether or not the budget is spent.`,
+      `The default wall clock is ${describeWallClock(input.hardTimeoutSeconds ?? 7200)}, and a run that hits it stops whether or not the budget is spent.`,
   );
   if (input.sessionId) {
     lines.push("");

@@ -92,6 +92,11 @@ if (ciGranted.length) {
 if (ciDeclined.length) {
   const d = ciDeclined.at(-1).p;
   console.log(`   repair declined:        ${d.reason} (granted ${d.granted} of ${d.ceiling}, spent $${d.spentUsd})`);
+  // b130: a clock decline is only defensible if the operator was offered the
+  // choice. Silence here means the run shipped red without asking.
+  if (d.reason === "wall_clock") {
+    console.log(`   operator asked for time: ${d.askedForTime ? "yes, and declined/timed out" : "NO — shipped red without asking"}`);
+  }
 }
 console.log(`   failing-log excerpt:    ${excerptMissing ? "MISSING" : "present"}`);
 
@@ -106,10 +111,17 @@ if (ciFail.length && excerptMissing) {
 } else if (ciGranted.length) {
   console.log("   >>> VERDICT: a repair cycle was GRANTED AND NOT RUN. That is the b124 failure");
   console.log("       shape repeating on a new counter. Report this — it is the important one.");
+} else if (ciFail.length && ciDeclined.at(-1)?.p?.reason === "wall_clock") {
+  // b130: this used to be listed as an unexpected reason, which contradicted
+  // section 4 calling the same event the b129 fix working. It is expected --
+  // what matters is whether the operator got a say before the run shipped red.
+  console.log("   >>> CI went red and the CLOCK, not the budget, refused the repair. That is b129");
+  console.log("       working. The question is the line above: if the operator was never asked,");
+  console.log("       the run shipped a do-not-merge PR with money still in the bank — report it.");
 } else if (ciFail.length) {
-  console.log("   >>> CI went red and no cycle was bought. Check the decline reason above: only");
-  console.log("       'ceiling'/'budget'/'disabled' are expected. No decline line at all means the");
-  console.log("       failing log could not be parsed into findings — report the excerpt.");
+  console.log("   >>> CI went red and no cycle was bought. Check the decline reason above:");
+  console.log("       'ceiling'/'budget'/'disabled'/'wall_clock' are expected. No decline line at");
+  console.log("       all means the failing log could not be parsed into findings — report it.");
 } else {
   console.log("   >>> CI never went red, so b127 was not exercised — that is fine, but it means");
   console.log("       this run did NOT test the repair path.");
@@ -278,8 +290,9 @@ const timeTimedOut = of("loop.time_extension_timeout");
 if (timeAsked.length) {
   console.log(`   time extension asked:   ${timeAsked.length}x`);
   for (const a of timeAsked) {
+    const why = a.p?.trigger === "ci_repair" ? "RED CI after the PR was opened" : `${a.p?.blockingFindings ?? "?"} blocking`;
     console.log(
-      `   - cycle ${a.p?.cycle ?? "?"}: ${a.p?.blockingFindings ?? "?"} blocking, ` +
+      `   - cycle ${a.p?.cycle ?? "?"} (${why}): ` +
         `${money(a.p?.spentUsd ?? 0)} of ${money(a.p?.budgetUsd ?? 0)} spent, ` +
         `${Math.round((a.p?.remainingMs ?? 0) / 60000)} min left, cycles running ~${Math.round((a.p?.observedCycleMs ?? 0) / 60000)} min`,
     );
@@ -296,6 +309,12 @@ const repairDeclinedClock = of("loop.ci_repair_declined").filter((e) => e.p?.rea
 if (repairDeclinedClock.length) {
   console.log(`   CI repair refused on the CLOCK: ${repairDeclinedClock.length}x — b129 stopping b127 from`);
   console.log("       starting a repair cycle that could not have finished. This is the fix working.");
+  // b130: refusing was right; refusing without asking was the gap.
+  const unasked = repairDeclinedClock.filter((e) => !e.p?.askedForTime);
+  if (unasked.length) {
+    console.log(`   >>> ${unasked.length} of those shipped RED WITHOUT ASKING for time. That is the b130`);
+    console.log("       regression — the operator had budget left and was never given the choice.");
+  }
 }
 if (extended.length && session.cycles_ran <= (extended[0].p?.maxCycles ?? 2)) {
   console.log("   >>> VERDICT: a cycle was granted and NOT run. The b124 fix regressed. Report this.");
