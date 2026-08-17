@@ -560,7 +560,13 @@ test("a granted extension is persisted, so a crash-resume honours what was paid 
   const body = src.slice(i, i + 900);
   assert.match(body, /hardDeadlineMs \+= grantedSeconds \* 1000/);
   assert.match(body, /timeExtensionCyclesGranted \+= 1/, "more time is useless without a cycle to spend it on");
-  assert.match(body, /UPDATE sessions SET hard_timeout_seconds/);
+  // b130 moved the write into a helper so the CI-repair ask shares it. What
+  // matters is that the granted ceiling still reaches the row.
+  assert.match(body, /persistExtendedDeadline\(sessionId, sessionTimeoutSeconds\)/);
+  assert.match(
+    src.slice(src.indexOf("private persistExtendedDeadline")),
+    /UPDATE sessions SET hard_timeout_seconds/,
+  );
 });
 
 test("the extension cycle joins the loop bound, or the grant is a lie", () => {
@@ -786,6 +792,22 @@ test("the confirmation gate advertises the clock, not just the cap", skipDist, a
   assert.match(text, /time budget/i, "b123 parsed this and no message ever mentioned it");
   assert.match(text, /2h/, "the operator cannot judge the default without being told it");
   assert.match(text, /whether or not the budget is spent/i, "which is the whole failure mode");
+});
+
+test("a ceiling that is not a whole number of hours is stated honestly", skipDist, async () => {
+  const m = await loadConfirm();
+  if (!m) return;
+  const render = (hardTimeoutSeconds) =>
+    m.renderBriefConfirmation({ brief: BRIEF, estimatedUsd: 12, effectiveBudget: 10, hardTimeoutSeconds });
+  // Rounding to whole hours told the first local b129 run its 50-minute
+  // ceiling was "1h". The operator budgets against the number they are shown,
+  // so overstating the runway is the one direction that cannot be tolerated.
+  assert.match(render(3000), /50m/, "50 minutes must not round up to an hour");
+  assert.doesNotMatch(render(3000), /\b1h\b/);
+  assert.match(render(1200), /20m/, "and 20 minutes must not collapse to 0h");
+  assert.doesNotMatch(render(1200), /0h/);
+  assert.match(render(5400), /1h 30m/, "an hour and a half is not two hours");
+  assert.match(render(7200), /2h\b/, "the whole-hour default still reads cleanly");
 });
 
 test("the syntax the gate advertises is syntax the parser actually accepts", skipDist, async () => {

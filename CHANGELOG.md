@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.1.0-beta.130
+
+### A do-not-merge PR, one assertion and one question away from green
+
+b129 was the first release driven locally rather than diagnosed from a report,
+and the run that validated it also found the next defect. Session 90912e52
+built the whole Continuity & Resilience feature against ProjectThanos in 34
+minutes for $9.84 of a $40 cap: two cycles, a passing review, twelve files,
+[PR #1058](https://github.com/Stitch-Vercel/ProjectThanos/pull/1058). Then CI
+came back red on a single assertion out of 9,027 tests — a sidebar ordering
+index the run's own nav entry had shifted — and the harness shipped a
+do-not-merge PR without asking anyone.
+
+The refusal itself was b129 working. The audit line reads `budgetOk=true
+clockOk=false`: it had $30.16 unspent and 15.6 minutes left, worked out that a
+repair cycle would not fit, and declined rather than starting one it could not
+finish. Under b127 that grant would have gone through and the run would have
+hit the wall clock mid-repair, which is exactly how d48ba433 died.
+
+What it did not do was ask. b129 built the ask-for-more-time machinery and
+wired it to the review boundary only, so the one place it was most valuable —
+branch already pushed, cost of a "yes" bounded, prize a green PR instead of one
+a human has to finish by hand — stayed silent.
+
+**A clock-only refusal now asks.** When CI is red and the wall clock is the
+single thing missing, the harness pauses and offers the operator more time,
+using the same bounded wait b129 built: it ships exactly as before if nothing
+comes back. A ceiling or budget shortfall is still a real no, because more
+seconds would not change either. The question is phrased for this case rather
+than the review one — it says the branch is pushed, names the failing check,
+and states that declining leaves a do-not-merge PR.
+
+**A dead clock no longer reads as unlimited time.** `shouldReserveTimeToShip`
+returns false once the deadline is behind us, which is correct at the review
+boundary because `hardTimeout` has already claimed the run by then. At the CI
+gate it is not, because b129's own "a passing verdict outranks the clock" rule
+is what carried the run past that check. A run earning its verdict *after* the
+deadline arrived holding `remaining <= 0` and would have read it as all the
+time in the world, granting a repair cycle on negative seconds.
+
+**The ship phase stopped swallowing the run.** `loop.phase_timing` promises
+that phases sum to the wall clock. The ship anchor sat outside the ship-attempt
+loop, so it spanned every cycle: the local run reported 25 minutes of shipping
+for 6 minutes of pushing and polling, and the phases summed to 45 minutes of a
+34-minute run. Ship is now timed from the push; the cross-attempt span is still
+reported, as `sinceFirstShipAttemptMs`.
+
+**The confirmation gate stopped overstating the runway.** It rounded the
+ceiling to whole hours, so the 50-minute clock this run was given was announced
+as "1h", and anything under half an hour announces itself as "0h". It now reads
+`50m`, `1h 30m`, `20m` — in the one message whose job is to warn about the
+limit, rounding in the generous direction is the one direction that cannot be
+tolerated.
+
+**The report stopped contradicting itself.** Section 1 listed `wall_clock` as
+an unexpected decline reason while section 4 called the same event the b129 fix
+working. Section 1 now recognises it, and both sections report the thing that
+actually matters: whether the operator was asked before a red build shipped.
+
+### Also
+
+A mutation was retired rather than kept green. Double-counting the extension
+grant against the loop bound is wrong, but it cannot be observed: `advance()`
+caps cycles independently on `maxCycles + cycleExtensionsGranted` and knows
+nothing about either counter, so inflating the bound changes no outcome. The
+source keeps the correct behaviour and says why; the cycle count is still
+asserted by a test, against the day the bound becomes load-bearing.
+
 ## 0.1.0-beta.129
 
 ### A converging run, guillotined one step short of the PR

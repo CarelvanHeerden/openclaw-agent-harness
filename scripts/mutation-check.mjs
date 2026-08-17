@@ -1619,6 +1619,70 @@ const MUTATIONS = [
     replace: `"confirm, budget $40"`,
     tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
   },
+
+  // --- beta.130: the refusal that never asked -------------------------------
+  {
+    // Delete the ask and b129's behaviour returns exactly: a correct refusal,
+    // silently, over a red build with the budget untouched. PR #1058 shipped
+    // do-not-merge for want of one assertion and $30 of unspent cap.
+    name: "a clock-only refusal ASKS first (b130): #1058 shipped red with $30 unspent and no question",
+    file: "dist/orchestrator/loop.js",
+    find: "trigger: \"ci_repair\",",
+    replace: "trigger: \"review\",",
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
+  {
+    // The ask must be reachable at all. Flipping the clock test makes the
+    // branch dead, which is the b129 status quo wearing b130's code.
+    name: "the b130 ask fires when the clock is the ONLY thing missing",
+    file: "dist/orchestrator/loop.js",
+    find: "budgetOk &&\n            !clockOk &&",
+    replace: "budgetOk &&\n            clockOk &&",
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
+  {
+    // shouldReserveTimeToShip answers "no need to reserve" once the deadline
+    // is behind us. Without this guard a run that earned its pass late reads
+    // a dead clock as unlimited and buys a cycle it cannot run.
+    name: "a dead clock cannot fund a repair (b130): remaining <= 0 is not 'plenty of time'",
+    file: "dist/orchestrator/loop.js",
+    find: "remainingMs > 0 &&",
+    replace: "true &&",
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
+  // NOT a mutation: bumping `timeExtensionCyclesGranted` in the CI-repair ask.
+  //
+  // The intent is real -- the repair grant raises the while-loop bound by one
+  // on its own, so counting the extension as well would ask for two. But it
+  // cannot be observed, because the bound is not what stops the run: at the
+  // next review `advance()` independently caps on `cyclesRan >= maxCycles +
+  // cycleExtensionsGranted`, which knows nothing about either the repair or
+  // the extension counter. Inflating the bound therefore changes no outcome,
+  // and a mutation that changes no outcome tests the test, not the code.
+  //
+  // Kept correct in the source with a comment saying why, and the cycle count
+  // is still asserted by "granting time for a repair buys ONE cycle, not two"
+  // -- which guards the property against a future change that DOES make the
+  // bound load-bearing (b124 is exactly that shape, on a different counter).
+  {
+    // Without this the report cannot tell "the clock said no" from "the clock
+    // said no and the operator agreed", which is the difference between a
+    // working feature and a silent one.
+    name: "the decline records whether the operator was ASKED (b130)",
+    file: "dist/orchestrator/loop.js",
+    find: "askedForTime: timeExtensionRefused,",
+    replace: "askedForTime: false,",
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
+  {
+    // shipStart is set outside the ship-attempt loop, so it spans every cycle.
+    // The live run reported 25 minutes of shipping for 6 minutes of pushing.
+    name: "the ship phase times SHIPPING (b130): anchored outside the loop it swallows every cycle",
+    file: "dist/orchestrator/loop.js",
+    find: 'this.emitPhaseTiming(sessionId, "ship", cycle, shipPhaseStart',
+    replace: 'this.emitPhaseTiming(sessionId, "ship", cycle, shipStart',
+    tests: ["tests/beta130-ci-repair-ask.test.mjs"],
+  },
 ];
 
 function runTests(files) {
