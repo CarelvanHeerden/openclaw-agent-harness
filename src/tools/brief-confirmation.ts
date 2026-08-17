@@ -113,6 +113,13 @@ export interface RenderConfirmationInput {
   /** Set when the request was read from disk rather than retyped by an agent. */
   sourcePath?: string;
   /**
+   * beta.129: the wall-clock ceiling this run will start with, so the gate can
+   * name it. It is the only limit that can stop a run with money still in the
+   * bank, and until now it was never mentioned at the one moment the operator
+   * could have changed it.
+   */
+  hardTimeoutSeconds?: number;
+  /**
    * beta.122: the session the confirmation belongs to, printed in the body.
    *
    * `harness_run` returns the id correctly, but on the b121 smoke the relaying
@@ -169,8 +176,15 @@ export function renderBriefConfirmation(input: RenderConfirmationInput): string 
   // beta.122: the cap is the one number an operator most often wants to change
   // at this moment, and until now saying so did nothing -- "Confirm, Budget
   // $40" was filed as a correction to the SPEC and the run started at $10.
+  // beta.129: the time half of this has been parsed since b123 and advertised
+  // never, so nobody used it. Session d48ba433 was killed by the 2-hour default
+  // with $18 of its $40 unspent; "with a time budget of 4 hours" was accepted
+  // syntax at that moment and no message anywhere said so. A capability the
+  // operator cannot discover is a capability that does not exist.
   lines.push(
-    `To change the cap at the same time, say it in the reply — e.g. "confirm, budget $30" — and the run starts at that number.`,
+    `To change the cap or the clock at the same time, say it in the reply — e.g. "confirm, budget $30" or ` +
+      `"confirm, budget $40 with a time budget of 4 hours" — and the run starts at those numbers. ` +
+      `The default wall clock is ${Math.round((input.hardTimeoutSeconds ?? 7200) / 3600)}h, and a run that hits it stops whether or not the budget is spent.`,
   );
   if (input.sessionId) {
     lines.push("");

@@ -1044,6 +1044,21 @@ export declare class OrchestratorLoop {
      */
     private abortHasSalvageableCommits;
     /**
+     * beta.129: pause at the review boundary, ask the operator to buy more wall
+     * clock, and wait IN PLACE for the answer. Returns the seconds granted, or 0
+     * for a decline, an unreadable reply, or silence.
+     *
+     * Waiting in place rather than returning through `finaliseAwaitingClarification`
+     * is the whole trick. That path resumes via a fresh `loop.run`, which re-plans
+     * from scratch -- another lead call, and a plan that need not match the one
+     * the existing commits were written against. Polling the answer column keeps
+     * the cycle counter, the findings history, the worktree and the deadline
+     * arithmetic exactly where they are.
+     */
+    private askForTimeExtension;
+    /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
+    private planBaseSha;
+    /**
      * beta.16 fix #3 + beta.17 correctness: schedule a best-effort worktree
      * release for a session that has already reached a terminal status.
      * Looks up both `repo` and `worktree_path` from the sessions row so the

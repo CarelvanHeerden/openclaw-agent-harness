@@ -287,6 +287,25 @@
             "maximum": 86400,
             "default": 7200
           },
+          "time_extension_ask_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.129: when the wall clock cannot fit another cycle but findings remain open, ask the operator for more time instead of silently shipping a half-reviewed branch. Answer with harness_answer; a reply carrying a time clause ('2 more hours') sets the new ceiling. Disable to restore the b120 behaviour of landing whatever exists."
+          },
+          "time_extension_wait_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "default": 300,
+            "description": "beta.129: how long the loop waits in place for an answer to the time-extension question before shipping anyway. An unanswered question must never be the reason a deliverable is missing from GitHub. Set 0 to disable waiting."
+          },
+          "time_extension_default_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400,
+            "default": 1800,
+            "description": "beta.129: seconds added when the operator approves an extension without naming a figure. A reply with its own time clause wins over this."
+          },
           "subtask_concurrency": {
             "type": "integer",
             "minimum": 1,

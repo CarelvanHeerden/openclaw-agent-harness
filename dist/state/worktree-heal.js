@@ -23,6 +23,7 @@ export async function healOrphanedWorktrees(state, deps) {
         removed: 0,
         protected_running: 0,
         protected_recent: 0,
+        protected_preserved: 0,
         errors: [],
     };
     // beta.45: build the protected set (exact paths + basenames) from live loops.
@@ -38,13 +39,11 @@ export async function healOrphanedWorktrees(state, deps) {
         return result;
     }
     result.scanned = dirs.length;
-    // Bulk-load session rows keyed by worktree_path so we can O(1) match each dir.
-    // Also load by basename for pre-beta.17 rows where `worktree_path` might be missing.
     const rowsByPath = new Map();
     const rowsByBasename = new Map();
     try {
         const rows = state.db
-            .prepare(`SELECT id, status, repo, worktree_path FROM sessions`)
+            .prepare(`SELECT id, status, repo, worktree_path, worktree_preserved FROM sessions`)
             .all();
         for (const r of rows) {
             if (r.worktree_path)
@@ -86,6 +85,15 @@ export async function healOrphanedWorktrees(state, deps) {
             }
         }
         const row = rowsByPath.get(dir) ?? rowsByBasename.get(bn);
+        // beta.129 GUARD 3: an abort that could not ship its commits preserves the
+        // worktree and tells the operator to go and get them. `aborted` is
+        // terminal, so without this guard the very next bootstrap deleted exactly
+        // the directory the abort had just promised to keep.
+        if (row?.worktree_preserved) {
+            result.protected_preserved += 1;
+            deps.logger.info("[worktree-heal] skipping worktree preserved by an abort (unpushed commits)", { dir, sessionId: row.id });
+            continue;
+        }
         const isTerminal = row && ["done", "failed", "aborted"].includes(row.status);
         const isActive = row && !isTerminal;
         if (isActive) {

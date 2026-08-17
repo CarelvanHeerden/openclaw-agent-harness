@@ -58,7 +58,18 @@ const of = (...names) => events.filter((e) => names.includes(e.event));
 rule(`SESSION    ${session.id}`);
 console.log(`status     ${session.status} | cycles ${session.cycles_ran} | cost ${money(session.cost_usd)} of ${money(session.budget_usd)}`);
 console.log(`branch     ${session.branch}`);
-console.log(`repo       ${session.repo} | PR ${session.final_pr_url || "(none)"}`);
+// b129: `final_pr_url` is only written on a terminal ship, but since b127 the
+// PR is opened mid-run and the loop can re-enter for a CI repair cycle. A run
+// that aborted after that point reported "PR (none)" while its own PR sat on
+// GitHub -- d48ba433 said exactly that about PR #1051 and cost an hour of
+// searching for work that had never gone anywhere. The row is fixed at source
+// in b129; this fallback covers sessions recorded before that.
+const openedPr = of("loop.pr_opened", "loop.shipped", "loop.abort_salvaged_to_pr").at(-1)?.p?.prUrl;
+const prForHeader = session.final_pr_url || openedPr;
+console.log(
+  `repo       ${session.repo} | PR ${prForHeader || "(none)"}` +
+    (!session.final_pr_url && openedPr ? "  [from the audit log; the session row never recorded it]" : ""),
+);
 console.log(`wall clock ${dur(session.updated_at - session.created_at)}`);
 console.log(`merge rec  ${session.merge_recommendation || "(none)"} ${trim(session.merge_recommendation_reason, 200)}`);
 
@@ -223,23 +234,69 @@ if (denied.length && viaWf.length) {
   // "The Checks API answered normally" three lines below it. Both came off the
   // same events; the verdict branch only tested `denied`, so a fallback that
   // fired for any other reason fell through to the everything-is-fine text.
-  console.log("   >>> The fallback fired WITHOUT a permanent denial — the Checks API was readable");
-  console.log(`       and still had nothing for this sha (${trim(viaWf[0].p.reason, 120)}).`);
-  console.log(`       It read ${viaWf[0].p.checkTotal} run(s). Zero runs means neither endpoint saw CI on this`);
-  console.log("       commit, so any 'green' here is an absence of evidence, not evidence of");
-  console.log("       passing. Check whether the workflow is triggered by this event at all.");
+  //
+  // b129: and then this replacement text made the mirror-image mistake. It
+  // narrates the FIRST fallback read ("0 runs, absence of evidence") even when
+  // CI later resolved loud and clear. On d48ba433 it announced that nothing had
+  // been seen on the sha while section 1, from the same log, correctly reported
+  // a red build naming a failing test. Whatever CI ended up saying outranks
+  // what the first poll could not yet see.
+  const terminalEvent = ciEnd.at(-1)?.event;
+  if (terminalEvent === "loop.ci_failure" || terminalEvent === "loop.ci_success") {
+    const how = terminalEvent === "loop.ci_failure" ? "RED" : "green";
+    console.log(`   >>> The fallback fired and CI then resolved ${how} (${terminalEvent}). The early`);
+    console.log(`       "read ${viaWf[0].p.checkTotal} run(s)" is a snapshot taken before CI had started, NOT a verdict.`);
+    console.log("       Section 1 has the failing detail. b125 did its job: the signal was read.");
+  } else {
+    console.log("   >>> The fallback fired WITHOUT a permanent denial — the Checks API was readable");
+    console.log(`       and still had nothing for this sha (${trim(viaWf[0].p.reason, 120)}).`);
+    console.log(`       It read ${viaWf[0].p.checkTotal} run(s), and CI never resolved either way (${terminalEvent ?? "no terminal"}).`);
+    console.log("       So any 'green' here is an absence of evidence, not evidence of passing.");
+    console.log("       Check whether the workflow is triggered by this event at all.");
+  }
 } else {
   console.log("   >>> The Checks API answered normally. b125 was not exercised — that is fine,");
   console.log("       but it means this run did NOT test the fallback.");
 }
 
 // ---------------------------------------------------------------------------
-rule("4. CYCLE EXTENSION  (b124)");
+rule("4. CYCLE + WALL-CLOCK EXTENSION  (b124, b129)");
 const suggested = of("loop.max_cycles_extend_suggested");
 const extended = of("loop.max_cycles_extended");
 console.log(`   extension suggested: ${suggested.length}`);
 console.log(`   extension granted:   ${extended.length}`);
 console.log(`   cycles actually ran: ${session.cycles_ran}`);
+
+// b129: the clock is now something an operator can buy more of mid-run, and
+// something the grant paths have to pay for. Both need reporting, because the
+// failure they exist to prevent (d48ba433: a converging run guillotined with
+// $18 unspent) is invisible unless you can see the decision that was made.
+const timeAsked = of("loop.time_extension_requested");
+const timeGranted = of("loop.time_extension_granted");
+const timeDeclined = of("loop.time_extension_declined");
+const timeTimedOut = of("loop.time_extension_timeout");
+if (timeAsked.length) {
+  console.log(`   time extension asked:   ${timeAsked.length}x`);
+  for (const a of timeAsked) {
+    console.log(
+      `   - cycle ${a.p?.cycle ?? "?"}: ${a.p?.blockingFindings ?? "?"} blocking, ` +
+        `${money(a.p?.spentUsd ?? 0)} of ${money(a.p?.budgetUsd ?? 0)} spent, ` +
+        `${Math.round((a.p?.remainingMs ?? 0) / 60000)} min left, cycles running ~${Math.round((a.p?.observedCycleMs ?? 0) / 60000)} min`,
+    );
+  }
+  for (const g of timeGranted) console.log(`   - GRANTED ${Math.round((g.p?.seconds ?? 0) / 60)} min (${g.p?.interpretation})`);
+  for (const d of timeDeclined) console.log(`   - DECLINED (${d.p?.interpretation}): ${trim(d.p?.answer, 120)}`);
+  if (timeTimedOut.length) console.log(`   - NO ANSWER within the wait window; shipped rather than stranding the work.`);
+  console.log("   >>> b129 was exercised: the run ran out of clock with work left and ASKED");
+  console.log("       instead of dying. Confirm the operator actually saw the question.");
+} else {
+  console.log("   time extension asked:   never (the clock never squeezed a cycle out)");
+}
+const repairDeclinedClock = of("loop.ci_repair_declined").filter((e) => e.p?.reason === "wall_clock");
+if (repairDeclinedClock.length) {
+  console.log(`   CI repair refused on the CLOCK: ${repairDeclinedClock.length}x — b129 stopping b127 from`);
+  console.log("       starting a repair cycle that could not have finished. This is the fix working.");
+}
 if (extended.length && session.cycles_ran <= (extended[0].p?.maxCycles ?? 2)) {
   console.log("   >>> VERDICT: a cycle was granted and NOT run. The b124 fix regressed. Report this.");
 } else if (extended.length) {
@@ -264,8 +321,30 @@ if (rescues.length > retractions.length) {
 
 // ---------------------------------------------------------------------------
 rule("6. TERMINAL CAUSE");
-const term = of("loop.failed", "loop.shipped", "loop.plan_failed").at(-1);
+// b129: `loop.aborted` was missing from this list, so every run that hit the
+// wall clock, the daily cap or a user abort reported "(no terminal event
+// recorded)" while the cause sat in the audit log twice over. That is two
+// smokes in three releases where this section said nothing about a run that
+// ended for an entirely knowable reason.
+const term = of("loop.failed", "loop.shipped", "loop.plan_failed", "loop.aborted").at(-1);
 console.log(`   ${term ? `${term.event} ${trim(JSON.stringify(term.p), 400)}` : "(no terminal event recorded)"}`);
+if (term?.event === "loop.aborted") {
+  const salvaged = of("loop.abort_salvaged_to_pr").at(-1);
+  const preserved = of("loop.abort_worktree_preserved").at(-1);
+  const nothing = of("loop.abort_nothing_to_salvage").at(-1);
+  console.log(`   abort reason:           ${term.p?.reason ?? "(unstated)"}`);
+  if (salvaged) {
+    console.log(`   work landed:            YES — salvaged to ${salvaged.p?.prUrl ?? "(a PR)"}`);
+  } else if (preserved) {
+    console.log(`   work landed:            NO — worktree PRESERVED at ${preserved.p?.worktreePath ?? "(unknown)"}`);
+    console.log(`                           branch ${preserved.p?.branch ?? "(unknown)"}; the commits are on disk, go and get them.`);
+  } else if (nothing) {
+    console.log(`   work landed:            the abort believed there was NOTHING to salvage and released the worktree.`);
+    console.log(`   >>> CHECK THIS. If the branch has commits, the salvage probe is lying and this`);
+    console.log(`       is the b120/b129 defect recurring. Look for the branch in the bare clone at`);
+    console.log(`       <worktree_root>/.repos/<owner>/<repo>.git before believing the work is gone.`);
+  }
+}
 const verifyFails = events.filter((e) => e.event.endsWith("_verify_failed"));
 if (verifyFails.length) {
   console.log(`   ${verifyFails.length} verification failure(s):`);

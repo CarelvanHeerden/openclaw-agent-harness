@@ -58,6 +58,8 @@ export interface WorktreeHealResult {
   protected_running: number;
   /** beta.45: dirs skipped because they were modified within the grace window. */
   protected_recent: number;
+  /** beta.129: dirs skipped because an abort deliberately preserved them. */
+  protected_preserved: number;
   errors: Array<{ path: string; error: string }>;
 }
 
@@ -70,6 +72,7 @@ export async function healOrphanedWorktrees(state: StateStore, deps: WorktreeHea
     removed: 0,
     protected_running: 0,
     protected_recent: 0,
+    protected_preserved: 0,
     errors: [],
   };
 
@@ -89,12 +92,13 @@ export async function healOrphanedWorktrees(state: StateStore, deps: WorktreeHea
 
   // Bulk-load session rows keyed by worktree_path so we can O(1) match each dir.
   // Also load by basename for pre-beta.17 rows where `worktree_path` might be missing.
-  const rowsByPath = new Map<string, { id: string; status: string; repo: string; worktree_path: string | null }>();
-  const rowsByBasename = new Map<string, { id: string; status: string; repo: string; worktree_path: string | null }>();
+  type SessionRow = { id: string; status: string; repo: string; worktree_path: string | null; worktree_preserved?: number | null };
+  const rowsByPath = new Map<string, SessionRow>();
+  const rowsByBasename = new Map<string, SessionRow>();
   try {
     const rows = state.db
-      .prepare(`SELECT id, status, repo, worktree_path FROM sessions`)
-      .all() as Array<{ id: string; status: string; repo: string; worktree_path: string | null }>;
+      .prepare(`SELECT id, status, repo, worktree_path, worktree_preserved FROM sessions`)
+      .all() as SessionRow[];
     for (const r of rows) {
       if (r.worktree_path) rowsByPath.set(r.worktree_path, r);
       if (r.worktree_path) rowsByBasename.set(basename(r.worktree_path), r);
@@ -136,6 +140,17 @@ export async function healOrphanedWorktrees(state: StateStore, deps: WorktreeHea
     }
 
     const row = rowsByPath.get(dir) ?? rowsByBasename.get(bn);
+
+    // beta.129 GUARD 3: an abort that could not ship its commits preserves the
+    // worktree and tells the operator to go and get them. `aborted` is
+    // terminal, so without this guard the very next bootstrap deleted exactly
+    // the directory the abort had just promised to keep.
+    if (row?.worktree_preserved) {
+      result.protected_preserved += 1;
+      deps.logger.info("[worktree-heal] skipping worktree preserved by an abort (unpushed commits)", { dir, sessionId: row.id });
+      continue;
+    }
+
     const isTerminal = row && ["done", "failed", "aborted"].includes(row.status);
     const isActive = row && !isTerminal;
 

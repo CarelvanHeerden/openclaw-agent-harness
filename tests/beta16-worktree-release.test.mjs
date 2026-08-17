@@ -214,9 +214,14 @@ test(
 
     const deps = baseDeps(state, plan(), releaseCalls);
     deps.readReactions = async () => ({ shipIt: false, abort: true, pause: false, budgetBump: false });
-    // An empty HEAD is the real "nothing was ever committed" signal.
-    deps.worktreeHeadSha = async () => "";
-    deps.buildVerifyProbes = () => ({ commitMadeSince: async () => ({ made: false, detail: "" }) });
+    // beta.129: "nothing was committed" is HEAD still sitting on the branch
+    // fork point -- a readable sha that has not moved. It is NOT an empty
+    // string: b120 read empty as "no commits" and so deleted the worktree of
+    // every session whose HEAD probe merely failed. Empty now means "could not
+    // ask", and could-not-ask protects the work.
+    const forkPoint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    state.db.prepare(`UPDATE sessions SET plan_base_sha = ? WHERE id = 'S_ABORT_EMPTY'`).run(forkPoint);
+    deps.worktreeHeadSha = async () => forkPoint;
 
     const loop = new OrchestratorLoop(deps);
     const outcome = await loop.run("S_ABORT_EMPTY", brief);

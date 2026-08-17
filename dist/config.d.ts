@@ -430,6 +430,29 @@ export interface LoopConfig {
      */
     lead_timeout_seconds: number;
     session_hard_timeout_seconds: number;
+    /**
+     * beta.129: when the wall clock will not fit another cycle but the findings
+     * are not finished, ASK the operator for more time instead of silently
+     * landing a half-reviewed branch.
+     *
+     * Session d48ba433 hit the 2h ceiling with $18 of its $40 unspent and no way
+     * to say "keep going" -- the confirmation gate can raise money mid-flight and
+     * nothing could raise time. Disabling this restores the b120 behaviour of
+     * shipping whatever exists.
+     */
+    time_extension_ask_enabled: boolean;
+    /**
+     * beta.129: how long the loop waits, in place, for an answer to that question
+     * before giving up and shipping. Bounded on purpose: an unanswered question
+     * must never be the reason a deliverable is not on GitHub. Default 300s.
+     */
+    time_extension_wait_seconds: number;
+    /**
+     * beta.129: seconds granted when the operator says yes without naming a
+     * figure. A reply carrying its own time clause ("2 more hours") wins.
+     * Default 1800.
+     */
+    time_extension_default_seconds: number;
     /** Max sub-tasks a cycle will run concurrently. Default 1 (sequential). */
     subtask_concurrency: number;
     /**

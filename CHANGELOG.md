@@ -1,5 +1,95 @@
 # Changelog
 
+## 0.1.0-beta.129
+
+### A converging run, guillotined one step short of the PR
+
+Session d48ba433 ran for two hours and two minutes against a two-hour ceiling.
+It completed thirty sub-tasks across four cycles, spent $21.55 of a $40 budget,
+and its cycle-4 adversary review returned `verdict: pass` with zero blocking
+findings. Two milliseconds later it was aborted, its worktree was deleted, and
+the report said `PR (none)`.
+
+Every one of those outcomes was a separate defect, and they had to line up in
+exactly that order to lose the work. This release fixes all of them.
+
+**The salvage guard could never say yes.** b120 added
+`abortHasSalvageableCommits` so an abort would ship or preserve a branch that
+still held commits. It asked the commit probe with an empty base string, and
+that probe computes `!!base && head !== base` — against an empty base it can
+only ever answer false. Every session that had a plan reported "nothing to
+salvage". The guard has never once protected anything. It now compares HEAD
+against the fork point already persisted on the session row at plan_ready.
+
+**And the wiring fed it silence.** `worktreeHeadSha` was injected as
+`git.baseSha(path).catch(() => "")`, so a deleted worktree, a broken git or a
+permissions error all arrived as an empty string, which b120 read as "no
+commits" — fail-open, and the thing b119 was written to prevent. The probe now
+throws, an unreadable HEAD is recorded as `loop.abort_commit_probe_indeterminate`,
+and doubt resolves towards keeping the work. Every other caller already applied
+its own `.catch`, which is where a best-effort read belongs.
+
+**A preserved worktree only survived until the next restart.** The startup
+self-heal reaps every worktree whose session is terminal, and `aborted` is
+terminal. b120's "your commits are preserved, go and get them" expired at the
+next container bounce. Aborts that keep a worktree now mark the row, and the
+heal skips it.
+
+**A ceiling was allowed to discard finished work.** The wall-clock check sat
+above the verdict in `advance()`, so a `pass` earned at 122 minutes lost a race
+to a deadline at 120. A ceiling exists to stop us STARTING work we cannot
+finish; it must never throw away work that is done. A passing verdict, and a
+`:rocket:` reaction, now outrank both the clock and the daily cap — landing a
+reviewed branch costs a push, not model spend.
+
+**The clock was never priced into any decision to keep going.** b120's
+`shipTimeReserved` asked "is there ten minutes left?" while cycles were taking
+twenty-five, and b127's CI repair grant checked dollars and cycles but never
+minutes — it handed d48ba433 a repair cycle with twenty minutes left on the
+clock. Both now compare the remaining wall clock against the longest cycle this
+run has actually taken, and the reserve is measured against the session's own
+ceiling rather than the configured default, which an operator who bought four
+hours at the confirmation gate was not getting.
+
+### You can now buy more time, and you can now find out that you can
+
+When the clock will not fit another cycle but findings are still open and the
+budget is not spent, the harness asks instead of shipping short. It waits in
+place at the review boundary — polling for the answer rather than unwinding
+through a clarification resume — so a granted extension continues the same
+cycle counter, the same findings history and the same worktree, with no re-plan
+and no second lead call. Answer with `harness_answer`: "1 hour", "30 minutes",
+or just "yes". "no more than 20 minutes" grants twenty minutes, because reading
+that as a refusal would throw away the extension you just gave.
+
+The wait is bounded (`loop.time_extension_wait_seconds`, default 300s) and
+silence ships the work. An unanswered question must never be the reason a
+deliverable is missing from GitHub.
+
+Separately: b123 taught the confirmation gate to parse "confirm, budget $40
+with a time budget of 4 hours" and no message anywhere said so, so nobody ever
+used it. The gate now names the clock, states the default, and says plainly
+that a run which hits it stops whether or not the budget is spent. A test
+extracts the worked example out of the message and feeds it back through the
+parser, so the syntax we advertise cannot drift from the syntax we accept.
+
+### The report stops lying about how runs end
+
+Three fixes, all of which cost real time on the last smoke. `loop.aborted` was
+missing from the terminal-cause section, so a run killed by the wall clock
+reported "no terminal event recorded" while the cause sat in the audit log
+twice over — the second time in three releases that section has said nothing
+about a knowable ending. The CI narrative templated itself on the first
+fallback poll and announced "absence of evidence" about a run whose CI had
+resolved red and named the failing test. And the header read `final_pr_url`,
+which is only written on a terminal ship, so a run that opened a PR mid-run
+(as every run has since b127) and then aborted reported `PR (none)` about its
+own PR. The row now records the PR the moment it exists.
+
+New config: `loop.time_extension_ask_enabled`, `loop.time_extension_wait_seconds`,
+`loop.time_extension_default_seconds`. New schema column:
+`sessions.worktree_preserved`.
+
 ## 0.1.0-beta.128
 
 ### A 24,000-character plan, thrown away over one token

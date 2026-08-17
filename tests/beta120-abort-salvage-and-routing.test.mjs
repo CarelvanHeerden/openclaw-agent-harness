@@ -308,8 +308,19 @@ test("a commit probe that cannot answer protects the work instead of deleting it
   const catchBody = body.slice(headCatch, body.indexOf("\n      }", headCatch));
   assert.match(catchBody, /return true;/, "the HEAD-probe catch itself must protect the work");
   assert.ok(!/return false;/.test(catchBody), "and must not resolve doubt towards deletion");
-  assert.match(body, /made: true, detail: "probe failed/, "the commitMadeSince probe already failed closed");
   assert.match(body, /assuming there IS work to protect/);
+
+  // beta.129: b120 asked `commitMadeSince("")`, and that probe computes
+  // `!!base && head !== base` -- with an empty base it can only ever answer
+  // false. So every session holding a plan reported "nothing to salvage" and
+  // had its worktree deleted, which is what happened to d48ba433's six
+  // commits. The comparison must be against a REAL base.
+  assert.ok(
+    !/commitMadeSince\(""\)/.test(body),
+    'commitMadeSince("") can never return true; an empty base makes the guard unconditionally delete',
+  );
+  assert.match(body, /planBaseSha\(sessionId\)/, "the fork point is what HEAD gets compared against");
+  assert.match(body, /head !== baseSha/, "and a HEAD past the fork point IS work worth keeping");
 });
 
 test("the abort headline names the cause and says the work survived", skipProgress, async () => {

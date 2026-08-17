@@ -97,6 +97,12 @@ export function openStateStoreSync(pathHint) {
         // money half landed in b122 and the time half had nowhere to go, because
         // the ceiling was config-only. NULL means "use loop.session_hard_timeout_seconds".
         { table: "sessions", column: "hard_timeout_seconds", type: "INTEGER" }, // per-session wall-clock override
+        // beta.129: set to 1 when an abort DELIBERATELY kept a worktree because it
+        // still holds unpushed commits. Without it the startup self-heal reaps the
+        // directory on the next restart -- it reaps any worktree whose session is
+        // done/failed/aborted -- so b120's "preserved, go and get your commits"
+        // promise expired at the next container bounce.
+        { table: "sessions", column: "worktree_preserved", type: "INTEGER" }, // 1 = abort kept this worktree on purpose
     ];
     for (const m of additiveMigrations) {
         try {

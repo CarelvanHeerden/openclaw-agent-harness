@@ -26,6 +26,7 @@ import {
   renderBriefConfirmation,
   type RiskLevel,
 } from "./brief-confirmation.js";
+import { isTimeExtensionPause, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 
 type ToolDisposer = (() => void) | { dispose?: () => void; unregister?: () => void };
@@ -241,6 +242,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // beta.122: so a verbatim relay carries the REAL id. See
           // RenderConfirmationInput.sessionId.
           sessionId,
+          hardTimeoutSeconds: liveConfig().loop?.session_hard_timeout_seconds,
         })
       : "";
     try {
@@ -1432,6 +1434,28 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         const seq = row.clarification_seq ?? -1;
         liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
         liveState().audit("loop.clarification_answered", { sessionId, seq, answerLen: trimmed.length, invokedBy: invokedBy ?? null }, sessionId);
+
+        // beta.129: a wall-clock question is answered by a loop that never left.
+        // It is sitting at the review boundary polling this very column, so the
+        // write above IS the answer. Re-driving loop.run here would start a
+        // second run against the same worktree and the same branch.
+        if (isTimeExtensionPause(row.clarification_subtask)) {
+          const waitUntilMs = readTimeExtensionWaitUntil(row.clarification_subtask);
+          if (Date.now() < waitUntilMs) {
+            liveState().audit(
+              "tool.answer_time_extension",
+              { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, waitUntilMs },
+              sessionId,
+            );
+            return {
+              content: [{ type: "text", text: `Recorded. The run is still waiting at its review boundary and will pick this up within a few seconds.` }],
+              details: { ok: true, sessionId, timeExtensionAnswered: true },
+            };
+          }
+          // The window closed -- the loop shipped, or the process died holding
+          // the question. Fall through to the ordinary resume so the answer is
+          // not silently swallowed.
+        }
 
         // 'abort'/'cancel' -> terminate the session cleanly (release worktree).
         if (/^(abort|cancel)\b/i.test(trimmed)) {

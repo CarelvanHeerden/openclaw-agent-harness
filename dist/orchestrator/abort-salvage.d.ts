@@ -46,6 +46,12 @@ export declare function describeAbortSalvage(reason: string, cycles: number, las
  * 300s timeout does exactly that.
  */
 export declare const MAX_RESERVE_FRACTION = 0.25;
+/**
+ * beta.129: a single anomalous cycle (a retry storm, a stuck worker that later
+ * timed out) must not be able to convince the loop that no further cycle can
+ * ever fit. Cap what one observed cycle is allowed to claim.
+ */
+export declare const MAX_CYCLE_ALLOWANCE_FRACTION = 0.5;
 export declare function shouldReserveTimeToShip(input: {
     now: number;
     hardDeadlineMs: number;
@@ -57,5 +63,19 @@ export declare function shouldReserveTimeToShip(input: {
     totalBudgetSeconds?: number;
     /** Only meaningful when there is something to ship. */
     hasWork: boolean;
+    /**
+     * beta.129: how long a cycle has ACTUALLY been taking on this run, in ms.
+     *
+     * b120 asked only "is there enough time left to push?" and so waved through
+     * a cycle that could not possibly finish: session d48ba433 had ~20 minutes
+     * left against a 10-minute reserve, started a 25-minute cycle, and was
+     * guillotined during the review that would have shipped it. Reserving a
+     * constant answers the wrong question. The question is whether another
+     * cycle FITS -- the cycle plus the push, not the push alone.
+     *
+     * Omitted (or zero) preserves the b120 behaviour, which is what the first
+     * review boundary of a run has to use since nothing has been measured yet.
+     */
+    observedCycleMs?: number;
 }): boolean;
 //# sourceMappingURL=abort-salvage.d.ts.map
