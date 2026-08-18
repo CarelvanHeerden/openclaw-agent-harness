@@ -439,7 +439,11 @@ test("the CI repair grant is priced in minutes as well as dollars", () => {
   const decl = src.slice(src.lastIndexOf("const repairCeiling", 0, i) >= 0 ? i - 1400 : i - 1400, i + 200);
   assert.match(decl, /clockOk/, "b127 asked only whether the money was there");
   assert.match(src.slice(i, i + 200), /&& clockOk/);
-  assert.match(src, /reason: repairCeiling === 0 \? "disabled" : !budgetOk \? "budget" : !clockOk \? "wall_clock"/);
+  // b131 re-ordered this ladder so the ceiling is named before the clock -- see
+  // beta131-ci-repair-routing.test.mjs. What b129 needs from it is unchanged:
+  // the clock must be one of the reasons a repair can be refused.
+  assert.match(src, /reason:\s*\n?\s*repairCeiling === 0 \? "disabled"/);
+  assert.match(src, /: !clockOk \? "wall_clock"/);
 });
 
 // ---------------------------------------------------------------------------

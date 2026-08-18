@@ -621,11 +621,33 @@ const JOB_LOG_MAX_BYTES = 4_000_000;
 /**
  * beta.127: read the failing job logs through the Actions API.
  *
- * Three hops, all on `Actions: read`: runs for the sha, jobs in the failed
- * runs, then the log text for each failed job. The log is a plain-text blob
- * behind a redirect, prefixed with an RFC3339 timestamp per line and full of
- * ANSI colour -- both are stripped, because the point of this text is that a
- * model reads it and finds the file that broke.
+ * Three hops, all on `Actions: read`: runs for the sha, jobs in those runs,
+ * then the log text for each failed job. The log is a plain-text blob behind a
+ * redirect, prefixed with an RFC3339 timestamp per line and full of ANSI
+ * colour -- both are stripped, because the point of this text is that a model
+ * reads it and finds the file that broke.
+ *
+ * beta.131: the run filter used to require a run-level conclusion of failure,
+ * and that made this entire function dead code on every live run.
+ *
+ * A workflow run's `conclusion` stays null until EVERY job in it finishes. The
+ * harness is woken by check-runs, which conclude per job. So the sequence is
+ * always: the Tests job goes red, the check-run says failure, the harness asks
+ * "which runs concluded as failed?" -- and the answer is "none", because Build
+ * and Security Scan are still going. Measured on 03a8a7b6: the job concluded
+ * at 10:29:05Z, the harness ruled at 10:29:28Z, the run did not conclude until
+ * 10:30:34Z. Sixty-six seconds too early, every single time.
+ *
+ * The caller then fell through to the check-runs text, which for GitHub Actions
+ * is routinely just "- Tests [failure]" -- no test, no file, nothing to route
+ * a repair at. b127 shipped the CI-repair cycle on top of this and it never
+ * once produced a routable finding: four releases of a feature that could only
+ * ever spend a cycle guessing.
+ *
+ * So the run-level conclusion is no longer consulted as a gate. Runs that
+ * concluded green hold nothing worth reading; everything else -- failed,
+ * cancelled, and crucially still-running -- is a candidate, and the job-level
+ * filter below (which was always right) decides what actually gets read.
  */
 async function readFailingJobLogs(input: {
   repoFullName: string; sha: string; ghToken: string; apiBase?: string;
@@ -640,16 +662,20 @@ async function readFailingJobLogs(input: {
     const rj = (await rRes.json()) as {
       workflow_runs?: Array<{ id: number; name?: string; conclusion: string | null }>;
     };
-    const failedRuns = (rj.workflow_runs ?? []).filter((r) =>
-      ["failure", "timed_out", "cancelled", "action_required"].includes(r.conclusion ?? ""),
-    );
-    if (failedRuns.length === 0) return "";
+    const settledGreen = ["success", "skipped", "neutral"];
+    const candidateRuns = (rj.workflow_runs ?? []).filter((r) => !settledGreen.includes(r.conclusion ?? ""));
+    // A run already known to have failed is likelier to hold the failing job
+    // than one still in flight, and only the first two are read.
+    const definite = (c: string | null) =>
+      ["failure", "timed_out", "cancelled", "action_required"].includes(c ?? "") ? 0 : 1;
+    candidateRuns.sort((a, b) => definite(a.conclusion) - definite(b.conclusion));
+    if (candidateRuns.length === 0) return "";
 
     const chunks: string[] = [];
     // Two runs, two jobs each. A repo with ten red jobs has one cause and nine
     // consequences, and a 2000-char excerpt spread over ten of them says
     // nothing about any of them.
-    for (const run of failedRuns.slice(0, 2)) {
+    for (const run of candidateRuns.slice(0, 2)) {
       const jRes = await fetch(`${base}/repos/${input.repoFullName}/actions/runs/${run.id}/jobs?per_page=100`, {
         headers: GH_HEADERS(input.ghToken),
       });

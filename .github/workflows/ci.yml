@@ -55,6 +55,15 @@ jobs:
         # with the behaviour removed -- which is how the b100 defect survived
         # review in the first place. Restores dist/ itself; the dist-sync step
         # above has already run, so a leaked edit cannot mask a real drift.
+        #
+        # beta.131: capped. The b130 release hung here for 90 minutes against a
+        # ~19-minute run, because a mutation nudged a scenario onto the new
+        # time-extension ask and every one of them then waited out the full
+        # 300-second operator poll. That is fixed at the source, but an
+        # uncapped job means the NEXT hang is also discovered by a human
+        # noticing an hour later. 45 gives the real run better than double its
+        # headroom.
+        timeout-minutes: 45
         run: node scripts/mutation-check.mjs
 
       - name: Smoke

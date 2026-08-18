@@ -43,6 +43,21 @@ export interface CiFindingOptions {
  */
 export declare function buildCiFailureFindings(logs: string, opts?: CiFindingOptions): ReviewFinding[];
 /**
+ * beta.131: the title of the sub-task that owns an unroutable CI failure.
+ *
+ * Stable, because a second repair cycle finds the existing one by it rather
+ * than adding another.
+ */
+export declare const CI_REPAIR_SUBTASK_TITLE = "Fix the failing CI check";
+/**
+ * beta.131: the brief handed to the sub-task above.
+ *
+ * The raw failing output verbatim, because the whole reason this sub-task
+ * exists is that nothing in the harness could work out which file to blame --
+ * so summarising it would throw away the only evidence there is.
+ */
+export declare function renderCiRepairIntent(detail: string): string;
+/**
  * A short, stable line for the audit trail and the ship note.
  */
 export declare function describeCiFindings(findings: ReviewFinding[]): string;

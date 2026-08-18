@@ -1686,6 +1686,66 @@ const MUTATIONS = [
     replace: 'this.emitPhaseTiming(sessionId, "ship", cycle, shipStart',
     tests: ["tests/beta130-ci-repair-ask.test.mjs"],
   },
+
+  // --- beta.131: the repair cycle that could never have worked --------------
+  {
+    // The one line. Restoring it restores four releases of a CI-repair feature
+    // that could only ever spend a cycle guessing, and b127's own tests stay
+    // green throughout -- their fixture says the run concluded "failure", which
+    // is real but never true at the moment this code runs.
+    name: "a still-running workflow is read (b131): run-level conclusion lags the job that woke us",
+    file: "dist/adapters/github.js",
+    find: 'const candidateRuns = (rj.workflow_runs ?? []).filter((r) => !settledGreen.includes(r.conclusion ?? ""));',
+    replace: 'const candidateRuns = (rj.workflow_runs ?? []).filter((r) => ["failure", "timed_out", "cancelled", "action_required"].includes(r.conclusion ?? ""));',
+    tests: ["tests/beta131-ci-repair-routing.test.mjs"],
+  },
+  {
+    // Only two runs are ever read. Reading the green ones spends that budget on
+    // runs that cannot contain a failing job, and on a sha with three runs that
+    // is how the failing one goes unread.
+    name: "green runs are not scanned (b131): the two-run budget must not be spent on runs that passed",
+    file: "dist/adapters/github.js",
+    find: 'const settledGreen = ["success", "skipped", "neutral"];',
+    replace: "const settledGreen = [];",
+    tests: ["tests/beta131-ci-repair-routing.test.mjs"],
+  },
+  {
+    // With the cap at two, ordering decides whether a definite failure listed
+    // third is reached at all.
+    name: "a definite failure is read before one still in flight (b131)",
+    file: "dist/adapters/github.js",
+    find: "candidateRuns.sort((a, b) => definite(a.conclusion) - definite(b.conclusion));",
+    replace: "candidateRuns.sort(() => 0);",
+    tests: ["tests/beta131-ci-repair-routing.test.mjs"],
+  },
+  {
+    // Testing the clock before the ceiling is what made a correct refusal read
+    // as "shipped red without asking" on b130's very first live run.
+    name: "an exhausted ceiling outranks a short clock in the decline reason (b131)",
+    file: "dist/orchestrator/loop.js",
+    find: ': !ceilingOk ? "ceiling"',
+    replace: ': !clockOk ? "wall_clock"',
+    tests: ["tests/beta131-ci-repair-routing.test.mjs"],
+  },
+  {
+    // A finding that names a file already has an owner holding the context to
+    // fix it. Adding a cold worker as well splits one failure across two
+    // mechanisms, which is how fan-out starts.
+    name: "only an UNROUTABLE failure gets its own sub-task (b131)",
+    file: "dist/orchestrator/loop.js",
+    find: 'if (ciFindings.some((f) => (f.file ?? "").trim()))\n            return;',
+    replace: "if (false)\n            return;",
+    tests: ["tests/beta131-ci-repair-routing.test.mjs"],
+  },
+  {
+    // Without the sub-task the finding is broadcast to everyone and owned by
+    // nobody: 03a8a7b6 spent a cycle and ~$3 that way and stayed red.
+    name: "an unroutable red build actually gets an owner (b131), not just an audit line",
+    file: "dist/orchestrator/loop.js",
+    find: "this.addCiRepairSubTask(sessionId, cycle, plan, lastCiFindings);",
+    replace: "void 0;",
+    tests: ["tests/beta131-ci-repair-routing.test.mjs"],
+  },
 ];
 
 /**
