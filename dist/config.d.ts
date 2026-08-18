@@ -1078,6 +1078,24 @@ export interface LoopConfig {
      */
     recovery_resume_at_subtask?: boolean;
     /**
+     * beta.132: refuse to auto-resume a session that already has a plan AND at
+     * least one finished cycle, in ANY phase.
+     *
+     * b81 stopped this for `executing` only; every other phase still fell
+     * through to a re-drive of `loop.run`, which re-plans from scratch -- a
+     * fresh lead call and scout (mean $6.24 across this repo's own audit
+     * history), `cycles_ran` reset, and completed sub-tasks re-run over their
+     * own commits. It fires unattended on plugin boot, and restarting the
+     * container is how a new build gets installed, so it lands on live runs as
+     * a matter of routine.
+     *
+     * With the guard on, such a session is surfaced instead: marked
+     * needs_human_review against its PR if it has one, otherwise failed with
+     * the worktree preserved. Sessions with no plan yet still resume normally.
+     * Default true. Set false to restore the pre-beta.132 re-drive.
+     */
+    recovery_replan_guard?: boolean;
+    /**
      * beta.81 (Track C): give the LEAD re-plan SDK call the same "retry once on
      * extractJson failure" guard the classifier has (runClassifierSdk), so a
      * transient prose-drift (the lead returns prose instead of the JSON plan

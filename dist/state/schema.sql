@@ -69,7 +69,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- holds unpushed commits. The startup self-heal reaps every worktree whose
   -- session is terminal, and `aborted` is terminal, so without this the
   -- "preserved, go and get your commits" promise expired at the next restart.
-  worktree_preserved       INTEGER            -- 1 = abort kept this worktree on purpose
+  worktree_preserved       INTEGER,           -- 1 = abort kept this worktree on purpose
+  -- beta.132: proof that a loop is still sitting on a time-extension question.
+  -- That pause is unlike every other one: the loop does not return, it polls
+  -- this row in place. harness_answer used to infer "still listening" from the
+  -- five-minute window alone, which is only true while the process lives.
+  -- Session 2b4c1d33 answered 28 seconds in, to a listener that had already
+  -- died, and was told the run would pick it up. Nothing did.
+  clarification_heartbeat_at INTEGER          -- ms; stamped on every poll tick
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

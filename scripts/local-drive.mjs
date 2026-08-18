@@ -245,10 +245,21 @@ async function cmdRun(requestPath, opts) {
 
 const TERMINAL = new Set(["done", "shipped", "failed", "cancelled", "merged", "aborted"]);
 
+/**
+ * The seq the harness parks a time-extension question under.
+ *
+ * Mirrors TIME_EXTENSION_SEQ in src/orchestrator/time-extension.ts. It matters
+ * here because that pause is unlike every other one: the loop does NOT return.
+ * It stays inside `askForTimeExtension`, polling the row for an answer, and
+ * resumes itself in place when one lands.
+ */
+const TIME_EXTENSION_SEQ = -3;
+
 async function watch(config, sessionId) {
   const conn = db(config);
   let lastId = 0;
   const started = Date.now();
+  let announcedPause = false;
   for (;;) {
     const rows = conn
       .prepare(`SELECT id, event, payload, created_at FROM audit_log WHERE session_id = ? AND id > ? ORDER BY id`)
@@ -268,13 +279,30 @@ async function watch(config, sessionId) {
       }
       console.log(`  ${AGE(r.created_at - started).padStart(7)}  ${r.event.padEnd(38)} ${detail}`);
     }
-    const s = conn.prepare(`SELECT status, clarification_question, cost_usd FROM sessions WHERE id = ?`).get(sessionId);
+    const s = conn
+      .prepare(`SELECT status, clarification_question, clarification_seq, cost_usd FROM sessions WHERE id = ?`)
+      .get(sessionId);
     if (!s) die(`no session ${sessionId}`);
     if (s.status === "awaiting_clarification") {
-      console.log(`\n--- PAUSED, needs an answer -------------------------------------------\n`);
-      console.log(s.clarification_question);
-      console.log(`\n  node scripts/local-drive.mjs answer ${sessionId} "skip"\n`);
-      return;
+      const timeExtension = s.clarification_seq === TIME_EXTENSION_SEQ;
+      if (!announcedPause) {
+        announcedPause = true;
+        console.log(`\n--- PAUSED, needs an answer -------------------------------------------\n`);
+        console.log(s.clarification_question);
+        console.log(`\n  node scripts/local-drive.mjs answer ${sessionId} "skip"\n`);
+      }
+      // Returning here ends main(), which hits `process.exit(0)` at the bottom
+      // of this file and takes the loop down with it. For an ordinary
+      // clarification that is correct -- the loop has already returned and a
+      // later `answer` re-drives it from the persisted seq. For a time
+      // extension it is fatal: the loop is still running IN THIS PROCESS,
+      // polling for the reply, and killing it strands the run holding a pushed
+      // branch and a red build. That is exactly how session 2b4c1d33 lost
+      // $11.07 -- answered 28 seconds after the question, to a listener this
+      // line had already killed.
+      if (!timeExtension) return;
+    } else {
+      announcedPause = false;
     }
     if (TERMINAL.has(s.status)) {
       console.log(`\n${s.status}  after ${AGE(Date.now() - started)}  $${Number(s.cost_usd ?? 0).toFixed(2)}`);

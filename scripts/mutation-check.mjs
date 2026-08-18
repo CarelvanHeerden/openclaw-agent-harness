@@ -1746,6 +1746,111 @@ const MUTATIONS = [
     replace: "void 0;",
     tests: ["tests/beta131-ci-repair-routing.test.mjs"],
   },
+
+  // --- beta.132: the answer nobody heard ------------------------------------
+  {
+    // The single most expensive default in the file. Absence of a heartbeat
+    // MUST read as absence of a listener: b129 inferred life from the wait
+    // window, told 2b4c1d33's operator "the run will pick this up within a few
+    // seconds", and left $11.07 of work parked against a process that had
+    // already exited.
+    name: "no heartbeat means NOBODY IS LISTENING (b132), not 'probably fine'",
+    file: "dist/orchestrator/time-extension.js",
+    find: 'if (typeof heartbeatAt !== "number" || !Number.isFinite(heartbeatAt) || heartbeatAt <= 0)\n        return false;',
+    replace: 'if (typeof heartbeatAt !== "number" || !Number.isFinite(heartbeatAt) || heartbeatAt <= 0)\n        return true;',
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // Staleness has to actually expire. Never going stale restores b129
+    // exactly: every dead listener reads as live, forever.
+    name: "a cold heartbeat eventually goes STALE (b132)",
+    file: "dist/orchestrator/time-extension.js",
+    find: "return nowMs - heartbeatAt <= LISTENER_STALE_MS;",
+    replace: "return true;",
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // ...and it must not expire so eagerly that a healthy loop between ticks
+    // is declared dead, which would ship runs out from under a live process.
+    name: "a heartbeat from six seconds ago is still ALIVE (b132): the poll sleeps 5s a tick",
+    file: "dist/orchestrator/time-extension.js",
+    find: "export const LISTENER_STALE_MS = 20_000;",
+    replace: "export const LISTENER_STALE_MS = 1;",
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // The liveness test has to be CONSULTED, not merely computed. Dropping it
+    // from the condition is the b129 code wearing b132's clothes.
+    name: "harness_answer actually checks liveness before promising a pickup (b132)",
+    file: "dist/tools/registration.js",
+    find: "const alive = listenerLooksAlive(row.clarification_heartbeat_at);",
+    replace: "const alive = true;",
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // A dead listener must not be resumed. loop.run re-plans from scratch: a
+    // fresh lead call and scout, mean $6.24 in this repo's own history, and
+    // completed sub-tasks re-run over their own commits.
+    name: "a dead listener FINISHES THE SHIP (b132) rather than re-planning from scratch",
+    file: "dist/tools/registration.js",
+    find: "details: { ok: true, sessionId, listenerLost: true, shipped: true, prUrl },",
+    replace: "details: { ok: true, sessionId, listenerLost: true, shipped: false, prUrl },",
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // Without the flag the session is terminal and the next boot's heal
+    // deletes the very commits this branch promised to keep -- b129's lesson,
+    // re-learned on a second path.
+    name: "an unpushed dead listener KEEPS its worktree (b132)",
+    file: "dist/tools/registration.js",
+    find: "UPDATE sessions SET status = 'aborted', worktree_preserved = 1",
+    replace: "UPDATE sessions SET status = 'aborted', worktree_preserved = 0",
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // b81 has been promising preserved commits on this path since b81 and
+    // deleting them at the next container bounce ever since b45's heal landed.
+    // Mutated in `src`, not `dist`, because the bootstrap recovery callback is
+    // an inline closure with no seam to drive from a test -- which is how b81
+    // shipped with only a grep for its own config key to guard it. The
+    // assertion this protects is a source-shape one, so the source is what has
+    // to be broken for the check to mean anything.
+    name: "b81's recovery path keeps the commits it promises (b132)",
+    file: "src/index.ts",
+    find: "UPDATE sessions SET status = 'failed', worktree_preserved = 1, updated_at = ? WHERE id = ?`",
+    replace: "UPDATE sessions SET status = 'failed', updated_at = ? WHERE id = ?`",
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // The guard exists to protect finished WORK, not the plan. Refusing on a
+    // plan alone would strand every session that died during planning -- the
+    // exact case auto-resume was built for and handles for free.
+    name: "recovery still resumes a session with a plan but NO finished cycles (b132)",
+    file: "dist/state/recovery-guard.js",
+    find: "if (!Number.isFinite(input.cyclesRan) || input.cyclesRan < 1)\n        return { resume: true };",
+    replace: "if (false)\n        return { resume: true };",
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // And the refusal has to fire. Resuming here is the unattended re-plan
+    // that fires on every plugin boot -- which is how a new build is
+    // installed, so it lands on live runs as a matter of routine.
+    name: "recovery REFUSES to re-plan a session holding a plan and finished cycles (b132)",
+    file: "dist/state/recovery-guard.js",
+    find: 'return { resume: false, outcome: input.prUrl.trim() ? "ship_for_review" : "preserve_worktree" };',
+    replace: "return { resume: true };",
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
+  {
+    // A session whose work already reached GitHub has nothing to rescue, only
+    // a verdict to record. Preserving a worktree instead leaves it for the
+    // heal to argue with and tells the operator to look in the wrong place.
+    name: "a refused session that PUSHED is surfaced against its PR (b132)",
+    file: "dist/state/recovery-guard.js",
+    find: 'input.prUrl.trim() ? "ship_for_review" : "preserve_worktree"',
+    replace: '"preserve_worktree"',
+    tests: ["tests/beta132-listener-liveness.test.mjs"],
+  },
 ];
 
 /**

@@ -1054,6 +1054,13 @@ export declare class OrchestratorLoop {
      * the existing commits were written against. Polling the answer column keeps
      * the cycle counter, the findings history, the worktree and the deadline
      * arithmetic exactly where they are.
+     *
+     * beta.132: the price of waiting in place is that the question dies with the
+     * process holding it, and b129 had no way to notice -- `harness_answer` read
+     * the wait window as proof of life and told session 2b4c1d33's operator the
+     * run would pick their answer up. It had already exited. Hence the
+     * heartbeat: every tick below stamps the row, and an answer arriving to a
+     * stale one finishes the ship rather than being promised to nobody.
      */
     private askForTimeExtension;
     /**
@@ -1061,6 +1068,15 @@ export declare class OrchestratorLoop {
      * resume honours what the operator granted instead of reverting to the
      * default and guillotining the run a second time.
      */
+    /**
+     * beta.132: say "I am still here" on the row the operator's answer lands on.
+     *
+     * Best-effort by design. A failed stamp reads as a dead listener, which
+     * costs the run its time extension and ships an honest do-not-merge PR --
+     * where the alternative, assuming life, strands the work. This is the safe
+     * direction to fail in.
+     */
+    private stampClarificationHeartbeat;
     private persistExtendedDeadline;
     /**
      * beta.131: give an unroutable CI failure somebody to belong to.

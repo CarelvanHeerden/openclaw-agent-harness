@@ -40,6 +40,32 @@ export function isTimeExtensionPause(clarificationSubtask) {
     }
 }
 /**
+ * beta.132: how stale a heartbeat may be before the listener is presumed dead.
+ *
+ * The poll sleeps at most 5s per tick, so a live loop restamps well inside
+ * this. Four missed ticks is generous enough to survive a slow disk and tight
+ * enough that an operator is not told to wait on a process that has exited.
+ */
+export const LISTENER_STALE_MS = 20_000;
+/**
+ * beta.132: is a loop actually still sitting on this question?
+ *
+ * b129 answered this with the wait window alone, and the window only says what
+ * the loop INTENDED before it died. Session 2b4c1d33 answered 28 seconds into
+ * a 5-minute window, was told "the run will pick this up within a few
+ * seconds", and never resumed -- the process holding the question had exited
+ * the moment its watcher saw the pause.
+ *
+ * A missing heartbeat reads as dead. That is the safe direction: treating a
+ * live loop as dead costs it an extension, treating a dead one as live loses
+ * the whole run.
+ */
+export function listenerLooksAlive(heartbeatAt, nowMs = Date.now()) {
+    if (typeof heartbeatAt !== "number" || !Number.isFinite(heartbeatAt) || heartbeatAt <= 0)
+        return false;
+    return nowMs - heartbeatAt <= LISTENER_STALE_MS;
+}
+/**
  * How long the live loop intends to keep polling for an answer. Written into
  * the pause marker so `harness_answer` can tell whether a loop is still sitting
  * there waiting (record the answer and let it pick it up) or has already given

@@ -14,7 +14,7 @@ import { findingText, isConditionalFinding, removeOwningFindingLines } from "../
 import { OnboardingSlack, resolveOnboardVaultService, validateGitToken } from "../slack/onboarding.js";
 import { measureParaphraseDrift, readRequestFile } from "./brief-source.js";
 import { BRIEF_CONFIRMATION_KIND, BRIEF_CONFIRMATION_SEQ, decideBriefConfirmation, isBriefConfirmationPause, parseConfirmationReply, renderBriefConfirmation, } from "./brief-confirmation.js";
-import { isTimeExtensionPause, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
+import { isTimeExtensionPause, listenerLooksAlive, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
 function toDispose(x) {
     return () => {
         if (typeof x === "function")
@@ -1206,7 +1206,9 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
             const row = liveDb()
-                .prepare(`SELECT status, crystallised_prompt, clarification_question, clarification_seq, clarification_subtask FROM sessions WHERE id = ?`)
+                .prepare(`SELECT status, crystallised_prompt, clarification_question, clarification_seq, clarification_subtask,
+                    clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd
+               FROM sessions WHERE id = ?`)
                 .get(sessionId);
             if (!row)
                 return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
@@ -1226,16 +1228,88 @@ export function registerHarnessTools(api, runtime) {
             // second run against the same worktree and the same branch.
             if (isTimeExtensionPause(row.clarification_subtask)) {
                 const waitUntilMs = readTimeExtensionWaitUntil(row.clarification_subtask);
-                if (Date.now() < waitUntilMs) {
-                    liveState().audit("tool.answer_time_extension", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, waitUntilMs }, sessionId);
+                // beta.132: the window says what the loop INTENDED, not whether it is
+                // still there. Session 2b4c1d33 answered 28 seconds into a 5-minute
+                // window and was told the run would pick it up; the process holding
+                // the question had already exited, and $11.07 of finished work sat on
+                // a branch nobody came back for.
+                const alive = listenerLooksAlive(row.clarification_heartbeat_at);
+                if (alive) {
+                    const windowOpen = Date.now() < waitUntilMs;
+                    liveState().audit("tool.answer_time_extension", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, waitUntilMs, windowOpen }, sessionId);
+                    // A live loop owns this session. Even with the window a moment
+                    // expired it is mid-shutdown and about to ship, so writing a
+                    // verdict from here would race its own -- the answer is recorded
+                    // and the loop decides.
                     return {
-                        content: [{ type: "text", text: `Recorded. The run is still waiting at its review boundary and will pick this up within a few seconds.` }],
-                        details: { ok: true, sessionId, timeExtensionAnswered: true },
+                        content: [{
+                                type: "text",
+                                text: windowOpen
+                                    ? `Recorded. The run is still waiting at its review boundary and will pick this up within a few seconds.`
+                                    : `Recorded, but the wait window has just closed and the run is already shipping what it has. It may not act on this.`,
+                            }],
+                        details: { ok: true, sessionId, timeExtensionAnswered: true, windowOpen },
                     };
                 }
-                // The window closed -- the loop shipped, or the process died holding
-                // the question. Fall through to the ordinary resume so the answer is
-                // not silently swallowed.
+                // Nobody is listening. The ordinary resume from here is a FULL
+                // re-plan -- a fresh lead call and scout ($6.24 on average across
+                // this repo's own history), the cycle counter reset to 1, and every
+                // sub-task re-run against a branch that already carries their
+                // commits. That is a worse outcome than the one the question was
+                // trying to avoid, so it is not what happens.
+                //
+                // Everything of value is already on the remote when a PR exists, so
+                // the honest move is to finish the ship the dead loop was in the
+                // middle of: exactly what would have happened had the operator
+                // replied "ship", or said nothing at all.
+                const prUrl = (row.final_pr_url ?? "").trim();
+                liveState().audit("tool.answer_time_extension_listener_lost", {
+                    sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null,
+                    waitUntilMs, windowWasOpen: Date.now() < waitUntilMs,
+                    heartbeatAt: row.clarification_heartbeat_at ?? null,
+                    hasPr: Boolean(prUrl),
+                }, sessionId);
+                if (prUrl) {
+                    liveDb()
+                        .prepare(`UPDATE sessions SET status = 'done', merge_recommendation = 'needs_human_review',
+                        merge_recommendation_reason = ?, clarification_question = NULL, clarification_seq = NULL,
+                        clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ?
+                  WHERE id = ?`)
+                        .run(`The run that asked for more time is no longer running, so the extension could not be used. ` +
+                        `The branch is pushed and the PR is open, but the CI repair it wanted the time FOR never ran -- ` +
+                        `treat CI on this PR as unfixed. Nothing was lost and nothing was re-spent.`, Date.now(), sessionId);
+                    return {
+                        content: [{
+                                type: "text",
+                                text: `The run that asked this question is gone, so the extra time could not be used.\n\n` +
+                                    `Nothing is lost: the branch is pushed and ${prUrl} is open. What did NOT happen is the CI ` +
+                                    `repair the run wanted the time for, so CI on that PR is still as red as it was.\n\n` +
+                                    `Marked needs_human_review. Re-running would have re-planned from scratch and re-spent the ` +
+                                    `lead and scout, so it was not done automatically -- use harness_revise if you want the fix attempted.`,
+                            }],
+                        details: { ok: true, sessionId, listenerLost: true, shipped: true, prUrl },
+                    };
+                }
+                // No PR means the question came from the review boundary, before any
+                // push, so there is nothing on the remote to point at. Keep the
+                // worktree (b129's flag stops the next boot reaping it) and say where
+                // the commits are rather than inventing a ship.
+                liveDb()
+                    .prepare(`UPDATE sessions SET status = 'aborted', worktree_preserved = 1, clarification_question = NULL,
+                      clarification_seq = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL,
+                      updated_at = ? WHERE id = ?`)
+                    .run(Date.now(), sessionId);
+                return {
+                    content: [{
+                            type: "text",
+                            text: `The run that asked this question is gone, so the extra time could not be used, and it had not ` +
+                                `pushed yet — there is no PR to point at.\n\n` +
+                                `Its worktree has been preserved rather than reaped, so the commits on branch ` +
+                                `${(row.branch ?? "").trim() || "(unrecorded)"} are still there. Resuming was not done ` +
+                                `automatically because it would have re-planned from scratch and re-spent the lead and scout.`,
+                        }],
+                    details: { ok: true, sessionId, listenerLost: true, shipped: false, worktreePreserved: true },
+                };
             }
             // 'abort'/'cancel' -> terminate the session cleanly (release worktree).
             if (/^(abort|cancel)\b/i.test(trimmed)) {

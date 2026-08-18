@@ -560,6 +560,11 @@
             "default": true,
             "description": "beta.81 (Track C / C3): when a session left mid-executing is recovered, RESUME AT the failed/incomplete sub-task (mark the orphaned running sub-task failed, preserve completed sub-task commits) instead of re-planning the whole session from scratch (which re-burns completed sub-tasks). Set false to restore the pre-beta.81 full-restart recovery behaviour."
           },
+          "recovery_replan_guard": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.132: refuse to auto-resume a session that already has a plan AND at least one finished cycle, in any phase. b81 stopped this for `executing` only; every other phase fell through to a re-drive of loop.run, which re-plans from scratch -- a fresh lead call and scout (mean $6.24 across this repo's own audit history), cycles_ran reset to zero, and completed sub-tasks re-run against a branch that already carries their commits. Nobody asks for it: it fires unattended on plugin boot for any session left non-terminal, and restarting the container is how a new build gets installed, so a restart landing on a mid-flight run is routine rather than exotic. Session 2b4c1d33 sat at `planning` holding a $6.03 plan and two finished cycles when a boot picked it up. With the guard on, such a session is surfaced instead -- marked needs_human_review against its PR if it has one, otherwise failed with the worktree preserved so the commits survive the next heal. A session with no plan yet has nothing to lose and still resumes normally. Set false to restore the pre-beta.132 re-drive."
+          },
           "lead_json_retry_enabled": {
             "type": "boolean",
             "default": true,

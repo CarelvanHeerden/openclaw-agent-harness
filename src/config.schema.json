@@ -352,6 +352,11 @@
           "type": "boolean",
           "default": true
         },
+        "recovery_replan_guard": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.132: refuse to auto-resume a session that already has a plan and at least one finished cycle. Resuming re-plans from scratch (fresh lead + scout, cycle counter reset, completed sub-tasks re-run over their own commits), and it fires unattended on plugin boot -- which is how a new build gets installed. Such a session is surfaced for a human instead; sessions with no plan yet still resume normally."
+        },
         "lead_json_retry_enabled": {
           "type": "boolean",
           "default": true
