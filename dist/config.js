@@ -206,7 +206,15 @@ const DEFAULTS = {
         // already excludes them as base commands, but `xargs sh -c`, `find -exec
         // bash` and `env sh` smuggled an unguarded shell through whitelisted hosts.
         bash_denylist_tokens: ["sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill", "sh", "bash", "zsh", "dash", "ksh", "fish"],
-        path_denylist: [".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519"],
+        // beta.110: the credential vault and its key are readable by anything
+        // running as the harness uid -- and the worker subprocess DOES run as that
+        // uid. Stripping the key out of the child's env (buildSdkEnv) stops
+        // `echo $OAH_VAULT_KEY`; these entries stop `cat .../vault.key`. Both are
+        // needed, and neither is a substitute for the other.
+        path_denylist: [
+            ".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519",
+            "harness-vault/", "vault.key", "vault.db",
+        ],
         allow_git_push: false,
         allow_network_commands: false,
     },
@@ -256,6 +264,10 @@ const DEFAULTS = {
         dir: "",
         full_prompts: false,
         retention_days: 14,
+    },
+    credentials: {
+        dir: "harness-vault",
+        key_env: "OAH_VAULT_KEY",
     },
 };
 /**

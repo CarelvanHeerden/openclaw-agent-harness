@@ -1,12 +1,13 @@
 /**
  * Credential adapter.
  *
- * Fetches PATs (and any other secrets the harness needs) from the OpenClaw
- * hybrid-memory credential vault via the `credential_get` MCP tool that
- * lives on the OpenClaw plugin API surface.
+ * beta.110: reads from the harness-owned CredentialVault (an in-process library
+ * call) rather than the memory-hybrid `credential_get` MCP tool. The vault is
+ * deliberately NOT a registered tool, so no agent turn can ask it for a service
+ * name -- see adapters/credential-vault.ts.
  *
- * We NEVER cache secrets to disk or memory beyond one session. If a session
- * ends (done/failed/aborted), we drop the token from the in-process cache.
+ * We NEVER cache secrets to disk, and only in memory for the life of a session.
+ * If a session ends (done/failed/aborted), we drop the token from the cache.
  *
  * The adapter also supports a file-based fallback for local dev, controlled
  * by env var `OAH_DEV_CRED_DIR`, where each secret lives at
@@ -35,12 +36,12 @@ export class CredentialAdapter {
             }
             catch { /* fall through */ }
         }
-        const r = await this.deps.callCredentialGetTool({ service, type: kind });
-        if (!r.value) {
-            throw new Error(`credential '${service}' not found in vault (${r.error ?? "no value"})`);
+        const value = this.deps.vault.get(service, kind);
+        if (!value) {
+            throw new Error(`credential '${service}' not found in vault`);
         }
-        this.cache.set(service, r.value);
-        return r.value;
+        this.cache.set(service, value);
+        return value;
     }
     /** Purge all cached secrets. Call after a session terminates. */
     purge() {

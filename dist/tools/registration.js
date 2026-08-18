@@ -1041,6 +1041,23 @@ export function registerHarnessTools(api, runtime) {
                     }
                 }
             }
+            // beta.110: vault health, reported EXPLICITLY. A vault that will not
+            // open fails every credential lookup, and inferring that from a
+            // "token not found" sends the operator hunting for a missing entry
+            // when the real fault is the key. Fatal, same rationale as git auth.
+            {
+                const vaultErr = liveRuntime().vaultError;
+                let detail = vaultErr ?? "open";
+                if (!vaultErr) {
+                    try {
+                        detail = `open (${liveRuntime().vault.list().length} credential(s) stored)`;
+                    }
+                    catch (err) {
+                        detail = `open, but listing failed: ${String(err)}`;
+                    }
+                }
+                checks.push({ name: "credential_vault_open", ok: !vaultErr, detail });
+            }
             // Credentials: are we set to talk to Slack/Vercel? (informational, not fatal)
             checks.push({ name: "slack_credential_service_set", ok: !!liveConfig().slack.credential_service });
             checks.push({ name: "vercel_enabled", ok: !!liveConfig().vercel?.enabled });
@@ -1051,7 +1068,8 @@ export function registerHarnessTools(api, runtime) {
                 c.name === "model_auth_resolvable" ||
                 c.name === "model_auth_live_ping" ||
                 c.name === "git_credential_resolvable" ||
-                c.name === "git_credential_live_ping")
+                c.name === "git_credential_live_ping" ||
+                c.name === "credential_vault_open")
                 .every((c) => c.ok);
             return {
                 content: [
@@ -1559,22 +1577,17 @@ export function registerHarnessTools(api, runtime) {
                     await onboard.postDm(dmChannel, `:x: That token didn't validate (${valid.error ?? "unknown"}). Please try again with a valid token.`);
                 return { content: [{ type: "text", text: `Token failed validation (${valid.error ?? "unknown"}); NOT stored.` }], details: { ok: false, invalidToken: true, error: valid.error } };
             }
-            if (!api.callTool) {
-                return { content: [{ type: "text", text: "credential vault not available (api.callTool missing); cannot store token." }], details: { ok: false, noVault: true } };
-            }
+            // beta.110: store straight into the harness-owned vault. This used to
+            // go out through memory-hybrid's `credential_store` tool; it is now a
+            // library call on a vault nothing else can address.
             try {
-                const stored = (await api.callTool("credential_store", {
-                    service: vaultService,
+                liveRuntime().vault.set(vaultService, token.trim(), {
                     type: "token",
-                    value: token.trim(),
                     notes: `git token for Slack user ${requester}; onboarded via harness_onboard`,
-                }));
-                if (stored && stored.ok === false) {
-                    return { content: [{ type: "text", text: `Vault store failed (${stored.error ?? "unknown"}).` }], details: { ok: false, vaultError: stored.error } };
-                }
+                });
             }
             catch (err) {
-                return { content: [{ type: "text", text: `Vault store threw (${String(err)}).` }], details: { ok: false, vaultThrew: String(err) } };
+                return { content: [{ type: "text", text: `Vault store failed (${String(err)}).` }], details: { ok: false, vaultThrew: String(err) } };
             }
             // Best-effort: delete our own prompt + confirm. The bot CANNOT delete
             // the user's token message, so ask them to remove it themselves.

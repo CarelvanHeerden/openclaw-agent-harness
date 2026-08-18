@@ -1939,6 +1939,48 @@ const MUTATIONS = [
     replace: "return slack.listener_enabled === true;",
     tests: ["tests/config.test.mjs"],
   },
+
+  // ------------------------------------------------- the credential vault
+  {
+    name: "vault key env strip: the worker subprocess never inherits the key",
+    file: "dist/adapters/claude-sdk.js",
+    // Dropped from the exact denylist. The regex beside it does NOT cover this
+    // name -- it matches API_KEY / ACCESS_KEY / PRIVATE_KEY, not a bare _KEY
+    // suffix -- so removing the entry really does hand the key to the child.
+    find: '    "OAH_VAULT_KEY",',
+    replace: "",
+    tests: ["tests/credential-vault.test.mjs"],
+  },
+  {
+    name: "vault key verifier: a wrong key fails at open, not entry by entry",
+    file: "dist/adapters/credential-vault.js",
+    // Without the verifier the vault opens happily under the wrong key and
+    // every lookup reports "not found", sending an operator to hunt for entries
+    // that are present but sealed.
+    find: "        vault.verifyKey();",
+    replace: "",
+    tests: ["tests/credential-vault.test.mjs"],
+  },
+  {
+    name: "authenticated decryption: a tampered row is refused, not swallowed",
+    file: "dist/adapters/credential-vault.js",
+    // Turns the GCM auth failure into a silent miss. That would make tampering
+    // and cross-service ciphertext swaps indistinguishable from an absent
+    // entry -- i.e. it would discard the only thing GCM buys us over raw AES.
+    find: '            this.opts.audit?.("vault.corrupt", { service });',
+    replace: "            return undefined;",
+    tests: ["tests/credential-vault.test.mjs"],
+  },
+  {
+    name: "vault artefacts are harness excludes: a key file must never reach a commit",
+    file: "dist/adapters/git-worktree.js",
+    // The vault resolves against the harness data dir, so this is belt-and-
+    // braces -- but b110's lesson was that a freely-chosen path swept 12,291
+    // files into a commit, and a key file is the worst thing to learn that on.
+    find: '    "vault.key",',
+    replace: "",
+    tests: ["tests/credential-vault.test.mjs"],
+  },
 ];
 
 /**

@@ -20,6 +20,12 @@ import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crys
 import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/fable5-lead.js";
 import type { ReviewReport } from "../orchestrator/fable5-adversary.js";
 /**
+ * beta.110: allow bootstrap to deny an operator-renamed secret env var (e.g. a
+ * custom `credentials.key_env`). The denylist is static by design -- this is the
+ * one seam that widens it, and it only ever ADDS.
+ */
+export declare function registerDeniedSdkEnvVar(name: string): void;
+/**
  * beta.99 (P0-4): default output-token ceiling exported to the SDK subprocess.
  * Fable 5 / Sonnet 5 / Opus 4.7 / Opus 4.8 all advertise
  * `max_output_tokens: { default: 64000, upper: 128000 }`. We pin the default

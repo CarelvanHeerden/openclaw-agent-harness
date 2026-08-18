@@ -94,6 +94,13 @@ export const HARNESS_EXCLUDE_PATTERNS: readonly string[] = [
   "_cacache/",
   ".git-commit-msg.txt",
   ".commit-msg-tmp.txt",
+  // The credential vault resolves against the harness data dir, so these should
+  // never appear inside a worktree at all. They are listed anyway because the
+  // failure above was caused by a path a model chose freely, and a private key
+  // is the worst thing to discover that on. Costs nothing when absent.
+  "harness-vault/",
+  "vault.key",
+  "vault.db",
 ];
 
 const EXCLUDE_HEADER = "# openclaw-agent-harness (beta.110): tooling scratch, never the project's own";

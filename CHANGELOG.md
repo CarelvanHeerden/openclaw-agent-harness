@@ -1,5 +1,80 @@
 # Changelog
 
+## Unreleased
+
+Deliberately not version-tagged. This work was swept into beta.110 once by a
+branch cut from an unpushed local `main`; it now carries no version number until
+the moment it lands, so nothing can collide with it a second time.
+
+### The harness owns its credential vault
+
+Credentials came from the memory-hybrid plugin's `credential_get` /
+`credential_store` MCP tools. That plugin is being retired, and its replacement
+is a *memory* backend — a retrieval system built to be searched by agents, which
+is the last place a PAT belongs. This is a hard cutover: the tool calls are gone,
+there is no fallback to them, and nothing needs migrating because the vault
+starts empty.
+
+The replacement is deliberately **not a tool**. Reaching a secret through a
+registered tool means any turn that can call tools can ask for an arbitrary
+service name; a library call cannot be reached at all. So the new vault ends up
+strictly safer than what it replaces rather than merely equivalent.
+
+- `adapters/credential-vault.ts` — AES-256-GCM, fresh 96-bit IV per write, in a
+  **dedicated** SQLite file rather than the state DB, which gets copied around
+  for debugging. The service name is bound in as additional authenticated data,
+  so an attacker with write access to the database cannot promote the
+  `github-readonly` row into `github-admin`.
+- The key comes from a 0600 key file, generated on first boot, with
+  `OAH_VAULT_KEY` overriding it for container injection. A known plaintext is
+  sealed under the active key and checked at open, so a **wrong key fails
+  immediately** instead of presenting as a procession of "credential not found"
+  errors that send an operator hunting for entries which are present but sealed.
+- `scripts/vault.mjs` for operators (`set` reads stdin, so no shell history),
+  including `rotate`, which re-encrypts every entry and stages the new key file
+  before committing so an interruption cannot leave a vault whose only key was
+  lost to a failed write. Rotation is refused when the key came from the
+  environment, since writing a key file the env var would keep overriding
+  bricks the vault on next boot.
+- A vault that will not open no longer takes the plugin down: the harness boots
+  with a sealed stub that carries the real reason into every read, and
+  `harness_health` reports `credential_vault_open` as a fatal check.
+
+### Two pre-existing holes this closed on the way
+
+Neither was the ask; both would have leaked the new key.
+
+- `buildSdkEnv` returned `undefined` when no explicit Anthropic key was
+  resolved, which tells the SDK to **inherit the full parent environment** —
+  silently bypassing the beta.57 denylist in exactly the configuration where it
+  still matters. It now always returns a filtered environment; the child still
+  gets no injected key, so the `/login` fallback is unchanged.
+- The denylist regex matches `API_KEY`, `ACCESS_KEY` and `PRIVATE_KEY`, but not
+  a bare `_KEY` suffix, so `OAH_VAULT_KEY` would have sailed straight through.
+  It is now denied explicitly, and `registerDeniedSdkEnvVar` lets an
+  operator-renamed key variable be denied too.
+
+Stripping the environment is necessary but not sufficient: the worker runs as
+the same uid as the harness, so it could still `cat vault.key`. The vault
+directory, `vault.key` and `vault.db` are therefore in the default
+`safety.path_denylist` as well. Both defences are required; neither substitutes
+for the other, and the tests assert both.
+
+### Vault artefacts are harness excludes too (ported in from beta.110)
+
+`HARNESS_EXCLUDE_PATTERNS` did not exist when this was written. The vault
+resolves against the harness data dir rather than the worktree, so a key file
+should never appear where `git add -A` can see it — but beta.110's own lesson
+was that a freely-chosen path swept 12,291 files into a commit, and a private
+key is the worst possible thing to learn that on. `vault.key`, `vault.db` and
+the vault directory now sit alongside the npm-cache patterns.
+
+`tests/credential-vault.test.mjs` drives the real vault against real files and a
+real database — this is a crypto and file-permission change, and a source-grep
+assertion cannot tell a working seal from a broken one. Four entries in
+`scripts/mutation-check.mjs` cover the environment strip, the key verifier, the
+refusal to swallow an authentication failure, and the commit exclusion.
+
 ## 0.1.0-beta.133
 
 ### A token in the vault that nothing could read
@@ -118,6 +193,7 @@ whichever way it is set.
 Worth noting how this one was found: the drift was reported by an OpenClaw
 instance reading the manifest during a fresh install, against a README that
 disagreed with it. The same install turned up the three items above.
+
 
 ## 0.1.0-beta.132
 
@@ -1709,7 +1785,6 @@ Still default OFF. Set `parallel_independent_subtasks: true` and
 `subtask_concurrency: 2` to enable. A serial run takes an early path and is
 byte-for-byte its pre-b117 behaviour; a stubbed orchestrator or an adapter that
 cannot create slots degrades to serial rather than failing.
-
 ## 0.1.0-beta.116
 
 ### The adversary named the file, the owner existed, and nobody was asked
