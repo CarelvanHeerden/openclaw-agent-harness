@@ -161,6 +161,7 @@ const DEFAULTS = {
         none_grace_seconds: 45,
         permanent_denial_polls: 2,
         max_repair_cycles: 1,
+        repair_subtask_enabled: true,
         workflow_runs_fallback: true,
     },
     vercel: {

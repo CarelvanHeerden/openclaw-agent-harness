@@ -130,6 +130,17 @@ export interface CiConfig {
      * behaviour. Default 1.
      */
     max_repair_cycles?: number;
+    /**
+     * beta.131: give a CI failure that names no file its own sub-task, carrying
+     * the raw failing output and no declared file scope.
+     *
+     * Without it such a finding is broadcast to every sub-task as background
+     * context and owned by none of them, which is how 03a8a7b6 spent a repair
+     * cycle and about $3 re-running seven sub-tasks while the failing assertion
+     * went unread. Only fires when NO CI finding names a file; one that does has
+     * a real owner and is routed there instead. Default true.
+     */
+    repair_subtask_enabled?: boolean;
 }
 export interface BriefConfig {
     /**

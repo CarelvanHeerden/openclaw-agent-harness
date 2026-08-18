@@ -149,7 +149,7 @@ import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, descr
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
-import { buildCiFailureFindings, describeCiFindings } from "./ci-findings.js";
+import { buildCiFailureFindings, describeCiFindings, CI_REPAIR_SUBTASK_TITLE, renderCiRepairIntent, } from "./ci-findings.js";
 import { isInfraCrash } from "./infra-crash.js";
 import { computeReviseScope } from "./revise-scope.js";
 import { mapFindingsToSubTasks, buildScopedReviseHint, } from "./revise-mapping.js";
@@ -3778,14 +3778,37 @@ export class OrchestratorLoop {
                     // account of what was tried reads as the harness not having noticed.
                     this.deps.state.audit("loop.ci_repair_declined", {
                         sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
-                        budgetOk, clockOk, spentUsd: Number(totalCost.toFixed(4)),
+                        budgetOk, ceilingOk, clockOk, spentUsd: Number(totalCost.toFixed(4)),
                         remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
                         observedCycleMs: maxCycleMs,
                         // beta.130: distinguishes "the clock said no" from "the clock said
                         // no AND the operator was given the chance to overrule it". Only
                         // the second is a complete account of why a red build shipped.
                         askedForTime: timeExtensionRefused,
-                        reason: repairCeiling === 0 ? "disabled" : !budgetOk ? "budget" : !clockOk ? "wall_clock" : "ceiling",
+                        // beta.131: the ladder used to test the clock BEFORE the ceiling,
+                        // so a run that had already spent its one repair reported
+                        // `wall_clock` whenever the clock happened to be short too. Session
+                        // 03a8a7b6 did exactly that: granted 1 of 1, then declined the
+                        // second with reason `wall_clock`. b130's report reads that as
+                        // "shipped red without asking" and calls it a regression -- at a
+                        // run where not asking was correct, because no amount of time buys
+                        // a cycle the ceiling has already refused.
+                        //
+                        // Ordered by what an operator could actually change: the ceiling
+                        // and the budget are settled facts, the clock is the one they can
+                        // still overrule. Naming the clock LAST means `wall_clock` now says
+                        // precisely "the clock is the only thing missing" -- the same
+                        // condition the ask tests, so the two can no longer disagree.
+                        reason: repairCeiling === 0 ? "disabled"
+                            : !ceilingOk ? "ceiling"
+                                : !budgetOk ? "budget"
+                                    : !clockOk ? "wall_clock"
+                                        // Defensive: `canRepair` is exactly these three, so reaching here
+                                        // means one of them changed without this ladder being told.
+                                        : "unknown",
+                        // Every constraint that was failing, because naming one of three is
+                        // how the single-reason field misled us in the first place.
+                        blockers: [!ceilingOk ? "ceiling" : "", !budgetOk ? "budget" : "", !clockOk ? "wall_clock" : ""].filter(Boolean),
                         findings: describeCiFindings(lastCiFindings),
                     }, sessionId);
                 }
@@ -3810,6 +3833,7 @@ export class OrchestratorLoop {
                         event: "ci_repair_cycle_granted", phase: "finalize", cycle,
                         findings: lastCiFindings.length,
                     });
+                    this.addCiRepairSubTask(sessionId, cycle, plan, lastCiFindings);
                     this.deps.logger.info("[loop] beta.127: CI is red and the budget covers another cycle -- routing the failures back as blocking findings instead of shipping over them", { sessionId, cycle, granted: ciRepairCyclesGranted, findings: describeCiFindings(lastCiFindings) });
                     await this.deps.reportProgress?.(sessionId, "executing", { cycle });
                     lastCiFindings = [];
@@ -5342,6 +5366,78 @@ export class OrchestratorLoop {
         catch (err) {
             this.deps.logger.warn("[loop] could not persist the extended wall clock", { sessionId, err: String(err) });
         }
+    }
+    /**
+     * beta.131: give an unroutable CI failure somebody to belong to.
+     *
+     * b127 folds CI findings into the review and lets the deterministic router
+     * hand each one to whoever owns its file. That is the right design and it
+     * works -- when the finding HAS a file. When it does not, the finding becomes
+     * a mapping miss and is broadcast to every sub-task as context, which sounds
+     * like the safe default and is not: session 03a8a7b6 bought a repair cycle
+     * for `file: null, adoptedBySeq: null`, re-ran all seven sub-tasks against
+     * the adversary's opinions for about $3, and left CI red on the same
+     * assertion. The audit said "1 CI finding(s), unrouted" twice and spent the
+     * cycle anyway.
+     *
+     * So an unroutable failure gets its own sub-task instead of everyone's
+     * peripheral vision. It carries the raw failing output and declares no file
+     * scope, which is what "may touch any file" means here -- there is no
+     * pre-commit contract gate, and an empty `filesLikelyTouched` is the one
+     * value revise-scoping will never skip.
+     *
+     * Only for findings with no file. One that names a path already has an owner
+     * with the context to fix it, and a fresh worker starting cold is worse.
+     */
+    addCiRepairSubTask(sessionId, cycle, plan, ciFindings) {
+        if (this.deps.config.ci.repair_subtask_enabled === false)
+            return;
+        if (ciFindings.length === 0)
+            return;
+        // Any finding that named a file is routable; leave the whole set to the
+        // existing router rather than splitting the failure across two mechanisms.
+        if (ciFindings.some((f) => (f.file ?? "").trim()))
+            return;
+        const detail = ciFindings
+            .map((f) => f.detail ?? f.title)
+            .join("\n\n")
+            .slice(0, 6000);
+        // A second repair cycle refreshes the brief rather than stacking a second
+        // sub-task; the failure is the same failure.
+        const existing = plan.subTasks.find((s) => s.title === CI_REPAIR_SUBTASK_TITLE);
+        if (existing) {
+            existing.intent = renderCiRepairIntent(detail);
+            this.deps.state.audit("loop.ci_repair_subtask_refreshed", { sessionId, cycle, seq: existing.seq }, sessionId);
+            return;
+        }
+        const seq = plan.subTasks.reduce((m, s) => Math.max(m, s.seq), 0) + 1;
+        plan.subTasks.push({
+            seq,
+            title: CI_REPAIR_SUBTASK_TITLE,
+            intent: renderCiRepairIntent(detail),
+            // Deliberately empty. The failing output named no repo path -- that is
+            // the whole reason this sub-task exists -- so there is nothing honest to
+            // put here, and an empty scope is never skipped by revise-scoping.
+            filesLikelyTouched: [],
+            successCriteria: [
+                "The check that GitHub CI reported as failing now passes when run locally.",
+                "The cause is fixed. No test is deleted, skipped, renamed or weakened to make it pass.",
+            ],
+            estimatedTokens: 40_000,
+            taskMode: "mutate",
+        });
+        // The plan on the row is what the progress UI and the smoke report read; a
+        // sub-task that exists only in memory is one nobody can see running.
+        try {
+            this.deps.state.db
+                .prepare(`UPDATE sessions SET lead_plan_json = ? WHERE id = ?`)
+                .run(JSON.stringify(plan), sessionId);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] could not persist the CI repair sub-task", { sessionId, err: String(err) });
+        }
+        this.deps.state.audit("loop.ci_repair_subtask_added", { sessionId, cycle, seq, findings: ciFindings.length, detailChars: detail.length }, sessionId);
+        this.deps.logger.info("[loop] beta.131: the CI failure named no file, so it gets its own sub-task rather than being broadcast to everyone", { sessionId, cycle, seq });
     }
     /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
     planBaseSha(sessionId) {

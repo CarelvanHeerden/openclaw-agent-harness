@@ -89,13 +89,33 @@ console.log(`   repair cycles granted:  ${ciGranted.length}`);
 if (ciGranted.length) {
   for (const g of ciGranted) console.log(`   - after cycle ${g.p.cycle}: ${trim(g.p.findings, 160)}`);
 }
+/**
+ * b131: was the CLOCK the only thing standing in the way?
+ *
+ * Only then is "the operator was never asked" a defect. Session 03a8a7b6 had
+ * spent its one repair cycle already, and no amount of time buys a cycle the
+ * ceiling has refused -- but the pre-b131 reason ladder tested the clock first
+ * and labelled it `wall_clock`, so the b130 line below called a correct refusal
+ * a regression on its first live run.
+ *
+ * Derived from the individual flags rather than from `reason`, so this reads
+ * old audit rows written by the buggy ladder correctly too.
+ */
+const ceilingWasOk = (p) =>
+  typeof p?.ceilingOk === "boolean" ? p.ceilingOk : Number(p?.granted ?? 0) < Number(p?.ceiling ?? 0);
+const clockWasTheOnlyBlocker = (p) => ceilingWasOk(p) && p?.budgetOk !== false && p?.clockOk === false;
+
 if (ciDeclined.length) {
   const d = ciDeclined.at(-1).p;
+  const blockers = Array.isArray(d.blockers) && d.blockers.length ? d.blockers.join(" + ") : d.reason;
   console.log(`   repair declined:        ${d.reason} (granted ${d.granted} of ${d.ceiling}, spent $${d.spentUsd})`);
+  if (blockers !== d.reason) console.log(`   everything blocking it:  ${blockers}`);
   // b130: a clock decline is only defensible if the operator was offered the
-  // choice. Silence here means the run shipped red without asking.
-  if (d.reason === "wall_clock") {
+  // choice. b131: and only when the clock is the ONLY thing in the way.
+  if (clockWasTheOnlyBlocker(d)) {
     console.log(`   operator asked for time: ${d.askedForTime ? "yes, and declined/timed out" : "NO — shipped red without asking"}`);
+  } else if (d.clockOk === false) {
+    console.log(`   operator NOT asked:      correct — ${ceilingWasOk(d) ? "the budget" : "the repair ceiling"} refused it too, and time cannot buy past that`);
   }
 }
 console.log(`   failing-log excerpt:    ${excerptMissing ? "MISSING" : "present"}`);
@@ -111,17 +131,23 @@ if (ciFail.length && excerptMissing) {
 } else if (ciGranted.length) {
   console.log("   >>> VERDICT: a repair cycle was GRANTED AND NOT RUN. That is the b124 failure");
   console.log("       shape repeating on a new counter. Report this — it is the important one.");
-} else if (ciFail.length && ciDeclined.at(-1)?.p?.reason === "wall_clock") {
+} else if (ciFail.length && clockWasTheOnlyBlocker(ciDeclined.at(-1)?.p)) {
   // b130: this used to be listed as an unexpected reason, which contradicted
   // section 4 calling the same event the b129 fix working. It is expected --
   // what matters is whether the operator got a say before the run shipped red.
   console.log("   >>> CI went red and the CLOCK, not the budget, refused the repair. That is b129");
   console.log("       working. The question is the line above: if the operator was never asked,");
   console.log("       the run shipped a do-not-merge PR with money still in the bank — report it.");
+} else if (ciFail.length && ciDeclined.at(-1)?.p?.reason === "unroutable") {
+  // b131: the repair was affordable and there was time, but the failing log
+  // named no file, so there was nothing to aim a cycle at.
+  console.log("   >>> CI went red and the failing log could not be tied to any file, so no cycle");
+  console.log("       was bought. Check section 3: if the excerpt is the bare check-run name, the");
+  console.log("       b131 job-log fix did not fire and the repair path is blind again.");
 } else if (ciFail.length) {
   console.log("   >>> CI went red and no cycle was bought. Check the decline reason above:");
-  console.log("       'ceiling'/'budget'/'disabled'/'wall_clock' are expected. No decline line at");
-  console.log("       all means the failing log could not be parsed into findings — report it.");
+  console.log("       'ceiling'/'budget'/'disabled'/'wall_clock'/'unroutable' are expected. No");
+  console.log("       decline line at all means the failing log never became findings — report it.");
 } else {
   console.log("   >>> CI never went red, so b127 was not exercised — that is fine, but it means");
   console.log("       this run did NOT test the repair path.");
@@ -305,7 +331,8 @@ if (timeAsked.length) {
 } else {
   console.log("   time extension asked:   never (the clock never squeezed a cycle out)");
 }
-const repairDeclinedClock = of("loop.ci_repair_declined").filter((e) => e.p?.reason === "wall_clock");
+// b131: the clock only counts as the reason when it was the ONLY reason.
+const repairDeclinedClock = of("loop.ci_repair_declined").filter((e) => clockWasTheOnlyBlocker(e.p));
 if (repairDeclinedClock.length) {
   console.log(`   CI repair refused on the CLOCK: ${repairDeclinedClock.length}x — b129 stopping b127 from`);
   console.log("       starting a repair cycle that could not have finished. This is the fix working.");

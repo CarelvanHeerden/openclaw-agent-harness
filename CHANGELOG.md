@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.1.0-beta.131
+
+### Four releases of a repair cycle that was always going to be blind
+
+b130 shipped the ask for a red build the clock refused, and the run that
+verified it went further than any before it. Session 03a8a7b6 built the whole
+Continuity & Resilience feature against ProjectThanos in 40.7 minutes of a
+50-minute ceiling for $10.09 of a $40 cap, pushed
+[PR #1068](https://github.com/Stitch-Vercel/ProjectThanos/pull/1068), watched CI
+go red, and — for the first time since b127 shipped the feature — **granted
+itself a repair cycle and ran it**.
+
+The repair spent about $3 re-running all seven sub-tasks and left CI red on the
+same assertion it started with. The audit had already said why, twice, and
+nothing was listening:
+
+```
+loop.ci_repair_cycle_granted   findings: "1 CI finding(s), unrouted"
+loop.finding_mapping_miss      file: null   adoptedBySeq: null
+loop.ci_repair_declined        findings: "1 CI finding(s), unrouted"
+```
+
+A red build was handed to everybody as background reading and owned by nobody.
+
+**The cause is one filter, three hops upstream.** `readFailingJobLogs` asked
+GitHub which workflow runs for the sha had *concluded as failed*. But a workflow
+run's conclusion stays `null` until every job in it finishes, while check-runs —
+which are what wake the harness — conclude per job. Measured on the live run:
+the Tests job concluded at `10:29:05Z`, the harness gave its CI verdict at
+`10:29:28Z`, and the run did not conclude until `10:30:34Z`. Sixty-six seconds
+too early, and structurally so, on every run there has ever been.
+
+So the fallback found zero failed runs, returned empty, and the caller fell
+through to the check-runs text — which for GitHub Actions is routinely the bare
+string `- Tests [failure]`. Every component downstream then did its job
+perfectly on a diagnosis that named no file. Replaying the real job log through
+the unmodified parser produces exactly what was missing:
+
+```
+FAIL src/__tests__/components/sidebar-nav-placement.test.ts
+  ● InfoSec GRC ordering › groups the AI system register with the other inventories
+    Expected: 2
+    Received: 3
+```
+
+→ `1 CI finding(s) across 1 file(s)`, routed to its owner.
+
+b127's tests passed throughout. Their fixture asserts a run-level conclusion of
+`failure` — a shape that is real, and never the one present at the moment the
+code runs.
+
+#### The four fixes
+
+**1. Read the jobs, not the run.** A run that concluded green holds nothing
+worth reading; everything else — failed, cancelled, and crucially still-running
+— is a candidate, and the job-level filter that was always correct decides what
+gets read. Definite failures are read first, since only the first two candidates
+are fetched.
+
+**2. Name the constraint that actually blocked the repair.** The decline ladder
+tested the clock before the ceiling, so a run that had already spent its one
+repair cycle reported `wall_clock` whenever the clock happened to be short too.
+03a8a7b6 did exactly that: `granted 1 of 1`, declined with `reason: wall_clock`.
+The ladder is now ordered by what an operator could change — ceiling, then
+budget, then clock — so `wall_clock` means precisely "the clock is the only
+thing missing", which is the same condition the b130 ask tests. A new `blockers`
+array records every failing constraint, because naming one of three is how the
+single-reason field misled us in the first place.
+
+**3. Stop the report crying wolf.** b130 taught the smoke report to flag a
+clock-refused repair that never asked for time as a regression. On its first
+live run it flagged 03a8a7b6 — where not asking was correct, because no amount
+of time buys a cycle the ceiling has refused. The alarm is now gated on the
+clock being the *only* blocker, derived from the individual flags rather than
+the `reason` label so that audit rows written by the old ladder still read
+correctly.
+
+**4. Give an unroutable failure an owner.** When no CI finding names a file, the
+failure now gets its own sub-task carrying the raw failing output verbatim and
+declaring no file scope — which is what lets it fix whichever file turns out to
+be responsible, and is the one value revise-scoping will never skip. It is
+explicitly forbidden from deleting, skipping or weakening a test to go green.
+Only when *nothing* is routable: a finding that names a file already has an
+owner holding the context to fix it, and a cold worker is worse. Set
+`ci.repair_subtask_enabled: false` to restore b127 broadcast behaviour.
+
+#### Also
+
+The b130 rounding fix was confirmed live: the confirmation gate rendered the
+3000-second ceiling as `50m`, where b129 printed `1h`.
+
 ## 0.1.0-beta.130
 
 ### A do-not-merge PR, one assertion and one question away from green

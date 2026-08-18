@@ -557,6 +557,11 @@
           "default": 1,
           "description": "beta.127: extra revise cycles a red CI may buy at the ship gate, on top of max_cycles and any beta.124 extension. Only a definite failure with a parseable log qualifies. 0 restores b126 behaviour."
         },
+        "repair_subtask_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.131: when a red CI names no file, give the failure its own sub-task carrying the raw output and no declared file scope, instead of broadcasting it to every sub-task and having none of them own it."
+        },
         "workflow_runs_fallback": {
           "type": "boolean",
           "default": true

@@ -160,6 +160,39 @@ export function buildCiFailureFindings(logs: string, opts: CiFindingOptions = {}
 }
 
 /**
+ * beta.131: the title of the sub-task that owns an unroutable CI failure.
+ *
+ * Stable, because a second repair cycle finds the existing one by it rather
+ * than adding another.
+ */
+export const CI_REPAIR_SUBTASK_TITLE = "Fix the failing CI check";
+
+/**
+ * beta.131: the brief handed to the sub-task above.
+ *
+ * The raw failing output verbatim, because the whole reason this sub-task
+ * exists is that nothing in the harness could work out which file to blame --
+ * so summarising it would throw away the only evidence there is.
+ */
+export function renderCiRepairIntent(detail: string): string {
+  return [
+    "GitHub CI is failing on this branch and the failing output did not name a file, so no other",
+    "sub-task could be given this to fix. That is why this one exists.",
+    "",
+    "Read the output below, work out which file is actually responsible, and fix the cause there.",
+    "You are not limited to any declared file scope for this task -- but stay inside the change this",
+    "run was asked to make, and do not rewrite unrelated code you happen to pass on the way.",
+    "",
+    "Do NOT delete, skip, rename or weaken a test to make the check pass. If the test is correct and",
+    "the code is wrong, fix the code. If the test genuinely encodes the old behaviour and this run",
+    "deliberately changed it, update the test to assert the NEW behaviour and say so in your summary.",
+    "",
+    "Failing CI output:",
+    detail,
+  ].join("\n");
+}
+
+/**
  * A short, stable line for the audit trail and the ship note.
  */
 export function describeCiFindings(findings: ReviewFinding[]): string {

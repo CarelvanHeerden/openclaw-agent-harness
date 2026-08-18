@@ -1062,6 +1062,29 @@ export declare class OrchestratorLoop {
      * default and guillotining the run a second time.
      */
     private persistExtendedDeadline;
+    /**
+     * beta.131: give an unroutable CI failure somebody to belong to.
+     *
+     * b127 folds CI findings into the review and lets the deterministic router
+     * hand each one to whoever owns its file. That is the right design and it
+     * works -- when the finding HAS a file. When it does not, the finding becomes
+     * a mapping miss and is broadcast to every sub-task as context, which sounds
+     * like the safe default and is not: session 03a8a7b6 bought a repair cycle
+     * for `file: null, adoptedBySeq: null`, re-ran all seven sub-tasks against
+     * the adversary's opinions for about $3, and left CI red on the same
+     * assertion. The audit said "1 CI finding(s), unrouted" twice and spent the
+     * cycle anyway.
+     *
+     * So an unroutable failure gets its own sub-task instead of everyone's
+     * peripheral vision. It carries the raw failing output and declares no file
+     * scope, which is what "may touch any file" means here -- there is no
+     * pre-commit contract gate, and an empty `filesLikelyTouched` is the one
+     * value revise-scoping will never skip.
+     *
+     * Only for findings with no file. One that names a path already has an owner
+     * with the context to fix it, and a fresh worker starting cold is worse.
+     */
+    private addCiRepairSubTask;
     /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
     private planBaseSha;
     /**
