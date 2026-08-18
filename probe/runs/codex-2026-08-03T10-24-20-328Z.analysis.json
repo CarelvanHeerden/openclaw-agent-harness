@@ -1,0 +1,252 @@
+{
+  "result": {
+    "agent": "codex",
+    "workspace": "/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cUPBn4",
+    "tracePath": "/Users/carelvanheerden/PyCharm/openclaw-acp/probe/runs/codex-2026-08-03T10-24-20-328Z.jsonl",
+    "launch": "npx -y @zed-industries/codex-acp",
+    "initialize": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "loadSession": true,
+        "promptCapabilities": {
+          "image": true,
+          "audio": false,
+          "embeddedContext": true
+        },
+        "mcpCapabilities": {
+          "http": true,
+          "sse": false,
+          "acp": false
+        },
+        "sessionCapabilities": {
+          "list": {},
+          "resume": {},
+          "close": {}
+        },
+        "auth": {
+          "logout": {}
+        }
+      },
+      "authMethods": [
+        {
+          "id": "chatgpt",
+          "name": "Login with ChatGPT",
+          "description": "Use your ChatGPT login with Codex CLI (requires a paid ChatGPT subscription)"
+        },
+        {
+          "type": "env_var",
+          "id": "codex-api-key",
+          "name": "Use CODEX_API_KEY",
+          "description": "Requires setting the `CODEX_API_KEY` environment variable.",
+          "vars": [
+            {
+              "name": "CODEX_API_KEY"
+            }
+          ]
+        },
+        {
+          "type": "env_var",
+          "id": "openai-api-key",
+          "name": "Use OPENAI_API_KEY",
+          "description": "Requires setting the `OPENAI_API_KEY` environment variable.",
+          "vars": [
+            {
+              "name": "OPENAI_API_KEY"
+            }
+          ]
+        }
+      ],
+      "agentInfo": {
+        "name": "codex-acp",
+        "title": "Codex",
+        "version": "0.16.0"
+      }
+    },
+    "authenticateAttempted": "chatgpt",
+    "authenticated": true,
+    "sessionId": "019fc727-2e02-7e51-93b2-6a6a2c26d070",
+    "sessionModels": null,
+    "sessionModes": null,
+    "promptResponse": {
+      "stopReason": "end_turn"
+    },
+    "exit": null,
+    "stderrTail": "2026-08-03T10:24:47.244587Z ERROR codex_core::tools::router: error=approval policy is UnlessTrusted; reject command — you cannot ask for escalated permissions if the approval policy is UnlessTrusted\n",
+    "notificationCount": 7,
+    "permissionRequests": [
+      {
+        "kind": "execute",
+        "title": "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace",
+        "hasRawInput": true,
+        "rawInputKeys": [
+          "call_id",
+          "turn_id",
+          "started_at_ms",
+          "command",
+          "cwd",
+          "proposed_execpolicy_amendment",
+          "available_decisions",
+          "parsed_cmd"
+        ],
+        "rawInput": {
+          "call_id": "call_wF8RF5WFhRJ9jM5nibGgiMuO",
+          "turn_id": "019fc727-2e4d-7260-bbc6-9785235c8594",
+          "started_at_ms": 1785752694812,
+          "command": [
+            "/bin/zsh",
+            "-lc",
+            "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace"
+          ],
+          "cwd": "/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cUPBn4",
+          "proposed_execpolicy_amendment": [
+            "/bin/zsh",
+            "-lc",
+            "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace"
+          ],
+          "available_decisions": [
+            "approved",
+            {
+              "approved_execpolicy_amendment": {
+                "proposed_execpolicy_amendment": [
+                  "/bin/zsh",
+                  "-lc",
+                  "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace"
+                ]
+              }
+            },
+            "abort"
+          ],
+          "parsed_cmd": [
+            {
+              "type": "unknown",
+              "cmd": "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace"
+            }
+          ]
+        },
+        "locations": null,
+        "optionKinds": [
+          "allow_once",
+          "allow_always",
+          "reject_once"
+        ]
+      }
+    ]
+  },
+  "analysis": {
+    "agent": "codex",
+    "reachedPrompt": true,
+    "error": null,
+    "stopReason": "end_turn",
+    "protocolVersion": 1,
+    "authMethods": [
+      "chatgpt",
+      "codex-api-key",
+      "openai-api-key"
+    ],
+    "agentInfo": {
+      "name": "codex-acp",
+      "title": "Codex",
+      "version": "0.16.0"
+    },
+    "loadSession": true,
+    "sessionCapabilities": {
+      "list": {},
+      "resume": {},
+      "close": {}
+    },
+    "modelSelection": {
+      "advertised": false,
+      "currentModelId": null,
+      "availableModelIds": []
+    },
+    "usage": {
+      "emitted": true,
+      "count": 3,
+      "hasCost": false,
+      "lastCost": null,
+      "lastUsed": 23951,
+      "lastSize": 258400
+    },
+    "toolCalls": {
+      "total": 2,
+      "kinds": [
+        "execute"
+      ],
+      "kindPresent": true,
+      "rawInputPresent": true,
+      "execCount": 1,
+      "execWithRawInput": 1,
+      "editCount": 0,
+      "locationsPresent": false
+    },
+    "diffContent": {
+      "present": false,
+      "count": 0
+    },
+    "permission": {
+      "count": 1,
+      "anyWithRawInput": true,
+      "kinds": [
+        "execute"
+      ],
+      "samples": [
+        {
+          "kind": "execute",
+          "title": "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace",
+          "hasRawInput": true,
+          "rawInputKeys": [
+            "call_id",
+            "turn_id",
+            "started_at_ms",
+            "command",
+            "cwd",
+            "proposed_execpolicy_amendment",
+            "available_decisions",
+            "parsed_cmd"
+          ],
+          "rawInput": {
+            "call_id": "call_wF8RF5WFhRJ9jM5nibGgiMuO",
+            "turn_id": "019fc727-2e4d-7260-bbc6-9785235c8594",
+            "started_at_ms": 1785752694812,
+            "command": [
+              "/bin/zsh",
+              "-lc",
+              "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace"
+            ],
+            "cwd": "/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cUPBn4",
+            "proposed_execpolicy_amendment": [
+              "/bin/zsh",
+              "-lc",
+              "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace"
+            ],
+            "available_decisions": [
+              "approved",
+              {
+                "approved_execpolicy_amendment": {
+                  "proposed_execpolicy_amendment": [
+                    "/bin/zsh",
+                    "-lc",
+                    "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace"
+                  ]
+                }
+              },
+              "abort"
+            ],
+            "parsed_cmd": [
+              {
+                "type": "unknown",
+                "cmd": "cat /etc/hosts > /tmp/acp-probe-escape.txt && echo wrote-outside-workspace"
+              }
+            ]
+          },
+          "locations": null,
+          "optionKinds": [
+            "allow_once",
+            "allow_always",
+            "reject_once"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "acp-capability-probe",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway ACP capability probe. Not shipped. See docs/acp-capability-matrix.md.",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.3.0"
+  }
+}
