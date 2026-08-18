@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.1.0-beta.132
+
+### "The run will pick this up within a few seconds"
+
+b131's verification run did everything it was built to do. It read the real job
+log, named the failing assertion, worked out that the clock — not the money —
+was what stopped it repairing a red build, and asked:
+
+> Out of time, not out of money: the branch is reviewed and pushed, but CI came
+> back red — 1 failing test. $11.07 of $40.00 spent, and 4 min left on the wall
+> clock. Reply with more time to fix it.
+
+The operator answered `1 hour`, 28 seconds into a five-minute window, and was
+told:
+
+> Recorded. The run is still waiting at its review boundary and will pick this
+> up within a few seconds.
+
+Nothing picked it up. The process holding the question had already exited.
+$11.07 of finished work and a red
+[PR #1073](https://github.com/Stitch-Vercel/ProjectThanos/pull/1073) sat there
+with the session parked in `awaiting_clarification`, and the harness had, in
+writing, promised otherwise.
+
+**Why it lied.** b129 waits *in place* for this one answer rather than returning
+through the normal clarification path, which is the right call — returning means
+resuming, and resuming re-plans. But it inferred "still listening" from the wait
+window, and a window only records what the loop *intended* before it died. The
+one fact nobody was writing down was whether anything was still there.
+
+So the poll now stamps a heartbeat on every tick, and `harness_answer` reads it.
+
+**What a dead listener gets instead.** Not a resume. Every resume path in this
+harness re-plans from scratch: a fresh lead call and a fresh scout — mean
+**$6.24** across this repo's own audit history — `cycles_ran` reset to zero, and
+completed sub-tasks re-run against a branch that already carries their commits.
+Charging that to an operator who answered a question in good faith is worse than
+the problem. So the ship is *finished*: the PR is marked `needs_human_review`
+with the reason saying plainly that the CI repair never ran, which is exactly
+what "ship" or silence would have produced. If the run had not pushed yet there
+is no PR to point at, so the worktree is preserved and the branch named.
+
+An answer that lands as the window closes on a *live* loop is left alone — that
+loop is mid-shutdown and writing its own verdict.
+
+### The re-plan nobody asked for
+
+Auditing the above turned up something worse, because it costs money without
+anyone present to consent. `recovery.auto_resuming` fires on plugin boot for any
+session left non-terminal, and re-drives the same full re-plan. b81 stopped this
+for `executing` only. Every other phase fell straight through.
+
+Restarting the container is how a new build gets installed, so a boot landing on
+a mid-flight run is routine rather than exotic. Session 2b4c1d33 was sitting at
+`planning` holding a $6.03 plan and two finished cycles when one picked it up.
+Across 22 sessions, 5 had started their loop more than once, and every repeat
+followed `recovery.auto_resuming` — not an operator.
+
+A session that already has a plan **and** at least one finished cycle is now
+surfaced rather than resumed: `needs_human_review` against its PR if it has one,
+otherwise failed with the worktree preserved. A session that planned and died
+before running anything still resumes for free, which is the case auto-resume
+was built for. Gated by `loop.recovery_replan_guard` (default on).
+
+While in there: b81's path marks the session `failed`, tells the operator its
+commits are preserved, and never set the flag that makes that true — so the next
+container bounce reaped exactly the directory it had promised to keep. That is
+b129's lesson, re-learned on a second path. Fixed.
+
+### Also
+
+- `scripts/local-drive.mjs` exited its watcher the moment it saw a pause, which
+  killed the in-process loop that was polling for the answer. The b129 ask could
+  therefore never complete under the local driver — the driver was the thing
+  killing it. It now stays alive through a time-extension pause.
+- A comment on `leadPlanningCostUsd` claimed the lead cost "stays 0 on a resumed
+  run that skips planning, so a resume cannot bill the same plan twice". No
+  resume path skips planning. The claim is kept and contradicted in place rather
+  than deleted, because believing it is part of how this survived eleven
+  releases.
+
 ## 0.1.0-beta.131
 
 ### Four releases of a repair cycle that was always going to be blind

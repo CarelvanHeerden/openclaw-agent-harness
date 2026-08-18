@@ -1072,8 +1072,13 @@ export class OrchestratorLoop {
         });
         // beta.127 (#157): planning happens before the cycle ledger opens, so the
         // lead's spend is parked here and folded into `totalCost` at its
-        // declaration. Stays 0 on a resumed run that skips planning, so a resume
-        // cannot bill the same plan twice.
+        // declaration.
+        //
+        // beta.132: this used to claim it "stays 0 on a resumed run that skips
+        // planning, so a resume cannot bill the same plan twice". No resume path
+        // skips planning -- every one of them re-plans from scratch and bills a
+        // second lead call in full, which is the thing b132's recovery guard and
+        // dead-listener ship exist to stop happening unasked.
         let leadPlanningCostUsd = 0;
         try {
             // beta.43: bound the lead-planner SDK call by lead_timeout_seconds. The
@@ -5262,6 +5267,13 @@ export class OrchestratorLoop {
      * the existing commits were written against. Polling the answer column keeps
      * the cycle counter, the findings history, the worktree and the deadline
      * arithmetic exactly where they are.
+     *
+     * beta.132: the price of waiting in place is that the question dies with the
+     * process holding it, and b129 had no way to notice -- `harness_answer` read
+     * the wait window as proof of life and told session 2b4c1d33's operator the
+     * run would pick their answer up. It had already exited. Hence the
+     * heartbeat: every tick below stamps the row, and an answer arriving to a
+     * stale one finishes the ship rather than being promised to nobody.
      */
     async askForTimeExtension(p) {
         const waitSeconds = Math.max(0, this.deps.config.loop.time_extension_wait_seconds ?? 300);
@@ -5303,17 +5315,22 @@ export class OrchestratorLoop {
         const clearPause = () => {
             try {
                 this.deps.state.db
-                    .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ?`)
+                    .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
                     .run(Date.now(), p.sessionId);
             }
             catch (err) {
                 this.deps.logger.warn("[loop] could not clear the time-extension pause", { sessionId: p.sessionId, err: String(err) });
             }
         };
+        // beta.132: proof of life, stamped before the first sleep so an answer that
+        // arrives in the first few seconds -- which is what a watching operator
+        // does -- is not mistaken for one shouted at an empty room.
+        this.stampClarificationHeartbeat(p.sessionId);
         let answer = "";
         while (Date.now() < waitUntilMs) {
             const sliceMs = Math.min(5000, Math.max(250, waitUntilMs - Date.now()));
             await new Promise((r) => setTimeout(r, sliceMs));
+            this.stampClarificationHeartbeat(p.sessionId);
             // The session is resting on a question, not wedged. Without this the
             // stall watchdog reads a silent five minutes as a hang and fails it.
             this.markProgress(p.sessionId, "time_extension_wait", "review", {
@@ -5357,6 +5374,24 @@ export class OrchestratorLoop {
      * resume honours what the operator granted instead of reverting to the
      * default and guillotining the run a second time.
      */
+    /**
+     * beta.132: say "I am still here" on the row the operator's answer lands on.
+     *
+     * Best-effort by design. A failed stamp reads as a dead listener, which
+     * costs the run its time extension and ships an honest do-not-merge PR --
+     * where the alternative, assuming life, strands the work. This is the safe
+     * direction to fail in.
+     */
+    stampClarificationHeartbeat(sessionId) {
+        try {
+            this.deps.state.db
+                .prepare(`UPDATE sessions SET clarification_heartbeat_at = ? WHERE id = ?`)
+                .run(Date.now(), sessionId);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] could not stamp the clarification heartbeat", { sessionId, err: String(err) });
+        }
+    }
     persistExtendedDeadline(sessionId, totalSeconds) {
         try {
             this.deps.state.db

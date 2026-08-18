@@ -139,6 +139,7 @@ const DEFAULTS = {
         recovery_max_resumes: 3,
         recovery_resume_window_seconds: 60,
         recovery_resume_at_subtask: true,
+        recovery_replan_guard: true,
         lead_json_retry_enabled: true,
         // beta.128: one more call when a COMPLETE plan fails JSON.parse. See the
         // field doc -- this is the `"seq_note":undefined` class, which neither the

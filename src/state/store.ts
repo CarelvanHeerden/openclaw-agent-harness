@@ -117,6 +117,9 @@ export function openStateStoreSync(pathHint: string): StateStore {
     // done/failed/aborted -- so b120's "preserved, go and get your commits"
     // promise expired at the next container bounce.
     { table: "sessions", column: "worktree_preserved",           type: "INTEGER" }, // 1 = abort kept this worktree on purpose
+    // beta.132: liveness for the one pause the loop does not return from. The
+    // window alone said "still listening" about a process that had exited.
+    { table: "sessions", column: "clarification_heartbeat_at",   type: "INTEGER" }, // ms; stamped on every poll tick
   ];
   for (const m of additiveMigrations) {
     try {

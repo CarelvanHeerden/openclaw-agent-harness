@@ -22,6 +22,7 @@ import type { HarnessConfig, TokenPointer } from "./config.js";
 import { parseHarnessConfig, assessBudgetCoherence } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { decideDrainAction, type DrainProgressSample } from "./state/teardown-drain.js";
+import { decideRecoveryResume } from "./state/recovery-guard.js";
 import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { resolveContractPath } from "./orchestrator/path-match.js";
@@ -2188,8 +2189,14 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
           return;
         }
         const row = state.db
-          .prepare(`SELECT crystallised_prompt, lead_plan_json, repo, branch, worktree_path FROM sessions WHERE id = ?`)
-          .get(s.id) as { crystallised_prompt?: string; lead_plan_json?: string; repo?: string; branch?: string; worktree_path?: string } | undefined;
+          .prepare(
+            `SELECT crystallised_prompt, lead_plan_json, repo, branch, worktree_path, cycles_ran, cost_usd, final_pr_url
+               FROM sessions WHERE id = ?`,
+          )
+          .get(s.id) as {
+            crystallised_prompt?: string; lead_plan_json?: string; repo?: string; branch?: string;
+            worktree_path?: string; cycles_ran?: number; cost_usd?: number; final_pr_url?: string | null;
+          } | undefined;
         if (!row?.crystallised_prompt) {
           api.logger.warn("[harness] recovery auto-resume: no crystallised brief, marking interrupted", { sessionId: s.id });
           state.db.prepare(`UPDATE sessions SET status = 'interrupted', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
@@ -2218,7 +2225,14 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
               .prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`)
               .run("orphaned by restart; failed on recovery (resume-at-subtask, no full re-plan)", Date.now(), o.id);
           }
-          state.db.prepare(`UPDATE sessions SET status = 'failed', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
+          // beta.132: `failed` is terminal, and the startup self-heal reaps
+          // every worktree whose session is terminal -- so this path has been
+          // promising preserved commits and then deleting them at the next
+          // bounce, which is precisely the broken promise b129 fixed for
+          // aborts. The flag is what actually keeps it.
+          state.db
+            .prepare(`UPDATE sessions SET status = 'failed', worktree_preserved = 1, updated_at = ? WHERE id = ?`)
+            .run(Date.now(), s.id);
           state.audit(
             "recovery.resume_at_subtask",
             { sessionId: s.id, wasStatus: s.status, orphanedSubTasks: orphaned.map((o) => o.seq), reason: "resume_at_failed_subtask_no_replan" },
@@ -2232,6 +2246,77 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
           }
           return;
         }
+        // beta.132: b81 protected `executing`. Every other phase of a run that
+        // already has a plan fell straight through to the re-drive below, and
+        // that re-drive is a FULL RE-PLAN: a fresh lead call and scout ($6.24
+        // on average across this repo's own audit history), `cycles_ran` reset
+        // to zero, and every sub-task re-run against a branch that already
+        // carries their commits.
+        //
+        // Nobody asks for this. It fires on plugin boot, unattended, for any
+        // session left non-terminal -- and restarting the container is how a
+        // new build gets installed, so a restart landing on a mid-flight run
+        // is routine rather than exotic. Session 2b4c1d33 sat at `planning`
+        // holding a $6.03 plan and two finished cycles when a boot picked it
+        // up.
+        //
+        // A session with no plan yet has nothing to lose and still resumes
+        // below; the cheap re-drive is the whole point of that path.
+        const cyclesRan = Number(row.cycles_ran ?? 0);
+        const prUrl = (row.final_pr_url ?? "").trim();
+        const verdict = decideRecoveryResume({
+          enabled: config.loop.recovery_replan_guard !== false,
+          hasPlan: Boolean(row.lead_plan_json),
+          cyclesRan,
+          prUrl,
+        });
+        if (!verdict.resume) {
+          const spent = Number(row.cost_usd ?? 0);
+          if (verdict.outcome === "ship_for_review") {
+            // The work reached GitHub before the restart, so there is nothing
+            // left to rescue -- only a verdict to record.
+            state.db
+              .prepare(
+                `UPDATE sessions SET status = 'done', merge_recommendation = 'needs_human_review',
+                        merge_recommendation_reason = ?, updated_at = ? WHERE id = ?`,
+              )
+              .run(
+                `The harness restarted while this run was mid-flight, after its PR was already open. Resuming ` +
+                  `would have re-planned from scratch and re-spent the lead and scout, so it was left for a human.`,
+                Date.now(), s.id,
+              );
+          } else {
+            state.db
+              .prepare(`UPDATE sessions SET status = 'failed', worktree_preserved = 1, updated_at = ? WHERE id = ?`)
+              .run(Date.now(), s.id);
+          }
+          state.audit(
+            "recovery.replan_refused",
+            {
+              sessionId: s.id, wasStatus: s.status, cyclesRan, spentUsd: Number(spent.toFixed(4)),
+              hasPr: Boolean(prUrl), branch: row.branch ?? null,
+              outcome: verdict.outcome,
+              reason: "would_replan_from_scratch",
+            },
+            s.id,
+          );
+          api.logger.warn(
+            "[harness] recovery: refusing to auto-resume -- this session already has a plan and finished cycles, so resuming would re-plan from scratch and re-spend the lead and scout",
+            { sessionId: s.id, wasStatus: s.status, cyclesRan, spentUsd: spent, hasPr: Boolean(prUrl) },
+          );
+          if (s.slack_channel && s.slack_thread) {
+            await slack
+              .replyInThread(
+                s.slack_channel, s.slack_thread,
+                prUrl
+                  ? `:warning: Harness restarted mid-run, after this session's PR was already open. It was NOT auto-resumed: that would re-plan from scratch and re-spend the lead and scout. Review ${prUrl} — CI on it may be unfinished.`
+                  : `:warning: Harness restarted mid-run (cycle ${cyclesRan}). It was NOT auto-resumed: that would re-plan from scratch and re-spend the lead and scout ($${spent.toFixed(2)} already spent). The commits are preserved on branch \`${row.branch ?? "?"}\`.`,
+              )
+              .catch(() => undefined);
+          }
+          return;
+        }
+
         const brief = JSON.parse(row.crystallised_prompt);
         state.db.prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
         api.logger.warn("[harness] recovery auto-resuming session (agent-orchestrated mode)", { sessionId: s.id, wasStatus: s.status });
