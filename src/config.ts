@@ -275,15 +275,16 @@ export interface LogConfig {
 
 export interface SlackConfig {
   /**
-   * When true, the plugin subscribes to `message_received` and treats
-   * allow-listed messages in `channel` as dev requests (autonomous mode).
+   * DEPRECATED as of beta.34, and IGNORED. The autonomous Slack listener was
+   * removed; `messageHandler` is built but never subscribed. Setting this true
+   * logs a warning and changes nothing.
    *
-   * When false (DEFAULT), the plugin does NOT listen to Slack at all. The
-   * OpenClaw agent orchestrates everything by calling the harness tools
-   * (`harness_run`, `harness_status`, ...). This is the recommended mode:
-   * you talk to the OpenClaw agent, and the agent drives the harness.
+   * The plugin does NOT listen to Slack. The OpenClaw agent orchestrates
+   * everything by calling the harness tools (`harness_run`, `harness_status`,
+   * ...). Retained only so existing configs keep parsing.
    */
   listener_enabled: boolean;
+  /** Outbound posting target. Optional; there is nothing to listen on. */
   channel: string;
   authorised_users: string[];
   /** Vault service name for the Slack bot token (used by reactions poller + adapter fallback). Optional; if unset, poller stays idle. */

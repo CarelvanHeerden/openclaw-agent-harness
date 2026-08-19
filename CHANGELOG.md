@@ -69,6 +69,31 @@ wrong road:
 between the two patterns, in the same place operators look for the naming
 convention.
 
+### A mode that has not existed since beta.34
+
+The README opened with "Two ways to drive it" and described an autonomous Slack
+listener as the second, complete with the config example for turning it on.
+beta.34 removed that listener. `src/index.ts` builds the message handler and
+then says so plainly — `void messageHandler; // retained for potential future
+use; never subscribed` — and logs a warning if `slack.listener_enabled` is true.
+The flag has done nothing for ninety-nine releases while the front page of the
+repository advertised it.
+
+The plugin manifest had the deprecation notice. `src/config.schema.json`, which
+is what a config editor actually surfaces, still carried the original
+description telling operators what the flag would do. Those two files are meant
+to say the same thing.
+
+Corrected in `README.md`, `docs/ARCHITECTURE.md` (both the intake section and
+§3.1, now "Slack message router (never subscribed)"), `docs/INSTALL.md`,
+`src/config.schema.json` and the `SlackConfig` type doc. `slack.channel` is
+described as what it is — an outbound posting target — rather than something
+the listener requires.
+
+Worth noting how this one was found: the drift was reported by an OpenClaw
+instance reading the manifest during a fresh install, against a README that
+disagreed with it. The same install turned up the three items above.
+
 ## 0.1.0-beta.132
 
 ### "The run will pick this up within a few seconds"

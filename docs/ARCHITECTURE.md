@@ -215,11 +215,9 @@ stateDiagram-v2
 
 ## 2. Session lifecycle
 
-1. **Intake.** Two entry points, same downstream pipeline:
-   - **Agent-orchestrated (default, `slack.listener_enabled: false`):** the OpenClaw agent calls the `harness_run` tool with a raw request (or `harness_start_session` with a pre-built brief). The plugin does not listen to Slack. `harness_run` runs the classifier + crystalliser itself and either starts a session, returns a clarifying question for the agent to relay, or rejects.
-   - **Autonomous listener (`slack.listener_enabled: true`):** the plugin subscribes to `message_received` and treats allow-listed messages in the configured channel as dev requests. Non-authorised senders are ignored.
+1. **Intake.** One entry point: the OpenClaw agent calls the `harness_run` tool with a raw request (or `harness_start_session` with a pre-built brief). The plugin does not listen to Slack — beta.34 removed the autonomous listener and `slack.listener_enabled` has been ignored ever since. `harness_run` runs the classifier + crystalliser itself and either starts a session, returns a clarifying question for the agent to relay, or rejects.
 
-   In both modes the requester must be in `slack.authorised_users`, and the request is classified with a lightweight intent check before anything runs.
+   The requester must be in `slack.authorised_users`, and the request is classified with a lightweight intent check before anything runs.
 
 2. **Crystallisation.** If intent = "dev task", the harness starts a Slack thread and asks up to 3 clarifying questions (repo, acceptance criteria, constraints). The user can override the loop with an explicit "go" reaction. Output: a crystallised prompt (Markdown) stored in the session record.
 
@@ -249,13 +247,13 @@ stateDiagram-v2
 
 ## 3. Component responsibilities
 
-### 3.1 Slack listener (opt-in; off by default)
+### 3.1 Slack message router (never subscribed)
 
-- **Only active when `slack.listener_enabled: true`.** In the default agent-orchestrated mode the plugin does not listen to Slack at all; the OpenClaw agent drives everything via the `harness_run` / `harness_start_session` tools.
-- When enabled, subscribed to a single channel via OpenClaw's Slack plugin (event `message_received`).
+- **The plugin does not listen to Slack.** beta.34 removed the autonomous listener; `slack.listener_enabled` is ignored and only logs a warning if set. The OpenClaw agent drives everything via the `harness_run` / `harness_start_session` tools.
+- `src/slack/channel-listener.ts` survives as a pure router with a UNIQUE thread guard, used for inbound events handed to it explicitly rather than any subscription of its own.
 - Filters by allow-listed user IDs.
 - Routes messages to the intent classifier.
-- Handles Slack reactions as first-class control signals: `ship_it`, `abort`, `pause`, `budget_bump`.
+- Slack reactions remain first-class control signals where a real channel binding exists: `ship_it`, `abort`, `pause`, `budget_bump`. Agent-orchestrated sessions carry an `agent:<uuid>` thread with no channel, so they are driven by verdicts and `harness_answer` instead.
 
 ### 3.2 Intent classifier
 

@@ -51,7 +51,7 @@
           },
           "channel": {
             "type": "string",
-            "description": "Slack channel ID (e.g. C0DEVCHAN). Only required when listener_enabled is true."
+            "description": "Slack channel ID (e.g. C0DEVCHAN). Optional: outbound posting only, since beta.34 removed the listener."
           },
           "authorised_users": {
             "type": "array",

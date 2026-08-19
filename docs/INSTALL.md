@@ -144,8 +144,10 @@ the shorter path is silently ignored. Minimal example:
 
 `slack.authorised_users` must contain at least one id even when you are not
 driving the harness from Slack: config validation refuses an empty list, and the
-first entry is the fallback requester identity. `slack.channel` is only required
-when `slack.listener_enabled` is true.
+first entry is the fallback requester identity.
+
+`slack.channel` is optional. Do not set `slack.listener_enabled` — beta.34
+removed the autonomous listener and the flag has been ignored since.
 
 See [`CONFIGURATION.md`](CONFIGURATION.md) for all options.
 
