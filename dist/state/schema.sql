@@ -164,3 +164,34 @@ CREATE TABLE IF NOT EXISTS runtime_uploads (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runtime_uploads_session ON runtime_uploads (session_id, uploaded_at DESC);
+
+-- Credential routes written by `harness_onboard`.
+--
+-- The routing tree `pat_routing.<provider>.<org>.<person>` lives in plugin
+-- config, which is read-only at runtime. Onboarding could therefore store a
+-- secret but nothing that told the router to use it: the token went into the
+-- vault under a name no session looked up, every step reported success, and the
+-- run died an hour later at clone.
+--
+-- These rows are the missing half -- the routing entry onboarding writes -- and
+-- are merged BENEATH config at resolve time. A hand-written config tree always
+-- wins, so a chat message can never silently override an operator.
+--
+-- Holds NO secret. `vault_service` NAMES a vault entry; the token itself lives
+-- in the credential vault, which is a separate database under a separate key.
+CREATE TABLE IF NOT EXISTS credential_routes (
+  provider         TEXT NOT NULL,     -- github | gitlab
+  org              TEXT NOT NULL,     -- repo owner, stored lower-cased for lookup
+  person           TEXT NOT NULL,     -- person key, as it would read in config
+  slack_user_id    TEXT NOT NULL,     -- authoritative link from request to person
+  commit_name      TEXT NOT NULL,     -- git author name for commits on their behalf
+  commit_email     TEXT NOT NULL,     -- git author email
+  vault_service    TEXT NOT NULL,     -- names the vault entry; never the secret
+  provider_login   TEXT,              -- login the token authenticated as, for re-auth checks
+  token_expires_at INTEGER,           -- epoch ms, when the provider discloses it
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
+  PRIMARY KEY (provider, org, person)
+);
+
+CREATE INDEX IF NOT EXISTS idx_credential_routes_requester ON credential_routes (slack_user_id, provider, org);
