@@ -2,6 +2,42 @@
 
 ## 0.1.0-beta.134
 
+### Two flakes in the tooling, one of which was lying
+
+Neither belongs to the credential work; both surfaced while verifying it.
+
+`scripts/mutation-check.mjs` re-read each target file from disk immediately
+before mutating it, and used that single read for two jobs: searching for the
+anchor, and as the content restored afterwards. So one bad read failed both. A
+full run showed five `anchor not found` failures, every one of them in
+`dist/orchestrator/loop.js` and every one passing in isolation, with twenty of
+that file's mutations succeeding *after* the first failure — transient, not
+stale. That file is 414KB and is rewritten about 98 times per run (49 mutations;
+the next-highest file has 19), so it is by far the most exposed to anything
+rewriting a file underneath a reader. The run also ended with the file "left
+mutated", which is what restoring a truncated read looks like. It now reads from
+the snapshot taken before any test ran, which removes the race from both jobs.
+
+It also now checks the mutation is *still in place* when the tests finish, and
+retries once if it is not. A writer landing during the test window means the
+tests ran against code that was no longer broken — they pass, and the old runner
+reported that as a surviving mutation, sending someone to hunt a missing
+assertion in a test that was fine. An unverifiable result is now named rather
+than scored.
+
+`tests/beta130-ci-repair-ask.test.mjs` runs a real loop against a ceiling of a
+few seconds, which is how "the clock is blown" becomes true by the time the ship
+gate is reached. On a loaded machine the run blows that ceiling *earlier* than
+intended and aborts before reaching the decision under test, so the assertion
+tripped over a missing event with `Cannot read properties of undefined` —
+naming neither the event nor the reason. It now reports which event was expected
+and which the run actually emitted, and every wall-clock number in the file
+scales together via `HARNESS_TEST_CLOCK_SCALE` (default 1, so the suite does not
+get slower). Under 14x CPU oversubscription the file fails at the default and
+passes 10/10 at `HARNESS_TEST_CLOCK_SCALE=3`. That is a mitigation, not a cure:
+the cure is a clock the loop takes as a dependency, and `loop.ts` reads
+`Date.now()` directly in about thirty places.
+
 ### Credentials the harness owns, and onboarding that can route to them
 
 Two halves of one problem. The harness stopped borrowing another plugin's vault,

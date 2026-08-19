@@ -2276,13 +2276,34 @@ let failures = 0;
 let timeouts = 0;
 for (const m of MUTATIONS) {
   const path = join(root, m.file);
-  const original = readFileSync(path, "utf8");
 
   // Optional substring filter: `node scripts/mutation-check.mjs b117` runs only
   // the mutations whose name matches. The full set takes ~40 minutes, which is
   // fine in CI and far too slow to iterate against while writing a release.
   if (FILTER && !m.name.includes(FILTER)) continue;
   ran++;
+
+  /*
+   * The snapshot taken at startup, NOT a fresh read of the file.
+   *
+   * This used to re-read on every mutation, and that one read did two jobs: it
+   * was searched for the anchor, and it was what the `finally` wrote back. So a
+   * single bad read failed both -- the anchor came up missing, and had it been
+   * found, the corrupt bytes would have been restored over the real file.
+   *
+   * That is not hypothetical. A full run showed five "anchor not found"
+   * failures, all in dist/orchestrator/loop.js and all passing when run alone,
+   * with twenty of that file's mutations succeeding AFTER the first failure --
+   * transient, not stale. loop.js is 414KB and is rewritten ~98 times per run
+   * (49 mutations; the next file has 19), so it is by far the most exposed to
+   * anything that rewrites a file underneath a reader: an editor saving, a
+   * stray build, an on-access malware scanner. The run also ended with the file
+   * "left mutated", which is what restoring a truncated read looks like.
+   *
+   * PRISTINE is captured before any test has run, so reading from it removes
+   * the race from both jobs at once.
+   */
+  const original = PRISTINE.get(path) ?? readFileSync(path, "utf8");
 
   const found = locate(original, m.find);
   if (!found) {
@@ -2305,9 +2326,36 @@ for (const m of MUTATIONS) {
     // Replace the text as it appears on disk, so an elastic match rewrites the
     // real indentation rather than the anchor's stale copy of it.
     inFlight = { path, original };
-    writeFileSync(path, original.replace(found.text, m.replace), "utf8");
-    const { passed, timedOut } = runTests(m.tests);
-    if (passed) {
+    const mutated = original.replace(found.text, m.replace);
+
+    /*
+     * Run the tests, then check the mutation was STILL in place when they
+     * finished.
+     *
+     * Restoring from a snapshot fixes a bad read; it cannot stop a writer that
+     * lands during the test window. If that happens the tests exercised code
+     * that was no longer broken, they pass, and the run reports a surviving
+     * mutation -- sending someone to hunt a missing assertion in a test that is
+     * perfectly fine. The whole value of this tool is that a green line means
+     * something, so an unverifiable result has to be named rather than scored.
+     *
+     * One retry, because the interference is transient. Twice is a real signal.
+     */
+    let passed, timedOut, intact;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      writeFileSync(path, mutated, "utf8");
+      ({ passed, timedOut } = runTests(m.tests));
+      intact = readFileSync(path, "utf8") === mutated;
+      if (intact) break;
+    }
+
+    if (!intact) {
+      console.error(`FAIL  ${m.name}`);
+      console.error(`      ${m.file} was rewritten underneath this mutation, on both attempts.`);
+      console.error(`      The tests did not run against the broken code, so this result says`);
+      console.error(`      nothing about ${m.tests.join(", ")}. Something else is writing into dist/.`);
+      failures++;
+    } else if (passed) {
       console.error(`FAIL  ${m.name}`);
       console.error(`      Broke it in ${m.file} and ${m.tests.join(", ")} STILL PASSED.`);
       console.error(`      Those tests do not actually verify this mechanism.`);
