@@ -231,7 +231,7 @@ export interface HarnessRuntime {
    */
   githubServiceFor: (repoFullName?: string) => string | undefined;
   /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
-  gitResolutionFor: (repoFullName?: string) => { credentialService: string; provider: string; apiBase: string; apiKeyEnv: string } | undefined;
+  gitResolutionFor: (repoFullName?: string, slackUserId?: string) => { credentialService: string; provider: string; apiBase: string; apiKeyEnv: string } | undefined;
   disposers: Array<() => void | Promise<void>>;
   /**
    * Promise for the async bootstrap phase (reactions poller start,
@@ -1389,14 +1389,18 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         return undefined;
       }
     },
-    gitResolutionFor: (repoFullName?: string) => {
+    gitResolutionFor: (repoFullName?: string, slackUserId?: string) => {
       const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
       if (!repo) return undefined;
       const glob = "/" + "*";
       const concrete = repo.endsWith(glob) ? repo.slice(0, -1) + "_probe" : repo;
       try {
         const r = pat.resolve({
-          slackUserId: config.slack.authorised_users[0] ?? "unknown",
+          // beta.133: onboarding needs the name THIS requester resolves to, not
+          // whatever the first authorised user would get. With a {userid} or
+          // {requester} pattern those differ, which is exactly the case the
+          // onboard consistency check exists to catch.
+          slackUserId: slackUserId ?? config.slack.authorised_users[0] ?? "unknown",
           gitHubUser: concrete.split("/")[0]!,
           repoFullName: concrete,
         });

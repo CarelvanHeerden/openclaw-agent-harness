@@ -1303,22 +1303,32 @@ export interface PatRoutingConfig {
     providers?: Partial<Record<GitProvider, ProviderConfig>>;
     /**
      * Template for the vault credential service name. Placeholders:
-     *   {owner} - repo owner (org or user), e.g. "CarelvanHeerden"
-     *   {repo}  - repo name, e.g. "openclaw-agent-harness"
-     *   {user}  - requester's GitHub login (deprecated alias; for a personal
-     *             repo this equals {owner}, which is why the old default
-     *             "github-{user}-{org}" collapsed to a duplicated segment)
-     *   {org}   - repo owner (deprecated alias of {owner})
-     * Default: "github-{owner}" (per-owner tokens). All placeholders are
-     * lower-cased.
+     *   {owner}     - repo owner (org or user), e.g. "CarelvanHeerden"
+     *   {repo}      - repo name, e.g. "openclaw-agent-harness"
+     *   {requester} - requester's provider login, from `user_identities`
+     *   {userid}    - requester's raw Slack id, e.g. "U07UT6G8LQ4". The only
+     *                 placeholder shared with `onboard_service_pattern`, so it
+     *                 is the one that makes a per-user setup expressible on both
+     *                 sides. NOT lower-cased, because onboarding writes the id
+     *                 verbatim (beta.133).
+     *   {user}      - requester's GitHub login (deprecated alias; for a personal
+     *                 repo this equals {owner}, which is why the old default
+     *                 "github-{user}-{org}" collapsed to a duplicated segment)
+     *   {org}       - repo owner (deprecated alias of {owner})
+     * Default: "github-{owner}" (per-owner tokens). Every placeholder except
+     * {userid} is lower-cased.
      */
     default_service_pattern: string;
     /**
      * beta.78 (Feature 4): vault service-name pattern used by `harness_onboard`
      * to store a user's git token. Placeholders: {userid} (Slack user id),
-     * {provider}. Default "git-pat:{userid}". Keep this consistent with
-     * `default_service_pattern` so an onboarded token is actually resolved for
-     * that user's runs.
+     * {provider}. Default "git-pat:{userid}".
+     *
+     * This MUST be able to produce the same string as `default_service_pattern`,
+     * or an onboarded token is stored under a name no session ever looks up --
+     * onboarding reports success and the run dies later at clone. beta.133 makes
+     * that reachable ({userid} now exists on both sides) and makes the broken
+     * combination refuse at onboard time instead of failing silently.
      */
     onboard_service_pattern?: string;
     /**

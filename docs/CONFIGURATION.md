@@ -165,8 +165,19 @@ Full guide: `docs/AUTH.md`.
 ### PAT routing (GitHub auth)
 
 `pat_routing.default_service_pattern` builds the vault credential service name
-for GitHub tokens. Placeholders (lower-cased): `{owner}`, `{repo}`, and the
-deprecated aliases `{user}` (requester login) / `{org}` (repo owner).
+for GitHub tokens. Placeholders (lower-cased): `{owner}`, `{repo}`, `{userid}`
+(NOT lower-cased — see below), and the deprecated aliases `{user}` (requester
+login) / `{org}` (repo owner).
+
+**Keep it consistent with `onboard_service_pattern`.** `harness_onboard` writes
+the vault entry from `onboard_service_pattern` (default `git-pat:{userid}`),
+while sessions read via `default_service_pattern` (default `github-{owner}`).
+`{userid}` — the requester's raw Slack id — is the only placeholder both
+understand, so it is the one to use if you want per-user tokens. It is not
+lower-cased on either side, because Slack ids are upper-case and the two spellings
+must match byte for byte. With the two defaults left alone the names cannot
+agree; since beta.133 onboarding refuses in that case rather than storing a
+token that no session will ever look up.
 
 **Default: `github-{owner}`.** The old `github-{user}-{org}` default collapsed
 to a duplicated segment for personal repos (`{user}` == `{org}` == owner), so

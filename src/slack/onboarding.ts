@@ -58,6 +58,43 @@ export function resolveOnboardVaultService(
     .replaceAll("{provider}", provider);
 }
 
+export interface OnboardConsistency {
+  /** False only when we know the written name is unreadable. */
+  ok: boolean;
+  /** The name onboarding would write. */
+  writing: string;
+  /** The names sessions would actually look up, de-duplicated. */
+  expected: string[];
+  /** True when there was nothing to compare against, so no verdict was possible. */
+  undetermined: boolean;
+}
+
+/**
+ * PURE: does the name `harness_onboard` writes match a name the pat-router will
+ * later read?
+ *
+ * beta.133. The two patterns ship with defaults that cannot agree -- onboarding
+ * writes `git-pat:{userid}` while resolution reads `github-{owner}` -- and
+ * nothing noticed. The token validated, the vault stored it, the tool said it
+ * had worked, and the first session died at clone with a "credential not found"
+ * for a name the operator had never seen.
+ *
+ * An empty `expected` means we could not work out what any session would look
+ * up (no allow-listed repos, or routing that refused to resolve). That is not
+ * evidence of a mismatch, so it reports `ok` with `undetermined` set rather
+ * than blocking an onboarding that may well be fine.
+ */
+export function checkOnboardConsistency(writing: string, expected: readonly string[]): OnboardConsistency {
+  const seen = new Set<string>();
+  for (const name of expected) {
+    const trimmed = name.trim();
+    if (trimmed.length > 0) seen.add(trimmed);
+  }
+  const names = [...seen];
+  if (names.length === 0) return { ok: true, writing, expected: [], undetermined: true };
+  return { ok: names.includes(writing.trim()), writing, expected: names, undetermined: false };
+}
+
 export class OnboardingSlack {
   constructor(private readonly deps: OnboardingDeps) {}
 

@@ -1104,7 +1104,7 @@ export function bootstrapHarnessSync(api) {
                 return undefined;
             }
         },
-        gitResolutionFor: (repoFullName) => {
+        gitResolutionFor: (repoFullName, slackUserId) => {
             const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
             if (!repo)
                 return undefined;
@@ -1112,7 +1112,11 @@ export function bootstrapHarnessSync(api) {
             const concrete = repo.endsWith(glob) ? repo.slice(0, -1) + "_probe" : repo;
             try {
                 const r = pat.resolve({
-                    slackUserId: config.slack.authorised_users[0] ?? "unknown",
+                    // beta.133: onboarding needs the name THIS requester resolves to, not
+                    // whatever the first authorised user would get. With a {userid} or
+                    // {requester} pattern those differ, which is exactly the case the
+                    // onboard consistency check exists to catch.
+                    slackUserId: slackUserId ?? config.slack.authorised_users[0] ?? "unknown",
                     gitHubUser: concrete.split("/")[0],
                     repoFullName: concrete,
                 });

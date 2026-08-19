@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.1.0-beta.133
+
+### A token in the vault that nothing could read
+
+Setting the harness up on a new machine, the plan was the obvious one: let
+`harness_onboard` put the GitHub PAT in the vault. It would have worked, in the
+sense that every visible step reports success. The token validates against
+`GET /user`. The vault stores it. The bot deletes its own prompt and confirms in
+the DM. Then the first session dies at clone:
+
+```
+credential 'github-stitch-vercel' not found in vault
+```
+
+The two halves of the feature never shared a placeholder. Onboarding builds its
+name from `pat_routing.onboard_service_pattern`, which defaults to
+`git-pat:{userid}` — a raw Slack id. Sessions resolve through
+`default_service_pattern`, which defaults to `github-{owner}`, and whose most
+user-specific placeholder, `{requester}`, is the provider *login*. There was no
+setting of either pattern that made them agree for a per-user token. The doc
+comment on `onboard_service_pattern` had been instructing operators to "keep
+this consistent with `default_service_pattern`" since beta.78, using a
+vocabulary that made consistency unreachable.
+
+Two changes.
+
+**`{userid}` now exists on the reading side.** `default_service_pattern`
+understands it, so `git-pat:{userid}` on both sides resolves to the same string
+and a genuine per-user setup is finally expressible. It is deliberately the one
+placeholder that is not lower-cased: Slack ids are upper-case and onboarding
+substitutes them verbatim, so folding case here would miss the vault entry by
+nothing but capitalisation.
+
+**Onboarding refuses to write a name nothing reads.** Before opening the DM or
+storing anything, `harness_onboard` asks the router what each allow-listed repo
+would actually look up, and stops if its own name is not among them — naming
+both strings and how to reconcile them. It refuses at `start` too, so nobody is
+asked to paste a secret that could never be used. When there is nothing to
+compare against (an empty allow-list, or routing that declines to resolve) the
+verdict is "undetermined" and onboarding proceeds, because absence of evidence
+is not a mismatch.
+
+`harness_health`'s `git_credential_resolvable` check already caught this after
+the fact. The point of beta.133 is that the failure now surfaces at the moment
+the operator is doing credential setup, rather than an hour into the first run.
+
+### Documentation that had drifted
+
+Three things in the install path were describing a harness that no longer
+exists, and between them they were enough to send a careful reader down the
+wrong road:
+
+- **The `better-sqlite3` section is gone.** The plugin has had zero native
+  dependencies since it moved to `node:sqlite`. The warnings about ABI
+  matching, missing linux-arm64 prebuilds and installing `build-essential`
+  described a real historical failure and a currently impossible one — the
+  install works on Apple Silicon with no toolchain.
+- **The Claude Agent SDK needs no Dockerfile change.**
+  `@anthropic-ai/claude-agent-sdk` is a plain runtime dependency;
+  `npm install --omit=dev` fetches it.
+- **The config path was wrong.** Plugin settings live under
+  `plugins.entries.<id>.config`, not `plugins.<id>`. Anything written at the
+  shorter path is silently ignored, which is a bad failure mode for a document
+  whose whole job is telling you where to put things.
+
+`CONFIGURATION.md` also documents `{userid}` and the consistency requirement
+between the two patterns, in the same place operators look for the naming
+convention.
+
 ## 0.1.0-beta.132
 
 ### "The run will pick this up within a few seconds"

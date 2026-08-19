@@ -13,7 +13,7 @@ import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
 import { findingText, isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
-import { OnboardingSlack, resolveOnboardVaultService, validateGitToken } from "../slack/onboarding.js";
+import { OnboardingSlack, checkOnboardConsistency, resolveOnboardVaultService, validateGitToken } from "../slack/onboarding.js";
 import { measureParaphraseDrift, readRequestFile } from "./brief-source.js";
 import {
   BRIEF_CONFIRMATION_KIND,
@@ -1774,6 +1774,32 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             pattern: liveConfig().pat_routing?.onboard_service_pattern,
             provider: provider ?? "github",
           });
+
+          // beta.133: refuse to store a token under a name nothing reads. The
+          // two patterns default to `git-pat:{userid}` and `github-{owner}`,
+          // which cannot agree, and the old failure was silent: the vault kept
+          // the token, the tool reported success, and the run died at clone.
+          {
+            const resFn = liveRuntime().gitResolutionFor;
+            const expected = resFn
+              ? liveConfig().repos.allowed.map((r) => resFn(r, requester)?.credentialService ?? "")
+              : [];
+            const consistency = checkOnboardConsistency(vaultService, expected);
+            if (!consistency.ok) {
+              liveState().audit("tool.onboard.pattern_mismatch", { requester, writing: consistency.writing, expected: consistency.expected });
+              return {
+                content: [{
+                  type: "text",
+                  text:
+                    `Onboarding would store the token as \`${consistency.writing}\`, but sessions look up ` +
+                    `${consistency.expected.map((e) => `\`${e}\``).join(" or ")}. Nothing would ever read it, and the ` +
+                    `run would fail at clone instead of here. Set pat_routing.onboard_service_pattern (or ` +
+                    `default_service_pattern) so the two agree, then retry. Both understand {userid}.`,
+                }],
+                details: { ok: false, patternMismatch: true, writing: consistency.writing, expected: consistency.expected },
+              };
+            }
+          }
 
           if (action === "start") {
             const dm = await onboard.openDm(requester);

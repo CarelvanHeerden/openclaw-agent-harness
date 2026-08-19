@@ -189,6 +189,14 @@ export class PatRouter {
         .replaceAll("{owner}", owner.toLowerCase())
         .replaceAll("{repo}", repo.toLowerCase())
         .replaceAll("{requester}", requester)
+        // beta.133: the raw Slack id. `harness_onboard` writes its vault entry
+        // from `{userid}`, and until now nothing on this side could read that
+        // back -- the closest placeholder, {requester}, is the provider login.
+        // The two default patterns were therefore incapable of agreeing, so an
+        // onboarded token sat in the vault under a name no session looked up.
+        // Deliberately NOT lower-cased: onboarding substitutes the id verbatim,
+        // and Slack ids are upper-case, so folding case here would miss it.
+        .replaceAll("{userid}", input.slackUserId)
         // Deprecated aliases: {user} = requester login (repo owner if unknown),
         // {org} = repo owner. For a personal repo these collapse to the same
         // value (why the old "github-{user}-{org}" default duplicated).
