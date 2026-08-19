@@ -1919,6 +1919,26 @@ const MUTATIONS = [
     replace: "resFn(r)?.credentialService ?? \"\"",
     tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
   },
+  {
+    // A removed setting must not survive parse. Leaving it on the object means
+    // code can still branch on a flag nothing obeys -- which is the state b133
+    // set out to end.
+    name: "the removed listener flag is DISCARDED at parse (b133)",
+    file: "dist/config.js",
+    find: "delete merged.slack.listener_enabled;",
+    replace: ";",
+    tests: ["tests/config.test.mjs"],
+  },
+  {
+    // The warning is owed to anyone whose config still carries the key, not
+    // only to those who set it true. `listener_enabled: false` is just as dead
+    // and just as worth deleting.
+    name: "a config carrying the dead flag is detected even when it is false (b133)",
+    file: "dist/config.js",
+    find: 'return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");',
+    replace: "return slack.listener_enabled === true;",
+    tests: ["tests/config.test.mjs"],
+  },
 ];
 
 /**

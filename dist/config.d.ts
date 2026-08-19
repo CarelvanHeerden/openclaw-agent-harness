@@ -268,15 +268,15 @@ export interface LogConfig {
 }
 export interface SlackConfig {
     /**
-     * DEPRECATED as of beta.34, and IGNORED. The autonomous Slack listener was
-     * removed; `messageHandler` is built but never subscribed. Setting this true
-     * logs a warning and changes nothing.
-     *
-     * The plugin does NOT listen to Slack. The OpenClaw agent orchestrates
-     * everything by calling the harness tools (`harness_run`, `harness_status`,
-     * ...). Retained only so existing configs keep parsing.
+     * NOTE: `listener_enabled` is deliberately absent. beta.34 removed the
+     * autonomous Slack listener; beta.133 removed the setting, because a key that
+     * can be configured but not obeyed is worse than no key at all -- it made the
+     * harness refuse to start over a prerequisite for a mode it does not have.
+     * Existing configs may still carry it: the JSON schema still accepts the key
+     * (both schemas are `additionalProperties: false`, so dropping it there would
+     * turn an old config into a validation failure), `parseHarnessConfig`
+     * discards it, and bootstrap warns once.
      */
-    listener_enabled: boolean;
     /** Outbound posting target. Optional; there is nothing to listen on. */
     channel: string;
     authorised_users: string[];
@@ -1360,6 +1360,16 @@ export interface PatAuthConfig {
  * discovers a missing email mid-run.
  */
 export declare function validatePatHierarchy(pr: PatRoutingConfig): void;
+/**
+ * PURE: did this config carry the removed `slack.listener_enabled` key?
+ *
+ * beta.133. Read off the RAW input, because `parseHarnessConfig` drops the key
+ * and the parsed config can no longer answer. Bootstrap uses this to warn once
+ * that the setting does nothing, which is the whole of what it should do -- the
+ * old behaviour was to refuse startup unless a channel was supplied for a
+ * listener that was deleted ninety-nine releases ago.
+ */
+export declare function declaresRemovedListenerFlag(input: unknown): boolean;
 export declare function parseHarnessConfig(input: unknown): HarnessConfig;
 /**
  * beta.78 (Feature 3): pure budget-coherence assessment.

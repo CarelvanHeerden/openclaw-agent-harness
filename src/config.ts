@@ -275,15 +275,16 @@ export interface LogConfig {
 
 export interface SlackConfig {
   /**
-   * DEPRECATED as of beta.34, and IGNORED. The autonomous Slack listener was
-   * removed; `messageHandler` is built but never subscribed. Setting this true
-   * logs a warning and changes nothing.
-   *
-   * The plugin does NOT listen to Slack. The OpenClaw agent orchestrates
-   * everything by calling the harness tools (`harness_run`, `harness_status`,
-   * ...). Retained only so existing configs keep parsing.
+   * NOTE: `listener_enabled` is deliberately absent. beta.34 removed the
+   * autonomous Slack listener; beta.133 removed the setting, because a key that
+   * can be configured but not obeyed is worse than no key at all -- it made the
+   * harness refuse to start over a prerequisite for a mode it does not have.
+   * Existing configs may still carry it: the JSON schema still accepts the key
+   * (both schemas are `additionalProperties: false`, so dropping it there would
+   * turn an old config into a validation failure), `parseHarnessConfig`
+   * discards it, and bootstrap warns once.
    */
-  listener_enabled: boolean;
+
   /** Outbound posting target. Optional; there is nothing to listen on. */
   channel: string;
   authorised_users: string[];
@@ -1375,7 +1376,6 @@ export interface PatAuthConfig {
 
 const DEFAULTS: HarnessConfig = {
   slack: {
-    listener_enabled: false,
     channel: "",
     authorised_users: [],
     native_progress_delivery: true,
@@ -1680,20 +1680,33 @@ function mergeDeep<T>(base: T, override: unknown): T {
   return out as T;
 }
 
+/**
+ * PURE: did this config carry the removed `slack.listener_enabled` key?
+ *
+ * beta.133. Read off the RAW input, because `parseHarnessConfig` drops the key
+ * and the parsed config can no longer answer. Bootstrap uses this to warn once
+ * that the setting does nothing, which is the whole of what it should do -- the
+ * old behaviour was to refuse startup unless a channel was supplied for a
+ * listener that was deleted ninety-nine releases ago.
+ */
+export function declaresRemovedListenerFlag(input: unknown): boolean {
+  const slack = (input as { slack?: unknown } | null | undefined)?.slack;
+  if (!slack || typeof slack !== "object") return false;
+  return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");
+}
+
 export function parseHarnessConfig(input: unknown): HarnessConfig {
   const merged = mergeDeep(DEFAULTS, input);
 
+  // An old config may still carry `slack.listener_enabled`. Accept it and drop
+  // it: the schemas keep the property so such a config still validates, but
+  // nothing downstream should be able to read a setting nothing obeys.
+  delete (merged.slack as unknown as Record<string, unknown>).listener_enabled;
+
   // Hard validation on safety-critical fields.
   //
-  // `slack.channel` is only required in autonomous listener mode. In the
-  // default agent-orchestrated mode the OpenClaw agent drives the harness
-  // via tools, so no channel to listen on is needed.
-  if (merged.slack.listener_enabled && !merged.slack.channel) {
-    throw new Error("harness.slack.channel is required when slack.listener_enabled is true");
-  }
   // `authorised_users` is always required: it gates who may invoke the
-  // harness (whether via the listener OR via agent tool calls) and who may
-  // drop control reactions.
+  // harness via agent tool calls, and who may drop control reactions.
   if (merged.slack.authorised_users.length === 0) {
     throw new Error("harness.slack.authorised_users must contain at least one Slack user id");
   }

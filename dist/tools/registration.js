@@ -927,14 +927,14 @@ export function registerHarnessTools(api, runtime) {
                 checks.push({ name: `table_${t}`, ok: !!row?.name });
             }
             // Config: minimally-valid?
-            // beta.57 (P3): slack.channel is only required in LISTENER mode. In
-            // the default agent-orchestrated mode (listener_enabled false) an
-            // empty channel is correct config, not a health failure.
-            const channelRequired = !!liveConfig().slack.listener_enabled;
+            // beta.57 (P3) made slack.channel conditional on listener mode.
+            // beta.133 removed that mode, so an empty channel is simply correct
+            // config: there is nothing to listen on, and the channel is only an
+            // outbound posting target.
             checks.push({
                 name: "config_slack_channel",
-                ok: channelRequired ? !!liveConfig().slack.channel : true,
-                detail: channelRequired ? liveConfig().slack.channel : (liveConfig().slack.channel || "(not required: listener disabled)"),
+                ok: true,
+                detail: liveConfig().slack.channel || "(not required: outbound posting only)",
             });
             checks.push({ name: "config_authorised_users", ok: liveConfig().slack.authorised_users.length > 0 });
             checks.push({ name: "config_repos_allowed", ok: liveConfig().repos.allowed.length > 0 });

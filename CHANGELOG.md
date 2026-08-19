@@ -90,6 +90,31 @@ Corrected in `README.md`, `docs/ARCHITECTURE.md` (both the intake section and
 described as what it is — an outbound posting target — rather than something
 the listener requires.
 
+**And the setting itself is gone.** Documenting a dead flag accurately still
+leaves a dead flag, and this one could do real damage on the way out:
+
+```ts
+if (merged.slack.listener_enabled && !merged.slack.channel) {
+  throw new Error("harness.slack.channel is required when slack.listener_enabled is true");
+}
+```
+
+The harness refused to start unless you supplied a channel for a listener it
+deleted in beta.34. `listener_enabled` is no longer part of `SlackConfig` or the
+defaults, the throw is gone, and `harness_health` no longer makes
+`config_slack_channel` conditional on it.
+
+Removing it from the JSON schemas would have been worse than keeping it: both
+`slack` blocks are `additionalProperties: false`, so an existing config that
+carries the key would have gone from "ignored" to "rejected". The property stays
+in the schema and the manifest — with its `default` dropped, so
+`beta126-declared-defaults-are-applied` no longer requires the harness to honour
+a promise it should not make — and `parseHarnessConfig` discards it. Bootstrap
+warns once via `declaresRemovedListenerFlag`, read off the raw input because the
+parsed config can no longer answer the question. The warning fires for
+`listener_enabled: false` too: a key that does nothing is worth deleting
+whichever way it is set.
+
 Worth noting how this one was found: the drift was reported by an OpenClaw
 instance reading the manifest during a fresh install, against a README that
 disagreed with it. The same install turned up the three items above.
