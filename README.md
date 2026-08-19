@@ -303,6 +303,12 @@ For repeatable smoke tests, `harness_bootstrap_test_repo` creates a fresh dispos
 
 CI on every push and PR: `.github/workflows/ci.yml`.
 
+Branch naming, version progression and the release cut are in
+[`docs/RELEASE.md`](docs/RELEASE.md). Read it before cutting a release or
+starting a branch that will outlive one — more than one agent works in this
+repository at a time, and the rules there are what stop two of them claiming the
+same version number.
+
 ## License
 
 MIT. See `LICENSE`.
