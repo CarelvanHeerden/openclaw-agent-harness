@@ -131,6 +131,9 @@ the shorter path is silently ignored. Minimal example:
             "allowed": ["example-org/example-repo"],
             "never_commit_paths": ["okf/**"]
           },
+          "brief": {
+            "request_file_roots": ["/home/node/.openclaw/media/inbound"]
+          },
           "models": {
             "lead": "claude-fable-5",
             "worker": "claude-sonnet-5",
@@ -160,6 +163,15 @@ regenerating was the job. The list is empty by default and is never inferred,
 since a generated tree cannot be told from hand-written code by inspection, and
 nothing will warn you if you leave it out. Drop the line if your repo has no
 such tree. See [Generated trees](CONFIGURATION.md#generated-trees-reposnever_commit_paths).
+
+`brief.request_file_roots` is the other one, and it is also empty by default.
+Empty means `harness_run({ requestPath })` is **refused**, so a calling agent
+that has the user's spec as a file has no way to hand it over except by retyping
+it — reintroducing the paraphrase hop that `requestPath` exists to remove. Point
+it at wherever your runtime stores uploads; for OpenClaw in Docker that is
+`~/.openclaw/media/inbound`. A root that does not exist matches nothing, so
+confirm it with a real file rather than assuming. See
+[Brief fidelity](CONFIGURATION.md#brief-fidelity-briefrequest_file_roots).
 
 See [`CONFIGURATION.md`](CONFIGURATION.md) for all options.
 

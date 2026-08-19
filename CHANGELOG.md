@@ -34,6 +34,36 @@ reverts rather than before and ignores, why unstaging alone is not enough, and
 what the failure actually costs downstream — not a noisy diff, but a review loop
 spending its whole cycle budget on a finding no worker is able to resolve.
 
+### The same shape, found on the same box: `brief.request_file_roots`
+
+Looking for a second instance turned one up immediately. `harness_run` accepts a
+`requestPath` so the harness can read a specification off disk itself instead of
+having the calling agent retype it — the one hop where a brief gets paraphrased
+in transit. beta.120 exists because two b119 smokes spent ~$18 and two hours each
+building a feature whose brief had been reworded upstream: `performedAt` had
+become `scheduledAt`.
+
+`request_file_roots` is empty by default, and empty means `requestPath` returns
+`code: "disabled"`. The caller's only remaining move is to inline the spec, which
+is precisely the hop the feature removes. On the devbot that is what happened,
+and the safeguard beta.120 shipped had never once run.
+
+Empty-by-default is right here too — the harness holds GitHub tokens and a
+brief's contents reach model prompts and PR bodies, so an operator must name the
+directories rather than have the harness guess — and, again, the setting was in
+no document.
+
+The whole `brief` block was in fact missing from `CONFIGURATION.md`:
+`confirm_before_spend`, `confirm_min_risk`, `bimodal_clarify`,
+`request_file_max_bytes`. All of it is now documented, with the fidelity
+reasoning and the read constraints that make the root safe to name — absolute
+paths only, symlinks resolved *before* the root check, credential-shaped
+basenames refused, NUL-byte content rejected, size capped rather than truncated.
+
+Two settings, one shape: a safeguard whose default is "off", whose reason for
+being off is sound, and which no document mentions. That combination reliably
+produces a deployment that believes it has protection it has never had.
+
 Docs, `package.json` and `src/version.ts` only. No behaviour change.
 
 ## 0.1.0-beta.135
