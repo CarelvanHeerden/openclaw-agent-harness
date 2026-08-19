@@ -21,7 +21,9 @@ import { Dispatcher } from "./slack/dispatcher.js";
 import { SlackProgressPoster } from "./slack/progress-poster.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
+import { RouteOverlay } from "./auth/route-overlay.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
+import { type CredentialRecord } from "./adapters/credential-vault.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import { type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
@@ -97,8 +99,25 @@ export interface HarnessPluginApi {
         ts: string;
         name: string;
     }) => Promise<void>;
-    /** Optional -- lookup for calling another plugin's tool (e.g. hybrid-memory's credential_get). */
+    /**
+     * Optional -- lookup for calling another plugin's tool. beta.110: NO LONGER
+     * used for credentials; the harness owns its vault. Retained for other
+     * cross-plugin calls and for runtimes that still provide it.
+     */
     callTool?: (name: string, input: unknown) => Promise<unknown>;
+}
+/**
+ * beta.110: the vault surface the runtime depends on. Narrower than
+ * `CredentialVault` so the sealed stub below (and tests) can stand in.
+ */
+export interface CredentialStore {
+    get: (service: string, type?: "token" | "api_key") => string | undefined;
+    set: (service: string, value: string, opts?: {
+        type?: string;
+        notes?: string;
+    }) => void;
+    delete: (service: string) => boolean;
+    list: () => CredentialRecord[];
 }
 export interface HarnessRuntime {
     config: HarnessConfig;
@@ -118,6 +137,10 @@ export interface HarnessRuntime {
     slack: SlackAdapter;
     git: GitAdapter;
     creds: CredentialAdapter;
+    /** beta.110: the harness-owned vault. Used by `harness_onboard` to STORE tokens. */
+    vault: CredentialStore;
+    /** beta.110: set when the vault could not be opened; surfaced by `harness_health`. */
+    vaultError?: string;
     /**
      * Classify + crystallise a raw request into a structured brief. Shared by
      * the optional Slack dispatcher and the agent-callable `harness_run` tool.
@@ -198,11 +221,29 @@ export interface HarnessRuntime {
      */
     githubServiceFor: (repoFullName?: string) => string | undefined;
     /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
+    /**
+     * Routes written by `harness_onboard`. The same instance the router reads,
+     * so a route the tool writes is live for the next session without a restart.
+     */
+    routeOverlay?: RouteOverlay;
     gitResolutionFor: (repoFullName?: string, slackUserId?: string) => {
         credentialService: string;
         provider: string;
         apiBase: string;
         apiKeyEnv: string;
+        /**
+         * Where the token actually comes from when routing resolved through a
+         * hierarchy or overlay entry, and the vault name it points at.
+         *
+         * `credentialService` is SYNTHETIC on those paths -- the router builds it
+         * for logging and never looks a token up by it. Onboarding compares the
+         * name it is about to write against what sessions read, so handing it the
+         * synthetic name makes the check compare against a string nothing uses:
+         * it refuses valid setups, and aligning the patterns to satisfy it stores
+         * the token under a name that still is not read.
+         */
+        tokenSource?: "vault" | "env" | "value";
+        vaultPointer?: string;
     } | undefined;
     disposers: Array<() => void | Promise<void>>;
     /**

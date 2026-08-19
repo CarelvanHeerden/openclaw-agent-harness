@@ -29,8 +29,8 @@ Both now use the same resolver, so a single credential covers both.
 Mirrors `models.auth`:
 
 1. **Vault** — the credential service name is resolved by the PAT router from
-   `pat_routing.default_service_pattern` (or an override). The harness calls
-   `credential_get({ service, type: "token" })`.
+   `pat_routing.default_service_pattern` (or an override), then read from the
+   harness-owned credential vault (`node scripts/vault.mjs set <service>`).
 2. **Env fallback** — if the vault lookup fails or is empty, the harness reads
    the environment variable named by `pat_routing.auth.api_key_env`
    (default `GH_TOKEN`). This lets vault-less deployments just set `GH_TOKEN`.
@@ -55,7 +55,9 @@ Placeholders (all lower-cased):
 | `{user}`      | requester login *(deprecated alias, repo owner if unknown)* | `carelvanheerden` |
 | `{org}`       | repo owner *(deprecated alias of `{owner}`)*                | `carelvanheerden` |
 
-**Default: `github-{owner}`** (per-owner tokens).
+**Default: `{provider}-{owner}`** (per-owner, per-provider tokens). The prefix
+was hard-coded to `github-` until one person's GitHub and GitLab tokens for a
+same-named org were found to collapse onto a single name.
 
 ## Hierarchical routing (recommended for multi-user) — beta.25
 
@@ -111,8 +113,9 @@ for back-compat.
 
 ### Vault is a first-class requirement for corporate multi-user
 
-For a true multi-user deployment, install the **memory-hybrid** plugin and use
-`vault` token pointers. Rationale:
+For a true multi-user deployment, use `vault` token pointers. The vault is
+harness-owned as of beta.110 — no plugin to install, and no tool surface an
+agent turn could call to read a secret. Rationale:
 
 - The operator **should not see** other users' tokens — with `vault`, the
   secret lives only in the encrypted credential store; `openclaw.json` holds
@@ -202,8 +205,8 @@ fallback var. For a self-managed GitLab, point `providers.gitlab.api_base` at
 
 Common choices:
 
-- `github-{owner}` — one token per account (default). Simplest.
-- `github-{owner}-{repo}` — one token per repo. Tightest scoping.
+- `{provider}-{owner}` — one token per account per provider (default). Simplest.
+- `{provider}-{owner}-{repo}` — one token per repo. Tightest scoping.
 
 Per-user / per-repo overrides still win over the template
 (`pat_routing.overrides`).
@@ -233,7 +236,7 @@ single shared token per provider — true per-user auth is vault-backed.
 {
   "openclaw-agent-harness": {
     "pat_routing": {
-      "default_service_pattern": "github-{owner}",
+      "default_service_pattern": "{provider}-{owner}",
       "auth": { "api_key_env": "GH_TOKEN" }
     }
   }

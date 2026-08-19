@@ -119,6 +119,58 @@ function autoAnswer(db, reply) {
 }
 
 /**
+ * Multiplier for every wall-clock number in this file.
+ *
+ * These tests run a real loop, doing real git work, against a ceiling of a few
+ * seconds -- that is how "the clock is blown" becomes true by the time the ship
+ * gate is reached. It is a stopwatch race, and on a loaded machine the run
+ * blows the ceiling EARLIER than intended and aborts before reaching the
+ * decision the test is about. That shows up as a MISSING event rather than a
+ * wrong one, which is why `lastPayload` below exists.
+ *
+ * Scaling every number by the same factor preserves the ratios the guard's
+ * quarter/half clamps depend on, so a bigger scale buys tolerance without
+ * changing what is being tested.
+ *
+ * The default is 2 because 1 was measurably not enough: the original numbers
+ * failed one full suite run and passed the next, a coin flip on an unloaded
+ * machine, purely because `npm test` runs this file alongside a hundred others.
+ * Raise it further on anything more contended:
+ *
+ *   HARNESS_TEST_CLOCK_SCALE=4 node --test tests/beta130-ci-repair-ask.test.mjs
+ *
+ * It is a mitigation, not a cure. The cure is a clock the loop takes as a
+ * dependency, which `loop.ts` does not yet have -- it reads `Date.now()`
+ * directly in about thirty places.
+ */
+const CLOCK_SCALE = Math.max(1, Number(process.env.HARNESS_TEST_CLOCK_SCALE ?? 2) || 2);
+/** Seconds and milliseconds, scaled together so the ratios survive. */
+const s = (n) => n * CLOCK_SCALE;
+const ms = (n) => n * CLOCK_SCALE;
+
+/**
+ * The last payload for an event, or a failure that says what the run did.
+ *
+ * `events(...).at(-1).payload` throws "Cannot read properties of undefined"
+ * when the run never got that far, which names neither the event nor the
+ * reason. Under a deliberately tiny ceiling that is the most likely way these
+ * tests fail, and it is worth five seconds of reading rather than twenty
+ * minutes of hunting a regression that is not there.
+ */
+function lastPayload(r, event) {
+  const seen = r.events(event);
+  if (seen.length > 0) return seen.at(-1).payload;
+  const emitted = [...new Set(r.audits.map((a) => a.event))].join(", ");
+  assert.fail(
+    `no '${event}' event was emitted, so the run never reached that decision.\n` +
+      `  Under this file's deliberately tiny wall clock that usually means the run was cut short\n` +
+      `  before the ship gate -- a timing failure, not a behavioural one. Re-run with\n` +
+      `  HARNESS_TEST_CLOCK_SCALE=3 to confirm before hunting a regression.\n` +
+      `  events seen: ${emitted}`,
+  );
+}
+
+/**
  * A ceiling the run gets inside but cannot fit a second cycle into.
  *
  * The guard clamps its reserve to a quarter of the ceiling and its cycle
@@ -128,14 +180,14 @@ function autoAnswer(db, reply) {
  */
 const TIGHT_CLOCK = {
   max_cycles: 1,
-  session_hard_timeout_seconds: 3,
-  time_extension_wait_seconds: 5,
+  session_hard_timeout_seconds: s(3),
+  time_extension_wait_seconds: s(5),
   time_extension_default_seconds: 1800,
 };
 
 /** Passes review, slowly -- which is what makes the cycle look expensive. */
 const PASSES = async () => {
-  await new Promise((res) => setTimeout(res, 1600));
+  await new Promise((res) => setTimeout(res, ms(1600)));
   return { verdict: "pass", findings: [], summary: "looks right", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
 };
 
@@ -188,7 +240,7 @@ test("granting time for a repair buys ONE cycle, not two", async (t) => {
   // double-counted one runs a third that nobody granted.
   let reviews = 0;
   const passThenRevise = async () => {
-    await new Promise((res) => setTimeout(res, 1600));
+    await new Promise((res) => setTimeout(res, ms(1600)));
     reviews += 1;
     if (reviews === 1) {
       return { verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
@@ -245,7 +297,7 @@ test("'ship' ships red -- and the audit records that the operator was asked", as
   assert.equal(r.events("loop.time_extension_declined").length, 1);
   assert.equal(r.events("loop.ci_repair_cycle_granted").length, 0, "a refusal must not buy a cycle anyway");
   assert.equal(r.session().cycles_ran, 1);
-  const declined = r.events("loop.ci_repair_declined").at(-1).payload;
+  const declined = lastPayload(r, "loop.ci_repair_declined");
   assert.equal(declined.reason, "wall_clock");
   assert.equal(declined.askedForTime, true, "the report must be able to tell this from a silent decline");
   assert.equal(r.session().merge_recommendation, "needs_human_review");
@@ -268,7 +320,7 @@ test("no ask when the budget is short too -- more time would not help", async (t
   });
 
   assert.equal(r.events("loop.time_extension_requested").length, 0, "asking for time cannot fix an empty wallet");
-  const declined = r.events("loop.ci_repair_declined").at(-1).payload;
+  const declined = lastPayload(r, "loop.ci_repair_declined");
   assert.equal(declined.reason, "budget");
   assert.equal(declined.askedForTime, false);
 });
@@ -287,7 +339,7 @@ test("no ask when repairs are switched off entirely", async (t) => {
   });
 
   assert.equal(r.events("loop.time_extension_requested").length, 0, "there is nothing to buy");
-  assert.equal(r.events("loop.ci_repair_declined").at(-1).payload.reason, "disabled");
+  assert.equal(lastPayload(r, "loop.ci_repair_declined").reason, "disabled");
 });
 
 test("the ask can be switched off, and then it ships exactly as b129 shipped", async (t) => {
@@ -307,7 +359,7 @@ test("the ask can be switched off, and then it ships exactly as b129 shipped", a
   });
 
   assert.equal(r.events("loop.time_extension_requested").length, 0);
-  assert.equal(r.events("loop.ci_repair_declined").at(-1).payload.reason, "wall_clock");
+  assert.equal(lastPayload(r, "loop.ci_repair_declined").reason, "wall_clock");
   assert.equal(r.session().merge_recommendation, "needs_human_review");
 });
 
@@ -323,7 +375,7 @@ test("a clock already past its deadline cannot fund a repair either", async (t) 
     // reserve" once remaining goes negative, which would have read as a green
     // light to spend a cycle that does not exist.
     configOver: {
-      loop: { ...TIGHT_CLOCK, session_hard_timeout_seconds: 1, time_extension_ask_enabled: false },
+      loop: { ...TIGHT_CLOCK, session_hard_timeout_seconds: s(1), time_extension_ask_enabled: false },
       ci: { max_repair_cycles: 1, poll_interval_seconds: 1 },
     },
     worker: countingWorker(),
@@ -333,7 +385,7 @@ test("a clock already past its deadline cannot fund a repair either", async (t) 
   });
 
   assert.equal(r.events("loop.ci_repair_cycle_granted").length, 0, "a dead clock must not buy a cycle");
-  const declined = r.events("loop.ci_repair_declined").at(-1).payload;
+  const declined = lastPayload(r, "loop.ci_repair_declined");
   assert.equal(declined.reason, "wall_clock");
   assert.ok(declined.remainingMs <= 0 || declined.clockOk === false);
   assert.equal(r.session().cycles_ran, 1);
@@ -406,7 +458,7 @@ test("the ship phase times shipping, not every cycle that preceded it", async (t
     // were still anchored outside the cycle loop it would absorb this sleep,
     // which is how the live run reported 25 minutes of shipping for 6.
     runAdversary: async () => {
-      await new Promise((res) => setTimeout(res, 1200));
+      await new Promise((res) => setTimeout(res, ms(1200)));
       return { verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
     },
     pushBranchAndOpenPr: async () => "https://github.com/o/r/pull/1058",

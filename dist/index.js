@@ -33,18 +33,20 @@ import { SlackProgressPoster, hasRealSlackBinding } from "./slack/progress-poste
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
+import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import { parseOkfBlocksFromContext, OkfConceptCache, decideAutoForward, buildRewrittenParams, cacheKeyForCtx, } from "./hooks/okf-auto-forward.js";
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
+import { CredentialVault, VAULT_KEY_ENV } from "./adapters/credential-vault.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { buildScoutSystemPrompt, buildScoutUserMessage, SCOUT_ALLOWED_TOOLS, SCOUT_DENIED_TOOLS, SCOUT_MAX_TURNS, } from "./orchestrator/lead-scout.js";
 import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getTokenScopes, mergePullRequest, postPrComment } from "./adapters/github.js";
 import { canPushWorkflows } from "./orchestrator/workflow-scope.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
-import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, } from "./adapters/claude-sdk.js";
+import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, registerDeniedSdkEnvVar, } from "./adapters/claude-sdk.js";
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt } from "./crystallise/prompt-refiner.js";
@@ -55,6 +57,16 @@ import { discoverCheckScripts } from "./orchestrator/repo-conventions.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
+/**
+ * beta.110: stand-in for a vault that would not open. Every operation reports
+ * the ORIGINAL failure, so an operator sees "the key does not match" rather
+ * than a procession of "credential not found" errors sending them to look for
+ * a missing entry that is in fact right there, sealed.
+ */
+function sealedVault(reason) {
+    const fail = () => { throw new Error(`credential vault unavailable: ${reason}`); };
+    return { get: fail, set: fail, delete: fail, list: fail };
+}
 let currentRuntime = null;
 /**
  * Synchronous phase of plugin bootstrap.
@@ -120,68 +132,53 @@ export function bootstrapHarnessSync(api) {
         logger: api.logger,
     });
     const budget = new BudgetEnforcer(config.budgets, state);
-    const pat = new PatRouter(config.pat_routing);
-    // beta.24: track whether the credential_get tool is actually available
-    // so downstream log messages can distinguish "no vault adapter present"
-    // from "vault adapter present but this specific service not found".
-    // Set to true on first successful call; the boot-time warning below
-    // also probes it eagerly so operators don't have to wait for the first
-    // git op to see the state.
-    let credentialGetAvailable = undefined;
-    const creds = new CredentialAdapter({
-        logger: api.logger,
-        callCredentialGetTool: async (input) => {
-            if (!api.callTool) {
-                credentialGetAvailable = false;
-                return { error: "api.callTool not available on plugin API; no vault adapter present" };
+    // Routes written by `harness_onboard`, merged BENEATH the config tree so a
+    // hand-written entry always wins. Without this the tool can store a secret
+    // and nothing that tells the router to use it.
+    const routeOverlay = new RouteOverlay(state.db);
+    const pat = new PatRouter(config.pat_routing, routeOverlay);
+    // beta.110: HARNESS-OWNED CREDENTIAL VAULT.
+    //
+    // Replaces memory-hybrid's `credential_get` / `credential_store` tools
+    // outright -- no flag, no fallback. Two properties the tool-based vault could
+    // not offer: it is an in-process library call, so no agent turn can reach it
+    // by name; and it is ours, so retiring the memory plugin cannot take the
+    // harness's git credentials with it.
+    //
+    // The boot probe that used to detect whether a vault adapter existed is gone
+    // with it: the vault is now a hard dependency we construct ourselves, so
+    // "is there an adapter?" is no longer a question that can have two answers.
+    const credCfg = config.credentials ?? {};
+    const vaultDir = resolve(dataDir, credCfg.dir ?? "harness-vault");
+    // An operator who renames the key var must not lose the worker-env strip.
+    registerDeniedSdkEnvVar(credCfg.key_env ?? VAULT_KEY_ENV);
+    let vaultOpenError;
+    let vault;
+    try {
+        vault = CredentialVault.open({
+            dir: vaultDir,
+            keyEnvVar: credCfg.key_env,
+            keyFile: credCfg.key_file,
+            logger: api.logger,
+            // Records the SERVICE NAME and never the value, so a read is traceable
+            // without the audit log becoming a second copy of the secret store.
+            audit: (event, payload) => { try {
+                state.audit(event, payload, "");
             }
-            try {
-                const r = (await api.callTool("credential_get", input));
-                // If we get a defined response (even if the entry isn't found),
-                // the adapter is present.
-                credentialGetAvailable = true;
-                return r;
-            }
-            catch (err) {
-                // Heuristic: if the error mentions "unknown tool" / "not found"
-                // (typical of a missing memory-hybrid plugin), classify as no
-                // adapter. Otherwise treat as a transient / permission error
-                // where the adapter IS present.
-                const msg = String(err).toLowerCase();
-                if (msg.includes("unknown tool") || msg.includes("tool not found") || msg.includes("no such tool") || msg.includes("credential_get") && msg.includes("not registered")) {
-                    credentialGetAvailable = false;
-                }
-                return { error: String(err) };
-            }
-        },
-    });
-    // beta.24: eagerly probe whether the credential_get tool is available at
-    // boot, so we can surface a single, loud warning at start-up rather than
-    // one warning per git operation. This does NOT resolve a real service --
-    // just calls credential_get with a sentinel service name; we don't care
-    // about the result, only about whether the tool exists.
-    (async () => {
-        if (api.callTool) {
-            try {
-                await api.callTool("credential_get", { service: "__harness_boot_probe", type: "token" });
-                credentialGetAvailable = true;
-            }
-            catch (err) {
-                const msg = String(err).toLowerCase();
-                if (msg.includes("unknown tool") || msg.includes("tool not found") || msg.includes("no such tool")) {
-                    credentialGetAvailable = false;
-                    api.logger.warn("[harness] no credential vault adapter (`credential_get` tool) is registered. Vault lookups will fail; the harness will always fall back to env vars for tokens. Install the memory-hybrid plugin to enable vault lookups.");
-                }
-                else {
-                    credentialGetAvailable = true;
-                }
-            }
-        }
-        else {
-            credentialGetAvailable = false;
-            api.logger.warn("[harness] no api.callTool bridge on this plugin API; vault lookups impossible. Env-only mode.");
-        }
-    })().catch(() => { });
+            catch { /* audit must never break a read */ } },
+        });
+        api.logger.info("[harness] credential vault opened", { dir: vaultDir, keySource: vault.keySource });
+    }
+    catch (err) {
+        // A vault we cannot open (wrong key, corrupt file) is fatal to every run,
+        // but crashing `register()` would take the whole plugin down and leave the
+        // operator with no `harness_health` to ask WHY. So we boot with a sealed
+        // stub that carries the real reason into every credential read.
+        vaultOpenError = String(err);
+        api.logger.warn(`[harness] CREDENTIAL VAULT UNAVAILABLE: ${vaultOpenError}. Every credential lookup will fail until this is fixed.`, { dir: vaultDir });
+        vault = sealedVault(vaultOpenError);
+    }
+    const creds = new CredentialAdapter({ logger: api.logger, vault });
     // Anthropic API key resolver for the embedded Claude Agent SDK.
     // Vault-first, then env fallback. Memoised (including the "not found"
     // result) so we only hit the vault once per runtime generation.
@@ -285,7 +282,7 @@ export function bootstrapHarnessSync(api) {
                 }
                 catch (err) {
                     throw new Error(`no ${r.provider} token: hierarchy vault pointer '${tp.vault}' lookup failed (${String(err)}). ` +
-                        `Install/enable memory-hybrid, or switch this person's token pointer to env/value.`);
+                        `Store it with 'node scripts/vault.mjs set ${tp.vault}', or switch this person's token pointer to env/value.`);
                 }
                 throw new Error(`no ${r.provider} token: hierarchy vault pointer '${tp.vault}' returned empty (person '${r.person ?? "?"}')`);
             }
@@ -297,16 +294,18 @@ export function bootstrapHarnessSync(api) {
                 return v;
         }
         catch (err) {
-            // beta.24: distinguish "no vault adapter" (structural) from "adapter
-            // present, entry missing" (operator config error). Also inline the
-            // error + service name in the message string so the log survives
-            // meta-stripping (see pr-watcher / crystallise comments).
+            // beta.110: the old "is there a vault adapter at all?" branch is gone --
+            // the vault is ours and always constructed, so a miss means exactly one
+            // thing: no entry under this service name. A BROKEN vault is a different
+            // message and comes from the sealed stub. Inline the error + service name
+            // in the message string so the log survives meta-stripping (see
+            // pr-watcher / crystallise comments).
             const reason = String(err);
-            if (credentialGetAvailable === false) {
-                api.logger.info(`[harness] git token '${r.credentialService}': using env fallback (no vault adapter; install memory-hybrid to enable)`, { service: r.credentialService, provider: r.provider, envVar: r.apiKeyEnv });
+            if (vaultOpenError) {
+                api.logger.warn(`[harness] git token '${r.credentialService}': vault is unavailable (${vaultOpenError}); trying env fallback`, { service: r.credentialService, provider: r.provider, envVar: r.apiKeyEnv });
             }
             else {
-                api.logger.warn(`[harness] git vault lookup failed for '${r.credentialService}': ${reason}; trying env fallback`, { service: r.credentialService, provider: r.provider, err: reason });
+                api.logger.info(`[harness] git token '${r.credentialService}' not in the vault (${reason}); trying env fallback`, { service: r.credentialService, provider: r.provider, envVar: r.apiKeyEnv });
             }
         }
         const envVal = process.env[r.apiKeyEnv];
@@ -1076,6 +1075,7 @@ export function bootstrapHarnessSync(api) {
     });
     const runtime = {
         config, state, budget, pat, loop, interactionLog, listener, dispatcher, slack, git, creds,
+        vault, vaultError: vaultOpenError,
         // beta.77: built during async bootstrap when slack.credential_service
         // resolves a token; null until then (and forever without one).
         progressPoster: null,
@@ -1104,6 +1104,7 @@ export function bootstrapHarnessSync(api) {
                 return undefined;
             }
         },
+        routeOverlay,
         gitResolutionFor: (repoFullName, slackUserId) => {
             const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
             if (!repo)
@@ -1120,7 +1121,16 @@ export function bootstrapHarnessSync(api) {
                     gitHubUser: concrete.split("/")[0],
                     repoFullName: concrete,
                 });
-                return { credentialService: r.credentialService, provider: r.provider, apiBase: r.apiBase, apiKeyEnv: r.apiKeyEnv };
+                const tp = r.tokenPointer;
+                const tokenSource = tp ? (tp.vault ? "vault" : tp.env ? "env" : "value") : undefined;
+                return {
+                    credentialService: r.credentialService,
+                    provider: r.provider,
+                    apiBase: r.apiBase,
+                    apiKeyEnv: r.apiKeyEnv,
+                    tokenSource,
+                    vaultPointer: tp?.vault,
+                };
             }
             catch {
                 return undefined;

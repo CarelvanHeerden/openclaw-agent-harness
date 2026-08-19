@@ -42,10 +42,39 @@ export interface HarnessConfig {
    * worktree release + container restart. Default ON.
    */
   log: LogConfig;
+  /**
+   * beta.110: harness-owned credential vault. Replaces the memory-hybrid
+   * `credential_get` / `credential_store` tools outright -- there is no
+   * fallback to them, by design (see adapters/credential-vault.ts).
+   */
+  credentials: CredentialsConfig;
 }
 
 export interface LoggingConfig {
   level: "debug" | "info" | "warn" | "error";
+}
+
+export interface CredentialsConfig {
+  /**
+   * Directory holding `vault.db` and (by default) `vault.key`. Relative paths
+   * resolve against the harness data dir -- the directory that already holds
+   * the state DB, NOT the git worktree, so the vault survives worktree
+   * teardown and is never inside a tree a worker can walk.
+   * Default: "harness-vault".
+   */
+  dir?: string;
+  /**
+   * Env var checked for a raw 32-byte key (64 hex chars or base64). When set
+   * it OVERRIDES the key file, so a container can inject the key without a
+   * mounted volume. Default: "OAH_VAULT_KEY".
+   */
+  key_env?: string;
+  /**
+   * Explicit key-file path. Default `<dir>/vault.key`, mode 0600. Generated on
+   * first boot if absent; back it up, because without it every stored
+   * credential is unrecoverable.
+   */
+  key_file?: string;
 }
 
 export interface CiConfig {
@@ -1260,7 +1289,8 @@ export type GitProvider = "github" | "gitlab";
  * A token pointer. Exactly one of `value` | `env` | `vault` must be set.
  *   - value: inline secret in openclaw.json (single-operator; setter accepts risk)
  *   - env:   name of an environment variable holding the token
- *   - vault: credential-vault service name (requires memory-hybrid plugin)
+ *   - vault: service name in the harness-owned credential vault (beta.110; was
+ *            the memory-hybrid plugin's vault before the cutover)
  */
 export interface TokenPointer {
   value?: string;
@@ -1332,8 +1362,16 @@ export interface PatRoutingConfig {
    *                 repo this equals {owner}, which is why the old default
    *                 "github-{user}-{org}" collapsed to a duplicated segment)
    *   {org}       - repo owner (deprecated alias of {owner})
-   * Default: "github-{owner}" (per-owner tokens). Every placeholder except
+   *   {provider}  - "github" or "gitlab"
+   * Default: "{provider}-{owner}" (per-owner tokens). Every placeholder except
    * {userid} is lower-cased.
+   *
+   * The default carried a hard-coded "github-" prefix until it was noticed that
+   * one person's GitHub and GitLab tokens for a same-named org collapse onto a
+   * single name, so the second overwrites the first. {provider} expands to
+   * "github" on GitHub repos, so this default reads identically to the old one
+   * on any single-provider GitHub deployment -- it only diverges where the old
+   * name was wrong.
    */
   default_service_pattern: string;
   /**
@@ -1573,14 +1611,22 @@ const DEFAULTS: HarnessConfig = {
     // already excludes them as base commands, but `xargs sh -c`, `find -exec
     // bash` and `env sh` smuggled an unguarded shell through whitelisted hosts.
     bash_denylist_tokens: ["sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill", "sh", "bash", "zsh", "dash", "ksh", "fish"],
-    path_denylist: [".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519"],
+    // beta.110: the credential vault and its key are readable by anything
+    // running as the harness uid -- and the worker subprocess DOES run as that
+    // uid. Stripping the key out of the child's env (buildSdkEnv) stops
+    // `echo $OAH_VAULT_KEY`; these entries stop `cat .../vault.key`. Both are
+    // needed, and neither is a substitute for the other.
+    path_denylist: [
+      ".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519",
+      "harness-vault/", "vault.key", "vault.db",
+    ],
     allow_git_push: false,
     allow_network_commands: false,
   },
   pat_routing: {
     overrides: {},
     commit_identity: {},
-    default_service_pattern: "github-{owner}",
+    default_service_pattern: "{provider}-{owner}",
     auth: {
       api_key_env: "GH_TOKEN",
     },
@@ -1623,6 +1669,10 @@ const DEFAULTS: HarnessConfig = {
     dir: "",
     full_prompts: false,
     retention_days: 14,
+  },
+  credentials: {
+    dir: "harness-vault",
+    key_env: "OAH_VAULT_KEY",
   },
 };
 

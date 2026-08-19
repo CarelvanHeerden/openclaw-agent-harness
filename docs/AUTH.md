@@ -31,7 +31,8 @@ Set `models.auth` in your plugin config:
     "models": {
       "auth": {
         // Preferred: vault credential service name (type `api_key`).
-        // Resolved via the same credential_get path used for GitHub PATs.
+        // Resolved from the harness-owned credential vault, the same path
+        // used for GitHub PATs.
         "credential_service": "anthropic-harness",
 
         // Fallback: environment variable name holding the key.
@@ -46,10 +47,11 @@ Set `models.auth` in your plugin config:
 
 ### Resolution order
 
-1. **Vault** — if `models.auth.credential_service` is set, the harness calls
-   `credential_get({ service, type: "api_key" })`. This is the recommended
-   path: the key never lives in the container environment, it is auditable,
-   and it matches how the harness already resolves GitHub PATs.
+1. **Vault** — if `models.auth.credential_service` is set, the harness reads it
+   from its own credential vault (beta.110; previously the memory-hybrid
+   `credential_get` tool). This is the recommended path: the key never lives in
+   the container environment, every read is audited by service name, and it
+   matches how the harness already resolves GitHub PATs.
 2. **Environment** — if the vault is unset or the lookup fails, the harness
    reads the env var named by `models.auth.api_key_env`
    (default `ANTHROPIC_API_KEY`).
@@ -65,13 +67,11 @@ classifier, crystalliser — via the SDK subprocess `env`.
 
 ### Option A — vault (recommended)
 
-Store the key once in the OpenClaw hybrid-memory credential vault:
+Store the key once in the harness credential vault. The value is read from
+stdin so it never lands in shell history:
 
 ```bash
-# via the credential_store tool / hybrid-mem CLI, service name of your choice
-service: anthropic-harness
-type:    api_key
-value:   sk-ant-...
+printf '%s' "sk-ant-..." | node scripts/vault.mjs set anthropic-harness --type api_key
 ```
 
 Then set `models.auth.credential_service: "anthropic-harness"`. No key in the

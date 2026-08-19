@@ -21,6 +21,7 @@
  * trivially unit-testable and safe to log.
  */
 import type { GitProvider, PatRoutingConfig, TokenPointer } from "../config.js";
+import type { RouteLookup } from "./route-overlay.js";
 export interface PatResolutionInput {
     slackUserId: string;
     slackHandle?: string;
@@ -38,7 +39,7 @@ export interface PatResolution {
     };
     apiBase: string;
     apiKeyEnv: string;
-    provenance: "hierarchy" | "override_repo" | "override_owner" | "default_pattern";
+    provenance: "hierarchy" | "overlay" | "override_repo" | "override_owner" | "default_pattern";
     /**
      * beta.25: when the hierarchical config matched, the token pointer for the
      * resolved person. The caller resolves this DIRECTLY (value|env|vault),
@@ -58,7 +59,14 @@ export declare class PatRequesterNotAuthorisedError extends Error {
 }
 export declare class PatRouter {
     private readonly cfg;
-    constructor(cfg: PatRoutingConfig);
+    private readonly overlay?;
+    /**
+     * `overlay` supplies routes written by `harness_onboard`. It is consulted
+     * only where the config tree has nothing to say, so a hand-written entry is
+     * never overridden by a chat message. Omitted entirely, the router behaves
+     * exactly as it did before onboarding could write routes.
+     */
+    constructor(cfg: PatRoutingConfig, overlay?: RouteLookup | undefined);
     /** Provider for a repo owner: explicit input > provider_by_owner > default_provider > github. */
     resolveProvider(owner: string, explicit?: GitProvider): GitProvider;
     private providerConfig;
@@ -72,6 +80,10 @@ export declare class PatRouter {
      * is not configured hierarchically (caller then uses the legacy path).
      * Throws PatRequesterNotAuthorisedError if the org IS configured but the
      * requester has no entry (no silent fallback).
+     *
+     * An onboarded route is consulted only where config has nothing for THIS
+     * requester, and before the refusal: an org an operator configured for one
+     * colleague must not lock out everyone who onboarded themselves.
      */
     private resolveHierarchy;
     resolve(input: PatResolutionInput): PatResolution;

@@ -1,5 +1,248 @@
 # Changelog
 
+## 0.1.0-beta.135
+
+### The onboarding DM asks which org, instead of assuming there is only one
+
+`harness_onboard action:"start"` computed a single vault name out of
+`onboard_service_pattern` and then posted "reply with your token". Both halves
+were wrong for anyone working in more than one place. The name was decided
+before anything knew which provider or org the token was for, so a second
+onboarding overwrote the first; and the prompt gave the person no way to say
+which org they were pasting a token for, because it never asked. The per-org
+`add` flow could already express all of this — it just had no way in from a DM.
+
+`start` now establishes provider and org *first*:
+
+- **With an `orgUrl`**, the DM names the exact provider, the exact org, and the
+  vault key the token will land under. A URL that names a host no provider is
+  configured for is refused *before* the DM opens — asking for a token and only
+  then rejecting the org it was for burns a live secret in a chat log. If the
+  org is already configured the DM says so, and names the real key rather than
+  the placeholder, so nobody re-onboards without knowing they are replacing.
+- **Without one**, the DM asks which provider and which org, offering only the
+  providers this deployment actually has, and states that a separate token is
+  needed per org. It no longer quotes a vault key, because at that point it
+  cannot honestly know one.
+
+Either way the reply is stored through `add`, which derives the name from
+provider, org and person together and writes the routing entry with it.
+
+**The flat flow is now something you ask for.** `submit` stores ONE token for a
+person across every org. Once they have per-org credentials that is a second
+credential for the same human under a different name, and whichever a session
+read would decide whose commits went out — so it is refused unless `legacy:true`
+is passed. Deliberately keyed on "this person has per-org routes" rather than on
+the deployment using pointer routing: a flat name that happens to equal the
+pointer is read perfectly well, and the consistency gate already decides that
+question precisely. Refusing on the deployment's shape would have taken away a
+setup that works.
+
+**`default_service_pattern` now defaults to `{provider}-{owner}`.** The prefix
+was hard-coded to `github-`, so one person's GitHub and GitLab tokens for a
+same-named org collapsed onto a single name and the second silently destroyed
+the first. `{provider}` expands to `github` on GitHub repos, so this reads
+identically to the old default on any single-provider GitHub deployment — it
+diverges only where the old name was already wrong.
+
+**The consistency gate is scoped to the provider being onboarded.** It compares
+the name onboarding would write against the names sessions read, drawn from the
+allow-listed repos. A GitLab token compared against what GitHub repos resolve to
+can only ever look like a mismatch, and the refusal then advises aligning the
+patterns — which would break the working GitHub side to satisfy a comparison
+that was never valid. Where no repo on that provider is allow-listed the list
+comes back empty, which is reported as undetermined rather than as a refusal.
+
+The b133 guarantee that the gate refuses *before* the DM is unchanged for the
+flow that needs it. Plain `start` no longer commits to a pattern-derived name at
+all, so there is nothing left for it to disagree with; the gate still guards
+`legacy:true`.
+
+## 0.1.0-beta.134
+
+### Two flakes in the tooling, one of which was lying
+
+Neither belongs to the credential work; both surfaced while verifying it.
+
+`scripts/mutation-check.mjs` re-read each target file from disk immediately
+before mutating it, and used that single read for two jobs: searching for the
+anchor, and as the content restored afterwards. So one bad read failed both. A
+full run showed five `anchor not found` failures, every one of them in
+`dist/orchestrator/loop.js` and every one passing in isolation, with twenty of
+that file's mutations succeeding *after* the first failure — transient, not
+stale. That file is 414KB and is rewritten about 98 times per run (49 mutations;
+the next-highest file has 19), so it is by far the most exposed to anything
+rewriting a file underneath a reader. The run also ended with the file "left
+mutated", which is what restoring a truncated read looks like. It now reads from
+the snapshot taken before any test ran, which removes the race from both jobs.
+
+It also now checks the mutation is *still in place* when the tests finish, and
+retries once if it is not. A writer landing during the test window means the
+tests ran against code that was no longer broken — they pass, and the old runner
+reported that as a surviving mutation, sending someone to hunt a missing
+assertion in a test that was fine. An unverifiable result is now named rather
+than scored.
+
+`tests/beta130-ci-repair-ask.test.mjs` runs a real loop against a ceiling of a
+few seconds, which is how "the clock is blown" becomes true by the time the ship
+gate is reached. On a loaded machine the run blows that ceiling *earlier* than
+intended and aborts before reaching the decision under test, so the assertion
+tripped over a missing event with `Cannot read properties of undefined` —
+naming neither the event nor the reason. It now reports which event was expected
+and which the run actually emitted, and every wall-clock number in the file
+scales together via `HARNESS_TEST_CLOCK_SCALE`, defaulting to 2. One was
+measurably not enough — the original numbers failed one full suite run and
+passed the next, a coin flip on an unloaded machine, purely because `npm test`
+runs this file alongside a hundred others. Under 14x CPU oversubscription the
+file still fails at 1 and passes 10/10 at 3. That is a mitigation, not a cure:
+the cure is a clock the loop takes as a dependency, and `loop.ts` reads
+`Date.now()` directly in about thirty places.
+
+### Credentials the harness owns, and onboarding that can route to them
+
+Two halves of one problem. The harness stopped borrowing another plugin's vault,
+and `harness_onboard` stopped storing tokens it had no way to make readable.
+
+This work carried no version number until the moment it landed: it was swept
+into beta.110 once by a branch cut from an unpushed local `main`, and staying
+untagged until release is what stops that colliding a second time.
+
+### The harness owns its credential vault
+
+Credentials came from the memory-hybrid plugin's `credential_get` /
+`credential_store` MCP tools. That plugin is being retired, and its replacement
+is a *memory* backend — a retrieval system built to be searched by agents, which
+is the last place a PAT belongs. This is a hard cutover: the tool calls are gone,
+there is no fallback to them, and nothing needs migrating because the vault
+starts empty.
+
+The replacement is deliberately **not a tool**. Reaching a secret through a
+registered tool means any turn that can call tools can ask for an arbitrary
+service name; a library call cannot be reached at all. So the new vault ends up
+strictly safer than what it replaces rather than merely equivalent.
+
+- `adapters/credential-vault.ts` — AES-256-GCM, fresh 96-bit IV per write, in a
+  **dedicated** SQLite file rather than the state DB, which gets copied around
+  for debugging. The service name is bound in as additional authenticated data,
+  so an attacker with write access to the database cannot promote the
+  `github-readonly` row into `github-admin`.
+- The key comes from a 0600 key file, generated on first boot, with
+  `OAH_VAULT_KEY` overriding it for container injection. A known plaintext is
+  sealed under the active key and checked at open, so a **wrong key fails
+  immediately** instead of presenting as a procession of "credential not found"
+  errors that send an operator hunting for entries which are present but sealed.
+- `scripts/vault.mjs` for operators (`set` reads stdin, so no shell history),
+  including `rotate`, which re-encrypts every entry and stages the new key file
+  before committing so an interruption cannot leave a vault whose only key was
+  lost to a failed write. Rotation is refused when the key came from the
+  environment, since writing a key file the env var would keep overriding
+  bricks the vault on next boot.
+- A vault that will not open no longer takes the plugin down: the harness boots
+  with a sealed stub that carries the real reason into every read, and
+  `harness_health` reports `credential_vault_open` as a fatal check.
+
+### Two pre-existing holes this closed on the way
+
+Neither was the ask; both would have leaked the new key.
+
+- `buildSdkEnv` returned `undefined` when no explicit Anthropic key was
+  resolved, which tells the SDK to **inherit the full parent environment** —
+  silently bypassing the beta.57 denylist in exactly the configuration where it
+  still matters. It now always returns a filtered environment; the child still
+  gets no injected key, so the `/login` fallback is unchanged.
+- The denylist regex matches `API_KEY`, `ACCESS_KEY` and `PRIVATE_KEY`, but not
+  a bare `_KEY` suffix, so `OAH_VAULT_KEY` would have sailed straight through.
+  It is now denied explicitly, and `registerDeniedSdkEnvVar` lets an
+  operator-renamed key variable be denied too.
+
+Stripping the environment is necessary but not sufficient: the worker runs as
+the same uid as the harness, so it could still `cat vault.key`. The vault
+directory, `vault.key` and `vault.db` are therefore in the default
+`safety.path_denylist` as well. Both defences are required; neither substitutes
+for the other, and the tests assert both.
+
+### Vault artefacts are harness excludes too (ported in from beta.110)
+
+`HARNESS_EXCLUDE_PATTERNS` did not exist when this was written. The vault
+resolves against the harness data dir rather than the worktree, so a key file
+should never appear where `git add -A` can see it — but beta.110's own lesson
+was that a freely-chosen path swept 12,291 files into a commit, and a private
+key is the worst possible thing to learn that on. `vault.key`, `vault.db` and
+the vault directory now sit alongside the npm-cache patterns.
+
+`tests/credential-vault.test.mjs` drives the real vault against real files and a
+real database — this is a crypto and file-permission change, and a source-grep
+assertion cannot tell a working seal from a broken one. Four entries in
+`scripts/mutation-check.mjs` cover the environment strip, the key verifier, the
+refusal to swallow an authentication failure, and the commit exclusion.
+
+### Onboarding writes the route as well as the secret
+
+b133 fixed a token stored under a name nothing read. The half it could not fix
+is that `harness_onboard` had nowhere to write the *routing* entry:
+`pat_routing.<provider>.<org>.<person>` lives in plugin config, which is
+read-only at runtime. So the tool could store a secret and nothing that told the
+router to use it, and the best it could do was refuse when the two names looked
+like they would disagree.
+
+There is now a `credential_routes` table, merged **beneath** the config tree at
+resolve time. A hand-written entry always wins — a chat message can never
+silently redirect commits an operator configured by hand — and onboarding
+refuses outright rather than writing a row that would never be reached.
+
+Two orderings carry most of the weight, and both are covered by mutations:
+
+- The overlay is consulted **before** `resolveHierarchy` throws
+  `PatRequesterNotAuthorisedError`. Behind that throw, an org an operator set up
+  for one colleague locks out everyone who onboarded themselves, reported as
+  "not authorised" — which reads like a permissions problem rather than a lookup
+  that never happened.
+- The secret is written **before** the route. The reverse publishes a route
+  pointing at a vault entry that does not exist, which is the hour-late failure
+  at clone this whole area exists to move forward. A failed route write rolls
+  the new secret back rather than leaving an orphan.
+
+Credentials are keyed by provider **and org**, because one person routinely
+holds different tokens for two orgs; a flat per-user name meant the second
+onboarding overwrote the first and runs pushed with the wrong org's token. The
+tool grew `list`, `add`, `replace` and `remove` around that, taking an org URL
+rather than a bare org name — a URL states the provider too, which someone
+holding tokens on both GitHub and GitLab otherwise has no way to express.
+Accepted hosts are derived from the configured providers, so a self-hosted
+GitLab works exactly when an operator has configured one and an unknown host is
+refused rather than guessed at.
+
+Three refusals are new, and each replaces a failure that used to surface an hour
+later or not at all:
+
+- **A token that authenticates as a different account** cannot replace a stored
+  credential. `requester` is an argument on an agent-relayed call, so nothing in
+  it proves who is asking; the token's own `GET /user` response does. Without
+  this, someone could store their token against another person's identity and
+  that person's commits would push with it.
+- **A token that cannot reach the org** is rejected at onboarding. `GET /user`
+  proves a token is live, not that it can see this org, and a fine-grained PAT
+  scoped elsewhere validates cleanly and then fails at clone. Checked against a
+  concrete allowed repo rather than the org itself, since `GET /orgs/<name>`
+  404s for a personal namespace and would refuse a perfectly good token.
+- **An org already configured in `pat_routing`** is not shadowed, because the
+  row would never be read.
+
+b133's own gate needed a matching correction. It compared what onboarding was
+about to write against `credentialService`, which is *synthetic* on a hierarchy
+or overlay hit — the router builds it for logs and looks the token up by
+`tokenPointer.vault`. So it compared against a string nothing uses: it refused
+correct setups, and following its advice to align the patterns made it pass
+while the token landed under a name still nothing read. It now reads the pointer,
+and treats an env-var or literal pointer as an absence rather than a mismatch.
+
+Finally, the interaction log redacts credentials by **field name** as well as by
+shape. Shape matching is a guess about other people's token formats, and
+onboarding now accepts self-hosted providers whose tokens look like whatever
+that deployment chose. The matching is exact rather than substring, so
+`tokensIn`, `tokensOut` and `tokenPointer` survive — blanking them to be safe
+would take away the numbers a budget or routing failure is diagnosed from.
+
 ## 0.1.0-beta.133
 
 ### A token in the vault that nothing could read
@@ -118,6 +361,7 @@ whichever way it is set.
 Worth noting how this one was found: the drift was reported by an OpenClaw
 instance reading the manifest during a fresh install, against a README that
 disagreed with it. The same install turned up the three items above.
+
 
 ## 0.1.0-beta.132
 
@@ -1709,7 +1953,6 @@ Still default OFF. Set `parallel_independent_subtasks: true` and
 `subtask_concurrency: 2` to enable. A serial run takes an early path and is
 byte-for-byte its pre-b117 behaviour; a stubbed orchestrator or an adapter that
 cannot create slots degrades to serial rather than failing.
-
 ## 0.1.0-beta.116
 
 ### The adversary named the file, the owner existed, and nobody was asked

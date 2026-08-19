@@ -154,28 +154,42 @@ See [`CONFIGURATION.md`](CONFIGURATION.md) for all options.
 ## 4. Store the GitHub PATs in the vault
 
 The vault service name comes from `pat_routing.default_service_pattern`, which
-defaults to `github-{owner}` with the owner lower-cased. For
-`Stitch-Vercel/ProjectThanos` that is `github-stitch-vercel`:
+defaults to `{provider}-{owner}` with the owner lower-cased. For
+`Stitch-Vercel/ProjectThanos` on GitHub that is `github-stitch-vercel`:
 
 ```bash
 openclaw memory credential-store --service github-stitch-vercel --type token --value 'ghp_...'
 ```
 
-If you use `harness_onboard` instead, make sure
-`pat_routing.onboard_service_pattern` can produce the same string as
+If you use `harness_onboard` with `action:"add"`, none of this applies: that
+flow writes the routing entry as well as the secret, so the two cannot disagree
+and no pattern needs to line up. It is the right choice when one person holds
+different tokens for different orgs.
+
+The pattern below matters only for the **legacy flat flow**
+(`harness_onboard action:"submit"` with `legacy:true`), which stores a single
+token per user. There,
+`pat_routing.onboard_service_pattern` must be able to produce the same string as
 `default_service_pattern` — they share only the `{userid}` placeholder, and the
-two defaults (`git-pat:{userid}` and `github-{owner}`) cannot agree. Since
+two defaults (`git-pat:{userid}` and `{provider}-{owner}`) cannot agree. Since
 beta.133 onboarding refuses rather than storing a token nothing will read, but
 it is easier to set the patterns correctly up front. Legacy per-(user, org)
 naming still works if you set the pattern explicitly:
 
 ```bash
-openclaw memory credential-store --service github-carel-example-org   --type token --value 'ghp_...'
-openclaw memory credential-store --service github-carel-personal        --type token --value 'ghp_...'
-openclaw memory credential-store --service github-francois-example-org --type token --value 'ghp_...'
+# example naming convention. The secret is read from stdin, so it never lands
+# in shell history or in `ps` output.
+printf '%s' 'ghp_...' | node scripts/vault.mjs set github-carel-example-org
+printf '%s' 'ghp_...' | node scripts/vault.mjs set github-carel-personal
+printf '%s' 'ghp_...' | node scripts/vault.mjs set github-francois-example-org
+
+node scripts/vault.mjs list   # names, types and timestamps -- never values
 ```
 
-Do NOT run these commands with the gateway live; add them via a maintenance window, or use the plugin `credential_store` tool from a session.
+beta.110: these go into the harness's own vault (`<dataDir>/harness-vault`), not
+the memory plugin. On first run the harness generates `vault.key` at mode 0600 —
+**back it up**, because without it every stored credential is unrecoverable. Set
+`OAH_VAULT_KEY` instead if you would rather inject the key at container start.
 
 ## 5. Restart the gateway
 

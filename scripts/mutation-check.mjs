@@ -1915,8 +1915,10 @@ const MUTATIONS = [
     // pattern while the person being onboarded still gets an unreadable name.
     name: "the gate resolves for the requester being onboarded (b133)",
     file: "dist/tools/registration.js",
-    find: "resFn(r, requester)?.credentialService ?? \"\"",
-    replace: "resFn(r)?.credentialService ?? \"\"",
+    // The expression moved when the gate learned to read a token pointer
+    // rather than the synthetic label; the mechanism under test is unchanged.
+    find: "const res = resFn(r, requester);",
+    replace: "const res = resFn(r);",
     tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
   },
   {
@@ -1937,6 +1939,251 @@ const MUTATIONS = [
     file: "dist/config.js",
     find: 'return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");',
     replace: "return slack.listener_enabled === true;",
+    tests: ["tests/config.test.mjs"],
+  },
+
+  // ------------------------------------------------- the credential vault
+  {
+    name: "vault key env strip: the worker subprocess never inherits the key",
+    file: "dist/adapters/claude-sdk.js",
+    // Dropped from the exact denylist. The regex beside it does NOT cover this
+    // name -- it matches API_KEY / ACCESS_KEY / PRIVATE_KEY, not a bare _KEY
+    // suffix -- so removing the entry really does hand the key to the child.
+    find: '    "OAH_VAULT_KEY",',
+    replace: "",
+    tests: ["tests/credential-vault.test.mjs"],
+  },
+  {
+    name: "vault key verifier: a wrong key fails at open, not entry by entry",
+    file: "dist/adapters/credential-vault.js",
+    // Without the verifier the vault opens happily under the wrong key and
+    // every lookup reports "not found", sending an operator to hunt for entries
+    // that are present but sealed.
+    find: "        vault.verifyKey();",
+    replace: "",
+    tests: ["tests/credential-vault.test.mjs"],
+  },
+  {
+    name: "authenticated decryption: a tampered row is refused, not swallowed",
+    file: "dist/adapters/credential-vault.js",
+    // Turns the GCM auth failure into a silent miss. That would make tampering
+    // and cross-service ciphertext swaps indistinguishable from an absent
+    // entry -- i.e. it would discard the only thing GCM buys us over raw AES.
+    find: '            this.opts.audit?.("vault.corrupt", { service });',
+    replace: "            return undefined;",
+    tests: ["tests/credential-vault.test.mjs"],
+  },
+  {
+    name: "vault artefacts are harness excludes: a key file must never reach a commit",
+    file: "dist/adapters/git-worktree.js",
+    // The vault resolves against the harness data dir, so this is belt-and-
+    // braces -- but b110's lesson was that a freely-chosen path swept 12,291
+    // files into a commit, and a key file is the worst thing to learn that on.
+    find: '    "vault.key",',
+    replace: "",
+    tests: ["tests/credential-vault.test.mjs"],
+  },
+
+  // ------------------------------------- onboarded routes and the router
+  {
+    // Without the overlay in the gate, an org that exists ONLY as an onboarded
+    // route never enters hierarchical routing at all: it falls through to the
+    // flat legacy pattern and resolves to a name the token was never stored
+    // under. That is the b133 failure again, reached by a different road.
+    name: "the hierarchy gate consults onboarded routes, not just config",
+    file: "dist/auth/pat-router.js",
+    find: "if (this.hasHierarchyFor(provider, owner) || overlayHit) {",
+    replace: "if (this.hasHierarchyFor(provider, owner)) {",
+    tests: ["tests/route-overlay-router.test.mjs"],
+  },
+  {
+    // The ordering that matters most. resolveHierarchy THROWS when an org is
+    // configured but the requester is not in it, so an overlay consulted after
+    // that throw is never consulted at all: an org an operator set up for one
+    // colleague locks out everyone who onboarded themselves, and it fails as
+    // "not authorised", which reads like a permissions problem.
+    name: "an onboarded route is consulted BEFORE the not-authorised refusal",
+    file: "dist/auth/pat-router.js",
+    find: "        if (overlayHit) {",
+    replace: "        if (false) {",
+    tests: ["tests/route-overlay-router.test.mjs"],
+  },
+  {
+    // Precedence, in the direction that matters: config must be read first. If
+    // an onboarded route could win, a Slack message would redirect commits an
+    // operator wrote down by hand.
+    name: "config is matched before any onboarded route",
+    file: "dist/auth/pat-router.js",
+    find: "        if (orgNode) {\n            for (const [person, node] of Object.entries(orgNode)) {",
+    replace: "        if (false) {\n            for (const [person, node] of Object.entries(orgNode)) {",
+    tests: ["tests/route-overlay-router.test.mjs"],
+  },
+  {
+    // Orgs arrive from a pasted URL, which preserves whatever case was typed.
+    // Stop folding it and "Stitch-Vercel" stores a route that "stitch-vercel"
+    // never finds -- a token in the vault that nothing reads, by nothing but
+    // capitalisation.
+    name: "org keys are case-folded on both sides of the overlay",
+    file: "dist/auth/route-overlay.js",
+    find: "export const normaliseOrg = (org) => org.trim().toLowerCase();",
+    replace: "export const normaliseOrg = (org) => org.trim();",
+    tests: ["tests/route-overlay.test.mjs", "tests/route-overlay-router.test.mjs"],
+  },
+  {
+    // b133's gate compares what onboarding writes against what routing reads.
+    // On a hierarchy or overlay hit, `credentialService` is a SYNTHETIC label
+    // the router never looks a token up by. Compare against it and a correct
+    // setup is refused -- and following the refusal's advice makes the gate
+    // pass while the token lands under a name still nothing reads.
+    name: "the onboard gate compares against the pointer, not the synthetic label",
+    file: "dist/tools/registration.js",
+    find: "if (res.tokenSource)",
+    replace: "if (false)",
+    tests: ["tests/onboard-consistency-hierarchy.test.mjs"],
+  },
+
+  // ------------------------------------- per-org onboarding, and its refusals
+  {
+    // `requester` is an ARGUMENT on an agent-relayed call, so nothing but the
+    // token itself proves who is asking. Drop this and someone can point
+    // another person's route at THEIR token, and that person's commits push
+    // with it -- an escalation that looks like a successful onboarding.
+    name: "a token authenticating as someone else cannot replace a credential",
+    file: "dist/tools/registration.js",
+    find: "if (!verdict.ok)",
+    replace: "if (false)",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // Config is resolved before the overlay, so a row written where an
+    // operator already configured the org is never read. Without this refusal
+    // the tool reports a success that has no effect -- the b133 failure with a
+    // green tick on it.
+    name: "onboarding refuses to shadow a hand-written config entry",
+    file: "dist/tools/registration.js",
+    find: "if (shadowed)",
+    replace: "if (false)",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // GET /user proves a token is LIVE, not that it can see this org. A
+    // fine-grained PAT scoped elsewhere passes validation and then fails at
+    // clone, which is exactly the hour-late failure this work moves forward.
+    name: "a token that cannot reach the org is refused at onboarding",
+    file: "dist/tools/registration.js",
+    find: 'reach.reach === "denied"',
+    replace: "false",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // The secret is written before the route, so a failed route write leaves a
+    // secret nothing points at. Skip the rollback and the vault accumulates
+    // orphaned tokens on every failed onboarding.
+    name: "a failed route write rolls the new secret back",
+    file: "dist/tools/registration.js",
+    find: 'if (action === "add") {',
+    replace: "if (false) {",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // An org arrives from a pasted URL, which keeps whatever case was typed.
+    // Store it verbatim and the lookup misses by nothing but capitalisation.
+    name: "the org from a pasted URL is case-folded before it is stored",
+    file: "dist/tools/registration.js",
+    find: "const orgKey = normaliseOrg(org);",
+    replace: "const orgKey = org;",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // Shape matching is a guess about other people's token formats. Onboarding
+    // now accepts self-hosted providers, whose tokens look like whatever that
+    // deployment chose, and the tool input carries the raw secret under a key
+    // called `token`. Without the key check that value is logged intact.
+    name: "a credential field is redacted by KEY, not only by shape",
+    file: "dist/state/interaction-log.js",
+    find: "if (key && isSecretKey(key) && value.length > 0)",
+    replace: "if (false)",
+    tests: ["tests/log-secret-keys.test.mjs"],
+  },
+  {
+    // The other direction: a substring match would blank `tokensIn`,
+    // `tokensOut` and `tokenPointer`, taking away the numbers a budget or
+    // routing failure is actually diagnosed from.
+    name: "secret-key matching is exact, so token counters survive the log",
+    file: "dist/state/interaction-log.js",
+    find: "const isSecretKey = (key) => SECRET_KEYS.has(key.toLowerCase().replace(/[_-]/g, \"\"));",
+    replace: "const isSecretKey = (key) => [...SECRET_KEYS].some((s) => key.toLowerCase().includes(s));",
+    tests: ["tests/log-secret-keys.test.mjs"],
+  },
+  {
+    // The consistency gate compares the name onboarding would write against
+    // the names sessions read. Comparing a GitLab onboarding against the names
+    // GitHub repos resolve to can only ever look like a mismatch, and the
+    // refusal advises aligning the patterns -- which breaks the working GitHub
+    // side to satisfy a comparison that was never valid.
+    name: "the onboard gate only compares against repos on the provider being onboarded",
+    file: "dist/tools/registration.js",
+    find: "if (res.provider !== flatProvider)",
+    replace: "if (false)",
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // ...and the scoping must not become a way to compare against nothing at
+    // all, which would pass every onboarding including the broken ones.
+    name: "provider scoping narrows the gate without disabling it",
+    file: "dist/tools/registration.js",
+    find: "if (res.provider !== flatProvider)",
+    replace: "if (true)",
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // `start` establishes the org BEFORE asking for a token. Falling back into
+    // the flat prompt asks for a secret while still not knowing which org it is
+    // for, which is the whole defect: the name was chosen before the question
+    // was asked, so the second org's token overwrote the first's.
+    name: "start asks which org before it asks for a token",
+    file: "dist/tools/registration.js",
+    find: 'if (action === "start" && !legacy) {',
+    replace: 'if (action === "start" && legacy === "never") {',
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // The provider must come from the URL the person pasted. Defaulting it is
+    // how a GitLab token gets stored, and later read, as a GitHub one.
+    name: "the provider named in the DM comes from the URL, not a default",
+    file: "dist/tools/registration.js",
+    find: "named = { provider: parsed.value.provider,",
+    replace: 'named = { provider: "github",',
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // The vault key shown must be the per-org one. Showing a flat per-user name
+    // would tell the person their two orgs share a credential -- which, if the
+    // storage side ever agreed, is exactly the clobbering being prevented.
+    name: "the key quoted in the DM is keyed on provider AND org",
+    file: "dist/tools/registration.js",
+    find: 'onboardRouteService(named.provider, named.orgKey, "<your-login>")',
+    replace: '"git-pat:" + requester',
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // A flat token stored alongside per-org ones is a second credential for the
+    // same human under a different name, and whichever a session read would
+    // decide whose commits went out.
+    name: "the flat flow is refused once per-org credentials exist",
+    file: "dist/tools/registration.js",
+    find: "if (!legacy && alreadyPerOrg) {",
+    replace: "if (false) {",
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // One person's GitHub and GitLab tokens for a same-named org collapse onto
+    // a single vault name under the old hard-coded prefix, so onboarding the
+    // second silently destroys the first.
+    name: "the default service pattern distinguishes the provider",
+    file: "dist/config.js",
+    find: 'default_service_pattern: "{provider}-{owner}",',
+    replace: 'default_service_pattern: "github-{owner}",',
     tests: ["tests/config.test.mjs"],
   },
 ];
@@ -2100,13 +2347,34 @@ let failures = 0;
 let timeouts = 0;
 for (const m of MUTATIONS) {
   const path = join(root, m.file);
-  const original = readFileSync(path, "utf8");
 
   // Optional substring filter: `node scripts/mutation-check.mjs b117` runs only
   // the mutations whose name matches. The full set takes ~40 minutes, which is
   // fine in CI and far too slow to iterate against while writing a release.
   if (FILTER && !m.name.includes(FILTER)) continue;
   ran++;
+
+  /*
+   * The snapshot taken at startup, NOT a fresh read of the file.
+   *
+   * This used to re-read on every mutation, and that one read did two jobs: it
+   * was searched for the anchor, and it was what the `finally` wrote back. So a
+   * single bad read failed both -- the anchor came up missing, and had it been
+   * found, the corrupt bytes would have been restored over the real file.
+   *
+   * That is not hypothetical. A full run showed five "anchor not found"
+   * failures, all in dist/orchestrator/loop.js and all passing when run alone,
+   * with twenty of that file's mutations succeeding AFTER the first failure --
+   * transient, not stale. loop.js is 414KB and is rewritten ~98 times per run
+   * (49 mutations; the next file has 19), so it is by far the most exposed to
+   * anything that rewrites a file underneath a reader: an editor saving, a
+   * stray build, an on-access malware scanner. The run also ended with the file
+   * "left mutated", which is what restoring a truncated read looks like.
+   *
+   * PRISTINE is captured before any test has run, so reading from it removes
+   * the race from both jobs at once.
+   */
+  const original = PRISTINE.get(path) ?? readFileSync(path, "utf8");
 
   const found = locate(original, m.find);
   if (!found) {
@@ -2129,9 +2397,36 @@ for (const m of MUTATIONS) {
     // Replace the text as it appears on disk, so an elastic match rewrites the
     // real indentation rather than the anchor's stale copy of it.
     inFlight = { path, original };
-    writeFileSync(path, original.replace(found.text, m.replace), "utf8");
-    const { passed, timedOut } = runTests(m.tests);
-    if (passed) {
+    const mutated = original.replace(found.text, m.replace);
+
+    /*
+     * Run the tests, then check the mutation was STILL in place when they
+     * finished.
+     *
+     * Restoring from a snapshot fixes a bad read; it cannot stop a writer that
+     * lands during the test window. If that happens the tests exercised code
+     * that was no longer broken, they pass, and the run reports a surviving
+     * mutation -- sending someone to hunt a missing assertion in a test that is
+     * perfectly fine. The whole value of this tool is that a green line means
+     * something, so an unverifiable result has to be named rather than scored.
+     *
+     * One retry, because the interference is transient. Twice is a real signal.
+     */
+    let passed, timedOut, intact;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      writeFileSync(path, mutated, "utf8");
+      ({ passed, timedOut } = runTests(m.tests));
+      intact = readFileSync(path, "utf8") === mutated;
+      if (intact) break;
+    }
+
+    if (!intact) {
+      console.error(`FAIL  ${m.name}`);
+      console.error(`      ${m.file} was rewritten underneath this mutation, on both attempts.`);
+      console.error(`      The tests did not run against the broken code, so this result says`);
+      console.error(`      nothing about ${m.tests.join(", ")}. Something else is writing into dist/.`);
+      failures++;
+    } else if (passed) {
       console.error(`FAIL  ${m.name}`);
       console.error(`      Broke it in ${m.file} and ${m.tests.join(", ")} STILL PASSED.`);
       console.error(`      Those tests do not actually verify this mechanism.`);

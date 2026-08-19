@@ -22,6 +22,7 @@
  */
 
 import type { GitProvider, PatRoutingConfig, PersonToken, ProviderConfig, TokenPointer } from "../config.js";
+import type { CredentialRoute, RouteLookup } from "./route-overlay.js";
 
 export interface PatResolutionInput {
   slackUserId: string;
@@ -40,6 +41,7 @@ export interface PatResolution {
   apiKeyEnv: string;           // env var to use as a token fallback for this provider
   provenance:
     | "hierarchy"              // beta.25 provider->org->person match
+    | "overlay"                // onboarded route, merged beneath the config tree
     | "override_repo"
     | "override_owner"
     | "default_pattern";
@@ -64,7 +66,8 @@ export class PatRequesterNotAuthorisedError extends Error {
     super(
       `no ${provider} token configured for requester '${slackUserId}' under org '${org}'. ` +
         `Add a person entry at pat_routing.${provider}.${org}.<person> with a matching slack_user_id, ` +
-        `token, name and email. (No silent fallback to another user's token.)`,
+        `token, name and email, or have them onboard their own with harness_onboard. ` +
+        `(No silent fallback to another user's token.)`,
     );
     this.name = "PatRequesterNotAuthorisedError";
   }
@@ -75,8 +78,25 @@ const PROVIDER_DEFAULTS: Record<GitProvider, ProviderConfig> = {
   gitlab: { api_base: "https://gitlab.com/api/v4", api_key_env: "GITLAB_TOKEN" },
 };
 
+/** An onboarded route, shaped like the config node it stands in for. */
+const personFromRoute = (route: CredentialRoute): PersonToken => ({
+  token: { vault: route.vaultService },
+  name: route.commitName,
+  email: route.commitEmail,
+  slack_user_id: route.slackUserId,
+});
+
 export class PatRouter {
-  constructor(private readonly cfg: PatRoutingConfig) {}
+  /**
+   * `overlay` supplies routes written by `harness_onboard`. It is consulted
+   * only where the config tree has nothing to say, so a hand-written entry is
+   * never overridden by a chat message. Omitted entirely, the router behaves
+   * exactly as it did before onboarding could write routes.
+   */
+  constructor(
+    private readonly cfg: PatRoutingConfig,
+    private readonly overlay?: RouteLookup,
+  ) {}
 
   /** Provider for a repo owner: explicit input > provider_by_owner > default_provider > github. */
   resolveProvider(owner: string, explicit?: GitProvider): GitProvider {
@@ -117,24 +137,38 @@ export class PatRouter {
    * is not configured hierarchically (caller then uses the legacy path).
    * Throws PatRequesterNotAuthorisedError if the org IS configured but the
    * requester has no entry (no silent fallback).
+   *
+   * An onboarded route is consulted only where config has nothing for THIS
+   * requester, and before the refusal: an org an operator configured for one
+   * colleague must not lock out everyone who onboarded themselves.
    */
   private resolveHierarchy(
     provider: GitProvider,
     owner: string,
     slackUserId: string,
-  ): { person: string; node: PersonToken } | undefined {
+    overlayHit?: CredentialRoute,
+  ): { person: string; node: PersonToken; source: "hierarchy" | "overlay" } | undefined {
     const orgs = this.cfg[provider];
-    if (!orgs) return undefined;
-    const orgNode = orgs[owner] ?? orgs[owner.toLowerCase()];
-    if (!orgNode) return undefined;
+    const orgNode = orgs ? (orgs[owner] ?? orgs[owner.toLowerCase()]) : undefined;
 
-    for (const [person, node] of Object.entries(orgNode)) {
-      if (node.slack_user_id && node.slack_user_id === slackUserId) {
-        return { person, node };
+    if (orgNode) {
+      for (const [person, node] of Object.entries(orgNode)) {
+        if (node.slack_user_id && node.slack_user_id === slackUserId) {
+          return { person, node, source: "hierarchy" };
+        }
       }
     }
-    // Org is configured hierarchically but this requester is not listed.
-    // Hard fail — never fall back to another person's token.
+
+    if (overlayHit) {
+      return { person: overlayHit.person, node: personFromRoute(overlayHit), source: "overlay" };
+    }
+
+    // Not configured hierarchically at all: the caller falls back to the legacy
+    // flat path, which is how every pre-beta.25 config still resolves.
+    if (!orgNode) return undefined;
+
+    // Org IS configured, this requester is not in it, and they have onboarded
+    // nothing. Hard fail — never fall back to another person's token.
     throw new PatRequesterNotAuthorisedError(provider, owner, slackUserId);
   }
 
@@ -150,9 +184,11 @@ export class PatRouter {
 
     // beta.25: hierarchical routing takes precedence when configured for this
     // provider+org. It carries its own token pointer + commit identity, so it
-    // short-circuits the legacy vault-service resolution entirely.
-    if (this.hasHierarchyFor(provider, owner)) {
-      const hit = this.resolveHierarchy(provider, owner, input.slackUserId);
+    // short-circuits the legacy vault-service resolution entirely. An onboarded
+    // route enters by the same door, so it inherits the same no-fallback rule.
+    const overlayHit = this.overlay?.lookup(provider, owner, input.slackUserId);
+    if (this.hasHierarchyFor(provider, owner) || overlayHit) {
+      const hit = this.resolveHierarchy(provider, owner, input.slackUserId, overlayHit);
       if (hit) {
         return {
           provider,
@@ -162,7 +198,7 @@ export class PatRouter {
           commitIdentity: { name: hit.node.name, email: hit.node.email },
           apiBase: pcfg.api_base,
           apiKeyEnv: pcfg.api_key_env,
-          provenance: "hierarchy",
+          provenance: hit.source,
           tokenPointer: hit.node.token,
           person: hit.person,
         };

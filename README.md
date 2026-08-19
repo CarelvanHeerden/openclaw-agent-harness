@@ -269,12 +269,25 @@ Only from `slack.authorised_users`:
 
 ## Per-user credential onboarding (`harness_onboard`, beta.78)
 
-For multi-user production (hybrid-memory vault), each authorised user onboards their own git token so runs use that user's own token for PR ops (the pat-router already resolves a per-user vault service via `default_service_pattern` / `{requester}`).
+For multi-user production, each authorised user onboards their own git token so runs use that user's own token for PR ops. Tokens live in the harness's own credential vault as of beta.110 — see [docs/INSTALL.md](docs/INSTALL.md).
+
+Credentials are keyed by **provider + org**, because one person routinely holds *different* tokens for different orgs. A single per-user name cannot express that: the second onboarding overwrites the first, and runs then push with the wrong org's token.
 
 The `harness_onboard` tool implements the **DM flow**, gated on `slack.authorised_users`:
 
-- `action:"start"` — opens a **DM** (`conversations.open`) to the requester with paste instructions (keeps the token out of any public channel).
-- `action:"submit"` — validates the pasted token (`GET /user`), stores it in the vault via `credential_store` as `git-pat:<userid>` (configurable via `pat_routing.onboard_service_pattern`), then deletes the bot's own prompt and confirms in DM.
+- `action:"start"` — opens a **DM** (`conversations.open`) to the requester, keeping the token out of any public channel. Pass `orgUrl` and the DM names the exact provider, org and vault key the token will land under; omit it and the DM *asks* which provider and org the token is for, and says that a separate token is needed per org. Either way the reply is stored with `action:"add"`, so the name is derived from provider, org and person together rather than chosen before anyone knew the answer.
+- `action:"list"` — shows what that caller has configured: provider, org, the account each token authenticates as, and any expiry. Never a secret, and never anyone else's.
+- `action:"add"` — takes an `orgUrl` (e.g. `https://github.com/acme`, which states the *provider* as well as the org) plus the token. Validates it, checks it can actually reach an allowed repo in that org, then stores **both** the vault entry and the routing entry that makes it readable.
+- `action:"replace"` — swaps the token for an org already configured, keeping the same vault name so existing routing keeps resolving.
+- `action:"remove"` — deletes one, and needs `confirm: true`.
+- `action:"submit"` — the legacy single-token flow, for flat setups that resolve through `default_service_pattern` rather than per-org routing. It stores ONE token for the person across every org, so once they have per-org credentials it is refused unless `legacy:true` is passed: a flat token sitting alongside per-org ones is a second credential for the same human under a different name, and whichever a session read would decide whose commits went out.
+
+Two refusals are worth knowing about:
+
+- **A token that authenticates as a different account** cannot replace an existing credential. `requester` is an argument on an agent-relayed call, so the token's own `GET /user` response is the only thing that proves who is asking; without the check, someone could store *their* token against *another person's* identity and that person's commits would push with it.
+- **An org an operator already configured by hand** in `pat_routing` is never shadowed. Config is resolved first, so a routing entry written here would never be reached — reporting success would be a green tick on a change with no effect.
+
+Routing entries written by onboarding live in the state DB and are merged *beneath* the `pat_routing` config tree, so hand-written config always wins.
 
 > **Slack setup caveat:** to expose this as a `/harness-onboard` slash command, the command must be added to the Slack **app manifest** (`slash_commands[]`) and the app reinstalled before Slack will route it. In HTTP mode each command also needs a `url` pointing at the single `/slack/events` webhook (Socket Mode delivers it over WS and ignores `url`). This is a one-time host/admin step. The slash-command handler then simply calls `harness_onboard`.
 

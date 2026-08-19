@@ -15,8 +15,9 @@
  *   1. Authorised user triggers onboarding.
  *   2. The harness opens a DM (`conversations.open`) and posts an instruction
  *      prompt (this module's helpers).
- *   3. The token is stored in the vault as `git-pat:<userid>` (or a configured
- *      pattern) via `credential_store`, validated with `GET /user` first.
+ *   3. The token is stored in the harness credential vault as `git-pat:<userid>`
+ *      (or a configured pattern), validated with `GET /user` first. beta.110:
+ *      this is a library call on our own vault, not memory-hybrid's tool.
  *   4. The harness deletes ITS OWN prompt (`chat.delete`). A bot token CANNOT
  *      delete the USER's message, so the confirmation asks the user to delete
  *      their token message themselves. (A Slack modal would keep the token out
@@ -96,13 +97,64 @@ export declare class OnboardingSlack {
     deleteOwnMessage(channel: string, ts: string): Promise<OnboardResult>;
 }
 /**
+ * Epoch ms for a token expiry header, or undefined.
+ *
+ * GitHub discloses a fine-grained PAT's expiry on every response as
+ * `github-authentication-token-expiration`, written as
+ * `2026-09-01 12:00:00 UTC` rather than as ISO-8601. Recording it lets the
+ * management view warn before a token dies mid-run instead of after.
+ *
+ * Anything unparseable returns undefined: a wrong expiry is worse than none,
+ * since it would either cry wolf or hide a real one.
+ */
+export declare function parseTokenExpiry(header: string | null | undefined): number | undefined;
+export interface GitTokenIdentity {
+    ok: boolean;
+    /** The account this token authenticates as. Drives the identity check. */
+    login?: string;
+    /** Display name, used for git commits when the caller gives none. */
+    name?: string;
+    /** Public email, often absent -- GitHub hides it by default. */
+    email?: string;
+    /** Epoch ms, when the provider discloses it. */
+    expiresAt?: number;
+    error?: string;
+}
+/**
  * Validate a git token against the provider's `GET /user` before storing it,
  * so a bad/expired paste is rejected up front instead of dying mid-run.
  * PURE except for the injected fetch. Never throws.
+ *
+ * The response is also the cheapest source of truth for WHO the token belongs
+ * to, which is what lets a later submission be checked against the account the
+ * credential was first stored for.
  */
-export declare function validateGitToken(token: string, apiBase: string, fetchImpl?: typeof fetch): Promise<{
-    ok: boolean;
-    login?: string;
+export declare function validateGitToken(token: string, apiBase: string, fetchImpl?: typeof fetch): Promise<GitTokenIdentity>;
+/**
+ * Does this token actually reach the repo it will be used on?
+ *
+ * `GET /user` proves a token is live; it says nothing about whether it can see
+ * the org being onboarded. A fine-grained PAT scoped to the wrong org passes
+ * validation and then fails at clone, which is the same hour-late failure this
+ * whole area exists to prevent.
+ *
+ * Checked against a CONCRETE allowed repo rather than the org itself, because
+ * `GET /orgs/<name>` 404s for a personal namespace and would refuse a perfectly
+ * good personal token. Returns "unknown" when there is nothing concrete to
+ * check, so an undetermined answer never becomes a refusal.
+ */
+export declare function checkRepoAccess(token: string, apiBase: string, repoFullName: string, fetchImpl?: typeof fetch): Promise<{
+    reach: "ok" | "denied" | "unknown";
+    status?: number;
     error?: string;
 }>;
+/**
+ * The vault name for an onboarded route.
+ *
+ * Keyed on provider, org AND person, because one person holding different
+ * tokens for two orgs is the case a flat per-user name cannot express: the
+ * second onboarding would overwrite the first and a run would push with the
+ * wrong org's token.
+ */
+export declare const onboardRouteService: (provider: string, org: string, person: string) => string;
 //# sourceMappingURL=onboarding.d.ts.map

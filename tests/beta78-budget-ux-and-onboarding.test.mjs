@@ -226,7 +226,9 @@ test("beta78/F4: harness_onboard tool registered, authorised-gated, DM-flow, per
   // DM flow + vault store + validate + delete own prompt
   assert.match(src, /onboard\.openDm\(requester\)/);
   assert.match(src, /validateGitToken\(token\.trim\(\), apiBase\)/);
-  assert.match(src, /api\.callTool\("credential_store"/);
+  // beta.110: the store went from memory-hybrid's credential_store tool to the
+  // harness-owned vault (a library call nothing else can address).
+  assert.match(src, /liveRuntime\(\)\.vault\.set\(vaultService/);
   assert.match(src, /deleteOwnMessage\(dmChannel, promptTs\)/);
   assert.match(src, /can't delete your messages, only my own/);
   // registered in manifest + expected-tools lists
