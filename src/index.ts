@@ -19,7 +19,7 @@ import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import type { HarnessConfig, TokenPointer } from "./config.js";
-import { parseHarnessConfig, assessBudgetCoherence } from "./config.js";
+import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedListenerFlag } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { decideDrainAction, type DrainProgressSample } from "./state/teardown-drain.js";
 import { decideRecoveryResume } from "./state/recovery-guard.js";
@@ -231,7 +231,7 @@ export interface HarnessRuntime {
    */
   githubServiceFor: (repoFullName?: string) => string | undefined;
   /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
-  gitResolutionFor: (repoFullName?: string) => { credentialService: string; provider: string; apiBase: string; apiKeyEnv: string } | undefined;
+  gitResolutionFor: (repoFullName?: string, slackUserId?: string) => { credentialService: string; provider: string; apiBase: string; apiKeyEnv: string } | undefined;
   disposers: Array<() => void | Promise<void>>;
   /**
    * Promise for the async bootstrap phase (reactions poller start,
@@ -1389,14 +1389,18 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         return undefined;
       }
     },
-    gitResolutionFor: (repoFullName?: string) => {
+    gitResolutionFor: (repoFullName?: string, slackUserId?: string) => {
       const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
       if (!repo) return undefined;
       const glob = "/" + "*";
       const concrete = repo.endsWith(glob) ? repo.slice(0, -1) + "_probe" : repo;
       try {
         const r = pat.resolve({
-          slackUserId: config.slack.authorised_users[0] ?? "unknown",
+          // beta.133: onboarding needs the name THIS requester resolves to, not
+          // whatever the first authorised user would get. With a {userid} or
+          // {requester} pattern those differ, which is exactly the case the
+          // onboard consistency check exists to catch.
+          slackUserId: slackUserId ?? config.slack.authorised_users[0] ?? "unknown",
           gitHubUser: concrete.split("/")[0]!,
           repoFullName: concrete,
         });
@@ -1746,16 +1750,17 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   //     layer, which carries the agent's auth/approval context);
   //   - the bot-to-bot loop risk is structurally eliminated (no two OpenClaws
   //     talking in a channel).
-  // `config.slack.listener_enabled` is now IGNORED (kept for config
-  // back-compat; a `true` value is logged and does nothing). Progress
+  // beta.133: `slack.listener_enabled` is no longer part of the config at all.
+  // The key is still accepted from older configs and discarded during parse, so
+  // the question "was it set?" can only be asked of the RAW input. Progress
   // posting to a channel/thread explicitly passed into a tool call still
   // works via the dispatcher/slack adapter — that's OUTBOUND only.
   void messageHandler; // retained for potential future use; never subscribed.
-  if (config.slack.listener_enabled) {
+  if (declaresRemovedListenerFlag(rawConfig)) {
     api.logger.warn(
-      "[harness] slack.listener_enabled=true is IGNORED as of beta.34 -- the Slack listener was removed. " +
-        "The harness is tool-driven only (drive it via harness_run / harness_start_session / harness_merge_pr). " +
-        "Remove this config key.",
+      "[harness] slack.listener_enabled was removed in beta.133 and has been IGNORED since beta.34, " +
+        "when the Slack listener was deleted. The harness is tool-driven only (drive it via " +
+        "harness_run / harness_start_session / harness_merge_pr). Remove this config key.",
     );
   } else {
     api.logger.info(
@@ -2157,12 +2162,12 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
   }
 
   // Session recovery: mark stale non-terminal sessions as 'interrupted' and
-  // notify their Slack threads. Fresh in-flight sessions:
-  //   - agent-orchestrated mode (default): AUTO-RESUME (re-drive the loop) --
-  //     there is no reaction poller / listener to resume them otherwise, so
-  //     they'd strand silently (beta.30 fix for the ProjectThanos symptom).
-  //   - listener mode: stay 'resumable' for a human reaction.
-  const agentOrchestrated = !config.slack.listener_enabled;
+  // notify their Slack threads. Fresh in-flight sessions AUTO-RESUME (re-drive
+  // the loop) -- there is no reaction poller or listener to resume them
+  // otherwise, so they would strand silently (beta.30 fix for the ProjectThanos
+  // symptom). The alternative, leaving them 'resumable' for a human reaction,
+  // belonged to listener mode; beta.133 removed the setting that selected it.
+  const agentOrchestrated = true;
   try {
     const { recoverSessions } = await import("./state/recovery.js");
     const result = await recoverSessions(state, {

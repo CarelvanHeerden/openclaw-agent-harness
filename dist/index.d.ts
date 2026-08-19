@@ -198,7 +198,7 @@ export interface HarnessRuntime {
      */
     githubServiceFor: (repoFullName?: string) => string | undefined;
     /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
-    gitResolutionFor: (repoFullName?: string) => {
+    gitResolutionFor: (repoFullName?: string, slackUserId?: string) => {
         credentialService: string;
         provider: string;
         apiBase: string;

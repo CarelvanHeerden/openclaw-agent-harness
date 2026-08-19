@@ -11,7 +11,7 @@ import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
 import { findingText, isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
-import { OnboardingSlack, resolveOnboardVaultService, validateGitToken } from "../slack/onboarding.js";
+import { OnboardingSlack, checkOnboardConsistency, resolveOnboardVaultService, validateGitToken } from "../slack/onboarding.js";
 import { measureParaphraseDrift, readRequestFile } from "./brief-source.js";
 import { BRIEF_CONFIRMATION_KIND, BRIEF_CONFIRMATION_SEQ, decideBriefConfirmation, isBriefConfirmationPause, parseConfirmationReply, renderBriefConfirmation, } from "./brief-confirmation.js";
 import { isTimeExtensionPause, listenerLooksAlive, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
@@ -927,14 +927,14 @@ export function registerHarnessTools(api, runtime) {
                 checks.push({ name: `table_${t}`, ok: !!row?.name });
             }
             // Config: minimally-valid?
-            // beta.57 (P3): slack.channel is only required in LISTENER mode. In
-            // the default agent-orchestrated mode (listener_enabled false) an
-            // empty channel is correct config, not a health failure.
-            const channelRequired = !!liveConfig().slack.listener_enabled;
+            // beta.57 (P3) made slack.channel conditional on listener mode.
+            // beta.133 removed that mode, so an empty channel is simply correct
+            // config: there is nothing to listen on, and the channel is only an
+            // outbound posting target.
             checks.push({
                 name: "config_slack_channel",
-                ok: channelRequired ? !!liveConfig().slack.channel : true,
-                detail: channelRequired ? liveConfig().slack.channel : (liveConfig().slack.channel || "(not required: listener disabled)"),
+                ok: true,
+                detail: liveConfig().slack.channel || "(not required: outbound posting only)",
             });
             checks.push({ name: "config_authorised_users", ok: liveConfig().slack.authorised_users.length > 0 });
             checks.push({ name: "config_repos_allowed", ok: liveConfig().repos.allowed.length > 0 });
@@ -1507,6 +1507,30 @@ export function registerHarnessTools(api, runtime) {
                 pattern: liveConfig().pat_routing?.onboard_service_pattern,
                 provider: provider ?? "github",
             });
+            // beta.133: refuse to store a token under a name nothing reads. The
+            // two patterns default to `git-pat:{userid}` and `github-{owner}`,
+            // which cannot agree, and the old failure was silent: the vault kept
+            // the token, the tool reported success, and the run died at clone.
+            {
+                const resFn = liveRuntime().gitResolutionFor;
+                const expected = resFn
+                    ? liveConfig().repos.allowed.map((r) => resFn(r, requester)?.credentialService ?? "")
+                    : [];
+                const consistency = checkOnboardConsistency(vaultService, expected);
+                if (!consistency.ok) {
+                    liveState().audit("tool.onboard.pattern_mismatch", { requester, writing: consistency.writing, expected: consistency.expected });
+                    return {
+                        content: [{
+                                type: "text",
+                                text: `Onboarding would store the token as \`${consistency.writing}\`, but sessions look up ` +
+                                    `${consistency.expected.map((e) => `\`${e}\``).join(" or ")}. Nothing would ever read it, and the ` +
+                                    `run would fail at clone instead of here. Set pat_routing.onboard_service_pattern (or ` +
+                                    `default_service_pattern) so the two agree, then retry. Both understand {userid}.`,
+                            }],
+                        details: { ok: false, patternMismatch: true, writing: consistency.writing, expected: consistency.expected },
+                    };
+                }
+            }
             if (action === "start") {
                 const dm = await onboard.openDm(requester);
                 if (!dm.ok || !dm.value) {

@@ -9,7 +9,6 @@
 // ---- Defaults ----
 const DEFAULTS = {
     slack: {
-        listener_enabled: false,
         channel: "",
         authorised_users: [],
         native_progress_delivery: true,
@@ -320,19 +319,31 @@ function mergeDeep(base, override) {
     }
     return out;
 }
+/**
+ * PURE: did this config carry the removed `slack.listener_enabled` key?
+ *
+ * beta.133. Read off the RAW input, because `parseHarnessConfig` drops the key
+ * and the parsed config can no longer answer. Bootstrap uses this to warn once
+ * that the setting does nothing, which is the whole of what it should do -- the
+ * old behaviour was to refuse startup unless a channel was supplied for a
+ * listener that was deleted ninety-nine releases ago.
+ */
+export function declaresRemovedListenerFlag(input) {
+    const slack = input?.slack;
+    if (!slack || typeof slack !== "object")
+        return false;
+    return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");
+}
 export function parseHarnessConfig(input) {
     const merged = mergeDeep(DEFAULTS, input);
+    // An old config may still carry `slack.listener_enabled`. Accept it and drop
+    // it: the schemas keep the property so such a config still validates, but
+    // nothing downstream should be able to read a setting nothing obeys.
+    delete merged.slack.listener_enabled;
     // Hard validation on safety-critical fields.
     //
-    // `slack.channel` is only required in autonomous listener mode. In the
-    // default agent-orchestrated mode the OpenClaw agent drives the harness
-    // via tools, so no channel to listen on is needed.
-    if (merged.slack.listener_enabled && !merged.slack.channel) {
-        throw new Error("harness.slack.channel is required when slack.listener_enabled is true");
-    }
     // `authorised_users` is always required: it gates who may invoke the
-    // harness (whether via the listener OR via agent tool calls) and who may
-    // drop control reactions.
+    // harness via agent tool calls, and who may drop control reactions.
     if (merged.slack.authorised_users.length === 0) {
         throw new Error("harness.slack.authorised_users must contain at least one Slack user id");
     }

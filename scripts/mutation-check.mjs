@@ -1851,6 +1851,94 @@ const MUTATIONS = [
     replace: '"preserve_worktree"',
     tests: ["tests/beta132-listener-liveness.test.mjs"],
   },
+  {
+    // The placeholder that makes onboarding and resolution capable of agreeing
+    // at all. Inert here and the two halves are back to sharing no vocabulary:
+    // a token stored under `git-pat:U07...` that no session ever looks up.
+    name: "{userid} is actually substituted on the reading side (b133)",
+    file: "dist/auth/pat-router.js",
+    find: '.replaceAll("{userid}", input.slackUserId)',
+    replace: '.replaceAll("{__inert__}", input.slackUserId)',
+    tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
+  },
+  {
+    // Every other placeholder is folded to lower case, so folding this one is
+    // the obvious "tidy-up". Slack ids are upper-case and onboarding writes
+    // them verbatim, so it would miss the vault entry by nothing but case.
+    name: "{userid} keeps the case onboarding wrote it in (b133)",
+    file: "dist/auth/pat-router.js",
+    find: '.replaceAll("{userid}", input.slackUserId)',
+    replace: '.replaceAll("{userid}", input.slackUserId.toLowerCase())',
+    tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
+  },
+  {
+    // "Cannot tell" must not become "no". An allow-list we could not resolve is
+    // not evidence of a mismatch, and blocking there breaks onboarding for
+    // setups that are configured perfectly well.
+    name: "an undetermined verdict lets onboarding PROCEED (b133)",
+    file: "dist/slack/onboarding.js",
+    find: "return { ok: true, writing, expected: [], undetermined: true };",
+    replace: "return { ok: false, writing, expected: [], undetermined: true };",
+    tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
+  },
+  {
+    // The verdict has to be a real comparison. Always-ok is the pre-b133 world
+    // with a check bolted on that never says no.
+    name: "the consistency verdict COMPARES the two names (b133)",
+    file: "dist/slack/onboarding.js",
+    find: "return { ok: names.includes(writing.trim()), writing, expected: names, undetermined: false };",
+    replace: "return { ok: true, writing, expected: names, undetermined: false };",
+    tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
+  },
+  {
+    // Blank names must not count as something a session reads. One empty string
+    // survives into `expected`, the list stops being empty, "undetermined"
+    // silently becomes "mismatch", and onboarding refuses for the wrong reason.
+    name: "empty resolutions are filtered, not counted (b133)",
+    file: "dist/slack/onboarding.js",
+    find: "if (trimmed.length > 0)",
+    replace: "if (true)",
+    tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
+  },
+  {
+    // Computing the verdict and ignoring it is exactly the bug: every step
+    // reports success and the run dies at clone an hour later.
+    name: "a mismatch actually REFUSES (b133) instead of being computed and dropped",
+    file: "dist/tools/registration.js",
+    find: "if (!consistency.ok) {",
+    replace: "if (false) {",
+    tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
+  },
+  {
+    // The check must ask what THIS requester resolves to. Falling back to the
+    // first authorised user makes it agree with itself under a {userid}
+    // pattern while the person being onboarded still gets an unreadable name.
+    name: "the gate resolves for the requester being onboarded (b133)",
+    file: "dist/tools/registration.js",
+    find: "resFn(r, requester)?.credentialService ?? \"\"",
+    replace: "resFn(r)?.credentialService ?? \"\"",
+    tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
+  },
+  {
+    // A removed setting must not survive parse. Leaving it on the object means
+    // code can still branch on a flag nothing obeys -- which is the state b133
+    // set out to end.
+    name: "the removed listener flag is DISCARDED at parse (b133)",
+    file: "dist/config.js",
+    find: "delete merged.slack.listener_enabled;",
+    replace: ";",
+    tests: ["tests/config.test.mjs"],
+  },
+  {
+    // The warning is owed to anyone whose config still carries the key, not
+    // only to those who set it true. `listener_enabled: false` is just as dead
+    // and just as worth deleting.
+    name: "a config carrying the dead flag is detected even when it is false (b133)",
+    file: "dist/config.js",
+    find: 'return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");',
+    replace: "return slack.listener_enabled === true;",
+    tests: ["tests/config.test.mjs"],
+  },
 ];
 
 /**

@@ -275,15 +275,17 @@ export interface LogConfig {
 
 export interface SlackConfig {
   /**
-   * When true, the plugin subscribes to `message_received` and treats
-   * allow-listed messages in `channel` as dev requests (autonomous mode).
-   *
-   * When false (DEFAULT), the plugin does NOT listen to Slack at all. The
-   * OpenClaw agent orchestrates everything by calling the harness tools
-   * (`harness_run`, `harness_status`, ...). This is the recommended mode:
-   * you talk to the OpenClaw agent, and the agent drives the harness.
+   * NOTE: `listener_enabled` is deliberately absent. beta.34 removed the
+   * autonomous Slack listener; beta.133 removed the setting, because a key that
+   * can be configured but not obeyed is worse than no key at all -- it made the
+   * harness refuse to start over a prerequisite for a mode it does not have.
+   * Existing configs may still carry it: the JSON schema still accepts the key
+   * (both schemas are `additionalProperties: false`, so dropping it there would
+   * turn an old config into a validation failure), `parseHarnessConfig`
+   * discards it, and bootstrap warns once.
    */
-  listener_enabled: boolean;
+
+  /** Outbound posting target. Optional; there is nothing to listen on. */
   channel: string;
   authorised_users: string[];
   /** Vault service name for the Slack bot token (used by reactions poller + adapter fallback). Optional; if unset, poller stays idle. */
@@ -1318,22 +1320,32 @@ export interface PatRoutingConfig {
   providers?: Partial<Record<GitProvider, ProviderConfig>>;
   /**
    * Template for the vault credential service name. Placeholders:
-   *   {owner} - repo owner (org or user), e.g. "CarelvanHeerden"
-   *   {repo}  - repo name, e.g. "openclaw-agent-harness"
-   *   {user}  - requester's GitHub login (deprecated alias; for a personal
-   *             repo this equals {owner}, which is why the old default
-   *             "github-{user}-{org}" collapsed to a duplicated segment)
-   *   {org}   - repo owner (deprecated alias of {owner})
-   * Default: "github-{owner}" (per-owner tokens). All placeholders are
-   * lower-cased.
+   *   {owner}     - repo owner (org or user), e.g. "CarelvanHeerden"
+   *   {repo}      - repo name, e.g. "openclaw-agent-harness"
+   *   {requester} - requester's provider login, from `user_identities`
+   *   {userid}    - requester's raw Slack id, e.g. "U07UT6G8LQ4". The only
+   *                 placeholder shared with `onboard_service_pattern`, so it
+   *                 is the one that makes a per-user setup expressible on both
+   *                 sides. NOT lower-cased, because onboarding writes the id
+   *                 verbatim (beta.133).
+   *   {user}      - requester's GitHub login (deprecated alias; for a personal
+   *                 repo this equals {owner}, which is why the old default
+   *                 "github-{user}-{org}" collapsed to a duplicated segment)
+   *   {org}       - repo owner (deprecated alias of {owner})
+   * Default: "github-{owner}" (per-owner tokens). Every placeholder except
+   * {userid} is lower-cased.
    */
   default_service_pattern: string;
   /**
    * beta.78 (Feature 4): vault service-name pattern used by `harness_onboard`
    * to store a user's git token. Placeholders: {userid} (Slack user id),
-   * {provider}. Default "git-pat:{userid}". Keep this consistent with
-   * `default_service_pattern` so an onboarded token is actually resolved for
-   * that user's runs.
+   * {provider}. Default "git-pat:{userid}".
+   *
+   * This MUST be able to produce the same string as `default_service_pattern`,
+   * or an onboarded token is stored under a name no session ever looks up --
+   * onboarding reports success and the run dies later at clone. beta.133 makes
+   * that reachable ({userid} now exists on both sides) and makes the broken
+   * combination refuse at onboard time instead of failing silently.
    */
   onboard_service_pattern?: string;
   /**
@@ -1364,7 +1376,6 @@ export interface PatAuthConfig {
 
 const DEFAULTS: HarnessConfig = {
   slack: {
-    listener_enabled: false,
     channel: "",
     authorised_users: [],
     native_progress_delivery: true,
@@ -1669,20 +1680,33 @@ function mergeDeep<T>(base: T, override: unknown): T {
   return out as T;
 }
 
+/**
+ * PURE: did this config carry the removed `slack.listener_enabled` key?
+ *
+ * beta.133. Read off the RAW input, because `parseHarnessConfig` drops the key
+ * and the parsed config can no longer answer. Bootstrap uses this to warn once
+ * that the setting does nothing, which is the whole of what it should do -- the
+ * old behaviour was to refuse startup unless a channel was supplied for a
+ * listener that was deleted ninety-nine releases ago.
+ */
+export function declaresRemovedListenerFlag(input: unknown): boolean {
+  const slack = (input as { slack?: unknown } | null | undefined)?.slack;
+  if (!slack || typeof slack !== "object") return false;
+  return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");
+}
+
 export function parseHarnessConfig(input: unknown): HarnessConfig {
   const merged = mergeDeep(DEFAULTS, input);
 
+  // An old config may still carry `slack.listener_enabled`. Accept it and drop
+  // it: the schemas keep the property so such a config still validates, but
+  // nothing downstream should be able to read a setting nothing obeys.
+  delete (merged.slack as unknown as Record<string, unknown>).listener_enabled;
+
   // Hard validation on safety-critical fields.
   //
-  // `slack.channel` is only required in autonomous listener mode. In the
-  // default agent-orchestrated mode the OpenClaw agent drives the harness
-  // via tools, so no channel to listen on is needed.
-  if (merged.slack.listener_enabled && !merged.slack.channel) {
-    throw new Error("harness.slack.channel is required when slack.listener_enabled is true");
-  }
   // `authorised_users` is always required: it gates who may invoke the
-  // harness (whether via the listener OR via agent tool calls) and who may
-  // drop control reactions.
+  // harness via agent tool calls, and who may drop control reactions.
   if (merged.slack.authorised_users.length === 0) {
     throw new Error("harness.slack.authorised_users must contain at least one Slack user id");
   }

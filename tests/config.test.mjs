@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-let parseHarnessConfig;
+let parseHarnessConfig, declaresRemovedListenerFlag;
 try {
-  ({ parseHarnessConfig } = await import("../dist/config.js"));
+  ({ parseHarnessConfig, declaresRemovedListenerFlag } = await import("../dist/config.js"));
 } catch {
   parseHarnessConfig = null;
 }
@@ -22,24 +22,41 @@ test("config: minimal input applies defaults",
     assert.deepEqual(cfg.slack.reactions, { ship_it: "rocket", abort: "x", pause: "pause_button", budget_bump: "moneybag" });
   });
 
-test("config: missing channel is rejected ONLY when listener_enabled",
+// beta.133 removed `slack.listener_enabled`. Until then, parsing THREW when the
+// flag was set without a channel -- refusing to start over a prerequisite for a
+// mode deleted in beta.34. An old config that carries the key must now be
+// accepted and the key discarded, never a startup failure.
+test("config: a channel is never required, listener flag or not",
   { skip: parseHarnessConfig === null }, () => {
-    // Autonomous mode: channel required.
-    assert.throws(() => parseHarnessConfig({
+    assert.doesNotThrow(() => parseHarnessConfig({
       ...minimalOk,
       slack: { listener_enabled: true, channel: "", authorised_users: ["U1"] },
-    }));
-    // Agent-orchestrated mode (default): no channel needed.
+    }), "the removed flag must not be able to block startup");
+
     assert.doesNotThrow(() => parseHarnessConfig({
       ...minimalOk,
       slack: { channel: "", authorised_users: ["U1"] },
     }));
   });
 
-test("config: listener_enabled defaults to false (agent-orchestrated)",
+test("config: the removed listener flag is discarded, not carried",
   { skip: parseHarnessConfig === null }, () => {
-    const cfg = parseHarnessConfig(minimalOk);
-    assert.equal(cfg.slack.listener_enabled, false);
+    const cfg = parseHarnessConfig({
+      ...minimalOk,
+      slack: { listener_enabled: true, channel: "C1", authorised_users: ["U1"] },
+    });
+    assert.equal("listener_enabled" in cfg.slack, false, "nothing downstream may read a setting nothing obeys");
+    assert.equal(cfg.slack.channel, "C1", "the channel survives: it is an outbound posting target");
+  });
+
+test("config: a config carrying the removed flag is detectable for the warning",
+  { skip: parseHarnessConfig === null }, () => {
+    assert.equal(declaresRemovedListenerFlag({ slack: { listener_enabled: false } }), true,
+      "present-and-false still deserves the 'remove this key' warning");
+    assert.equal(declaresRemovedListenerFlag({ slack: { authorised_users: ["U1"] } }), false);
+    assert.equal(declaresRemovedListenerFlag({}), false);
+    assert.equal(declaresRemovedListenerFlag(null), false);
+    assert.equal(declaresRemovedListenerFlag(undefined), false);
   });
 
 test("config: empty allow-list is rejected",

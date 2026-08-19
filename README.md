@@ -11,12 +11,19 @@
 > **beta.14-15:** authoritative `contractScope` and `taskMode` plan fields that promote scope decisions to first-class (replacing regex-inference whack-a-mole).
 > **beta.10:** the 5 new beta.9 optional verify probes are now provided by the production `buildVerifyProbes` factories in both the loop-path and worker-path. See [CHANGELOG](CHANGELOG.md) for the full arc.
 
-### Two ways to drive it
+### How to drive it
 
-- **Agent-orchestrated (DEFAULT, recommended).** The OpenClaw agent owns the conversation and calls the harness as a set of tools. You talk to your OpenClaw agent; it calls `harness_run` (raw request -> crystallise -> plan -> workers -> adversary -> PR), watches with `harness_status` / `harness_session_get`, and reports back. The plugin does **not** listen to Slack itself. This is the default (`slack.listener_enabled: false`).
-- **Autonomous listener (opt-in).** Set `slack.listener_enabled: true` and the plugin subscribes to `message_received` and treats allow-listed messages in `slack.channel` as dev requests directly, bypassing the agent. Useful for a dedicated dev channel, but it competes with your OpenClaw agent for messages, so it's off by default.
+**Agent-orchestrated, and only that.** The OpenClaw agent owns the conversation
+and calls the harness as a set of tools. You talk to your OpenClaw agent; it
+calls `harness_run` (raw request -> crystallise -> plan -> workers -> adversary
+-> PR), watches with `harness_status` / `harness_session_get`, and reports back.
+The plugin does **not** listen to Slack.
 
-Either way the pipeline is identical; only the *entry point* differs.
+> **`slack.listener_enabled` is deprecated and ignored.** beta.34 removed the
+> autonomous listener; the flag has done nothing since, and setting it only logs
+> a warning. Earlier revisions of this README described listener mode as a
+> second supported way to drive the harness, with a config example. It was not
+> one, and anyone who followed it set a flag with no effect. Remove the key.
 
 ## How to ask for work: task-phrasing guide
 
@@ -145,7 +152,7 @@ sequenceDiagram
   autonumber
   actor User
   participant Slack
-  participant Harness as Harness (listener + dispatcher + crystalliser)
+  participant Harness as Harness (tools + dispatcher + crystalliser)
   participant Lead as Fable-5 lead
   participant Worker as Sonnet worker(s)
   participant Adv as Fable-5 adversary
@@ -195,8 +202,8 @@ Nothing pushes until the adversary passes (or a human drops `:rocket:`). Reactio
 | GitHub PR opener             | `src/adapters/github-pr.ts`                      | Push branch, POST /pulls (draft if verdict != pass)   |
 | GitHub PR-merged watcher     | `src/adapters/github-watcher.ts`                 | Detects merge/close, releases worktree                 |
 | Runtime logs bridge          | `src/vercel/logs.ts`                             | Optional. Vercel bridge (feature-flagged) OR manual upload via `harness_upload_logs`. Adversary refuses to sign off on runtime dimension when no data is present. |
-| Slack listener               | `src/slack/channel-listener.ts`                  | Pure `routeMessage()` + UNIQUE thread guard           |
-| Slack dispatcher             | `src/slack/dispatcher.ts`                        | Bridges listener -> orchestrator                       |
+| Slack message router         | `src/slack/channel-listener.ts`                  | Pure `routeMessage()` + UNIQUE thread guard. Never subscribed since beta.34; retained for inbound events handed to it explicitly |
+| Slack dispatcher             | `src/slack/dispatcher.ts`                        | Bridges routed messages -> orchestrator                |
 | Slack reactions reader       | `src/slack/reactions.ts`                         | Authorised-user filter                                 |
 | Reactions poller             | `src/slack/reactions-poller.ts`                  | 15s interval, writes into `reactions_json` column      |
 | Bash guard                   | `src/safety/bash-guard.ts`                       | Tokeniser-based POSIX-ish denylist                     |

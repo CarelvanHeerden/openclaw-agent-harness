@@ -268,15 +268,16 @@ export interface LogConfig {
 }
 export interface SlackConfig {
     /**
-     * When true, the plugin subscribes to `message_received` and treats
-     * allow-listed messages in `channel` as dev requests (autonomous mode).
-     *
-     * When false (DEFAULT), the plugin does NOT listen to Slack at all. The
-     * OpenClaw agent orchestrates everything by calling the harness tools
-     * (`harness_run`, `harness_status`, ...). This is the recommended mode:
-     * you talk to the OpenClaw agent, and the agent drives the harness.
+     * NOTE: `listener_enabled` is deliberately absent. beta.34 removed the
+     * autonomous Slack listener; beta.133 removed the setting, because a key that
+     * can be configured but not obeyed is worse than no key at all -- it made the
+     * harness refuse to start over a prerequisite for a mode it does not have.
+     * Existing configs may still carry it: the JSON schema still accepts the key
+     * (both schemas are `additionalProperties: false`, so dropping it there would
+     * turn an old config into a validation failure), `parseHarnessConfig`
+     * discards it, and bootstrap warns once.
      */
-    listener_enabled: boolean;
+    /** Outbound posting target. Optional; there is nothing to listen on. */
     channel: string;
     authorised_users: string[];
     /** Vault service name for the Slack bot token (used by reactions poller + adapter fallback). Optional; if unset, poller stays idle. */
@@ -1303,22 +1304,32 @@ export interface PatRoutingConfig {
     providers?: Partial<Record<GitProvider, ProviderConfig>>;
     /**
      * Template for the vault credential service name. Placeholders:
-     *   {owner} - repo owner (org or user), e.g. "CarelvanHeerden"
-     *   {repo}  - repo name, e.g. "openclaw-agent-harness"
-     *   {user}  - requester's GitHub login (deprecated alias; for a personal
-     *             repo this equals {owner}, which is why the old default
-     *             "github-{user}-{org}" collapsed to a duplicated segment)
-     *   {org}   - repo owner (deprecated alias of {owner})
-     * Default: "github-{owner}" (per-owner tokens). All placeholders are
-     * lower-cased.
+     *   {owner}     - repo owner (org or user), e.g. "CarelvanHeerden"
+     *   {repo}      - repo name, e.g. "openclaw-agent-harness"
+     *   {requester} - requester's provider login, from `user_identities`
+     *   {userid}    - requester's raw Slack id, e.g. "U07UT6G8LQ4". The only
+     *                 placeholder shared with `onboard_service_pattern`, so it
+     *                 is the one that makes a per-user setup expressible on both
+     *                 sides. NOT lower-cased, because onboarding writes the id
+     *                 verbatim (beta.133).
+     *   {user}      - requester's GitHub login (deprecated alias; for a personal
+     *                 repo this equals {owner}, which is why the old default
+     *                 "github-{user}-{org}" collapsed to a duplicated segment)
+     *   {org}       - repo owner (deprecated alias of {owner})
+     * Default: "github-{owner}" (per-owner tokens). Every placeholder except
+     * {userid} is lower-cased.
      */
     default_service_pattern: string;
     /**
      * beta.78 (Feature 4): vault service-name pattern used by `harness_onboard`
      * to store a user's git token. Placeholders: {userid} (Slack user id),
-     * {provider}. Default "git-pat:{userid}". Keep this consistent with
-     * `default_service_pattern` so an onboarded token is actually resolved for
-     * that user's runs.
+     * {provider}. Default "git-pat:{userid}".
+     *
+     * This MUST be able to produce the same string as `default_service_pattern`,
+     * or an onboarded token is stored under a name no session ever looks up --
+     * onboarding reports success and the run dies later at clone. beta.133 makes
+     * that reachable ({userid} now exists on both sides) and makes the broken
+     * combination refuse at onboard time instead of failing silently.
      */
     onboard_service_pattern?: string;
     /**
@@ -1349,6 +1360,16 @@ export interface PatAuthConfig {
  * discovers a missing email mid-run.
  */
 export declare function validatePatHierarchy(pr: PatRoutingConfig): void;
+/**
+ * PURE: did this config carry the removed `slack.listener_enabled` key?
+ *
+ * beta.133. Read off the RAW input, because `parseHarnessConfig` drops the key
+ * and the parsed config can no longer answer. Bootstrap uses this to warn once
+ * that the setting does nothing, which is the whole of what it should do -- the
+ * old behaviour was to refuse startup unless a channel was supplied for a
+ * listener that was deleted ninety-nine releases ago.
+ */
+export declare function declaresRemovedListenerFlag(input: unknown): boolean;
 export declare function parseHarnessConfig(input: unknown): HarnessConfig;
 /**
  * beta.78 (Feature 3): pure budget-coherence assessment.

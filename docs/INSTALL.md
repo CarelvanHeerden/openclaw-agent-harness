@@ -5,41 +5,27 @@ Prerequisites:
 - OpenClaw >= 2026.5.0 running in a Node 22+ environment (the plugin's `engines.node` is `>=22.0.0`, matching the OpenClaw plugin SDK).
 - An Anthropic API key exposed to the OpenClaw container as `ANTHROPIC_API_KEY`.
 - `pnpm` available inside the container (or wherever you run the plugin).
-- GitHub personal access tokens stored in the OpenClaw credential vault, one per (user, org). See [`CONFIGURATION.md`](CONFIGURATION.md#pat-routing) for naming.
-- **`better-sqlite3` prebuilt binary must be available for your Node ABI.** The plugin depends on `better-sqlite3@12.11.1+`, which ships prebuilds for Node ABI 127 (Node 22), 137 (Node 24), 141 (Node 25), and 147 (Node 26) on linux-x64. If OpenClaw is running on a Node version outside that set (e.g. Node 23, which is EOL, or something exotic like linux-arm64 without a matching prebuild), `prebuild-install` will fall back to `node-gyp rebuild`, which requires a C/C++ toolchain: Debian/Ubuntu `apt-get install -y build-essential python3`, Alpine `apk add --no-cache build-base python3`. The stock OpenClaw Docker image on `node:24` already has a matching prebuild available; no toolchain needed.
+- GitHub personal access tokens stored in the OpenClaw credential vault. See [`CONFIGURATION.md`](CONFIGURATION.md#pat-routing) for naming, and read the consistency note there before using `harness_onboard`.
 
-### Troubleshooting: `Error: Could not locate the bindings file`
+### No native dependencies, no toolchain
 
-Symptom on `openclaw plugins list` or gateway startup:
+The plugin has **zero native dependencies**. Persistence uses Node's built-in
+`node:sqlite`, so there is no `better-sqlite3`, no prebuild to match against
+your Node ABI, and no `node-gyp` fallback needing `build-essential`. Any
+platform Node 22+ runs on will do, including linux/arm64 (Apple Silicon), which
+earlier releases could not install on without a compiler.
 
-```
-plugin failed during register: Error: Could not locate the bindings file. Tried:
-  → .../node_modules/better-sqlite3/build/Release/better_sqlite3.node
-  ...
-  → .../node_modules/better-sqlite3/lib/binding/node-v137-linux-x64/better_sqlite3.node
-```
+If you are reading an older copy of this file that warns about
+`Error: Could not locate the bindings file`, that failure mode no longer exists.
 
-This means `npm install --omit=dev` (the mode OpenClaw runs on git installs) neither found a prebuilt native module for your Node version + platform, nor could it compile one (no `make`/`g++` in the container). Options:
+## 1. The Claude Agent SDK needs no separate install
 
-1. **Confirm the plugin is on `better-sqlite3@12.11.1` or newer.** v11.10.0 does NOT publish a prebuild for Node 24 (ABI 137). If you see the plugin pinned to an older version, upgrade the plugin.
-2. **Run OpenClaw on a Node LTS with prebuilds available.** As of `better-sqlite3@12.11.1`, that's Node 22 (ABI 127), 24 (ABI 137), 25 (ABI 141), or 26 (ABI 147) on linux-x64.
-3. **Install a C/C++ toolchain** in the container so `node-gyp` can compile from source: Debian/Ubuntu `apt-get install -y build-essential python3`, Alpine `apk add --no-cache build-base python3`, then reinstall the plugin.
+`@anthropic-ai/claude-agent-sdk` is a plain runtime dependency of the plugin, so
+`npm install --omit=dev` (the mode OpenClaw runs on git installs) fetches it.
+No Dockerfile change is required.
 
-You can check your Node ABI with `docker exec -it openclaw-gateway node -p 'process.versions.modules'` (returns e.g. `137` for Node 24).
-
-## 1. Install the Claude Agent SDK
-
-The harness embeds `@anthropic-ai/claude-agent-sdk`. Install into your OpenClaw container image via a Dockerfile addition:
-
-```dockerfile
-# after the existing OpenClaw install steps, before USER node:
-
-RUN npm install -g @anthropic-ai/claude-agent-sdk \
- && mkdir -p /home/node/.claude \
- && chown -R 1001:1001 /home/node/.claude
-```
-
-If you also want the interactive CLI available for debugging:
+If you also want the interactive CLI available for debugging, that one *is* a
+separate global install:
 
 ```dockerfile
 RUN npm install -g @anthropic-ai/claude-code
@@ -120,42 +106,70 @@ After local edits, run `pnpm build` and commit `dist/` alongside your `src/` cha
 
 ## 3. Configure
 
-Edit `~/.openclaw/openclaw.json` (or use `openclaw config patch`) and add the plugin config. Minimal example:
+Edit `~/.openclaw/openclaw.json` (or use `openclaw config patch`) and add the
+plugin config. Note the shape: plugin settings live under
+`plugins.entries.<id>.config`, **not** `plugins.<id>`. Configuration written at
+the shorter path is silently ignored. Minimal example:
 
 ```json
 {
   "plugins": {
-    "openclaw-agent-harness": {
-      "slack": {
-        "channel": "C0XXXXXXXXX",
-        "authorised_users": ["U07UT6G8LQ4"]
-      },
-      "budgets": {
-        "monthly_per_user_usd": 1000,
-        "session_default_usd": 50,
-        "session_hard_ceiling_usd": 200
-      },
-      "repos": {
-        "allowed": ["example-org/example-repo"]
-      },
-      "models": {
-        "lead": "claude-fable-5",
-        "worker": "claude-sonnet-5",
-        "adversary": "claude-fable-5"
+    "entries": {
+      "openclaw-agent-harness": {
+        "enabled": true,
+        "config": {
+          "slack": {
+            "channel": "C0XXXXXXXXX",
+            "authorised_users": ["U07UT6G8LQ4"]
+          },
+          "budgets": {
+            "monthly_per_user_usd": 1000,
+            "session_default_usd": 50,
+            "session_hard_ceiling_usd": 200
+          },
+          "repos": {
+            "allowed": ["example-org/example-repo"]
+          },
+          "models": {
+            "lead": "claude-fable-5",
+            "worker": "claude-sonnet-5",
+            "adversary": "claude-fable-5"
+          }
+        }
       }
     }
   }
 }
 ```
 
+`slack.authorised_users` must contain at least one id even when you are not
+driving the harness from Slack: config validation refuses an empty list, and the
+first entry is the fallback requester identity.
+
+`slack.channel` is optional. Do not set `slack.listener_enabled` — beta.34
+removed the autonomous listener and the flag has been ignored since.
+
 See [`CONFIGURATION.md`](CONFIGURATION.md) for all options.
 
 ## 4. Store the GitHub PATs in the vault
 
-Using OpenClaw's credential vault, add one entry per (user, org):
+The vault service name comes from `pat_routing.default_service_pattern`, which
+defaults to `github-{owner}` with the owner lower-cased. For
+`Stitch-Vercel/ProjectThanos` that is `github-stitch-vercel`:
 
 ```bash
-# example naming convention
+openclaw memory credential-store --service github-stitch-vercel --type token --value 'ghp_...'
+```
+
+If you use `harness_onboard` instead, make sure
+`pat_routing.onboard_service_pattern` can produce the same string as
+`default_service_pattern` — they share only the `{userid}` placeholder, and the
+two defaults (`git-pat:{userid}` and `github-{owner}`) cannot agree. Since
+beta.133 onboarding refuses rather than storing a token nothing will read, but
+it is easier to set the patterns correctly up front. Legacy per-(user, org)
+naming still works if you set the pattern explicitly:
+
+```bash
 openclaw memory credential-store --service github-carel-example-org   --type token --value 'ghp_...'
 openclaw memory credential-store --service github-carel-personal        --type token --value 'ghp_...'
 openclaw memory credential-store --service github-francois-example-org --type token --value 'ghp_...'
