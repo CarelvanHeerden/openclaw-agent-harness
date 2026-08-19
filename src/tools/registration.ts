@@ -1795,10 +1795,26 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // two patterns default to `git-pat:{userid}` and `github-{owner}`,
           // which cannot agree, and the old failure was silent: the vault kept
           // the token, the tool reported success, and the run died at clone.
+          //
+          // The name a session reads is NOT always `credentialService`. Where
+          // routing resolves through a hierarchy or overlay entry the token
+          // comes from a pointer, and `credentialService` is a synthetic label
+          // the router never looks anything up by. Comparing against it there
+          // refuses correct setups, and "aligning the patterns" as the refusal
+          // advises then stores the token under a name that still is not read --
+          // the same silent failure, one level down. A pointer at an env var or
+          // a literal reads no vault name at all, which is not a mismatch but an
+          // absence, so it contributes nothing and can leave the verdict
+          // undetermined.
           {
             const resFn = liveRuntime().gitResolutionFor;
             const expected = resFn
-              ? liveConfig().repos.allowed.map((r) => resFn(r, requester)?.credentialService ?? "")
+              ? liveConfig().repos.allowed.map((r) => {
+                  const res = resFn(r, requester);
+                  if (!res) return "";
+                  if (res.tokenSource) return res.vaultPointer ?? "";
+                  return res.credentialService;
+                })
               : [];
             const consistency = checkOnboardConsistency(vaultService, expected);
             if (!consistency.ok) {

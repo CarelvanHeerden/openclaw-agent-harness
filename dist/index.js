@@ -1115,7 +1115,16 @@ export function bootstrapHarnessSync(api) {
                     gitHubUser: concrete.split("/")[0],
                     repoFullName: concrete,
                 });
-                return { credentialService: r.credentialService, provider: r.provider, apiBase: r.apiBase, apiKeyEnv: r.apiKeyEnv };
+                const tp = r.tokenPointer;
+                const tokenSource = tp ? (tp.vault ? "vault" : tp.env ? "env" : "value") : undefined;
+                return {
+                    credentialService: r.credentialService,
+                    provider: r.provider,
+                    apiBase: r.apiBase,
+                    apiKeyEnv: r.apiKeyEnv,
+                    tokenSource,
+                    vaultPointer: tp?.vault,
+                };
             }
             catch {
                 return undefined;

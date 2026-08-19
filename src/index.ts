@@ -263,7 +263,25 @@ export interface HarnessRuntime {
    */
   githubServiceFor: (repoFullName?: string) => string | undefined;
   /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
-  gitResolutionFor: (repoFullName?: string, slackUserId?: string) => { credentialService: string; provider: string; apiBase: string; apiKeyEnv: string } | undefined;
+  gitResolutionFor: (repoFullName?: string, slackUserId?: string) => {
+    credentialService: string;
+    provider: string;
+    apiBase: string;
+    apiKeyEnv: string;
+    /**
+     * Where the token actually comes from when routing resolved through a
+     * hierarchy or overlay entry, and the vault name it points at.
+     *
+     * `credentialService` is SYNTHETIC on those paths -- the router builds it
+     * for logging and never looks a token up by it. Onboarding compares the
+     * name it is about to write against what sessions read, so handing it the
+     * synthetic name makes the check compare against a string nothing uses:
+     * it refuses valid setups, and aligning the patterns to satisfy it stores
+     * the token under a name that still is not read.
+     */
+    tokenSource?: "vault" | "env" | "value";
+    vaultPointer?: string;
+  } | undefined;
   disposers: Array<() => void | Promise<void>>;
   /**
    * Promise for the async bootstrap phase (reactions poller start,
@@ -1416,7 +1434,16 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           gitHubUser: concrete.split("/")[0]!,
           repoFullName: concrete,
         });
-        return { credentialService: r.credentialService, provider: r.provider, apiBase: r.apiBase, apiKeyEnv: r.apiKeyEnv };
+        const tp = r.tokenPointer;
+        const tokenSource = tp ? (tp.vault ? "vault" : tp.env ? "env" : "value") : undefined;
+        return {
+          credentialService: r.credentialService,
+          provider: r.provider,
+          apiBase: r.apiBase,
+          apiKeyEnv: r.apiKeyEnv,
+          tokenSource,
+          vaultPointer: tp?.vault,
+        };
       } catch {
         return undefined;
       }

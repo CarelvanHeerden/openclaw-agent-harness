@@ -225,6 +225,19 @@ export interface HarnessRuntime {
         provider: string;
         apiBase: string;
         apiKeyEnv: string;
+        /**
+         * Where the token actually comes from when routing resolved through a
+         * hierarchy or overlay entry, and the vault name it points at.
+         *
+         * `credentialService` is SYNTHETIC on those paths -- the router builds it
+         * for logging and never looks a token up by it. Onboarding compares the
+         * name it is about to write against what sessions read, so handing it the
+         * synthetic name makes the check compare against a string nothing uses:
+         * it refuses valid setups, and aligning the patterns to satisfy it stores
+         * the token under a name that still is not read.
+         */
+        tokenSource?: "vault" | "env" | "value";
+        vaultPointer?: string;
     } | undefined;
     disposers: Array<() => void | Promise<void>>;
     /**

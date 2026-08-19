@@ -1981,6 +1981,64 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/credential-vault.test.mjs"],
   },
+
+  // ------------------------------------- onboarded routes and the router
+  {
+    // Without the overlay in the gate, an org that exists ONLY as an onboarded
+    // route never enters hierarchical routing at all: it falls through to the
+    // flat legacy pattern and resolves to a name the token was never stored
+    // under. That is the b133 failure again, reached by a different road.
+    name: "the hierarchy gate consults onboarded routes, not just config",
+    file: "dist/auth/pat-router.js",
+    find: "if (this.hasHierarchyFor(provider, owner) || overlayHit) {",
+    replace: "if (this.hasHierarchyFor(provider, owner)) {",
+    tests: ["tests/route-overlay-router.test.mjs"],
+  },
+  {
+    // The ordering that matters most. resolveHierarchy THROWS when an org is
+    // configured but the requester is not in it, so an overlay consulted after
+    // that throw is never consulted at all: an org an operator set up for one
+    // colleague locks out everyone who onboarded themselves, and it fails as
+    // "not authorised", which reads like a permissions problem.
+    name: "an onboarded route is consulted BEFORE the not-authorised refusal",
+    file: "dist/auth/pat-router.js",
+    find: "        if (overlayHit) {",
+    replace: "        if (false) {",
+    tests: ["tests/route-overlay-router.test.mjs"],
+  },
+  {
+    // Precedence, in the direction that matters: config must be read first. If
+    // an onboarded route could win, a Slack message would redirect commits an
+    // operator wrote down by hand.
+    name: "config is matched before any onboarded route",
+    file: "dist/auth/pat-router.js",
+    find: "        if (orgNode) {\n            for (const [person, node] of Object.entries(orgNode)) {",
+    replace: "        if (false) {\n            for (const [person, node] of Object.entries(orgNode)) {",
+    tests: ["tests/route-overlay-router.test.mjs"],
+  },
+  {
+    // Orgs arrive from a pasted URL, which preserves whatever case was typed.
+    // Stop folding it and "Stitch-Vercel" stores a route that "stitch-vercel"
+    // never finds -- a token in the vault that nothing reads, by nothing but
+    // capitalisation.
+    name: "org keys are case-folded on both sides of the overlay",
+    file: "dist/auth/route-overlay.js",
+    find: "export const normaliseOrg = (org) => org.trim().toLowerCase();",
+    replace: "export const normaliseOrg = (org) => org.trim();",
+    tests: ["tests/route-overlay.test.mjs", "tests/route-overlay-router.test.mjs"],
+  },
+  {
+    // b133's gate compares what onboarding writes against what routing reads.
+    // On a hierarchy or overlay hit, `credentialService` is a SYNTHETIC label
+    // the router never looks a token up by. Compare against it and a correct
+    // setup is refused -- and following the refusal's advice makes the gate
+    // pass while the token lands under a name still nothing reads.
+    name: "the onboard gate compares against the pointer, not the synthetic label",
+    file: "dist/tools/registration.js",
+    find: "if (res.tokenSource)",
+    replace: "if (false)",
+    tests: ["tests/onboard-consistency-hierarchy.test.mjs"],
+  },
 ];
 
 /**
