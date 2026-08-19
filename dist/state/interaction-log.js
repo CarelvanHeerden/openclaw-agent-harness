@@ -45,20 +45,41 @@ export const PROMPT_TAIL_CHARS = 2000;
  * (Anthropic `sk-ant-...`, GitHub `ghp_`/`gho_`/`ghs_`/`github_pat_...`,
  * generic bearer tokens). MANDATORY on every write — there is no off switch.
  */
-export function redactValue(value) {
-    if (typeof value === "string")
+export function redactValue(value, key) {
+    if (typeof value === "string") {
+        if (key && isSecretKey(key) && value.length > 0)
+            return "***";
         return redactTokenShapes(redactSecrets(value));
+    }
     if (Array.isArray(value))
-        return value.map((v) => redactValue(v));
+        return value.map((v) => redactValue(v, key));
     if (value && typeof value === "object") {
         const out = {};
         for (const [k, v] of Object.entries(value)) {
-            out[k] = redactValue(v);
+            out[k] = redactValue(v, k);
         }
         return out;
     }
     return value;
 }
+/**
+ * Keys whose value is a credential whatever it happens to look like.
+ *
+ * Shape matching only catches the formats we already know -- `ghp_`,
+ * `github_pat_`, `glpat-`. `harness_onboard` now accepts self-hosted providers,
+ * where the token has whatever shape that deployment chose, and its tool input
+ * carries the raw secret under a known key. Redacting BY KEY is therefore the
+ * half that cannot be outrun by a token format nobody has seen yet.
+ *
+ * Matched exactly on a normalised key, never as a substring: `tokensIn` and
+ * `tokenPointer` are diagnostics worth keeping, and a greedy match here would
+ * quietly blank the numbers the budget ledger is debugged with.
+ */
+const SECRET_KEYS = new Set([
+    "token", "secret", "password", "pat", "apikey", "credential", "credentials",
+    "privatekey", "accesstoken", "authorization", "auth",
+]);
+const isSecretKey = (key) => SECRET_KEYS.has(key.toLowerCase().replace(/[_-]/g, ""));
 /**
  * Scrub standalone secret token shapes that {@link redactSecrets} (which only
  * knows about URL userinfo + a KNOWN token value) cannot catch when the raw

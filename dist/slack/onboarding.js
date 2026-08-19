@@ -155,9 +155,36 @@ export class OnboardingSlack {
     }
 }
 /**
+ * Epoch ms for a token expiry header, or undefined.
+ *
+ * GitHub discloses a fine-grained PAT's expiry on every response as
+ * `github-authentication-token-expiration`, written as
+ * `2026-09-01 12:00:00 UTC` rather than as ISO-8601. Recording it lets the
+ * management view warn before a token dies mid-run instead of after.
+ *
+ * Anything unparseable returns undefined: a wrong expiry is worse than none,
+ * since it would either cry wolf or hide a real one.
+ */
+export function parseTokenExpiry(header) {
+    const raw = (header ?? "").trim();
+    if (!raw)
+        return undefined;
+    // "2026-09-01 12:00:00 UTC" -> "2026-09-01T12:00:00Z". Date.parse handles the
+    // ISO form natively, so try it first and only reshape if that fails.
+    const direct = Date.parse(raw);
+    if (Number.isFinite(direct))
+        return direct;
+    const reshaped = Date.parse(raw.replace(" ", "T").replace(/\s*UTC$/i, "Z"));
+    return Number.isFinite(reshaped) ? reshaped : undefined;
+}
+/**
  * Validate a git token against the provider's `GET /user` before storing it,
  * so a bad/expired paste is rejected up front instead of dying mid-run.
  * PURE except for the injected fetch. Never throws.
+ *
+ * The response is also the cheapest source of truth for WHO the token belongs
+ * to, which is what lets a later submission be checked against the account the
+ * credential was first stored for.
  */
 export async function validateGitToken(token, apiBase, fetchImpl) {
     const f = fetchImpl ?? fetch;
@@ -175,10 +202,67 @@ export async function validateGitToken(token, apiBase, fetchImpl) {
         if (!res.ok)
             return { ok: false, error: `http_${res.status}` };
         const j = (await res.json());
-        return { ok: true, login: j.login };
+        // `headers` is optional here only because test doubles omit it; a real
+        // Response always carries one.
+        const expiresAt = parseTokenExpiry(res.headers?.get?.("github-authentication-token-expiration"));
+        return {
+            ok: true,
+            // GitLab calls it `username`; GitHub calls it `login`.
+            login: j.login ?? j.username,
+            name: j.name ?? undefined,
+            email: j.email ?? undefined,
+            expiresAt,
+        };
     }
     catch (err) {
         return { ok: false, error: String(err) };
     }
 }
+/**
+ * Does this token actually reach the repo it will be used on?
+ *
+ * `GET /user` proves a token is live; it says nothing about whether it can see
+ * the org being onboarded. A fine-grained PAT scoped to the wrong org passes
+ * validation and then fails at clone, which is the same hour-late failure this
+ * whole area exists to prevent.
+ *
+ * Checked against a CONCRETE allowed repo rather than the org itself, because
+ * `GET /orgs/<name>` 404s for a personal namespace and would refuse a perfectly
+ * good personal token. Returns "unknown" when there is nothing concrete to
+ * check, so an undetermined answer never becomes a refusal.
+ */
+export async function checkRepoAccess(token, apiBase, repoFullName, fetchImpl) {
+    const f = fetchImpl ?? fetch;
+    const base = apiBase.replace(/\/+$/, "");
+    try {
+        const res = await f(`${base}/repos/${repoFullName}`, {
+            headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: "application/vnd.github+json",
+                "User-Agent": "openclaw-agent-harness",
+            },
+        });
+        if (res.ok)
+            return { reach: "ok", status: res.status };
+        // 404 is what GitHub returns for "exists but you cannot see it" as well as
+        // "does not exist", and both mean this token cannot work here.
+        if (res.status === 401 || res.status === 403 || res.status === 404) {
+            return { reach: "denied", status: res.status };
+        }
+        return { reach: "unknown", status: res.status };
+    }
+    catch (err) {
+        // A transport failure is not evidence the token is wrong.
+        return { reach: "unknown", error: String(err) };
+    }
+}
+/**
+ * The vault name for an onboarded route.
+ *
+ * Keyed on provider, org AND person, because one person holding different
+ * tokens for two orgs is the case a flat per-user name cannot express: the
+ * second onboarding would overwrite the first and a run would push with the
+ * wrong org's token.
+ */
+export const onboardRouteService = (provider, org, person) => `${provider}:${org}:${person}`.toLowerCase();
 //# sourceMappingURL=onboarding.js.map

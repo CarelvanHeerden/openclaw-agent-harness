@@ -21,6 +21,7 @@ import { Dispatcher } from "./slack/dispatcher.js";
 import { SlackProgressPoster } from "./slack/progress-poster.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
+import { RouteOverlay } from "./auth/route-overlay.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { type CredentialRecord } from "./adapters/credential-vault.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
@@ -220,6 +221,11 @@ export interface HarnessRuntime {
      */
     githubServiceFor: (repoFullName?: string) => string | undefined;
     /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
+    /**
+     * Routes written by `harness_onboard`. The same instance the router reads,
+     * so a route the tool writes is live for the next session without a restart.
+     */
+    routeOverlay?: RouteOverlay;
     gitResolutionFor: (repoFullName?: string, slackUserId?: string) => {
         credentialService: string;
         provider: string;

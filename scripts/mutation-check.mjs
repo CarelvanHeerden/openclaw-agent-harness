@@ -1915,8 +1915,10 @@ const MUTATIONS = [
     // pattern while the person being onboarded still gets an unreadable name.
     name: "the gate resolves for the requester being onboarded (b133)",
     file: "dist/tools/registration.js",
-    find: "resFn(r, requester)?.credentialService ?? \"\"",
-    replace: "resFn(r)?.credentialService ?? \"\"",
+    // The expression moved when the gate learned to read a token pointer
+    // rather than the synthetic label; the mechanism under test is unchanged.
+    find: "const res = resFn(r, requester);",
+    replace: "const res = resFn(r);",
     tests: ["tests/beta133-onboard-credential-consistency.test.mjs"],
   },
   {
@@ -2038,6 +2040,80 @@ const MUTATIONS = [
     find: "if (res.tokenSource)",
     replace: "if (false)",
     tests: ["tests/onboard-consistency-hierarchy.test.mjs"],
+  },
+
+  // ------------------------------------- per-org onboarding, and its refusals
+  {
+    // `requester` is an ARGUMENT on an agent-relayed call, so nothing but the
+    // token itself proves who is asking. Drop this and someone can point
+    // another person's route at THEIR token, and that person's commits push
+    // with it -- an escalation that looks like a successful onboarding.
+    name: "a token authenticating as someone else cannot replace a credential",
+    file: "dist/tools/registration.js",
+    find: "if (!verdict.ok)",
+    replace: "if (false)",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // Config is resolved before the overlay, so a row written where an
+    // operator already configured the org is never read. Without this refusal
+    // the tool reports a success that has no effect -- the b133 failure with a
+    // green tick on it.
+    name: "onboarding refuses to shadow a hand-written config entry",
+    file: "dist/tools/registration.js",
+    find: "if (shadowed)",
+    replace: "if (false)",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // GET /user proves a token is LIVE, not that it can see this org. A
+    // fine-grained PAT scoped elsewhere passes validation and then fails at
+    // clone, which is exactly the hour-late failure this work moves forward.
+    name: "a token that cannot reach the org is refused at onboarding",
+    file: "dist/tools/registration.js",
+    find: 'reach.reach === "denied"',
+    replace: "false",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // The secret is written before the route, so a failed route write leaves a
+    // secret nothing points at. Skip the rollback and the vault accumulates
+    // orphaned tokens on every failed onboarding.
+    name: "a failed route write rolls the new secret back",
+    file: "dist/tools/registration.js",
+    find: 'if (action === "add") {',
+    replace: "if (false) {",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // An org arrives from a pasted URL, which keeps whatever case was typed.
+    // Store it verbatim and the lookup misses by nothing but capitalisation.
+    name: "the org from a pasted URL is case-folded before it is stored",
+    file: "dist/tools/registration.js",
+    find: "const orgKey = normaliseOrg(org);",
+    replace: "const orgKey = org;",
+    tests: ["tests/onboard-per-org.test.mjs"],
+  },
+  {
+    // Shape matching is a guess about other people's token formats. Onboarding
+    // now accepts self-hosted providers, whose tokens look like whatever that
+    // deployment chose, and the tool input carries the raw secret under a key
+    // called `token`. Without the key check that value is logged intact.
+    name: "a credential field is redacted by KEY, not only by shape",
+    file: "dist/state/interaction-log.js",
+    find: "if (key && isSecretKey(key) && value.length > 0)",
+    replace: "if (false)",
+    tests: ["tests/log-secret-keys.test.mjs"],
+  },
+  {
+    // The other direction: a substring match would blank `tokensIn`,
+    // `tokensOut` and `tokenPointer`, taking away the numbers a budget or
+    // routing failure is actually diagnosed from.
+    name: "secret-key matching is exact, so token counters survive the log",
+    file: "dist/state/interaction-log.js",
+    find: "const isSecretKey = (key) => SECRET_KEYS.has(key.toLowerCase().replace(/[_-]/g, \"\"));",
+    replace: "const isSecretKey = (key) => [...SECRET_KEYS].some((s) => key.toLowerCase().includes(s));",
+    tests: ["tests/log-secret-keys.test.mjs"],
   },
 ];
 

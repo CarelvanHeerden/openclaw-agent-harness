@@ -71,7 +71,7 @@ export declare const PROMPT_TAIL_CHARS = 2000;
  * (Anthropic `sk-ant-...`, GitHub `ghp_`/`gho_`/`ghs_`/`github_pat_...`,
  * generic bearer tokens). MANDATORY on every write — there is no off switch.
  */
-export declare function redactValue(value: unknown): unknown;
+export declare function redactValue(value: unknown, key?: string): unknown;
 /**
  * Scrub standalone secret token shapes that {@link redactSecrets} (which only
  * knows about URL userinfo + a KNOWN token value) cannot catch when the raw

@@ -11,7 +11,10 @@ import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
 import { findingText, isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
-import { OnboardingSlack, checkOnboardConsistency, resolveOnboardVaultService, validateGitToken } from "../slack/onboarding.js";
+import { OnboardingSlack, checkOnboardConsistency, checkRepoAccess, onboardRouteService, resolveOnboardVaultService, validateGitToken, } from "../slack/onboarding.js";
+import { parseOrgUrl } from "../auth/org-url.js";
+import { checkTokenIdentity } from "../auth/identity.js";
+import { RouteOverlay, normaliseOrg } from "../auth/route-overlay.js";
 import { measureParaphraseDrift, readRequestFile } from "./brief-source.js";
 import { BRIEF_CONFIRMATION_KIND, BRIEF_CONFIRMATION_SEQ, decideBriefConfirmation, isBriefConfirmationPause, parseConfirmationReply, renderBriefConfirmation, } from "./brief-confirmation.js";
 import { isTimeExtensionPause, listenerLooksAlive, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
@@ -1489,25 +1492,302 @@ export function registerHarnessTools(api, runtime) {
     // handler then calls this tool. Documented in the README.
     disposers.push(toDispose(api.registerTool({
         name: "harness_onboard",
-        description: "Per-user git credential onboarding (DM flow). action:'start' opens a private DM to the requester asking them to paste their git token (keeps it out of public channels). action:'submit' validates a pasted token (GET /user) and stores it in the vault as the requester's per-user service, then deletes the bot's own prompt and confirms in DM. ONLY users in slack.authorised_users may onboard. The raw token must NEVER be posted to a public channel.",
+        description: "Per-user git credential onboarding and management (DM flow). One person can hold DIFFERENT tokens for different orgs, so credentials are keyed by provider+org: " +
+            "action:'list' shows what the requester has configured (never any secret); " +
+            "action:'add' takes an orgUrl (e.g. https://github.com/acme) plus a token, validates it, and stores BOTH the secret and the routing entry that makes it readable; " +
+            "action:'replace' swaps the token for an org already configured; " +
+            "action:'remove' deletes one (needs confirm:true). " +
+            "action:'start' opens a private DM so the token is pasted out of any public channel; action:'submit' is the legacy single-token flow for flat, non-per-org setups. " +
+            "ONLY users in slack.authorised_users may onboard. The raw token must NEVER be posted to a public channel.",
         parameters: {
             type: "object",
             properties: {
                 requester: { type: "string", minLength: 1, description: "Slack user id being onboarded. Must be in slack.authorised_users." },
-                action: { type: "string", enum: ["start", "submit"], description: "'start' opens the DM prompt; 'submit' stores a pasted token." },
-                token: { type: "string", description: "For action:'submit' ONLY: the git token to validate + store. Never pass this in a public channel." },
-                provider: { type: "string", description: "Git provider (default 'github'). Selects the validation API base." },
-                promptTs: { type: "string", description: "For action:'submit': the ts of the bot's DM prompt to delete after storing." },
-                dmChannel: { type: "string", description: "For action:'submit': the DM channel id (from action:'start') to post confirmation + delete the prompt in." },
+                action: {
+                    type: "string",
+                    enum: ["start", "submit", "list", "add", "replace", "remove"],
+                    description: "'list' shows configured credentials; 'add'/'replace'/'remove' manage one org; 'start' opens the DM prompt; 'submit' is the legacy flat flow.",
+                },
+                token: { type: "string", description: "For 'add', 'replace' and 'submit': the git token to validate + store. Never pass this in a public channel." },
+                orgUrl: { type: "string", description: "For 'add', 'replace' and 'remove': the org or repo URL, e.g. https://github.com/acme. States the provider as well as the org." },
+                confirm: { type: "boolean", description: "For 'remove': must be true to actually delete. A first call without it reports what would be removed." },
+                commitName: { type: "string", description: "Optional git author name for commits made on this person's behalf. Defaults to the provider account's name." },
+                commitEmail: { type: "string", description: "Optional git author email. Defaults to the provider account's email, or its noreply address." },
+                provider: { type: "string", description: "Git provider (default 'github'). Only needed for the legacy 'submit' flow; 'add' reads it from orgUrl." },
+                promptTs: { type: "string", description: "The ts of the bot's DM prompt to delete after storing." },
+                dmChannel: { type: "string", description: "The DM channel id (from action:'start') to post confirmation + delete the prompt in." },
             },
             required: ["requester", "action"],
             additionalProperties: false,
         },
         execute: async (_callId, input) => {
-            const { requester, action, token, provider, promptTs, dmChannel } = input;
+            const { requester, action, token, orgUrl, confirm, commitName, commitEmail, provider, promptTs, dmChannel } = input;
             if (!liveConfig().slack.authorised_users.includes(requester)) {
                 liveState().audit("tool.onboard.unauthorised", { requester });
                 return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users; onboarding refused.` }], details: { ok: false, unauthorised: true } };
+            }
+            // Routes this tool writes. Falls back to a fresh view over the same
+            // database, so a runtime assembled without one still works.
+            const overlay = liveRuntime().routeOverlay ?? new RouteOverlay(liveState().db);
+            const providerApiBase = (p) => liveConfig().pat_routing?.providers?.[p]?.api_base ??
+                (p === "gitlab" ? "https://gitlab.com/api/v4" : "https://api.github.com");
+            /**
+             * A config-defined entry for this requester in this org. The overlay
+             * is read BENEATH config, so writing a row where config already
+             * answers would store a token that nothing reads -- refuse instead of
+             * reporting a success that has no effect.
+             */
+            const configRouteFor = (p, org) => {
+                const orgs = liveConfig().pat_routing?.[p];
+                const node = orgs?.[org] ?? orgs?.[org.toLowerCase()];
+                if (!node)
+                    return undefined;
+                for (const [person, entry] of Object.entries(node)) {
+                    if (entry?.slack_user_id === requester)
+                        return { person };
+                }
+                return undefined;
+            };
+            /** A concrete allowed repo in this org, so reach can actually be tested. */
+            const allowedRepoIn = (org) => liveConfig().repos.allowed.find((r) => !r.includes("*") && r.split("/")[0]?.toLowerCase() === org.toLowerCase());
+            /** Slack is best-effort for the management actions; absent, they still work. */
+            const tryOnboardSlack = async () => {
+                const cs = liveConfig().slack.credential_service;
+                if (!cs)
+                    return null;
+                try {
+                    return new OnboardingSlack({ slackToken: await liveRuntime().creds.getToken(cs), logger: api.logger });
+                }
+                catch {
+                    return null;
+                }
+            };
+            const describeRoute = (r) => {
+                const who = r.providerLogin ? ` as \`${r.providerLogin}\`` : "";
+                if (!r.tokenExpiresAt)
+                    return `• \`${r.provider}\` / \`${r.org}\`${who}`;
+                const days = Math.floor((r.tokenExpiresAt - Date.now()) / 86_400_000);
+                const when = new Date(r.tokenExpiresAt).toISOString().slice(0, 10);
+                const note = days < 0 ? ` — :x: EXPIRED ${when}` : days <= 14 ? ` — :warning: expires ${when} (${days}d)` : ` — expires ${when}`;
+                return `• \`${r.provider}\` / \`${r.org}\`${who}${note}`;
+            };
+            // ---------------------------------------------------------------
+            // list: what this person has configured. Never a secret, and never
+            // anyone else's routes -- the lookup is keyed on the caller.
+            // ---------------------------------------------------------------
+            if (action === "list") {
+                const routes = overlay.listForRequester(requester);
+                liveState().audit("tool.onboard.list", { requester, count: routes.length });
+                if (routes.length === 0) {
+                    return {
+                        content: [{ type: "text", text: "You have no git credentials configured yet. Send me the URL of an org you want to add (for example `https://github.com/acme`) and I'll open a private DM for the token." }],
+                        details: { ok: true, routes: [] },
+                    };
+                }
+                const stored = new Set(liveRuntime().vault.list().map((c) => c.service));
+                const lines = routes.map((r) => {
+                    const missing = stored.has(r.vaultService) ? "" : " — :x: the stored token is missing; use `replace`";
+                    return describeRoute(r) + missing;
+                });
+                return {
+                    content: [{ type: "text", text: `You have ${routes.length} git credential(s) configured:\n${lines.join("\n")}\n\nYou can \`add\` another org, \`replace\` a token, or \`remove\` one.` }],
+                    details: {
+                        ok: true,
+                        routes: routes.map((r) => ({
+                            provider: r.provider, org: r.org, person: r.person,
+                            providerLogin: r.providerLogin ?? null, tokenExpiresAt: r.tokenExpiresAt ?? null,
+                            vaultService: r.vaultService, secretPresent: stored.has(r.vaultService),
+                            createdAt: r.createdAt, updatedAt: r.updatedAt,
+                        })),
+                    },
+                };
+            }
+            // ---------------------------------------------------------------
+            // remove: two-step, because it destroys a credential.
+            // ---------------------------------------------------------------
+            if (action === "remove") {
+                const parsed = parseOrgUrl(orgUrl, liveConfig().pat_routing?.providers);
+                if (!parsed.ok) {
+                    return { content: [{ type: "text", text: `Which org should I remove? ${parsed.error}.` }], details: { ok: false, badOrgUrl: parsed.error } };
+                }
+                const { provider: p, org } = parsed.value;
+                const existing = overlay.lookup(p, org, requester);
+                if (!existing) {
+                    return { content: [{ type: "text", text: `You have nothing configured for \`${p}\` / \`${org}\`, so there is nothing to remove.` }], details: { ok: false, notConfigured: true, provider: p, org } };
+                }
+                if (confirm !== true) {
+                    return {
+                        content: [{ type: "text", text: `This will delete your \`${p}\` token for \`${org}\`${existing.providerLogin ? ` (\`${existing.providerLogin}\`)` : ""}. Sessions for that org will stop working until you add one again. Confirm to proceed.` }],
+                        details: { ok: false, needsConfirm: true, provider: p, org: existing.org, person: existing.person },
+                    };
+                }
+                // Route first, then secret. This order can only ever leave an
+                // unreferenced secret behind; the reverse leaves a route pointing
+                // at a vault entry that is gone, which is the hour-late failure at
+                // clone that this whole area exists to prevent.
+                overlay.remove(p, existing.org, existing.person);
+                let secretDeleted = false;
+                try {
+                    secretDeleted = liveRuntime().vault.delete(existing.vaultService);
+                }
+                catch (err) {
+                    liveState().audit("tool.onboard.remove_vault_failed", { requester, provider: p, org: existing.org, error: String(err) });
+                }
+                liveState().audit("tool.onboard.removed", { requester, provider: p, org: existing.org, person: existing.person, secretDeleted });
+                const slack = await tryOnboardSlack();
+                if (slack && dmChannel)
+                    await slack.postDm(dmChannel, `:wastebasket: Removed your \`${p}\` credential for \`${org}\`.`);
+                return {
+                    content: [{ type: "text", text: `Removed your \`${p}\` credential for \`${org}\`. If that token is no longer used anywhere else, revoke it at the provider too — deleting it here does not.` }],
+                    details: { ok: true, removed: true, provider: p, org: existing.org, person: existing.person, secretDeleted },
+                };
+            }
+            // ---------------------------------------------------------------
+            // add / replace: store the secret AND the routing entry that makes
+            // it readable. Writing only the secret is what left a token in the
+            // vault under a name no session ever looked up.
+            // ---------------------------------------------------------------
+            if (action === "add" || action === "replace") {
+                const parsed = parseOrgUrl(orgUrl, liveConfig().pat_routing?.providers);
+                if (!parsed.ok) {
+                    return {
+                        content: [{ type: "text", text: `I need the org URL to know which provider and org this token is for. ${parsed.error}. Send something like \`https://github.com/acme\`.` }],
+                        details: { ok: false, badOrgUrl: parsed.error },
+                    };
+                }
+                const { provider: p, org } = parsed.value;
+                const orgKey = normaliseOrg(org);
+                if (!token || token.trim().length < 8) {
+                    return { content: [{ type: "text", text: `No valid token supplied for \`${p}\` / \`${org}\`. Paste it in the private DM, never in a channel.` }], details: { ok: false, badToken: true } };
+                }
+                const existing = overlay.lookup(p, orgKey, requester);
+                if (action === "add" && existing) {
+                    return {
+                        content: [{ type: "text", text: `You already have a \`${p}\` credential for \`${org}\`${existing.providerLogin ? ` (\`${existing.providerLogin}\`)` : ""}. Use \`replace\` to swap the token, or \`remove\` first.` }],
+                        details: { ok: false, alreadyConfigured: true, provider: p, org: orgKey },
+                    };
+                }
+                if (action === "replace" && !existing) {
+                    return {
+                        content: [{ type: "text", text: `You have no \`${p}\` credential for \`${org}\` to replace. Use \`add\` instead.` }],
+                        details: { ok: false, notConfigured: true, provider: p, org: orgKey },
+                    };
+                }
+                const shadowed = configRouteFor(p, orgKey);
+                if (shadowed) {
+                    // Config is read first, so a row written here would never be
+                    // reached. Saying "stored" would be a lie with a green tick.
+                    liveState().audit("tool.onboard.config_shadow", { requester, provider: p, org: orgKey, person: shadowed.person });
+                    return {
+                        content: [{ type: "text", text: `An operator has already configured \`${p}\` / \`${org}\` for you as \`${shadowed.person}\` in \`pat_routing\`. Hand-written config is read first, so anything I stored here would never be used. Ask them to update that entry instead.` }],
+                        details: { ok: false, configShadow: true, provider: p, org: orgKey, person: shadowed.person },
+                    };
+                }
+                const apiBase = providerApiBase(p);
+                const valid = await validateGitToken(token.trim(), apiBase);
+                if (!valid.ok) {
+                    liveState().audit("tool.onboard.token_invalid", { requester, provider: p, org: orgKey, error: valid.error });
+                    const slack = await tryOnboardSlack();
+                    if (slack && dmChannel)
+                        await slack.postDm(dmChannel, `:x: That token didn't validate (${valid.error ?? "unknown"}). Please try again with a valid token.`);
+                    return { content: [{ type: "text", text: `Token failed validation (${valid.error ?? "unknown"}); NOT stored.` }], details: { ok: false, invalidToken: true, error: valid.error } };
+                }
+                // The token says who it belongs to, which is the only thing here
+                // that does not come from the caller. `requester` is an argument on
+                // an agent-relayed call, so without this someone could store THEIR
+                // token under SOMEONE ELSE'S id and that person's commits would
+                // push with it.
+                const verdict = checkTokenIdentity(existing?.providerLogin, valid.login);
+                if (!verdict.ok) {
+                    liveState().audit("tool.onboard.identity_mismatch", {
+                        requester, provider: p, org: orgKey, recorded: verdict.recorded, presented: verdict.presented ?? null,
+                    });
+                    return { content: [{ type: "text", text: verdict.message }], details: { ok: false, identityMismatch: true, kind: verdict.kind, recorded: verdict.recorded } };
+                }
+                // `GET /user` proves the token is live, not that it can see this
+                // org. A PAT scoped to the wrong org passes validation and then
+                // fails at clone, an hour later, which is the failure mode this
+                // whole area exists to move forward.
+                const probeRepo = allowedRepoIn(orgKey);
+                if (probeRepo) {
+                    const reach = await checkRepoAccess(token.trim(), apiBase, probeRepo);
+                    if (reach.reach === "denied") {
+                        liveState().audit("tool.onboard.no_reach", { requester, provider: p, org: orgKey, repo: probeRepo, status: reach.status ?? null });
+                        return {
+                            content: [{ type: "text", text: `That token is valid${valid.login ? ` (\`${valid.login}\`)` : ""} but cannot see \`${probeRepo}\` (HTTP ${reach.status}). A fine-grained token has to grant access to \`${org}\` specifically. Nothing was stored — check the token's resource owner and repository access, then try again.` }],
+                            details: { ok: false, noReach: true, repo: probeRepo, status: reach.status ?? null },
+                        };
+                    }
+                }
+                const person = existing?.person ?? valid.login ?? requester;
+                const vaultService = existing?.vaultService ?? onboardRouteService(p, orgKey, person);
+                const name = commitName ?? existing?.commitName ?? valid.name ?? person;
+                const email = commitEmail ?? existing?.commitEmail ?? valid.email ??
+                    (p === "github" ? `${person}@users.noreply.github.com` : `${person}@users.noreply.gitlab.com`);
+                // Secret first, route second. If the route write fails the secret
+                // is merely unreferenced; the reverse publishes a route pointing at
+                // a vault entry that does not exist.
+                try {
+                    liveRuntime().vault.set(vaultService, token.trim(), {
+                        type: "token",
+                        notes: `${p} token for Slack user ${requester} in ${orgKey}; onboarded via harness_onboard`,
+                    });
+                }
+                catch (err) {
+                    return { content: [{ type: "text", text: `Vault store failed (${String(err)}).` }], details: { ok: false, vaultThrew: String(err) } };
+                }
+                try {
+                    overlay.upsert({
+                        provider: p, org: orgKey, person, slackUserId: requester,
+                        commitName: name, commitEmail: email, vaultService,
+                        providerLogin: valid.login, tokenExpiresAt: valid.expiresAt,
+                    });
+                }
+                catch (err) {
+                    // Only safe to undo on `add`: on `replace` the route already
+                    // exists and now points at the token just written, so deleting
+                    // the entry would destroy a working credential to tidy up
+                    // metadata.
+                    if (action === "add") {
+                        try {
+                            liveRuntime().vault.delete(vaultService);
+                        }
+                        catch { /* leave the orphan; nothing points at it */ }
+                    }
+                    liveState().audit("tool.onboard.route_write_failed", { requester, provider: p, org: orgKey, error: String(err) });
+                    return { content: [{ type: "text", text: `Stored the token but could not record the routing entry (${String(err)}), so nothing would read it. Nothing was left half-configured.` }], details: { ok: false, routeThrew: String(err) } };
+                }
+                const slack = await tryOnboardSlack();
+                if (slack && dmChannel && promptTs)
+                    await slack.deleteOwnMessage(dmChannel, promptTs);
+                const expiryNote = valid.expiresAt ? ` It expires on ${new Date(valid.expiresAt).toISOString().slice(0, 10)}.` : "";
+                if (slack && dmChannel) {
+                    await slack.postDm(dmChannel, `:white_check_mark: Stored your \`${p}\` token for \`${org}\`${valid.login ? ` (validated as \`${valid.login}\`)` : ""}.${expiryNote}` +
+                        `\n:warning: Please DELETE your message above containing the raw token — I can't delete your messages, only my own.` +
+                        (action === "replace" ? `\n:key: The previous token is no longer used here; revoke it at the provider.` : ""));
+                }
+                liveState().audit(action === "add" ? "tool.onboard.route_added" : "tool.onboard.route_replaced", {
+                    requester, provider: p, org: orgKey, person, vaultService, login: valid.login ?? null, expiresAt: valid.expiresAt ?? null,
+                });
+                const others = overlay.listForRequester(requester);
+                const rest = others.filter((r) => !(r.provider === p && r.org === orgKey));
+                const more = rest.length > 0
+                    ? ` You also have ${rest.map((r) => `\`${r.org}\``).join(", ")} configured.`
+                    : "";
+                return {
+                    content: [{
+                            type: "text",
+                            text: `${action === "add" ? "Added" : "Replaced"} your \`${p}\` credential for \`${org}\`` +
+                                `${valid.login ? `, validated as \`${valid.login}\`` : ""}.${expiryNote}${more}` +
+                                (action === "replace" ? " Revoke the old token at the provider — removing it here does not." : "") +
+                                " Send another org URL if you have more to add.",
+                        }],
+                    details: {
+                        ok: true, action, provider: p, org: orgKey, person, vaultService,
+                        login: valid.login ?? null, tokenExpiresAt: valid.expiresAt ?? null,
+                        identity: verdict.kind, otherOrgs: rest.map((r) => r.org),
+                    },
+                };
             }
             const credService = liveConfig().slack.credential_service;
             if (!credService) {
@@ -1521,6 +1801,46 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `Could not resolve the Slack bot token from vault (${String(err)}).` }], details: { ok: false, slackTokenError: true } };
             }
             const onboard = new OnboardingSlack({ slackToken, logger: api.logger });
+            // Which of the two onboarding flows this deployment actually uses.
+            //
+            // The flat flow stores ONE token under a pattern-derived name. It
+            // cannot express one person holding different tokens for two orgs,
+            // and on a deployment whose routing resolves through pointers the
+            // name it produces is never read at all -- so `submit` there would
+            // store a token nothing could use, and the pattern gate below would
+            // (correctly) refuse to open the DM in the first place. Those setups
+            // onboard per-org via `add`, which writes the routing entry itself
+            // and so needs no pattern agreement.
+            const perOrgFlow = !!orgUrl ||
+                overlay.listForRequester(requester).length > 0 ||
+                (() => {
+                    const resFn = liveRuntime().gitResolutionFor;
+                    if (!resFn)
+                        return false;
+                    return liveConfig().repos.allowed.some((r) => !!resFn(r, requester)?.tokenSource);
+                })();
+            if (action === "start" && perOrgFlow) {
+                const dm = await onboard.openDm(requester);
+                if (!dm.ok || !dm.value) {
+                    return { content: [{ type: "text", text: `Could not open a DM with <@${requester}> (${dm.error ?? "unknown"}).` }], details: { ok: false, dmError: dm.error } };
+                }
+                const configured = overlay.listForRequester(requester);
+                const already = configured.length > 0
+                    ? `\n\nYou currently have ${configured.map((r) => `\`${r.org}\``).join(", ")} configured.`
+                    : "";
+                const prompt = await onboard.postDm(dm.value, `:wave: Let's set up a git token so the harness can act as you.\n\n` +
+                    `Reply in THIS DM with two things:\n` +
+                    `1. the org URL, e.g. \`https://github.com/acme\`\n` +
+                    `2. a token that can reach that org\n\n` +
+                    `Tokens are stored per org, so you can repeat this for as many orgs as you need. ` +
+                    `Once stored, I'll delete my prompt and confirm.${already}\n\n` +
+                    `:lock: Never paste your token in a public channel.`);
+                liveState().audit("tool.onboard.started", { requester, dmChannel: dm.value, flow: "per_org" });
+                return {
+                    content: [{ type: "text", text: `Opened an onboarding DM with <@${requester}>. Ask them for the org URL and token in that DM, then call harness_onboard action:'add' with both.` }],
+                    details: { ok: true, dmChannel: dm.value, promptTs: prompt.value ?? null, flow: "per_org", configured: configured.map((r) => r.org) },
+                };
+            }
             const vaultService = resolveOnboardVaultService(requester, {
                 pattern: liveConfig().pat_routing?.onboard_service_pattern,
                 provider: provider ?? "github",

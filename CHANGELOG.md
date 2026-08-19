@@ -75,6 +75,73 @@ assertion cannot tell a working seal from a broken one. Four entries in
 `scripts/mutation-check.mjs` cover the environment strip, the key verifier, the
 refusal to swallow an authentication failure, and the commit exclusion.
 
+### Onboarding writes the route as well as the secret
+
+b133 fixed a token stored under a name nothing read. The half it could not fix
+is that `harness_onboard` had nowhere to write the *routing* entry:
+`pat_routing.<provider>.<org>.<person>` lives in plugin config, which is
+read-only at runtime. So the tool could store a secret and nothing that told the
+router to use it, and the best it could do was refuse when the two names looked
+like they would disagree.
+
+There is now a `credential_routes` table, merged **beneath** the config tree at
+resolve time. A hand-written entry always wins — a chat message can never
+silently redirect commits an operator configured by hand — and onboarding
+refuses outright rather than writing a row that would never be reached.
+
+Two orderings carry most of the weight, and both are covered by mutations:
+
+- The overlay is consulted **before** `resolveHierarchy` throws
+  `PatRequesterNotAuthorisedError`. Behind that throw, an org an operator set up
+  for one colleague locks out everyone who onboarded themselves, reported as
+  "not authorised" — which reads like a permissions problem rather than a lookup
+  that never happened.
+- The secret is written **before** the route. The reverse publishes a route
+  pointing at a vault entry that does not exist, which is the hour-late failure
+  at clone this whole area exists to move forward. A failed route write rolls
+  the new secret back rather than leaving an orphan.
+
+Credentials are keyed by provider **and org**, because one person routinely
+holds different tokens for two orgs; a flat per-user name meant the second
+onboarding overwrote the first and runs pushed with the wrong org's token. The
+tool grew `list`, `add`, `replace` and `remove` around that, taking an org URL
+rather than a bare org name — a URL states the provider too, which someone
+holding tokens on both GitHub and GitLab otherwise has no way to express.
+Accepted hosts are derived from the configured providers, so a self-hosted
+GitLab works exactly when an operator has configured one and an unknown host is
+refused rather than guessed at.
+
+Three refusals are new, and each replaces a failure that used to surface an hour
+later or not at all:
+
+- **A token that authenticates as a different account** cannot replace a stored
+  credential. `requester` is an argument on an agent-relayed call, so nothing in
+  it proves who is asking; the token's own `GET /user` response does. Without
+  this, someone could store their token against another person's identity and
+  that person's commits would push with it.
+- **A token that cannot reach the org** is rejected at onboarding. `GET /user`
+  proves a token is live, not that it can see this org, and a fine-grained PAT
+  scoped elsewhere validates cleanly and then fails at clone. Checked against a
+  concrete allowed repo rather than the org itself, since `GET /orgs/<name>`
+  404s for a personal namespace and would refuse a perfectly good token.
+- **An org already configured in `pat_routing`** is not shadowed, because the
+  row would never be read.
+
+b133's own gate needed a matching correction. It compared what onboarding was
+about to write against `credentialService`, which is *synthetic* on a hierarchy
+or overlay hit — the router builds it for logs and looks the token up by
+`tokenPointer.vault`. So it compared against a string nothing uses: it refused
+correct setups, and following its advice to align the patterns made it pass
+while the token landed under a name still nothing read. It now reads the pointer,
+and treats an env-var or literal pointer as an absence rather than a mismatch.
+
+Finally, the interaction log redacts credentials by **field name** as well as by
+shape. Shape matching is a guess about other people's token formats, and
+onboarding now accepts self-hosted providers whose tokens look like whatever
+that deployment chose. The matching is exact rather than substring, so
+`tokensIn`, `tokensOut` and `tokenPointer` survive — blanking them to be safe
+would take away the numbers a budget or routing failure is diagnosed from.
+
 ## 0.1.0-beta.133
 
 ### A token in the vault that nothing could read

@@ -33,6 +33,7 @@ import { SlackProgressPoster, hasRealSlackBinding } from "./slack/progress-poste
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
+import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import { parseOkfBlocksFromContext, OkfConceptCache, decideAutoForward, buildRewrittenParams, cacheKeyForCtx, } from "./hooks/okf-auto-forward.js";
@@ -131,7 +132,11 @@ export function bootstrapHarnessSync(api) {
         logger: api.logger,
     });
     const budget = new BudgetEnforcer(config.budgets, state);
-    const pat = new PatRouter(config.pat_routing);
+    // Routes written by `harness_onboard`, merged BENEATH the config tree so a
+    // hand-written entry always wins. Without this the tool can store a secret
+    // and nothing that tells the router to use it.
+    const routeOverlay = new RouteOverlay(state.db);
+    const pat = new PatRouter(config.pat_routing, routeOverlay);
     // beta.110: HARNESS-OWNED CREDENTIAL VAULT.
     //
     // Replaces memory-hybrid's `credential_get` / `credential_store` tools
@@ -1099,6 +1104,7 @@ export function bootstrapHarnessSync(api) {
                 return undefined;
             }
         },
+        routeOverlay,
         gitResolutionFor: (repoFullName, slackUserId) => {
             const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
             if (!repo)

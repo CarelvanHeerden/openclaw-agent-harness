@@ -37,6 +37,7 @@ import { SlackProgressPoster, hasRealSlackBinding } from "./slack/progress-poste
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
+import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import {
@@ -263,6 +264,11 @@ export interface HarnessRuntime {
    */
   githubServiceFor: (repoFullName?: string) => string | undefined;
   /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
+  /**
+   * Routes written by `harness_onboard`. The same instance the router reads,
+   * so a route the tool writes is live for the next session without a restart.
+   */
+  routeOverlay?: RouteOverlay;
   gitResolutionFor: (repoFullName?: string, slackUserId?: string) => {
     credentialService: string;
     provider: string;
@@ -408,7 +414,11 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   });
 
   const budget = new BudgetEnforcer(config.budgets, state);
-  const pat = new PatRouter(config.pat_routing);
+  // Routes written by `harness_onboard`, merged BENEATH the config tree so a
+  // hand-written entry always wins. Without this the tool can store a secret
+  // and nothing that tells the router to use it.
+  const routeOverlay = new RouteOverlay(state.db);
+  const pat = new PatRouter(config.pat_routing, routeOverlay);
 
   // beta.110: HARNESS-OWNED CREDENTIAL VAULT.
   //
@@ -1419,6 +1429,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         return undefined;
       }
     },
+    routeOverlay,
     gitResolutionFor: (repoFullName?: string, slackUserId?: string) => {
       const repo = repoFullName ?? config.repos.allowed.find((r) => !r.includes("*")) ?? config.repos.allowed[0];
       if (!repo) return undefined;
