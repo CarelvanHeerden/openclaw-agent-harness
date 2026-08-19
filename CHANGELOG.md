@@ -32,9 +32,11 @@ intended and aborts before reaching the decision under test, so the assertion
 tripped over a missing event with `Cannot read properties of undefined` —
 naming neither the event nor the reason. It now reports which event was expected
 and which the run actually emitted, and every wall-clock number in the file
-scales together via `HARNESS_TEST_CLOCK_SCALE` (default 1, so the suite does not
-get slower). Under 14x CPU oversubscription the file fails at the default and
-passes 10/10 at `HARNESS_TEST_CLOCK_SCALE=3`. That is a mitigation, not a cure:
+scales together via `HARNESS_TEST_CLOCK_SCALE`, defaulting to 2. One was
+measurably not enough — the original numbers failed one full suite run and
+passed the next, a coin flip on an unloaded machine, purely because `npm test`
+runs this file alongside a hundred others. Under 14x CPU oversubscription the
+file still fails at 1 and passes 10/10 at 3. That is a mitigation, not a cure:
 the cure is a clock the loop takes as a dependency, and `loop.ts` reads
 `Date.now()` directly in about thirty places.
 

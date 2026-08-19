@@ -130,16 +130,20 @@ function autoAnswer(db, reply) {
  *
  * Scaling every number by the same factor preserves the ratios the guard's
  * quarter/half clamps depend on, so a bigger scale buys tolerance without
- * changing what is being tested. The default of 1 keeps the suite fast; raise
- * it when running somewhere contended:
+ * changing what is being tested.
  *
- *   HARNESS_TEST_CLOCK_SCALE=3 node --test tests/beta130-ci-repair-ask.test.mjs
+ * The default is 2 because 1 was measurably not enough: the original numbers
+ * failed one full suite run and passed the next, a coin flip on an unloaded
+ * machine, purely because `npm test` runs this file alongside a hundred others.
+ * Raise it further on anything more contended:
+ *
+ *   HARNESS_TEST_CLOCK_SCALE=4 node --test tests/beta130-ci-repair-ask.test.mjs
  *
  * It is a mitigation, not a cure. The cure is a clock the loop takes as a
  * dependency, which `loop.ts` does not yet have -- it reads `Date.now()`
  * directly in about thirty places.
  */
-const CLOCK_SCALE = Math.max(1, Number(process.env.HARNESS_TEST_CLOCK_SCALE ?? 1) || 1);
+const CLOCK_SCALE = Math.max(1, Number(process.env.HARNESS_TEST_CLOCK_SCALE ?? 2) || 2);
 /** Seconds and milliseconds, scaled together so the ratios survive. */
 const s = (n) => n * CLOCK_SCALE;
 const ms = (n) => n * CLOCK_SCALE;
