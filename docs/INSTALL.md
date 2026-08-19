@@ -128,7 +128,8 @@ the shorter path is silently ignored. Minimal example:
             "session_hard_ceiling_usd": 200
           },
           "repos": {
-            "allowed": ["example-org/example-repo"]
+            "allowed": ["example-org/example-repo"],
+            "never_commit_paths": ["okf/**"]
           },
           "models": {
             "lead": "claude-fable-5",
@@ -148,6 +149,17 @@ first entry is the fallback requester identity.
 
 `slack.channel` is optional. Do not set `slack.listener_enabled` — beta.34
 removed the autonomous listener and the flag has been ignored since.
+
+`repos.never_commit_paths` is the one setting you have to decide per repo. If an
+allow-listed repo keeps a **generated bundle checked in** — generated API docs, a
+regenerated schema index, snapshot fixtures — list it here. Workers stage with
+`git add -A`, so a build step that regenerates that tree sweeps all of it into
+the commit; one real run committed 141 generated files alongside 13 real ones,
+and the out-of-scope findings that follow are blocking and unfixable, because
+regenerating was the job. The list is empty by default and is never inferred,
+since a generated tree cannot be told from hand-written code by inspection, and
+nothing will warn you if you leave it out. Drop the line if your repo has no
+such tree. See [Generated trees](CONFIGURATION.md#generated-trees-reposnever_commit_paths).
 
 See [`CONFIGURATION.md`](CONFIGURATION.md) for all options.
 

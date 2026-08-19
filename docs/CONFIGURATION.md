@@ -42,7 +42,11 @@ The surrounding `plugins.entries[<id>]` object also supports an `enabled` boolea
             "can_create":         true,          // may create new repos on request
             "create_org":         "example-org",
             "create_visibility":  "private",     // "private" | "public"
-            "default_base_branch": "main"
+            "default_base_branch": "main",
+            // Generated trees a worker may regenerate but must never commit.
+            // Empty by default. Set this for any repo with a checked-in
+            // generated bundle -- see "Generated trees" below.
+            "never_commit_paths": ["okf/**"]
           },
 
           // Model selection
@@ -224,6 +228,36 @@ Sessions may only operate on repos listed in `repos.allowed` unless the user exp
 - New repos are created under `repos.create_org` with visibility `repos.create_visibility`.
 - The new repo is added to the running config's allow-list for the remainder of the session.
 - On session end, the newly created repo is either persisted in the config (if the user confirms) or left in the ad-hoc allow-list for future sessions.
+
+### Generated trees (`repos.never_commit_paths`)
+
+Set this for any allow-listed repo that keeps a **generated bundle checked in** —
+generated API docs, a regenerated schema index, snapshot fixtures. Glob patterns,
+matched against paths relative to the repo root:
+
+```
+"never_commit_paths": ["okf/**", "docs/generated/**"]
+```
+
+Workers stage with `git add -A`, so a build step that regenerates such a tree as
+a side effect sweeps the whole thing into the commit. In the run that produced
+[PR #961](https://github.com/Stitch-Vercel/ProjectThanos/pull/961), 141 of 154
+committed files were a regenerated documentation bundle. The cost is not only a
+noisy diff: every review cycle then has hundreds of unrelated files to find new
+problems in, and the deterministic final-scope check counts each one as an
+out-of-scope write, which is a `medium` finding and therefore blocking. A run
+can spend its whole cycle budget on a finding no worker is able to resolve,
+because regenerating is exactly what the sub-task was asked to do.
+
+The list runs **after** staging and reverts, not before and ignores. Both halves
+matter: unstaging alone leaves the files dirty and the next sub-task's `add -A`
+stages them straight back. A commit left holding nothing but excluded paths is
+dropped rather than committed empty.
+
+**Empty by default, and never inferred.** A generated tree is indistinguishable
+from hand-written code by inspection — `okf/**` is ordinary markdown — so a
+harness that guessed would eventually discard someone's real work. Nothing warns
+you if you omit it; an unconfigured repo behaves exactly as it did before.
 
 ### Safety
 
