@@ -842,7 +842,7 @@
         },
         "default_service_pattern": {
           "type": "string",
-          "default": "github-{owner}"
+          "default": "{provider}-{owner}"
         },
         "onboard_service_pattern": {
           "type": "string",

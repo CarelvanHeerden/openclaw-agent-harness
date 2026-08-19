@@ -221,7 +221,7 @@ const DEFAULTS = {
     pat_routing: {
         overrides: {},
         commit_identity: {},
-        default_service_pattern: "github-{owner}",
+        default_service_pattern: "{provider}-{owner}",
         auth: {
             api_key_env: "GH_TOKEN",
         },

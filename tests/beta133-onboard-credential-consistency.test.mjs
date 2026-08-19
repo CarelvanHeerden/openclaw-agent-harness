@@ -209,8 +209,25 @@ test("beta133: the refusal happens before the DM, not after the token is pasted"
 
   // 'start' must fail the same way. If only 'submit' checked, the user would be
   // asked for a secret in a DM before being told it could never be used.
-  const r = await tools.get("harness_onboard").execute({ requester: "U07UT6G8LQ4", action: "start" });
+  //
+  // legacy:true because this gate guards the FLAT flow, which is the only flow
+  // that commits to a vault name before knowing the org. Plain 'start' now asks
+  // which org the token is for and hands the answer to 'add', which derives the
+  // name from the org and writes the route with it -- there is no pattern left
+  // to disagree with. The guarantee is unchanged for the flow that needs it.
+  const r = await tools.get("harness_onboard").execute({ requester: "U07UT6G8LQ4", action: "start", legacy: true });
   assert.equal(r.details.patternMismatch, true);
+});
+
+test("beta133: the per-org 'start' needs no pattern agreement, so it is not refused", { skip }, async () => {
+  // Same deployment, same irreconcilable patterns. Without legacy:true nothing
+  // is being stored under a pattern-derived name yet, so refusing here would
+  // block an onboarding that is going to work.
+  const runtime = makeRuntime({ onboardPattern: undefined });
+  const { tools } = collectTools(runtime);
+
+  const r = await tools.get("harness_onboard").execute({ requester: "U07UT6G8LQ4", action: "start" });
+  assert.notEqual(r.details.patternMismatch, true, "the per-org flow must not inherit the flat flow's gate");
 });
 
 /** Keeps the suite off the network: past the gate, `submit` calls GET /user. */

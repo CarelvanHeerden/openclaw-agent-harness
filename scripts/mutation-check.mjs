@@ -2115,6 +2115,77 @@ const MUTATIONS = [
     replace: "const isSecretKey = (key) => [...SECRET_KEYS].some((s) => key.toLowerCase().includes(s));",
     tests: ["tests/log-secret-keys.test.mjs"],
   },
+  {
+    // The consistency gate compares the name onboarding would write against
+    // the names sessions read. Comparing a GitLab onboarding against the names
+    // GitHub repos resolve to can only ever look like a mismatch, and the
+    // refusal advises aligning the patterns -- which breaks the working GitHub
+    // side to satisfy a comparison that was never valid.
+    name: "the onboard gate only compares against repos on the provider being onboarded",
+    file: "dist/tools/registration.js",
+    find: "if (res.provider !== flatProvider)",
+    replace: "if (false)",
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // ...and the scoping must not become a way to compare against nothing at
+    // all, which would pass every onboarding including the broken ones.
+    name: "provider scoping narrows the gate without disabling it",
+    file: "dist/tools/registration.js",
+    find: "if (res.provider !== flatProvider)",
+    replace: "if (true)",
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // `start` establishes the org BEFORE asking for a token. Falling back into
+    // the flat prompt asks for a secret while still not knowing which org it is
+    // for, which is the whole defect: the name was chosen before the question
+    // was asked, so the second org's token overwrote the first's.
+    name: "start asks which org before it asks for a token",
+    file: "dist/tools/registration.js",
+    find: 'if (action === "start" && !legacy) {',
+    replace: 'if (action === "start" && legacy === "never") {',
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // The provider must come from the URL the person pasted. Defaulting it is
+    // how a GitLab token gets stored, and later read, as a GitHub one.
+    name: "the provider named in the DM comes from the URL, not a default",
+    file: "dist/tools/registration.js",
+    find: "named = { provider: parsed.value.provider,",
+    replace: 'named = { provider: "github",',
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // The vault key shown must be the per-org one. Showing a flat per-user name
+    // would tell the person their two orgs share a credential -- which, if the
+    // storage side ever agreed, is exactly the clobbering being prevented.
+    name: "the key quoted in the DM is keyed on provider AND org",
+    file: "dist/tools/registration.js",
+    find: 'onboardRouteService(named.provider, named.orgKey, "<your-login>")',
+    replace: '"git-pat:" + requester',
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // A flat token stored alongside per-org ones is a second credential for the
+    // same human under a different name, and whichever a session read would
+    // decide whose commits went out.
+    name: "the flat flow is refused once per-org credentials exist",
+    file: "dist/tools/registration.js",
+    find: "if (!legacy && alreadyPerOrg) {",
+    replace: "if (false) {",
+    tests: ["tests/onboard-multi-org-start.test.mjs"],
+  },
+  {
+    // One person's GitHub and GitLab tokens for a same-named org collapse onto
+    // a single vault name under the old hard-coded prefix, so onboarding the
+    // second silently destroys the first.
+    name: "the default service pattern distinguishes the provider",
+    file: "dist/config.js",
+    find: 'default_service_pattern: "{provider}-{owner}",',
+    replace: 'default_service_pattern: "github-{owner}",',
+    tests: ["tests/config.test.mjs"],
+  },
 ];
 
 /**

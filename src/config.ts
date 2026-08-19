@@ -1362,8 +1362,16 @@ export interface PatRoutingConfig {
    *                 repo this equals {owner}, which is why the old default
    *                 "github-{user}-{org}" collapsed to a duplicated segment)
    *   {org}       - repo owner (deprecated alias of {owner})
-   * Default: "github-{owner}" (per-owner tokens). Every placeholder except
+   *   {provider}  - "github" or "gitlab"
+   * Default: "{provider}-{owner}" (per-owner tokens). Every placeholder except
    * {userid} is lower-cased.
+   *
+   * The default carried a hard-coded "github-" prefix until it was noticed that
+   * one person's GitHub and GitLab tokens for a same-named org collapse onto a
+   * single name, so the second overwrites the first. {provider} expands to
+   * "github" on GitHub repos, so this default reads identically to the old one
+   * on any single-provider GitHub deployment -- it only diverges where the old
+   * name was wrong.
    */
   default_service_pattern: string;
   /**
@@ -1618,7 +1626,7 @@ const DEFAULTS: HarnessConfig = {
   pat_routing: {
     overrides: {},
     commit_identity: {},
-    default_service_pattern: "github-{owner}",
+    default_service_pattern: "{provider}-{owner}",
     auth: {
       api_key_env: "GH_TOKEN",
     },

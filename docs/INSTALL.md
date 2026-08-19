@@ -154,8 +154,8 @@ See [`CONFIGURATION.md`](CONFIGURATION.md) for all options.
 ## 4. Store the GitHub PATs in the vault
 
 The vault service name comes from `pat_routing.default_service_pattern`, which
-defaults to `github-{owner}` with the owner lower-cased. For
-`Stitch-Vercel/ProjectThanos` that is `github-stitch-vercel`:
+defaults to `{provider}-{owner}` with the owner lower-cased. For
+`Stitch-Vercel/ProjectThanos` on GitHub that is `github-stitch-vercel`:
 
 ```bash
 openclaw memory credential-store --service github-stitch-vercel --type token --value 'ghp_...'
@@ -167,10 +167,11 @@ and no pattern needs to line up. It is the right choice when one person holds
 different tokens for different orgs.
 
 The pattern below matters only for the **legacy flat flow**
-(`harness_onboard action:"submit"`), which stores a single token per user. There,
+(`harness_onboard action:"submit"` with `legacy:true`), which stores a single
+token per user. There,
 `pat_routing.onboard_service_pattern` must be able to produce the same string as
 `default_service_pattern` — they share only the `{userid}` placeholder, and the
-two defaults (`git-pat:{userid}` and `github-{owner}`) cannot agree. Since
+two defaults (`git-pat:{userid}` and `{provider}-{owner}`) cannot agree. Since
 beta.133 onboarding refuses rather than storing a token nothing will read, but
 it is easier to set the patterns correctly up front. Legacy per-(user, org)
 naming still works if you set the pattern explicitly:

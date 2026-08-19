@@ -21,7 +21,7 @@ import {
   resolveOnboardVaultService,
   validateGitToken,
 } from "../slack/onboarding.js";
-import { parseOrgUrl } from "../auth/org-url.js";
+import { acceptedHosts, parseOrgUrl } from "../auth/org-url.js";
 import { checkTokenIdentity } from "../auth/identity.js";
 import { RouteOverlay, normaliseOrg } from "../auth/route-overlay.js";
 import type { GitProvider } from "../config.js";
@@ -1769,7 +1769,8 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           "action:'add' takes an orgUrl (e.g. https://github.com/acme) plus a token, validates it, and stores BOTH the secret and the routing entry that makes it readable; " +
           "action:'replace' swaps the token for an org already configured; " +
           "action:'remove' deletes one (needs confirm:true). " +
-          "action:'start' opens a private DM so the token is pasted out of any public channel; action:'submit' is the legacy single-token flow for flat, non-per-org setups. " +
+          "action:'start' opens a private DM so the token is pasted out of any public channel — pass orgUrl to name the org up front, or omit it and the DM asks which provider and org the token is for; the reply is then stored with action:'add'. " +
+          "action:'submit' (with legacy:true) is the legacy single-token flow for flat setups that resolve through default_service_pattern. " +
           "ONLY users in slack.authorised_users may onboard. The raw token must NEVER be posted to a public channel.",
         parameters: {
           type: "object",
@@ -1785,7 +1786,8 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             confirm: { type: "boolean", description: "For 'remove': must be true to actually delete. A first call without it reports what would be removed." },
             commitName: { type: "string", description: "Optional git author name for commits made on this person's behalf. Defaults to the provider account's name." },
             commitEmail: { type: "string", description: "Optional git author email. Defaults to the provider account's email, or its noreply address." },
-            provider: { type: "string", description: "Git provider (default 'github'). Only needed for the legacy 'submit' flow; 'add' reads it from orgUrl." },
+            provider: { type: "string", description: "Git provider. Only needed for the legacy flat flow; 'add' and 'start' read it from orgUrl. Defaults to pat_routing.default_provider." },
+            legacy: { type: "boolean", description: "Opt in to the legacy flat single-token flow, which stores ONE token per person rather than one per org. Only for flat deployments that resolve through default_service_pattern." },
             promptTs: { type: "string", description: "The ts of the bot's DM prompt to delete after storing." },
             dmChannel: { type: "string", description: "The DM channel id (from action:'start') to post confirmation + delete the prompt in." },
           },
@@ -1793,11 +1795,11 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
-          const { requester, action, token, orgUrl, confirm, commitName, commitEmail, provider, promptTs, dmChannel } = input as {
+          const { requester, action, token, orgUrl, confirm, commitName, commitEmail, provider, promptTs, dmChannel, legacy } = input as {
             requester: string;
             action: "start" | "submit" | "list" | "add" | "replace" | "remove";
             token?: string; orgUrl?: string; confirm?: boolean; commitName?: string; commitEmail?: string;
-            provider?: string; promptTs?: string; dmChannel?: string;
+            provider?: string; promptTs?: string; dmChannel?: string; legacy?: boolean;
           };
           if (!liveConfig().slack.authorised_users.includes(requester)) {
             liveState().audit("tool.onboard.unauthorised", { requester });
@@ -2094,54 +2096,139 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           }
           const onboard = new OnboardingSlack({ slackToken, logger: api.logger });
 
-          // Which of the two onboarding flows this deployment actually uses.
+          // This person has already been onboarded per org, so a flat token
+          // would be a second, differently-keyed credential for the same
+          // human -- and whichever one a session happened to read would decide
+          // whose commits went out. That is the conflict worth refusing.
           //
-          // The flat flow stores ONE token under a pattern-derived name. It
-          // cannot express one person holding different tokens for two orgs,
-          // and on a deployment whose routing resolves through pointers the
-          // name it produces is never read at all -- so `submit` there would
-          // store a token nothing could use, and the pattern gate below would
-          // (correctly) refuse to open the DM in the first place. Those setups
-          // onboard per-org via `add`, which writes the routing entry itself
-          // and so needs no pattern agreement.
-          const perOrgFlow =
-            !!orgUrl ||
-            overlay.listForRequester(requester).length > 0 ||
-            (() => {
-              const resFn = liveRuntime().gitResolutionFor;
-              if (!resFn) return false;
-              return liveConfig().repos.allowed.some((r) => !!resFn(r, requester)?.tokenSource);
-            })();
+          // Deliberately NOT "does this deployment use pointers": a flat name
+          // that happens to equal the pointer is read perfectly well, and the
+          // consistency gate below already decides that question precisely.
+          // Refusing on the deployment's shape would take away a setup that
+          // works.
+          const alreadyPerOrg = overlay.listForRequester(requester).length > 0;
 
-          if (action === "start" && perOrgFlow) {
+          // ---------------------------------------------------------------
+          // start: open the private DM. Per-org unless legacy is asked for.
+          //
+          // The old prompt said "reply with your token" and computed one vault
+          // name from `onboard_service_pattern` before it knew which provider
+          // or org the token was for. A person in two orgs -- or on both
+          // GitHub and GitLab -- has no way to answer that question, and the
+          // single name it had already chosen would have the second token
+          // overwrite the first. So the DM now establishes provider and org
+          // FIRST, and the reply is handed to `add`, which derives the vault
+          // name from all three and writes the routing entry with it.
+          // ---------------------------------------------------------------
+          if (action === "start" && !legacy) {
+            // A URL is the one input that states provider and org together, so
+            // when it is given the DM can name exactly what is being onboarded
+            // instead of asking a question already answered. A bad one is
+            // refused BEFORE the DM: asking for a token and then rejecting the
+            // org it was for wastes a live secret in a chat log.
+            let named: { provider: GitProvider; org: string; orgKey: string } | undefined;
+            if (orgUrl) {
+              const parsed = parseOrgUrl(orgUrl, liveConfig().pat_routing?.providers);
+              if (!parsed.ok) {
+                return {
+                  content: [{ type: "text", text: `I can't tell which provider and org that is. ${parsed.error}. Send something like \`https://github.com/acme\`.` }],
+                  details: { ok: false, badOrgUrl: parsed.error },
+                };
+              }
+              named = { provider: parsed.value.provider, org: parsed.value.org, orgKey: normaliseOrg(parsed.value.org) };
+            }
+
             const dm = await onboard.openDm(requester);
             if (!dm.ok || !dm.value) {
               return { content: [{ type: "text", text: `Could not open a DM with <@${requester}> (${dm.error ?? "unknown"}).` }], details: { ok: false, dmError: dm.error } };
             }
             const configured = overlay.listForRequester(requester);
             const already = configured.length > 0
-              ? `\n\nYou currently have ${configured.map((r) => `\`${r.org}\``).join(", ")} configured.`
+              ? `\n\nYou already have ${configured.map((r) => `\`${r.provider}\`/\`${r.org}\``).join(", ")} configured.`
               : "";
-            const prompt = await onboard.postDm(
-              dm.value,
-              `:wave: Let's set up a git token so the harness can act as you.\n\n` +
-                `Reply in THIS DM with two things:\n` +
-                `1. the org URL, e.g. \`https://github.com/acme\`\n` +
-                `2. a token that can reach that org\n\n` +
-                `Tokens are stored per org, so you can repeat this for as many orgs as you need. ` +
-                `Once stored, I'll delete my prompt and confirm.${already}\n\n` +
-                `:lock: Never paste your token in a public channel.`,
-            );
-            liveState().audit("tool.onboard.started", { requester, dmChannel: dm.value, flow: "per_org" });
+
+            let body: string;
+            let vaultPreview: string | undefined;
+            if (named) {
+              const existing = overlay.lookup(named.provider, named.orgKey, requester);
+              // The person is part of the key, and until a token is validated
+              // the provider login is not known -- so an existing route can be
+              // named exactly, and a new one only in shape. Showing the shape
+              // is still worth it: it is what makes "one name per org" visible
+              // rather than something the operator has to take on trust.
+              vaultPreview = existing?.vaultService ?? onboardRouteService(named.provider, named.orgKey, "<your-login>");
+              body =
+                `:wave: Let's set up your \`${named.provider}\` token for \`${named.org}\`.\n\n` +
+                `Reply in THIS DM with a token that can reach \`${named.org}\` on \`${named.provider}\`. ` +
+                `I'll store it as \`${vaultPreview}\` — the name includes the provider and the org, so this ` +
+                `token will not disturb any other org you've set up.${already}\n\n` +
+                (existing ? `:repeat: This will REPLACE the token you already have for \`${named.org}\`.\n\n` : "") +
+                `:lock: Never paste your token in a public channel.`;
+            } else {
+              // No URL: ask, rather than defaulting to GitHub and whatever
+              // `default_service_pattern` produces. The providers offered are
+              // the ones this deployment actually has, so a GitHub-only
+              // deployment does not invite a GitLab token it cannot route.
+              const offered = [...new Set(acceptedHosts(liveConfig().pat_routing?.providers).values())];
+              const choices = offered.length > 0 ? offered.map((p) => `\`${p}\``).join(" or ") : "`github` or `gitlab`";
+              body =
+                `:wave: Let's set up a git token so the harness can act as you.\n\n` +
+                `First, tell me which org this token is for. Reply in THIS DM with:\n` +
+                `1. the provider — ${choices}\n` +
+                `2. the org, ideally as a URL like \`https://github.com/acme\`\n` +
+                `3. a token that can reach that org\n\n` +
+                `:key: A separate token is needed for EACH org you work in — they are stored one per ` +
+                `provider and org, so adding a second org never overwrites the first. Repeat this for ` +
+                `as many orgs as you need.${already}\n\n` +
+                `:lock: Never paste your token in a public channel.`;
+            }
+
+            const prompt = await onboard.postDm(dm.value, body);
+            liveState().audit("tool.onboard.started", {
+              requester, dmChannel: dm.value, flow: "per_org",
+              provider: named?.provider ?? null, org: named?.orgKey ?? null,
+            });
             return {
-              content: [{ type: "text", text: `Opened an onboarding DM with <@${requester}>. Ask them for the org URL and token in that DM, then call harness_onboard action:'add' with both.` }],
-              details: { ok: true, dmChannel: dm.value, promptTs: prompt.value ?? null, flow: "per_org", configured: configured.map((r) => r.org) },
+              content: [{
+                type: "text",
+                text: named
+                  ? `Opened an onboarding DM with <@${requester}> for \`${named.provider}\`/\`${named.org}\`. When they reply with the token, call harness_onboard action:'add' with the same orgUrl and that token.`
+                  : `Opened an onboarding DM with <@${requester}>. Ask them which provider and org the token is for, then call harness_onboard action:'add' with that orgUrl and the token.`,
+              }],
+              details: {
+                ok: true, dmChannel: dm.value, promptTs: prompt.value ?? null, flow: "per_org",
+                provider: named?.provider ?? null, org: named?.orgKey ?? null,
+                vaultService: vaultPreview ?? null,
+                configured: configured.map((r) => r.org),
+              },
             };
           }
 
+          if (!legacy && alreadyPerOrg) {
+            const configured = overlay.listForRequester(requester);
+            liveState().audit("tool.onboard.flat_refused", { requester, action, configured: configured.length });
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `You already have per-org credentials configured (${configured.map((r) => `\`${r.provider}\`/\`${r.org}\``).join(", ")}). ` +
+                  `The flat flow stores ONE token for you across every org, so it would sit alongside those under a ` +
+                  `different name and whichever a session read would decide which of your tokens went out. ` +
+                  `Use action:'add' with the org URL and the token instead. Pass legacy:true if you really mean the flat flow.`,
+              }],
+              details: { ok: false, flatRefused: true, configured: configured.map((r) => r.org) },
+            };
+          }
+
+          // The provider the LEGACY flat flow is storing for. `add` reads this
+          // from the org URL, which states it; the flat flow has no URL, so it
+          // is either stated explicitly or taken from the deployment's own
+          // default rather than assumed to be GitHub.
+          const flatProvider: GitProvider =
+            (provider as GitProvider | undefined) ?? liveConfig().pat_routing?.default_provider ?? "github";
           const vaultService = resolveOnboardVaultService(requester, {
             pattern: liveConfig().pat_routing?.onboard_service_pattern,
-            provider: provider ?? "github",
+            provider: flatProvider,
           });
 
           // beta.133: refuse to store a token under a name nothing reads. The
@@ -2161,10 +2248,20 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // undetermined.
           {
             const resFn = liveRuntime().gitResolutionFor;
+            // Only repos on the provider being onboarded can say anything about
+            // the name this token will be read by. A GitLab token compared
+            // against the names GitHub repos resolve to is guaranteed to look
+            // like a mismatch, and the refusal then tells the operator to
+            // "align the patterns" -- advice that would break the GitHub side
+            // to satisfy a comparison that was never valid. Where no repo on
+            // this provider is allow-listed yet the list comes back empty,
+            // which `checkOnboardConsistency` reports as undetermined rather
+            // than as a refusal.
             const expected = resFn
               ? liveConfig().repos.allowed.map((r) => {
                   const res = resFn(r, requester);
                   if (!res) return "";
+                  if (res.provider !== flatProvider) return "";
                   if (res.tokenSource) return res.vaultPointer ?? "";
                   return res.credentialService;
                 })
@@ -2186,6 +2283,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             }
           }
 
+          // The legacy flat prompt, reached only via legacy:true. It names one
+          // vault entry for the person rather than one per org, which is why it
+          // has to be asked for rather than fallen into.
           if (action === "start") {
             const dm = await onboard.openDm(requester);
             if (!dm.ok || !dm.value) {
@@ -2193,15 +2293,17 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             }
             const prompt = await onboard.postDm(
               dm.value,
-              `:wave: Let's onboard your git token so the harness can act as you.\n\n` +
+              `:wave: Let's onboard your \`${flatProvider}\` token so the harness can act as you.\n\n` +
                 `Reply in THIS DM with your token (it stays private; the operator never sees it). ` +
                 `Once stored, I'll delete my prompt and confirm. It will be saved in the vault as \`${vaultService}\`.\n\n` +
+                `:information_source: This is the flat single-token setup: ONE token for you across every org. ` +
+                `If you work in more than one org, ask for per-org onboarding instead.\n\n` +
                 `:lock: Never paste your token in a public channel.`,
             );
-            liveState().audit("tool.onboard.started", { requester, dmChannel: dm.value, vaultService });
+            liveState().audit("tool.onboard.started", { requester, dmChannel: dm.value, vaultService, flow: "flat" });
             return {
-              content: [{ type: "text", text: `Opened an onboarding DM with <@${requester}>. Ask them to paste their token in that DM, then submit it via harness_onboard action:'submit'.` }],
-              details: { ok: true, dmChannel: dm.value, promptTs: prompt.value ?? null, vaultService },
+              content: [{ type: "text", text: `Opened a LEGACY flat onboarding DM with <@${requester}>. Ask them to paste their token in that DM, then submit it via harness_onboard action:'submit' with legacy:true.` }],
+              details: { ok: true, dmChannel: dm.value, promptTs: prompt.value ?? null, vaultService, flow: "flat" },
             };
           }
 

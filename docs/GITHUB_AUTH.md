@@ -55,7 +55,9 @@ Placeholders (all lower-cased):
 | `{user}`      | requester login *(deprecated alias, repo owner if unknown)* | `carelvanheerden` |
 | `{org}`       | repo owner *(deprecated alias of `{owner}`)*                | `carelvanheerden` |
 
-**Default: `github-{owner}`** (per-owner tokens).
+**Default: `{provider}-{owner}`** (per-owner, per-provider tokens). The prefix
+was hard-coded to `github-` until one person's GitHub and GitLab tokens for a
+same-named org were found to collapse onto a single name.
 
 ## Hierarchical routing (recommended for multi-user) — beta.25
 
@@ -203,8 +205,8 @@ fallback var. For a self-managed GitLab, point `providers.gitlab.api_base` at
 
 Common choices:
 
-- `github-{owner}` — one token per account (default). Simplest.
-- `github-{owner}-{repo}` — one token per repo. Tightest scoping.
+- `{provider}-{owner}` — one token per account per provider (default). Simplest.
+- `{provider}-{owner}-{repo}` — one token per repo. Tightest scoping.
 
 Per-user / per-repo overrides still win over the template
 (`pat_routing.overrides`).
@@ -234,7 +236,7 @@ single shared token per provider — true per-user auth is vault-backed.
 {
   "openclaw-agent-harness": {
     "pat_routing": {
-      "default_service_pattern": "github-{owner}",
+      "default_service_pattern": "{provider}-{owner}",
       "auth": { "api_key_env": "GH_TOKEN" }
     }
   }

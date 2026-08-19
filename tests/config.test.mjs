@@ -111,10 +111,14 @@ test("config: models.auth defaults present, overridable",
     assert.equal(cfg2.models.lead, "claude-fable-5");
   });
 
-test("config: pat_routing default is github-{owner} with GH_TOKEN env fallback",
+test("config: pat_routing default is {provider}-{owner} with GH_TOKEN env fallback",
   { skip: parseHarnessConfig === null }, () => {
     const cfg = parseHarnessConfig(minimalOk);
-    assert.equal(cfg.pat_routing.default_service_pattern, "github-{owner}");
+    // The default carried a hard-coded "github-" prefix until one person's
+    // GitHub and GitLab tokens for a same-named org were found to collapse onto
+    // a single name. {provider} expands to "github" on GitHub repos, so this
+    // reads identically to the old default wherever the old one was right.
+    assert.equal(cfg.pat_routing.default_service_pattern, "{provider}-{owner}");
     assert.equal(cfg.pat_routing.auth.api_key_env, "GH_TOKEN");
     // Override merges, env fallback survives partial override.
     const cfg2 = parseHarnessConfig({

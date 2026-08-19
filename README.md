@@ -275,12 +275,12 @@ Credentials are keyed by **provider + org**, because one person routinely holds 
 
 The `harness_onboard` tool implements the **DM flow**, gated on `slack.authorised_users`:
 
-- `action:"start"` — opens a **DM** (`conversations.open`) to the requester with paste instructions (keeps the token out of any public channel).
+- `action:"start"` — opens a **DM** (`conversations.open`) to the requester, keeping the token out of any public channel. Pass `orgUrl` and the DM names the exact provider, org and vault key the token will land under; omit it and the DM *asks* which provider and org the token is for, and says that a separate token is needed per org. Either way the reply is stored with `action:"add"`, so the name is derived from provider, org and person together rather than chosen before anyone knew the answer.
 - `action:"list"` — shows what that caller has configured: provider, org, the account each token authenticates as, and any expiry. Never a secret, and never anyone else's.
 - `action:"add"` — takes an `orgUrl` (e.g. `https://github.com/acme`, which states the *provider* as well as the org) plus the token. Validates it, checks it can actually reach an allowed repo in that org, then stores **both** the vault entry and the routing entry that makes it readable.
 - `action:"replace"` — swaps the token for an org already configured, keeping the same vault name so existing routing keeps resolving.
 - `action:"remove"` — deletes one, and needs `confirm: true`.
-- `action:"submit"` — the legacy single-token flow, for flat setups that resolve through `default_service_pattern` rather than per-org routing.
+- `action:"submit"` — the legacy single-token flow, for flat setups that resolve through `default_service_pattern` rather than per-org routing. It stores ONE token for the person across every org, so once they have per-org credentials it is refused unless `legacy:true` is passed: a flat token sitting alongside per-org ones is a second credential for the same human under a different name, and whichever a session read would decide whose commits went out.
 
 Two refusals are worth knowing about:
 

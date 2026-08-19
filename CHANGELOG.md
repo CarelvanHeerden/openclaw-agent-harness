@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.1.0-beta.135
+
+### The onboarding DM asks which org, instead of assuming there is only one
+
+`harness_onboard action:"start"` computed a single vault name out of
+`onboard_service_pattern` and then posted "reply with your token". Both halves
+were wrong for anyone working in more than one place. The name was decided
+before anything knew which provider or org the token was for, so a second
+onboarding overwrote the first; and the prompt gave the person no way to say
+which org they were pasting a token for, because it never asked. The per-org
+`add` flow could already express all of this — it just had no way in from a DM.
+
+`start` now establishes provider and org *first*:
+
+- **With an `orgUrl`**, the DM names the exact provider, the exact org, and the
+  vault key the token will land under. A URL that names a host no provider is
+  configured for is refused *before* the DM opens — asking for a token and only
+  then rejecting the org it was for burns a live secret in a chat log. If the
+  org is already configured the DM says so, and names the real key rather than
+  the placeholder, so nobody re-onboards without knowing they are replacing.
+- **Without one**, the DM asks which provider and which org, offering only the
+  providers this deployment actually has, and states that a separate token is
+  needed per org. It no longer quotes a vault key, because at that point it
+  cannot honestly know one.
+
+Either way the reply is stored through `add`, which derives the name from
+provider, org and person together and writes the routing entry with it.
+
+**The flat flow is now something you ask for.** `submit` stores ONE token for a
+person across every org. Once they have per-org credentials that is a second
+credential for the same human under a different name, and whichever a session
+read would decide whose commits went out — so it is refused unless `legacy:true`
+is passed. Deliberately keyed on "this person has per-org routes" rather than on
+the deployment using pointer routing: a flat name that happens to equal the
+pointer is read perfectly well, and the consistency gate already decides that
+question precisely. Refusing on the deployment's shape would have taken away a
+setup that works.
+
+**`default_service_pattern` now defaults to `{provider}-{owner}`.** The prefix
+was hard-coded to `github-`, so one person's GitHub and GitLab tokens for a
+same-named org collapsed onto a single name and the second silently destroyed
+the first. `{provider}` expands to `github` on GitHub repos, so this reads
+identically to the old default on any single-provider GitHub deployment — it
+diverges only where the old name was already wrong.
+
+**The consistency gate is scoped to the provider being onboarded.** It compares
+the name onboarding would write against the names sessions read, drawn from the
+allow-listed repos. A GitLab token compared against what GitHub repos resolve to
+can only ever look like a mismatch, and the refusal then advises aligning the
+patterns — which would break the working GitHub side to satisfy a comparison
+that was never valid. Where no repo on that provider is allow-listed the list
+comes back empty, which is reported as undetermined rather than as a refusal.
+
+The b133 guarantee that the gate refuses *before* the DM is unchanged for the
+flow that needs it. Plain `start` no longer commits to a pattern-derived name at
+all, so there is nothing left for it to disagree with; the gate still guards
+`legacy:true`.
+
 ## 0.1.0-beta.134
 
 ### Two flakes in the tooling, one of which was lying
