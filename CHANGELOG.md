@@ -1,10 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.134
 
-Deliberately not version-tagged. This work was swept into beta.110 once by a
-branch cut from an unpushed local `main`; it now carries no version number until
-the moment it lands, so nothing can collide with it a second time.
+### Credentials the harness owns, and onboarding that can route to them
+
+Two halves of one problem. The harness stopped borrowing another plugin's vault,
+and `harness_onboard` stopped storing tokens it had no way to make readable.
+
+This work carried no version number until the moment it landed: it was swept
+into beta.110 once by a branch cut from an unpushed local `main`, and staying
+untagged until release is what stops that colliding a second time.
 
 ### The harness owns its credential vault
 
