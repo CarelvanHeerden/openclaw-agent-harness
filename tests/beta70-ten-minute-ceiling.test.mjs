@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal, pluginVersionOf } from "./helpers/version-floor.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -256,9 +257,10 @@ test("beta70: version is at least beta.70 (superseded by beta.71 bump)", () => {
   // beta.71 bumped the version; assert >= beta.70 rather than an exact string
   // so future bumps don't re-break this.
   // beta.100: the old alternation only admitted TWO-digit betas (7x/8x/9x), so
-  // the first three-digit release broke it. Use the numeric floor every other
-  // version-floor test converged on.
-  const betaNum = (s) => Number(/0\.1\.0-beta\.(\d+)/.exec(s)?.[1] ?? -1);
-  assert.ok(betaNum(S("package.json")) >= 70, `package.json >= beta.70, got ${S("package.json").match(/0\.1\.0-beta\.\d+/)}`);
-  assert.ok(betaNum(S("src/version.ts")) >= 70, `version.ts >= beta.70, got ${S("src/version.ts").match(/0\.1\.0-beta\.\d+/)}`);
+  // the first three-digit release broke it. Use the shared floor, which also
+  // admits the versions that come after the beta line ends.
+  const pkg = JSON.parse(S("package.json")).version;
+  const plugin = pluginVersionOf(S("src/version.ts"));
+  assert.ok(betaOrdinal(pkg) >= 70, `package.json >= beta.70, got ${pkg}`);
+  assert.ok(betaOrdinal(plugin) >= 70, `version.ts >= beta.70, got ${plugin}`);
 });

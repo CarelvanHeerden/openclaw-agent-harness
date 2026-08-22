@@ -16,13 +16,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 const readSrc = (rel) => readFileSync(join(ROOT, rel), "utf8");
 
 test("beta.86: version bumped to >= beta.86 in package.json + version.ts", () => {
-  const betaNum = (v) => parseInt(/beta\.(\d+)/.exec(v)?.[1] ?? "0", 10);
+  const betaNum = betaOrdinal;
   const pkg = JSON.parse(readSrc("package.json"));
   assert.ok(betaNum(pkg.version) >= 86, `package.json ${pkg.version}`);
   const ver = readSrc("src/version.ts");

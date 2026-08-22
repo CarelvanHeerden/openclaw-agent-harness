@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal, pluginVersionOf } from "./helpers/version-floor.mjs";
 
 import {
   rederiveContractPath,
@@ -140,8 +141,7 @@ test("wiring: config + manifest declare contract_rederive_enabled (default true)
 });
 
 test("beta.93 version floor", () => {
-  const ver = src("version.ts");
-  const m = ver.match(/pluginVersion:\s*"0\.1\.0-beta\.(\d+)"/);
-  assert.ok(m, "pluginVersion present");
-  assert.ok(Number(m[1]) >= 93, `expected >= beta.93, got beta.${m[1]}`);
+  const plugin = pluginVersionOf(src("version.ts"));
+  assert.ok(plugin, "pluginVersion present");
+  assert.ok(betaOrdinal(plugin) >= 93, `expected at or past beta.93, got ${plugin}`);
 });

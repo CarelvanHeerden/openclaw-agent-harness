@@ -9,11 +9,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 const S = (p) => readFileSync(resolve(root, p), "utf8");
-const betaNum = (v) => Number(/0\.1\.0-beta\.(\d+)/.exec(v)?.[1] ?? -1);
+const betaNum = betaOrdinal;
 
 const { computeReviseScope, subTaskIntersectsFindings } = await import("../dist/orchestrator/revise-scope.js");
 const { selectWorkerModel, isMechanicalSubTask } = await import("../dist/orchestrator/worker-model-select.js");

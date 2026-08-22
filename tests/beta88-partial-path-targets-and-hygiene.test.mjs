@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -34,7 +35,7 @@ const skip = { skip: resolveContractPath === null };
 const FULL = "src/app/api/grc/continuity-exercises/[id]/files/[fileId]/download/route.ts";
 
 test("beta.88: version >= beta.88", () => {
-  const betaNum = (v) => parseInt(/beta\.(\d+)/.exec(v)?.[1] ?? "0", 10);
+  const betaNum = betaOrdinal;
   assert.ok(betaNum(JSON.parse(readSrc("package.json")).version) >= 88);
 });
 

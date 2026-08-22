@@ -20,6 +20,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const { reconcileTestContractPaths, rederiveContractPath, learnRemapsForDir } =
   await import("../dist/orchestrator/contract-rederive.js");
@@ -297,6 +298,6 @@ test("beta100: pluginVersion and package.json agree at >= beta.100", async () =>
   const { PLUGIN_VERSION } = await import("../dist/version.js");
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(PLUGIN_VERSION.pluginVersion, pkg.version);
-  const n = Number(/beta\.(\d+)$/.exec(pkg.version)?.[1] ?? 0);
+  const n = betaOrdinal(pkg.version);
   assert.ok(n >= 100, `expected >= beta.100, got ${pkg.version}`);
 });

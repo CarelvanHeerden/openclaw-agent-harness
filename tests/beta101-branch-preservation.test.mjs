@@ -23,6 +23,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -485,6 +486,6 @@ test("beta101: pluginVersion and package.json agree at >= beta.101", async () =>
   const { PLUGIN_VERSION } = await import("../dist/version.js");
   const pkg = JSON.parse(S("package.json"));
   assert.equal(PLUGIN_VERSION.pluginVersion, pkg.version);
-  const n = Number(/beta\.(\d+)$/.exec(pkg.version)?.[1] ?? 0);
+  const n = betaOrdinal(pkg.version);
   assert.ok(n >= 101, `expected >= beta.101, got ${pkg.version}`);
 });

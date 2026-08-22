@@ -34,6 +34,7 @@ import { isBlockingFinding, classifyFinding } from "../dist/orchestrator/finding
 import { deriveMergeRecommendation } from "../dist/orchestrator/merge-recommendation.js";
 import { parseHarnessConfig } from "../dist/config.js";
 import { readFileSync } from "node:fs";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const MIN = { slack: { authorised_users: ["U1"] }, repos: { allowed: ["a/*"], default_base_branch: "main" } };
 
@@ -284,7 +285,7 @@ test("beta111: both keys are declared where operators look for them", () => {
 });
 
 test("beta111: pluginVersion and package.json agree at >= beta.111", () => {
-  const betaNum = (s) => Number(/beta\.(\d+)/.exec(s)?.[1] ?? -1);
+  const betaNum = betaOrdinal;
   const pkg = JSON.parse(readFileSync("package.json", "utf8")).version;
   assert.ok(betaNum(pkg) >= 111, `expected >= beta.111, got ${pkg}`);
   assert.ok(readFileSync("src/version.ts", "utf8").includes(pkg));

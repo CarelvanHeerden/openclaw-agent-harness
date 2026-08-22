@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 let buildProgressSnapshot, Database;
 try {
@@ -59,7 +60,7 @@ function insertAudit(db, sessionId, event, payload = {}, atOffset = 0) {
 }
 
 test("beta.96: version >= beta.96", () => {
-  const betaNum = (v) => parseInt(/beta\.(\d+)/.exec(v)?.[1] ?? "0", 10);
+  const betaNum = betaOrdinal;
   assert.ok(betaNum(JSON.parse(readFileSync(resolve(here, "..", "package.json"), "utf8")).version) >= 96);
 });
 

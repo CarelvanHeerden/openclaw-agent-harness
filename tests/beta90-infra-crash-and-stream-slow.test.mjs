@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -396,7 +397,7 @@ test("beta90: worker_stream_idle_warn_seconds declared in manifest (additionalPr
 // Version bump
 // ---------------------------------------------------------------------------
 test("beta90: version >= beta.90", () => {
-  const betaNum = (v) => parseInt(/beta\.(\d+)/.exec(v)?.[1] ?? "0", 10);
+  const betaNum = betaOrdinal;
   assert.ok(betaNum(JSON.parse(S("package.json")).version) >= 90, "package.json >= beta.90");
   assert.ok(betaNum(S("src/version.ts").match(/pluginVersion: "([^"]+)"/)[1]) >= 90, "version.ts >= beta.90");
 });

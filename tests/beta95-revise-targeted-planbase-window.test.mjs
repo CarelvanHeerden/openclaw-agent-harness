@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -48,7 +49,7 @@ const NOISE_A = ".commit-msg-tmp.txt";
 const NOISE_B = ".git-commit-msg.txt";
 
 test("beta.95: version >= beta.95", () => {
-  const betaNum = (v) => parseInt(/beta\.(\d+)/.exec(v)?.[1] ?? "0", 10);
+  const betaNum = betaOrdinal;
   assert.ok(betaNum(JSON.parse(readSrc("package.json")).version) >= 95);
 });
 

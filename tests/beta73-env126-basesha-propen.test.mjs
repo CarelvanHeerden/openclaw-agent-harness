@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -190,7 +191,5 @@ test("beta73 fix3: main PR-open path emits pr_open_started + pr_open_failed", ()
 
 test("beta73 version is >= beta.73 (range floor, so later bumps don't re-break it)", () => {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const m = /0\.1\.0-beta\.(\d+)/.exec(pkg.version);
-  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
-  assert.ok(Number(m[1]) >= 73, `beta number should be >= 73, got ${m[1]}`);
+  assert.ok(betaOrdinal(pkg.version) >= 73, `version should be at or past beta.73, got ${pkg.version}`);
 });
