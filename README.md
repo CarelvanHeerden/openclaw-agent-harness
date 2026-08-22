@@ -312,6 +312,8 @@ npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 
 Then follow `docs/REAL-TEST-RUNBOOK.md` for wiring up the real Slack channel and Vault credentials. See `docs/AUTH.md` (Anthropic key) and `docs/GITHUB_AUTH.md` (GitHub token) for the vault-first, env-fallback auth both the model loop and git operations need.
 
+If any repo you allow-list keeps a **generated bundle checked in** (generated API docs, a regenerated schema index, snapshot fixtures), set [`repos.never_commit_paths`](docs/CONFIGURATION.md#generated-trees-reposnever_commit_paths) before your first run. Workers stage with `git add -A`, so a regeneration side effect otherwise lands the whole tree in the commit, and the out-of-scope findings that follow are blocking and unfixable. It is empty by default and never inferred.
+
 For repeatable smoke tests, `harness_bootstrap_test_repo` creates a fresh disposable repo under your account (seeded with a README + `docs/`) and adds it to the live allow-list, so you never test against the harness's own source.
 
 ## Development

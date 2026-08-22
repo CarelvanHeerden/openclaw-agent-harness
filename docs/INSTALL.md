@@ -128,7 +128,11 @@ the shorter path is silently ignored. Minimal example:
             "session_hard_ceiling_usd": 200
           },
           "repos": {
-            "allowed": ["example-org/example-repo"]
+            "allowed": ["example-org/example-repo"],
+            "never_commit_paths": ["okf/**"]
+          },
+          "brief": {
+            "request_file_roots": ["/home/node/.openclaw/media/inbound"]
           },
           "models": {
             "lead": "claude-fable-5",
@@ -148,6 +152,26 @@ first entry is the fallback requester identity.
 
 `slack.channel` is optional. Do not set `slack.listener_enabled` — beta.34
 removed the autonomous listener and the flag has been ignored since.
+
+`repos.never_commit_paths` is the one setting you have to decide per repo. If an
+allow-listed repo keeps a **generated bundle checked in** — generated API docs, a
+regenerated schema index, snapshot fixtures — list it here. Workers stage with
+`git add -A`, so a build step that regenerates that tree sweeps all of it into
+the commit; one real run committed 141 generated files alongside 13 real ones,
+and the out-of-scope findings that follow are blocking and unfixable, because
+regenerating was the job. The list is empty by default and is never inferred,
+since a generated tree cannot be told from hand-written code by inspection, and
+nothing will warn you if you leave it out. Drop the line if your repo has no
+such tree. See [Generated trees](CONFIGURATION.md#generated-trees-reposnever_commit_paths).
+
+`brief.request_file_roots` is the other one, and it is also empty by default.
+Empty means `harness_run({ requestPath })` is **refused**, so a calling agent
+that has the user's spec as a file has no way to hand it over except by retyping
+it — reintroducing the paraphrase hop that `requestPath` exists to remove. Point
+it at wherever your runtime stores uploads; for OpenClaw in Docker that is
+`~/.openclaw/media/inbound`. A root that does not exist matches nothing, so
+confirm it with a real file rather than assuming. See
+[Brief fidelity](CONFIGURATION.md#brief-fidelity-briefrequest_file_roots).
 
 See [`CONFIGURATION.md`](CONFIGURATION.md) for all options.
 

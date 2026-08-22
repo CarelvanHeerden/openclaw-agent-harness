@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.1.0-beta.136
+
+### The setting that prevents b114's failure was documented only in a source comment
+
+A fresh install on a new machine reproduced beta.114 exactly: a BCP/DR run
+against ProjectThanos committed ~110 regenerated `okf/**` files, and the
+deterministic final-scope check turned every one of them into a single `medium`
+"out-of-scope file write(s)" finding. That finding is blocking, carries no
+`file`, so no worker can be assigned it, and the sub-task it indicts is the one
+the plan commissioned to regenerate the bundle. It sustained `revise` across
+cycles 2, 3 and 4, consumed the one b124 extension, and ended a run with green
+CI at `do_not_merge`. $22.67 and 92 minutes, of which the last three cycles
+could not have converged.
+
+b114's `repos.never_commit_paths` fixes this and shipped twenty-two releases
+ago. It was inert because the config did not set it, and the config did not set
+it because **the option appears in no document**. Not `INSTALL.md`, not the
+README, and not `CONFIGURATION.md`, which says it lists all options. Its only
+description was a comment in `src/config.ts` whose example is, verbatim,
+`["okf/**"]` — the exact value this deployment needed.
+
+The setting is deliberately empty by default and deliberately never inferred: a
+generated tree is indistinguishable from hand-written code by inspection, so a
+harness that guessed would eventually discard someone's real work. That is the
+right call, and it is precisely what makes documenting it load-bearing rather
+than optional. An opt-in safeguard nobody can discover is not opt-in, it is
+absent.
+
+So it is now in all three places, and `CONFIGURATION.md` carries the reasoning
+that was previously only in the changelog: why the list runs after staging and
+reverts rather than before and ignores, why unstaging alone is not enough, and
+what the failure actually costs downstream — not a noisy diff, but a review loop
+spending its whole cycle budget on a finding no worker is able to resolve.
+
+### The same shape, found on the same box: `brief.request_file_roots`
+
+Looking for a second instance turned one up immediately. `harness_run` accepts a
+`requestPath` so the harness can read a specification off disk itself instead of
+having the calling agent retype it — the one hop where a brief gets paraphrased
+in transit. beta.120 exists because two b119 smokes spent ~$18 and two hours each
+building a feature whose brief had been reworded upstream: `performedAt` had
+become `scheduledAt`.
+
+`request_file_roots` is empty by default, and empty means `requestPath` returns
+`code: "disabled"`. The caller's only remaining move is to inline the spec, which
+is precisely the hop the feature removes. On the devbot that is what happened,
+and the safeguard beta.120 shipped had never once run.
+
+Empty-by-default is right here too — the harness holds GitHub tokens and a
+brief's contents reach model prompts and PR bodies, so an operator must name the
+directories rather than have the harness guess — and, again, the setting was in
+no document.
+
+The whole `brief` block was in fact missing from `CONFIGURATION.md`:
+`confirm_before_spend`, `confirm_min_risk`, `bimodal_clarify`,
+`request_file_max_bytes`. All of it is now documented, with the fidelity
+reasoning and the read constraints that make the root safe to name — absolute
+paths only, symlinks resolved *before* the root check, credential-shaped
+basenames refused, NUL-byte content rejected, size capped rather than truncated.
+
+Two settings, one shape: a safeguard whose default is "off", whose reason for
+being off is sound, and which no document mentions. That combination reliably
+produces a deployment that believes it has protection it has never had.
+
+Docs, `package.json` and `src/version.ts` only. No behaviour change.
+
 ## 0.1.0-beta.135
 
 ### The onboarding DM asks which org, instead of assuming there is only one
