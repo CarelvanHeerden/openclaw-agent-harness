@@ -24,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import { deriveMergeRecommendation } from "../dist/orchestrator/merge-recommendation.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths } from "../dist/orchestrator/plan-path-validate.js";
 import { detectWorkerConfab } from "../dist/orchestrator/worker-confab-detect.js";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 /**
@@ -300,7 +301,7 @@ test("beta112: one skipped file among several committed ones is still reported",
 });
 
 test("beta112: pluginVersion and package.json agree at >= beta.112", () => {
-  const betaNum = (s) => Number(/beta\.(\d+)/.exec(s)?.[1] ?? -1);
+  const betaNum = betaOrdinal;
   const pkg = JSON.parse(readFileSync("package.json", "utf8")).version;
   assert.ok(betaNum(pkg) >= 112, `expected >= beta.112, got ${pkg}`);
   assert.ok(readFileSync("src/version.ts", "utf8").includes(pkg));

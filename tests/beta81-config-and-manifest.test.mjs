@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal, pluginVersionOf } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -32,15 +33,10 @@ const NEW_CI_KEYS = ["wait_timeout_seconds", "poll_interval_seconds"];
 test("beta81: version is at least 0.1.0-beta.81 in BOTH package.json and version.ts", () => {
   // beta.82+: relaxed from an exact pin to a floor so later betas don't have to
   // touch this assertion (same pattern beta.70->.73 applied).
-  const betaNum = (s) => {
-    const m = /0\.1\.0-beta\.(\d+)/.exec(s);
-    return m ? Number(m[1]) : -1;
-  };
   const pkg = JSON.parse(S("package.json"));
-  assert.ok(betaNum(pkg.version) >= 81, `package.json version must be >= beta.81, got ${pkg.version}`);
-  const ver = S("src/version.ts");
-  const m = /pluginVersion:\s*"([^"]+)"/.exec(ver);
-  assert.ok(m && betaNum(m[1]) >= 81, `version.ts pluginVersion must be >= beta.81, got ${m && m[1]}`);
+  assert.ok(betaOrdinal(pkg.version) >= 81, `package.json version must be >= beta.81, got ${pkg.version}`);
+  const plugin = pluginVersionOf(S("src/version.ts"));
+  assert.ok(betaOrdinal(plugin) >= 81, `version.ts pluginVersion must be >= beta.81, got ${plugin}`);
 });
 
 // ---- DEFAULTS carry every new key ----

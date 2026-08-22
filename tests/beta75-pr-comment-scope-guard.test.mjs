@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -123,7 +124,5 @@ test("beta75 version is >= beta.75 (range floor)", () => {
   // Relaxed from an exact match to a floor so later betas (beta.76+) that
   // build on top of beta.75 don't false-fail this suite.
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const m = /^0\.1\.0-beta\.(\d+)$/.exec(pkg.version);
-  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
-  assert.ok(Number(m[1]) >= 75, `expected beta >= 75, got ${pkg.version}`);
+  assert.ok(betaOrdinal(pkg.version) >= 75, `version should be at or past beta.75, got ${pkg.version}`);
 });

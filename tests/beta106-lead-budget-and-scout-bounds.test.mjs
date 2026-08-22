@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -387,7 +388,7 @@ test("beta106: lead_scout_max_turns is documented in both schemas", { skip }, ()
 });
 
 test("beta106: pluginVersion and package.json agree at >= beta.106", { skip }, () => {
-  const n = (s) => Number(/beta\.(\d+)/.exec(s)?.[1] ?? 0);
+  const n = betaOrdinal;
   assert.ok(n(PLUGIN_VERSION.pluginVersion) >= 106, PLUGIN_VERSION.pluginVersion);
   assert.equal(JSON.parse(S("package.json")).version, PLUGIN_VERSION.pluginVersion);
 });

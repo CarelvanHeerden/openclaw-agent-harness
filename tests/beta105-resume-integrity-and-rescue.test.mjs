@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -562,7 +563,7 @@ test("beta105: the new keys are documented in both schemas", { skip }, () => {
 });
 
 test("beta105: pluginVersion and package.json agree at >= beta.105", { skip }, () => {
-  const n = (s) => Number(/beta\.(\d+)/.exec(s)?.[1] ?? 0);
+  const n = betaOrdinal;
   assert.ok(n(PLUGIN_VERSION.pluginVersion) >= 105, PLUGIN_VERSION.pluginVersion);
   assert.equal(JSON.parse(S("package.json")).version, PLUGIN_VERSION.pluginVersion);
 });

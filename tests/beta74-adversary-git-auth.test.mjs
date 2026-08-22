@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -103,7 +104,5 @@ test("beta74 (D3 nit): finaliseFailedPreserveWorktree also emits canonical loop.
 
 test("beta74 version is >= beta.74 (range floor)", () => {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const m = /0\.1\.0-beta\.(\d+)/.exec(pkg.version);
-  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
-  assert.ok(Number(m[1]) >= 74, `beta number should be >= 74, got ${m[1]}`);
+  assert.ok(betaOrdinal(pkg.version) >= 74, `version should be at or past beta.74, got ${pkg.version}`);
 });

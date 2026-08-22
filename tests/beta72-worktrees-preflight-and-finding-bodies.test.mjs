@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -145,7 +146,5 @@ test("beta72 version is >= beta.72 (range, so later bumps don't re-break it)", (
   // Was an exact-match assertion; relaxed to a floor (same lesson as beta.70->71)
   // so a subsequent beta bump doesn't fail this test.
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const m = /0\.1\.0-beta\.(\d+)/.exec(pkg.version);
-  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
-  assert.ok(Number(m[1]) >= 72, `beta number should be >= 72, got ${m[1]}`);
+  assert.ok(betaOrdinal(pkg.version) >= 72, `version should be at or past beta.72, got ${pkg.version}`);
 });

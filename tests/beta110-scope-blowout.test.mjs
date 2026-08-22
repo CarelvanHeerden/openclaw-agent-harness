@@ -22,6 +22,7 @@ import { execFileSync } from "node:child_process";
 import { GitAdapter, HARNESS_EXCLUDE_PATTERNS } from "../dist/adapters/git-worktree.js";
 import { OrchestratorLoop, ScopeBlowoutError } from "../dist/orchestrator/loop.js";
 import { parseHarnessConfig } from "../dist/config.js";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const S = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 const D = (p) => readFileSync(new URL(`../dist/${p}`, import.meta.url), "utf8");
@@ -429,7 +430,7 @@ test("beta110: the key is declared in both schemas", () => {
 });
 
 test("beta110: pluginVersion and package.json agree at >= beta.110", () => {
-  const betaNum = (s) => Number(/beta\.(\d+)/.exec(s)?.[1] ?? -1);
+  const betaNum = betaOrdinal;
   const pkg = JSON.parse(S("package.json")).version;
   assert.ok(betaNum(pkg) >= 110, `expected >= beta.110, got ${pkg}`);
   assert.ok(S("src/version.ts").includes(pkg));

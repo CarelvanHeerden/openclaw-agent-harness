@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.0-beta.137
+
+### 29 tests that would have refused 1.0.0
+
+Bumping the version to `1.0.0-rc.1` turned 29 green tests red without changing
+a line of behaviour. Each of them asserts a floor — "this release is at or past
+beta.86" — and each arrived at the same implementation on its own:
+
+```js
+const betaNum = (v) => parseInt(/beta\.(\d+)/.exec(v)?.[1] ?? "0", 10);
+assert.ok(betaNum(pkg.version) >= 86);
+```
+
+which reads as "at least beta.86" but means "is a beta, and its number is at
+least 86". Nobody intended the second clause, and it makes the suite reject
+every version that is not a beta — including the 1.0.0 the betas were leading
+up to. The floor tests were, collectively, a gate against ever leaving beta,
+and nothing said so.
+
+This is the second time the shape has bitten. A comment in
+`beta70-ten-minute-ceiling.test.mjs` records the first: the original assertion
+spelled the floor as an alternation over two-digit betas, so the first
+three-digit release broke it. That fix was then copied into each file
+separately rather than shared, which is why there were 29 near-identical
+closures to correct instead of one.
+
+The floor now lives once, in `tests/helpers/version-floor.mjs`, and is
+expressed as the question the tests were always asking: where does this version
+sort relative to `0.1.0-beta.N`? A version that sorts above the whole beta line
+clears every floor, because it is by definition later than all of them.
+`0.1.0-beta.100` still yields 100; `1.0.0-rc.1` and `1.0.0` clear everything;
+`0.0.9`, `0.1.0-alpha.9` and unparseable input still fail a floor rather than
+passing blind. Six tests cover the helper itself, the boundary cases included.
+
+Tests only — no `src/` change, and `dist/` differs by the version string alone.
+The suite was run green at `0.1.0-beta.137` and again at `1.0.0-rc.1` to
+confirm the floor no longer depends on the scheme.
+
 ## 0.1.0-beta.136
 
 ### The setting that prevents b114's failure was documented only in a source comment

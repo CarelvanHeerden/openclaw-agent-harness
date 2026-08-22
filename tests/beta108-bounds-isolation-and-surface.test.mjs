@@ -24,6 +24,7 @@ import { sessionScopedBranch } from "../dist/orchestrator/fable5-lead.js";
 import { buildHeadline, mergeAdvice, renderWorklog } from "../dist/orchestrator/progress.js";
 import { buildHarnessHelp } from "../dist/tools/help-content.js";
 import { parseHarnessConfig } from "../dist/config.js";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const S = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 
@@ -706,7 +707,7 @@ test("beta108: parallel sub-tasks remain OFF", () => {
 });
 
 test("beta108: pluginVersion and package.json agree at >= beta.108", () => {
-  const betaNum = (s) => Number(/beta\.(\d+)/.exec(s)?.[1] ?? -1);
+  const betaNum = betaOrdinal;
   const pkg = JSON.parse(S("package.json")).version;
   assert.ok(betaNum(pkg) >= 108, `expected >= beta.108, got ${pkg}`);
   const ver = S("src/version.ts");

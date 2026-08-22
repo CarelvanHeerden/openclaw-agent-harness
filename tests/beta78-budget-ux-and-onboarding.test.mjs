@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -246,7 +247,5 @@ test("beta78/F4: onboard_service_pattern declared in the config schema (addition
 // ===========================================================================
 test("beta78 version is >= beta.78 (range floor)", () => {
   const pkg = JSON.parse(S("package.json"));
-  const m = /^0\.1\.0-beta\.(\d+)$/.exec(pkg.version);
-  assert.ok(m, `version should be 0.1.0-beta.N, got ${pkg.version}`);
-  assert.ok(Number(m[1]) >= 78, `version floor beta.78, got ${pkg.version}`);
+  assert.ok(betaOrdinal(pkg.version) >= 78, `version should be at or past beta.78, got ${pkg.version}`);
 });

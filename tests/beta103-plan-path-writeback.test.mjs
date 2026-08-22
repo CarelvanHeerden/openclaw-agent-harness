@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal } from "./helpers/version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -286,6 +287,6 @@ test("beta103: the new key is declared in both schemas", { skip }, () => {
 });
 
 test("beta103: version is at or past beta.103", { skip }, () => {
-  const n = Number(/beta\.(\d+)/.exec(JSON.parse(S("package.json")).version)?.[1] ?? 0);
-  assert.ok(n >= 103, `expected beta >= 103, got ${n}`);
+  const version = JSON.parse(S("package.json")).version;
+  assert.ok(betaOrdinal(version) >= 103, `expected at or past beta.103, got ${version}`);
 });

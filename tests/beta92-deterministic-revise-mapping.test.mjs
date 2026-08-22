@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { betaOrdinal, pluginVersionOf } from "./helpers/version-floor.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const S = (p) => readFileSync(join(__dirname, "..", p), "utf8");
@@ -208,8 +209,8 @@ test("beta.92: revise-scope exempts meta dimensions from the unscopable gate (so
 test("beta.92: version floor >= beta.92", () => {
   // Relaxed from an exact pin to a FLOOR (beta.73 lesson) so downstream betas
   // don't have to touch this file just to bump the version.
-  const verMatch = S("src/version.ts").match(/0\.1\.0-beta\.(\d+)/);
-  const pkgMatch = S("package.json").match(/0\.1\.0-beta\.(\d+)/);
-  assert.ok(verMatch && Number(verMatch[1]) >= 92, `version.ts >= beta.92, got ${verMatch?.[1]}`);
-  assert.ok(pkgMatch && Number(pkgMatch[1]) >= 92, `package.json >= beta.92, got ${pkgMatch?.[1]}`);
+  const ver = pluginVersionOf(S("src/version.ts"));
+  const pkg = JSON.parse(S("package.json")).version;
+  assert.ok(betaOrdinal(ver) >= 92, `version.ts >= beta.92, got ${ver}`);
+  assert.ok(betaOrdinal(pkg) >= 92, `package.json >= beta.92, got ${pkg}`);
 });
