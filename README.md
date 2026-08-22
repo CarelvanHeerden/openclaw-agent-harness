@@ -2,14 +2,13 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: beta.* Version `0.1.0-beta.21`. 323 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: release candidate.* Version `1.0.0-rc.1`. 2180 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 >
-> **beta.21:** OKF concept pass-through (`relevantConcepts` field on `harness_run` / `harness_start_session` propagates through crystalliser + lead + worker prompts). See [OKF integration](#okf-integration-optional) below.
-> **beta.20:** README task-phrasing guide added (see [How to ask for work](#how-to-ask-for-work-task-phrasing-guide) below).
-> **beta.19:** lead atomicity rule for write+commit and push+PR (avoids over-decomposition of atomic actions into separate sub-tasks); `sub_tasks.started_at` column populated.
-> **beta.16-18:** verification telemetry (`baseRef`/`baseSemantics` on `verify_failed`), observe-mode audit breadcrumb, worktree pruning on terminal transitions with real physical removal, startup worktree self-heal, always-emit heal audit.
-> **beta.14-15:** authoritative `contractScope` and `taskMode` plan fields that promote scope decisions to first-class (replacing regex-inference whack-a-mole).
-> **beta.10:** the 5 new beta.9 optional verify probes are now provided by the production `buildVerifyProbes` factories in both the loop-path and worker-path. See [CHANGELOG](CHANGELOG.md) for the full arc.
+> **beta.136:** the two settings that default to off are now documented where you would look for them: `repos.never_commit_paths` keeps a regenerated tree out of the commit, and without `brief.request_file_roots` a `harness_run({ requestPath })` is refused. Both are in [CONFIGURATION.md](docs/CONFIGURATION.md).
+> **beta.135:** onboarding asks which org, so one person can hold a separate token per org and per provider instead of one token standing for everything.
+> **beta.134:** the harness owns its credential vault (AES-256-GCM, its own key file, stripped from worker subprocesses) rather than borrowing another plugin's store.
+> **beta.108:** `harness_progress` carries a `worklog` of what each sub-task actually did.
+> Full history in the [CHANGELOG](CHANGELOG.md).
 
 ### How to drive it
 
@@ -306,7 +305,7 @@ DM-flow privacy note: the harness deletes **its own** onboarding prompt after st
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 306 tests as of 0.1.0-beta.20
+npm test        # runs 2180 tests as of 1.0.0-rc.1
 npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 ```
 
@@ -320,7 +319,7 @@ For repeatable smoke tests, `harness_bootstrap_test_repo` creates a fresh dispos
 
 - `npm run typecheck` -- strict TS, no `any` leaks in `src/`
 - `npm run build` -- emits `dist/` + copies `schema.sql`
-- `npm test` -- Node test runner, 306 tests as of `0.1.0-beta.20`
+- `npm test` -- Node test runner, 2180 tests as of `1.0.0-rc.1`
 - `npm run smoke` -- post-build bootstrap sanity
 
 CI on every push and PR: `.github/workflows/ci.yml`.
