@@ -202,13 +202,20 @@ stateDiagram-v2
 | Slack (private #dev channel, allow-listed users)            |
 +-------------------------+-----------------------------------+
                           |
-                          v
+              message     |         ^  reactions are POLLED
+              (Slack ->   |         |  every 15s, and progress
+               the AGENT) v         |  is POSTED back out
 +-------------------------------------------------------------+
 | OpenClaw gateway                                            |
 |   |                                                         |
+|   +--> OpenClaw agent  (subscribed to Slack, owns the chat) |
+|         |                                                   |
+|         |   harness_run / harness_start_session             |
+|         |   (a TOOL CALL -- the only way in)                |
+|         v                                                   |
 |   +--> openclaw-agent-harness plugin                        |
 |         |                                                   |
-|         +-- Tool surface  (harness_run, ~19 tools)          |
+|         +-- Tool surface  (harness_run, 19 tools)           |
 |         +-- Intent classifier  (dev_task|clarify|not_dev|   |
 |         |                       unsafe)                     |
 |         +-- Prompt crystalliser  (single pass)              |
@@ -234,7 +241,7 @@ stateDiagram-v2
 
 ## 2. Session lifecycle
 
-1. **Intake.** One entry point: the OpenClaw agent calls the `harness_run` tool with a raw request (or `harness_start_session` with a pre-built brief). The plugin does not listen to Slack — beta.34 removed the autonomous listener and `slack.listener_enabled` has been ignored ever since. `harness_run` runs the classifier + crystalliser itself and either starts a session, returns a clarifying question for the agent to relay, or rejects.
+1. **Intake.** One entry point: the OpenClaw agent calls the `harness_run` tool with a raw request (or `harness_start_session` with a pre-built brief). The plugin does not listen to Slack — beta.34 removed the autonomous listener, and beta.133 dropped `slack.listener_enabled` from the parsed config altogether. `harness_run` runs the classifier + crystalliser itself and either starts a session, returns a clarifying question for the agent to relay, or rejects.
 
    The requester must be in `slack.authorised_users`, and the request is classified with a lightweight intent check before anything runs.
 
