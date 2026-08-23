@@ -29,6 +29,20 @@ beta.34. Reactions are polled: the arrow points out now, through an explicit
 Slack Web API node, and the diagram carries a note saying every way in starts
 inside the gateway.
 
+**rc.2 broke the sequence diagram on GitHub.** The rewritten intake step read
+`message (the agent is subscribed; the harness is not)`, and Mermaid treats `;`
+as a statement separator — so the message ended early, the remainder parsed as
+nothing, and GitHub replaced the entire diagram with "Unable to render rich
+display". The line was correct and unreadable, which is the worst combination.
+
+It shipped because nothing looks at the diagrams: every other claim in
+ARCHITECTURE.md has a test behind it, but a fenced `mermaid` block is just text
+to the suite and the failure only appears on github.com. `mermaid-blocks-parse`
+now rejects a semicolon anywhere in a Mermaid block — newlines separate
+statements, so the character has no legitimate use here and only truncates
+labels silently. Two other semicolons were removed at the same time, including
+one in the flowchart that had been quietly eating half an edge label.
+
 The README claimed "2180 tests as of 1.0.0-rc.1" while shipping 1.0.0-rc.2. The
 rc.2 bump had updated the status line and missed two claims further down, because
 nothing tied the count to the version it was pinned to. `readme-version-claims-current`

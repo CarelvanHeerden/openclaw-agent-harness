@@ -55,7 +55,7 @@ flowchart TB
   end
 
   U -->|message| API
-  API -->|the AGENT subscribes; the harness never does| AGENT
+  API -->|the AGENT subscribes, never the harness| AGENT
   AGENT -->|harness_run / harness_start_session| TOOLS
   U -->|reaction| API
   RPOLL -.->|polls every 15s| API
@@ -64,7 +64,7 @@ flowchart TB
   DIS --> CRY
   CRY --> LOOP
   LOOP --> LEAD
-  LOOP -->|spawn; serial unless subtask_concurrency > 1| W1 & W2
+  LOOP -->|spawn, serial unless subtask_concurrency over 1| W1 & W2
   W1 & W2 -->|edit + commit, no push| WT
   LOOP --> ADV
   ADV -.reads.-> WT
@@ -106,7 +106,7 @@ sequenceDiagram
   participant GH as GitHub
 
   User->>Slack: Ask the agent for some dev work
-  Slack->>Agent: message (the agent is subscribed; the harness is not)
+  Slack->>Agent: message (the agent is subscribed, the harness is not)
   Agent->>Disp: harness_run({ request, repo })
   Disp->>Disp: INSERT session (UNIQUE thread)
   Disp-->>Slack: react :eyes:
