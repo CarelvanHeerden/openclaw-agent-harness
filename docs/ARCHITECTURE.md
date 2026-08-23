@@ -2,9 +2,11 @@
 
 This document describes the design of `openclaw-agent-harness`.
 
-> The diagrams in [§0. UML diagrams](#0-uml-diagrams) are the canonical, always-current
-> view of how the agents interact. The ASCII sketches further down are kept as a
-> quick-reference and may lag the code; when in doubt, trust the Mermaid diagrams.
+> The diagrams in [§0. UML diagrams](#0-uml-diagrams) show how the agents interact.
+> The ASCII sketches further down are a quick reference. Neither is generated, so
+> when a diagram and the code disagree, the code wins — through 1.0.0-rc.1 these
+> diagrams still drew a Slack listener that was removed in beta.34, and a
+> credential vault the harness stopped borrowing in beta.110.
 
 ---
 
@@ -22,8 +24,9 @@ flowchart TB
   end
 
   subgraph GW["OpenClaw gateway"]
+    AGENT["OpenClaw agent\nowns the conversation"]
     subgraph PLUGIN["openclaw-agent-harness plugin"]
-      LIS["SlackChannelListener\nrouteMessage()"]
+      TOOLS["Tool surface\nharness_run / harness_start_session"]
       DIS["Dispatcher\nsession row + handoff"]
       CRY["Crystalliser\nhaiku classify + fable-5 refine"]
       LOOP["OrchestratorLoop\nstate machine"]
@@ -47,15 +50,17 @@ flowchart TB
     GH["GitHub REST\n(per-user PAT)"]
     WT[["Per-session git worktree"]]
     VER["Vercel logs (optional)"]
-    VAULT["OpenClaw credential vault"]
+    VAULT["Harness credential vault\nAES-256-GCM, own key file"]
   end
 
-  U -->|message / reaction| LIS
-  LIS --> DIS
+  U -->|talks to| AGENT
+  U -->|reaction| RPOLL
+  AGENT -->|harness_run| TOOLS
+  TOOLS --> DIS
   DIS --> CRY
   CRY --> LOOP
   LOOP --> LEAD
-  LOOP -->|spawn, bounded concurrency| W1 & W2
+  LOOP -->|spawn; serial unless subtask_concurrency > 1| W1 & W2
   W1 & W2 -->|edit + commit, no push| WT
   LOOP --> ADV
   ADV -.reads.-> WT
@@ -79,7 +84,7 @@ sequenceDiagram
   autonumber
   actor User as Allow-listed user
   participant Slack
-  participant Listener as SlackChannelListener
+  participant Agent as OpenClaw agent
   participant Disp as Dispatcher
   participant Cry as Crystalliser
   participant Orch as OrchestratorLoop
@@ -89,10 +94,9 @@ sequenceDiagram
   participant Git as Git worktree
   participant GH as GitHub
 
-  User->>Slack: Post dev request in thread
-  Slack->>Listener: message_received
-  Listener->>Listener: routeMessage() -> start_new_session
-  Listener->>Disp: startNewSession(evt)
+  User->>Slack: Ask the agent for some dev work
+  Slack->>Agent: message (the agent is subscribed; the harness is not)
+  Agent->>Disp: harness_run({ request, repo })
   Disp->>Disp: INSERT session (UNIQUE thread)
   Disp-->>Slack: react :eyes:
 
@@ -126,7 +130,7 @@ sequenceDiagram
       Orch->>Adv: review(brief, diff, runtime?)
       Adv-->>Orch: verdict = pass | revise | block
       alt pass OR user :rocket:
-        Orch->>GH: push branch + open PR (draft if not pass)
+        Orch->>GH: push branch + open PR (draft only if repos.draft_pr_on_nonpass)
         GH-->>Orch: PR URL
         Orch-->>Slack: post PR link + cost + react :tada:
       else block OR max cycles
@@ -154,7 +158,7 @@ stateDiagram-v2
   reviewing --> done: user_ship_it_reaction
   reviewing --> executing: adversary_revise
   reviewing --> failed: adversary_block
-  reviewing --> failed: max_cycles_reached
+  reviewing --> done: max_cycles_reached (ships, flagged do_not_merge)
 
   crystallising --> aborted: user_abort / budget / timeout
   planning --> aborted: user_abort / budget / timeout
@@ -190,9 +194,10 @@ stateDiagram-v2
 |   |                                                         |
 |   +--> openclaw-agent-harness plugin                        |
 |         |                                                   |
-|         +-- Slack listener  (watches configured channel)    |
-|         +-- Intent classifier  (dev task | question | meta) |
-|         +-- Prompt crystalliser  (2-3 refinement turns)     |
+|         +-- Tool surface  (harness_run, ~19 tools)          |
+|         +-- Intent classifier  (dev_task|clarify|not_dev|   |
+|         |                       unsafe)                     |
+|         +-- Prompt crystalliser  (single pass)              |
 |         +-- Session state store  (SQLite)                   |
 |         +-- Orchestrator                                    |
 |         |     +-- Fable-5 lead                              |
@@ -233,15 +238,23 @@ stateDiagram-v2
    - the wider codebase (read-only)
    - the latest Vercel preview logs for the branch (if enabled)
 
-   Adversary emits one of: `pass`, `fixes_required(list)`, `reject_and_replan(reason)`.
+   Adversary emits one of: `pass`, `revise` (with findings), `block`.
 
-7. **Loop.** Up to 3 cycles of (execute -> assemble -> review). Early exit on:
+7. **Loop.** `loop.max_cycles` cycles of (execute -> review), 3 by default, extendable
+   once via `loop.max_cycle_extensions`. Early exit on:
    - adversarial `pass`
    - budget ceiling hit (with human handover)
    - user "ship it anyway" reaction (logged)
    - user "abort" reaction
 
-8. **Human review + PR.** On successful exit, the harness pushes the branch under the requester's PAT (per-org routing) and opens a draft PR. The Slack thread gets a summary + PR link + cost breakdown. Human reviews and merges.
+   Reaching the ceiling with findings still outstanding usually **ships** rather than
+   fails: the run opens a PR flagged `do_not_merge` and audits
+   `shipped_max_cycles_revise`. A `block` verdict is what ends a run without one.
+
+8. **Human review + PR.** On successful exit, the harness pushes the branch under the
+   requester's PAT (per-org routing) and opens a PR — not a draft, unless
+   `repos.draft_pr_on_nonpass` is set and the verdict was not `pass`. The Slack thread
+   gets a summary + PR link + cost breakdown. Human reviews and merges.
 
 ---
 
@@ -249,7 +262,7 @@ stateDiagram-v2
 
 ### 3.1 Slack message router (never subscribed)
 
-- **The plugin does not listen to Slack.** beta.34 removed the autonomous listener; `slack.listener_enabled` is ignored and only logs a warning if set. The OpenClaw agent drives everything via the `harness_run` / `harness_start_session` tools.
+- **The plugin does not listen to Slack.** beta.34 removed the autonomous listener and beta.133 dropped `slack.listener_enabled` from the parsed config entirely; a legacy config that still sets it gets a one-time warning at bootstrap and is otherwise unaffected. The OpenClaw agent drives everything via the `harness_run` / `harness_start_session` tools.
 - `src/slack/channel-listener.ts` survives as a pure router with a UNIQUE thread guard, used for inbound events handed to it explicitly rather than any subscription of its own.
 - Filters by allow-listed user IDs.
 - Routes messages to the intent classifier.
@@ -257,37 +270,54 @@ stateDiagram-v2
 
 ### 3.2 Intent classifier
 
-- Lightweight Haiku/Sonnet call, or a rule-based first pass.
-- Categories: `dev_task`, `question`, `status`, `meta_command`, `noise`.
-- Only `dev_task` triggers a session.
+- One `models.classifier` call (default `claude-haiku-4-5`). There is no rule-based first pass.
+- Categories: `dev_task`, `clarify`, `not_dev`, `unsafe`.
+- Only `dev_task` proceeds to crystallisation. `clarify` returns a single question for the
+  agent to put to the user; `not_dev` and `unsafe` decline.
 
 ### 3.3 Prompt crystalliser
 
-- Multi-turn refinement in the Slack thread.
-- Explicit slots to fill: `target_repo`, `acceptance_criteria`, `constraints`, `budget_override?`, `permission_mode?`.
-- User can short-circuit with "go" or a `:rocket:` reaction.
+- A single pass, not a conversation: one classifier call followed by one crystalliser call.
+  The crystalliser uses `models.lead` rather than a model key of its own.
+- Produces a structured brief (`acceptanceCriteria`, `repoHint` and friends) as JSON.
+- Where it needs more from the user it returns **one** clarifying question, which the
+  calling agent relays and answers via `harness_answer`. It does not run a multi-turn
+  slot-filling loop in a Slack thread.
 
 ### 3.4 Session state store
 
 - SQLite at `~/.openclaw/workspace/openclaw-agent-harness/state.db`.
-- Tables: `sessions`, `sub_tasks`, `attempts`, `reviews`, `budgets_daily`, `budgets_monthly`, `audit_log`.
-- Every mutation appended to `audit_log` for QSA-friendly traceability.
+- Tables: `sessions`, `sub_tasks`, `reviews`, `budgets_daily`, `budgets_monthly`,
+  `audit_log`, `runtime_uploads`, `credential_routes`. `src/state/schema.sql` is the
+  authoritative definition; see §4.
+- Significant lifecycle events are appended to `audit_log`. It is an event log rather
+  than a change-data-capture of every UPDATE — the exhaustive trail is the interaction
+  log (`harness_logs`).
 
 ### 3.5 Fable-5 lead
 
 - One instance per session.
-- System prompt: planner + reviewer of worker outputs, not a coder itself.
-- Tools: `spawn_worker`, `read_repo`, `write_summary`, `request_adversarial_review`.
+- A structured planning call, not an agent with a tool belt: `runLeadPlanner` returns a
+  JSON `LeadPlan` (repo, branch, sub-task DAG, verify contracts). It holds no
+  `spawn_worker` or `read_repo` tools — scheduling belongs to `OrchestratorLoop`, which
+  dispatches workers from the plan and calls the lead again to re-plan.
+- Before planning it may take a bounded scout turn over the repository
+  (`loop.lead_repo_scout_enabled`), because a lead that has read nothing plans against
+  files it imagined.
 - Model: `claude-fable-5`.
 
 ### 3.6 Sonnet workers
 
 - Ephemeral Claude Agent SDK sessions.
 - Sandboxed to specific paths within the session's git worktree.
-- Bash whitelist: `git` (no push), `pnpm`, `npm`, `ls`, `grep`, `cat`, `node`, `jq`, `sed`, `awk`.
-- Deny-list: `.secrets/`, `credentials.db`, `.env*`, `~/.claude/`, `memory/credentials*`.
+- Bash whitelist (`safety.bash_whitelist`): around fifty base commands — the git/package/language toolchain (`git`, `npm`, `pnpm`, `yarn`, `node`, `tsc`, `python`, `pytest`, `go`, `cargo`, `make`) and read-only shell utilities (`ls`, `cat`, `rg`, `jq`, `sed`, `awk`, `find`). Shells themselves are excluded as base commands *and* denied as argument tokens, because `xargs sh -c`, `find -exec bash` and `env sh` otherwise smuggle an unguarded shell through a whitelisted host. `git push` is governed separately by `safety.allow_git_push`, which is `false` by default. See `src/config.ts` for the authoritative list.
+- Path deny-list (`safety.path_denylist`): `.env`, `.env.*`, `.secrets/`, `/etc/`, `/root/`, `~/.ssh/`, `id_rsa`, `id_ed25519`, `harness-vault/`, `vault.key`, `vault.db`. The last three keep a worker out of the harness's own credential vault. The deny-list is enforced on the Read/Write/Edit tools; bash arguments are not path-checked, which is why the whitelist above is narrow and `bash_denylist_tokens` exists as the hard guard.
+- Vault key material never reaches the worker environment at all: `OAH_VAULT_KEY` and `OAH_VAULT_KEY_FILE` are stripped from the subprocess env, and renaming the key variable via `credentials.key_env` moves the strip with it.
 - Model: `claude-sonnet-5`.
-- Reports back a structured `WorkerResult` object (files changed, tests added, summary, cost).
+- Workers run **serially by default**: concurrency needs both `loop.subtask_concurrency > 1`
+  and `loop.parallel_independent_subtasks`.
+- Reports back a structured `WorkerResult` (`filesChanged`, commit SHAs, status, token
+  and cost metrics).
 
 ### 3.7 Fable-5 adversarial reviewer
 
@@ -301,14 +331,14 @@ stateDiagram-v2
 
 ### 3.8 Budget enforcer
 
-- Tracks spend per session (`total_cost_usd` from every SDK `result` event), per user per day, per user per month.
-- Hard-kills sessions that exceed their per-session ceiling.
-- Refuses new sessions past the monthly cap unless the user explicitly overrides via a reaction (audit-logged).
+- Tracks spend per session (`cost_usd`, accumulated from every SDK `result` event), per user per day, per user per month.
+- A session that overruns its own ceiling **warns**; it is the daily and monthly caps that stop work. Treat the per-session budget as a tripwire, not a kill switch.
+- Refuses new sessions past a cap unless the user overrides with the `:moneybag:` reaction (audit-logged), which lifts the daily cap for the run in flight.
 
 ### 3.9 PAT router
 
 - On session start, records `(user, target_org)` -> credential service name.
-- Fetches token via OpenClaw credential vault at session start; never persists it in plugin state.
+- Fetches the token from the harness's own vault at session start; never persists it in plugin state. Routes are per `(provider, org, person)` in `credential_routes`, written by `harness_onboard` — not one flat token per person.
 - All git operations use the fetched token via short-lived `x-access-token` URL.
 
 ### 3.10 Git / GitHub bridge
@@ -333,8 +363,22 @@ stateDiagram-v2
 > which skips native build scripts; a built-in module avoids the missing-bindings
 > failure entirely. See `src/state/store.ts`.
 
+**`src/state/schema.sql` is the definition; read it there.** The sketch below is a
+shape guide, deliberately partial, and it has been wrong before: through 1.0.0-rc.1 it
+listed an `attempts` table that has never existed, omitted `runtime_uploads` and
+`credential_routes`, called `sub_tasks.seq` "ordinal", and gave the adversary a verdict
+vocabulary the code does not use. A schema copied into prose is a schema that drifts, so
+treat this as orientation and the SQL file as truth.
+
+Tables: `sessions`, `sub_tasks`, `reviews`, `budgets_daily`, `budgets_monthly`,
+`audit_log`, `runtime_uploads`, `credential_routes`.
+
+Session statuses include `crystallising`, `planning`, `executing`, `reviewing`,
+`awaiting_clarification`, `resumable`, `interrupted`, `done`, `failed` and `aborted` —
+the last four matter to recovery, which sweeps unfinished sessions on boot.
 
 ```sql
+-- Orientation only. Columns are omitted; see src/state/schema.sql.
 CREATE TABLE sessions (
   id              TEXT PRIMARY KEY,
   slack_thread    TEXT NOT NULL,
@@ -344,7 +388,7 @@ CREATE TABLE sessions (
   repo            TEXT NOT NULL,      -- e.g. example-org/example-repo
   branch          TEXT NOT NULL,
   worktree_path   TEXT NOT NULL,
-  status          TEXT NOT NULL,      -- crystallising|planning|executing|reviewing|done|failed|aborted
+  status          TEXT NOT NULL,      -- see the status list above
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
   budget_usd      REAL NOT NULL,
@@ -356,11 +400,11 @@ CREATE TABLE sessions (
 CREATE TABLE sub_tasks (
   id              TEXT PRIMARY KEY,
   session_id      TEXT NOT NULL REFERENCES sessions(id),
-  cycle           INTEGER NOT NULL,   -- 1..3
-  ordinal         INTEGER NOT NULL,
+  cycle           INTEGER NOT NULL,
+  seq             INTEGER NOT NULL,
   description     TEXT NOT NULL,
   worker_model    TEXT NOT NULL,
-  status          TEXT NOT NULL,      -- pending|running|done|failed
+  status          TEXT NOT NULL,      -- pending|running|done|failed|interrupted
   cost_usd        REAL NOT NULL DEFAULT 0,
   files_touched   TEXT,               -- JSON array
   summary         TEXT,
@@ -372,7 +416,7 @@ CREATE TABLE reviews (
   id              TEXT PRIMARY KEY,
   session_id      TEXT NOT NULL REFERENCES sessions(id),
   cycle           INTEGER NOT NULL,
-  verdict         TEXT NOT NULL,      -- pass|fixes_required|reject_and_replan
+  verdict         TEXT NOT NULL,      -- pass|revise|block
   findings        TEXT NOT NULL,      -- JSON
   cost_usd        REAL NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL
@@ -408,7 +452,7 @@ CREATE TABLE audit_log (
 | Failure | Detection | Response |
 |---|---|---|
 | Worker times out | SDK client-side timer | Kill worker, mark sub-task failed, lead decides retry vs abandon |
-| Adversary times out | SDK client-side timer | Treat as `fixes_required` with a single "review timed out" finding |
+| Adversary times out | SDK client-side timer | Audit `loop.adversary_timeout` + `loop.review_failed`, then the review-crash path. With `loop.graceful_pr_on_review_crash` (default on) and work already committed, it still opens a PR marked `needs_human_review` rather than discarding the cycle |
 | Budget hit mid-cycle | Cost tracker on every `result` event | Freeze session, notify user in Slack thread, ask for override |
 | Container restart | Missing PID + no `result` event within grace period | Mark session `interrupted`, expose "resume" action |
 | Git push rejected (SAML) | `git push` returncode + stderr grep | Emit `git format-patch` to prompt file, ping user with fallback flow |
@@ -424,12 +468,19 @@ CREATE TABLE audit_log (
 - Secrets never enter worker prompts; if a worker needs a secret, the lead resolves it via the vault and passes only the resolved value as a scoped variable.
 - Audit log is append-only, timestamped, and retained for 90 days minimum.
 - Every session's Claude Agent SDK transcript is preserved under `~/.claude/projects/<encoded-path>/*.jsonl`.
-- The plugin itself has broader access (e.g., can read `credentials.db`) than the workers it spawns. This is intentional: the harness sometimes needs to see secrets to inject them selectively, but the workers must not.
+- The plugin process can open the harness vault; worker subprocesses cannot. That gap is deliberate and enforced twice over — `safety.path_denylist` blocks `harness-vault/`, `vault.key` and `vault.db` on the file tools, and the vault key variables are stripped from the worker environment — because the harness sometimes needs to resolve a secret in order to hand a worker only its resolved value.
 
 ---
 
 ## 7. Observability
 
 - All sessions surface a live cost line in the Slack thread (updated at most once per 30s to respect rate limits).
-- `audit_log` is queryable via a `harness_audit` plugin tool.
-- Per-session Markdown report written to `memory/openclaw-agent-harness/YYYY-MM-DD-<session>.md` on completion for later human/QSA review.
+- `harness_progress` is the one to poll: phase, per-sub-task status, running cost against
+  budget, PR and deploy state, and a ready-to-post headline. Relay the terminal headline
+  verbatim — a `do_not_merge` PR that reads as plain "Done" gets merged by mistake.
+- `harness_logs` reads the durable interaction log (JSONL under `<dataDir>/logs`), which
+  is the complete SDK/state trail and survives worktree teardown and container restarts.
+  `harness_session_get` gives the session row and its sub-tasks; `harness_telemetry`
+  aggregates. There is no `harness_audit` tool — `audit_log` is a table, readable through
+  those tools or directly with SQLite.
+- Run `harness_help` for the current tool surface rather than trusting a list in prose.

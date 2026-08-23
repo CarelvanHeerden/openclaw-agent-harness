@@ -17,19 +17,32 @@
  * `set` reads the secret from stdin so it never lands in shell history:
  *   printf '%s' "$TOKEN" | node scripts/vault.mjs set github-carel
  *
- * The vault directory defaults to <dataDir>/harness-vault. Point at another
- * with --dir, matching harness.credentials.dir.
+ * The vault directory is derived from the SAME config the plugin reads, so a
+ * token seeded here is a token the running harness can find. rc.2: it used to
+ * default to ~/.openclaw/harness/harness-vault while the plugin resolved
+ * <dirname(storage.state_db_path)>/harness-vault — by default
+ * ~/.openclaw/workspace/openclaw-agent-harness/harness-vault. Every documented
+ * `vault.mjs set` therefore wrote a real, correctly encrypted entry into a
+ * directory nothing ever read, and the failure only surfaced later as a
+ * credential lookup miss against a vault that visibly contained the name.
+ *
+ * Resolution order: --dir, then $OAH_VAULT_DIR, then openclaw.json, then the
+ * harness's own defaults. The directory in use is printed to stderr, because a
+ * vault CLI that is silent about which vault it opened is how the above
+ * happened.
  */
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 const DIST = new URL("../dist/adapters/credential-vault.js", import.meta.url);
 let CredentialVault;
+let parseHarnessConfig;
 try {
   ({ CredentialVault } = await import(DIST.href));
+  ({ parseHarnessConfig } = await import(new URL("../dist/config.js", import.meta.url).href));
 } catch {
-  console.error("Could not load dist/adapters/credential-vault.js. Run `npm run build` first.");
+  console.error("Could not load dist/. Run `npm run build` first.");
   process.exit(1);
 }
 
@@ -55,6 +68,41 @@ function readStdin() {
   }
 }
 
+/**
+ * The harness's own defaults, read from the parser rather than restated here.
+ * Restating them is what produced the drift this function exists to close.
+ */
+export function harnessDefaults() {
+  return parseHarnessConfig({
+    slack: { channel: "C0000000000", authorised_users: ["U0000000000"] },
+    repos: { allowed: ["example-org/example-repo"] },
+  });
+}
+
+/**
+ * Where the running plugin will look. Mirrors src/index.ts: the vault sits
+ * beside the state DB, under `credentials.dir`.
+ */
+export function runtimeVaultDir({ home = process.env.HOME ?? ".", configPath, defaults } = {}) {
+  const expand = (p) => p.replace(/^~/, home);
+  const cfgPath = configPath ?? resolve(expand("~"), ".openclaw/openclaw.json");
+  let harness = {};
+  try {
+    const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
+    harness = raw?.plugins?.entries?.["openclaw-agent-harness"]?.config ?? {};
+  } catch {
+    // No readable config is normal on a fresh box; fall through to defaults.
+  }
+  const dbPath = expand(harness?.storage?.state_db_path ?? defaults.storage.state_db_path);
+  return resolve(dirname(dbPath), harness?.credentials?.dir ?? defaults.credentials.dir);
+}
+
+// Importing this file must not open a vault or exit the process; the CLI body
+// runs only when it is the entry point, so a test can check the path
+// resolution that the rc.2 mismatch turned on.
+if (process.argv[1]?.endsWith("vault.mjs")) main();
+
+function main() {
 const args = parseArgs(process.argv.slice(2));
 const [cmd, service] = args._;
 if (!cmd) {
@@ -62,14 +110,14 @@ if (!cmd) {
   process.exit(2);
 }
 
-const dir = resolve(
-  args.dir ?? process.env.OAH_VAULT_DIR ?? resolve(process.env.HOME ?? ".", ".openclaw/harness/harness-vault"),
-);
+const dir = resolve(args.dir ?? process.env.OAH_VAULT_DIR ?? runtimeVaultDir({ defaults: harnessDefaults() }));
 
 const logger = {
   info: (m, meta) => console.error(m, meta ?? ""),
   warn: (m, meta) => console.error(m, meta ?? ""),
 };
+
+console.error(`vault: ${dir}`);
 
 let vault;
 try {
@@ -137,4 +185,5 @@ try {
   process.exit(1);
 } finally {
   vault.close();
+}
 }
