@@ -31,9 +31,19 @@ the very cap it needed to survive.
 through as actionable, so an info-in-all-but-name finding re-ran every sub-task —
 the beta.114 cost that function exists to prevent, arriving through a synonym.
 
-**The advertised Node floor is now actually tested.** `engines.node` claimed
-`>=22.5.0` and CI ran Node 24 only, so the floor was claimed and never executed.
-Not academic: 22 subtests across `beta64-first-token-watchdog` and
+**The advertised Node floor was wrong, and is now actually tested.**
+`engines.node` claimed `>=22.5.0` and CI ran Node 24 only, so the floor was
+claimed and never executed. Running it found two separate defects.
+
+The floor itself was wrong. `node:sqlite` is the entire persistence layer, and it
+was experimental and flag-gated until 22.13.0 — on the advertised 22.5.0 the
+plugin cannot open its state store at all. CI on 22.5 failed 70 tests with "No
+such built-in module: node:sqlite". Anyone who read `engines` and provisioned
+22.5 got a harness that could not start. The floor is now `>=22.13.0`, the first
+version this code can actually run on, and the compliance test compares major
+*and* minor — asserting `>=22` is what let `22.5.0` stand.
+
+And the run was hiding cancellations. 22 subtests across `beta64-first-token-watchdog` and
 `beta65-first-token-arming` were `cancelledByParent` on 22.x and asserted
 nothing — on the suite that exists because of the beta.63 hung-stream incident.
 A cancellation is not a failure, so the run stayed green while proving nothing.
@@ -47,9 +57,9 @@ pending work, the loop drained, and every later subtest in the file — includin
 the synchronous source assertions — was cancelled. The fakes now hold a ref'd
 handle for the duration of the wait, which is what the socket was doing.
 
-CI runs `["22.5", "24"]` with `fail-fast: false`. The mutation check stays on the
-primary version: it asks whether the tests are vacuous, which is a property of
-the tests and not of the runtime.
+CI runs `["22.13", "24"]` with `fail-fast: false`. The mutation check stays on
+the primary version: it asks whether the tests are vacuous, which is a property
+of the tests and not of the runtime.
 
 ## 1.0.0-rc.3
 

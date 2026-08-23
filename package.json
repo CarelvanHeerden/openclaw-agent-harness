@@ -46,7 +46,7 @@
     "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
   },
   "keywords": [
     "openclaw",

@@ -213,17 +213,35 @@ test("rc4: CI runs the Node version that package.json advertises", () => {
   // first-token watchdog files were `cancelledByParent` on 22.x and asserted
   // nothing -- on the suite that exists because of the beta.63 hung-stream
   // incident.
+  //
+  // Running it also proved the floor itself was wrong: `node:sqlite` is the
+  // whole persistence layer and is flag-gated before 22.13.0, so on the
+  // advertised 22.5.0 the plugin could not open its state store -- 70 tests
+  // failed on "No such built-in module: node:sqlite". Matching on the MAJOR
+  // version only is what let that stand, so this compares major AND minor.
   const pkg = JSON.parse(S("package.json"));
-  const floor = /(\d+)/.exec(pkg.engines.node)?.[1];
-  assert.ok(floor, "engines.node must name a major version");
+  const m = /^>=\s*(\d+)\.(\d+)\./.exec(pkg.engines.node.trim());
+  assert.ok(m, `engines.node must pin a full floor, got ${pkg.engines.node}`);
+  const floor = `${m[1]}.${m[2]}`;
 
   const ci = S(".github/workflows/ci.yml");
   const matrix = /node-version:\s*\[([^\]]+)\]/.exec(ci);
   assert.ok(matrix, "CI must test a matrix of Node versions, not a single one");
   const versions = matrix[1].split(",").map((v) => v.trim().replace(/["']/g, ""));
   assert.ok(
-    versions.some((v) => v.startsWith(floor)),
+    versions.includes(floor) || versions.some((v) => v.startsWith(`${floor}.`)),
     `CI must run the advertised floor (Node ${floor}); matrix is ${versions.join(", ")}`,
+  );
+});
+
+test("rc4: the state store's Node floor claim matches package.json", () => {
+  // The comment in store.ts is where the 22.5 number came from originally.
+  const pkg = JSON.parse(S("package.json"));
+  const m = /^>=\s*(\d+)\.(\d+)\./.exec(pkg.engines.node.trim());
+  assert.match(
+    S("src/state/store.ts"),
+    new RegExp(`node:sqlite\`? \\(built into Node >= ${m[1]}\\.${m[2]}\\)`),
+    "store.ts must cite the same floor package.json enforces",
   );
 });
 

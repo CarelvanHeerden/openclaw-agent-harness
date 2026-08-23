@@ -87,10 +87,20 @@ test("sdk: package.json files array includes openclaw.plugin.json (not plugin.js
   assert.equal(pkg.files.includes("plugin.json"), false, "files must not include legacy plugin.json");
 });
 
-test("sdk: package.json engines.node is >=22", () => {
+test("sdk: package.json engines.node is at least the node:sqlite floor", () => {
+  // rc.4: this asserted `>=22` and so accepted `>=22.5.0`, which was wrong --
+  // `node:sqlite` is the entire persistence layer and was experimental and
+  // flag-gated until 22.13.0. On 22.5.0 the plugin cannot open its state store
+  // at all. A floor that only checks the major version cannot catch that.
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
   assert.equal(typeof pkg.engines?.node, "string");
-  assert.match(pkg.engines.node, />=\s*22/, "engines.node must require Node >=22");
+  const m = /^>=\s*(\d+)\.(\d+)\.(\d+)$/.exec(pkg.engines.node.trim());
+  assert.ok(m, `engines.node must pin a full floor, got ${pkg.engines.node}`);
+  const [major, minor] = [Number(m[1]), Number(m[2])];
+  assert.ok(
+    major > 22 || (major === 22 && minor >= 13),
+    `engines.node must be >=22.13.0 (node:sqlite is unflagged from 22.13.0), got ${pkg.engines.node}`,
+  );
 });
 
 test("sdk: dist entry point wraps definePluginEntry (when built)", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, async () => {

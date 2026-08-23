@@ -5,7 +5,7 @@
  * The schema is loaded from schema.sql at package root. It is intentionally
  * copied into dist/state/schema.sql by the build (see package.json "files").
  *
- * We deliberately use `node:sqlite` (built into Node >= 22.5) rather than
+ * We deliberately use `node:sqlite` (built into Node >= 22.13) rather than
  * `better-sqlite3` so the plugin has ZERO native dependencies. OpenClaw's
  * plugin loader installs deps with `npm install --ignore-scripts`, which
  * silently skips `better-sqlite3`'s `install` script and leaves the plugin

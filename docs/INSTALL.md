@@ -2,7 +2,7 @@
 
 Prerequisites:
 
-- OpenClaw **2026.6.1 or later**, running in a Node 22+ environment (the plugin's `engines.node` is `>=22.5.0`, which is where `node:sqlite` arrives). Older releases dropped plugins this depends on, Slack among them, so 2026.6.1 is the earliest version the harness has actually been exercised against — not a theoretical floor. Development and testing through 1.0.0-rc.2 ran on `openclaw:2026.7.2-beta.7`.
+- OpenClaw **2026.6.1 or later**, running in a Node 22.13+ environment (the plugin's `engines.node` is `>=22.13.0`). `node:sqlite` is the whole persistence layer; it was *added* in 22.5.0 but stayed behind `--experimental-sqlite` until **22.13.0**, so on anything earlier the plugin cannot open its state store. rc.4 corrected this — through rc.3 the floor was advertised as 22.5.0, which does not work. Older releases dropped plugins this depends on, Slack among them, so 2026.6.1 is the earliest version the harness has actually been exercised against — not a theoretical floor. Development and testing through 1.0.0-rc.2 ran on `openclaw:2026.7.2-beta.7`.
 - An Anthropic API key exposed to the OpenClaw container as `ANTHROPIC_API_KEY`.
 - `pnpm` available inside the container (or wherever you run the plugin).
 - A git provider token per person, per org, held in the harness's own credential vault. Onboard with `harness_onboard` (see [`CONFIGURATION.md`](CONFIGURATION.md#pat-routing)), or load them directly with `node scripts/vault.mjs set <service>`.

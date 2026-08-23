@@ -2363,9 +2363,19 @@ const MUTATIONS = [
     // several releases without anybody seeing it.
     name: "the advertised Node floor is tested (rc.4): CI must run what engines claims",
     file: ".github/workflows/ci.yml",
-    find: '        node-version: ["22.5", "24"]',
+    find: '        node-version: ["22.13", "24"]',
     replace: '        node-version: ["24"]',
     tests: ["tests/rc4-severity-consolidation.test.mjs"],
+  },
+  {
+    // The floor was not just untested, it was wrong: `node:sqlite` is the whole
+    // persistence layer and is flag-gated before 22.13.0, so the advertised
+    // 22.5.0 could not open a state store. Putting it back must fail.
+    name: "the Node floor is the one node:sqlite needs (rc.4): 22.5 cannot open a database",
+    file: "package.json",
+    find: '"node": ">=22.13.0"',
+    replace: '"node": ">=22.5.0"',
+    tests: ["tests/sdk-compliance.test.mjs", "tests/rc4-severity-consolidation.test.mjs"],
   },
 ];
 
