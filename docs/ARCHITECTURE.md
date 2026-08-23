@@ -21,6 +21,7 @@ version with the code.
 flowchart TB
   subgraph SLACK["Slack (private dev channel)"]
     U["Allow-listed user"]
+    API["Slack Web API"]
   end
 
   subgraph GW["OpenClaw gateway"]
@@ -53,9 +54,12 @@ flowchart TB
     VAULT["Harness credential vault\nAES-256-GCM, own key file"]
   end
 
-  U -->|talks to| AGENT
-  U -->|reaction| RPOLL
-  AGENT -->|harness_run| TOOLS
+  U -->|message| API
+  API -->|the AGENT subscribes; the harness never does| AGENT
+  AGENT -->|harness_run / harness_start_session| TOOLS
+  U -->|reaction| API
+  RPOLL -.->|polls every 15s| API
+  DIS -.->|posts progress, PR link, reactions| API
   TOOLS --> DIS
   DIS --> CRY
   CRY --> LOOP
@@ -72,10 +76,17 @@ flowchart TB
   LOOP -->|push branch + open PR| GH
   GH --> WT
   RPOLL -->|shipIt / abort / budgetBump| STORE
+  PRW -.->|polls every 300s| GH
   PRW -->|merge/close detected| STORE
   LOOP <--> STORE
   DIS <--> STORE
 ```
+
+**Every arrow into the plugin starts inside the gateway.** Slack cannot reach the
+harness: the OpenClaw agent is the subscriber, and the only way in is a tool call.
+Even reactions are *pulled* — the poller calls the Slack API on a timer, which is
+why the arrow points out of the plugin rather than into it. A message posted in
+the channel that no agent picks up does nothing at all.
 
 ### 0.2 Sequence diagram (one dev request, end to end)
 

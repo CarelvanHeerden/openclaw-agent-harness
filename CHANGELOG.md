@@ -23,6 +23,18 @@ but not all of them, and the remainder were the same species as the rest:
 - Crystallisation asks at most one question, not "up to 3 in a Slack thread", and
   `awaiting_clarification` is now on the state diagram.
 
+The component diagram still drew a reaction arriving *at* the plugin, which reads
+as Slack pushing into the harness — the thing that has not been true since
+beta.34. Reactions are polled: the arrow points out now, through an explicit
+Slack Web API node, and the diagram carries a note saying every way in starts
+inside the gateway.
+
+The README claimed "2180 tests as of 1.0.0-rc.1" while shipping 1.0.0-rc.2. The
+rc.2 bump had updated the status line and missed two claims further down, because
+nothing tied the count to the version it was pinned to. `readme-version-claims-current`
+now fails when an "as of `<version>`" claim falls behind `package.json`, which is
+the moment you would notice the count moved too.
+
 ## 1.0.0-rc.2
 
 ### The vault CLI and the vault were two different directories
