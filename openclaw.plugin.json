@@ -1099,6 +1099,27 @@
             "description": "beta.63 (Part B): prune per-session log files older than this many days."
           }
         }
+      },
+      "credentials": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them. Every key here is optional \u2014 the defaults are a working configuration, and $OAH_VAULT_KEY / $OAH_VAULT_KEY_FILE cover the same ground without touching config.",
+        "properties": {
+          "dir": {
+            "type": "string",
+            "default": "harness-vault",
+            "description": "Directory holding vault.db and (by default) vault.key. Relative paths resolve against the harness data dir, NOT the git worktree, so the vault survives worktree teardown."
+          },
+          "key_env": {
+            "type": "string",
+            "default": "OAH_VAULT_KEY",
+            "description": "Env var checked for a raw 32-byte key (64 hex chars or base64). When set it OVERRIDES the key file. Renaming it also moves the worker-subprocess env strip, so the key never reaches a worker under either name."
+          },
+          "key_file": {
+            "type": "string",
+            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent \u2014 back it up, because without it every stored credential is unrecoverable."
+          }
+        }
       }
     }
   }

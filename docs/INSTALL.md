@@ -2,10 +2,10 @@
 
 Prerequisites:
 
-- OpenClaw >= 2026.5.0 running in a Node 22+ environment (the plugin's `engines.node` is `>=22.0.0`, matching the OpenClaw plugin SDK).
+- OpenClaw **2026.6.1 or later**, running in a Node 22+ environment (the plugin's `engines.node` is `>=22.5.0`, which is where `node:sqlite` arrives). Older releases dropped plugins this depends on, Slack among them, so 2026.6.1 is the earliest version the harness has actually been exercised against — not a theoretical floor. Development and testing through 1.0.0-rc.1 ran on `openclaw:2026.7.2-beta.7`.
 - An Anthropic API key exposed to the OpenClaw container as `ANTHROPIC_API_KEY`.
 - `pnpm` available inside the container (or wherever you run the plugin).
-- GitHub personal access tokens stored in the OpenClaw credential vault. See [`CONFIGURATION.md`](CONFIGURATION.md#pat-routing) for naming, and read the consistency note there before using `harness_onboard`.
+- A git provider token per person, per org, held in the harness's own credential vault. Onboard with `harness_onboard` (see [`CONFIGURATION.md`](CONFIGURATION.md#pat-routing)), or load them directly with `node scripts/vault.mjs set <service>`.
 
 ### No native dependencies, no toolchain
 
@@ -182,8 +182,15 @@ defaults to `{provider}-{owner}` with the owner lower-cased. For
 `Stitch-Vercel/ProjectThanos` on GitHub that is `github-stitch-vercel`:
 
 ```bash
-openclaw memory credential-store --service github-stitch-vercel --type token --value 'ghp_...'
+# The secret is read from stdin, so it never lands in shell history or `ps`.
+printf '%s' 'ghp_...' | node scripts/vault.mjs set github-stitch-vercel --type token
 ```
+
+There is no `openclaw memory credential-store` step any more: beta.110 moved the
+harness onto its own vault and removed the memory-hybrid path entirely, with no
+fallback. The CLI opens the same directory the running plugin does, and prints
+which one on every invocation — check that line if a token appears stored but
+cannot be found.
 
 If you use `harness_onboard` with `action:"add"`, none of this applies: that
 flow writes the routing entry as well as the secret, so the two cannot disagree
@@ -225,26 +232,38 @@ Or via OpenClaw's `gateway restart` tool.
 
 ## 6. Smoke test
 
-Post the following in your configured Slack channel:
+Ask your OpenClaw agent, in a channel or DM it is already listening to:
 
 ```
-harness: add a comment to README.md saying hello from the agent harness
+Use the harness to add a comment to README.md in example-org/example-repo
+saying hello from the agent harness.
 ```
+
+**The harness itself does not read Slack.** beta.34 removed the listener, so a
+message beginning `harness:` posted into the configured channel does nothing at
+all — the agent has to call `harness_run`. If nothing happens, that is the first
+thing to check, and it is the most common reason a fresh install looks dead.
 
 Expected behaviour:
 
-1. The harness starts a thread.
-2. It asks 1-2 clarifying questions (or accepts the prompt as-is if it deems it clear).
+1. The agent calls `harness_run` and reports a session id back to you.
+2. It may relay **one** clarifying question; answer it in the same conversation.
 3. Fable-5 lead plans a single Sonnet worker sub-task.
-4. Worker edits `README.md`, commits to a new branch.
-5. Adversarial reviewer signs off.
-6. Draft PR opens under your GitHub identity.
-7. Slack thread posts the PR link + cost summary.
+4. Worker edits `README.md` and commits to a new branch — workers never push.
+5. Adversarial reviewer returns `pass`, `revise` or `block`.
+6. The harness pushes the branch under your GitHub identity and opens a PR
+   (not a draft, unless you set `repos.draft_pr_on_nonpass`).
+7. You get the PR link and a cost summary.
+
+Poll `harness_progress` while it runs. Relay its terminal headline verbatim: a PR
+flagged `do_not_merge` is a PR that shipped with findings outstanding, and it
+reads as ordinary success if you paraphrase it.
 
 ## Troubleshooting
 
 - **`claude --version` fails inside container.** Rebuild the image with the Dockerfile changes in step 1.
-- **`ANTHROPIC_API_KEY missing`.** Set it in the container env; the SDK inherits from `process.env`.
+- **`ANTHROPIC_API_KEY missing`.** Resolution is vault-first: set `models.auth.credential_service` and store the key with `printf '%s' 'sk-ant-...' | node scripts/vault.mjs set <service> --type api_key`. Failing that the SDK inherits `ANTHROPIC_API_KEY` from `process.env`, so the container env still works as a fallback.
+- **A token is in the vault but the harness cannot find it.** Compare the path `scripts/vault.mjs` prints on startup with `<dirname of storage.state_db_path>/harness-vault`. They agree by default from 1.0.0-rc.2; before that the CLI wrote to `~/.openclaw/harness/harness-vault`, which nothing read. Re-seed if you installed earlier, or point the CLI with `--dir`.
 - **GitHub PAT 401.** Confirm the token has `repo` scope. For org-level SAML SSO enforcement, authorise the token via the org's PAT settings page.
 - **Session stuck.** Check `~/.openclaw/workspace/openclaw-agent-harness/state.db`, table `sessions`, for the row's status. If `interrupted`, use the plugin's `harness_resume` tool.
 - **Costs unexpectedly high.** Inspect `audit_log` and `sub_tasks` for the offending session. Consider lowering `session_default_usd` in config.

@@ -2186,6 +2186,29 @@ const MUTATIONS = [
     replace: 'default_service_pattern: "github-{owner}",',
     tests: ["tests/config.test.mjs"],
   },
+  {
+    // rc.2: the manifest is what the gateway validates against, and it is
+    // additionalProperties:false. A block we document but never declare there
+    // rejects the operator's ENTIRE config the moment they set it, which is
+    // what beta.34 did with vercel.api_key_env and rc.1 did with the whole
+    // credentials block.
+    name: "a config block the docs advertise is one the gateway will accept",
+    file: "openclaw.plugin.json",
+    find: '      "credentials": {',
+    replace: '      "credentials_UNDECLARED": {',
+    tests: ["tests/manifest-accepts-documented-config.test.mjs"],
+  },
+  {
+    // rc.2: the config appendix is generated, so the way it goes wrong is no
+    // longer "someone forgot to write it down" but "someone forgot to
+    // regenerate it". Prove that drift fails rather than sitting there looking
+    // authoritative.
+    name: "a stale generated config reference fails instead of misinforming",
+    file: "docs/CONFIGURATION.md",
+    find: "- **`safety.allow_git_push`** — `boolean`, default `false`.",
+    replace: "- **`safety.allow_git_push`** — `boolean`, default `true`.",
+    tests: ["tests/config-reference-current.test.mjs"],
+  },
 ];
 
 /**

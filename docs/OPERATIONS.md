@@ -74,7 +74,7 @@ FROM audit_log WHERE session_id = ? ORDER BY id ASC;
 
 ## PAT cache lifecycle
 
-At session start the harness fetches each required PAT from the OpenClaw credential vault and caches it in-process (a plain `Map`, per-runtime, not persisted). Cached tokens live for the lifetime of the session and are dropped by `teardown()` when the session terminates.
+At session start the harness fetches each required PAT from its own credential vault (`CredentialVault`, via `CredentialAdapter`) and caches it in-process (a plain `Map`, per-runtime, not persisted). Cached tokens live for the lifetime of the session and are dropped by `teardown()` when the session terminates.
 
 Implication for long-running sessions: **there is no TTL**. If a PAT is rotated in the vault mid-session, the cached value continues to be used until the session ends. For rotations that must take effect on an active session, either:
 

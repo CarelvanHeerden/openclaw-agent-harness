@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.0.0-rc.2
+
+### The vault CLI and the vault were two different directories
+
+`scripts/vault.mjs` defaulted to `~/.openclaw/harness/harness-vault`. The plugin
+resolves its vault beside the state DB, which by default is
+`~/.openclaw/workspace/openclaw-agent-harness/harness-vault`. Both were
+individually correct and nothing compared them, so every `vault.mjs set` in
+INSTALL.md wrote a real, correctly encrypted credential into a directory nothing
+would ever open — and `vault.mjs list` then confirmed it was there. The failure
+surfaced much later and somewhere else, as a credential lookup miss against a
+vault that visibly contained the name.
+
+The CLI now derives its directory the way the plugin does: from
+`storage.state_db_path` and `credentials.dir` in `openclaw.json`, falling back to
+the parser's own defaults rather than a second copy of them. `--dir` and
+`$OAH_VAULT_DIR` still override. It also prints the directory it opened on every
+invocation, because a vault CLI that is silent about which vault it opened is how
+this went unnoticed for twenty-five betas.
+
+If you seeded tokens before this release, check the path the CLI now prints and
+re-seed if it differs from where you put them.
+
+### `credentials` was documented, used, and rejected
+
+`src/config.schema.json` declared a `credentials` block and `src/index.ts` read
+it, but `openclaw.plugin.json` — which is `additionalProperties: false` — never
+listed it. Any operator who configured the vault the way the schema described had
+their whole config rejected at load. This is the beta.34 regression exactly, one
+node over, so the guard is now general: `manifest-accepts-documented-config`
+fails if any schema-declared key is missing from a strict manifest node, rather
+than checking the one key that broke last time.
+
+### Docs that described a harness we no longer ship
+
+The install smoke test told you to post `harness: ...` into your Slack channel.
+The harness stopped subscribing to Slack in beta.34, so the documented way to
+verify a fresh install was a step that cannot work — the failure mode being a new
+operator concluding the thing is dead. It now goes through the agent and
+`harness_run`.
+
+Also corrected: the adversary's verdicts are `pass`/`revise`/`block`, not
+`fixes_required`/`reject_and_replan`; the classifier's categories are
+`dev_task`/`clarify`/`not_dev`/`unsafe`; PRs open non-draft by default; workers
+run serially unless `subtask_concurrency` says otherwise; hitting `max_cycles`
+with findings outstanding ships a `do_not_merge` PR rather than failing; there is
+no `harness_audit` tool and no per-session Markdown report; the state schema has
+no `attempts` table and does have `runtime_uploads` and `credential_routes`; and
+`engines.node` is `>=22.5.0`. The §4 schema is now a pointer to
+`src/state/schema.sql` instead of a copy that drifts.
+
+`CONFIGURATION.md` gains a generated appendix covering all 168 settings, with a
+test that fails when it falls behind the manifest. The 106 keys that had never
+been documented were not obscure — they included every safety default an infosec
+reviewer would ask about.
+
 ## 1.0.0-rc.1
 
 ### The same tree as beta.137, under a version that says what it is

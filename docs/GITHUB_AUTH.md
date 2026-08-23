@@ -224,7 +224,7 @@ type:    token
 value:   github_pat_...
 ```
 
-### Env only (no vault plugin)
+### Env only (nothing seeded in the vault)
 
 Set the provider's env var in the container environment: `GH_TOKEN` for
 GitHub, `GITLAB_TOKEN` for GitLab (names configurable via
