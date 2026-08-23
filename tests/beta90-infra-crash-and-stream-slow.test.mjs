@@ -164,13 +164,26 @@ const greenProbes = () => ({
 const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
 const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/tmp/wt/s", subTasks: [commitSubTask(1)], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
 
-// Feature 1a: INFRA crash on CYCLE 1 (no prior review) + green self-verify =>
-// ELIGIBLE => opens a needs_human_review PR (the b89 041bd3d3 case).
-test("beta90 F1: cycle-1 INFRA crash (ENOSPC) with green self-verify opens needs_human_review PR",
+// Feature 1a, as REVISED in rc.3.
+//
+// beta.90 shipped this case: an infra crash (ENOSPC) on cycle 1 with green
+// self-verification opened a needs_human_review PR, attaching a synthesized
+// `revise` report, so an out-of-disk error could not sink a finished run.
+//
+// The external review (§2) pointed out what that meant in practice: the code in
+// that PR had been reviewed by nobody. "Self-verified green" is the worker's own
+// probe on its own work. The harness advertises that nothing is pushed until the
+// adversary passes, and this was one of three paths where that was not true.
+//
+// rc.3 keeps beta.90's premise -- an infra error says nothing about the code --
+// and changes its conclusion. The commits are still not lost: the worktree is
+// preserved and stays resumable. Only the automatic push is withdrawn. Where a
+// PRIOR review exists, the infra path still ships (asserted below).
+test("rc3: a cycle-1 INFRA crash with NO prior review preserves the worktree instead of pushing",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "I1");
-    let prCalls = 0, prReport = null;
+    let prCalls = 0, releaseCalls = 0;
     const loop = new OrchestratorLoop({
       config: config(),
       state,
@@ -181,37 +194,38 @@ test("beta90 F1: cycle-1 INFRA crash (ENOSPC) with green self-verify opens needs
       runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "sha1", costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
       // CYCLE-1 adversary crashes with an INFRASTRUCTURE error.
       runAdversary: async () => { throw new Error("ENOSPC: no space left on device, write"); },
-      pushBranchAndOpenPr: async ({ reviewReport }) => { prCalls++; prReport = reviewReport; return "https://github.com/o/r/pull/90"; },
+      pushBranchAndOpenPr: async () => { prCalls++; return "https://github.com/o/r/pull/90"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
       buildVerifyProbes: greenProbes,
-      releaseWorktree: async () => ({ ok: true, path: "/tmp/wt/s" }),
+      releaseWorktree: async () => { releaseCalls++; return { ok: true, path: "/tmp/wt/s" }; },
     });
 
     const outcome = await loop.run("I1", brief);
-    assert.equal(outcome.status, "shipped", "infra crash + green self-verify must ship, not fail");
-    assert.equal(outcome.prUrl, "https://github.com/o/r/pull/90");
-    assert.equal(prCalls, 1, "PR opened once via the infra graceful path");
-    // No prior review => a synthesized revise review is attached.
-    assert.ok(prReport, "a review report is passed to the push");
-    assert.equal(prReport.verdict, "revise");
-    assert.match(prReport.summary, /infrastructure error/i);
+    assert.equal(outcome.status, "failed", "nothing reviewed this code, so it is not pushed");
+    assert.equal(prCalls, 0, "no PR is opened for code no adversary has seen");
+    assert.equal(releaseCalls, 0, "the worktree is kept, so the work is recoverable");
+    assert.match(outcome.reason, /no adversary review has ever run/i);
+    assert.match(outcome.reason, /harness_resume/, "the operator is told how to get the work");
 
-    const row = state.db.prepare(`SELECT status, merge_recommendation FROM sessions WHERE id='I1'`).get();
-    assert.equal(row.status, "done");
-    assert.equal(row.merge_recommendation, "needs_human_review");
+    const row = state.db.prepare(`SELECT status, worktree_preserved, final_pr_url FROM sessions WHERE id='I1'`).get();
+    assert.equal(row.status, "failed");
+    assert.equal(row.final_pr_url, null);
+    // rc.3: without this flag the startup self-heal reaps the very directory
+    // this path just promised to keep (beta.129 fixed the abort path and missed
+    // this one).
+    assert.equal(row.worktree_preserved, 1, "the preserved worktree must survive a restart");
 
     const rec = state.audits.filter((e) => e.event === "loop.review_crash_recovery");
     assert.equal(rec.length, 1);
-    assert.equal(rec[0].payload.eligible, true);
-    assert.equal(rec[0].payload.infra, true, "recovery audit flags infra=true");
+    assert.equal(rec[0].payload.eligible, false, "infra no longer waives the prior-review requirement");
+    assert.equal(rec[0].payload.infra, true, "recovery audit still flags infra=true");
     assert.equal(rec[0].payload.hasPriorReview, false);
     assert.equal(rec[0].payload.selfVerifyGreen, true);
 
-    const shipped = state.audits.filter((e) => e.event === "loop.shipped");
-    assert.equal(shipped.length, 1);
-    assert.equal(shipped[0].payload.viaReviewCrashRecovery, true);
-    assert.equal(shipped[0].payload.viaInfraCrash, true);
-    assert.match(shipped[0].payload.reason, /INFRASTRUCTURE error/i);
+    const refused = state.audits.filter((e) => e.event === "loop.salvage_refused_unreviewed");
+    assert.equal(refused.length, 1, "the refusal is auditable, not silent");
+    assert.equal(refused[0].payload.path, "review_crash");
+    assert.equal(state.audits.filter((e) => e.event === "loop.shipped").length, 0);
     state.close();
   });
 

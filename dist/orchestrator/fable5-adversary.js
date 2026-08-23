@@ -21,7 +21,7 @@
  * explicit banner and MUST refuse to sign off on the runtime dimension.
  */
 import { renderConventionsForPrompt } from "./repo-conventions.js";
-import { gateVerdict } from "./finding-classify.js";
+import { classifyFinding, gateVerdict } from "./finding-classify.js";
 import { findingsMissingFile, buildFileAttributionRetryNudge } from "./adversary-file-attribution.js";
 /**
  * Adversary prompt-preamble helper. Injected verbatim into the adversary's
@@ -306,14 +306,22 @@ export async function runAdversary(input, deps) {
         priorFindings: input.priorFindings,
     });
     if (gated.downgraded) {
-        deps.logger.info("[adversary] verdict downgraded revise->pass (no new diff-addressable medium+ finding)", {
+        // rc.3: warn, not info. This line is the only account of a `revise` the
+        // system chose to treat as a `pass`, and it decides whether the PR is
+        // auto-mergeable.
+        deps.logger.warn("[adversary] verdict downgraded revise->pass (no new diff-addressable medium+ finding)", {
             findings: findings.length,
             newBlocking: gated.newBlocking.length,
+            demoted: findings
+                .filter((f) => classifyFinding(f, classifyCtx) !== "diff_addressable")
+                .map((f) => `${f.severity}/${classifyFinding(f, classifyCtx)}: ${f.title}`)
+                .slice(0, 10),
         });
     }
     const verdict = gated.verdict;
     return {
         verdict,
+        verdictDowngraded: gated.downgraded,
         findings,
         summary: result.parsed.summary,
         sdkSessionId: result.sdkSessionId,

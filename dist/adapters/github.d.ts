@@ -20,6 +20,14 @@ export interface CreatePrInput {
      * the one hardcoded holdout).
      */
     apiBase?: string;
+    /**
+     * rc.3: labels to apply after the PR opens -- `do-not-merge` when the harness
+     * is not vouching for this code. Applied best-effort; see `applyPrLabels`.
+     */
+    labels?: string[];
+    logger?: {
+        warn: (msg: string, meta?: unknown) => void;
+    };
 }
 export interface CreatePrOutput {
     number: number;

@@ -22,7 +22,7 @@
  */
 
 import { renderConventionsForPrompt } from "./repo-conventions.js";
-import { gateVerdict, type ClassifyCtx } from "./finding-classify.js";
+import { classifyFinding, gateVerdict, type ClassifyCtx } from "./finding-classify.js";
 import { findingsMissingFile, buildFileAttributionRetryNudge } from "./adversary-file-attribution.js";
 
 export interface AdversaryInput {
@@ -68,9 +68,25 @@ export interface ReviewFinding {
    * GitHub CI failure, which the classifier must not downgrade -- see
    * classifyFinding.
    */
-  source?: "ci";
+  /**
+   * rc.3: `"harness_env"` marks a finding the HARNESS authored about its own
+   * tooling -- the beta.115 typecheck gate reporting that nothing could run.
+   * Like `"ci"`, it is a fact the harness established rather than a judgement
+   * the adversary argued, so the classifier trusts it directly instead of
+   * inferring the bucket from the wording. Needed because the rc.3
+   * `isNonDemotable` rule stops HIGH-severity findings being demoted on
+   * keywords, and this one is deliberately high AND deliberately non-blocking:
+   * it must stop a merge, and no code change can repair a missing binary.
+   */
+  source?: "ci" | "harness_env";
   dimension: "spec" | "fit" | "quality" | "security" | "runtime";
-  severity: "info" | "low" | "medium" | "high" | "critical";
+  /**
+   * rc.3: `"unknown"` is a real value here, not a defect. The adversary's JSON
+   * is not schema-checked, so a severity we cannot map lands as `"unknown"` and
+   * is treated as blocking rather than quietly becoming `"low"`. See
+   * `normaliseSeverity` in finding-classify.ts.
+   */
+  severity: "info" | "low" | "medium" | "high" | "critical" | "unknown";
   title: string;
   detail: string;
   /** beta.91: repo-relative path. REQUIRED for diff-addressable findings
@@ -96,6 +112,17 @@ export interface ReviewReport {
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
+  /**
+   * rc.3: true when `verdict` is a `pass` the gate produced from the model's
+   * `revise`, rather than one the adversary actually gave.
+   *
+   * The downgrade was previously visible only as a log line, while the `pass`
+   * it produced went on to set `reachedCleanPass` and make the PR
+   * auto-mergeable. A reader of the PR could not tell the two kinds of pass
+   * apart. Carried on the report so the audit trail, the PR body and the merge
+   * recommendation can all say which one it was.
+   */
+  verdictDowngraded?: boolean;
 }
 
 /**
@@ -418,15 +445,23 @@ export async function runAdversary(
     priorFindings: input.priorFindings,
   });
   if (gated.downgraded) {
-    deps.logger.info("[adversary] verdict downgraded revise->pass (no new diff-addressable medium+ finding)", {
+    // rc.3: warn, not info. This line is the only account of a `revise` the
+    // system chose to treat as a `pass`, and it decides whether the PR is
+    // auto-mergeable.
+    deps.logger.warn("[adversary] verdict downgraded revise->pass (no new diff-addressable medium+ finding)", {
       findings: findings.length,
       newBlocking: gated.newBlocking.length,
+      demoted: findings
+        .filter((f) => classifyFinding(f, classifyCtx) !== "diff_addressable")
+        .map((f) => `${f.severity}/${classifyFinding(f, classifyCtx)}: ${f.title}`)
+        .slice(0, 10),
     });
   }
   const verdict = gated.verdict;
 
   return {
     verdict,
+    verdictDowngraded: gated.downgraded,
     findings,
     summary: result.parsed.summary,
     sdkSessionId: result.sdkSessionId,

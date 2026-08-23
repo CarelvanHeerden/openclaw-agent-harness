@@ -13,8 +13,22 @@
  *      turn can reach it, because there is nothing registered to reach.
  *
  * Storage is a DEDICATED SQLite file, not the harness state DB. State DBs get
- * copied around for debugging; secrets must not ride along. The file is useless
- * without the key, which lives outside it.
+ * copied around for debugging; secrets must not ride along. The ciphertext is
+ * useless without the key, which lives outside the DB FILE.
+ *
+ * rc.3, after an external review read the previous wording as a stronger claim
+ * than it is: by default the key file lives in the same DIRECTORY as the
+ * ciphertext (`<dir>/vault.key` next to `<dir>/vault.db`, both under the
+ * harness data dir, the key at 0600 and the dir at 0700). So the default
+ * defends against the threat it was built for -- a state DB copied off the box
+ * for debugging takes no secrets with it -- and does NOT defend against anyone
+ * who can read the harness data dir, because they get both halves.
+ *
+ * Set `$OAH_VAULT_KEY_FILE` to a path outside the data dir, or `$OAH_VAULT_KEY`
+ * to inject the key from a secret manager, if you need at-rest protection
+ * against data-dir read. Starting the harness is deliberately NOT gated on
+ * this: refusing to open a vault that thousands of existing installs are
+ * already using would turn a documentation problem into an outage.
  *
  * Crypto: AES-256-GCM, a fresh 96-bit IV per write, 128-bit auth tag. The
  * SERVICE NAME is bound in as additional authenticated data, so ciphertext

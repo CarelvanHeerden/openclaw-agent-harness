@@ -1,5 +1,88 @@
 # Changelog
 
+## 1.0.0-rc.3
+
+Response to an external review of rc.2. Full finding-by-finding reply, including
+where we disagree, in [docs/EXTERNAL_REVIEW_RESPONSE.md](docs/EXTERNAL_REVIEW_RESPONSE.md).
+
+**Severity is read in one place, and an unreadable severity blocks.**
+`isBlockingFinding` compared severity with `===` while every other consumer in
+the harness had independently written `(f.severity ?? "").toLowerCase()`. The one
+that did not was the one deciding whether a finding could stop a ship, so
+`"Medium"` was not medium: the finding did not block, the gate downgraded
+`revise` to `pass`, `reachedCleanPass` went true, and the PR became
+auto-mergeable. A defect flipped to shippable on the casing of a word. Worse, the
+parse boundary read `f.severity ?? "low"`, so a *missing* severity — which an
+unschema'd model response produces routinely — was silently non-blocking.
+
+`normaliseSeverity` is now the single interpreter: it trims, lowercases, maps the
+synonyms models actually emit, and returns `unknown` for anything else. `unknown`
+counts as blocking. `harness_merge_pr`'s override gate, which counted only
+high/critical and so let a `medium` PR stay Vercel-overridable, reads through the
+same function.
+
+The demotion buckets were a one-way ratchet toward shipping — every rule matched
+prose and every rule demoted. `security`, `high`, `critical` and unreadable
+severities are no longer demoted on a keyword. `medium` still is, deliberately:
+the beta.69/70 forensics were about medium demotions and reopening those loops
+would trade one failure mode for another. The bare verb `regenerate` is gone from
+the generated-artifact pattern, which had been matching it anywhere in the text —
+"regenerate the token on each login" was classified as somebody else's process
+work and could not sustain a `revise`.
+
+**Nothing pushes that no adversary has reviewed.** Three salvage paths —
+best-effort verify, abort salvage, review-crash recovery — synthesised a
+placeholder `revise` report and pushed for sessions where no review had ever run.
+Each stamped the PR `needs_human_review`, which works if somebody reads it. They
+now share one gate: with a prior review, ship as before; with none, preserve the
+worktree and refuse the push. The commits are not lost, only the push. beta.90's
+infra-crash recovery keeps its waiver of `cycle >= 2` and loses its waiver of the
+prior review.
+
+Two things fell out of implementing that. `finaliseFailedPreserveWorktree` never
+set `worktree_preserved`, and `failed` is terminal, so the startup self-heal
+reaped the directory the function's name promises to keep — beta.129 fixed this
+for the abort path and missed this one. And `tryBestEffortVerify` returned a bare
+`true` both when it opened a PR and when the push *threw*, so a failed push was
+reported to the caller as `shipped` with an empty PR URL.
+
+PRs now carry `do-not-merge`, `harness:unreviewed` and `harness:downgraded-pass`
+labels, applied on both the open and the revise re-push paths, so the warning is
+something branch protection can require the absence of rather than body text
+somebody has to read. Labelling is best-effort and never fails a run.
+
+A `pass` the gate manufactured from a `revise` used to look exactly like one the
+adversary gave. It now logs at `warn` with the demoted findings named, sets
+`verdictDowngraded`, and says so on the PR.
+
+**The security documentation no longer claims a boundary that does not exist.**
+The bash guard is a filter on command lines, and the default whitelist contains
+`python3`, `node` and `make` — so `path_denylist` and `allow_network_commands`
+are best-effort, and `python3 exfil.py`, `cat .e*`, `cat .ENV`,
+`git show HEAD:.env` and `echo x > .git/hooks/pre-commit` are all allowed.
+SECURITY.md now states the threat model plainly, separates what is enforced from
+what is advisory, and carries the bypass table; CONFIGURATION.md and
+ARCHITECTURE.md carried the same overstatement and now carry the correction.
+`tests/bash-guard.test.mjs` asserts the bypasses so the file documents what the
+guard cannot do, and a test keeps it in step with SECURITY.md.
+[docs/WORKER_ISOLATION.md](docs/WORKER_ISOLATION.md) scopes what real OS-level
+isolation would take, and why an egress proxy and a scoped API key beat
+filesystem sandboxing as a first move.
+
+Also: the credential vault's header claimed more at-rest protection than the
+default delivers (the key file sits in the same directory as the ciphertext); the
+comment and the `credentials.key_file` documentation now say what it does and
+does not protect against. The Dockerfile was installing a C++ toolchain to build
+`better-sqlite3`, which is not a dependency of this project and never was.
+
+`mutation-check` protected its baseline without ever establishing it. beta.128
+and beta.130 both hardened the *restore*, so a mutation that escaped a run stayed
+in `dist/` and the next run snapshotted the sabotaged bytes as pristine — after
+which the mutation whose own anchor it had eaten reported "renamed or removed",
+which is indistinguishable from a real regression and cost an hour to tell apart
+from one. Twice. `dist/` is now rebuilt from `src/` before anything is
+snapshotted, so "anchor not found" means the source changed and nothing else.
+
 ## Unreleased
 
 Docs only; no behaviour change. The rc.2 sweep folded in most of two doc audits

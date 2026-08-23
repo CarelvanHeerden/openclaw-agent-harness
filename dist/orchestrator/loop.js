@@ -1712,7 +1712,10 @@ export class OrchestratorLoop {
                 const inFlight = [];
                 const inFlightSubTasks = new Map();
                 const done = new Set();
-                const failed = { seq: -1, err: null };
+                // rc.3: `preservedReason` carries the human-readable reason out of a
+                // terminal path that already handled its own transition, so the outcome
+                // reported to the caller says what actually happened.
+                const failed = { seq: -1, err: null, preservedReason: "" };
                 /**
                  * beta.123: RETRACT a failure a recovery path has just healed.
                  *
@@ -2004,9 +2007,17 @@ export class OrchestratorLoop {
                             }
                             if (scripted !== "fail") {
                                 // scripted fallback disabled or unrunnable -> try best-effort verify.
-                                const shipped = await this.tryBestEffortVerify(sessionId, plan, brief, st, cycle, totalCost, row.requester, subTaskBaseSha);
-                                if (shipped) {
+                                const outcome = await this.tryBestEffortVerify(sessionId, plan, brief, st, cycle, totalCost, row.requester, subTaskBaseSha);
+                                // rc.3: `preserved` means the terminal transition is done but
+                                // nothing was pushed -- it must not report as shipped.
+                                if (outcome === "shipped") {
                                     failed.err = "__best_effort_shipped__";
+                                    failed.seq = st.seq;
+                                    return;
+                                }
+                                if (outcome !== false) {
+                                    failed.err = "__best_effort_preserved__";
+                                    failed.preservedReason = outcome.preserved;
                                     failed.seq = st.seq;
                                     return;
                                 }
@@ -3082,6 +3093,19 @@ export class OrchestratorLoop {
                     if (failed.err === "__best_effort_shipped__") {
                         const bePr = this.deps.state.db.prepare(`SELECT final_pr_url FROM sessions WHERE id = ?`).get(sessionId);
                         return { status: "shipped", sessionId, prUrl: bePr?.final_pr_url ?? "", cycles: cycle, totalCostUsd: totalCost };
+                    }
+                    // rc.3: best-effort verify handled the terminal transition WITHOUT
+                    // pushing -- either no adversary has ever reviewed this session, or the
+                    // push itself threw. Either way the session row is already terminal and
+                    // the worktree is preserved; report the truth rather than `shipped`.
+                    if (failed.err === "__best_effort_preserved__") {
+                        return {
+                            status: "failed",
+                            sessionId,
+                            reason: failed.preservedReason || "verify_timeout_no_adversary_review",
+                            cycles: cycle,
+                            totalCostUsd: totalCost,
+                        };
                     }
                     // beta.120 (fix 1): every abort that could be holding commits goes
                     // through the salvaging path -- it ships resource aborts and preserves
@@ -4389,6 +4413,20 @@ export class OrchestratorLoop {
             this.deps.logger.warn("[loop] best-effort verify NOT eligible (prior probe not green or diff not clean); falling through to terminal", { sessionId, seq: st.seq, priorGreen, cleanDiff });
             return false;
         }
+        // rc.3: `priorGreen` is the WORKER's own verify probe -- the author marking
+        // its own homework. It is good evidence that the code runs, and no evidence
+        // at all that anything adversarial looked at it. When no review has ever
+        // run, keep the commits and refuse the push.
+        if (this.refuseUnreviewedSalvage(sessionId, "best_effort_verify", { seq: st.seq, cycle })) {
+            const why = "verify_timeout_no_adversary_review: the VERIFY sub-task timed out and no adversary review has ever run for this session, so there is nothing to ship behind. " +
+                "The commits are preserved in the worktree -- run harness_resume to review and push them.";
+            this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
+            // Distinct from "shipped": both short-circuit the caller's terminal fail
+            // path, but only one of them opened a PR. Reporting this as shipped would
+            // hand back an outcome with an empty prUrl and a session that never
+            // pushed.
+            return { preserved: why };
+        }
         // Open the graceful PR flagged needs_human_review (beta.62 pattern).
         this.markProgress(sessionId, "finalize_start", "finalize", { cycle, viaBestEffortVerify: true });
         const priorReview = this.getLastReview(sessionId);
@@ -4406,10 +4444,15 @@ export class OrchestratorLoop {
             this.deps.state.audit("loop.best_effort_verify_pr_failed", { sessionId, seq: st.seq, error: String(pushErr?.message ?? pushErr) }, sessionId);
             this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr_failed", phase: "finalize", seq: st.seq, error: String(pushErr) });
             // Push failed -- preserve the worktree so the branch is still inspectable.
-            this.finaliseFailedPreserveWorktree(sessionId, `verify_timeout_best_effort_pr_failed: ${String(pushErr)}`, cycle, totalCost);
-            // Signal to the caller that we ALREADY handled the terminal transition
-            // (returning true short-circuits the caller's own terminal fail path).
-            return true;
+            const why = `verify_timeout_best_effort_pr_failed: ${String(pushErr)}`;
+            this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
+            // Signals to the caller that we ALREADY handled the terminal transition,
+            // short-circuiting its own terminal fail path.
+            //
+            // rc.3: this used to return the same `true` as the success path below, so
+            // a run whose push THREW was reported to the caller as `shipped`, with an
+            // empty prUrl and a session row marked failed. Nothing pushed here.
+            return { preserved: why };
         }
         const recReason = `The final VERIFY sub-task's LLM turn TIMED OUT (no first token / worker timeout) even after a fresh-session retry, but the prior mutate sub-task self-verified GREEN and the diff is clean + in-scope. ` +
             `Opened for MANUAL human review (best-effort verify) -- there is no machine verify sign-off, so this is NOT auto-mergeable.`;
@@ -4422,7 +4465,7 @@ export class OrchestratorLoop {
         this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaBestEffortVerify: true }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr", phase: "finalize", seq: st.seq, prUrl, prNumber });
         await this.tryReleaseWorktree(sessionId, plan.repo, plan.worktreePath, "shipped");
-        return true;
+        return "shipped";
     }
     /**
      * beta.81 (Track B / B2 + B3): POST-PUSH CI VERIFICATION WAIT-STATE. After a
@@ -4841,6 +4884,10 @@ export class OrchestratorLoop {
                             `so it cannot be fixed by changing code; a human should run the typecheck before merging.`,
                         severity: "high",
                         dimension: "runtime",
+                        // rc.3: the harness authored this about its own tooling. Marked so
+                        // the classifier files it as `env` structurally rather than by
+                        // matching "command not found" in the prose above.
+                        source: "harness_env",
                     },
                 ];
             }
@@ -5134,7 +5181,12 @@ export class OrchestratorLoop {
             this.deps.state.audit("loop.abort_nothing_to_salvage", { sessionId, reason, worktreePath: row?.worktree_path ?? null }, sessionId);
             return this.finaliseAbort(sessionId, reason, cycles, totalCostUsd);
         }
-        const salvageEligible = ABORT_REASONS_WORTH_SHIPPING.has(reason) && this.deps.config.loop.abort_salvage_pr !== false;
+        const salvageEligible = ABORT_REASONS_WORTH_SHIPPING.has(reason) &&
+            this.deps.config.loop.abort_salvage_pr !== false &&
+            // rc.3: an abort that never got as far as a review has no adversary
+            // sign-off to ship behind. Fall through to the preserve tail below, which
+            // keeps every commit and tells the operator where they are.
+            !this.refuseUnreviewedSalvage(sessionId, "abort_salvage", { abortReason: reason, cycles });
         if (salvageEligible && row?.repo && row?.worktree_path) {
             const planJson = this.getPlanJson(sessionId);
             if (planJson) {
@@ -5566,6 +5618,18 @@ export class OrchestratorLoop {
         this.deps.state.audit("loop.failed", { sessionId, reason, cycles, worktreePreserved: true }, sessionId);
         this.deps.state.audit("loop.failed_worktree_preserved", { sessionId, reason, cycles }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "failed_worktree_preserved", phase: "finalize", reason });
+        // rc.3: mark the row so the startup self-heal leaves the directory alone.
+        // beta.129 did this for the abort path and this path was missed, so the
+        // function whose name is a promise to preserve the worktree kept it only
+        // until the next restart -- `failed` is terminal, and worktree-heal reaps
+        // every terminal session's directory unless this flag is set. The rc.3
+        // no-review push gate routes here, so the promise has to be real.
+        try {
+            this.deps.state.db.prepare(`UPDATE sessions SET worktree_preserved = 1 WHERE id = ?`).run(sessionId);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] could not mark worktree as preserved", { sessionId, err: String(err) });
+        }
         this.setStatus(sessionId, "failed");
         return { status: "failed", sessionId, reason, cycles, totalCostUsd };
     }
@@ -5984,6 +6048,40 @@ export class OrchestratorLoop {
             return null;
         }
     }
+    /**
+     * rc.3: the one rule the three salvage paths share -- has an adversary ever
+     * reviewed this session's code at all?
+     *
+     * The harness advertises that nothing is pushed until the adversary passes.
+     * That was not strictly true. Three paths reached `pushBranchAndOpenPr` after
+     * synthesising a placeholder `revise` report for a session where no review had
+     * EVER run: `tryBestEffortVerify` (the verify sub-task timed out),
+     * `finaliseAbortSalvaging` (a budget or time ceiling), and
+     * `finaliseReviewCrash` (an infra error, which beta.90 deliberately let
+     * through on cycle 1). Each stamped the PR `needs_human_review`, which is a
+     * real mitigation but is body text on a PR -- it relies on a human reading it.
+     *
+     * Where a PRIOR review exists, shipping with that stamp is still a defensible
+     * trade: something adversarial did look at this code, and losing the work has
+     * a cost too. Where NOTHING has reviewed it, the trade is not available, so
+     * these paths now preserve the worktree instead. The commits survive on disk
+     * and stay resumable; only the push is refused.
+     */
+    hasBeenReviewed(sessionId) {
+        return this.getLastReview(sessionId) !== undefined;
+    }
+    /**
+     * rc.3: audit a refused salvage push. Returns true when the caller must NOT
+     * push, so every call site reads as `if (this.refuseUnreviewedSalvage(...))`.
+     */
+    refuseUnreviewedSalvage(sessionId, path, detail = {}) {
+        if (this.hasBeenReviewed(sessionId))
+            return false;
+        this.deps.state.audit("loop.salvage_refused_unreviewed", { sessionId, path, why: "no adversary review has ever run for this session", ...detail }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "salvage_refused_unreviewed", phase: "finalize", path });
+        this.deps.logger.warn("[loop] refusing to push code no adversary has reviewed; preserving the worktree instead", { sessionId, path });
+        return true;
+    }
     /** beta.63: read the most recent completed review for a session (or undefined). */
     getLastReview(sessionId) {
         try {
@@ -6042,8 +6140,17 @@ export class OrchestratorLoop {
         // is infra AND every sub-task self-verified green, recovery is eligible
         // WITHOUT requiring cycle>=2 or a prior review -- we open a
         // needs_human_review PR (never auto-mergeable) so the deliverable survives.
+        //
+        // rc.3: the infra path no longer waives the PRIOR-REVIEW requirement, only
+        // the cycle>=2 one. beta.90's reasoning holds -- an out-of-disk error says
+        // nothing about the code -- but the conclusion it drew was that a
+        // self-verified run may be pushed with no adversarial review at all, and
+        // self-verification is the worker checking its own work. The deliverable is
+        // still preserved: the commits stay in the worktree and the session stays
+        // resumable, so an operator can review and push them. Only the automatic
+        // push is withdrawn.
         const infra = isInfraCrash(String(err?.message ?? err));
-        const eligible = gracefulEnabled && selfVerifyGreen && (infra || (cycle >= 2 && !!priorReview));
+        const eligible = gracefulEnabled && selfVerifyGreen && !!priorReview && (infra || cycle >= 2);
         this.deps.state.audit("loop.review_crash_recovery", {
             sessionId,
             cycle,
@@ -6057,22 +6164,17 @@ export class OrchestratorLoop {
         }, sessionId);
         if (!eligible) {
             // Not salvageable into a PR -- fail, but keep the worktree (fix #3).
+            if (!priorReview) {
+                this.refuseUnreviewedSalvage(sessionId, "review_crash", { cycle, infra, selfVerifyGreen });
+                return this.finaliseFailedPreserveWorktree(sessionId, `${reason}; no adversary review has ever run for this session, so the commits are preserved in the worktree rather than pushed -- run harness_resume to review and push them`, cycle, totalCost);
+            }
             return this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
         }
-        // beta.90: when eligible via the INFRA path but there is NO prior review to
-        // ship, synthesize a minimal `revise` ReviewReport so the graceful push has
-        // a report to attach (mirrors the STALL graceful-PR pattern). The PR is
-        // flagged needs_human_review either way, so this cannot silently ship
-        // unverified code -- it just preserves the self-verified deliverable.
-        const synthesizedReview = {
-            verdict: "revise",
-            findings: [],
-            summary: "Adversary review crashed on an infrastructure error (e.g. out of disk) before producing a verdict; all sub-tasks self-verified green. Opened for MANUAL human review.",
-            costUsd: 0,
-            tokensIn: 0,
-            tokensOut: 0,
-        };
-        const reviewForPr = priorReview ?? synthesizedReview;
+        // rc.3: `eligible` now implies a prior review exists, so the beta.90
+        // synthesized placeholder report is gone. It only ever existed to give the
+        // push something to attach when nothing had reviewed the code, which is the
+        // case this gate refuses.
+        const reviewForPr = priorReview;
         // GRACEFUL PR: open the PR on the existing branch using the last COMPLETED
         // review (the prior cycle's) or the synthesized infra-crash review, flagged
         // needs_human_review.
@@ -6093,6 +6195,7 @@ export class OrchestratorLoop {
         }
         const recReason = infra
             ? `The adversary review for cycle ${cycle} crashed on an INFRASTRUCTURE error (e.g. out of disk) before producing a verdict, but all ${selfVerify.length} sub-task(s) self-verified green. ` +
+                `The review attached to this PR is the last COMPLETED one, from an earlier cycle -- it is not a review of the final commits. ` +
                 `The commits are opened for MANUAL human review -- there is no machine sign-off, so this is NOT auto-mergeable.`
             : `The adversary review for cycle ${cycle} crashed before producing a verdict, but all ${selfVerify.length} sub-task(s) self-verified green and the prior cycle's review was addressed. ` +
                 `The commits are opened for MANUAL human review -- there is no machine sign-off, so this is NOT auto-mergeable.`;

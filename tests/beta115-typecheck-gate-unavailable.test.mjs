@@ -220,14 +220,28 @@ test("beta115: an unavailable gate blocks the merge but does not drive revise cy
   //   - it must STOP a merge recommendation (>= medium severity), and
   //   - it must NOT sustain revise cycles, because no code change can repair a
   //     missing binary; the worktree bootstrap owns that.
+  //
+  // rc.3: `source: "harness_env"` is now what makes this `env`, rather than
+  // "command not found" appearing in the detail text. The rc.3 rule that a HIGH
+  // severity finding is not demoted on keywords would otherwise promote this
+  // one, and it is deliberately high (to stop the merge) AND deliberately
+  // non-blocking (no code change repairs a missing binary). The marker states
+  // that directly instead of relying on the wording.
   const f = {
     title: "Typecheck gate could not run: the branch is unverified, not verified",
     detail: "The repo declares a `typecheck` script but it could not be executed (exit 127 / command not found) and invoking the compiler directly did not work either.",
     severity: "high",
     dimension: "runtime",
+    source: "harness_env",
   };
   const cls = classifyFinding(f);
   assert.equal(cls, "env", "env/tooling breakage, not a diff defect");
+
+  // The marker is what the loop actually emits, not just what this test passes.
+  const { readFileSync } = await import("node:fs");
+  const loopSrc = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const emitted = loopSrc.slice(loopSrc.indexOf("Typecheck gate could not run"));
+  assert.match(emitted.slice(0, 1200), /source: "harness_env"/);
   assert.equal(isBlockingFinding(f, cls), false, "a worker cannot fix a missing binary, so this must not cycle");
 
   const { deriveMergeRecommendation } = await import("../dist/orchestrator/merge-recommendation.js");

@@ -484,9 +484,11 @@ CREATE TABLE audit_log (
 
 ## 6. Security model
 
-- Every worker session sees only its own worktree + explicit allow-listed read paths.
-- Bash whitelist enforced via SDK permission callback, not just prompt discipline.
-- Secrets never enter worker prompts; if a worker needs a secret, the lead resolves it via the vault and passes only the resolved value as a scoped variable.
+> The authoritative and honest version of this section is [SECURITY.md](../SECURITY.md#the-threat-model-stated-plainly). The controls below are built for a capable but non-adversarial worker. They are not a sandbox, and they do not contain a worker that is trying to get out.
+
+- Each worker session is *pointed at* its own worktree. That is a working convention, not an OS boundary — the worker process has the harness user's full filesystem access, and a whitelisted interpreter (`python3`, `node`, `make`) can read and write anywhere that user can.
+- Bash whitelist enforced via SDK permission callback, not just prompt discipline. It filters command lines; it does not constrain what a permitted interpreter then does.
+- Secrets are not placed in worker prompts; if a worker needs a secret, the lead resolves it via the vault and passes only the resolved value as a scoped variable. Note that `ANTHROPIC_API_KEY` *is* present in the worker's environment by design, so the worker can read that one.
 - Audit log is append-only, timestamped, and retained for 90 days minimum.
 - Every session's Claude Agent SDK transcript is preserved under `~/.claude/projects/<encoded-path>/*.jsonl`.
 - The plugin process can open the harness vault; worker subprocesses cannot. That gap is deliberate and enforced twice over — `safety.path_denylist` blocks `harness-vault/`, `vault.key` and `vault.db` on the file tools, and the vault key variables are stripped from the worker environment — because the harness sometimes needs to resolve a secret in order to hand a worker only its resolved value.

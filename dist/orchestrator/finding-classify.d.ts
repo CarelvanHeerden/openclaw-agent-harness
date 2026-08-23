@@ -47,6 +47,35 @@ export interface ClassifyCtx {
  */
 export declare function classifyFinding(f: ReviewFinding, ctx?: ClassifyCtx): FindingClass;
 /**
+ * rc.3: the one place severity is interpreted.
+ *
+ * The adversary's response is not schema-validated -- `runAdversarySdk` checks
+ * only that `verdict`, `findings` and `summary` are present, and `findings` is
+ * `unknown[]`. So `severity` is whatever string a language model wrote, and
+ * `"Medium"`, `"moderate"` and a missing field are all things it writes.
+ *
+ * Every consumer that reasons about severity had independently written
+ * `(f.severity ?? "").toLowerCase()` -- merge-recommendation, revise-scope,
+ * revise-mapping, file-attribution, the merge tool. Every consumer except the
+ * one that decides whether a finding can stop a ship: `isBlockingFinding`
+ * compared with `===`, so `"Medium"` was not medium, the finding was not
+ * blocking, `gateVerdict` downgraded `revise` to `pass`, and `reachedCleanPass`
+ * made the PR auto-mergeable. A defect flipped to shippable on the casing of a
+ * word.
+ *
+ * Unrecognised severities normalise to `"unknown"`, which counts as blocking.
+ * An adversary that said something we cannot read should send the run back for
+ * another look, not through.
+ */
+export type Severity = ReviewFinding["severity"];
+/** Anything we cannot read becomes `"unknown"`, which is treated as blocking. */
+export declare function normaliseSeverity(raw: unknown): Severity;
+/**
+ * `medium` or above, the threshold that lets a finding sustain a `revise`.
+ * `unknown` qualifies: fail toward review.
+ */
+export declare function isAtLeastMedium(raw: unknown): boolean;
+/**
  * A finding is BLOCKING (can sustain a `revise`) only when it is
  * `diff_addressable` AND at least `medium` severity. Everything else is
  * surfaced but non-blocking.

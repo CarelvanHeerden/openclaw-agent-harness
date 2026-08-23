@@ -335,9 +335,12 @@ truncated.
 
 ### Safety
 
+> **Read [SECURITY.md](../SECURITY.md#the-threat-model-stated-plainly) before you rely on these.** They are built for a capable but non-adversarial worker — they stop accidents, not attackers. The default whitelist includes `python3`, `node` and `make`, and once an interpreter is permitted, every other setting here is advisory. Tune them for tidiness; do not treat them as a sandbox.
+
 - **`worker_permission_mode`.** The Claude Agent SDK permission mode used for workers. `acceptEdits` is a sensible default: file edits happen without a prompt, bash commands go through the whitelist / denylist.
-- **`bash_whitelist` / `bash_denylist_tokens`.** Enforced by an SDK permission callback, not just prompt discipline. `bash_denylist_tokens` is a list of exact command tokens (e.g. `rm`, `sudo`); a command is rejected if any pipe segment's base command (after env-var prefix stripping) matches a listed token.
-- **`path_denylist`.** Directories and files that workers may not read or write. Enforced by hooking into the SDK's tool interface. The lead orchestrator itself is NOT constrained by this list.
+- **`bash_whitelist` / `bash_denylist_tokens`.** Enforced by an SDK permission callback, not just prompt discipline. `bash_denylist_tokens` is a list of exact command tokens (e.g. `rm`, `sudo`); a command is rejected if any pipe segment's base command (after env-var prefix stripping) matches a listed token. Blocking a token stops that binary, not the behaviour — the same work can be done from a whitelisted interpreter.
+- **`path_denylist`.** Files and directories the SDK's `Read`/`Write` tools refuse, and that are rejected as direct arguments to whitelisted commands. Matching is on literal paths and is case-sensitive, so it does not cover shell globs (`cat .e*`), a case change on a case-insensitive filesystem (`cat .ENV`), reads out of git history (`git show HEAD:.env`), or anything an interpreter opens. `.git/` is deliberately absent — workers need it — which means `.git/hooks/` is writable. The lead orchestrator is NOT constrained by this list.
+- **`allow_network_commands`.** Adds or removes `curl` and `wget` from the whitelist. It does not restrict network access; `python3`, `node` and `make` all reach the network regardless.
 
 ### Vercel bridge
 
@@ -589,6 +592,6 @@ beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces 
 
 - **`credentials.dir`** — `string`, default `"harness-vault"`. Directory holding vault.db and (by default) vault.key. Relative paths resolve against the harness data dir, NOT the git worktree, so the vault survives worktree teardown.
 - **`credentials.key_env`** — `string`, default `"OAH_VAULT_KEY"`. Env var checked for a raw 32-byte key (64 hex chars or base64). When set it OVERRIDES the key file. Renaming it also moves the worker-subprocess env strip, so the key never reaches a worker under either name.
-- **`credentials.key_file`** — `string`, no default; unset unless you set it. Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent — back it up, because without it every stored credential is unrecoverable.
+- **`credentials.key_file`** — `string`, no default; unset unless you set it. Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent — back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir — they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you.
 
 <!-- END GENERATED CONFIG REFERENCE -->
