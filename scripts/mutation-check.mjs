@@ -287,8 +287,10 @@ const MUTATIONS = [
   {
     name: "adoption skips info (b108): the adversary's 'verified resolved, no action' entries",
     file: "dist/orchestrator/revise-mapping.js",
-    find: 'if (!ADOPTABLE_SEVERITIES.has((f.severity ?? "").toLowerCase()))',
-    replace: 'if (false && !ADOPTABLE_SEVERITIES.has((f.severity ?? "").toLowerCase()))',
+    // rc.4: the anchor moved when this site stopped hand-rolling severity and
+    // started reading `normaliseSeverity`. Same claim, new spelling.
+    find: "if (!ADOPTABLE_SEVERITIES.has(normaliseSeverity(f.severity)))",
+    replace: "if (false && !ADOPTABLE_SEVERITIES.has(normaliseSeverity(f.severity)))",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
   {
@@ -608,9 +610,14 @@ const MUTATIONS = [
   {
     name: "medium is still actionable (b113): widening the floor would scope away real work",
     file: "dist/orchestrator/revise-scope.js",
-    find: 'const BELOW_ACTIONABLE = new Set(["info", "informational", "low", "nit", "note"]);',
-    replace: 'const BELOW_ACTIONABLE = new Set(["info", "informational", "low", "nit", "note", "medium", "high", "critical"]);',
-    tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
+    // rc.4: the private `BELOW_ACTIONABLE` set is gone -- this reads
+    // `isAtLeastMedium` now. The claim is unchanged: widen the floor so `medium`
+    // counts as below-actionable and real work gets scoped away.
+    find: "    return !isAtLeastMedium(f.severity);",
+    // Uses only what this module imports: a mutation that throws would be
+    // "caught" for the wrong reason and prove nothing about the floor.
+    replace: '    return !isAtLeastMedium(f.severity) || String(f.severity ?? "").toLowerCase() === "medium";',
+    tests: ["tests/beta113-drbcp-run-defects.test.mjs", "tests/rc4-severity-consolidation.test.mjs"],
   },
   {
     name: "scoping never selects nobody (b113): a cycle that dispatches no worker changes nothing",
@@ -2307,6 +2314,68 @@ const MUTATIONS = [
     find: "speed bump, not a wall",
     replace: "containment boundary",
     tests: ["tests/bash-guard.test.mjs"],
+  },
+
+  // ---- rc.4: blocking must imply fixable, and the floor must be run ----
+  {
+    // The reviewer's finding, as a mutation. Drop `unknown` from the adoptable
+    // set and a finding that blocks the ship can no longer be given to a worker,
+    // so the revise loop cannot converge and the run burns to max_cycles.
+    name: "blocking implies adoptable (rc.4): an unreadable finding must reach a worker",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: 'export const ADOPTABLE_SEVERITIES = new Set(["low", "medium", "high", "critical", "unknown"]);',
+    replace: 'export const ADOPTABLE_SEVERITIES = new Set(["low", "medium", "high", "critical"]);',
+    tests: ["tests/rc4-severity-consolidation.test.mjs"],
+  },
+  {
+    // Rank is not cosmetic: adoption is severity-ordered and then capped, so
+    // ranking `unknown` below `info` puts it first in line to be dropped by the
+    // cap it has to survive.
+    name: "an unknown severity outranks info (rc.4): the cap must not drop the blocking finding",
+    file: "dist/orchestrator/revise-mapping.js",
+    find: "    unknown: 2,",
+    replace: "    unknown: -1,",
+    tests: ["tests/rc4-severity-consolidation.test.mjs"],
+  },
+  {
+    // Attribution: an unreadable finding that is not required to name a file can
+    // never be scoped to one, which is the other half of the same trap.
+    name: "blocking implies attributable (rc.4): the finding must be made to name a file",
+    file: "dist/orchestrator/adversary-file-attribution.js",
+    find: "return DIFF_ADDRESSABLE_DIMENSIONS.has(normaliseDimension(f.dimension)) && isAtLeastMedium(f.severity);",
+    replace:
+      'return DIFF_ADDRESSABLE_DIMENSIONS.has(normaliseDimension(f.dimension)) && new Set(["medium","high","critical"]).has((f.severity ?? "").toLowerCase());',
+    tests: ["tests/rc4-severity-consolidation.test.mjs"],
+  },
+  {
+    // revise-scope's private synonym list, restored. `trivial` and `minor` fall
+    // through as actionable again and re-run every sub-task.
+    name: "one severity vocabulary (rc.4): a synonym must not force a full re-run",
+    file: "dist/orchestrator/revise-scope.js",
+    find: "    return !isAtLeastMedium(f.severity);",
+    replace:
+      '    const sev = ((f.severity ?? "")).trim().toLowerCase();\n    return sev !== "" && new Set(["info","informational","low","nit","note"]).has(sev);',
+    tests: ["tests/rc4-severity-consolidation.test.mjs"],
+  },
+  {
+    // §4a. Drop the floor from the matrix and CI stops running the version
+    // `engines` advertises -- which is how 22 subtests asserted nothing for
+    // several releases without anybody seeing it.
+    name: "the advertised Node floor is tested (rc.4): CI must run what engines claims",
+    file: ".github/workflows/ci.yml",
+    find: '        node-version: ["22.13", "24"]',
+    replace: '        node-version: ["24"]',
+    tests: ["tests/rc4-severity-consolidation.test.mjs"],
+  },
+  {
+    // The floor was not just untested, it was wrong: `node:sqlite` is the whole
+    // persistence layer and is flag-gated before 22.13.0, so the advertised
+    // 22.5.0 could not open a state store. Putting it back must fail.
+    name: "the Node floor is the one node:sqlite needs (rc.4): 22.5 cannot open a database",
+    file: "package.json",
+    find: '"node": ">=22.13.0"',
+    replace: '"node": ">=22.5.0"',
+    tests: ["tests/sdk-compliance.test.mjs", "tests/rc4-severity-consolidation.test.mjs"],
   },
 ];
 

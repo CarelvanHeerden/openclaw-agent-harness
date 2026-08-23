@@ -73,6 +73,7 @@ export interface ScopeFinding {
 // recognised here too. A private copy of the vocabulary was how the two modules
 // drifted apart in the first place.
 import { normaliseDimension } from "./finding-dimension.js";
+import { isAtLeastMedium } from "./finding-classify.js";
 
 const META_DIMENSIONS = new Set(["fit", "runtime"]);
 function isMetaDimension(f: ScopeFinding): boolean {
@@ -105,11 +106,19 @@ function isMetaDimension(f: ScopeFinding): boolean {
  * Matches the severity floor used everywhere else (isBlockingFinding, b109's
  * cycling gate, b112's merge gate): medium and above is actionable.
  */
-const BELOW_ACTIONABLE = new Set(["info", "informational", "low", "nit", "note"]);
+/**
+ * rc.4: this kept its own severity vocabulary (`info|informational|low|nit|
+ * note`), which is the same list `normaliseSeverity` already knows -- minus
+ * `trivial` and `minor`. Those two normalise to `info` and `low` everywhere
+ * else, and here they fell through as actionable, so an `info`-in-all-but-name
+ * finding still forced every sub-task to re-run. That is precisely the beta.114
+ * cost this function exists to avoid, arriving through a synonym.
+ *
+ * `isAtLeastMedium` preserves the intent exactly, including that an absent or
+ * unreadable severity stays actionable: unknown is not a licence to skip.
+ */
 function isBelowActionable(f: ScopeFinding): boolean {
-  const sev = ((f.severity ?? "") as string).trim().toLowerCase();
-  // An absent severity is treated as actionable: unknown is not a licence to skip.
-  return sev !== "" && BELOW_ACTIONABLE.has(sev);
+  return !isAtLeastMedium(f.severity);
 }
 
 export interface ReviseScopeResult {

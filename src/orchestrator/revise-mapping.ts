@@ -81,6 +81,7 @@ export interface MapSubTask {
 export type StructuralMatch = (owned: string[], candidate: string) => unknown;
 
 import { isRoutable, normaliseDimension } from "./finding-dimension.js";
+import { normaliseSeverity, type Severity } from "./finding-classify.js";
 import { coFixFiles, findingKey, type CcFinding } from "./cross-cutting-findings.js";
 
 /** Diff-addressable dimensions (must carry a `.file` per beta.91). */
@@ -215,11 +216,29 @@ const MIN_NEAREST_PATH_DEPTH = 2;
  * adversary emits below `low` is commentary -- `info` in particular is how it
  * records that a PRIOR finding was verified fixed.
  */
-export const ADOPTABLE_SEVERITIES = new Set(["low", "medium", "high", "critical"]);
+export const ADOPTABLE_SEVERITIES = new Set(["low", "medium", "high", "critical", "unknown"]);
 
-const SEVERITY_ORDER = ["info", "low", "medium", "high", "critical"];
+/**
+ * rc.4: `unknown` ranks with `medium`, which is what `isAtLeastMedium` already
+ * decides about it -- at least medium, and nothing more can be read.
+ *
+ * The rank is not cosmetic. Adoption is severity-ordered and then capped, so the
+ * cap drops the lowest ranks; the old `indexOf` returned -1 for an unreadable
+ * severity, sorting it below `info`. That put `unknown` first in line to be
+ * dropped by the very cap it needed to survive, on a finding that blocks the
+ * ship. Ranking it at the threshold it blocks at keeps the two consistent.
+ */
+const SEVERITY_RANK: Readonly<Record<Severity, number>> = {
+  info: 0,
+  low: 1,
+  medium: 2,
+  unknown: 2,
+  high: 3,
+  critical: 4,
+};
+
 function severityRank(f: MapFinding): number {
-  return SEVERITY_ORDER.indexOf((f.severity ?? "").toLowerCase());
+  return SEVERITY_RANK[normaliseSeverity(f.severity)];
 }
 
 /** Leading path segments `a` and `b` share. `src/lib/x` vs `src/lib/y` -> 2. */
@@ -316,7 +335,10 @@ export function adoptOrphanFindings(
     // findings reading like "Findings 2, 3, 4, 5, 7 verified resolved (no
     // action)" -- adopting one of those puts a worker on a finding that says the
     // code is already correct, which is worse than leaving it unmapped.
-    if (!ADOPTABLE_SEVERITIES.has((f.severity ?? "").toLowerCase())) continue;
+    // rc.4: `unknown` is adoptable. It blocks the ship, so a worker has to get a
+    // shot at it; excluding it made the revise loop unable to converge on the
+    // one class of finding that can neither be read nor waived.
+    if (!ADOPTABLE_SEVERITIES.has(normaliseSeverity(f.severity))) continue;
     // beta.108: a cap, because adoption widens scope and scope is what revise
     // cycles cost. That same revise fired TWENTY-ONE mapping misses across two
     // cycles against the original smoke's two: the adversary reviews the whole

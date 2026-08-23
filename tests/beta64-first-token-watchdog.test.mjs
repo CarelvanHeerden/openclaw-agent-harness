@@ -18,6 +18,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+import { waitForAbort } from "./helpers/event-loop.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const S = (p) => readFileSync(join(root, p), "utf8");
@@ -34,11 +36,10 @@ try {
 // end it. `abort` is honoured to break out of the wait.
 async function* stallAfterOpen(abort, sessionId = "sdk-sess-1") {
   yield { type: "system", subtype: "init", session_id: sessionId };
-  // Wait until aborted (the watchdog fires abort.abort()), then stop.
-  await new Promise((resolve) => {
-    if (abort.signal.aborted) return resolve();
-    abort.signal.addEventListener("abort", () => resolve(), { once: true });
-  });
+  // Wait until aborted (the watchdog fires abort.abort()), then stop. The wait
+  // holds the loop open: the watchdog timer is unref'd, so without a ref'd
+  // handle here Node 22 drains the loop and cancels this file. See the helper.
+  await waitForAbort(abort);
   // No more messages: return.
 }
 

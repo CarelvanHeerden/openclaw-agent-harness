@@ -223,6 +223,15 @@ export function classifyFinding(f: ReviewFinding, ctx: ClassifyCtx = {}): Findin
  * Unrecognised severities normalise to `"unknown"`, which counts as blocking.
  * An adversary that said something we cannot read should send the run back for
  * another look, not through.
+ *
+ * rc.4: rc.3 converted the two gates and left the other four sites reading their
+ * own local sets, which the comment above described as though it had not. That
+ * was not cosmetic. Because the parse boundary normalises, the only value that
+ * still disagreed was `unknown` -- and it disagreed in the worst direction: an
+ * unreadable finding blocked the ship, but was not adoptable into revise scope
+ * and not required to name a file, so no worker could ever be sent to fix the
+ * one thing standing between the run and a pass. It failed safe and burned the
+ * budget to `max_cycles` doing it. All six sites now read through here.
  */
 export type Severity = ReviewFinding["severity"];
 

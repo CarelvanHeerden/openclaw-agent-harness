@@ -27,7 +27,17 @@ export interface AttribFinding {
     file?: string | null;
     title?: string;
 }
-/** A finding that MUST carry a file: diff-addressable dimension AND >= medium. */
+/**
+ * A finding that MUST carry a file: diff-addressable dimension AND >= medium.
+ *
+ * rc.4: this read a local `AT_LEAST_MEDIUM` set through a hand-rolled
+ * `(f.severity ?? "").toLowerCase()`. rc.3 consolidated the ship gate and the
+ * merge gate onto `isAtLeastMedium` and left this site behind, which left one
+ * value disagreeing: `unknown`. An unreadable severity blocked the ship but was
+ * not required to name a file, so it could never be attributed, never scoped to
+ * a worker, and the revise loop burned to `max_cycles` on a finding nothing
+ * could be assigned to fix. Blocking and unfixable is the wrong pair.
+ */
 export declare function requiresFile(f: AttribFinding): boolean;
 /** True when the finding is one that requires a file but has none. */
 export declare function isUnfiledDiffAddressable(f: AttribFinding): boolean;

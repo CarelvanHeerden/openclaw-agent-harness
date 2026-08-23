@@ -2,7 +2,7 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: release candidate.* Version `1.0.0-rc.3`. 2219 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: release candidate.* Version `1.0.0-rc.4`. 2230 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 >
 > **beta.136:** the two settings that default to off are now documented where you would look for them: `repos.never_commit_paths` keeps a regenerated tree out of the commit, and without `brief.request_file_roots` a `harness_run({ requestPath })` is refused. Both are in [CONFIGURATION.md](docs/CONFIGURATION.md).
 > **beta.135:** onboarding asks which org, so one person can hold a separate token per org and per provider instead of one token standing for everything.
@@ -305,7 +305,7 @@ DM-flow privacy note: the harness deletes **its own** onboarding prompt after st
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 2219 tests as of 1.0.0-rc.3
+npm test        # runs 2230 tests as of 1.0.0-rc.4
 npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 ```
 
@@ -319,7 +319,7 @@ For repeatable smoke tests, `harness_bootstrap_test_repo` creates a fresh dispos
 
 - `npm run typecheck` -- strict TS, no `any` leaks in `src/`
 - `npm run build` -- emits `dist/` + copies `schema.sql`
-- `npm test` -- Node test runner, 2219 tests as of `1.0.0-rc.3`
+- `npm test` -- Node test runner, 2230 tests as of `1.0.0-rc.4`
 - `npm run smoke` -- post-build bootstrap sanity
 
 CI on every push and PR: `.github/workflows/ci.yml`.
