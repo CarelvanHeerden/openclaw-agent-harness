@@ -269,11 +269,21 @@ test("beta109: a medium is counted, so the run does NOT ship early", async () =>
   assert.equal(OrchestratorLoop.advance(ADV({ blockingFindings: n })).nextStatus, "executing");
 });
 
-test("beta109: merge-recommendation's own reason text names mediums", () => {
-  const mr = D("orchestrator/merge-recommendation.js");
-  const i = mr.indexOf("AT_LEAST_MEDIUM");
-  assert.ok(i > 0);
-  assert.match(mr.slice(i, i + 200), /"medium"/);
+// rc.3: this asserted that the local `AT_LEAST_MEDIUM` Set literal contained
+// "medium". That Set is gone -- merge-recommendation now reads severity through
+// `isAtLeastMedium`, so the ship gate and the merge gate cannot drift apart.
+// The claim it was making is unchanged, so it is made against behaviour instead
+// of against the source text that used to implement it.
+test("beta109: merge-recommendation counts a medium as blocking", () => {
+  const medium = { severity: "medium", dimension: "quality", title: "unchecked index write" };
+  const r = deriveMergeRecommendation({
+    review: REVIEW("revise", [...PR932_FINDINGS, medium]),
+    blockingFindings: 1,
+    reachedCleanPass: false,
+    ciStatus: "success",
+  });
+  assert.equal(r.recommendation, "do_not_merge");
+  assert.match(r.reason, /unchecked index write/);
 });
 
 test("beta109: the config key defaults on and is overridable", () => {

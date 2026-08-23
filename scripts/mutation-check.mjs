@@ -17,6 +17,8 @@
 //      otherwise -- exactly the rot this exists to prevent.
 //   2. Files are restored from an in-memory copy in a finally block, so an
 //      interrupted run cannot leave a sabotaged dist/ behind.
+//   3. dist/ is rebuilt before anything is snapshotted, so a sabotaged tree
+//      that did survive a previous run cannot be mistaken for the baseline.
 //
 // Run: node scripts/mutation-check.mjs
 import { readFileSync, writeFileSync } from "node:fs";
@@ -395,11 +397,43 @@ const MUTATIONS = [
     tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
   },
   {
+    // rc.3: the anchor moved when severity gained one interpreter. Same claim,
+    // made against `isAtLeastMedium` instead of the inline comparison chain.
     name: "the gate respects medium (b109): shipping open mediums would be a real loosening",
     file: "dist/orchestrator/finding-classify.js",
-    find: 'return f.severity === "medium" || f.severity === "high" || f.severity === "critical";',
-    replace: 'return f.severity === "high" || f.severity === "critical";',
-    tests: ["tests/beta109-blocking-severity-gate.test.mjs"],
+    find: 'return s === "medium" || s === "high" || s === "critical" || s === "unknown";',
+    replace: 'return s === "high" || s === "critical";',
+    tests: [
+      "tests/beta109-blocking-severity-gate.test.mjs",
+      "tests/rc3-severity-normalisation.test.mjs",
+    ],
+  },
+  {
+    // rc.3 (external review §3). `"Medium"` failing an `===` check was what let
+    // a real defect become an auto-mergeable pass.
+    name: "severity is normalised (rc.3): a mis-cased severity must not slip the gate",
+    file: "dist/orchestrator/finding-classify.js",
+    find: "const key = raw.trim().toLowerCase();",
+    replace: "const key = raw;",
+    tests: ["tests/rc3-severity-normalisation.test.mjs"],
+  },
+  {
+    // rc.3. The parse boundary's `?? "low"` was the more dangerous half: a
+    // MISSING severity silently became non-blocking.
+    name: "an unreadable severity blocks (rc.3): fail toward review, not toward shipping",
+    file: "dist/orchestrator/finding-classify.js",
+    find: 'return SEVERITY_SYNONYMS[key] ?? "unknown";',
+    replace: 'return SEVERITY_SYNONYMS[key] ?? "low";',
+    tests: ["tests/rc3-severity-normalisation.test.mjs"],
+  },
+  {
+    // rc.3. Prose-matching rules all demote, so a real defect whose wording
+    // trips one becomes non-blocking. Security/high/critical are exempt.
+    name: "keyword demotion is not a one-way ratchet (rc.3): a high finding survives a tripped regex",
+    file: "dist/orchestrator/finding-classify.js",
+    find: "const demotable = !isNonDemotable(f);",
+    replace: "const demotable = true;",
+    tests: ["tests/rc3-severity-normalisation.test.mjs"],
   },
   {
     name: "the loop counts what it gates on (b109): an uncounted review never ships early",
@@ -523,11 +557,16 @@ const MUTATIONS = [
   {
     // The exact code that shipped PR #952 with "no blocking findings" while the
     // audit log recorded blockingFindings=1.
+    // rc.3: the local AT_LEAST_MEDIUM set is gone -- merge-recommendation reads
+    // severity through the same helper as the ship gate. Same claim, new anchor.
     name: "one definition of blocking (b112): the medium-blind set denies a finding the loop counted",
     file: "dist/orchestrator/merge-recommendation.js",
-    find: "const blocking = review.findings.filter((f) => AT_LEAST_MEDIUM.has((f.severity || \"\").toLowerCase()));",
+    find: "const blocking = review.findings.filter((f) => isAtLeastMedium(f.severity));",
     replace: "const blocking = review.findings.filter((f) => BLOCKING_SEVERITIES.has((f.severity || \"\").toLowerCase()));",
-    tests: ["tests/beta112-local-run-defects.test.mjs"],
+    tests: [
+      "tests/beta112-local-run-defects.test.mjs",
+      "tests/rc3-severity-normalisation.test.mjs",
+    ],
   },
   {
     name: "the reason reflects the loop's count (b112): not just what the severity scan found",
@@ -2209,6 +2248,66 @@ const MUTATIONS = [
     replace: "- **`safety.allow_git_push`** — `boolean`, default `true`.",
     tests: ["tests/config-reference-current.test.mjs"],
   },
+
+  // -------------------------------------------------------------------------
+  // rc.3 -- external review §2: nothing pushes that no adversary has reviewed.
+  // -------------------------------------------------------------------------
+  {
+    // The gate itself. Disabling it restores rc.2 behaviour on all three
+    // salvage paths at once, which is exactly the finding.
+    name: "the salvage gate (rc.3): an unreviewed session must never reach a push",
+    file: "dist/orchestrator/loop.js",
+    find: "        if (this.hasBeenReviewed(sessionId))\n            return false;",
+    replace: "        if (true)\n            return false;",
+    tests: [
+      "tests/rc3-salvage-push-gate.test.mjs",
+      "tests/beta64-timeout-retry-and-verify.test.mjs",
+      "tests/beta90-infra-crash-and-stream-slow.test.mjs",
+      "tests/loop-integration.test.mjs",
+    ],
+  },
+  {
+    // "Has anything reviewed this?" must mean the review table, not a guess.
+    name: "the gate reads the review ledger (rc.3): a session with no review is not 'reviewed'",
+    file: "dist/orchestrator/loop.js",
+    find: "        return this.getLastReview(sessionId) !== undefined;",
+    replace: "        return true;",
+    tests: [
+      "tests/rc3-salvage-push-gate.test.mjs",
+      "tests/beta64-timeout-retry-and-verify.test.mjs",
+    ],
+  },
+  {
+    // beta.90's infra waiver used to cover the prior-review requirement too.
+    // Putting it back is the §2 review-crash hole, exactly.
+    name: "an infra crash does not waive review (rc.3): only the cycle>=2 requirement",
+    file: "dist/orchestrator/loop.js",
+    find: "const eligible = gracefulEnabled && selfVerifyGreen && !!priorReview && (infra || cycle >= 2);",
+    replace: "const eligible = gracefulEnabled && selfVerifyGreen && (infra || (cycle >= 2 && !!priorReview));",
+    tests: ["tests/beta90-infra-crash-and-stream-slow.test.mjs", "tests/beta62-review-crash-recovery.test.mjs"],
+  },
+  {
+    // A preserved worktree that the next boot reaps is not preserved. beta.129
+    // fixed this for the abort path; rc.3 fixed the fail path the gate uses.
+    name: "preserving a worktree survives a restart (rc.3): the reaper skips only flagged rows",
+    file: "dist/state/worktree-heal.js",
+    find: "if (row?.worktree_preserved) {",
+    replace: "if (false) {",
+    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs", "tests/rc3-salvage-push-gate.test.mjs"],
+  },
+
+  // -------------------------------------------------------------------------
+  // rc.3 -- external review §1: the guard's limits are documented, not implied.
+  // -------------------------------------------------------------------------
+  {
+    // SECURITY.md and the guard test file have to keep saying the same thing.
+    // If the doc softens back into implying containment, the suite says so.
+    name: "the security posture stays honest (rc.3): the guard is not described as a wall",
+    file: "SECURITY.md",
+    find: "speed bump, not a wall",
+    replace: "containment boundary",
+    tests: ["tests/bash-guard.test.mjs"],
+  },
 ];
 
 /**
@@ -2310,6 +2409,26 @@ const restoreInFlight = () => {
  * without proving each one is byte-identical to how we found it. Anything that
  * gets past the handlers is still caught here, and said out loud.
  */
+/**
+ * rc.3: every layer above protects the baseline without ever establishing it.
+ *
+ * A run that loses dist/orchestrator/loop.js to an outside writer leaves the
+ * mutated bytes on disk. The next run then snapshots those bytes as "pristine"
+ * and defends them perfectly, and the mutation whose own anchor was eaten
+ * reports "renamed or removed" -- the beta.130 symptom, arriving through the
+ * one door beta.130 did not close. It cost the same hour a second time.
+ *
+ * So the baseline is built rather than assumed. dist/ is regenerated from src/
+ * immediately before the snapshot, which makes "anchor not found" mean the
+ * source really changed, and nothing else.
+ */
+const build = spawnSync("npm", ["run", "build"], { cwd: root, encoding: "utf8" });
+if (build.status !== 0) {
+  console.error("Could not build dist/ -- refusing to mutate an unverified tree.");
+  console.error(build.stderr || build.stdout);
+  process.exit(1);
+}
+
 const PRISTINE = new Map();
 for (const m of MUTATIONS) {
   const p = join(root, m.file);

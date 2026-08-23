@@ -60,6 +60,11 @@ export async function createPullRequest(input) {
                 const arr = (await found.json());
                 if (Array.isArray(arr) && arr.length > 0) {
                     const existing = arr[0];
+                    // rc.3: a revise re-pushes into the PR that already exists, and the
+                    // body is not rewritten on that path. Re-apply the labels so a run
+                    // that ENDED do-not-merge is marked even though its PR was opened by
+                    // an earlier cycle that was not.
+                    await applyPrLabels({ ...input, apiBase, prNumber: existing.number });
                     return { number: existing.number, htmlUrl: existing.html_url, nodeId: existing.node_id, updatedExisting: true };
                 }
             }
@@ -70,11 +75,55 @@ export async function createPullRequest(input) {
         throw new Error(`GitHub PR create failed ${res.status}: ${text.slice(0, 400)}`);
     }
     const json = (await res.json());
+    await applyPrLabels({ ...input, apiBase, prNumber: json.number });
     return {
         number: json.number,
         htmlUrl: json.html_url,
         nodeId: json.node_id,
     };
+}
+/**
+ * rc.3: put the do-not-merge warning somewhere a human cannot scroll past.
+ *
+ * Until now the only marks on a PR the harness did not want merged were a
+ * paragraph in the PR body and a column in the harness's own database. Both are
+ * things a reviewer has to go and read. A label shows up in the PR list, in
+ * search, and can be wired to a branch-protection rule or a required check, so
+ * a repo that wants the warning enforced rather than advertised now has
+ * something to enforce against.
+ *
+ * Best-effort by design: labels need `issues: write`, and a token scoped only
+ * to `pull_requests` will 403. The PR and the code have already landed at this
+ * point, so a failure here is logged and swallowed -- never fatal.
+ */
+async function applyPrLabels(input) {
+    const labels = (input.labels ?? []).filter((l) => l.trim() !== "");
+    if (labels.length === 0)
+        return;
+    try {
+        const res = await fetch(`${input.apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/labels`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${input.ghToken}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+                "User-Agent": "openclaw-agent-harness/0.1",
+            },
+            body: JSON.stringify({ labels }),
+        });
+        if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            input.logger?.warn("[github] could not label PR (the PR body still carries the warning)", {
+                repo: input.repoFullName, prNumber: input.prNumber, labels, status: res.status, detail: text.slice(0, 200),
+            });
+        }
+    }
+    catch (err) {
+        input.logger?.warn("[github] could not label PR (the PR body still carries the warning)", {
+            repo: input.repoFullName, prNumber: input.prNumber, labels, err: String(err),
+        });
+    }
 }
 /**
  * beta.75 (#1): post a comment on a PR (issue-comments endpoint).

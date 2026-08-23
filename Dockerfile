@@ -14,17 +14,20 @@ FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 
-# Native compile for better-sqlite3
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
+# rc.3: the python3/make/g++ toolchain and `npm_config_build_from_source` that
+# used to live here were for `better-sqlite3`, which this project does not
+# depend on -- persistence is `node:sqlite`, built into Node (see the header of
+# src/state/store.ts). The whole dependency tree contains no native modules, so
+# the compiler was dead weight in the build image. An external review read the
+# leftover as a contradiction of store.ts's "ZERO native dependencies"; store.ts
+# was right and the Dockerfile was stale.
 
 # Copy manifests first so the layer cache is stable across source edits
 COPY package.json package-lock.json ./
 COPY tsconfig.json ./
 
 # Full install (dev deps required for tsc + tests)
-RUN npm_config_build_from_source=true npm ci
+RUN npm ci
 
 # Copy sources and build
 COPY src ./src

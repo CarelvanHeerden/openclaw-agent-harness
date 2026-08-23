@@ -163,7 +163,15 @@ test("beta64/P0-2: worker_timeout_retry_enabled=false does NOT retry (single att
   });
 
 // ---- P0-3: best-effort verify => push + needs_human_review PR ----
-test("beta64/P0-3: verify sub-task timeout + prior GREEN probe + clean diff => graceful needs_human_review PR",
+// rc.3: this scenario times out on cycle 1, so no adversary has reviewed the
+// work and the best-effort push is now refused -- the commits are preserved in
+// the worktree instead. beta.64's purpose survives intact: the work is still not
+// discarded, which is what "must ship a reviewable PR, not discard the work"
+// was protecting. What changed is that "reviewable" no longer means "already
+// pushed to a PR that says a review happened when none did". The eligibility
+// signals below (priorGreen, cleanDiff) are still computed and audited exactly
+// as before, so the mechanism this test covers is unchanged.
+test("beta64/P0-3 (rc.3): verify sub-task timeout with NO review preserves the work instead of pushing it",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "B1");
@@ -186,20 +194,29 @@ test("beta64/P0-3: verify sub-task timeout + prior GREEN probe + clean diff => g
       },
     }));
     const outcome = await loop.run("B1", brief);
-    assert.equal(outcome.status, "shipped", "best-effort verify must ship a reviewable PR, not discard the work");
-    assert.equal(outcome.prUrl, "https://github.com/o/r/pull/63");
-    assert.equal(prCalls, 1, "graceful PR opened exactly once");
-    const row = state.db.prepare(`SELECT status, merge_recommendation, final_pr_url FROM sessions WHERE id='B1'`).get();
-    assert.equal(row.status, "done");
-    assert.equal(row.merge_recommendation, "needs_human_review");
+    assert.equal(outcome.status, "failed", "nothing reviewed this, so it is not pushed");
+    assert.equal(prCalls, 0, "no PR is opened for code no adversary has seen");
+    assert.match(outcome.reason, /no adversary review has ever run/i);
+    assert.match(outcome.reason, /harness_resume/, "the operator is told how to recover the work");
+
+    const row = state.db.prepare(`SELECT status, merge_recommendation, final_pr_url, worktree_preserved FROM sessions WHERE id='B1'`).get();
+    assert.equal(row.status, "failed");
+    assert.equal(row.final_pr_url, null);
+    assert.equal(row.worktree_preserved, 1, "the work must survive the next restart");
+
+    // The best-effort ELIGIBILITY mechanism is untouched: it still ran, still
+    // found the prior probe green and the diff clean, and still audited that.
+    // Only the conclusion drawn from it changed.
     const vs = state.audits.filter((e) => e.event === "loop.verify_skipped_best_effort");
     assert.equal(vs.length, 1);
     assert.equal(vs[0].payload.eligible, true);
     assert.equal(vs[0].payload.priorGreen, true);
     assert.equal(vs[0].payload.cleanDiff, true);
-    const shipped = state.audits.filter((e) => e.event === "loop.shipped");
-    assert.equal(shipped.length, 1);
-    assert.equal(shipped[0].payload.viaBestEffortVerify, true);
+
+    const refused = state.audits.filter((e) => e.event === "loop.salvage_refused_unreviewed");
+    assert.equal(refused.length, 1);
+    assert.equal(refused[0].payload.path, "best_effort_verify");
+    assert.equal(state.audits.filter((e) => e.event === "loop.shipped").length, 0);
     state.close();
   });
 
@@ -261,9 +278,15 @@ test("beta64/P0-4: verify sub-task timeout => scripted verifier fallback runs (t
     // the (nonexistent) worktree path -> returns [] -> nothing runnable ->
     // scripted fallback is "unavailable" -> escalates to best-effort verify.
     const outcome = await loop.run("F1", brief);
-    // With a green prior probe + clean diff, the run still SHIPS (via best-effort
-    // verify after the scripted fallback found nothing runnable).
-    assert.equal(outcome.status, "shipped");
+    // The subject of this test is the ESCALATION -- scripted fallback finds
+    // nothing runnable, reports `unavailable`, and hands off to best-effort
+    // verify. That is unchanged and asserted below.
+    //
+    // rc.3: what best-effort verify then does has changed. This session timed
+    // out on cycle 1 with no adversary review, so the work is preserved rather
+    // than pushed.
+    assert.equal(outcome.status, "failed");
+    assert.match(outcome.reason, /no adversary review has ever run/i);
     const sf = state.audits.filter((e) => e.event === "loop.scripted_verify_fallback");
     assert.equal(sf.length, 1, "scripted verifier fallback audited exactly once");
     assert.equal(sf[0].payload.result, "unavailable", "no tsconfig/scripts at the fake worktree => unavailable, escalate");

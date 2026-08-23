@@ -28,6 +28,8 @@ import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { resolveContractPath } from "./orchestrator/path-match.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { buildProgressSnapshot } from "./orchestrator/progress.js";
+import { isAtLeastMedium, normaliseSeverity } from "./orchestrator/finding-classify.js";
+import { prLabelsFor } from "./orchestrator/pr-labels.js";
 import type { DatabaseSync } from "node:sqlite";
 import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
@@ -959,7 +961,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                 verdict: r.parsed.verdict,
                 findings: (r.parsed.findings as any[]).map((f) => ({
                   dimension: f.dimension ?? "quality",
-                  severity: f.severity ?? "low",
+                  // rc.3: was `f.severity ?? "low"`, which made a missing
+                  // severity non-blocking and passed "Medium" through verbatim
+                  // for `isBlockingFinding` to reject on casing.
+                  severity: normaliseSeverity(f.severity),
                   title: f.title ?? "(untitled)",
                   detail: f.detail ?? "",
                   file: f.file,
@@ -1068,6 +1073,11 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // adapter also retries non-draft on a 422. The verdict warning is in
         // the PR body regardless.
         draft: (config.repos.draft_pr_on_nonpass ?? false) && reviewReport.verdict !== "pass",
+        // rc.3: the do-not-merge warning was PR body text and a column in the
+        // harness's DB -- nothing a branch-protection rule or a PR list could
+        // see. A label is checkable.
+        labels: prLabelsFor(reviewReport),
+        logger: api.logger,
       });
       // beta.75 (#1): post the review verdict + findings as a PR COMMENT on
       // EVERY review -- not just at PR creation. createPullRequest writes the
@@ -1564,8 +1574,11 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       let hasBlockingFinding = false;
       try {
         const findings = lastReviewRow?.findings ? (JSON.parse(lastReviewRow.findings) as Array<{ severity?: string }>) : [];
-        const BLOCKING = new Set(["block", "blocker", "critical", "high"]);
-        hasBlockingFinding = findings.some((f) => BLOCKING.has((f.severity ?? "").toLowerCase()));
+        // rc.3: this used to count only high/critical, so a `medium` finding --
+        // blocking everywhere else in the system -- left the PR eligible for the
+        // Vercel override. The ship gate and the merge gate now read severity
+        // through the same function, and an unreadable severity blocks both.
+        hasBlockingFinding = findings.some((f) => isAtLeastMedium(f.severity));
       } catch { /* ignore malformed */ }
       // ---- GATE (beta.36: Vercel-aware) ----
       // Baseline recommendation from ship time.
@@ -2762,6 +2775,20 @@ function renderPrBody(
       f?.dimension === "runtime" ||
       /runtime|preview|deploy|render/i.test(String(f?.title ?? "") + " " + String(f?.detail ?? "")),
   );
+  // rc.3: a `pass` the gate manufactured from a `revise` is not the same thing
+  // as a `pass` the adversary gave, and it lands on the PR looking identical.
+  // Say so, because this one is auto-mergeable.
+  const downgradedAnnotation = (review as { verdictDowngraded?: boolean }).verdictDowngraded
+    ? [
+        ``,
+        `## \u26a0\ufe0f This \`pass\` was downgraded from \`revise\``,
+        `The adversary returned \`revise\`. The harness downgraded it to \`pass\` because no NEW finding was ` +
+          `both diff-addressable and at least medium severity -- the remaining findings were judged to be about ` +
+          `process, environment, architecture or unproven runtime rather than this diff. That judgement is made ` +
+          `by keyword matching on the finding text, so read the findings below before merging rather than ` +
+          `treating this as a clean review.`,
+      ]
+    : [];
   const reviseAnnotation = shippedWithoutCleanPass
     ? [
         ``,
@@ -2783,6 +2810,7 @@ function renderPrBody(
     ``,
     `## Acceptance criteria`,
     ...brief.acceptanceCriteria.map((c) => `- [ ] ${c}`),
+    ...downgradedAnnotation,
     ...reviseAnnotation,
     ``,
     `## Adversarial review`,

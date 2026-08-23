@@ -28,6 +28,8 @@
  * The harness_merge_pr HARD GATE treats it exactly like do_not_merge (refuse;
  * human merges via the GitHub UI) -- it is never auto-overridable.
  */
+import { isAtLeastMedium } from "./finding-classify.js";
+
 export type MergeRecommendation = "merge" | "do_not_merge" | "needs_human_review";
 
 export interface ReviewSignal {
@@ -69,9 +71,13 @@ const BLOCKING_SEVERITIES = new Set(["block", "blocker", "critical", "high"]);
  * rest of the harness -- isBlockingFinding, the adversary's file-attribution
  * gate -- has always treated medium as actionable, and shipping a PR carrying
  * open mediums on the strength of a high-only test would be a loosening nobody
- * asked for. This set is used only to describe WHY a do-not-merge stands.
+ * asked for.
+ *
+ * rc.3: that set is now `isAtLeastMedium` from finding-classify, so the ship
+ * gate, this recommendation and `harness_merge_pr` cannot disagree about what
+ * "blocking" means. The local copy also had no notion of an unreadable severity
+ * and counted one as non-blocking.
  */
-const AT_LEAST_MEDIUM = new Set(["medium", "high", "critical", "block", "blocker"]);
 
 function ciNote(ciStatus: RecommendationInput["ciStatus"]): string {
   return ciStatus === "success"
@@ -148,7 +154,7 @@ export function deriveMergeRecommendation(input: RecommendationInput): Recommend
       };
     }
     const worst = review.findings
-      .filter((f) => AT_LEAST_MEDIUM.has((f.severity || "").toLowerCase()))
+      .filter((f) => isAtLeastMedium(f.severity))
       .map((f) => f.title || f.dimension || "(untitled)")
       .slice(0, 3)
       .join("; ");
@@ -195,7 +201,7 @@ export function deriveMergeRecommendation(input: RecommendationInput): Recommend
   // One definition, no fallback. Keeping the old severity set alive for callers
   // that omit `blockingFindings` would leave exactly this bug in place for the
   // next caller to rediscover, and there is only one production caller.
-  const blocking = review.findings.filter((f) => AT_LEAST_MEDIUM.has((f.severity || "").toLowerCase()));
+  const blocking = review.findings.filter((f) => isAtLeastMedium(f.severity));
   const blockingCount = input.blockingFindings ?? blocking.length;
   if (blockingCount > 0 || blocking.length > 0) {
     const titles = blocking.map((f) => f.title || f.dimension || "(untitled)").slice(0, 3).join("; ");

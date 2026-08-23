@@ -283,12 +283,14 @@ test("beta62: loop wires review_failed telemetry + folds post-review persist int
   assert.match(src, /return await this\.finaliseReviewCrash\(/);
 });
 
-test("beta62: finaliseReviewCrash gate = graceful && green self-verify && (infra || cycle>=2 && priorReview) (source)", () => {
+test("beta62: finaliseReviewCrash gate = graceful && green self-verify && priorReview && (infra || cycle>=2) (source)", () => {
   const src = S("src/orchestrator/loop.ts");
   assert.match(src, /graceful_pr_on_review_crash !== false/);
-  // beta.90 (Feature 1): eligibility widened to admit an INFRA crash without
-  // requiring cycle>=2 or a prior review (the non-infra path is unchanged).
-  assert.match(src, /const eligible = gracefulEnabled && selfVerifyGreen && \(infra \|\| \(cycle >= 2 && !!priorReview\)\)/);
+  // beta.90 (Feature 1) widened eligibility to admit an INFRA crash without
+  // requiring cycle>=2 OR a prior review. rc.3 gave back the prior-review half:
+  // an infra crash still does not need cycle>=2, but no path pushes code that
+  // no adversary has reviewed. See the rc3 salvage-gate suite.
+  assert.match(src, /const eligible = gracefulEnabled && selfVerifyGreen && !!priorReview && \(infra \|\| cycle >= 2\)/);
   assert.match(src, /merge_recommendation = \?[\s\S]*?\.run\(prUrl, prNumber \?\? null, "needs_human_review"/);
 });
 
@@ -297,6 +299,9 @@ test("beta62: finaliseFailedPreserveWorktree does NOT release the worktree (sour
   const body = src.slice(src.indexOf("private finaliseFailedPreserveWorktree"), src.indexOf("private async finaliseReviewCrash"));
   assert.doesNotMatch(body, /scheduleWorktreeReleaseForSession/);
   assert.match(body, /"loop\.failed_worktree_preserved"/);
+  // rc.3: preserving it in memory is not preserving it. Without this the
+  // startup self-heal reaps the directory on the next restart.
+  assert.match(body, /UPDATE sessions SET worktree_preserved = 1 WHERE id = \?/);
 });
 
 // ---- Config + manifest wiring ----

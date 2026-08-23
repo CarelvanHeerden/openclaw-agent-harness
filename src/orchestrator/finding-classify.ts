@@ -76,8 +76,39 @@ const ARCHITECTURAL_RE =
 // the PR body and is enforced by the convention check, but it does not force
 // another expensive code cycle. A genuine code defect (wrong logic, wrong
 // placement) still classifies `diff_addressable`.
+//
+// rc.3: the bare `regenerate` alternative is REMOVED. It matched the verb
+// anywhere in the finding text, so "the session token is never rotated -- an
+// attacker can replay it; regenerate it on each login" classified as `process`
+// and could not sustain a `revise`. The demotion is meant for findings ABOUT a
+// generated artifact, so the verb now has to be attached to one.
 const GENERATED_ARTIFACT_RE =
-  /\b(okf[- ]?bundle|okf[:-]?check|keep[- ]?okf[- ]?current|regenerate|regenerat(e|ed|ion)|re-?generate|bundle (is )?(stale|out ?of ?date|not (regenerated|current|up[- ]?to[- ]?date))|stale (generated|okf)|generated (bundle|artifact|file)s? (are |is )?(stale|out of date)|run (npm run )?okf)\b/i;
+  /\b(okf[- ]?bundle|okf[:-]?check|keep[- ]?okf[- ]?current|run (npm run )?okf|re-?generat(e|es|ed|ing|ion)( of)?( the| a| an)? (okf|bundle|generated|artifact|lock(file)?|snapshot|schema|client|types?)|bundle (is |was |has been )?(stale|out ?of ?date|not (regenerated|current|up[- ]?to[- ]?date))|stale (generated|okf)|generated (bundle|artifact|file)s? (are |is |were |was )?(stale|out of date|not regenerated))\b/i;
+
+/**
+ * rc.3: the buckets below `diff_addressable` are all keyword matches on prose,
+ * and every one of them demotes. That is a one-way ratchet toward shipping: a
+ * real defect whose wording happens to trip a regex becomes non-blocking, and
+ * a `revise` built on it is downgraded to an auto-mergeable `pass`.
+ *
+ * These findings are never demoted on the strength of a keyword:
+ *   - `security` dimension -- the cost of wrongly demoting one is not symmetric
+ *     with the cost of one extra review cycle.
+ *   - `high` and `critical` severity -- the adversary said this is serious;
+ *     a regex written for an OKF bundle does not get to overrule that.
+ *   - unreadable severity -- see `normaliseSeverity`. We cannot show it is
+ *     minor, so we do not treat it as minor.
+ *
+ * This deliberately does NOT cover the `medium`-severity demotions the beta.69
+ * and beta.70 forensics were about (PR #870's sole medium, the 1f2e6642
+ * runtime spiral). Those stay demotable, so this closes the hole without
+ * reopening the loops that motivated the buckets.
+ */
+function isNonDemotable(f: ReviewFinding): boolean {
+  if (f.dimension === "security") return true;
+  const s = normaliseSeverity(f.severity);
+  return s === "high" || s === "critical" || s === "unknown";
+}
 
 /**
  * Classify a single finding. Pure. Order matters: the most "structurally
@@ -100,9 +131,31 @@ export function classifyFinding(f: ReviewFinding, ctx: ClassifyCtx = {}): Findin
   // fail with the wrong words in them.
   if (f.source === "ci") return "diff_addressable";
 
+  // rc.3: the mirror of the rule above. The harness reporting that its own
+  // typecheck gate could not run is a fact it established, so it is filed as
+  // `env` without consulting the prose -- and without the `isNonDemotable` rule
+  // below promoting it, which it otherwise would, since the finding is
+  // deliberately `high` so that it stops a merge.
+  if (f.source === "harness_env") return "env";
+
   // Runtime dimension with no live deploy evidence: the harness decides whether
   // to push; the worker cannot conjure runtime data in a code cycle.
-  if (f.dimension === "runtime" && (ctx.runtimeUnavailable || UNPROVEN_RUNTIME_RE.test(text))) {
+  //
+  // rc.3: `ctx.runtimeUnavailable` is a fact the harness established, not a
+  // guess about prose, so it still demotes anything. The `UNPROVEN_RUNTIME_RE`
+  // half is a keyword match and obeys the non-demotable rule below.
+  if (f.dimension === "runtime" && ctx.runtimeUnavailable) {
+    return "unproven_runtime";
+  }
+
+  // rc.3: every rule from here down demotes on keywords alone, so each one is
+  // gated on `isNonDemotable` -- see there for why security, high, critical and
+  // unreadable severities are not demoted by prose.
+  //
+  // The generated-artifact rule below is the exception, and takes no guard.
+  const demotable = !isNonDemotable(f);
+
+  if (demotable && f.dimension === "runtime" && UNPROVEN_RUNTIME_RE.test(text)) {
     return "unproven_runtime";
   }
 
@@ -110,7 +163,7 @@ export function classifyFinding(f: ReviewFinding, ctx: ClassifyCtx = {}): Findin
   // worktree bootstrap owns this (F4). Distinct from a real convention failure.
   // Checked BEFORE the generated-artifact bucket so "okf:check exited 127"
   // classifies as `env` (bootstrap's job), not `process`.
-  if (ENV_RE.test(text)) {
+  if (demotable && ENV_RE.test(text)) {
     return "env";
   }
 
@@ -120,9 +173,19 @@ export function classifyFinding(f: ReviewFinding, ctx: ClassifyCtx = {}): Findin
   // regenerated" is redundant with that phase and must not sustain a revise
   // (PR #870 root cause). Checked AFTER runtime/env so a real env-127 still
   // wins; both `process` and `env` are non-blocking so gating is unaffected.
+  //
+  // rc.3: this is the one demotion that applies at ANY severity, because it is
+  // not really a judgement about the finding -- the convention phase regenerates
+  // the bundle deterministically, so the complaint is answered by machinery
+  // rather than argued about. A high-severity "the bundle is stale" is still
+  // just a stale bundle (beta.127 asserts exactly this). It earns the exemption
+  // by being narrow: the bare verb "regenerate" was removed from the pattern in
+  // rc.3 precisely so it cannot reach findings that are not about an artifact.
   if (GENERATED_ARTIFACT_RE.test(text)) {
     return "process";
   }
+
+  if (!demotable) return "diff_addressable";
 
   // Test-wiring findings when the repo has no test script by design: adding a
   // test script / wiring tests into package.json is a PROCESS change the
@@ -141,13 +204,75 @@ export function classifyFinding(f: ReviewFinding, ctx: ClassifyCtx = {}): Findin
 }
 
 /**
+ * rc.3: the one place severity is interpreted.
+ *
+ * The adversary's response is not schema-validated -- `runAdversarySdk` checks
+ * only that `verdict`, `findings` and `summary` are present, and `findings` is
+ * `unknown[]`. So `severity` is whatever string a language model wrote, and
+ * `"Medium"`, `"moderate"` and a missing field are all things it writes.
+ *
+ * Every consumer that reasons about severity had independently written
+ * `(f.severity ?? "").toLowerCase()` -- merge-recommendation, revise-scope,
+ * revise-mapping, file-attribution, the merge tool. Every consumer except the
+ * one that decides whether a finding can stop a ship: `isBlockingFinding`
+ * compared with `===`, so `"Medium"` was not medium, the finding was not
+ * blocking, `gateVerdict` downgraded `revise` to `pass`, and `reachedCleanPass`
+ * made the PR auto-mergeable. A defect flipped to shippable on the casing of a
+ * word.
+ *
+ * Unrecognised severities normalise to `"unknown"`, which counts as blocking.
+ * An adversary that said something we cannot read should send the run back for
+ * another look, not through.
+ */
+export type Severity = ReviewFinding["severity"];
+
+const SEVERITY_SYNONYMS: Readonly<Record<string, Severity>> = {
+  info: "info",
+  informational: "info",
+  note: "info",
+  nit: "info",
+  trivial: "info",
+  low: "low",
+  minor: "low",
+  medium: "medium",
+  moderate: "medium",
+  med: "medium",
+  warn: "medium",
+  warning: "medium",
+  high: "high",
+  major: "high",
+  severe: "high",
+  critical: "critical",
+  crit: "critical",
+  blocker: "critical",
+  fatal: "critical",
+};
+
+/** Anything we cannot read becomes `"unknown"`, which is treated as blocking. */
+export function normaliseSeverity(raw: unknown): Severity {
+  if (typeof raw !== "string") return "unknown";
+  const key = raw.trim().toLowerCase();
+  if (key === "") return "unknown";
+  return SEVERITY_SYNONYMS[key] ?? "unknown";
+}
+
+/**
+ * `medium` or above, the threshold that lets a finding sustain a `revise`.
+ * `unknown` qualifies: fail toward review.
+ */
+export function isAtLeastMedium(raw: unknown): boolean {
+  const s = normaliseSeverity(raw);
+  return s === "medium" || s === "high" || s === "critical" || s === "unknown";
+}
+
+/**
  * A finding is BLOCKING (can sustain a `revise`) only when it is
  * `diff_addressable` AND at least `medium` severity. Everything else is
  * surfaced but non-blocking.
  */
 export function isBlockingFinding(f: ReviewFinding, cls: FindingClass): boolean {
   if (cls !== "diff_addressable") return false;
-  return f.severity === "medium" || f.severity === "high" || f.severity === "critical";
+  return isAtLeastMedium(f.severity);
 }
 
 /**

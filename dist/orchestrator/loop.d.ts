@@ -1268,6 +1268,31 @@ export declare class OrchestratorLoop {
     private readLedgerCommits;
     private checkLedgerReachability;
     private getPlanJson;
+    /**
+     * rc.3: the one rule the three salvage paths share -- has an adversary ever
+     * reviewed this session's code at all?
+     *
+     * The harness advertises that nothing is pushed until the adversary passes.
+     * That was not strictly true. Three paths reached `pushBranchAndOpenPr` after
+     * synthesising a placeholder `revise` report for a session where no review had
+     * EVER run: `tryBestEffortVerify` (the verify sub-task timed out),
+     * `finaliseAbortSalvaging` (a budget or time ceiling), and
+     * `finaliseReviewCrash` (an infra error, which beta.90 deliberately let
+     * through on cycle 1). Each stamped the PR `needs_human_review`, which is a
+     * real mitigation but is body text on a PR -- it relies on a human reading it.
+     *
+     * Where a PRIOR review exists, shipping with that stamp is still a defensible
+     * trade: something adversarial did look at this code, and losing the work has
+     * a cost too. Where NOTHING has reviewed it, the trade is not available, so
+     * these paths now preserve the worktree instead. The commits survive on disk
+     * and stay resumable; only the push is refused.
+     */
+    private hasBeenReviewed;
+    /**
+     * rc.3: audit a refused salvage push. Returns true when the caller must NOT
+     * push, so every call site reads as `if (this.refuseUnreviewedSalvage(...))`.
+     */
+    private refuseUnreviewedSalvage;
     /** beta.63: read the most recent completed review for a session (or undefined). */
     private getLastReview;
     /**

@@ -186,13 +186,26 @@ test("loop: budget exhaustion aborts unless budget_bump",
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
     const outcome = await loop.run("S4", brief);
-    // beta.120 (fix 1): the spend gate still fires at exactly the same point --
-    // what changed is that hitting a ceiling no longer destroys the branch. The
-    // run ships what it has for a human to judge.
-    assert.equal(outcome.status, "shipped");
-    const salvaged = state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr");
-    assert.equal(salvaged.length, 1);
-    assert.equal(salvaged[0].payload.abortReason, "daily_max_exhausted");
+    // beta.120 (fix 1): the spend gate still fires at exactly the same point,
+    // and hitting a ceiling still does not destroy the branch.
+    //
+    // rc.3 changed how the work is kept. This session died on sub-task 1, so no
+    // adversary ever reviewed it, and the salvage push is now refused rather
+    // than opening a PR nobody has looked at. The commits are preserved in the
+    // worktree and the session stays resumable -- the b119 loss this test
+    // guards against (a ceiling deleting finished work) still cannot happen.
+    // The salvage-PR half is covered at rc3-salvage-push-gate for a session
+    // that DOES have a prior review.
+    assert.equal(outcome.status, "aborted");
+    assert.match(outcome.reason, /worktree PRESERVED/);
+    assert.equal(state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr").length, 0);
+    const refused = state.audits.filter((e) => e.event === "loop.salvage_refused_unreviewed");
+    assert.equal(refused.length, 1);
+    assert.equal(refused[0].payload.abortReason, "daily_max_exhausted");
+    assert.equal(
+      state.db.prepare(`SELECT worktree_preserved FROM sessions WHERE id='S4'`).get().worktree_preserved,
+      1,
+    );
     // Should have run the first sub-task, then noticed daily-cap over on the second check
     assert.equal(workerCalls, 1);
   });
@@ -379,13 +392,15 @@ test("loop: projected-cost gating aborts BEFORE starting an unaffordable sub-tas
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
     const outcome = await loop.run("SB1", brief);
-    // beta.120 (fix 1): the spend gate still fires at exactly the same point --
-    // what changed is that hitting a ceiling no longer destroys the branch. The
-    // run ships what it has for a human to judge.
-    assert.equal(outcome.status, "shipped");
-    const salvaged = state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr");
-    assert.equal(salvaged.length, 1);
-    assert.equal(salvaged[0].payload.abortReason, "daily_max_exhausted");
+    // beta.120 (fix 1): the spend gate still fires at exactly the same point,
+    // and hitting a ceiling still does not destroy the branch.
+    //
+    // rc.3: the gate fired before any review, so the salvage push is refused
+    // and the commits are preserved instead. See the note on S4 above.
+    assert.equal(outcome.status, "aborted");
+    assert.match(outcome.reason, /worktree PRESERVED/);
+    assert.equal(state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr").length, 0);
+    assert.equal(state.audits.filter((e) => e.event === "loop.salvage_refused_unreviewed").length, 1);
     // Sub-task 1 ran (0.10), sub-task 2 projected daily 0.20+ > 0.15 -> gated.
     assert.deepEqual(workerSeqs, [1], "second sub-task must be gated out before execution");
     const gate = state.audits.find((a) => a.event === "loop.daily_max_abort");
@@ -420,14 +435,18 @@ test("loop: review is skipped + cycle aborts when remaining budget < review esti
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
     const outcome = await loop.run("SB2", brief);
-    // beta.120 (fix 1): the spend gate still fires at exactly the same point --
-    // what changed is that hitting a ceiling no longer destroys the branch. The
-    // run ships what it has for a human to judge.
-    assert.equal(outcome.status, "shipped");
-    const salvaged = state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr");
-    assert.equal(salvaged.length, 1);
-    assert.equal(salvaged[0].payload.abortReason, "daily_max_exhausted");
     assert.equal(adversaryCalled, false, "adversary must not run when the daily cap can't afford it");
+    // beta.120 (fix 1): the spend gate still fires at exactly the same point,
+    // and hitting a ceiling still does not destroy the branch.
+    //
+    // rc.3: this test is the §2 finding in miniature. It asserted on the line
+    // above that the adversary never ran, and then asserted the code shipped --
+    // an unreviewed PR, opened by design, with the test written to expect it.
+    // The commits are now preserved instead of pushed.
+    assert.equal(outcome.status, "aborted");
+    assert.match(outcome.reason, /worktree PRESERVED/);
+    assert.equal(state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr").length, 0);
+    assert.equal(state.audits.filter((e) => e.event === "loop.salvage_refused_unreviewed").length, 1);
     const gate = state.audits.find((a) => a.event === "loop.review_budget_abort");
     assert.ok(gate, "review budget abort should be audited");
   });
