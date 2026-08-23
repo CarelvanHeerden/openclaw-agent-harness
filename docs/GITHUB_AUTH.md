@@ -130,6 +130,15 @@ walks the agent through storing credentials in the correct tier:
 1. **Vault** (recommended): store token in the vault under
    `harness-pat-{provider}-{org}-{person}`, add a `{ "vault": ... }` pointer,
    auto-capture the Slack id.
+
+   That name is the **manual** convention, and it is only a convention: the
+   pointer is what binds a route to a secret, so any name works as long as the
+   `{ "vault": ... }` value matches what you stored. **`harness_onboard` does not
+   use it.** The per-org flow (`action:"add"` / `"replace"`) writes
+   `{provider}:{org}:{person}`, lower-cased — `github:stitch-vercel:janice`, not
+   `harness-pat-github-stitch-vercel-janice`. It writes the route as well as the
+   secret, so the two cannot disagree; the naming only matters when you are
+   seeding by hand and writing the pointer yourself.
 2. **Self-write `openclaw.json` + reload**: no vault, but the agent can edit
    config — writes an `env`/`value` pointer and reloads.
 3. **Emit copy-paste JSON**: no vault and no config-write — the agent prints
@@ -251,9 +260,10 @@ plan phase:
 - **`git_credential_resolvable`** — a token was found (vault or env) for the
   first allowed repo. **Fatal** to overall health when false.
 - **`git_credential_live_ping`** — *(only with `{ deep: true }`)* a
-  `GET /user` against the GitHub API with the resolved token, proving it
-  actually authenticates. Catches expired/revoked tokens, distinguishing an
-  auth rejection from an unrelated network error.
+  `GET /user` against the resolved provider's API, proving the token actually
+  authenticates. Provider-aware: a `Bearer` header for GitHub, `PRIVATE-TOKEN`
+  for GitLab. Catches expired/revoked tokens, distinguishing an auth rejection
+  from an unrelated network error.
 
 ```jsonc
 // harness_health
@@ -293,6 +303,7 @@ via the vault / env chain above.
 
 All of these are **read-only** calls; they do not create or modify any GitHub resource.
 
-The `buildVerifyProbes` factory in the real adapter must be updated to supply
-these probes before beta.9 is used in a live production session. See
-`src/orchestrator/verify.ts` for the full `VerifyProbes` interface.
+These probes are supplied by `createVerifyProbes`, wired into the runtime at
+bootstrap (`src/index.ts`). See `src/orchestrator/verify.ts` for the full
+`VerifyProbes` interface and `src/orchestrator/verify-probes.ts` for the
+implementation.

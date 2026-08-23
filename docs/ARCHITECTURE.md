@@ -151,6 +151,8 @@ Mirrors `OrchestratorLoop.advance()` in `src/orchestrator/loop.ts`.
 ```mermaid
 stateDiagram-v2
   [*] --> crystallising
+  crystallising --> awaiting_clarification: needs one question answered
+  awaiting_clarification --> crystallising: harness_answer
   crystallising --> planning: crystallise_ok
   planning --> executing: plan_ready
   executing --> reviewing: subtasks_complete
@@ -161,6 +163,7 @@ stateDiagram-v2
   reviewing --> done: max_cycles_reached (ships, flagged do_not_merge)
 
   crystallising --> aborted: user_abort / budget / timeout
+  awaiting_clarification --> aborted: user_abort / budget / timeout
   planning --> aborted: user_abort / budget / timeout
   executing --> aborted: user_abort / budget / timeout
   reviewing --> aborted: user_abort / budget / timeout
@@ -224,7 +227,7 @@ stateDiagram-v2
 
    The requester must be in `slack.authorised_users`, and the request is classified with a lightweight intent check before anything runs.
 
-2. **Crystallisation.** If intent = "dev task", the harness starts a Slack thread and asks up to 3 clarifying questions (repo, acceptance criteria, constraints). The user can override the loop with an explicit "go" reaction. Output: a crystallised prompt (Markdown) stored in the session record.
+2. **Crystallisation.** If intent = `dev_task`, one crystalliser call turns the request into a structured brief (repo, acceptance criteria, constraints). Where it needs more, it returns **one** clarifying question for the calling agent to relay — answered with `harness_answer`, not a multi-turn Slack loop. Output: a crystallised prompt stored in the session record.
 
 3. **Plan.** Fable-5 lead reads the crystallised prompt + a repo overview and produces a plan: a DAG of sub-tasks, each with a scope, expected outputs, and a suggested worker model.
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Docs only; no behaviour change. The rc.2 sweep folded in most of two doc audits
+but not all of them, and the remainder were the same species as the rest:
+
+- `harness_onboard` writes vault entries as `{provider}:{org}:{person}`, not the
+  `harness-pat-{provider}-{org}-{person}` convention documented next to it. That
+  name is the **manual** one, and only ever a convention — the `{ "vault": ... }`
+  pointer is what binds a route to a secret. Following it while using the per-org
+  flow would have produced a second vault-path-shaped bug: a real token under a
+  name nothing resolves.
+- Session recovery no longer DMs "resume?" and waits. In tool-driven mode nothing
+  would ever answer, so fresh sessions auto-resume and only stale ones are marked
+  `interrupted` for `harness_resume`. It also sweeps `crystallising` and
+  `resumable`, which the doc omitted.
+- `git_credential_live_ping` is provider-aware (`Bearer` for GitHub,
+  `PRIVATE-TOKEN` for GitLab), not GitHub-only.
+- The beta.9 note claiming `buildVerifyProbes` "must be updated before use in a
+  live session" has been true-by-accident for a long time: `createVerifyProbes`
+  is wired at bootstrap.
+- Crystallisation asks at most one question, not "up to 3 in a Slack thread", and
+  `awaiting_clarification` is now on the state diagram.
+
 ## 1.0.0-rc.2
 
 ### The vault CLI and the vault were two different directories

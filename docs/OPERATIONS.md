@@ -46,11 +46,19 @@ The state DB is small (KB-MB range). Backup with `sqlite3 state.db .backup /path
 
 If the container is restarted mid-session:
 
-1. On next boot, the harness scans `sessions` for rows with `status IN ('planning', 'executing', 'reviewing')`.
-2. Each such row is marked `interrupted` with a heartbeat note.
-3. The user is DMed with a "resume?" prompt referencing the Slack thread.
-4. If the user confirms, the harness uses `sessions.last_worker_sdk_session` (populated at every checkpoint) to resume the last worker via `@anthropic-ai/claude-agent-sdk` `resume()`.
-5. If no per-worker session exists (interrupted during planning), the harness resumes from the crystallised prompt with the Fable-5 lead replay path.
+1. On next boot, the harness scans `sessions` for non-terminal rows:
+   `crystallising`, `planning`, `executing`, `reviewing` and `resumable`.
+2. **Fresh sessions are auto-resumed.** In tool-driven mode there is no reaction
+   poller and no Slack listener, so nothing would ever act on a "resume?" prompt —
+   a session parked awaiting confirmation would simply go quiet forever. Recovery
+   therefore re-drives the loop itself rather than asking.
+3. Only **stale** sessions — past the heartbeat threshold — are marked
+   `interrupted` and surfaced for a human. Resume those deliberately with
+   `harness_resume`.
+4. Resuming uses `sessions.last_worker_sdk_session` (written at every checkpoint)
+   to continue the last worker via the SDK's `resume()`.
+5. If no per-worker session exists (interrupted during planning), the harness
+   resumes from the crystallised prompt with the Fable-5 lead replay path.
 
 ## Cost forensics
 
