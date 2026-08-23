@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.0.0-rc.1
+
+### The same tree as beta.137, under a version that says what it is
+
+No behaviour change, and deliberately so. This is the beta.137 tree — the one
+that ran 2180 tests green with no `dist/` drift — carried forward under a
+release-candidate version, so that what gets exercised from here on is the thing
+that would ship as 1.0.0 rather than a moving target.
+
+`0.1.0-beta.*` had stopped describing the artefact. The vault the harness owns
+outright (beta.134), onboarding that asks which org rather than assuming there
+is one (beta.135), and the two default-off safeguards finally written down
+(beta.136) are not the shape of a `0.1.0`. The arc from here is
+`1.0.0-rc.N -> 1.0.0`, and each RC is a version-only commit on top of a tree
+that has already been smoked, so a candidate never contains a change no smoke
+has seen.
+
+Getting here needed one non-version commit first, which is its own finding:
+beta.137 had to remove a floor-test idiom that would have rejected 1.0.0
+outright. Twenty-nine tests asserted "at or past beta.N" in a way that also
+required *being a beta*, so the first attempt at this bump turned them red
+without a line of behaviour changing. That is fixed and merged separately; this
+commit is version-only on top of it.
+
+The README's status block was stale in the meantime: it announced
+`0.1.0-beta.21` and 323 tests, and its "what's new" list stopped at beta.10-21,
+while the body of the same file already referenced beta.34, beta.78, beta.108
+and beta.110. Anyone reading only the top of the page was told the OKF concept
+pass-through was the newest thing in the harness. Status line, both test counts
+(306 -> 2180) and the highlight list now match the tree they sit in.
+
 ## 0.1.0-beta.137
 
 ### 29 tests that would have refused 1.0.0
