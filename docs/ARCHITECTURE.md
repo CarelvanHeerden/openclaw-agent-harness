@@ -21,6 +21,7 @@ version with the code.
 flowchart TB
   subgraph SLACK["Slack (private dev channel)"]
     U["Allow-listed user"]
+    API["Slack Web API"]
   end
 
   subgraph GW["OpenClaw gateway"]
@@ -53,14 +54,17 @@ flowchart TB
     VAULT["Harness credential vault\nAES-256-GCM, own key file"]
   end
 
-  U -->|talks to| AGENT
-  U -->|reaction| RPOLL
-  AGENT -->|harness_run| TOOLS
+  U -->|message| API
+  API -->|the AGENT subscribes, never the harness| AGENT
+  AGENT -->|harness_run / harness_start_session| TOOLS
+  U -->|reaction| API
+  RPOLL -.->|polls every 15s| API
+  DIS -.->|posts progress, PR link, reactions| API
   TOOLS --> DIS
   DIS --> CRY
   CRY --> LOOP
   LOOP --> LEAD
-  LOOP -->|spawn; serial unless subtask_concurrency > 1| W1 & W2
+  LOOP -->|spawn, serial unless subtask_concurrency over 1| W1 & W2
   W1 & W2 -->|edit + commit, no push| WT
   LOOP --> ADV
   ADV -.reads.-> WT
@@ -72,10 +76,17 @@ flowchart TB
   LOOP -->|push branch + open PR| GH
   GH --> WT
   RPOLL -->|shipIt / abort / budgetBump| STORE
+  PRW -.->|polls every 300s| GH
   PRW -->|merge/close detected| STORE
   LOOP <--> STORE
   DIS <--> STORE
 ```
+
+**Every arrow into the plugin starts inside the gateway.** Slack cannot reach the
+harness: the OpenClaw agent is the subscriber, and the only way in is a tool call.
+Even reactions are *pulled* — the poller calls the Slack API on a timer, which is
+why the arrow points out of the plugin rather than into it. A message posted in
+the channel that no agent picks up does nothing at all.
 
 ### 0.2 Sequence diagram (one dev request, end to end)
 
@@ -95,7 +106,7 @@ sequenceDiagram
   participant GH as GitHub
 
   User->>Slack: Ask the agent for some dev work
-  Slack->>Agent: message (the agent is subscribed; the harness is not)
+  Slack->>Agent: message (the agent is subscribed, the harness is not)
   Agent->>Disp: harness_run({ request, repo })
   Disp->>Disp: INSERT session (UNIQUE thread)
   Disp-->>Slack: react :eyes:
@@ -151,6 +162,8 @@ Mirrors `OrchestratorLoop.advance()` in `src/orchestrator/loop.ts`.
 ```mermaid
 stateDiagram-v2
   [*] --> crystallising
+  crystallising --> awaiting_clarification: needs one question answered
+  awaiting_clarification --> crystallising: harness_answer
   crystallising --> planning: crystallise_ok
   planning --> executing: plan_ready
   executing --> reviewing: subtasks_complete
@@ -161,6 +174,7 @@ stateDiagram-v2
   reviewing --> done: max_cycles_reached (ships, flagged do_not_merge)
 
   crystallising --> aborted: user_abort / budget / timeout
+  awaiting_clarification --> aborted: user_abort / budget / timeout
   planning --> aborted: user_abort / budget / timeout
   executing --> aborted: user_abort / budget / timeout
   reviewing --> aborted: user_abort / budget / timeout
@@ -188,13 +202,20 @@ stateDiagram-v2
 | Slack (private #dev channel, allow-listed users)            |
 +-------------------------+-----------------------------------+
                           |
-                          v
+              message     |         ^  reactions are POLLED
+              (Slack ->   |         |  every 15s, and progress
+               the AGENT) v         |  is POSTED back out
 +-------------------------------------------------------------+
 | OpenClaw gateway                                            |
 |   |                                                         |
+|   +--> OpenClaw agent  (subscribed to Slack, owns the chat) |
+|         |                                                   |
+|         |   harness_run / harness_start_session             |
+|         |   (a TOOL CALL -- the only way in)                |
+|         v                                                   |
 |   +--> openclaw-agent-harness plugin                        |
 |         |                                                   |
-|         +-- Tool surface  (harness_run, ~19 tools)          |
+|         +-- Tool surface  (harness_run, 19 tools)           |
 |         +-- Intent classifier  (dev_task|clarify|not_dev|   |
 |         |                       unsafe)                     |
 |         +-- Prompt crystalliser  (single pass)              |
@@ -220,11 +241,11 @@ stateDiagram-v2
 
 ## 2. Session lifecycle
 
-1. **Intake.** One entry point: the OpenClaw agent calls the `harness_run` tool with a raw request (or `harness_start_session` with a pre-built brief). The plugin does not listen to Slack — beta.34 removed the autonomous listener and `slack.listener_enabled` has been ignored ever since. `harness_run` runs the classifier + crystalliser itself and either starts a session, returns a clarifying question for the agent to relay, or rejects.
+1. **Intake.** One entry point: the OpenClaw agent calls the `harness_run` tool with a raw request (or `harness_start_session` with a pre-built brief). The plugin does not listen to Slack — beta.34 removed the autonomous listener, and beta.133 dropped `slack.listener_enabled` from the parsed config altogether. `harness_run` runs the classifier + crystalliser itself and either starts a session, returns a clarifying question for the agent to relay, or rejects.
 
    The requester must be in `slack.authorised_users`, and the request is classified with a lightweight intent check before anything runs.
 
-2. **Crystallisation.** If intent = "dev task", the harness starts a Slack thread and asks up to 3 clarifying questions (repo, acceptance criteria, constraints). The user can override the loop with an explicit "go" reaction. Output: a crystallised prompt (Markdown) stored in the session record.
+2. **Crystallisation.** If intent = `dev_task`, one crystalliser call turns the request into a structured brief (repo, acceptance criteria, constraints). Where it needs more, it returns **one** clarifying question for the calling agent to relay — answered with `harness_answer`, not a multi-turn Slack loop. Output: a crystallised prompt stored in the session record.
 
 3. **Plan.** Fable-5 lead reads the crystallised prompt + a repo overview and produces a plan: a DAG of sub-tasks, each with a scope, expected outputs, and a suggested worker model.
 
