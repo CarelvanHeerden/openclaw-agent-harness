@@ -11,12 +11,29 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    name: build-and-test (node ${{ matrix.node-version }})
+    strategy:
+      # Do not cancel the floor run because the primary failed, or vice versa.
+      # Which of the two broke is the whole diagnostic.
+      fail-fast: false
+      matrix:
+        # rc.4: `engines` claims >=22.5.0 and CI only ever ran 24, so the floor
+        # was advertised and never tested. It was not hypothetical -- 22 subtests
+        # across the two first-token watchdog files were silently
+        # `cancelledByParent` on 22.x and asserted nothing, on the suite that
+        # exists because of the beta.63 hung-stream incident. A cancellation is
+        # not a failure, so the run stayed green while proving nothing.
+        #
+        # If this matrix is ever cut back to one version, raise `engines` to
+        # match what is actually tested. Claiming a floor nobody runs is how
+        # this happened.
+        node-version: ["22.5", "24"]
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: ${{ matrix.node-version }}
           cache: "npm"
 
       - name: Install dependencies
@@ -63,6 +80,11 @@ jobs:
         # uncapped job means the NEXT hang is also discovered by a human
         # noticing an hour later. 45 gives the real run better than double its
         # headroom.
+        #
+        # rc.4: primary version only. This asks whether the tests are vacuous,
+        # which is a property of the tests and not of the runtime, so paying for
+        # it on every matrix leg buys a duplicate answer for ~13 minutes.
+        if: matrix.node-version == '24'
         timeout-minutes: 45
         run: node scripts/mutation-check.mjs
 

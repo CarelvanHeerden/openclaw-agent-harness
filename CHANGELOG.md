@@ -1,9 +1,59 @@
 # Changelog
 
+## 1.0.0-rc.4
+
+The external reviewer verified rc.3 against the shipped tag and found the one
+thing rc.3's own response document got wrong.
+
+**Blocking now implies fixable.** rc.3 claimed severity was interpreted in one
+place. It was interpreted in one place by the two gates that decide whether a
+finding can stop a ship, and in four others by their own local sets:
+`revise-mapping` twice, `adversary-file-attribution`, and — the one the reviewer
+did not reach — `revise-scope`, which kept a private synonym list.
+
+Because the parse boundary normalises, almost every value agreed anyway. Exactly
+one did not, and it disagreed in the direction that costs a whole run.
+`unknown` — a genuinely missing or unreadable severity — **blocked the ship**,
+which is rc.3 working as designed, but was **not adoptable** into revise scope
+and **not required to name a file**. So nothing could ever be scoped to a worker
+to fix the one finding standing between the run and a pass: the revise loop could
+not converge and burned to `max_cycles`. It failed safe, and it failed safe
+expensively.
+
+`unknown` is now adoptable and must name a file, and it ranks with `medium` —
+the threshold it blocks at. The rank is not cosmetic: adoption is
+severity-ordered and then capped, and `indexOf` returned `-1` for an unreadable
+severity, sorting it below `info` and making it first in line to be dropped by
+the very cap it needed to survive.
+
+`revise-scope`'s private list was `normaliseSeverity`'s minus `trivial` and
+`minor`, which normalise to `info` and `low` everywhere else. Here they fell
+through as actionable, so an info-in-all-but-name finding re-ran every sub-task —
+the beta.114 cost that function exists to prevent, arriving through a synonym.
+
+**The advertised Node floor is now actually tested.** `engines.node` claimed
+`>=22.5.0` and CI ran Node 24 only, so the floor was claimed and never executed.
+Not academic: 22 subtests across `beta64-first-token-watchdog` and
+`beta65-first-token-arming` were `cancelledByParent` on 22.x and asserted
+nothing — on the suite that exists because of the beta.63 hung-stream incident.
+A cancellation is not a failure, so the run stayed green while proving nothing.
+This is why rc.3 "could not reproduce" it: nothing we run is on Node 22.
+
+The cause is in the fakes, not the product. `consumeWorkerStream` deliberately
+`unref()`s its watchdog timers so a pending watchdog can never keep the process
+alive; the real SDK stream holds a ref'd socket across that span, so the unref is
+free. A fake async-iterable has no socket, so the unref'd timer was the only
+pending work, the loop drained, and every later subtest in the file — including
+the synchronous source assertions — was cancelled. The fakes now hold a ref'd
+handle for the duration of the wait, which is what the socket was doing.
+
+CI runs `["22.5", "24"]` with `fail-fast: false`. The mutation check stays on the
+primary version: it asks whether the tests are vacuous, which is a property of
+the tests and not of the runtime.
+
 ## 1.0.0-rc.3
 
-Response to an external review of rc.2. Full finding-by-finding reply, including
-where we disagree, in [docs/EXTERNAL_REVIEW_RESPONSE.md](docs/EXTERNAL_REVIEW_RESPONSE.md).
+Response to an external review of rc.2.
 
 **Severity is read in one place, and an unreadable severity blocks.**
 `isBlockingFinding` compared severity with `===` while every other consumer in

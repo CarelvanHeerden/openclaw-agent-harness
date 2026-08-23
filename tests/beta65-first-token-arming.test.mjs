@@ -34,6 +34,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { waitForAbort } from "./helpers/event-loop.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -50,20 +51,14 @@ try {
 // hangs until aborted. Models the SDK streaming POST that never returns its
 // first byte (smoke #3). Only the PHASE-1 watchdog can end it.
 async function* hangBeforeOpen(abort) {
-  await new Promise((resolve) => {
-    if (abort.signal.aborted) return resolve();
-    abort.signal.addEventListener("abort", () => resolve(), { once: true });
-  });
+  await waitForAbort(abort);
 }
 
 // STREAM OPENS then STALLS (no assistant token) — the beta.64-covered case.
 // Only the PHASE-2 watchdog can end it.
 async function* openThenStall(abort, sessionId = "sdk-sess-b65") {
   yield { type: "system", subtype: "init", session_id: sessionId };
-  await new Promise((resolve) => {
-    if (abort.signal.aborted) return resolve();
-    abort.signal.addEventListener("abort", () => resolve(), { once: true });
-  });
+  await waitForAbort(abort);
 }
 
 // STREAM OPENS LATE (after `openAfterMs`) then first-tokens instantly. Models
