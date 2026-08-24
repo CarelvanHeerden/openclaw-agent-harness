@@ -216,7 +216,10 @@ test("beta70 F1: worker convention guidance defers regeneration to the harness",
 
 test("beta70 F2: loop convention-fold only force-revises on a BLOCKING finding", () => {
   const src = S("src/orchestrator/loop.ts");
-  assert.match(src, /import \{ classifyFinding, isBlockingFinding \} from "\.\/finding-classify\.js"/);
+  // rc.5: `blocksMerge` joined the import when the merge gate stopped reading
+  // raw severity. The claim here is only that the cycling decision still reads
+  // the classifier, so match the two names it needs rather than the whole line.
+  assert.match(src, /import \{[^}]*\bclassifyFinding\b[^}]*\bisBlockingFinding\b[^}]*\} from "\.\/finding-classify\.js"/);
   assert.match(src, /const blockingConvention = conventionFindings\.filter/);
   assert.match(src, /report\.verdict === "pass" && blockingConvention\.length > 0/);
 });

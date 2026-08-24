@@ -36,6 +36,20 @@ export interface RecommendationInput {
      * Undefined preserves the pre-b109 behaviour for callers that do not count.
      */
     blockingFindings?: number;
+    /**
+     * rc.5: how many findings should stop a MERGE, counted by the caller with
+     * `blocksMerge`. A superset of `blockingFindings` (it adds `env`) and a
+     * subset of "everything at medium or above" (it drops `unproven_runtime`,
+     * `process` and `architectural`).
+     *
+     * Separate from `blockingFindings` because the two answer different
+     * questions: whether another cycle is worth running, and whether a human
+     * should look before this merges. Step 4 used to answer the second with raw
+     * severity, which is how PR #1084 stuck.
+     */
+    mergeBlockingFindings?: number;
+    /** Titles of those findings, for the reason string. */
+    mergeBlockingTitles?: string[];
     /** True if the loop reached a clean adversary pass (vs. shipping at cap). */
     reachedCleanPass: boolean;
     /**

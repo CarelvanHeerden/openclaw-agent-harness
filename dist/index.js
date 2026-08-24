@@ -25,7 +25,7 @@ import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { buildProgressSnapshot } from "./orchestrator/progress.js";
-import { isAtLeastMedium, normaliseSeverity } from "./orchestrator/finding-classify.js";
+import { blocksMerge, classifyFinding, normaliseSeverity } from "./orchestrator/finding-classify.js";
 import { prLabelsFor } from "./orchestrator/pr-labels.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
@@ -1242,13 +1242,29 @@ export function bootstrapHarnessSync(api) {
                 .get(sessionId);
             const lastVerdict = (lastReviewRow?.verdict ?? "").toLowerCase();
             let hasBlockingFinding = false;
+            // rc.5: true when EVERY finding standing between this PR and a merge is an
+            // `env` one -- the harness reporting it could not verify something, rather
+            // than a defect anybody can fix. Those are cleared by a green pipeline,
+            // not by a code change, so they are resolved against CI further down
+            // instead of hard-refusing here.
+            let envOnlyBlock = false;
             try {
                 const findings = lastReviewRow?.findings ? JSON.parse(lastReviewRow.findings) : [];
                 // rc.3: this used to count only high/critical, so a `medium` finding --
                 // blocking everywhere else in the system -- left the PR eligible for the
-                // Vercel override. The ship gate and the merge gate now read severity
-                // through the same function, and an unreadable severity blocks both.
-                hasBlockingFinding = findings.some((f) => isAtLeastMedium(f.severity));
+                // Vercel override.
+                //
+                // rc.5: and it read severity with no classification at all, so it
+                // disagreed with the recommendation it was gating on. The beta.115
+                // typecheck-gate finding is deliberately `high` and deliberately
+                // non-blocking; severity alone made it an unoverridable blocker on every
+                // run on a host with no `tsc`, which is a permanent refusal rather than
+                // a safety check. Classify, then ask what the class means for a merge.
+                const blockers = findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true })));
+                hasBlockingFinding = blockers.length > 0;
+                envOnlyBlock =
+                    blockers.length > 0 &&
+                        blockers.every((f) => classifyFinding(f, { repoHasTestScript: true }) === "env");
             }
             catch { /* ignore malformed */ }
             // ---- GATE (beta.36: Vercel-aware) ----
@@ -1268,7 +1284,16 @@ export function bootstrapHarnessSync(api) {
             // project keeps the HARD refuse (human merges via the GitHub UI).
             const reviseOnly = lastVerdict === "revise" && !hasBlockingFinding;
             const overridable = vercelConfigured && reviseOnly && !reviewCrashPr;
-            if (rec !== "merge" && !overridable) {
+            // rc.5: an env-ONLY block asks a question CI can answer, so it is deferred
+            // rather than refused here. "The harness could not typecheck this" matters
+            // only if nothing else did -- and the merge path below already refuses
+            // unless CI is EXPLICITLY green (beta.119 made failure, pending and
+            // unreadable all hard refusals). So if the repo's own pipeline went green,
+            // the thing the harness could not verify has been verified, and a missing
+            // local `tsc` should not be a permanent bar to every merge on that host.
+            // If CI is absent or not green, the deferral is refused below.
+            const deferToCi = rec !== "merge" && !overridable && envOnlyBlock && !reviewCrashPr && lastVerdict !== "block";
+            if (rec !== "merge" && !overridable && !deferToCi) {
                 state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, recommendation: rec, lastVerdict, hasBlockingFinding, vercelConfigured }, sessionId);
                 return {
                     ok: false,
@@ -1341,6 +1366,25 @@ export function bootstrapHarnessSync(api) {
                         ok: false, refused: true, recommendation: rec,
                         message: `Refusing to merge PR #${row.pr_number}: CI is still running on the head commit (${ciSnap.reason}). Hard gate — wait for CI, then retry.`,
                     };
+                }
+                // rc.5: resolve the env-only deferral. The three refusals above have
+                // already taken failure, unreadable and pending, so the only non-green
+                // state left here is `none` -- a repo with no checks configured. That is
+                // the case the beta.115 finding exists for: the harness could not verify
+                // the code and neither did anything else, so nothing has. Refuse.
+                // Written as `!== "success"` rather than `=== "none"` so a new CI state
+                // fails toward the refusal.
+                if (deferToCi && ci !== "success") {
+                    state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "env_block_no_green_ci", ci, ciReason: ciSnap.reason }, sessionId);
+                    return {
+                        ok: false, refused: true, recommendation: rec,
+                        message: `Refusing to merge PR #${row.pr_number}. ${row.merge_recommendation_reason ?? "The harness could not verify this change."} ` +
+                            `CI could not clear it either (${ciSnap.reason}), so nothing has verified this code. ` +
+                            `Hard gate — fix the harness's check environment, add CI, or merge from the GitHub UI.`,
+                    };
+                }
+                if (deferToCi) {
+                    state.audit("tool.merge_override", { sessionId, prNumber: row.pr_number, reason: "env_block_cleared_by_green_ci", ci }, sessionId);
                 }
                 const merged = await mergePullRequest({ repoFullName: row.repo, prNumber: row.pr_number, ghToken, method: "squash" });
                 mergeSha = merged.sha;

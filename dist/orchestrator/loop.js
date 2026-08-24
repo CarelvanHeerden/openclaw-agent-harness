@@ -148,7 +148,7 @@ import { applyPathCorrections, describePathCorrections } from "./plan-path-write
 import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, describeBasenameRescue } from "./basename-rescue.js";
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
-import { classifyFinding, isBlockingFinding } from "./finding-classify.js";
+import { blocksMerge, classifyFinding, isBlockingFinding } from "./finding-classify.js";
 import { buildCiFailureFindings, describeCiFindings, CI_REPAIR_SUBTASK_TITLE, renderCiRepairIntent, } from "./ci-findings.js";
 import { isInfraCrash } from "./infra-crash.js";
 import { computeReviseScope } from "./revise-scope.js";
@@ -3875,11 +3875,17 @@ export class OrchestratorLoop {
         // the final review + whether we reached a clean pass. Persist it + the PR
         // number for the harness_merge_pr hard gate.
         const reachedCleanPass = lastReview.verdict === "pass";
+        const mergeBlockers = this.mergeBlockingFindings(lastReview.findings);
         const rec = deriveMergeRecommendation({
             review: { verdict: lastReview.verdict, findings: lastReview.findings ?? [] },
             // beta.109: so a `revise` carrying only lows is recommended for merge
             // rather than blocked on the verdict word alone.
             blockingFindings: this.countBlockingFindings(lastReview.findings),
+            // rc.5: what stops a merge, as opposed to what buys another cycle. Passing
+            // only the cycle count let step 4 fall back to raw severity and gate on
+            // findings nobody could ever close -- PR #1084.
+            mergeBlockingFindings: mergeBlockers.length,
+            mergeBlockingTitles: mergeBlockers.map((f) => f.title || f.dimension || "(untitled)"),
             reachedCleanPass,
             ciStatus: undefined, // the merge tool re-checks CI at merge time
         });
@@ -5946,6 +5952,17 @@ export class OrchestratorLoop {
         if (!findings)
             return 0;
         return findings.filter((f) => isBlockingFinding(f, classifyFinding(f, { repoHasTestScript: true }))).length;
+    }
+    /**
+     * rc.5: the findings that should stop a MERGE -- a real unfixed defect, or the
+     * harness reporting it could not verify something. Distinct from
+     * `countBlockingFindings`, which asks whether another cycle is worth running.
+     * See `blocksMerge`.
+     */
+    mergeBlockingFindings(findings) {
+        if (!findings)
+            return [];
+        return findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true })));
     }
     /**
      * beta.122: the most recent commit this session is known to have made, or

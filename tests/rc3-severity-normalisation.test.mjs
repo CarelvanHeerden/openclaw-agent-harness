@@ -150,9 +150,19 @@ test("rc3: the ship gate and the merge tool agree on what blocks", () => {
 
   // harness_merge_pr's override gate, which used to count only high/critical so
   // a medium left the PR eligible for the Vercel override.
+  //
+  // rc.5: severity alone was only half the consolidation. This gate still did no
+  // CLASSIFICATION, so it disagreed with the recommendation it was gating on --
+  // the beta.115 typecheck finding is deliberately high and deliberately
+  // non-blocking, and severity alone made it an unoverridable permanent refusal.
+  // It now reads the same predicate the recommendation does.
   const src = S("src/index.ts");
-  assert.match(src, /hasBlockingFinding = findings\.some\(\(f\) => isAtLeastMedium\(f\.severity\)\)/);
-  assert.doesNotMatch(src, /new Set\(\["block", "blocker", "critical", "high"\]\)\s*;\s*\n\s*hasBlockingFinding/);
+  assert.match(src, /blocksMerge\(f, classifyFinding\(f, \{ repoHasTestScript: true \}\)\)/);
+  assert.doesNotMatch(
+    src,
+    /hasBlockingFinding = findings\.some\(\(f\) => isAtLeastMedium\(f\.severity\)\)/,
+    "the merge gate must classify, not read raw severity",
+  );
 });
 
 test("rc3: merge-recommendation reads severity through the shared helper", () => {

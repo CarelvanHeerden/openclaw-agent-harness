@@ -563,8 +563,11 @@ const MUTATIONS = [
     // severity through the same helper as the ship gate. Same claim, new anchor.
     name: "one definition of blocking (b112): the medium-blind set denies a finding the loop counted",
     file: "dist/orchestrator/merge-recommendation.js",
-    find: "const blocking = review.findings.filter((f) => isAtLeastMedium(f.severity));",
-    replace: "const blocking = review.findings.filter((f) => BLOCKING_SEVERITIES.has((f.severity || \"\").toLowerCase()));",
+    // rc.5: the local set went in rc.3 and the variable was renamed when step 4
+    // stopped gating on it. It still names the findings in the reason, so a
+    // medium-blind scan here withholds on a finding it then refuses to name.
+    find: "const severityBlocking = review.findings.filter((f) => isAtLeastMedium(f.severity));",
+    replace: "const severityBlocking = review.findings.filter((f) => BLOCKING_SEVERITIES.has((f.severity || \"\").toLowerCase()));",
     tests: [
       "tests/beta112-local-run-defects.test.mjs",
       "tests/rc3-severity-normalisation.test.mjs",
@@ -573,9 +576,12 @@ const MUTATIONS = [
   {
     name: "the reason reflects the loop's count (b112): not just what the severity scan found",
     file: "dist/orchestrator/merge-recommendation.js",
-    find: "const n = Math.max(blockingCount, blocking.length);",
-    replace: "const n = blocking.length;",
-    tests: ["tests/beta112-local-run-defects.test.mjs"],
+    // rc.5: `Math.max(blockingCount, blocking.length)` is gone -- it was how a
+    // classified 0 got reported as a 1 on #1084. The claim survives it: the
+    // number in the reason is the caller's, not the severity scan's.
+    find: "carries ${blockingCount} blocking finding(s) at medium severity or above",
+    replace: "carries ${severityBlocking.length} blocking finding(s) at medium severity or above",
+    tests: ["tests/beta112-local-run-defects.test.mjs", "tests/rc5-merge-gate-classification.test.mjs"],
   },
   {
     // Repo-wide precedent would let a stray `utils/` anywhere vouch for any
@@ -2376,6 +2382,76 @@ const MUTATIONS = [
     find: '"node": ">=22.13.0"',
     replace: '"node": ">=22.5.0"',
     tests: ["tests/sdk-compliance.test.mjs", "tests/rc4-severity-consolidation.test.mjs"],
+  },
+
+  // ---- rc.5: the merge gate asks the same question the verdict gate does ----
+  {
+    // PR #1084 exactly. Put the disjunction back and the caller's classified 0
+    // is overridden by raw severity, so a finding the verdict gate passed --
+    // and that no cycle can close -- pins the PR at do_not_merge forever.
+    name: "the merge gate honours the classified count (rc.5): #1084's unclearable do_not_merge",
+    file: "dist/orchestrator/merge-recommendation.js",
+    find: "  if (blockingCount > 0) {",
+    replace: "  if (blockingCount > 0 || severityBlocking.length > 0) {",
+    tests: ["tests/rc5-merge-gate-classification.test.mjs"],
+  },
+  {
+    // The other half: if the count is right but the caller never supplies it,
+    // step 4 falls back to severity and the bug returns through the front door.
+    name: "the loop supplies the merge count (rc.5): a caller that does not count gets severity",
+    // Asserted against the source: the claim is about the wiring, and the loop
+    // is not constructible in a unit test without a live session and worktree.
+    file: "src/orchestrator/loop.ts",
+    find: "      mergeBlockingFindings: mergeBlockers.length,",
+    replace: "      // mergeBlockingFindings: mergeBlockers.length,",
+    tests: ["tests/rc5-merge-gate-classification.test.mjs"],
+  },
+  {
+    // The operator's proposed one-line fix, as a mutation. Gate on
+    // isBlockingFinding alone and the beta.115 typecheck finding -- deliberately
+    // high, deliberately not worth a cycle -- stops blocking, so a host with no
+    // `tsc` silently auto-merges code nothing typechecked.
+    name: "an unverified typecheck still stops a merge (rc.5): env is not merely non-blocking",
+    file: "dist/orchestrator/finding-classify.js",
+    find: '    return cls === "diff_addressable" || cls === "env";',
+    replace: '    return cls === "diff_addressable";',
+    tests: ["tests/rc5-merge-gate-classification.test.mjs"],
+  },
+  {
+    // The opposite over-reach: gate on every class and #1084 comes straight
+    // back, because unproven_runtime blocks again.
+    name: "unclearable classes do not gate (rc.5): gating on everything recreates the deadlock",
+    file: "dist/orchestrator/finding-classify.js",
+    find: '    return cls === "diff_addressable" || cls === "env";',
+    replace: "    return true;",
+    tests: ["tests/rc5-merge-gate-classification.test.mjs"],
+  },
+  {
+    // Drop the medium floor and an adversary's passing note about a missing
+    // linter becomes a gate nobody can clear.
+    name: "the medium floor covers env too (rc.5): a low aside must not gate a merge",
+    file: "dist/orchestrator/finding-classify.js",
+    find: "    if (!isAtLeastMedium(f.severity))\n        return false;\n    return cls === \"diff_addressable\" || cls === \"env\";",
+    replace: "    if (!isAtLeastMedium(f.severity) && cls !== \"env\")\n        return false;\n    return cls === \"diff_addressable\" || cls === \"env\";",
+    tests: ["tests/rc5-merge-gate-classification.test.mjs"],
+  },
+  {
+    // The deferral must never widen past env-only. With `some`, one real defect
+    // alongside an env finding would be deferred to CI and merged on green.
+    name: "the CI deferral stays env-ONLY (rc.5): a real defect must not ride along",
+    file: "src/index.ts",
+    find: 'blockers.every((f) => classifyFinding(f, { repoHasTestScript: true }) === "env")',
+    replace: 'blockers.some((f) => classifyFinding(f, { repoHasTestScript: true }) === "env")',
+    tests: ["tests/rc5-merge-gate-classification.test.mjs", "tests/beta36-merge-gate-and-config.test.mjs"],
+  },
+  {
+    // And it must require an EXPLICIT green. Widen it and a repo with no checks
+    // at all clears the very finding that says nothing verified this code.
+    name: "a deferred block needs explicitly-green CI (rc.5): 'no checks' is not verification",
+    file: "src/index.ts",
+    find: 'if (deferToCi && ci !== "success") {',
+    replace: 'if (deferToCi && ci === "failure") {',
+    tests: ["tests/rc5-merge-gate-classification.test.mjs"],
   },
 ];
 

@@ -285,6 +285,39 @@ export function isBlockingFinding(f: ReviewFinding, cls: FindingClass): boolean 
 }
 
 /**
+ * rc.5: whether a finding should stop a MERGE. A different question from
+ * `isBlockingFinding`, which asks whether another worker cycle is worth running.
+ *
+ * Collapsing the two is what produced PR #1084. `deriveMergeRecommendation` was
+ * handed the correct classified count and then ignored it, gating on raw
+ * severity instead, so a `medium` `unproven_runtime` finding -- "preview deploy
+ * logs show 14 errors", with no verified deploy behind it -- forced
+ * `do_not_merge` on a review the verdict gate had correctly passed. Nothing
+ * could clear it: a revise cycle cannot conjure runtime evidence, and the
+ * finding recurs every cycle, so the PR was stuck until a human merged around
+ * the harness. A gate nobody can satisfy is not a safety control.
+ *
+ * Two classes stop a merge:
+ *   - `diff_addressable` at >= medium: a real defect a worker could have fixed
+ *     and did not.
+ *   - `env`: the harness saying it could not verify something (the beta.115
+ *     typecheck gate reporting no `tsc`). Not a defect, but not a clean bill of
+ *     health either.
+ *
+ * `unproven_runtime`, `process` and `architectural` do not. Nobody can close
+ * them -- not a worker, not the operator -- so they belong on the PR body where
+ * a human reads them, not on a gate that can only deadlock.
+ */
+export function blocksMerge(f: ReviewFinding, cls: FindingClass): boolean {
+  // The medium floor applies to both. An adversary aside about a missing linter
+  // is an `env` finding too, and a `low` one should no more stop a merge than a
+  // `low` defect does. The beta.115 gate finding is deliberately `high`, so the
+  // case this exists for is unaffected.
+  if (!isAtLeastMedium(f.severity)) return false;
+  return cls === "diff_addressable" || cls === "env";
+}
+
+/**
  * Fuzzy "same finding as a prior cycle" test, used to strip recycled findings
  * from the "NEW this cycle" set (F3). Token-overlap on the title, mirroring the
  * conservative style of finding-hygiene.ts. Two findings match when they share
