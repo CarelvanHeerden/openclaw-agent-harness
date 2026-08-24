@@ -1251,6 +1251,13 @@ export declare class OrchestratorLoop {
      */
     private countBlockingFindings;
     /**
+     * rc.5: the findings that should stop a MERGE -- a real unfixed defect, or the
+     * harness reporting it could not verify something. Distinct from
+     * `countBlockingFindings`, which asks whether another cycle is worth running.
+     * See `blocksMerge`.
+     */
+    private mergeBlockingFindings;
+    /**
      * beta.122: the most recent commit this session is known to have made, or
      * undefined when it has made none.
      *

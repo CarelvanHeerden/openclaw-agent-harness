@@ -47,6 +47,20 @@ export interface RecommendationInput {
    * Undefined preserves the pre-b109 behaviour for callers that do not count.
    */
   blockingFindings?: number;
+  /**
+   * rc.5: how many findings should stop a MERGE, counted by the caller with
+   * `blocksMerge`. A superset of `blockingFindings` (it adds `env`) and a
+   * subset of "everything at medium or above" (it drops `unproven_runtime`,
+   * `process` and `architectural`).
+   *
+   * Separate from `blockingFindings` because the two answer different
+   * questions: whether another cycle is worth running, and whether a human
+   * should look before this merges. Step 4 used to answer the second with raw
+   * severity, which is how PR #1084 stuck.
+   */
+  mergeBlockingFindings?: number;
+  /** Titles of those findings, for the reason string. */
+  mergeBlockingTitles?: string[];
   /** True if the loop reached a clean adversary pass (vs. shipping at cap). */
   reachedCleanPass: boolean;
   /**
@@ -201,15 +215,34 @@ export function deriveMergeRecommendation(input: RecommendationInput): Recommend
   // One definition, no fallback. Keeping the old severity set alive for callers
   // that omit `blockingFindings` would leave exactly this bug in place for the
   // next caller to rediscover, and there is only one production caller.
-  const blocking = review.findings.filter((f) => isAtLeastMedium(f.severity));
-  const blockingCount = input.blockingFindings ?? blocking.length;
-  if (blockingCount > 0 || blocking.length > 0) {
-    const titles = blocking.map((f) => f.title || f.dimension || "(untitled)").slice(0, 3).join("; ");
-    const n = Math.max(blockingCount, blocking.length);
+  //
+  // rc.5: and yet the fallback was still here, as `|| blocking.length > 0`.
+  // The `??` on the line above already covers a caller that does not count, so
+  // the disjunction added nothing except the power to override a caller that
+  // DOES. `countBlockingFindings` passes a properly classified 0; this then
+  // read raw severity, found one `medium`, and returned do_not_merge anyway --
+  // with `Math.max` printing "1 blocking finding(s)" over the top of the 0 it
+  // had been given.
+  //
+  // ProjectThanos PR #1084: verdict `pass`, recommendation `do_not_merge`,
+  // reason "carries 1 blocking finding(s)... Preview deploy logs show 14
+  // errors". A runtime finding with no deploy behind it, which the verdict gate
+  // had already classified `unproven_runtime` and correctly ignored. No cycle
+  // could close it and no human input could clear it, so the PR sat.
+  //
+  // The tell was inside this same function: step 2b, twenty lines up, honours
+  // `blockingCount === 0` and recommends merge. Two branches, one function,
+  // opposite answers about the same findings.
+  const severityBlocking = review.findings.filter((f) => isAtLeastMedium(f.severity));
+  const blockingCount = input.mergeBlockingFindings ?? input.blockingFindings ?? severityBlocking.length;
+  if (blockingCount > 0) {
+    const titles = (input.mergeBlockingTitles ?? severityBlocking.map((f) => f.title || f.dimension || "(untitled)"))
+      .slice(0, 3)
+      .join("; ");
     return {
       recommendation: "do_not_merge",
       reason:
-        `The final review passed but carries ${n} blocking finding(s) at medium severity or above` +
+        `The final review passed but carries ${blockingCount} blocking finding(s) at medium severity or above` +
         `${titles ? `: ${titles}` : ""}. A pass verdict does not clear these -- the adversary signed off on the ` +
         `change while these remained open. Resolve them, or run \`harness_revise\` to have the loop close them.`,
     };

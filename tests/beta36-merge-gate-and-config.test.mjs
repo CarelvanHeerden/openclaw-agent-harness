@@ -17,7 +17,14 @@ test("merge gate override is Vercel-AND-revise-only (never on block or blocking 
   assert.match(indexSrc, /const overridable = vercelConfigured && reviseOnly/, "override must require vercelConfigured && reviseOnly");
   assert.match(indexSrc, /reviseOnly = lastVerdict === "revise" && !hasBlockingFinding/, "reviseOnly must exclude blocking findings");
   // A block verdict / blocking finding / non-vercel still hard-refuses.
-  assert.match(indexSrc, /if \(rec !== "merge" && !overridable\)/, "non-overridable do_not_merge must still refuse");
+  //
+  // rc.5: `deferToCi` joined this condition. It is not a third way to merge --
+  // an env-only block is deferred to the CI check below, which refuses unless CI
+  // is EXPLICITLY green. The assertions below pin both halves, so the deferral
+  // cannot quietly become an escape hatch.
+  assert.match(indexSrc, /if \(rec !== "merge" && !overridable && !deferToCi\)/, "non-overridable do_not_merge must still refuse");
+  assert.match(indexSrc, /deferToCi = rec !== "merge" && !overridable && envOnlyBlock/, "only an env-ONLY block may be deferred");
+  assert.match(indexSrc, /if \(deferToCi && ci !== "success"\)/, "a deferred block must refuse on anything but explicitly-green CI");
 });
 
 test("deploy-repair only runs on ERROR + enabled", () => {

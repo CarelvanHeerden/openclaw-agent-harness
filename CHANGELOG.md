@@ -1,5 +1,81 @@
 # Changelog
 
+## 1.0.0-rc.5
+
+Reported from production against rc.4, on a PR that had been stuck for days.
+
+**The merge gate now asks the same question the verdict gate does.** rc.4
+consolidated how six sites *read* severity. It did not consolidate what any of
+them did with the answer, and the merge gate never classified at all.
+
+ProjectThanos PR #1084: verdict `pass`, recommendation `do_not_merge`, reason
+"carries 1 blocking finding(s) at medium severity or above: Preview deploy logs
+show 14 errors". The finding was a runtime one with no verified deploy behind
+it — `unproven_runtime`, which the verdict gate correctly ignored, which is why
+the verdict was `pass` in the first place. The loop classified it the same way
+and passed `blockingFindings: 0`.
+
+Step 4 of `deriveMergeRecommendation` then ignored that zero:
+
+```js
+const blocking = findings.filter((f) => isAtLeastMedium(f.severity));
+const blockingCount = input.blockingFindings ?? blocking.length;   // 0
+if (blockingCount > 0 || blocking.length > 0)                      // fires anyway
+```
+
+The `??` already covered a caller that does not count, so the disjunction added
+nothing except the power to override a caller that does — and `Math.max` then
+printed "1 blocking finding(s)" over the top of the 0 it had been handed. The
+tell was twenty lines up in the same function: the `revise` branch honours
+`blockingCount === 0` and recommends merge. One function, two branches, opposite
+answers about an identical set of findings.
+
+Nothing could clear it. A revise cycle cannot produce runtime evidence, the
+finding recurs every cycle, and `harness_merge_pr` hard-refuses on any
+`do_not_merge`. The only exit was merging around the harness.
+
+**Two questions, two predicates.** `isBlockingFinding` asks whether another
+worker cycle is worth running. New `blocksMerge` asks whether a human should
+look before this merges. They are not the same question, and collapsing them is
+what produced #1084:
+
+- `diff_addressable` at ≥ medium — a real defect a worker could have fixed and
+  did not. Blocks both.
+- `env` at ≥ medium — the harness saying it could not verify something. Blocks a
+  merge, does not buy a cycle: no code change repairs a missing binary.
+- `unproven_runtime`, `process`, `architectural` — block neither. Nobody can
+  close them, so gating on them can only deadlock. They appear on the PR body.
+
+The reported fix — gate on `isBlockingFinding` alone — would have introduced a
+quieter bug in the same environment. The beta.115 typecheck-gate finding is
+deliberately `high` and deliberately non-blocking, so that fix would have started
+auto-merging code nothing had typechecked, on precisely the hosts that cannot
+run `tsc`.
+
+**`harness_merge_pr` classifies too.** It was computing its own
+`hasBlockingFinding` from raw severity with no classification, so it disagreed
+with the recommendation it was gating on. On a host with no `tsc` the typecheck
+finding made every run an unoverridable refusal — a permanent bar, not a safety
+check.
+
+**An env-only block is now resolved against CI.** "The harness could not verify
+this" matters only if nothing else did. The merge path already refuses unless CI
+is *explicitly* green (beta.119 made failure, pending and unreadable all hard
+refusals), so an env-only block is deferred to that check: green CI clears it,
+and anything else — including a repo with no checks configured — still refuses.
+Both outcomes are audited. One real defect alongside the env finding turns the
+deferral off.
+
+**Verifying a release without a toolchain.** `npm test` builds first, so it needs
+`typescript` from `devDependencies`, which a gateway host installing with
+`--omit=dev` does not have. `npm run test:no-build` runs the same suite against
+the committed `dist/` — the exact code the gateway loads — with nothing beyond
+Node. Now documented in the README, so a release can be checked rather than
+taken on trust.
+
+2247 tests. Seven new mutations, including #1084 itself and both directions of
+over-reach on the new predicate.
+
 ## 1.0.0-rc.4
 
 The external reviewer verified rc.3 against the shipped tag and found the one
