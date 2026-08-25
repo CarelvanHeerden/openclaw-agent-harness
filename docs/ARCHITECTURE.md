@@ -64,7 +64,7 @@ flowchart TB
   DIS --> CRY
   CRY --> LOOP
   LOOP --> LEAD
-  LOOP -->|spawn, serial unless subtask_concurrency over 1| W1 & W2
+  LOOP -->|spawn, one sub-task at a time in topo order| W1 & W2
   W1 & W2 -->|edit + commit, no push| WT
   LOOP --> ADV
   ADV -.reads.-> WT
@@ -130,7 +130,7 @@ sequenceDiagram
 
     loop up to max_cycles
       Orch->>Orch: topoSort sub-tasks
-      par bounded concurrency
+      loop each sub-task, one at a time
         Orch->>Worker: run(subTask) [bash-guarded]
         Worker->>Git: edit + commit (no push)
         Worker-->>Orch: WorkerResult (files, cost, sha)
@@ -335,8 +335,11 @@ stateDiagram-v2
 - Path deny-list (`safety.path_denylist`): `.env`, `.env.*`, `.secrets/`, `/etc/`, `/root/`, `~/.ssh/`, `id_rsa`, `id_ed25519`, `harness-vault/`, `vault.key`, `vault.db`. The last three keep a worker out of the harness's own credential vault. The deny-list is enforced on the Read/Write/Edit tools; bash arguments are not path-checked, which is why the whitelist above is narrow and `bash_denylist_tokens` exists as the hard guard.
 - Vault key material never reaches the worker environment at all: `OAH_VAULT_KEY` and `OAH_VAULT_KEY_FILE` are stripped from the subprocess env, and renaming the key variable via `credentials.key_env` moves the strip with it.
 - Model: `claude-sonnet-5`.
-- Workers run **serially by default**: concurrency needs both `loop.subtask_concurrency > 1`
-  and `loop.parallel_independent_subtasks`.
+- Workers run **one at a time**, in topological order, in the session worktree. That
+  checkout is the isolation boundary — one session, one branch — so a worker commits
+  straight onto the session branch. Parallel sub-task dispatch was removed in v2.0.0;
+  `loop.subtask_concurrency` and `loop.parallel_independent_subtasks` are still accepted
+  from an existing config but are ignored.
 - Reports back a structured `WorkerResult` (`filesChanged`, commit SHAs, status, token
   and cost metrics).
 

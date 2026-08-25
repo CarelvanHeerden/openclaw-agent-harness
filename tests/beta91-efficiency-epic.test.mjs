@@ -3,7 +3,12 @@
 // sub-tasks. Born from Staging's beta.90 DR/BCP smoke (session baa8ba08): a
 // revise cycle re-ran ALL 12 sub-tasks even though 8 were subtask_revise_no_change,
 // sub-tasks ran strictly serial, and mechanical scaffolding ran on the strong
-// worker model. All three fixes are pure/behavioural + wired conservatively.
+// worker model.
+//
+// v2.0.0: Fix 2 was removed. It shipped disabled for its whole life and b117's
+// measurement found it bought nothing (41m38s at concurrency 2 against b116's
+// 41m00s), so the parallel dispatcher, its worktree pool and its merge-back are
+// deleted rather than carried. Fixes 1 and 3 are untouched and still tested here.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -18,7 +23,6 @@ const betaNum = betaOrdinal;
 
 const { computeReviseScope, subTaskIntersectsFindings } = await import("../dist/orchestrator/revise-scope.js");
 const { selectWorkerModel, isMechanicalSubTask } = await import("../dist/orchestrator/worker-model-select.js");
-const { canDispatchConcurrently, fileScopesOverlap, resolveEffectiveConcurrency } = await import("../dist/orchestrator/parallel-safety.js");
 const { requiresFile, isUnfiledDiffAddressable, findingsMissingFile, buildFileAttributionRetryNudge } = await import("../dist/orchestrator/adversary-file-attribution.js");
 
 // ---------------------------------------------------------------------------
@@ -235,58 +239,25 @@ test("Fix3: selectWorkerModel returns mechanical model only when mechanical + co
 });
 
 // ---------------------------------------------------------------------------
-// Fix 2: safe parallel independent sub-tasks
+// Fix 2 (parallel independent sub-tasks) was REMOVED in v2.0.0 along with the
+// whole parallel dispatcher. Its tests are gone with it; what remains is the
+// assertion that the mechanism is really absent, in v2-strip-parallel.test.mjs.
 // ---------------------------------------------------------------------------
-
-test("Fix2: effective concurrency is serial unless enabled AND >1", () => {
-  assert.equal(resolveEffectiveConcurrency({ subtaskConcurrency: 4, parallelEnabled: false }), 1);
-  assert.equal(resolveEffectiveConcurrency({ subtaskConcurrency: 1, parallelEnabled: true }), 1);
-  assert.equal(resolveEffectiveConcurrency({ subtaskConcurrency: 4, parallelEnabled: true }), 4);
-  assert.equal(resolveEffectiveConcurrency({ subtaskConcurrency: 0, parallelEnabled: true }), 1);
-});
-
-test("Fix2: fileScopesOverlap detects shared files (normalised)", () => {
-  assert.equal(fileScopesOverlap(["src/a.ts"], ["./src/a.ts"]), true);
-  assert.equal(fileScopesOverlap(["src/a.ts"], ["src/b.ts"]), false);
-  assert.equal(fileScopesOverlap(["src/A.ts"], ["src/a.ts"]), true); // case-insensitive
-});
-
-test("Fix2: canDispatchConcurrently only allows known-disjoint scopes", () => {
-  const a = { seq: 2, filesLikelyTouched: ["prisma/schema.prisma"] };
-  const b = { seq: 8, filesLikelyTouched: ["src/components/ui/sidebar.tsx"] };
-  const c = { seq: 2, filesLikelyTouched: ["prisma/schema.prisma"] };
-  // first one always dispatches
-  assert.equal(canDispatchConcurrently(a, []), true);
-  // disjoint -> allowed
-  assert.equal(canDispatchConcurrently(b, [a]), true);
-  // overlapping (same file) -> forced serial
-  assert.equal(canDispatchConcurrently(c, [a]), false);
-  // unknown candidate scope -> forced serial
-  assert.equal(canDispatchConcurrently({ seq: 9, filesLikelyTouched: [] }, [a]), false);
-  // unknown in-flight scope -> forced serial
-  assert.equal(canDispatchConcurrently(b, [{ seq: 1, filesLikelyTouched: [] }]), false);
-});
 
 // ---------------------------------------------------------------------------
 // Wiring source-asserts
 // ---------------------------------------------------------------------------
 
-test("wiring: loop.ts imports and uses all three modules", () => {
+test("wiring: loop.ts imports and uses the surviving modules", () => {
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /from "\.\/revise-scope\.js"/);
   assert.match(loop, /from "\.\/worker-model-select\.js"/);
-  assert.match(loop, /from "\.\/parallel-safety\.js"/);
-  // Fix 1: computes scope on a revise cycle, gated on revise_scoping_enabled, and skips in runOne
+  // Fix 1: computes scope on a revise cycle, gated on revise_scoping_enabled, and skips per sub-task
   assert.match(loop, /computeReviseScope\(plan\.subTasks, lastReview\.findings, cycle\)/);
   assert.match(loop, /revise_scoping_enabled !== false/);
   assert.match(loop, /reviseScopeSkip\.has\(st\.seq\)/);
   assert.match(loop, /loop\.subtask_revise_scoped_skip/);
   assert.match(loop, /loop\.revise_scoped/);
-  // Fix 2: effective concurrency + overlap guard in the dispatcher
-  assert.match(loop, /resolveEffectiveConcurrency\(/);
-  assert.match(loop, /parallel_independent_subtasks === true/);
-  assert.match(loop, /canDispatchConcurrently\(ordered\[idx\]!, \[\.\.\.inFlightSubTasks\.values\(\)\]\)/);
-  assert.match(loop, /inFlightSubTasks\.set\(p, st\)/);
   // Fix 3: model override threaded to both runWorker call sites
   const overrides = loop.match(/modelOverride: selectWorkerModel\(st, this\.deps\.config\.models\)/g) ?? [];
   assert.ok(overrides.length >= 2, `expected >=2 modelOverride call sites, got ${overrides.length}`);
@@ -314,18 +285,15 @@ test("wiring: sonnet-worker + index thread modelOverride to the SDK model", () =
 test("wiring: config + manifest declare all new keys with conservative defaults", () => {
   const cfg = S("src/config.ts");
   assert.match(cfg, /revise_scoping_enabled\?: boolean/);
-  assert.match(cfg, /parallel_independent_subtasks\?: boolean/);
   assert.match(cfg, /worker_mechanical\?: string/);
   // complexity lives on LeadPlanSubTask (fable5-lead.ts), not config.ts
   assert.match(S("src/orchestrator/fable5-lead.ts"), /complexity\?: "mechanical" \| "standard" \| "complex"/);
-  // defaults: scoping ON, parallel OFF
+  // default: scoping ON
   assert.match(cfg, /revise_scoping_enabled: true/);
-  assert.match(cfg, /parallel_independent_subtasks: false/);
 
   const man = JSON.parse(S("openclaw.plugin.json"));
   const loopProps = man.configSchema.properties.loop.properties;
   assert.equal(loopProps.revise_scoping_enabled.default, true);
-  assert.equal(loopProps.parallel_independent_subtasks.default, false);
   assert.ok(man.configSchema.properties.models.properties.worker_mechanical, "worker_mechanical declared in manifest models");
   // manifest models block is additionalProperties:false -> undeclared key would reject config (beta.34)
   assert.equal(man.configSchema.properties.models.additionalProperties, false);

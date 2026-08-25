@@ -197,10 +197,6 @@ import {
   type TimeExtensionTrigger,
 } from "./time-extension.js";
 import { selectWorkerModel } from "./worker-model-select.js";
-import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
-import { WorktreePool, type PooledWorktree } from "./worktree-pool.js";
-import { Mutex, mergeBackSubTask } from "./merge-back.js";
-
 export type LoopStatus =
   | "crystallising"
   | "planning"
@@ -845,29 +841,6 @@ export interface OrchestratorDeps {
     reason: "shipped" | "aborted" | "failed";
   }) => Promise<{ ok: boolean; path?: string; error?: string }>;
 
-  /**
-   * beta.117: lifecycle for one parallel-worker slot checkout.
-   *
-   * Only consulted when effective concurrency exceeds 1, so a serial run --
-   * still the default -- never allocates a slot and behaves exactly as it did
-   * before b117. Optional so the many tests that stub the orchestrator do not
-   * all have to grow a git implementation.
-   */
-  allocatePooledWorktree?: (params: {
-    sessionId: string;
-    repoFullName: string;
-    sessionBranch: string;
-    slotBranch: string;
-    slot: number;
-  }) => Promise<string>;
-  resetPooledWorktree?: (worktreePath: string, sha: string) => Promise<void>;
-  releasePooledWorktree?: (params: {
-    repoFullName: string;
-    worktreePath: string;
-    slotBranch: string;
-  }) => Promise<{ ok: boolean; error?: string }>;
-  /** `git -C <cwd> <args>`, rejecting on non-zero exit. Used for merge-back. */
-  gitRun?: (cwd: string, args: string[]) => Promise<string>;
 }
 
 /**
@@ -931,12 +904,6 @@ export function isConvergingBlockingTrend(blocking: number[] | undefined): boole
 }
 
 export class OrchestratorLoop {
-  /**
-   * beta.117: serialises merge-back into the session worktree. One per loop
-   * instance, which is one per process -- the only worktree it guards.
-   */
-  private readonly mergeBackMutex = new Mutex();
-
   constructor(private readonly deps: OrchestratorDeps) {}
 
   /**
@@ -1343,78 +1310,6 @@ export class OrchestratorLoop {
    * The guard is registered/cleared here so EVERY entry path (fresh run and
    * recovery auto-resume both call `run()`) is covered and can't be forgotten.
    */
-  /**
-   * beta.117: bring one parallel worker's commits onto the session branch.
-   *
-   * Serialised across the whole loop instance by {@link mergeBackMutex}: git
-   * will not take two concurrent index operations in one worktree, and a lock
-   * turns that race into a queue.
-   *
-   * A conflict here is the mechanism working, not a bug. Two workers writing
-   * the same file that neither declared used to corrupt each other invisibly in
-   * the shared worktree; now it surfaces as a named conflict against a specific
-   * sub-task. The sub-task is marked failed so the cycle's own machinery
-   * re-runs it -- by which point the other worker's change is already on the
-   * branch, so the retry sees it and adapts.
-   */
-  private async mergeBackSlot(args: {
-    sessionId: string;
-    cycle: number;
-    st: LeadPlanSubTask;
-    lease: PooledWorktree;
-    baseSha: string;
-    plan: { worktreePath: string };
-    failed: { seq: number; err: unknown };
-  }): Promise<void> {
-    const { sessionId, cycle, st, lease, baseSha, plan, failed } = args;
-    const gitRun = this.deps.gitRun;
-    if (!gitRun) return;
-    const git = {
-      run: gitRun,
-      headSha: async (cwd: string) => (await gitRun(cwd, ["rev-parse", "HEAD"])).trim(),
-    };
-
-    const res = await this.mergeBackMutex.run(() =>
-      mergeBackSubTask(git, {
-        sessionWorktree: plan.worktreePath,
-        workerWorktree: lease.path,
-        workerBranch: lease.branch,
-        baseSha,
-        seq: st.seq,
-      }),
-    );
-
-    if (res.ok) {
-      if (res.landed.length > 0) {
-        this.deps.state.audit(
-          "loop.parallel_merge_back",
-          { sessionId, cycle, seq: st.seq, slot: lease.slot, commits: res.landed.length, fastForward: res.fastForward, headSha: res.headSha },
-          sessionId,
-        );
-      }
-      return;
-    }
-
-    this.deps.state.audit(
-      "loop.parallel_merge_back_conflict",
-      { sessionId, cycle, seq: st.seq, slot: lease.slot, reason: res.reason, conflictedPaths: res.conflictedPaths, detail: res.detail },
-      sessionId,
-    );
-    this.deps.logger.error("[loop] a parallel sub-task could not be merged back; its work is NOT on the branch", {
-      sessionId, cycle, seq: st.seq, reason: res.reason, conflictedPaths: res.conflictedPaths,
-    });
-    this.deps.interactionLog?.log(sessionId, {
-      event: "parallel_merge_back_conflict", phase: "worker", seq: st.seq, cycle, conflictedPaths: res.conflictedPaths,
-    });
-    this.deps.state.db
-      .prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
-      .run(`parallel merge-back ${res.reason}: ${res.detail}`, Date.now(), sessionId, cycle, st.seq);
-    if (!failed.err) {
-      failed.err = `parallel_merge_back_${res.reason} (seq ${st.seq}): ${res.detail}`;
-      failed.seq = st.seq;
-    }
-  }
-
   async run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
     if (runningSessions.has(sessionId)) {
       // beta.40: the guard entry exists -- but is the tracked loop actually
@@ -2349,15 +2244,6 @@ export class OrchestratorLoop {
         }
       }
 
-      // beta.91 (Fix 2): effective concurrency. Serial (1) unless the feature is
-      // on AND subtask_concurrency > 1. The dispatcher additionally enforces a
-      // file-overlap guard (canDispatchConcurrently) below.
-      const concurrency = resolveEffectiveConcurrency({
-        subtaskConcurrency: this.deps.config.loop.subtask_concurrency ?? 1,
-        parallelEnabled: this.deps.config.loop.parallel_independent_subtasks === true,
-      });
-      const inFlight: Array<Promise<void>> = [];
-      const inFlightSubTasks = new Map<Promise<void>, LeadPlanSubTask>();
       const done = new Set<number>();
       // rc.3: `preservedReason` carries the human-readable reason out of a
       // terminal path that already handled its own transition, so the outcome
@@ -2384,13 +2270,12 @@ export class OrchestratorLoop {
        * terminal decision. It is not a race -- there is no timing in it. The
        * flag is simply never unset.
        *
-       * Retraction is keyed to the SEQ THAT RECORDED THE FAILURE. Under b117
-       * parallelism several sub-tasks share this one slot, so a blanket clear
-       * would let a rescue on seq 10 silently erase a genuine failure on seq 4.
-       * If the slot no longer belongs to this seq we leave it entirely alone:
-       * some other sub-task's failure is the live one and it must still stop
-       * the run.
-       */
+   * Retraction is keyed to the SEQ THAT RECORDED THE FAILURE, so a rescue can
+   * only ever clear its own sub-task's failure. Sub-tasks run one at a time,
+   * so the slot's owner is unambiguous; the key is kept because a blanket
+   * clear would be wrong the moment anything else writes to this accumulator,
+   * and because it states which failure is being retracted.
+   */
       const retractFailure = (seq: number, why: string) => {
         if (failed.seq !== seq || failed.err === null) return;
         const retracted = failed.err;
@@ -2406,52 +2291,6 @@ export class OrchestratorLoop {
         });
       };
 
-      /**
-       * beta.117: isolated checkouts for concurrent workers.
-       *
-       * Built only when concurrency > 1 AND the adapter can actually create
-       * slots. Everything below tolerates a null pool by running serially, so a
-       * stubbed orchestrator or a repo the adapter cannot pool degrades to
-       * pre-b117 behaviour instead of failing.
-       *
-       * Sized to `concurrency`, not `concurrency - 1`. Letting one worker keep
-       * using the session worktree looks like a free slot and is not: that
-       * checkout is the MERGE TARGET, and a merge into a tree another worker is
-       * actively editing either aborts on a dirty tree or mixes that worker's
-       * uncommitted edits into someone else's merge. Once parallel, the session
-       * worktree is an integration checkout only, and every worker gets a slot.
-       *
-       * Slots are created lazily, so a cycle whose sub-tasks never actually
-       * overlap still pays for just one.
-       */
-      const canPool =
-        concurrency > 1 &&
-        !!this.deps.allocatePooledWorktree &&
-        !!this.deps.resetPooledWorktree &&
-        !!this.deps.gitRun &&
-        !!plan.branch;
-      const pool: WorktreePool | null = canPool
-        ? new WorktreePool({
-            size: concurrency,
-            sessionBranch: plan.branch,
-            deps: {
-              create: async (slot, slotBranch) =>
-                this.deps.allocatePooledWorktree!({
-                  sessionId, repoFullName: plan.repo, sessionBranch: plan.branch, slotBranch, slot,
-                }),
-              reset: async (wt, sha) => this.deps.resetPooledWorktree!(wt.path, sha),
-              destroy: async (wt) => {
-                await this.deps.releasePooledWorktree?.({
-                  repoFullName: plan.repo, worktreePath: wt.path, slotBranch: wt.branch,
-                });
-              },
-              logger: this.deps.logger,
-            },
-          })
-        : null;
-      if (pool) {
-        this.deps.state.audit("loop.parallel_enabled", { sessionId, cycle, concurrency, poolSize: concurrency }, sessionId);
-      }
       // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
       // instead of hard-failing. Carries the ONE question to surface + the
       // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
@@ -3763,157 +3602,69 @@ export class OrchestratorLoop {
       };
 
       /**
-       * beta.117: run one sub-task, in its own checkout when running parallel.
+       * v2.0.0: sub-tasks run one at a time, in the session worktree.
        *
-       * Serial runs (still the default) take the early path and are byte-for-byte
-       * the pre-b117 behaviour: the sub-task works directly in the session
-       * worktree and commits straight onto the session branch.
-       *
-       * When parallel, the sub-task gets a leased slot instead and its commits
-       * are merged back afterwards. The merge-back sits in a `finally` on
-       * purpose. `runOneInner` has more than a dozen early returns -- revise
-       * skips, clarification pauses, contract mismatches, verification failures
-       * -- and a worker can have committed real work before reaching any of
-       * them. Merging back on the success path alone would strand those commits
-       * on a slot branch that gets deleted at the end of the run, which is the
-       * b100 lost-commit failure reintroduced by the back door.
+       * That checkout IS the isolation boundary -- one session, one worktree,
+       * one branch -- so a serial worker commits straight onto the session
+       * branch and there is nothing to merge back. b117's slot pool and
+       * merge-back existed only to make CONCURRENT workers safe in a shared
+       * tree; with concurrency gone they are pure liability, so they are gone
+       * too. See the v2 CHANGELOG entry for the measurement that motivated it.
        */
-      const runOne = async (st: LeadPlanSubTask): Promise<void> => {
-        // No pool, or nothing for a worker to do: use the session worktree.
-        if (!pool?.enabled || reviseScopeSkip.has(st.seq)) {
-          return runOneInner(st, plan.worktreePath);
-        }
+      for (const st of ordered) {
+        // beta.123 (sweep): a sub-task can record a failure that a recovery
+        // path is about to retract, so the accumulator is read at the top of
+        // each iteration rather than mid-flight. Serial execution makes this
+        // unambiguous: whatever `failed.err` holds here is settled, because
+        // the sub-task that set it has fully returned.
+        if (failed.err) break;
 
-        const sessionTip = this.deps.worktreeHeadSha
-          ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
-          : "";
-        if (!sessionTip) {
-          // Without a start point we cannot position a slot, and a slot at the
-          // wrong base produces a diff against the wrong tree. Degrade to
-          // serial rather than guess.
-          this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "session_tip_unavailable" }, sessionId);
-          return runOneInner(st, plan.worktreePath);
-        }
-
-        let lease: PooledWorktree;
-        try {
-          lease = await pool.acquire(sessionTip);
-        } catch (err) {
-          // Disk, npm, or git trouble creating a slot must cost this sub-task
-          // its parallelism, not the run.
-          this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "acquire_failed", err: String(err) }, sessionId);
-          this.deps.logger.warn("[loop] could not lease a parallel slot; running this sub-task in the session worktree", { sessionId, seq: st.seq, err: String(err) });
-          return runOneInner(st, plan.worktreePath);
-        }
-
-        try {
-          return await runOneInner(st, lease.path);
-        } finally {
-          try {
-            await this.mergeBackSlot({ sessionId, cycle, st, lease, baseSha: sessionTip, plan, failed });
-          } finally {
-            pool.release(lease);
-          }
-        }
-      };
-
-      // Dispatcher: greedily fill up to `concurrency` in-flight, respecting dependsOn.
-      let idx = 0;
-      while (idx < ordered.length || inFlight.length > 0) {
-        if (failed.err) {
-          // beta.123 (sweep): the same class as the retraction above, one level
-          // up. A sub-task records its failure BEFORE its rescue has run, and
-          // the rescue awaits git IO. Under b117 parallelism a sibling
-          // finishing in that window hands control back here, we observe a
-          // failure that is about to be retracted, and we stop dispatching the
-          // rest of the cycle. The run then reviews a partial cycle and calls
-          // it done -- silent under-delivery rather than a visible failure,
-          // which is the worse shape of the two.
-          //
-          // Draining first costs nothing when there is nothing in flight (the
-          // serial default), and turns the guess into an answer.
-          if (inFlight.length > 0) {
-            await Promise.allSettled([...inFlight]);
-            if (!failed.err) continue;
-          }
+        const unmet = (st.dependsOn ?? []).filter((d) => !done.has(d));
+        if (unmet.length > 0) {
+          // topoSortSubTasks already ordered these, so an unmet dependency at
+          // this point is a cycle or a dangling reference the sort could not
+          // resolve -- a data bug in the plan, not a scheduling state.
+          failed.err = `subtask ${st.seq} has unresolved dependencies`;
+          failed.seq = st.seq;
           break;
         }
-        // Fill
-        while (
-          idx < ordered.length &&
-          inFlight.length < concurrency &&
-          (ordered[idx]!.dependsOn ?? []).every((d) => done.has(d)) &&
-          // beta.91 (Fix 2): only start a second worker when its file scope is
-          // known-disjoint from every in-flight worker (shared worktree write
-          // safety). With concurrency=1 this is always true (inFlight empty).
-          canDispatchConcurrently(ordered[idx]!, [...inFlightSubTasks.values()])
-        ) {
-          const st = ordered[idx]!;
-          // beta.60: bound the ENTIRE runOne, not just the worker SDK call.
-          // beta.42 wrapped runWorker in withTimeout, but runOne ALSO awaits
-          // unbounded git/IO before and after the worker (worktreeHeadSha,
-          // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
-          // hang in ANY of those froze the dispatcher at `await
-          // Promise.race(inFlight)` forever with the sub-task row stuck
-          // `running`, sdk_session_id=null, cost_usd=0, and NO worker process
-          // spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent, no
-          // auto-recovery, because nothing re-called run() to arm the
-          // stall-watchdog). Bounding runOne converts any such hang into a
-          // clean SubTaskDeadlineError -> failed.err -> terminal.
-          const p = withTimeout(runOne(st), this.deps.config.loop.subtask_deadline_seconds, "subtask_deadline_seconds")
-            .catch((err) => {
-              if (err instanceof WorkerTimeoutError) {
-                this.deps.state.audit(
-                  "loop.subtask_deadline_exceeded",
-                  { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds },
-                  sessionId,
-                );
-                this.deps.logger.error(
-                  "[loop] sub-task exceeded subtask_deadline_seconds (dispatch hang, likely a stalled git/IO await before or after the worker); failing the run",
-                  { sessionId, seq: st.seq, seconds: this.deps.config.loop.subtask_deadline_seconds },
-                );
-                // mark the stuck row failed so it doesn't linger as `running`
-                this.deps.state.db.prepare(
-                  `UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`,
-                ).run(`sub-task dispatch exceeded ${this.deps.config.loop.subtask_deadline_seconds}s (stalled IO)`, Date.now(), sessionId, cycle, st.seq);
-                if (!failed.err) { failed.err = `subtask_deadline_exceeded (seq ${st.seq})`; failed.seq = st.seq; }
-              } else {
-                // runOne handles its own errors internally; a throw here is
-                // unexpected -- surface it rather than silently dropping.
-                if (!failed.err) { failed.err = `subtask_dispatch_error: ${String(err)}`; failed.seq = st.seq; }
-              }
-            })
-            .finally(() => {
-              const i = inFlight.indexOf(p);
-              if (i >= 0) inFlight.splice(i, 1);
-              inFlightSubTasks.delete(p);
-            });
-          inFlight.push(p);
-          inFlightSubTasks.set(p, st);
-          idx++;
-        }
-        if (inFlight.length === 0 && idx < ordered.length) {
-          // Blocked -- dependency not met yet and no in-flight to unblock. Data bug.
-          failed.err = `subtask ${ordered[idx]!.seq} has unresolved dependencies`;
-          failed.seq = ordered[idx]!.seq;
-          break;
-        }
-        if (inFlight.length > 0) {
-          await Promise.race(inFlight);
-        }
-      }
-      await Promise.allSettled(inFlight);
-      // beta.117: slots are per-cycle. A revise cycle re-plans which sub-tasks
-      // run, and a slot still holding the previous cycle's tree would start a
-      // worker from the wrong base. Draining here also means a run that fails
-      // mid-cycle does not leave checkouts behind for the reaper to find.
-      if (pool) {
-        // beta.118: read the count BEFORE draining. `drain()` clears the slot
-        // map, so reading after it always audited `slots: 0` -- and this line is
-        // the only evidence of how much parallelism a run actually bought.
-        const slots = pool.createdCount;
-        await pool.drain();
-        this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots }, sessionId);
+
+        // beta.60: bound the ENTIRE sub-task, not just the worker SDK call.
+        // beta.42 wrapped runWorker in withTimeout, but a sub-task ALSO awaits
+        // unbounded git/IO before and after the worker (worktreeHeadSha,
+        // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
+        // hang in ANY of those froze the run forever with the sub-task row
+        // stuck `running`, sdk_session_id=null, cost_usd=0, and NO worker
+        // process spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent,
+        // no auto-recovery, because nothing re-called run() to arm the
+        // stall-watchdog). Bounding it converts any such hang into a clean
+        // SubTaskDeadlineError -> failed.err -> terminal.
+        await withTimeout(
+          runOneInner(st, plan.worktreePath),
+          this.deps.config.loop.subtask_deadline_seconds,
+          "subtask_deadline_seconds",
+        ).catch((err) => {
+          if (err instanceof WorkerTimeoutError) {
+            this.deps.state.audit(
+              "loop.subtask_deadline_exceeded",
+              { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds },
+              sessionId,
+            );
+            this.deps.logger.error(
+              "[loop] sub-task exceeded subtask_deadline_seconds (dispatch hang, likely a stalled git/IO await before or after the worker); failing the run",
+              { sessionId, seq: st.seq, seconds: this.deps.config.loop.subtask_deadline_seconds },
+            );
+            // mark the stuck row failed so it doesn't linger as `running`
+            this.deps.state.db.prepare(
+              `UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`,
+            ).run(`sub-task dispatch exceeded ${this.deps.config.loop.subtask_deadline_seconds}s (stalled IO)`, Date.now(), sessionId, cycle, st.seq);
+            if (!failed.err) { failed.err = `subtask_deadline_exceeded (seq ${st.seq})`; failed.seq = st.seq; }
+          } else {
+            // runOneInner handles its own errors internally; a throw here is
+            // unexpected -- surface it rather than silently dropping.
+            if (!failed.err) { failed.err = `subtask_dispatch_error: ${String(err)}`; failed.seq = st.seq; }
+          }
+        });
       }
 
       if (failed.err) {

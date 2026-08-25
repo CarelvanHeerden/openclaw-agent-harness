@@ -75,7 +75,6 @@ const DEFAULTS = {
         time_extension_ask_enabled: true,
         time_extension_wait_seconds: 300,
         time_extension_default_seconds: 1800,
-        subtask_concurrency: 1,
         stuck_loop_seconds: 2700,
         teardown_drain_seconds: 3600,
         stall_watchdog_seconds: 90,
@@ -96,7 +95,6 @@ const DEFAULTS = {
         skip_observe_reprobe_on_revise: true,
         revise_scoping_enabled: true,
         revise_targeted_planbase_window: true,
-        parallel_independent_subtasks: false,
         deterministic_revise_mapping: true,
         worker_confab_detect: true,
         contract_rederive_enabled: true,
@@ -346,12 +344,46 @@ export function declaresRemovedListenerFlag(input) {
         return false;
     return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");
 }
+/**
+ * v2.0.0: `loop` keys that parallel sub-task dispatch owned, now removed.
+ *
+ * Kept as data rather than prose because three things must agree on the list:
+ * the parse-time drop below, the startup warning, and the manifest entries
+ * that let such a config through the gateway at all.
+ */
+export const REMOVED_LOOP_KEYS = ["subtask_concurrency", "parallel_independent_subtasks"];
+/**
+ * PURE: which removed parallelism keys did this config carry?
+ *
+ * v2.0.0. Read off the RAW input, because `parseHarnessConfig` drops them and
+ * the parsed config can no longer answer -- the same shape as
+ * {@link declaresRemovedListenerFlag}.
+ *
+ * These keys MUST stay declared in `openclaw.plugin.json`. The gateway
+ * validates an operator's config against that manifest with
+ * `additionalProperties: false`, so deleting them there would not "remove a
+ * setting" -- it would reject the operator's ENTIRE plugin config the moment
+ * an existing one still named them, which is the beta.34 and rc.1 outage. They
+ * are accepted, ignored, and warned about instead.
+ */
+export function declaresRemovedParallelKeys(input) {
+    const loop = input?.loop;
+    if (!loop || typeof loop !== "object")
+        return [];
+    return REMOVED_LOOP_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(loop, k));
+}
 export function parseHarnessConfig(input) {
     const merged = mergeDeep(DEFAULTS, input);
     // An old config may still carry `slack.listener_enabled`. Accept it and drop
     // it: the schemas keep the property so such a config still validates, but
     // nothing downstream should be able to read a setting nothing obeys.
     delete merged.slack.listener_enabled;
+    // v2.0.0: same treatment for the parallelism keys. Dropping them here is what
+    // stops a stale `subtask_concurrency: 4` from reading as live configuration
+    // in a dump or a log when nothing obeys it any more.
+    for (const k of REMOVED_LOOP_KEYS) {
+        delete merged.loop[k];
+    }
     // Hard validation on safety-critical fields.
     //
     // `authorised_users` is always required: it gates who may invoke the

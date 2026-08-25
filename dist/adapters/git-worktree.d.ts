@@ -338,59 +338,6 @@ export declare class GitAdapter {
      * insufficient.
      */
     private reconcileBranchWorktrees;
-    /**
-     * beta.117: create one parallel-worker slot checkout.
-     *
-     * Deliberately NOT `allocate`. That path exists to put a session on its
-     * branch and carries everything that implies -- remote fetch, the
-     * reuse-remote/preserve-local/reset-to-base decision, `rescueBranchIfAhead`,
-     * and the b108 live-branch refusal. A slot branch is local, ephemeral, cut
-     * from the session tip and deleted at the end of the run; routing it through
-     * that logic would give it remote semantics it must not have, and would trip
-     * the very collision guard that protects the session branch it derives from.
-     *
-     * The slot stays in `inFlightWorktrees` for its WHOLE lifetime, not just
-     * during creation. `allocate` can drop that protection once it returns
-     * because the session worktree is then recorded on `sessions.worktree_path`,
-     * which is what self-heal consults. A pooled slot is on no table -- to the
-     * reaper it looks exactly like the orphan of a crashed run, so unprotected it
-     * would be deleted out from under a live worker.
-     */
-    allocatePooled(o: {
-        repoFullName: string;
-        sessionBranch: string;
-        slotBranch: string;
-        slotPath: string;
-        commitIdentity: {
-            name: string;
-            email: string;
-        };
-        bootstrapDeps?: boolean;
-    }): Promise<string>;
-    /**
-     * beta.117: point a slot at `sha` and discard everything left from its last
-     * sub-task.
-     *
-     * `clean -fd` without `-x`, which is load-bearing: `-x` would also remove
-     * ignored files, and `node_modules` is ignored. Adding it would delete the
-     * dependency tree this slot paid 25 seconds to install, on every single
-     * reuse.
-     */
-    resetPooled(worktreePath: string, sha: string): Promise<void>;
-    /**
-     * beta.117: run a plain git command in a checkout.
-     *
-     * Deliberately local-only -- no askpass, no token. Merge-back never touches
-     * a remote, and handing it credentials would widen the surface of a helper
-     * whose whole job is moving commits between two local branches.
-     */
-    runIn(cwd: string, args: string[]): Promise<string>;
-    /** beta.117: tear down a slot checkout and its ephemeral branch. */
-    releasePooled(worktreePath: string, repoFullName: string, slotBranch: string): Promise<{
-        ok: boolean;
-        path: string;
-        error?: string;
-    }>;
     releaseByPath(worktreePath: string, repoFullName: string): Promise<{
         ok: boolean;
         path: string;

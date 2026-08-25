@@ -744,57 +744,26 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/beta116-finding-routing.test.mjs"],
   },
-  // --- beta.117: parallel sub-tasks work in isolation ----------------------
+  // --- v2.0.0: parallel sub-tasks removed ----------------------------------
+  // The seven b117 mutations that lived here are gone with the mechanism they
+  // policed (worktree-pool.js, merge-back.js, and the `clean -fd` that kept a
+  // slot's node_modules). They are replaced by the two below, which guard the
+  // removal itself: a serial dispatcher and a config migration that accepts the
+  // dead keys rather than rejecting the operator's whole config.
   {
-    name: "slots are siblings (b117): a child ref cannot coexist with the session branch, so git refuses to create it",
-    file: "dist/orchestrator/worktree-pool.js",
-    find: "return `${(sessionBranch ?? \"\").replace(/[/\\-]+$/, \"\")}-w${slot}`;",
-    replace: "return `${(sessionBranch ?? \"\").replace(/[/\\-]+$/, \"\")}/w${slot}`;",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+    name: "sub-tasks run one at a time (v2): a concurrent dispatcher shares one worktree and one git index",
+    file: "dist/orchestrator/loop.js",
+    find: "                    if (failed.err)\n                        break;",
+    replace: "                    if (false)\n                        break;",
+    tests: ["tests/v2-strip-parallel.test.mjs"],
   },
   {
-    name: "a reused slot is repositioned (b117): a stale tree diffs against the wrong base",
-    file: "dist/orchestrator/worktree-pool.js",
-    find: "            await this.deps.reset(existing, sha);",
+    name: "removed keys are dropped, not obeyed (v2): a stale subtask_concurrency must not read as live config",
+    file: "dist/config.js",
+    find: "        delete merged.loop[k];",
     replace: "",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+    tests: ["tests/v2-strip-parallel.test.mjs"],
   },
-  {
-    name: "a released slot goes to the longest waiter (b117): otherwise a third sub-task blocks forever",
-    file: "dist/orchestrator/worktree-pool.js",
-    find: "        const next = this.waiters.shift();",
-    replace: "        const next = undefined;",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
-  },
-  {
-    name: "a failed create is retryable (b117): one transient disk error must not shrink the pool for the run",
-    file: "dist/orchestrator/worktree-pool.js",
-    find: "                this.uncreated.unshift(slot);",
-    replace: "",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
-  },
-  {
-    name: "a conflicted merge is aborted (b117): a repo left mid-merge fails every later sub-task in the cycle",
-    file: "dist/orchestrator/merge-back.js",
-    find: '        await git.run(req.sessionWorktree, ["merge", "--abort"]).catch(() => undefined);',
-    replace: "",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
-  },
-  {
-    name: "merge-back reports conflicts (b117): swallowing one silently drops a sub-task's work from the branch",
-    file: "dist/orchestrator/merge-back.js",
-    find: '            reason: paths.length > 0 ? "conflict" : "error",',
-    replace: '            reason: "error",',
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
-  },
-  {
-    name: "clean -fd keeps ignored files (b117): adding -x deletes the node_modules the slot paid 25s to install",
-    file: "dist/adapters/git-worktree.js",
-    find: '        await this.run(["-C", worktreePath, "clean", "-fd"]);',
-    replace: '        await this.run(["-C", worktreePath, "clean", "-fdx"]);',
-    tests: ["tests/beta117-slot-reset.test.mjs"],
-  },
-  // --- beta.117: parallel sub-tasks work in isolation ----------------------
   {
     name: "runtime stays a broadcast (b116): its file is where behaviour was seen, not a defect to edit",
     file: "dist/orchestrator/finding-dimension.js",
@@ -1268,20 +1237,22 @@ const MUTATIONS = [
   // NOT a mutation: `failed.seq !== seq` in the b123 retraction guard.
   //
   // The guard stops a rescue on one sub-task from clearing a DIFFERENT
-  // sub-task's genuine failure -- possible only under b117 parallelism, where
-  // several sub-tasks share the one `failed` slot. Reproducing it needs a
-  // rescue to be mid-flight at the moment another seq records a failure, and
-  // the scenario harness can force that interleaving with a gate but cannot
-  // reliably make the pooled slot produce a rescuable mismatch: the b100
-  // reconciler settles the path first, so no rescue fires and there is nothing
-  // to retract. A mutation here would therefore survive for want of a fixture,
-  // reporting a coverage gap that is really a harness limitation.
+  // sub-task's genuine failure. v2.0.0 removed parallel dispatch, which is the
+  // only thing that made that reachable at runtime: sub-tasks now run one at a
+  // time and the cycle breaks on a live failure before the next one starts, so
+  // no rescue can observe another seq's failure to clear. The guard is kept
+  // because it states which failure is being retracted and would be wrong the
+  // moment anything else writes to the accumulator -- but it is now defensive,
+  // and no scenario can construct a case that distinguishes a targeted clear
+  // from a blanket one. A mutation here would survive for want of a reachable
+  // path, reporting a coverage gap that is really a property of the design.
   //
   // What IS covered: "the retraction is recorded against the seq that recorded
-  // the failure" pins the audit payload, and "a rescue on one sub-task cannot
-  // bury another's real failure" pins the outcome under concurrency 2. Neither
-  // distinguishes a targeted clear from a blanket one. Left deliberately, and
-  // named here so the gap is visible rather than assumed closed.
+  // the failure" pins the audit payload, "a rescue on one sub-task cannot bury
+  // another's real failure" pins the serial outcome, and "retraction is keyed
+  // to the seq that recorded the failure" asserts the comparison structurally
+  // against the source. Named here so the gap stays visible rather than assumed
+  // closed.
   {
     name: "time and money are parsed separately (b123): 'a time budget of 3 hours' read as a $3 cap",
     file: "dist/tools/brief-confirmation.js",

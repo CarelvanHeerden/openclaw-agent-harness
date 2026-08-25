@@ -504,8 +504,6 @@ export interface LoopConfig {
    * Default 1800.
    */
   time_extension_default_seconds: number;
-  /** Max sub-tasks a cycle will run concurrently. Default 1 (sequential). */
-  subtask_concurrency: number;
   /**
    * beta.40: stuck-loop reclaim threshold (seconds). The beta.38 re-entrancy
    * guard (`runningSessions`) is module-scoped and survives a plugin
@@ -731,15 +729,6 @@ export interface LoopConfig {
    * depends on. true (default) enables; false restores beta.90 (run-all).
    */
   revise_scoping_enabled?: boolean;
-  /**
-   * beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no
-   * dependency) to run concurrently up to subtask_concurrency. The dispatcher
-   * already honours subtask_concurrency + dependsOn; this flag additionally
-   * enforces a file-overlap guard so two workers never write the same file in
-   * the shared worktree. false (default) keeps beta.90 serial behaviour even if
-   * subtask_concurrency > 1; set true AND subtask_concurrency > 1 to parallelise.
-   */
-  parallel_independent_subtasks?: boolean;
   /**
    * beta.92: use the DETERMINISTIC finding->sub-task mapping (revise-mapping.ts)
    * on a revise cycle instead of the deleted LLM revise-spec turn. Maps each
@@ -1480,7 +1469,6 @@ const DEFAULTS: HarnessConfig = {
     time_extension_ask_enabled: true,
     time_extension_wait_seconds: 300,
     time_extension_default_seconds: 1800,
-    subtask_concurrency: 1,
     stuck_loop_seconds: 2700,
     teardown_drain_seconds: 3600,
     stall_watchdog_seconds: 90,
@@ -1501,7 +1489,6 @@ const DEFAULTS: HarnessConfig = {
     skip_observe_reprobe_on_revise: true,
     revise_scoping_enabled: true,
     revise_targeted_planbase_window: true,
-    parallel_independent_subtasks: false,
     deterministic_revise_mapping: true,
     worker_confab_detect: true,
     contract_rederive_enabled: true,
@@ -1745,6 +1732,35 @@ export function declaresRemovedListenerFlag(input: unknown): boolean {
   return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");
 }
 
+/**
+ * v2.0.0: `loop` keys that parallel sub-task dispatch owned, now removed.
+ *
+ * Kept as data rather than prose because three things must agree on the list:
+ * the parse-time drop below, the startup warning, and the manifest entries
+ * that let such a config through the gateway at all.
+ */
+export const REMOVED_LOOP_KEYS = ["subtask_concurrency", "parallel_independent_subtasks"] as const;
+
+/**
+ * PURE: which removed parallelism keys did this config carry?
+ *
+ * v2.0.0. Read off the RAW input, because `parseHarnessConfig` drops them and
+ * the parsed config can no longer answer -- the same shape as
+ * {@link declaresRemovedListenerFlag}.
+ *
+ * These keys MUST stay declared in `openclaw.plugin.json`. The gateway
+ * validates an operator's config against that manifest with
+ * `additionalProperties: false`, so deleting them there would not "remove a
+ * setting" -- it would reject the operator's ENTIRE plugin config the moment
+ * an existing one still named them, which is the beta.34 and rc.1 outage. They
+ * are accepted, ignored, and warned about instead.
+ */
+export function declaresRemovedParallelKeys(input: unknown): string[] {
+  const loop = (input as { loop?: unknown } | null | undefined)?.loop;
+  if (!loop || typeof loop !== "object") return [];
+  return REMOVED_LOOP_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(loop, k));
+}
+
 export function parseHarnessConfig(input: unknown): HarnessConfig {
   const merged = mergeDeep(DEFAULTS, input);
 
@@ -1752,6 +1768,13 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   // it: the schemas keep the property so such a config still validates, but
   // nothing downstream should be able to read a setting nothing obeys.
   delete (merged.slack as unknown as Record<string, unknown>).listener_enabled;
+
+  // v2.0.0: same treatment for the parallelism keys. Dropping them here is what
+  // stops a stale `subtask_concurrency: 4` from reading as live configuration
+  // in a dump or a log when nothing obeys it any more.
+  for (const k of REMOVED_LOOP_KEYS) {
+    delete (merged.loop as unknown as Record<string, unknown>)[k];
+  }
 
   // Hard validation on safety-critical fields.
   //

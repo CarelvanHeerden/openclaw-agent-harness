@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.0.0-beta.1 (unreleased)
+
+### Parallel sub-task dispatch removed
+
+Parallelism shipped disabled for its entire life, behind two keys that had to be
+set together. beta.117 finally made it *safe* — a pooled worktree per concurrent
+worker, its own ephemeral branch, a mutex-serialised merge-back so two workers
+could not take the git index at once — and then measured what it bought:
+**41m38s at concurrency 2, against beta.116's 41m00s on the same brief.**
+
+It cost an `npm ci` per slot per cycle, a merge-back that could conflict and
+strand a sub-task's commits, and a class of interleaving that every recovery
+path in the loop had to keep reasoning about. beta.123 is the clearest example:
+a rescue retracting a failure had to be keyed to the sub-task that recorded it,
+because a blanket clear could erase a *different* sub-task's genuine failure and
+turn a hard stop into a silent partial delivery.
+
+So the mechanism is gone rather than switched off. The session worktree is the
+isolation boundary — one session, one checkout, one branch — and sub-tasks run
+one at a time in topological order, committing straight onto the session branch.
+There is nothing to merge back.
+
+Deleted: `parallel-safety.ts`, `worktree-pool.ts`, `merge-back.ts`, the pooled
+slot lifecycle in the git adapter, and the greedy dispatcher (now a `for...of`
+over the topo-sorted sub-tasks).
+
+Unchanged, because none of it is sub-task dispatch: session worktree allocation
+and its orphan-reaper protection, the per-session re-entrancy guard, the
+`subtask_deadline_seconds` bound on the whole sub-task, the worker idle-abort
+race, and the SQLite busy timeout.
+
+**Config migration — accepted, ignored, warned.** `loop.subtask_concurrency` and
+`loop.parallel_independent_subtasks` are dropped at parse time, so nothing can
+read a setting nothing obeys, and the harness warns once at startup naming the
+keys it ignored. They stay *declared* in `openclaw.plugin.json` deliberately:
+the gateway validates an operator's config against that manifest with
+`additionalProperties: false`, so deleting them there would not remove a setting
+— it would reject the operator's entire plugin config at boot and take the
+plugin offline, which is the beta.34 and rc.1 outage shape. Nobody's harness
+goes down over a knob that no longer does anything.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**

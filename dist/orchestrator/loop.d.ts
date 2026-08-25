@@ -562,32 +562,6 @@ export interface OrchestratorDeps {
         path?: string;
         error?: string;
     }>;
-    /**
-     * beta.117: lifecycle for one parallel-worker slot checkout.
-     *
-     * Only consulted when effective concurrency exceeds 1, so a serial run --
-     * still the default -- never allocates a slot and behaves exactly as it did
-     * before b117. Optional so the many tests that stub the orchestrator do not
-     * all have to grow a git implementation.
-     */
-    allocatePooledWorktree?: (params: {
-        sessionId: string;
-        repoFullName: string;
-        sessionBranch: string;
-        slotBranch: string;
-        slot: number;
-    }) => Promise<string>;
-    resetPooledWorktree?: (worktreePath: string, sha: string) => Promise<void>;
-    releasePooledWorktree?: (params: {
-        repoFullName: string;
-        worktreePath: string;
-        slotBranch: string;
-    }) => Promise<{
-        ok: boolean;
-        error?: string;
-    }>;
-    /** `git -C <cwd> <args>`, rejecting on non-zero exit. Used for merge-back. */
-    gitRun?: (cwd: string, args: string[]) => Promise<string>;
 }
 /**
  * beta.97 (Fix #7): is the adversary finding count CONVERGING across cycles?
@@ -629,11 +603,6 @@ export declare function isConvergingFindingTrend(counts: number[] | undefined): 
 export declare function isConvergingBlockingTrend(blocking: number[] | undefined): boolean;
 export declare class OrchestratorLoop {
     private readonly deps;
-    /**
-     * beta.117: serialises merge-back into the session worktree. One per loop
-     * instance, which is one per process -- the only worktree it guards.
-     */
-    private readonly mergeBackMutex;
     constructor(deps: OrchestratorDeps);
     /**
      * Pure state-transition rule (unit-tested).
@@ -724,21 +693,6 @@ export declare class OrchestratorLoop {
      * The guard is registered/cleared here so EVERY entry path (fresh run and
      * recovery auto-resume both call `run()`) is covered and can't be forgotten.
      */
-    /**
-     * beta.117: bring one parallel worker's commits onto the session branch.
-     *
-     * Serialised across the whole loop instance by {@link mergeBackMutex}: git
-     * will not take two concurrent index operations in one worktree, and a lock
-     * turns that race into a queue.
-     *
-     * A conflict here is the mechanism working, not a bug. Two workers writing
-     * the same file that neither declared used to corrupt each other invisibly in
-     * the shared worktree; now it surfaces as a named conflict against a specific
-     * sub-task. The sub-task is marked failed so the cycle's own machinery
-     * re-runs it -- by which point the other worker's change is already on the
-     * branch, so the retry sees it and adapts.
-     */
-    private mergeBackSlot;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
     /**
      * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is

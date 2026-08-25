@@ -284,11 +284,13 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 8,
-          "default": 1
+          "deprecated": true,
+          "description": "REMOVED in v2.0.0 and ignored. Accepted so an existing config still validates. Delete it."
         },
         "parallel_independent_subtasks": {
           "type": "boolean",
-          "default": false
+          "deprecated": true,
+          "description": "REMOVED in v2.0.0 and ignored. Accepted so an existing config still validates. Delete it."
         },
         "stuck_loop_seconds": {
           "type": "integer",

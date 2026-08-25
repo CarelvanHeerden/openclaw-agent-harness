@@ -309,7 +309,8 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 8,
-            "default": 1
+            "deprecated": true,
+            "description": "REMOVED in v2.0.0 and now ignored. Sub-tasks run one at a time in the session worktree. Still declared here ONLY so an existing config naming it validates: this manifest is additionalProperties:false, so dropping the key would reject the operator's entire plugin config rather than remove a setting. Delete it from your config."
           },
           "stuck_loop_seconds": {
             "type": "integer",
@@ -424,8 +425,8 @@
           },
           "parallel_independent_subtasks": {
             "type": "boolean",
-            "default": false,
-            "description": "beta.117: run independent sub-tasks (disjoint declared file scope, no dependency) concurrently, up to subtask_concurrency. Each concurrent worker gets its OWN checkout on its own branch, and its commits are merged back into the session branch one at a time; two workers touching the same undeclared file surface as a merge conflict against a named sub-task instead of silently corrupting each other. Costs one `npm ci` per slot, once per cycle. Default false. Set true AND subtask_concurrency > 1 to parallelise."
+            "deprecated": true,
+            "description": "REMOVED in v2.0.0 and now ignored. Parallel sub-task dispatch, its worktree pool and its merge-back are deleted; the session worktree is the isolation boundary and workers commit to it serially. Still declared here ONLY so an existing config naming it validates: this manifest is additionalProperties:false, so dropping the key would reject the operator's entire plugin config rather than remove a setting. Delete it from your config."
           },
           "deterministic_revise_mapping": {
             "type": "boolean",

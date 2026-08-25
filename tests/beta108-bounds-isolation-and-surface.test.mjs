@@ -693,16 +693,24 @@ test("beta108: new keys are declared in both schemas", () => {
   }
 });
 
-test("beta108: parallel sub-tasks remain OFF", () => {
-  // Deliberate, and the reason belongs in a test so it is not quietly reversed:
-  // every sub-task shares ONE worktree (plan.worktreePath) and GitAdapter.commit
-  // stages with an unscoped `git add -A`, so the first worker to commit sweeps
-  // the other's half-finished edits into its own commit. The b91 overlap guard
-  // compares DECLARED scope only, and b106 measured committedCount 141 against
-  // declaredCount 7. Enabling this needs per-sub-task worktrees first.
-  const c = parseHarnessConfig(MINIMAL_CONFIG);
-  assert.equal(c.loop.parallel_independent_subtasks, false);
-  assert.equal(c.loop.subtask_concurrency, 1);
+test("beta108: parallel sub-tasks are GONE, not merely off", () => {
+  // The original reason they were off still holds and is why they were deleted
+  // rather than fixed: every sub-task shares ONE worktree (plan.worktreePath)
+  // and GitAdapter.commit stages with an unscoped `git add -A`, so two
+  // concurrent workers sweep each other's half-finished edits into their
+  // commits. The b91 overlap guard compares DECLARED scope only, and b106
+  // measured committedCount 141 against declaredCount 7.
+  //
+  // v2.0.0 removed the mechanism. The keys are still ACCEPTED (the gateway
+  // manifest is additionalProperties:false, so dropping them would reject an
+  // operator's whole config) but they are dropped at parse time, so nothing
+  // downstream can read a setting nothing obeys.
+  const c = parseHarnessConfig({
+    ...MINIMAL_CONFIG,
+    loop: { ...(MINIMAL_CONFIG.loop ?? {}), parallel_independent_subtasks: true, subtask_concurrency: 8 },
+  });
+  assert.equal(c.loop.parallel_independent_subtasks, undefined, "the removed key must not survive parse");
+  assert.equal(c.loop.subtask_concurrency, undefined, "the removed key must not survive parse");
   assert.match(S("src/adapters/git-worktree.ts"), /"add", "-A"/);
 });
 

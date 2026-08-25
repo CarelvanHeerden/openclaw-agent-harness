@@ -493,8 +493,6 @@ export interface LoopConfig {
      * Default 1800.
      */
     time_extension_default_seconds: number;
-    /** Max sub-tasks a cycle will run concurrently. Default 1 (sequential). */
-    subtask_concurrency: number;
     /**
      * beta.40: stuck-loop reclaim threshold (seconds). The beta.38 re-entrancy
      * guard (`runningSessions`) is module-scoped and survives a plugin
@@ -720,15 +718,6 @@ export interface LoopConfig {
      * depends on. true (default) enables; false restores beta.90 (run-all).
      */
     revise_scoping_enabled?: boolean;
-    /**
-     * beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no
-     * dependency) to run concurrently up to subtask_concurrency. The dispatcher
-     * already honours subtask_concurrency + dependsOn; this flag additionally
-     * enforces a file-overlap guard so two workers never write the same file in
-     * the shared worktree. false (default) keeps beta.90 serial behaviour even if
-     * subtask_concurrency > 1; set true AND subtask_concurrency > 1 to parallelise.
-     */
-    parallel_independent_subtasks?: boolean;
     /**
      * beta.92: use the DETERMINISTIC finding->sub-task mapping (revise-mapping.ts)
      * on a revise cycle instead of the deleted LLM revise-spec turn. Maps each
@@ -1407,6 +1396,29 @@ export declare function validatePatHierarchy(pr: PatRoutingConfig): void;
  * listener that was deleted ninety-nine releases ago.
  */
 export declare function declaresRemovedListenerFlag(input: unknown): boolean;
+/**
+ * v2.0.0: `loop` keys that parallel sub-task dispatch owned, now removed.
+ *
+ * Kept as data rather than prose because three things must agree on the list:
+ * the parse-time drop below, the startup warning, and the manifest entries
+ * that let such a config through the gateway at all.
+ */
+export declare const REMOVED_LOOP_KEYS: readonly ["subtask_concurrency", "parallel_independent_subtasks"];
+/**
+ * PURE: which removed parallelism keys did this config carry?
+ *
+ * v2.0.0. Read off the RAW input, because `parseHarnessConfig` drops them and
+ * the parsed config can no longer answer -- the same shape as
+ * {@link declaresRemovedListenerFlag}.
+ *
+ * These keys MUST stay declared in `openclaw.plugin.json`. The gateway
+ * validates an operator's config against that manifest with
+ * `additionalProperties: false`, so deleting them there would not "remove a
+ * setting" -- it would reject the operator's ENTIRE plugin config the moment
+ * an existing one still named them, which is the beta.34 and rc.1 outage. They
+ * are accepted, ignored, and warned about instead.
+ */
+export declare function declaresRemovedParallelKeys(input: unknown): string[];
 export declare function parseHarnessConfig(input: unknown): HarnessConfig;
 /**
  * beta.78 (Feature 3): pure budget-coherence assessment.

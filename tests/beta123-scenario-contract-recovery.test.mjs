@@ -11,12 +11,14 @@
 // between this file and the 33 green tests that watched b105 ship broken.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { join, dirname } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { runScenario, makeWorld, makeConfig, scenarioAvailable, mutateSubTask, IDENT } from "./helpers/scenario.mjs";
 
 const skip = (await scenarioAvailable()) ? false : "dist/ not built";
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** A worker that commits `writes` and reports them, ignoring the plan's paths. */
 const commitWorker = (writes) => async ({ subTask, worktreePath, plan }, { world }) => {
@@ -83,11 +85,17 @@ test("beta123: an UNCOVERED expected path still stops and asks", { skip }, async
 // ---------------------------------------------------------------------------
 // The retraction is scoped to the sub-task that recorded the failure.
 //
-// `failed` is one slot shared by every sub-task in the cycle. Under b117
-// parallelism a rescue on one seq must not erase a genuine failure on another,
-// which a blanket `failed.err = null` would do -- turning a hard stop into a
-// silent partial delivery. Interleaving here is forced with a gate rather than
-// left to timing, so this is deterministic.
+// `failed` is one slot shared by every sub-task in the cycle, so a rescue must
+// only ever clear its OWN sub-task's failure -- a blanket `failed.err = null`
+// would turn a hard stop into a silent partial delivery.
+//
+// v2.0.0: this was originally written against b117 parallelism, where two
+// sub-tasks could genuinely interleave, and forced the interleaving with a gate.
+// Sub-tasks now run one at a time, so the gate would simply deadlock (seq 1 runs
+// first and would wait on a seq 2 that cannot start). The invariant is unchanged
+// and is exercised serially instead: seq 1 records a failure and has it
+// retracted by the basename rescue, the cycle continues, and seq 2's genuine
+// failure still stops the run.
 // ---------------------------------------------------------------------------
 
 test("beta123: a rescue on one sub-task cannot bury another's real failure", { skip }, async () => {
@@ -95,16 +103,11 @@ test("beta123: a rescue on one sub-task cannot bury another's real failure", { s
     files: { "README.md": "# seed\n", "src/components/ui/button.tsx": "export const B = () => null;\n" },
   });
 
-  let openGate;
-  const gate = new Promise((r) => { openGate = r; });
-
   const s = await runScenario({
     world,
-    configOver: { loop: { parallel_independent_subtasks: true, subtask_concurrency: 2 } },
     subTasks: [
       // Rescuable: plans a directory the repo does not have, commits the same
-      // basename where it does. Waits so that its verification runs AFTER seq 2
-      // has already recorded a genuine failure.
+      // basename where it does. Fails verification, then is rescued.
       mutateSubTask({ seq: 1, title: "sidebar", path: "src/components/layout/sidebar.tsx" }),
       // Genuinely broken: claims success, commits nothing.
       mutateSubTask({ seq: 2, title: "does nothing", path: "src/never.ts" }),
@@ -112,7 +115,6 @@ test("beta123: a rescue on one sub-task cannot bury another's real failure", { s
     worker: async ({ subTask, worktreePath, plan }, { world: w }) => {
       const wt = worktreePath ?? plan.worktreePath;
       if (subTask.seq === 2) {
-        openGate();
         return {
           status: "completed", filesChanged: [], costUsd: 0.01, tokensIn: 1, tokensOut: 1,
           reason: "end_turn", finalMessage: "All done.",
@@ -122,7 +124,6 @@ test("beta123: a rescue on one sub-task cannot bury another's real failure", { s
       mkdirSync(dirname(join(wt, rel)), { recursive: true });
       writeFileSync(join(wt, rel), "export const Sidebar = () => null;\n");
       const sha = await w.adapter.commit(wt, "feat: sidebar", IDENT);
-      await gate;
       return {
         status: "completed", filesChanged: [rel], commitSha: sha, commitShas: [sha],
         costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn", finalMessage: "done",
@@ -132,4 +133,17 @@ test("beta123: a rescue on one sub-task cannot bury another's real failure", { s
 
   assert.notEqual(s.out.status, "shipped", "seq 2 did nothing; a rescue elsewhere must not let this ship");
   assert.equal(s.calls.push, 0, "no PR may be opened over an unfixed failure");
+});
+
+test("beta123: retraction is keyed to the seq that recorded the failure", () => {
+  // The seq key is what stops one sub-task's rescue from clearing another's
+  // failure. Serial execution makes that hard to reach at runtime, which is
+  // precisely why the guard is asserted structurally rather than left to a
+  // scenario that can no longer construct the interleaving.
+  const src = readFileSync(resolve(root, "src/orchestrator/loop.ts"), "utf8");
+  const fn = src.slice(src.indexOf("const retractFailure ="));
+  const body = fn.slice(0, fn.indexOf("};"));
+  assert.match(body, /failed\.seq !== seq/, "retraction must compare the recording seq");
+  assert.ok(!/^\s*failed\.err = null;\s*$/m.test(body.split("failed.seq !== seq")[0] ?? ""),
+    "nothing may clear the failure before the seq check");
 });
