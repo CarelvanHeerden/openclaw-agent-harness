@@ -201,4 +201,66 @@ export declare function preflightAcpBackend(input: {
     /** Parsed contents of the backend's own config, e.g. opencode.json. */
     backendConfig: unknown;
 }): AcpPreflightResult;
+export interface AcpLiveProbeResult extends AcpPreflightResult {
+    /** True when a `session/request_permission` actually arrived. */
+    sawPermissionRequest: boolean;
+    /** True when the agent honoured a denial rather than proceeding anyway. */
+    denialHonoured: boolean;
+    /** What the agent did, for the audit trail and for an operator to read. */
+    detail: string;
+}
+/**
+ * Prove, by doing it, that this INSTALLATION asks before it acts.
+ *
+ * `preflightAcpBackend` reads configuration and reasons about what it should
+ * mean. That is worth doing and it is not sufficient, because every step
+ * between the config and the behaviour can fail silently: the variable may not
+ * reach the child, the agent's version may have renamed a key, the document may
+ * be shadowed by managed preferences, or the backend may simply not honour what
+ * it was told. In all of those cases the config LOOKS right and the guard is
+ * never called — and a guard that is never called is indistinguishable from a
+ * guard that approved everything.
+ *
+ * So this drives a real turn, asks for a real tool call, and requires the
+ * round-trip to happen. It DENIES the call, because a probe that approves is
+ * only half a test: an agent could conceivably ask and then ignore the answer,
+ * and the denial path is the one the containment story actually rests on.
+ *
+ * FAILS CLOSED, on every axis. No permission request, a timeout, a spawn
+ * failure, an agent that proceeds after being refused, or any thrown error all
+ * return `ok: false`. There is no path through this function where "we could
+ * not tell" produces a pass, because "we could not tell" is exactly what the
+ * broken case looks like.
+ */
+export declare function probeAcpPermissionEnforcement(input: {
+    agent: AcpAgentSpec;
+    /** A scratch directory. Must NOT be a real worktree: the probe asks for a write. */
+    cwd: string;
+    model?: string;
+    timeoutSeconds?: number;
+    logger?: {
+        info: (m: string, meta?: unknown) => void;
+        warn: (m: string, meta?: unknown) => void;
+    };
+}): Promise<AcpLiveProbeResult>;
+/**
+ * The full startup check: read the configuration, then prove the behaviour.
+ *
+ * Static inspection runs first because it is free and its messages are more
+ * specific — "permission.bash is 'allow'" tells an operator what to edit, where
+ * the live probe can only say "it did not ask". But a clean static result is
+ * never sufficient on its own, so a pass there does not skip the probe.
+ */
+export declare function preflightAcpBackendLive(input: {
+    agentId: string;
+    backendConfig: unknown;
+    agent: AcpAgentSpec;
+    cwd: string;
+    model?: string;
+    timeoutSeconds?: number;
+    logger?: {
+        info: (m: string, meta?: unknown) => void;
+        warn: (m: string, meta?: unknown) => void;
+    };
+}): Promise<AcpLiveProbeResult>;
 //# sourceMappingURL=acp.d.ts.map

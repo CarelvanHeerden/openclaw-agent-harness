@@ -172,6 +172,38 @@ M6 configures the backend to have none, and a deny-all guard catches anything
 that arrives anyway — because `preflightAcpBackend`'s entire premise is that a
 backend silently ignoring its own permission config is a thing that happens.
 
+### Configuring OpenCode to ask, and proving that it does
+
+The M2 capability probe measured OpenCode on default configuration running four
+shell commands and two file edits while issuing **zero** permission requests.
+Nothing errored. The harness guard was simply never called, so `bash_whitelist`
+and `path_denylist` were inert while still reading as enabled in
+`openclaw.json`.
+
+`adapters/opencode-config.ts` generates the configuration, with `"*": "ask"`
+plus every known tool named explicitly — the wildcard covers a tool added by a
+version we have not seen, and the explicit entries remove the question of
+whether a tool's own permissive default beats `"*"` on precedence. It travels as
+`OPENCODE_CONFIG_CONTENT` rather than a file in the worktree, because a file
+there would put the control inside the thing the worker can edit.
+
+**The probe is separate from the configuration, and that is the point.**
+`probeAcpPermissionEnforcement` drives a real turn, asks for a real file write,
+and requires the `session/request_permission` round-trip to happen. It *denies*
+the call, because a probe that approves is half a test — an agent that asks and
+then proceeds anyway offers no containment, and the denial path is the one the
+containment story rests on.
+
+It fails closed on every axis: no permission request, a timeout, a spawn
+failure, an agent that proceeds after refusal. There is no path where "we could
+not tell" produces a pass, because that is exactly what the broken case looks
+like from outside. A clean static config check does **not** skip it.
+
+Writing the "cannot be launched" case found a real bug: a spawn failure arrives
+as an asynchronous `error` event, not a throw from `spawn()`. Unhandled, it was
+an uncaught exception that took the whole harness process down rather than
+failing one turn — which in production is a mistyped `worker_backend`.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**

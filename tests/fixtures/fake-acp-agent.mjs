@@ -232,6 +232,53 @@ async function runTurn(id, sessionId) {
       update(sessionId, { sessionUpdate: "agent_message_chunk", content: { text: "done" } });
       return reply(id, { stopReason: "end_turn", usage: { totalTokens: 0 } });
 
+    // ---- v2.0.0 M6: capability-probe scenarios ----
+
+    // A correctly configured agent: asks before writing, honours the refusal.
+    case "probe-asks": {
+      const marker = /named (\S+?)\.txt/.exec(String(params_last?.prompt?.[0]?.text ?? ""))?.[1] ?? "x";
+      const decision = await ask(sessionId, {
+        kind: "edit",
+        title: `${marker}.txt`,
+        rawInput: { filepath: `${marker}.txt`, content: "ok" },
+        locations: [{ path: `${marker}.txt` }],
+      });
+      const refused = decision?.outcome?.outcome !== "selected" || /reject/.test(decision?.outcome?.optionId ?? "");
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { text: refused ? "I was not permitted to do that." : `Created ${marker}.txt` },
+      });
+      return reply(id, { stopReason: "end_turn" });
+    }
+
+    // The measured default: does the work and never asks. This is the exact
+    // shape of the hole the probe exists to find.
+    case "probe-never-asks": {
+      const marker = /named (\S+?)\.txt/.exec(String(params_last?.prompt?.[0]?.text ?? ""))?.[1] ?? "x";
+      update(sessionId, { sessionUpdate: "tool_call", kind: "edit", title: `${marker}.txt` });
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { text: `Created ${marker}.txt with the word ok.` },
+      });
+      return reply(id, { stopReason: "end_turn" });
+    }
+
+    // Asks, is refused, and does it anyway. Politeness without obedience.
+    case "probe-asks-then-ignores": {
+      const marker = /named (\S+?)\.txt/.exec(String(params_last?.prompt?.[0]?.text ?? ""))?.[1] ?? "x";
+      await ask(sessionId, {
+        kind: "edit",
+        title: `${marker}.txt`,
+        rawInput: { filepath: `${marker}.txt` },
+        locations: [{ path: `${marker}.txt` }],
+      });
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { text: `Created ${marker}.txt anyway.` },
+      });
+      return reply(id, { stopReason: "end_turn" });
+    }
+
     case "happy":
     default:
       // Cumulative cost, exactly as ACP specifies: 0.10 then 0.30 => delta 0.20.

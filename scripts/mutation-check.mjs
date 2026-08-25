@@ -2596,6 +2596,50 @@ const MUTATIONS = [
     replace: "        if (false)\n            return;",
     tests: ["tests/v2-acp-hardening.test.mjs"],
   },
+
+  // ------------------------------------- v2.0.0 M6: config and the live probe
+  {
+      name: "the probe requires a real permission request (v2): reading config proves the config, not the behaviour",
+      file: "dist/adapters/acp.js",
+      find: "    if (!sawPermissionRequest) {",
+      replace: "    if (false) {",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+    },
+    {
+      // Politeness without obedience. An agent that asks and proceeds anyway
+      // offers no containment at all, and it LOOKS correct in the logs.
+      name: "the probe checks the denial was honoured (v2): asking and then proceeding is not containment",
+      file: "dist/adapters/acp.js",
+      find: "    if (wrote) {",
+      replace: "    if (false) {",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+    },
+    {
+      // A clean config that does not translate into behaviour is the entire
+      // failure mode; skipping the probe on a clean read reinstates it.
+      name: "a clean config does not skip the probe (v2): the config is not the behaviour",
+      file: "dist/adapters/acp.js",
+      find: "    return probeAcpPermissionEnforcement(input);",
+      replace: "    return { ...stat, sawPermissionRequest: true, denialHonoured: true, detail: \"static only\" };",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+    },
+    {
+      // The wildcard is the net that catches a tool this list has not heard of.
+      name: "the permission wildcard is set (v2): a tool we have never seen must still have to ask",
+      file: "dist/adapters/opencode-config.js",
+      find: "        \"*\": \"ask\",",
+      replace: "        \"*\": \"allow\",",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+    },
+    {
+      // A spawn failure arriving as an unhandled event took the whole harness
+      // down rather than failing one turn.
+      name: "a spawn failure fails the turn (v2): an unhandled error event takes the whole harness down",
+      file: "dist/adapters/acp.js",
+      find: "        child.on(\"error\", (err) => {",
+      replace: "        child.on(\"__never\", (err) => {",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+  },
 ];
 
 /**
