@@ -2498,6 +2498,54 @@ const MUTATIONS = [
     replace: "              // guidance: _reviseMeta?.guidance ?? null,",
     tests: ["tests/revise-guidance.test.mjs"],
   },
+
+  // ------------------------------------- v2.0.0 M4: the backend contract
+  {
+    // The silent one. A backend that never asks permission is indistinguishable
+    // from a backend whose every request was approved -- so if this check goes,
+    // a worker runs to completion with bash-guard, the path deny-list and the
+    // no-push rule all inert, and nothing in the run looks wrong.
+    name: "an ungated backend cannot run a worker (v2): the permission callback IS the containment boundary",
+    file: "dist/adapters/backend.js",
+    find: "        if (!caps.toolPermissionCallback) {",
+    replace: "        if (false) {",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+  {
+    // A weak adversary does not fail loudly, it returns a well-formed pass.
+    name: "the judgement roles hold their floor (v2): a weak reviewer rubber-stamps rather than erroring",
+    file: "dist/adapters/backend.js",
+    find: "    if (!tierAtLeast(declaredTier, floor)) {",
+    replace: "    if (false) {",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+  {
+    // The whole point of the ladder's exit. Returning a document instead of
+    // throwing turns "no reviewer was reachable" into "the reviewer approved".
+    name: "an exhausted ladder throws (v2): a pass-shaped default converts an outage into an approval",
+    file: "dist/adapters/shared/structured.js",
+    find: "            if (i === maxAttempts - 1)\n                throw exhausted(opts.role, attempts, costUsd, lastRaw, err);\n            // Rung 4: retry, told what went wrong.",
+    replace: "            if (i === maxAttempts - 1)\n                return { parsed: { verdict: \"pass\", findings: [], summary: \"\" }, raw: lastRaw, costUsd, tokensIn, tokensOut, sessionId, attempts, repaired: false };\n            // Rung 4: retry, told what went wrong.",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+  {
+    // b98: three calls, three identical truncations, twelve minutes, no plan.
+    // Repair is free and must be tried before a retry is spent.
+    name: "a truncation is repaired before it is re-asked (v2): re-asking a capped model re-truncates identically",
+    file: "dist/adapters/shared/structured.js",
+    find: "            if (wasTruncated) {\n                const repairedText = repairTruncatedJson(call.raw);",
+    replace: "            if (false) {\n                const repairedText = repairTruncatedJson(call.raw);",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+  {
+    // Repairing a document that was never cut off papers over a genuine
+    // contract violation and reports it as a recovery.
+    name: "repair is truncation-only (v2): closing a complete-but-wrong document hides the fault",
+    file: "dist/adapters/shared/structured.js",
+    find: "            const wasTruncated = call.truncated === true || looksTruncatedJson(call.raw);",
+    replace: "            const wasTruncated = true;",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
 ];
 
 /**

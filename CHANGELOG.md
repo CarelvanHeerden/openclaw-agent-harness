@@ -91,6 +91,49 @@ protection instead of having to remember it. `extra` is applied *after* the
 filter, so passing a secret to a child is explicit and greppable at the call
 site; nothing is ever allow-listed by pattern.
 
+### The backend contract: declared capabilities, and one structured-output ladder
+
+`adapters/backend.ts` states what the harness asks of a model backend: eight
+roles in two shapes (two agentic — worker and scout; six structured), the
+capabilities a backend declares, and the floor each role requires. A mismatch is
+refused with a sentence naming both sides.
+
+The floor that matters is `toolPermissionCallback`. A backend that cannot gate
+tool calls cannot run a worker, because bash-guard, the path deny-list and the
+no-push rule are all enforced through that callback — without it they are three
+functions nobody calls. That gap is silent: a backend that never asks for
+permission looks exactly like one whose every request was approved. M6 verifies
+it with a live probe rather than trusting the declaration.
+
+Capability tiers (`frontier` / `strong` / `basic`) are an operator assertion,
+not a measurement. `lead`, `adversary` and `crystalliser` require at least
+`strong`, because those three fail *quietly*: a weak worker produces code that
+does not compile, but a weak adversary returns `{"verdict":"pass"}`, which is
+well-formed, cheap, and indistinguishable from a careful review. The other five
+roles accept `basic`.
+
+This also retires the last brand name in a prompt. The lead's "ATOMIC sub-tasks
+a Sonnet worker can complete in one turn" was calibrating decomposition against
+a capability level, so it now derives from the worker's declared tier — a
+`basic` worker is told to cut finer, a `frontier` one may span related files.
+
+**One ladder, and where it fails.** `shared/structured.ts` holds extract →
+validate → repair → retry, ordered by cost: extraction and repair are free, a
+retry is a whole model call. A truncated reply is repaired before it is
+re-asked, because re-asking a model that hit its output ceiling reproduces the
+truncation — that was b98, three identical failures and twelve minutes for no
+plan. A retry is told what went wrong, and told *differently* for a truncation
+(be more concise) than for prose drift (restate the contract).
+
+The adversary previously had no ladder at all while the lead had an elaborate
+one, which was never a decision — just where the bugs were found. It is the
+wrong way round: a lost plan costs a retry, a lost review costs a review.
+
+Exhaustion **throws**, and there is no route from it to `pass` for any role
+under any configuration. A `pass`-shaped default would have to travel through
+the caller as data, and every caller would have to remember to check it — which
+is exactly how a failed review becomes an approval.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**

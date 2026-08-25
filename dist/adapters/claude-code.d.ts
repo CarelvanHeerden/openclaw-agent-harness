@@ -29,6 +29,7 @@ import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crys
 import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/lead.js";
 import type { ReviewReport } from "../orchestrator/adversary.js";
 import { type LeadAttemptInfo } from "./shared/json.js";
+import { type BackendCapabilities, type CapabilityTier } from "./backend.js";
 export { describeJsonSyntaxFault, extractAndValidateJson, extractJson, repairTruncatedJson, type JsonValidationOptions, type LeadAttemptInfo, type StructuredCallError, } from "./shared/json.js";
 export { splitDiffOnFileBoundaries } from "./shared/diff.js";
 export { evaluateStreamSlowTick } from "./shared/stream.js";
@@ -427,6 +428,12 @@ export declare function runLeadSdk(params: {
      * whatever the last error looked like.
      */
     onAttempt?: (info: LeadAttemptInfo) => void;
+    /**
+     * v2.0.0: how capable the WORKER model is declared to be, which is what the
+     * sizing instruction below is really calibrating against. Defaults to
+     * `strong`, which reproduces v1's sentence in backend-neutral wording.
+     */
+    workerTier?: CapabilityTier;
 }): Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
     costUsd: number;
     tokensIn: number;
@@ -512,6 +519,17 @@ export declare function runAdversarySdk(params: {
         totalBytes: number;
     };
 }>;
+/**
+ * What this backend can do.
+ *
+ * Every entry is `true` because the Claude Agent SDK supports all of it, and
+ * because v1 was built assuming exactly this — which is the point of writing it
+ * down. The declaration is not interesting until a second backend fills the
+ * same shape and some of the answers are `false`. Then the harness can refuse a
+ * pairing at startup instead of discovering it mid-run, and this row is the
+ * baseline the other is compared against.
+ */
+export declare const CLAUDE_CODE_CAPABILITIES: BackendCapabilities;
 /**
  * beta.61: fetch the list of live model ids from the Anthropic Models API
  * (GET /v1/models). IMPORTANT LIMITATION: Anthropic exposes NO pricing API --

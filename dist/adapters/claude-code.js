@@ -31,6 +31,8 @@ import { buildAgentEnv, registerDeniedEnvVar } from "./shared/env.js";
 import { classifyAttempt, describeJsonSyntaxFault, extractAndValidateJson, extractJson, looksTruncatedJson, repairTruncatedJson, } from "./shared/json.js";
 import { evaluateStreamSlowTick } from "./shared/stream.js";
 import { DIFF_SINGLE_CHUNK_BYTES, splitDiffOnFileBoundaries } from "./shared/diff.js";
+import { runStructuredLadder } from "./shared/structured.js";
+import { subTaskSizingInstruction } from "./backend.js";
 // Re-exported so the many existing importers of this module keep working. The
 // definitions live in `shared/` now; this is a compatibility surface, not a
 // second home for them.
@@ -749,7 +751,10 @@ async function structuredCall(params) {
     }
     const raw = textChunks.join("");
     let parsed;
-    if (params.validation) {
+    if (params.skipParse) {
+        parsed = undefined;
+    }
+    else if (params.validation) {
         try {
             parsed = extractAndValidateJson(raw, { ...params.validation, logger: params.logger ?? params.validation.logger });
         }
@@ -916,7 +921,7 @@ export function formatConceptBlockForCrystalliser(concepts) {
 }
 export async function runLeadSdk(params) {
     const systemPrompt = [
-        "You are the lead planner. Decompose a brief into ATOMIC sub-tasks a Sonnet worker can complete in one turn.",
+        `You are the lead planner. ${subTaskSizingInstruction(params.workerTier ?? "strong")}`,
         "Return STRICT JSON:",
         "  { repo: string (owner/repo, must be in reposAllowed),",
         "    branch: string (must start with 'harness/'; NOTE: the harness namespaces all branches under 'harness/' and may rewrite/slugify your hint, so the final branch name is authoritative from the plan, not this field),",
@@ -1424,19 +1429,58 @@ function mergeVerdict(a, b) {
     const order = { pass: 0, revise: 1, block: 2 };
     return order[a] >= order[b] ? a : b;
 }
+/**
+ * One adversary call, up the shared ladder.
+ *
+ * v2.0.0: the adversary previously had NO ladder. The lead grew an elaborate
+ * three-attempt one over beta.97 to beta.128; the reviewer, running the same
+ * kind of call against the same kind of model, threw on the first malformed
+ * reply. That asymmetry was never a decision, it was just where the bugs
+ * happened to be found, and it is the wrong way round: a lost plan costs a
+ * retry, while a lost review costs a review.
+ *
+ * The ladder THROWS on exhaustion rather than returning a `pass`-shaped
+ * default. `shared/structured.ts` explains why at length; the short version is
+ * that "no reviewer was reachable" and "the reviewer found nothing" must not
+ * be the same value. The loop's rc.3 machinery then treats the throw as a
+ * review crash, which preserves the worktree and refuses the push.
+ */
+async function reviewOnce(params, systemPrompt, userMessage, label) {
+    return runStructuredLadder({
+        role: "adversary",
+        validation: { requiredKeys: ["verdict", "findings", "summary"], label },
+        logger: params.logger,
+        attempt: async (correction) => {
+            const r = await structuredCall({
+                model: params.model,
+                systemPrompt,
+                userMessage: correction ? `${userMessage}\n\n${correction}` : userMessage,
+                timeoutSeconds: params.timeoutSeconds,
+                apiKey: params.apiKey,
+                // The ladder does the extraction and validation, so the call itself
+                // must hand back the RAW reply rather than parsing it first --
+                // otherwise a malformed reply throws here and the text the ladder
+                // needs is gone.
+                skipParse: true,
+                logger: params.logger,
+            });
+            return {
+                raw: r.raw,
+                costUsd: r.costUsd,
+                tokensIn: r.tokensIn,
+                tokensOut: r.tokensOut,
+                sessionId: r.sdkSessionId,
+                truncated: r.stopReason === "max_tokens",
+            };
+        },
+    });
+}
 export async function runAdversarySdk(params) {
     const diffBytes = params.diffText.length;
     // Fast path: single call.
     if (diffBytes <= DIFF_SINGLE_CHUNK_BYTES) {
-        const r = await structuredCall({
-            model: params.model,
-            systemPrompt: params.systemPrompt,
-            userMessage: `Here is the diff to review:\n\n${params.diffText}`,
-            timeoutSeconds: params.timeoutSeconds,
-            apiKey: params.apiKey,
-            validation: { requiredKeys: ["verdict", "findings", "summary"], label: "adversary" },
-        });
-        return { parsed: r.parsed, sdkSessionId: r.sdkSessionId, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+        const r = await reviewOnce(params, params.systemPrompt, `Here is the diff to review:\n\n${params.diffText}`, "adversary");
+        return { parsed: r.parsed, sdkSessionId: r.sessionId, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
     }
     // Slow path: chunked.
     const chunks = splitDiffOnFileBoundaries(params.diffText);
@@ -1453,19 +1497,12 @@ export async function runAdversarySdk(params) {
         const chunkUserMsg = i === 0
             ? `Here is CHUNK ${i + 1}/${chunks.length} of the diff:\n\n${chunks[i]}`
             : `Prior chunks produced these findings so far:\n\n${JSON.stringify(findings, null, 2).slice(0, 8000)}\n\nHere is CHUNK ${i + 1}/${chunks.length}:\n\n${chunks[i]}`;
-        const r = await structuredCall({
-            model: params.model,
-            systemPrompt: chunkPrompt,
-            userMessage: chunkUserMsg,
-            timeoutSeconds: params.timeoutSeconds,
-            apiKey: params.apiKey,
-            validation: { requiredKeys: ["verdict", "findings", "summary"], label: `adversary-chunk-${i + 1}/${chunks.length}` },
-        });
+        const r = await reviewOnce(params, chunkPrompt, chunkUserMsg, `adversary-chunk-${i + 1}/${chunks.length}`);
         verdict = mergeVerdict(verdict, r.parsed.verdict);
         findings.push(...(Array.isArray(r.parsed.findings) ? r.parsed.findings : []));
         summaries.push(`Chunk ${i + 1}/${chunks.length}: ${r.parsed.summary}`);
         if (!sdkSessionId)
-            sdkSessionId = r.sdkSessionId;
+            sdkSessionId = r.sessionId;
         costUsd += r.costUsd;
         tokensIn += r.tokensIn;
         tokensOut += r.tokensOut;
@@ -1483,6 +1520,28 @@ export async function runAdversarySdk(params) {
         chunkedReview: { chunkCount: chunks.length, totalBytes: diffBytes },
     };
 }
+/**
+ * What this backend can do.
+ *
+ * Every entry is `true` because the Claude Agent SDK supports all of it, and
+ * because v1 was built assuming exactly this — which is the point of writing it
+ * down. The declaration is not interesting until a second backend fills the
+ * same shape and some of the answers are `false`. Then the harness can refuse a
+ * pairing at startup instead of discovering it mid-run, and this row is the
+ * baseline the other is compared against.
+ */
+export const CLAUDE_CODE_CAPABILITIES = {
+    id: "claude-code",
+    toolUse: true,
+    // `canUseTool`. This is the containment boundary; see backend.ts.
+    toolPermissionCallback: true,
+    // `tools: []`, the authoritative switch per sdk.d.ts. beta.28 established
+    // that `allowedTools: []` is NOT this.
+    disableAllTools: true,
+    resumeSession: true,
+    // The SDK reports `total_cost_usd` on the result frame.
+    reportsCostUsd: true,
+};
 /**
  * beta.61: fetch the list of live model ids from the Anthropic Models API
  * (GET /v1/models). IMPORTANT LIMITATION: Anthropic exposes NO pricing API --
