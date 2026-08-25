@@ -2453,6 +2453,85 @@ const MUTATIONS = [
     replace: 'if (deferToCi && ci === "failure") {',
     tests: ["tests/rc5-merge-gate-classification.test.mjs"],
   },
+
+  // ---- revise guidance: the caller can say what to DO, not only what to drop ----
+  {
+    // The whole point. Drop the fold-in and guidance is accepted, audited and
+    // echoed on the PR while never reaching the lead, the workers or the
+    // adversary -- the operator is told their steer landed and it silently did
+    // not. Worse than not having the parameter.
+    name: "guidance reaches the models (revise): a steer that never enters the brief is theatre",
+    file: "src/tools/registration.ts",
+    find: "      ...(guidance ? [guidanceAcceptanceLine(guidance)] : []),",
+    replace: "      // ...(guidance ? [guidanceAcceptanceLine(guidance)] : []),",
+    tests: ["tests/revise-guidance.test.mjs"],
+  },
+  {
+    // StitchGuard #1084 was not a worker ignoring a finding. It was a worker
+    // satisfying the finding's wording with a code comment. Strip the clause
+    // that rules that out and the guidance is just another restatement.
+    name: "a responsive-but-inert change is not a fix (revise): the #1084 dodge stays named",
+    file: "dist/tools/revise-guidance.js",
+    find: "does NOT count as addressing that finding. ",
+    replace: "is one way to address that finding. ",
+    tests: ["tests/revise-guidance.test.mjs"],
+  },
+  {
+    // Guidance must not be able to retire a finding. Remove the sentence that
+    // says so and the only thing standing between a steer and a quiet
+    // severity downgrade is the model's own restraint.
+    name: "guidance cannot weaken the gate (revise): the constraint must be stated, not assumed",
+    file: "dist/tools/revise-guidance.js",
+    find: "This ADDS intent and cannot subtract: it does not drop any finding and does not lower any finding's severity. ",
+    replace: "",
+    tests: ["tests/revise-guidance.test.mjs"],
+  },
+  {
+    // Position is load-bearing: guidance is the intent the findings serve, so a
+    // worker must read it before reaching finding 3, not after.
+    name: "guidance governs the findings (revise): it must be read before them, not after",
+    file: "src/tools/registration.ts",
+    find: "      ...(guidance ? [guidanceAcceptanceLine(guidance)] : []),\n      ...(demotedIdx.length",
+    replace: "      ...(demotedIdx.length",
+    tests: ["tests/revise-guidance.test.mjs"],
+  },
+  {
+    // A revise updates an existing PR and the body is only written on first
+    // open, so the review comment is the only echo that reaches the PR the
+    // guidance applies to.
+    name: "the PR echo survives a revise (revise): the body is never rewritten on an update",
+    file: "src/index.ts",
+    find: "          operatorGuidance: brief.operatorGuidance,",
+    replace: "          operatorGuidance: undefined,",
+    tests: ["tests/revise-guidance.test.mjs"],
+  },
+  {
+    // Whitespace-only input must be the same as no input, or an empty
+    // AUTHORITATIVE instruction is injected above every finding.
+    name: "empty guidance is no guidance (revise): an empty authoritative line is worse than none",
+    file: "dist/tools/revise-guidance.js",
+    find: "    return flattened.length > 0 ? flattened : undefined;",
+    replace: "    return flattened;",
+    tests: ["tests/revise-guidance.test.mjs"],
+  },
+  {
+    // The operator's words must survive verbatim; a normaliser that also
+    // truncates would silently change what was asked for.
+    name: "the operator's words survive (revise): normalising must not edit the instruction",
+    file: "dist/tools/revise-guidance.js",
+    find: "    const flattened = raw.replace(/\\s+/g, \" \").trim();",
+    replace: "    const flattened = raw.replace(/\\s+/g, \" \").trim().slice(0, 20);",
+    tests: ["tests/revise-guidance.test.mjs"],
+  },
+  {
+    // Provenance: a revise that went somewhere surprising has to be answerable
+    // from the audit trail, and "what were they told to build" is half of it.
+    name: "the steer is auditable (revise): what they were told to build is provenance",
+    file: "src/tools/registration.ts",
+    find: "              guidance: _reviseMeta?.guidance ?? null,",
+    replace: "              // guidance: _reviseMeta?.guidance ?? null,",
+    tests: ["tests/revise-guidance.test.mjs"],
+  },
 ];
 
 /**

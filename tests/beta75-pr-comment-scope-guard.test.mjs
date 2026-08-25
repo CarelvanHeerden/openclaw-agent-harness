@@ -92,7 +92,10 @@ test("beta75 #1: renderReviewComment renders verdict + findings + updated-PR mar
   const src = readFileSync(join(root, "src/index.ts"), "utf8");
   assert.match(src, /function renderReviewComment\(/, "helper exists");
   const idx = src.indexOf("function renderReviewComment(");
-  const body = src.slice(idx, idx + 1400);
+  // To the function's closing brace rather than a byte count: a fixed window
+  // silently shrinks the claim every time a comment is added above the thing
+  // being asserted, which is how the guidance echo broke this.
+  const body = src.slice(idx, src.indexOf("\n}", idx));
   assert.match(body, /verdict/, "renders the verdict");
   assert.match(body, /updatedExisting/, "marks an updated (existing) PR");
   assert.match(body, /Findings/, "renders findings");

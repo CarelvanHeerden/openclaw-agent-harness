@@ -13,6 +13,7 @@ import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
 import { buildProgressSnapshot } from "../orchestrator/progress.js";
 import { findingText, isConditionalFinding, removeOwningFindingLines } from "../orchestrator/finding-hygiene.js";
+import { guidanceAcceptanceLine, normaliseGuidance } from "./revise-guidance.js";
 import {
   OnboardingSlack,
   checkOnboardConsistency,
@@ -83,6 +84,8 @@ interface RunnableBrief {
    * CrystallisedBrief.resumeFromClarification.
    */
   resumeFromClarification?: boolean;
+  /** Free-text operator direction for a revise. See CrystallisedBrief. */
+  operatorGuidance?: string;
 }
 
 export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRuntime): () => void {
@@ -2479,10 +2482,13 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
   //   C (auto-demote conditional findings): any finding whose premise is an
   //     unresolved repo-state conditional is rewritten into a verify-first
   //     instruction rather than a hard mandate.
+  //   guidance: free-text operator direction about WHAT THE FIX MUST DO, folded
+  //     in as an authoritative instruction. dropFindings says what to ignore;
+  //     this says what to build. See src/tools/revise-guidance.ts.
   function buildReviseBrief(
     row: RevisableRow,
-    opts: { dropFindings?: number[] } = {},
-  ): (RunnableBrief & { _reviseMeta?: { total: number; dropped: number[]; demoted: number[] } }) | { error: string } {
+    opts: { dropFindings?: number[]; guidance?: string } = {},
+  ): (RunnableBrief & { _reviseMeta?: { total: number; dropped: number[]; demoted: number[]; guidance?: string } }) | { error: string } {
     const fnd = latestFindings(row.id);
     let orig: Partial<RunnableBrief> = {};
     try {
@@ -2530,8 +2536,14 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         findingLines.push(base);
       }
     });
+    // Guidance sits directly under the preamble and ABOVE the findings, because
+    // it governs how they are read: it is the intent the findings are meant to
+    // serve. A worker that reaches finding 3 has already been told what
+    // resolving it has to achieve.
+    const guidance = normaliseGuidance(opts.guidance);
     const acceptance = [
       "Address each adversary finding listed below without regressing the original acceptance criteria.",
+      ...(guidance ? [guidanceAcceptanceLine(guidance)] : []),
       ...(demotedIdx.length
         ? [
             "NOTE: findings marked CONDITIONAL PREMISE must be premise-verified against the current repo BEFORE any change; a contradicted premise means skip that finding, not fail.",
@@ -2560,12 +2572,17 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       riskLevel: (orig.riskLevel as RunnableBrief["riskLevel"]) ?? "low",
       reviseOfSessionId: row.id,
       pinnedBranch: row.branch,
+      // Also carried structurally, not only as prose inside acceptanceCriteria.
+      // The PR review comment renders it as its own section, and a revise never
+      // rewrites the PR body, so the echo needs a field it can read rather than
+      // a string it has to find by prefix.
+      operatorGuidance: guidance,
     };
     // _reviseMeta is advisory (audit/telemetry only) and is stripped before
     // the brief is handed to startSessionFromBrief so it never reaches the
     // loop / crystallised_prompt.
     return Object.assign(brief, {
-      _reviseMeta: { total: allFindings.length, dropped: droppedIdx, demoted: demotedIdx },
+      _reviseMeta: { total: allFindings.length, dropped: droppedIdx, demoted: demotedIdx, guidance },
     });
   }
 
@@ -2599,6 +2616,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           "Target resolution: pass `prNumber` OR `sessionId` to revise that specific one. Pass NEITHER to get back the revisable list (needsSelection=true) so the caller can present a picker and re-invoke with a choice. " +
           "The revise brief is built AUTOMATICALLY from the prior session's stored adversary findings + original goal -- the user does NOT need to know the session id or restate the findings. " +
           "beta.49: pass `dropFindings: [n, ...]` (1-based indices as shown by harness_list_revisable) to EXCLUDE stale/wrong findings from the revise (e.g. a finding whose premise is factually false). Conditional findings (premise depends on unverified repo state) are AUTOMATICALLY demoted to verify-premise-first, not dropped. " +
+          "Pass `guidance: \"...\"` to steer WHAT THE FIX SHOULD DO when a finding names a symptom but understates the remedy -- it is folded into the brief as an authoritative operator instruction the lead, workers and adversary all see. Guidance adds intent only; it cannot drop a finding or lower a severity (that is dropFindings). " +
           "Returns the new revise sessionId (fire-and-forget loop; watch harness_progress). requester must be in slack.authorised_users.",
         parameters: {
           type: "object",
@@ -2612,17 +2630,31 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               items: { type: "number", minimum: 1 },
               description: "1-based finding indices (from harness_list_revisable) to EXCLUDE from this revise. Use for stale/false findings.",
             },
+            guidance: {
+              type: "string",
+              minLength: 1,
+              // Bounded because it is copied into the lead, worker and adversary
+              // prompts on every cycle. 2000 chars is several paragraphs of
+              // direction; past that the operator wants a new brief, not a steer.
+              maxLength: 2000,
+              description:
+                "Free-text direction for THIS revise, from the human requesting it -- what the fix must actually DO. " +
+                "Folded into the brief as an authoritative instruction that reaches the lead, the workers and the adversary. " +
+                "Use when a finding names a symptom but understates the remedy (e.g. 'translate status=DUE_FOR_RENEWAL into a reviewDate < now() predicate rather than rejecting it'). " +
+                "It ADDS intent only: it cannot drop a finding or lower a severity -- use dropFindings for that.",
+            },
           },
           required: ["requester"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
-          const { requester, prNumber, sessionId, budgetUsd, dropFindings } = input as {
+          const { requester, prNumber, sessionId, budgetUsd, dropFindings, guidance } = input as {
             requester: string;
             prNumber?: number;
             sessionId?: string;
             budgetUsd?: number;
             dropFindings?: number[];
+            guidance?: string;
           };
           if (!liveConfig().slack.authorised_users.includes(requester)) {
             return { content: [{ type: "text", text: `Requester ${requester} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
@@ -2665,14 +2697,14 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (!row.pr_number || !row.branch) {
             return { content: [{ type: "text", text: `Session ${row.id} has no PR/branch to revise.` }], details: { ok: false, noPr: true } };
           }
-          const built = buildReviseBrief(row, { dropFindings });
+          const built = buildReviseBrief(row, { dropFindings, guidance });
           if ("error" in built) {
             return { content: [{ type: "text", text: built.error }], details: { ok: false, error: built.error } };
           }
           // Strip the advisory _reviseMeta before the brief goes to the loop /
           // crystallised_prompt (it's audit-only).
           const { _reviseMeta, ...cleanBrief } = built as RunnableBrief & {
-            _reviseMeta?: { total: number; dropped: number[]; demoted: number[] };
+            _reviseMeta?: { total: number; dropped: number[]; demoted: number[]; guidance?: string };
           };
           const started = startSessionFromBrief({
             requester,
@@ -2700,6 +2732,12 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               findingsTotal: _reviseMeta?.total ?? 0,
               findingsDropped: _reviseMeta?.dropped ?? [],
               findingsDemotedConditional: _reviseMeta?.demoted ?? [],
+              // The operator's steer, verbatim as folded in. A revise that went
+              // somewhere surprising should be answerable from the audit trail
+              // alone -- "what were they told to build" is half of that, and it
+              // is the half that was previously unrecorded because it could not
+              // be said at all.
+              guidance: _reviseMeta?.guidance ?? null,
             },
             started.sessionId,
           );
@@ -2711,6 +2749,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                   `Revising PR #${row.pr_number} (branch ${row.branch}) as session ${started.sessionId}. ` +
                   (_reviseMeta?.dropped.length ? `Dropped finding(s) ${_reviseMeta.dropped.join(", ")}. ` : "") +
                   (_reviseMeta?.demoted.length ? `Auto-demoted conditional finding(s) ${_reviseMeta.demoted.join(", ")} to verify-first. ` : "") +
+                  (_reviseMeta?.guidance ? `Operator guidance folded into the brief (findings and severities unchanged). ` : "") +
                   `New commits will update the same PR. Watch harness_progress for the new session.`,
               },
             ],
@@ -2722,6 +2761,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               branch: row.branch,
               findingsDropped: _reviseMeta?.dropped ?? [],
               findingsDemotedConditional: _reviseMeta?.demoted ?? [],
+              guidanceApplied: !!_reviseMeta?.guidance,
               feedback: {
                 poll: "harness_progress",
                 args: { sessionId: started.sessionId },

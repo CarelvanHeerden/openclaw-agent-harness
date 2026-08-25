@@ -2,7 +2,7 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: release candidate.* Version `1.0.0-rc.5`. 2247 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: release candidate.* Version `1.0.0-rc.6`. 2268 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 >
 > **beta.136:** the two settings that default to off are now documented where you would look for them: `repos.never_commit_paths` keeps a regenerated tree out of the commit, and without `brief.request_file_roots` a `harness_run({ requestPath })` is refused. Both are in [CONFIGURATION.md](docs/CONFIGURATION.md).
 > **beta.135:** onboarding asks which org, so one person can hold a separate token per org and per provider instead of one token standing for everything.
@@ -232,7 +232,7 @@ All 19 tools are called by the *agent*, not typed by the user. A person says
 
 **Once a PR exists**
 
-- `harness_revise` -- address the outstanding findings and update the SAME PR; takes `prNumber` or `sessionId`, or neither to get the picker
+- `harness_revise` -- address the outstanding findings and update the SAME PR; takes `prNumber` or `sessionId`, or neither to get the picker. Two optional steers: `dropFindings: [n]` excludes stale findings by index, and `guidance: "..."` says what the fix must actually DO, for when a finding names a symptom but understates the remedy and each cycle keeps satisfying it the cheapest way. Guidance is folded into the brief as an authoritative instruction the lead, workers and adversary all see; it adds intent only and cannot drop a finding or lower a severity.
 - `harness_list_revisable` -- shipped PRs that are not merge-ready, for "what's still outstanding?"
 - `harness_merge_pr` -- merge and verify the deploy. Refuses anything the review did not sign off on, and the refusal says why.
 
@@ -305,7 +305,7 @@ DM-flow privacy note: the harness deletes **its own** onboarding prompt after st
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 2247 tests as of 1.0.0-rc.5
+npm test        # runs 2268 tests as of 1.0.0-rc.6
 npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 ```
 
@@ -319,7 +319,7 @@ For repeatable smoke tests, `harness_bootstrap_test_repo` creates a fresh dispos
 
 - `npm run typecheck` -- strict TS, no `any` leaks in `src/`
 - `npm run build` -- emits `dist/` + copies `schema.sql`
-- `npm test` -- Node test runner, 2247 tests as of `1.0.0-rc.5`
+- `npm test` -- Node test runner, 2268 tests as of `1.0.0-rc.6`
 - `npm run test:no-build` -- the same tests against the committed `dist/`, no build
 - `npm run smoke` -- post-build bootstrap sanity
 
@@ -336,7 +336,7 @@ against exactly the code the gateway loads -- which is the thing you want to
 verify anyway -- with no toolchain beyond Node:
 
 ```bash
-npm run test:no-build   # 2247 tests, no devDependencies required
+npm run test:no-build   # 2268 tests, no devDependencies required
 ```
 
 This is the supported way to check a release for yourself rather than taking the

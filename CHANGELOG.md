@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.0.0-rc.6
+
+**`harness_revise` can now be told what to do, not only what to ignore.**
+
+The revise brief is built entirely from the prior session's stored adversary
+findings. `dropFindings` says which to EXCLUDE, so every steer a human had was
+subtractive — the caller could say what to ignore and never what to build.
+
+That holds up while a finding states the required behaviour. It fails when a
+finding correctly identifies a SYMPTOM and understates the remedy, because every
+cycle re-reads the same stored text and a worker satisfies it the cheapest way
+available.
+
+StitchGuard PR #1084 is the shape. The finding read "external monitors cannot
+filter the list API by `status=DUE_FOR_RENEWAL` server-side". Twice, a worker
+"addressed" it by adding a code comment explaining the limitation — a true and
+responsive reading of those words. Nothing in the revise input could say
+"translate the value into a `reviewDate < now()` predicate instead of rejecting
+it". A human wrote the six lines by hand, after three cycles and $25.48.
+
+The new optional `guidance` parameter carries free text from the human
+requesting the revise, folded into the brief as a labelled, authoritative
+instruction — the same treatment `harness_answer` gives a qualified confirmation
+reply, which becomes a brief correction that supersedes anything contradicting
+it.
+
+It lands in `acceptanceCriteria`, above the findings it governs, because that
+array is what reaches the lead planner, the worker system prompts and the
+adversary's spec-fidelity check. One insertion, three readers, each pinned by a
+test so the delivery cannot silently lapse.
+
+The instruction names the failure directly: a change that satisfies a finding's
+wording without delivering the guidance — documenting the limitation, commenting
+on it, renaming around it — does not count as addressing that finding.
+
+**It adds intent and cannot subtract.** Guidance cannot drop a finding or lower a
+severity; that stays the explicit, indexed job of `dropFindings`, where the
+operator has to name what they are excluding and it shows up in the audit trail
+as an exclusion. Structurally this already held — exclusion is driven only by
+`dropFindings`, and severity is assigned by the adversary on a fresh review each
+cycle, never read back out of the brief — and a test asserts guidance is never
+referenced inside the finding-rendering loop, so it cannot acquire that reach
+later. The prompt text says so too, because the models are the only thing that
+could conflate the two.
+
+Recorded verbatim in the `tool.revise.started` audit entry: a revise that went
+somewhere surprising should be answerable from the audit trail, and "what were
+they told to build" is half of that.
+
+Echoed on the PR in the **review comment** rather than the body. The body does
+render guidance, via `acceptanceCriteria` — but `createPullRequest` only writes a
+body on first open, and a revise updates an existing PR, so the body echo would
+have worked everywhere except the one case guidance exists for.
+
+2268 tests, 278 mutations. The guidance logic is a pure module rather than inline
+in the tool closure, so its behaviour is tested directly instead of asserted
+against source that cannot be imported.
+
 ## 1.0.0-rc.5
 
 Reported from production against rc.4, on a PR that had been stuck for days.
