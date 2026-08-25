@@ -1,14 +1,14 @@
 /**
  * Worker.
  *
- * Executes ONE sub-task inside a git worktree, using
- * `@anthropic-ai/claude-agent-sdk`'s `query()` with:
+ * Executes ONE sub-task inside a git worktree, through an injected backend
+ * call, with:
  *   - a scoped system prompt (built from the brief + sub-task)
- *   - MCP tools: read/write/edit (SDK built-ins), plus our custom
- *     harness_bash tool guarded by bash-guard.
- *   - `canUseTool` permission callback that hard-blocks Bash outside the
- *     whitelist, blocks writes to path_denylist, blocks git push.
- *   - session tagging so the SDK session id is captured for resume.
+ *   - read/write/edit tools, plus our custom harness_bash tool guarded by
+ *     bash-guard.
+ *   - a permission callback that hard-blocks Bash outside the whitelist,
+ *     blocks writes to path_denylist, blocks git push.
+ *   - session tagging so the backend session id is captured for resume.
  *
  * The worker COMMITS but does not PUSH. Push happens once, at the end,
  * by the orchestrator after adversarial review passes.

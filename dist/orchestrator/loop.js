@@ -26,7 +26,7 @@
  * behaved differently, not a unit test that asserts the decision differed.
  */
 import { elideFinalScopeSubTask } from "./lead.js";
-import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
+import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";

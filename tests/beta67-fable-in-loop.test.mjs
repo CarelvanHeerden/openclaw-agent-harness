@@ -248,7 +248,7 @@ test("beta.92 SUPERSEDES P0b: loop no longer runs the timed LLM revise-spec turn
   assert.match(src, /buildScopedReviseHint/);
 });
 test("P0b: revise-spec SDK adapter reads findings + refreshes workerContext", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /export async function runLeadReviseSpecSdk/);
   assert.match(src, /REVISION SPEC turn/);
   assert.match(src, /workerContext/);

@@ -33,7 +33,7 @@ try {
   ({ parseHarnessConfig } = await import("../dist/config.js"));
   ({ PLUGIN_VERSION } = await import("../dist/version.js"));
   ({ SCOUT_MAX_TURNS, buildScoutSystemPrompt } = await import("../dist/orchestrator/lead-scout.js"));
-  ({ consumeWorkerStream } = await import("../dist/adapters/claude-sdk.js"));
+  ({ consumeWorkerStream } = await import("../dist/adapters/claude-code.js"));
 } catch {
   withTimeout = undefined;
 }
@@ -228,7 +228,7 @@ test("beta106: a scout turn cap exists and is passed to the SDK", { skip }, () =
   // Asserted against the BUILT artifact too: runLeadScoutSdk loads the SDK at
   // module scope with no injection seam, so the shipped bundle carrying the cap
   // is the strongest check available without refactoring that seam.
-  for (const f of ["src/adapters/claude-sdk.ts", "dist/adapters/claude-sdk.js"]) {
+  for (const f of ["src/adapters/claude-code.ts", "dist/adapters/claude-code.js"]) {
     assert.match(S(f), /maxTurns: params\.maxTurns/, `the cap must reach sdk.query options in ${f}`);
   }
   assert.match(S("src/index.ts"), /maxTurns: config\.loop\.lead_scout_max_turns \?\? SCOUT_MAX_TURNS/);
@@ -244,7 +244,7 @@ test("beta106: the prompt states the budget and no longer invites exhaustive exp
 });
 
 test("beta106: the scout hard-stops and keeps what it already has", { skip }, () => {
-  for (const f of ["src/adapters/claude-sdk.ts", "dist/adapters/claude-sdk.js"]) {
+  for (const f of ["src/adapters/claude-code.ts", "dist/adapters/claude-code.js"]) {
     const sdk = S(f);
     // The ceiling must be derived from the configured budget, not a constant:
     // a fixed hard stop is how an unbounded scout hides.

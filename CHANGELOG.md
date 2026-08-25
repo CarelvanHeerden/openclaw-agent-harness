@@ -60,6 +60,37 @@ Also removed 24 stale `dist/` artifacts for the renamed and deleted modules
 (`tsc` does not clean, and `dist/` is committed), plus four for
 `adapters/github-pr`, dead since beta.32.
 
+### The Claude adapter split, so a second backend can exist
+
+`claude-sdk.ts` was 2,481 lines holding two unrelated things: the Claude Agent
+SDK integration, and a pile of code that lived there only because that is where
+it was first needed. It is now `claude-code.ts` plus `adapters/shared/`:
+
+- `shared/json.ts` — extract → validate → repair → retry, and the error that
+  ladder throws.
+- `shared/pricing.ts` — the price table and the projection arithmetic.
+- `shared/diff.ts` — chunking a diff on `diff --git` boundaries.
+- `shared/stream.ts` — the "has this stream gone quiet" tick.
+- `shared/env.ts` — the environment deny-list.
+
+Behaviour is unchanged; the code moved verbatim.
+
+**The gate:** exactly one file in `src/` may import
+`@anthropic-ai/claude-agent-sdk`, enforced by a test. It checks *imports*, not
+mentions — `config.ts` documents the `models.anthropic` block and names the SDK
+in prose, correctly, and rewording a true comment to satisfy a grep would make
+the gate weaker rather than stronger.
+
+**Why the env filter is the load-bearing part.** A second copy of shared code
+drifts, and the drift that matters here is not cosmetic. `shared/env.ts` is the
+only thing keeping `OAH_VAULT_KEY` and the GitHub PAT out of an agent
+subprocess, and the ACP branch already spawns OpenCode with the full
+`process.env` — precisely because it grew its own spawn path rather than reusing
+this one. One filter, used by both backends, means a new backend inherits the
+protection instead of having to remember it. `extra` is applied *after* the
+filter, so passing a secret to a child is explicit and greppable at the call
+site; nothing is ever allow-listed by pattern.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**

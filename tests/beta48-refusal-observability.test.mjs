@@ -77,7 +77,7 @@ test("beta48 P5: a disallowed base command is still rejected", { skip: !guard },
 // ----------------------------------------------------------------------------
 // C1: worker final message capture + loop.worker_end_turn breadcrumb (source).
 // ----------------------------------------------------------------------------
-const sdkSrc = read("src/adapters/claude-sdk.ts");
+const sdkSrc = read("src/adapters/claude-code.ts");
 const workerSrc = read("src/orchestrator/worker.ts");
 const loopSrc = read("src/orchestrator/loop.ts");
 

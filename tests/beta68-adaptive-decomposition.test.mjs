@@ -9,7 +9,7 @@
 // human-in-Cursor on small changes.
 //
 // FIX: replace the flat rule with complexity-tiered guidance in the lead
-// prompt (src/adapters/claude-sdk.ts): TRIVIAL single-file -> exactly ONE
+// prompt (src/adapters/claude-code.ts): TRIVIAL single-file -> exactly ONE
 // mutate sub-task (no ceremony probe/verify); MODERATE -> 2-4; LARGE -> 3-8,
 // hard cap 20. Bias toward fewer.
 //
@@ -27,7 +27,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const S = (p) => readFileSync(join(root, p), "utf8");
 
-const sdk = S("src/adapters/claude-sdk.ts");
+const sdk = S("src/adapters/claude-code.ts");
 
 test("beta.68: the flat 'Prefer 3-8 sub-tasks' rule is GONE from the lead prompt", () => {
   assert.equal(

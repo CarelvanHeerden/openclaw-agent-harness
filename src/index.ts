@@ -79,7 +79,7 @@ import {
   fetchLiveModelIds,
   assessModelPricingHealth,
   registerDeniedSdkEnvVar,
-} from "./adapters/claude-sdk.js";
+} from "./adapters/claude-code.js";
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair, type DeployRepairDeps, type DeployVerifyLite } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt, type CrystallisedBrief } from "./crystallise/prompt-refiner.js";

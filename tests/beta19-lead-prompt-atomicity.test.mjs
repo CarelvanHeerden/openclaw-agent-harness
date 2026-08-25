@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const sdkSourcePath = resolve(here, "..", "src", "adapters", "claude-sdk.ts");
+const sdkSourcePath = resolve(here, "..", "src", "adapters", "claude-code.ts");
 
 // Reading source directly rather than importing dist, because the system
 // prompt lives inside a function's local array literal and isn't exported.

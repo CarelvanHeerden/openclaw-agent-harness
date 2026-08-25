@@ -170,7 +170,7 @@ test("beta81/C4: recovery circuit breaker wired + lead JSON retry present", () =
   const rec = S("src/state/recovery.ts");
   assert.match(rec, /recordResumeAndCheckBreaker/);
   assert.match(rec, /recovery_bounce_loop|breaker.*tripped|tripped/i);
-  const sdk = S("src/adapters/claude-sdk.ts");
+  const sdk = S("src/adapters/claude-code.ts");
   assert.match(sdk, /anti-prose-drift|retrying ONCE with a terse output-contract/i);
   assert.match(sdk, /jsonRetryEnabled/);
 });

@@ -1,14 +1,14 @@
 /**
  * Worker.
  *
- * Executes ONE sub-task inside a git worktree, using
- * `@anthropic-ai/claude-agent-sdk`'s `query()` with:
+ * Executes ONE sub-task inside a git worktree, through an injected backend
+ * call, with:
  *   - a scoped system prompt (built from the brief + sub-task)
- *   - MCP tools: read/write/edit (SDK built-ins), plus our custom
- *     harness_bash tool guarded by bash-guard.
- *   - `canUseTool` permission callback that hard-blocks Bash outside the
- *     whitelist, blocks writes to path_denylist, blocks git push.
- *   - session tagging so the SDK session id is captured for resume.
+ *   - read/write/edit tools, plus our custom harness_bash tool guarded by
+ *     bash-guard.
+ *   - a permission callback that hard-blocks Bash outside the whitelist,
+ *     blocks writes to path_denylist, blocks git push.
+ *   - session tagging so the backend session id is captured for resume.
  *
  * The worker COMMITS but does not PUSH. Push happens once, at the end,
  * by the orchestrator after adversarial review passes.
@@ -80,9 +80,11 @@ export interface WorkerDeps {
         error: (m: string, meta?: unknown) => void;
     };
     /**
-     * Injected SDK call. In production this is a thin wrapper around
-     * `@anthropic-ai/claude-agent-sdk`'s `query()` -- see
-     * `src/adapters/claude-sdk.ts`. In tests it is a stub.
+     * Injected model call. In production this is a thin wrapper around whichever
+     * backend the role is configured for -- `src/adapters/claude-code.ts` over
+     * the Claude Agent SDK, or the ACP client over an OpenCode subprocess. In
+     * tests it is a stub. This module never learns which it got, which is the
+     * point: the sub-task contract is the same either way.
      */
     runWorkerModel: (input: {
         worktreePath: string;

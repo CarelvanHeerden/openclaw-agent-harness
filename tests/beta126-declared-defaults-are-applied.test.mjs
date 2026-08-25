@@ -150,7 +150,7 @@ test("the justified list does not outlive its entries", { skip }, () => {
 
 test("max_output_tokens reads back from the effective config without an operator setting it", { skip }, async () => {
   const cfg = parseHarnessConfig(MINIMAL);
-  const { DEFAULT_SDK_MAX_OUTPUT_TOKENS } = await import("../dist/adapters/claude-sdk.js");
+  const { DEFAULT_SDK_MAX_OUTPUT_TOKENS } = await import("../dist/adapters/claude-code.js");
   assert.equal(
     cfg.models.max_output_tokens,
     DEFAULT_SDK_MAX_OUTPUT_TOKENS,
@@ -164,7 +164,7 @@ test("the two 64000s cannot drift apart", { skip }, async () => {
   // One value, declared in config.ts, in buildSdkEnv's fallback, in the
   // manifest and in config.schema.json. Three of those are now checked against
   // the fourth by the tests above; this closes the last pair.
-  const { DEFAULT_SDK_MAX_OUTPUT_TOKENS } = await import("../dist/adapters/claude-sdk.js");
+  const { DEFAULT_SDK_MAX_OUTPUT_TOKENS } = await import("../dist/adapters/claude-code.js");
   assert.equal(parseHarnessConfig(MINIMAL).models.max_output_tokens, DEFAULT_SDK_MAX_OUTPUT_TOKENS);
 });
 

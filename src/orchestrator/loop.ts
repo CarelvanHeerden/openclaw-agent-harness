@@ -36,7 +36,7 @@ import { elideFinalScopeSubTask } from "./lead.js";
 import type { ReviewReport, ReviewFinding } from "./adversary.js";
 import type { WorkerResult } from "./worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
-import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
+import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";

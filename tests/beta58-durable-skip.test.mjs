@@ -117,7 +117,7 @@ test("beta.58 D1/D2 wiring: loop captures paused sub-task title+intent at pause"
 });
 
 test("beta.58 D3 wiring: lead prompt forbids promoting a conditional premise to unconditional", () => {
-  const sdk = S("src/adapters/claude-sdk.ts");
+  const sdk = S("src/adapters/claude-code.ts");
   assert.match(sdk, /CONDITIONAL PREMISE FINDINGS STAY CONDITIONAL/);
   assert.match(sdk, /the premise gate WINS/);
   assert.match(sdk, /OPERATOR SKIP IS ABSOLUTE/);

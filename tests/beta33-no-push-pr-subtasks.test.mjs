@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const sdkSourcePath = resolve(here, "..", "src", "adapters", "claude-sdk.ts");
+const sdkSourcePath = resolve(here, "..", "src", "adapters", "claude-code.ts");
 const sdkSrc = readFileSync(sdkSourcePath, "utf8");
 
 test("beta.33 prompt: lead is told NOT to plan push/PR sub-tasks", () => {

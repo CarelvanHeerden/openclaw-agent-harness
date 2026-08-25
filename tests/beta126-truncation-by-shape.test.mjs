@@ -28,7 +28,7 @@ import assert from "node:assert/strict";
 
 let extractJson;
 try {
-  ({ extractJson } = await import("../dist/adapters/claude-sdk.js"));
+  ({ extractJson } = await import("../dist/adapters/claude-code.js"));
 } catch {
   extractJson = null;
 }

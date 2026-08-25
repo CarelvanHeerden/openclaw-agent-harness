@@ -10,7 +10,7 @@
 //   - buildWorkerSystemPrompt: injects the context block (before ## Rules) when
 //     workerContext present; unchanged cold prompt when absent (regression).
 //   - LeadPlanSubTask: workerContext is optional/additive (parse both shapes).
-//   - Lead prompt (claude-sdk.ts) instructs Fable to emit workerContext.
+//   - Lead prompt (claude-code.ts) instructs Fable to emit workerContext.
 //   - HARD BOUNDARY: adversary (adversary.ts) never references
 //     workerContext — warm context is dev-worker-only.
 import test from "node:test";
@@ -144,7 +144,7 @@ test("beta66: LeadPlanSubTask carries optional workerContext + WorkerContext typ
 });
 
 test("beta66: lead prompt instructs Fable to emit workerContext (dev-worker only)", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /WARM WORKER CONTEXT/);
   assert.match(src, /workerContext\?: WorkerContext/);
   assert.match(src, /DEV WORKERS ONLY/);

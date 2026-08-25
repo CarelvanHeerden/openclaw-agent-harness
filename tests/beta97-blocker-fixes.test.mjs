@@ -21,7 +21,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SlackProgressPoster } from "../dist/slack/progress-poster.js";
 import { OrchestratorLoop, isConvergingFindingTrend } from "../dist/orchestrator/loop.js";
-import { extractJson } from "../dist/adapters/claude-sdk.js";
+import { extractJson } from "../dist/adapters/claude-code.js";
 
 // ---- Fix #8: plan-JSON truncation is the `no JSON in output` root cause ------
 

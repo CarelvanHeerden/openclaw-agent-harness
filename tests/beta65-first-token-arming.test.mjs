@@ -42,7 +42,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 
 let consumeWorkerStream = null;
 try {
-  ({ consumeWorkerStream } = await import("../dist/adapters/claude-sdk.js"));
+  ({ consumeWorkerStream } = await import("../dist/adapters/claude-code.js"));
 } catch {
   consumeWorkerStream = null;
 }
@@ -163,7 +163,7 @@ test("beta65/P0: healthy fast stream disarms both phases cleanly, no abort",
 
 // ---- (4) SOURCE: BOTH timers exist; phase-1 armed BEFORE the for-await ----
 test("beta65/P0: BOTH watchdogs exist AND the phase-1 (stream-open) timer is armed BEFORE the for-await loop (source)", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   const consumeStart = src.indexOf("export async function consumeWorkerStream");
   assert.ok(consumeStart >= 0, "consumeWorkerStream present");
   const body = src.slice(consumeStart);
@@ -237,7 +237,7 @@ test("beta65/P0: worker threads BOTH windows into runWorkerModel (source)", () =
 });
 
 test("beta65/P0: runWorkerSdk threads streamOpenTimeoutSeconds into consumeWorkerStream (source)", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /streamOpenTimeoutSeconds\?: number/);
   assert.match(src, /streamOpenTimeoutSeconds: params\.streamOpenTimeoutSeconds/);
 });

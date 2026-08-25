@@ -21,7 +21,7 @@ let crystallisePrompt, buildWorkerSystemPrompt, pickConceptsForSubTask, formatCo
 try {
   ({ crystallisePrompt } = await import("../dist/crystallise/prompt-refiner.js"));
   ({ buildWorkerSystemPrompt, pickConceptsForSubTask } = await import("../dist/orchestrator/worker.js"));
-  ({ formatConceptBlockForCrystalliser } = await import("../dist/adapters/claude-sdk.js"));
+  ({ formatConceptBlockForCrystalliser } = await import("../dist/adapters/claude-code.js"));
 } catch {
   crystallisePrompt = null;
 }

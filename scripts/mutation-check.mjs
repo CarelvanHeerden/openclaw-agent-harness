@@ -117,7 +117,7 @@ const MUTATIONS = [
   },
   {
     name: "full scout report (b104): a multi-message report is not cut to its last chunk",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "allText: opts.accumulateAllText ? allText.join(\"\\n\\n\") : undefined,",
     replace: "allText: undefined,",
     tests: ["tests/beta104-lead-repo-scout.test.mjs"],
@@ -195,21 +195,21 @@ const MUTATIONS = [
   },
   {
     name: "scout turn cap (b106): the wall clock alone cannot bound a tool call in flight",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "...(params.maxTurns && params.maxTurns > 0 ? { maxTurns: params.maxTurns } : {}),",
     replace: "...({}),",
     tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
   },
   {
     name: "scout hard stop (b106): the harness stops waiting and keeps the partial report",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "const hardStopMs = params.timeoutSeconds * 1000 + 30_000;",
     replace: "const hardStopMs = 24 * 60 * 60 * 1000;",
     tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
   },
   {
     name: "streamed scout text (b106): a caller that gives up can still salvage prose",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "opts.onText?.(text);",
     replace: "void text;",
     tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
@@ -828,13 +828,8 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/beta118-orphan-routing.test.mjs"],
   },
-  {
-    name: "the slot count is read before drain (b118): after it, the pool is empty and the audit always says zero",
-    file: "dist/orchestrator/loop.js",
-    find: "                const slots = pool.createdCount;\n                await pool.drain();",
-    replace: "                await pool.drain();\n                const slots = pool.createdCount;",
-    tests: ["tests/beta118-orphan-routing.test.mjs"],
-  },
+  // The b118 slot-count mutation went out with the worktree pool in v2.0.0.
+  // There is no pool left to drain, so there is no read order to police.
   {
     name: "the adversary must name the trigger (b118): without it the registry finding has no owner to route to",
     file: "src/orchestrator/adversary.ts",
@@ -1296,35 +1291,35 @@ const MUTATIONS = [
   // wrong. These pin the signal.
   {
     name: "truncation is read off the DOCUMENT (b126): b125 waited for a stop_reason the SDK never sent",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: 'const wasTruncated = stopReason === "max_tokens" || looksTruncatedJson(raw);',
     replace: 'const wasTruncated = stopReason === "max_tokens";',
     tests: ["tests/beta126-lead-retry-ladder.test.mjs", "tests/beta126-truncation-by-shape.test.mjs"],
   },
   {
     name: "an unclosed container is truncation, not prose (b126): the sentence that sent an operator after tools: []",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/shared/json.js",
     find: "if (looksTruncatedJson(text)) {",
     replace: "if (false) {",
     tests: ["tests/beta126-truncation-by-shape.test.mjs", "tests/beta97-blocker-fixes.test.mjs"],
   },
   {
     name: "the shape check respects string state (b126): a brace inside a string would fake every truncation",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/shared/json.js",
     find: "if (!/[{[]/.test(text))",
     replace: "if (false)",
     tests: ["tests/beta126-truncation-by-shape.test.mjs"],
   },
   {
     name: "a failed attempt is still billed (b126): two Opus calls were recorded as $0.00",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "err.costUsd = costUsd;",
     replace: "err.costUsd = 0;",
     tests: ["tests/beta126-lead-retry-ladder.test.mjs"],
   },
   {
     name: "a retry bills for BOTH attempts (b126): attempt 1's spend vanished on every retried plan",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "costUsd: spentSoFar + r2.costUsd,",
     replace: "costUsd: r2.costUsd,",
     tests: ["tests/beta126-lead-retry-ladder.test.mjs"],
@@ -1498,7 +1493,7 @@ const MUTATIONS = [
     // Without the rung the run dies holding a plan that is one token from
     // usable -- which is exactly what f75f7db6 did.
     name: "a complete-but-invalid plan gets its re-ask (b128): the seq_note:undefined death",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "if (fault && params.leadSyntaxRetryEnabled !== false) {",
     replace: "if (false) {",
     tests: ["tests/beta128-invalid-json-rung.test.mjs"],
@@ -1508,7 +1503,7 @@ const MUTATIONS = [
     // does not name the fault is the b127 message that gave it nothing to act
     // on, dressed up as a new rung.
     name: "the re-ask names the offending literal (b128): a correction with no fault in it is noise",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/shared/json.js",
     find: "lines.push(`The token \\`${located.token}\\` is a JavaScript literal, not a JSON value. JSON has no ` +",
     replace: "lines.push(``.slice(0) +",
     tests: ["tests/beta128-invalid-json-rung.test.mjs"],
@@ -1517,14 +1512,14 @@ const MUTATIONS = [
     // String-awareness. Blaming an `undefined` that lives inside a string
     // sends the model to rewrite a healthy field.
     name: "the fault scan respects string state (b128): prose is allowed to say 'undefined'",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/shared/json.js",
     find: "if (inString)\n            continue;\n        for (const token of NON_JSON_LITERALS) {",
     replace: "if (false)\n            continue;\n        for (const token of NON_JSON_LITERALS) {",
     tests: ["tests/beta128-invalid-json-rung.test.mjs"],
   },
   {
     name: "every attempt is reported, not just the fatal one (b128): a recovered truncation left no trace",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "params.onAttempt?.(info);",
     replace: "void info;",
     tests: ["tests/beta128-invalid-json-rung.test.mjs"],
@@ -1967,8 +1962,8 @@ const MUTATIONS = [
 
   // ------------------------------------------------- the credential vault
   {
-    name: "vault key env strip: the worker subprocess never inherits the key",
-    file: "dist/adapters/claude-sdk.js",
+    name: "vault key env strip: no agent subprocess ever inherits the key",
+    file: "dist/adapters/shared/env.js",
     // Dropped from the exact denylist. The regex beside it does NOT cover this
     // name -- it matches API_KEY / ACCESS_KEY / PRIVATE_KEY, not a bare _KEY
     // suffix -- so removing the entry really does hand the key to the child.

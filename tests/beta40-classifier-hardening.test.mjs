@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(resolve(here, "..", "src", "adapters", "claude-sdk.ts"), "utf8");
+const src = readFileSync(resolve(here, "..", "src", "adapters", "claude-code.ts"), "utf8");
 
 // ============================================================
 // 1. permissionMode: "plan" is GONE from the structured extractors

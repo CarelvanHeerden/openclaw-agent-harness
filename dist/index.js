@@ -49,7 +49,7 @@ import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, ge
 import { canPushWorkflows } from "./orchestrator/workflow-scope.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
-import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, registerDeniedSdkEnvVar, } from "./adapters/claude-sdk.js";
+import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, registerDeniedSdkEnvVar, } from "./adapters/claude-code.js";
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt } from "./crystallise/prompt-refiner.js";

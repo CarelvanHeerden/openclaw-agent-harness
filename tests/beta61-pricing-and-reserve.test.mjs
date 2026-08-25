@@ -20,7 +20,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const S = (p) => readFileSync(join(root, p), "utf8");
 
-const sdk = await import("../dist/adapters/claude-sdk.js");
+const sdk = await import("../dist/adapters/claude-code.js");
 
 // ---- Fix 1: opus pricing + fail-safe unknown-model fallback ----
 test("beta61: opus-tier models are now priced (no longer fall through to sonnet)", () => {

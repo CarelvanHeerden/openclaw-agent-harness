@@ -23,7 +23,7 @@ const S = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 
 let sdk;
 try {
-  sdk = await import("../dist/adapters/claude-sdk.js");
+  sdk = await import("../dist/adapters/claude-code.js");
 } catch {
   sdk = null;
 }
@@ -87,7 +87,7 @@ test("beta.99: benign frames are NOT reported as truncation", () => {
 });
 
 test("beta.99: structuredCall OR-s truncation across frames and overrides stop_reason", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /if \(messageIndicatesTruncation\(message\)\) truncationSeen = true;/);
   assert.match(src, /if \(truncationSeen\) stopReason = "max_tokens";/);
 });
@@ -145,7 +145,7 @@ test("beta.110: no api key -> filtered env, not an unfiltered inherit", () => {
 // Link 4: the retry must shrink the contract, and must not contradict itself.
 // ---------------------------------------------------------------------------
 test("beta.99: the truncation retry drops the corrective note that demanded MORE prose", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   // The truncation branch must rebuild from baseMessage (brief only). Building
   // it from userMessage would re-inject the b67 "add more context" note into a
   // prompt whose entire purpose is to produce less.
@@ -162,7 +162,7 @@ test("beta.99: the truncation retry drops the corrective note that demanded MORE
 });
 
 test("beta.99: the truncation retry shrinks MECHANICALLY, not by polite request", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   // "please be terser" produced three identical truncations on b98. Name the
   // field to delete and give numeric caps instead.
   assert.match(src, /OMIT .{0,2}codeExcerpts.{0,2} ENTIRELY/);
@@ -223,7 +223,7 @@ test("beta.99: repair leaves an already-complete document byte-identical", () =>
 });
 
 test("beta.99: a structuredCall failure carries the FULL raw reply for salvage", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   // The error MESSAGE embeds only the first 4000 chars -- far too little to
   // rebuild a plan from -- so the untruncated text rides on the error object.
   assert.match(src, /\(err as StructuredCallError\)\.rawText = raw;/);
@@ -238,14 +238,14 @@ test("beta.99: a structuredCall failure carries the FULL raw reply for salvage",
 });
 
 test("beta.99: salvage only accepts a plan with the required keys and >=1 sub-task", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   const fn = src.slice(src.indexOf("function salvageLeadPlan"));
   assert.match(fn, /typeof p\.repo !== "string" \|\| typeof p\.branch !== "string"/);
   assert.match(fn, /p\.subTasks\.length === 0/);
 });
 
 test("beta.99: salvage is gated and its incompleteness is announced, not hidden", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /params\.leadSalvageEnabled === false/);
   assert.match(src, /This plan is INCOMPLETE/);
 });
@@ -273,7 +273,7 @@ test("beta.99: the bounded top-up is wired as a lead dep", () => {
 });
 
 test("beta.99: the top-up prompt forbids restating the plan and bounds its own size", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   const fn = src.slice(src.indexOf("export async function runLeadWorkerContextSdk"));
   assert.match(fn, /Do NOT restate the plan/);
   assert.match(fn, /SIZE LIMIT \(HARD\)/);
@@ -305,14 +305,14 @@ test("beta.99: mergeWorkerContexts never overwrites context the lead already got
 // P0-7: the structured-call stream-open watchdog.
 // ---------------------------------------------------------------------------
 test("beta.99: structuredCall arms a stream-open watchdog and disarms it on system/init", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /let streamOpenTimedOut = false;/);
   assert.match(src, /streamOpened = true;\s*\n\s*if \(streamOpenTimer\) clearTimeout\(streamOpenTimer\);/);
   assert.equal(sdk?.DEFAULT_STREAM_OPEN_TIMEOUT_SECONDS, 120);
 });
 
 test("beta.99: a stream-open wedge aborts with a DISTINCT, retryable error", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /\[stream_open_timeout\] the SDK stream never opened within/);
   // It must join the lead's bounded retry set: the model never spoke, so a
   // fresh call is the correct remedy rather than a hard plan failure.
@@ -320,7 +320,7 @@ test("beta.99: a stream-open wedge aborts with a DISTINCT, retryable error", () 
 });
 
 test("beta.99: the watchdog is stream-open, NOT first-token (partials are off)", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   // structuredCall never sets includePartialMessages, so assistant text lands
   // only when the turn completes. A first-token timer would therefore fire on
   // every slow-but-healthy call and just duplicate the outer timeout.

@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 
 let runLeadSdk, __setSdkForTests;
 try {
-  ({ runLeadSdk, __setSdkForTests } = await import("../dist/adapters/claude-sdk.js"));
+  ({ runLeadSdk, __setSdkForTests } = await import("../dist/adapters/claude-code.js"));
 } catch {
   runLeadSdk = null;
 }
@@ -146,7 +146,7 @@ test("an unset ceiling still reaches the subprocess via buildSdkEnv's own fallba
   // entry looked like it left the subprocess uncapped; it never did, because
   // buildSdkEnv substitutes DEFAULT_SDK_MAX_OUTPUT_TOKENS. Pinned so nobody
   // reaches for that explanation again.
-  const { DEFAULT_SDK_MAX_OUTPUT_TOKENS } = await import("../dist/adapters/claude-sdk.js");
+  const { DEFAULT_SDK_MAX_OUTPUT_TOKENS } = await import("../dist/adapters/claude-code.js");
   await withSdk([{ text: COMPLETE_PLAN }], async (f) => {
     await runLeadSdk({ ...base });
     assert.equal(f.calls[0].env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS, String(DEFAULT_SDK_MAX_OUTPUT_TOKENS));

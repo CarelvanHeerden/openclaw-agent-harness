@@ -1179,7 +1179,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               checks.push({ name: "model_auth_live_ping", ok: false, detail: "skipped: no key to test" });
             } else {
               try {
-                const { runClassifierSdk } = await import("../adapters/claude-sdk.js");
+                const { runClassifierSdk } = await import("../adapters/claude-code.js");
                 await runClassifierSdk({
                   model: liveConfig().models.classifier,
                   userText: "ping",

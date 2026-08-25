@@ -13,7 +13,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const sdk = await import("../dist/adapters/claude-sdk.js");
+const sdk = await import("../dist/adapters/claude-code.js");
 
 test("beta71: claude-opus-5 (+aliases) is priced at 5/25", () => {
   const { PRICES } = sdk;

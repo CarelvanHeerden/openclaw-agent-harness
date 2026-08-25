@@ -15,6 +15,15 @@
  * NOTE (2026-07-13): This module lazy-imports the SDK so tests can run
  * without the real SDK installed. Production code will error clearly if
  * the SDK is missing.
+ *
+ * v2.0.0: this file is now the ONLY one in `src/` that touches
+ * `@anthropic-ai/claude-agent-sdk`, and a test enforces that. Everything that
+ * was never really about the SDK -- JSON extraction, cost arithmetic, diff
+ * chunking, stream-liveness, env filtering -- moved to `shared/`, where the ACP
+ * backend uses the same code rather than a second copy that drifts. What stayed
+ * is what is genuinely Claude Code's: the truncation ladder,
+ * `messageIndicatesTruncation`, the `canUseTool` adaptation, the SDK message
+ * stream, and the Anthropic Models API lookup.
  */
 
 import type {
@@ -26,6 +35,44 @@ import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/l
 import type { ReviewReport } from "../orchestrator/adversary.js";
 import { renderConventionsForPrompt } from "../orchestrator/repo-conventions.js";
 import { renderScoutForPrompt } from "../orchestrator/lead-scout.js";
+import { buildAgentEnv, registerDeniedEnvVar } from "./shared/env.js";
+import {
+  classifyAttempt,
+  describeJsonSyntaxFault,
+  extractAndValidateJson,
+  extractJson,
+  looksTruncatedJson,
+  repairTruncatedJson,
+  type JsonValidationOptions,
+  type LeadAttemptInfo,
+  type StructuredCallError,
+} from "./shared/json.js";
+import { evaluateStreamSlowTick } from "./shared/stream.js";
+import { CHUNK_MAX_BYTES, DIFF_SINGLE_CHUNK_BYTES, splitDiffOnFileBoundaries } from "./shared/diff.js";
+import { PRICES, isUnknownModel, mostExpensivePrice } from "./shared/pricing.js";
+
+// Re-exported so the many existing importers of this module keep working. The
+// definitions live in `shared/` now; this is a compatibility surface, not a
+// second home for them.
+export {
+  describeJsonSyntaxFault,
+  extractAndValidateJson,
+  extractJson,
+  repairTruncatedJson,
+  type JsonValidationOptions,
+  type LeadAttemptInfo,
+  type StructuredCallError,
+} from "./shared/json.js";
+export { splitDiffOnFileBoundaries } from "./shared/diff.js";
+export { evaluateStreamSlowTick } from "./shared/stream.js";
+export {
+  PRICES,
+  assessModelPricingHealth,
+  checkPriceDrift,
+  estimateSubTaskCost,
+  isUnknownModel,
+  mostExpensivePrice,
+} from "./shared/pricing.js";
 
 /**
  * Build the `env` passed to the SDK subprocess.
@@ -41,32 +88,15 @@ import { renderScoutForPrompt } from "../orchestrator/lead-scout.js";
  * may already be logged in.
  */
 /**
- * beta.57 (P2): env vars that must NEVER reach the worker subprocess. The SDK
- * child previously inherited the FULL harness env -- including GH_TOKEN /
- * GITLAB_TOKEN / VERCEL_TOKEN / SLACK tokens -- so any worker could
- * `echo $GH_TOKEN` (Bash env access is unguardable) and exfiltrate the PAT
- * the harness so carefully keeps out of git config. The worker needs NONE of
- * these: git creds are injected per-invocation by the HARNESS's own git ops
- * (askpass/cred-helper), never the worker's.
- */
-const SDK_ENV_DENY_EXACT = new Set([
-  "OAH_GH_TOKEN",
-  // beta.110: the credential-vault key and the path to it. NOTE the regex below
-  // does NOT catch these: it matches API_KEY / ACCESS_KEY / PRIVATE_KEY, but a
-  // bare `_KEY` suffix is not in the alternation, so `OAH_VAULT_KEY` would sail
-  // straight through. They are listed explicitly for that reason.
-  "OAH_VAULT_KEY",
-  "OAH_VAULT_KEY_FILE",
-]);
-const SDK_ENV_DENY_RE = /(^|_)(TOKEN|SECRET|SECRETS|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)(_|$)/i;
-
-/**
  * beta.110: allow bootstrap to deny an operator-renamed secret env var (e.g. a
- * custom `credentials.key_env`). The denylist is static by design -- this is the
- * one seam that widens it, and it only ever ADDS.
+ * custom `credentials.key_env`).
+ *
+ * v2.0.0: the denylist itself now lives in `shared/env.ts` because the ACP
+ * backend spawns a subprocess too and must be filtered by the same list. Kept
+ * under its old name so bootstrap's call site is unchanged.
  */
 export function registerDeniedSdkEnvVar(name: string): void {
-  if (name && name.trim()) SDK_ENV_DENY_EXACT.add(name.trim());
+  registerDeniedEnvVar(name);
 }
 
 /**
@@ -96,24 +126,23 @@ export function buildSdkEnv(apiKey?: string, maxOutputTokens?: number): Record<s
   // credentials live in an on-disk session store, not the environment. So we
   // always build a filtered env now, and the key is the only thing the branch
   // below decides.
-  const base: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v !== "string") continue;
-    if (SDK_ENV_DENY_EXACT.has(k)) continue;
-    if (SDK_ENV_DENY_RE.test(k)) continue;
-    base[k] = v;
-  }
-  // The ONE secret the SDK subprocess genuinely needs. Absent it, the child
-  // falls back to the interactive `/login` store (fine locally, fatal headless
-  // -- which is why every production path resolves a key first).
-  if (apiKey) base.ANTHROPIC_API_KEY = apiKey;
+  //
+  // v2.0.0: the filtering is `shared/env.ts`. What stays here is the pair of
+  // variables that mean something only to the Claude Code child.
+  //
+  // The ONE secret the SDK subprocess genuinely needs is the API key. Absent
+  // it, the child falls back to the interactive `/login` store (fine locally,
+  // fatal headless -- which is why every production path resolves a key first).
+  //
   // beta.99 (P0-4): make the output ceiling explicit and OURS. `0` disables
-  // (inherit whatever the bundled SDK picks for the model id). Note this is
-  // NOT caught by SDK_ENV_DENY_RE: that pattern matches the bare word TOKEN,
-  // and this name ends in TOKENS.
+  // (inherit whatever the bundled SDK picks for the model id). Note the name is
+  // NOT caught by the deny regex: that pattern matches the bare word TOKEN, and
+  // this one ends in TOKENS.
   const ceiling = typeof maxOutputTokens === "number" ? maxOutputTokens : DEFAULT_SDK_MAX_OUTPUT_TOKENS;
-  if (ceiling > 0) base.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(ceiling));
-  return base;
+  return buildAgentEnv({
+    ANTHROPIC_API_KEY: apiKey,
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: ceiling > 0 ? String(Math.floor(ceiling)) : undefined,
+  });
 }
 
 /**
@@ -602,30 +631,6 @@ export async function consumeWorkerStream(
   };
 }
 
-/**
- * beta.90 (Feature 2): PURE tick-decision helper for the worker stream-slow
- * detector. Extracted so the idle logic is unit-testable without a real SDK or
- * timers. Given the current activity `marker` (max of tokensOut + message
- * count), the `lastMarker`/`lastActivityAtMs` from the previous advance, `nowMs`,
- * and the `idleWarnMs` threshold, returns whether activity advanced (reset the
- * idle clock), the current idle duration, and whether onStreamSlow should fire.
- *
- * `idleWarnMs <= 0` disables (never fires). `fire` is true only when the stream
- * did NOT advance AND has been idle for >= idleWarnMs.
- */
-export function evaluateStreamSlowTick(input: {
-  marker: number;
-  lastMarker: number;
-  nowMs: number;
-  lastActivityAtMs: number;
-  idleWarnMs: number;
-}): { advanced: boolean; idleMs: number; fire: boolean; nowMs: number } {
-  const advanced = input.marker > input.lastMarker;
-  const idleMs = advanced ? 0 : input.nowMs - input.lastActivityAtMs;
-  const fire = !advanced && input.idleWarnMs > 0 && idleMs >= input.idleWarnMs;
-  return { advanced, idleMs, fire, nowMs: input.nowMs };
-}
-
 export async function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerResult> {
   const sdk = await loadSdk();
   const abort = new AbortController();
@@ -793,25 +798,6 @@ export async function runLeadScoutSdk(params: {
  * and whether the call was cut off at the output ceiling, so callers can try
  * `repairTruncatedJson` rather than discard the work.
  */
-export interface StructuredCallError extends Error {
-  rawText?: string;
-  truncated?: boolean;
-  /**
-   * beta.126: what the failed call cost. A call that throws still burned
-   * tokens -- the b125 planning failure spent six minutes of Opus across two
-   * attempts and the session recorded $0.00 -- and a caller cannot charge for
-   * what it is never told.
-   */
-  costUsd?: number;
-  /**
-   * beta.128: the JSON we actually tried to parse, kept whole. `rawText` is the
-   * entire reply (prose, fences and all) and the message embeds only a 2000
-   * char slice; neither lets a caller point at the offending token. See
-   * `describeJsonSyntaxFault`.
-   */
-  extractedText?: string;
-}
-
 async function structuredCall<T>(params: {
   model: string;
   systemPrompt: string;
@@ -1025,438 +1011,6 @@ async function structuredCall<T>(params: {
   return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw, stopReason };
 }
 
-/**
- * Extracts the first well-formed top-level JSON object or array from a
- * string. Handles the common case where the model wraps output in prose
- * or a fenced code block despite instructions.
- *
- * WARNING: prefer `extractAndValidateJson()` over calling this directly.
- * If the model outputs `{"foo":1}\n{"bar":2}` we return only the first object;
- * without validation you can silently miss the second half of the response.
- */
-/**
- * Scan for the first balanced {...} or [...] object starting at `from`,
- * respecting string literals and escapes. Returns the substring or null.
- */
-function scanBalanced(text: string, from = 0): string | null {
-  const start = text.slice(from).search(/[{[]/);
-  if (start === -1) return null;
-  const abs = from + start;
-  const opening = text[abs]!;
-  const closing = opening === "{" ? "}" : "]";
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = abs; i < text.length; i++) {
-    const ch = text[i]!;
-    if (esc) { esc = false; continue; }
-    if (ch === "\\") { esc = true; continue; }
-    if (ch === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (ch === opening) depth++;
-    else if (ch === closing) {
-      depth--;
-      if (depth === 0) return text.slice(abs, i + 1);
-    }
-  }
-  return null;
-}
-
-function parsesAsJson(s: string): boolean {
-  try { JSON.parse(s); return true; } catch { return false; }
-}
-
-/**
- * beta.126: is this reply a JSON document that was cut off?
- *
- * Until now the only evidence of truncation the harness would accept was
- * `stop_reason === "max_tokens"` from the SDK. That works when the SDK knows
- * the model. When it does not -- a model id newer than the pinned SDK, which
- * is the b125 lead configuration -- the output stops at a ceiling the SDK
- * never names, no stop reason arrives, and the b97 compaction retry never
- * fires. The b81 anti-prose rung runs instead and re-truncates identically,
- * because telling a model "you returned prose, begin with '{'" does nothing
- * about a reply being cut at a fixed length. That is 6m15s and $0 for nothing.
- *
- * The document itself is better evidence than the metadata. A reply that opens
- * a JSON container and never closes it was cut off -- there is no other way to
- * produce one. Prose has no opening container; prose wrapped around a complete
- * object balances and never reaches here.
- */
-function looksTruncatedJson(text: string): boolean {
-  if (!text) return false;
-  if (!/[{[]/.test(text)) return false;   // no container was ever opened: prose
-  return scanBalanced(text) === null;      // opened and never closed: cut off
-}
-
-/**
- * beta.99 (P0-6): repair a JSON document that was cut off mid-write.
- *
- * `scanBalanced` requires depth to return to 0, so a truncated reply yields
- * ZERO candidates and `extractJson` throws "no JSON in output" -- discarding a
- * document that was perfectly well-formed for its first 95%. On b98 that meant
- * a plan whose sub-task 1 was complete and sub-task 2 half-written was binned
- * wholesale.
- *
- * The repair walks the text tracking string/escape state and container depth,
- * rewinds to the last position where a COMPLETE element had just been closed,
- * and appends the closers needed to balance it. Anything after that point (the
- * half-written element) is dropped.
- *
- * Returns null when there is nothing recoverable. The result is deliberately
- * INCOMPLETE-BUT-VALID: callers must treat it as a partial document, announce
- * it loudly, and re-validate before use. It is never a silent substitute for a
- * complete reply.
- */
-export function repairTruncatedJson(text: string): string | null {
-  const start = text.search(/[{[]/);
-  if (start === -1) return null;
-
-  // The cut point is chosen so the PARTIAL trailing element is dropped whole.
-  // Preferring the last CLOSED container does that: on a plan cut mid-way
-  // through sub-task 5, we rewind to the `}` that closed sub-task 4 and keep
-  // 1..4 intact. Cutting at the last comma instead would keep a half-built
-  // `{"seq":5}` that then fails plan validation for a confusing reason.
-  const stack: string[] = [];
-  let inStr = false;
-  let esc = false;
-  let lastCloseEnd = -1;   // index AFTER the last `}`/`]` that closed a container
-  let lastCloseDepth = 0;  // container depth remaining after that close
-  let lastCommaAt = -1;    // fallback for documents where nothing ever closed
-  let lastCommaDepth = 0;
-
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i]!;
-    if (esc) { esc = false; continue; }
-    if (ch === "\\") { esc = true; continue; }
-    if (ch === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (ch === "{" || ch === "[") { stack.push(ch === "{" ? "}" : "]"); continue; }
-    if (ch === "}" || ch === "]") {
-      if (stack.length === 0) break;
-      stack.pop();
-      if (stack.length === 0) return text.slice(start, i + 1); // never truncated
-      lastCloseEnd = i + 1;
-      lastCloseDepth = stack.length;
-      continue;
-    }
-    if (ch === ",") { lastCommaAt = i; lastCommaDepth = stack.length; continue; }
-  }
-
-  const cutEnd = lastCloseEnd > 0 ? lastCloseEnd : lastCommaAt;
-  const cutDepth = lastCloseEnd > 0 ? lastCloseDepth : lastCommaDepth;
-  if (cutEnd <= start || cutDepth <= 0) return null;
-
-  // Re-walk to the cut point to recover the exact set of open containers.
-  const closers: string[] = [];
-  let s2 = false;
-  let e2 = false;
-  for (let i = start; i < cutEnd; i++) {
-    const ch = text[i]!;
-    if (e2) { e2 = false; continue; }
-    if (ch === "\\") { e2 = true; continue; }
-    if (ch === '"') { s2 = !s2; continue; }
-    if (s2) continue;
-    if (ch === "{") closers.push("}");
-    else if (ch === "[") closers.push("]");
-    else if (ch === "}" || ch === "]") closers.pop();
-  }
-  if (closers.length === 0) return null;
-
-  const body = text.slice(start, cutEnd).replace(/[,\s]+$/, "");
-  const repaired = body + closers.reverse().join("");
-  return parsesAsJson(repaired) ? repaired : null;
-}
-
-/**
- * Extract the JSON contract from a model's raw output.
- *
- * beta.31: the lead planner (session 78237f43) failed with
- *   `[lead] JSON.parse failed: SyntaxError: Unexpected token '\', "\n{\n \"r\"..."`
- * The model wrapped its plan as a JSON-STRING-ENCODED payload (as if writing
- * it to a file): the ```json fence content was the escaped string
- * `\n{\n \"repo\": ...` rather than raw JSON. The old code grabbed the first
- * fence blindly and returned the escaped text, which JSON.parse rejects on
- * the leading `\`.
- *
- * New strategy: gather CANDIDATES (all fenced blocks + the first balanced
- * brace-scan of the whole text + a JSON-string-unescape of each candidate)
- * and return the FIRST candidate that actually parses. This tolerates:
- *   - raw JSON,
- *   - ```json fenced JSON,
- *   - double-encoded (JSON-string-escaped) JSON, incl. inside a fence,
- *   - JSON preceded/followed by prose.
- */
-export function extractJson(text: string): string {
-  const candidates: string[] = [];
-
-  // 1. All fenced blocks (```json ... ``` or ``` ... ```), in order.
-  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/g;
-  let m: RegExpExecArray | null;
-  while ((m = fenceRe.exec(text)) !== null) {
-    if (m[1]) candidates.push(m[1].trim());
-  }
-
-  // 2. First balanced object in the raw text (prose-wrapped JSON).
-  const balanced = scanBalanced(text);
-  if (balanced) candidates.push(balanced);
-
-  // 3. For each candidate, also try a JSON-string-unescape pass. If a
-  //    candidate is escaped text like `\n{\n \"repo\"...`, wrapping it in
-  //    quotes and JSON.parse-ing yields the real JSON string, which we then
-  //    re-scan for a balanced object. This handles the double-encoded case.
-  const unescaped: string[] = [];
-  for (const c of candidates) {
-    if (!(c.includes('\\"') || c.includes("\\n"))) continue;
-    // The candidate is (likely) the escaped BODY of a JSON string, e.g.
-    // `\n{\n \"repo\"...`. Its embedded quotes are already backslash-escaped,
-    // so wrap in quotes and parse directly. Only if that fails do we try
-    // escaping bare quotes (for a half-escaped candidate).
-    let decoded: string | null = null;
-    try {
-      decoded = JSON.parse(`"${c}"`) as string;
-    } catch {
-      try {
-        decoded = JSON.parse(`"${c.replace(/(?<!\\)"/g, '\\"')}"`) as string;
-      } catch {
-        decoded = null;
-      }
-    }
-    if (decoded) {
-      const inner = scanBalanced(decoded) ?? decoded;
-      unescaped.push(inner);
-    }
-  }
-  candidates.push(...unescaped);
-
-  // Return the first candidate that actually parses.
-  for (const c of candidates) {
-    if (parsesAsJson(c)) return c;
-  }
-  // Fall back to the first candidate at all (preserves prior behaviour of
-  // returning *something* so the caller's JSON.parse produces the real
-  // diagnostic), or throw the prose error if we found nothing JSON-shaped.
-  if (candidates.length > 0) return candidates[0]!;
-  // beta.126: tell the two failures apart before naming a cause.
-  //
-  // There was one message here, and it said the model returned prose and to
-  // check `tools: []`. On the b125 planning failure the reply began
-  // `{"repo":"Stitch-Vercel/ProjectThanos","branch":...` -- unmistakably the
-  // contract, cut off mid-write -- and the error still called it prose and
-  // pointed at built-in tools. An operator following that advice is debugging
-  // a subsystem that is working. Confidently wrong is worse than silent.
-  if (looksTruncatedJson(text)) {
-    throw new Error(
-      `truncated JSON in output (the reply opened a JSON container and never closed it — ` +
-        `it was cut off, most likely at an output-token ceiling; this is NOT prose drift): ` +
-        `${text.length} chars, ending "...${text.slice(-120)}"`,
-    );
-  }
-  throw new Error(
-    `no JSON in output (model returned prose, not the JSON contract — ` +
-      `check that structured calls run with tools: [] to disable built-in tools): ${text.slice(0, 200)}`,
-  );
-}
-
-/**
- * beta.128: the JS literals a language model reaches for when it is thinking in
- * JavaScript instead of JSON. None of them are JSON values, so any one of them
- * fails the whole document.
- */
-const NON_JSON_LITERALS = ["undefined", "NaN", "Infinity"] as const;
-
-/**
- * beta.128: find the first non-JSON literal that sits OUTSIDE a string.
- *
- * String-aware on purpose: a plan whose prose legitimately says `the value is
- * undefined` must not be reported as the fault. Only a bare token in value
- * position breaks the parse.
- */
-function findNonJsonLiteral(text: string): { index: number; token: string } | undefined {
-  let inString = false;
-  let escaped = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]!;
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      if (inString) escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    for (const token of NON_JSON_LITERALS) {
-      if (ch === token[0] && text.startsWith(token, i)) return { index: i, token };
-    }
-  }
-  return undefined;
-}
-
-/**
- * beta.128: turn a `JSON.parse failed` error into a correction a model can act
- * on -- the parser's own complaint, the text either side of the fault, and the
- * rule that was broken.
- *
- * WHY THIS EXISTS. Session f75f7db6 (b127) died on a complete plan carrying
- * `"seq_note":undefined`. The retry it got said "you returned prose or an
- * incomplete object" -- describing neither the document nor the fault, about a
- * reply that was valid in every other respect. A model told what is wrong and
- * where can fix one token; a model told it wrote prose when it did not has no
- * move to make.
- *
- * Deliberately NOT a repair: we do not guess what `undefined` was meant to
- * hold. Only the model knows whether that field should be a value or absent.
- *
- * Returns undefined when the error is not a parse fault we can describe, so
- * callers fall back to their existing retry text.
- */
-export function describeJsonSyntaxFault(err: unknown): string | undefined {
-  const e = err as StructuredCallError | undefined;
-  if (!e) return undefined;
-  const message = String(e.message ?? "");
-  if (!/JSON\.parse failed/i.test(message)) return undefined;
-  // Prefer the document carried on the error; fall back to the copy embedded in
-  // the message for errors that crossed a boundary which dropped the property.
-  const embedded = /--- extracted ---\n([\s\S]*?)\n--- raw ---/.exec(message);
-  const text = e.extractedText ?? embedded?.[1];
-  if (!text) return undefined;
-
-  // The parser reports a position on some runtimes and not others, so treat it
-  // as a hint and fall back to locating the offending literal ourselves.
-  const positionMatch = /at position (\d+)/.exec(message);
-  const located = findNonJsonLiteral(text);
-  const index = positionMatch ? Number(positionMatch[1]) : located?.index;
-  const reason = /(SyntaxError: [^\n]*)/.exec(message)?.[1] ?? "the document is not valid JSON";
-
-  const lines = [`The JSON parser rejected it with: ${reason}`];
-  if (index !== undefined && index >= 0 && index < text.length) {
-    const from = Math.max(0, index - 180);
-    const to = Math.min(text.length, index + 180);
-    const window = `${text.slice(from, index)}>>>HERE>>>${text.slice(index, to)}`;
-    lines.push(`Here is the text around the fault, with >>>HERE>>> marking the position:`, window);
-  }
-  if (located) {
-    lines.push(
-      `The token \`${located.token}\` is a JavaScript literal, not a JSON value. JSON has no ` +
-        `\`undefined\`, \`NaN\` or \`Infinity\`, and permits no trailing commas.`,
-      `If a field has no value, OMIT the key entirely or write null. Never emit the bare token \`${located.token}\`.`,
-    );
-  }
-  return lines.join("\n");
-}
-
-/**
- * beta.128: what one lead planning attempt did. Reported per attempt so the
- * audit trail records the attempts that were survived, not only the one that
- * ended the run. See `runLeadSdk.onAttempt`.
- */
-export interface LeadAttemptInfo {
-  attempt: number;
-  /**
-   * `truncated` means cut off at the output ceiling; `invalid_json` means a
-   * COMPLETE document the parser rejected. Keeping them apart is the whole
-   * point -- b126 conflated them and retried a cut-off reply with a plea to
-   * stop writing prose.
-   */
-  outcome: "ok" | "truncated" | "invalid_json" | "error";
-  costUsd: number;
-  outputChars: number;
-  /** Which retry rung produced this attempt. Absent on the first attempt. */
-  rung?: "mechanical_size_reduction" | "contract_reassertion" | "syntax_repair";
-  error?: string;
-}
-
-/** beta.128: which failure class an attempt landed in. See LeadAttemptInfo. */
-function classifyAttempt(err: unknown): LeadAttemptInfo["outcome"] {
-  const e = err as StructuredCallError | undefined;
-  if (e?.truncated === true) return "truncated";
-  if (/JSON\.parse failed/i.test(String(e?.message ?? ""))) return "invalid_json";
-  return "error";
-}
-
-export interface JsonValidationOptions<T> {
-  /** Required top-level keys on the parsed object. Missing keys throw. */
-  requiredKeys: readonly (keyof T)[];
-  /** Optional per-key type checker. Values that fail throw. */
-  typeCheck?: (parsed: unknown) => parsed is T;
-  /** Warn if the raw text after the JSON object contains more JSON. Default true. */
-  warnOnTrailingJson?: boolean;
-  /** Logger for the trailing-JSON warning. */
-  logger?: { warn: (m: string, meta?: unknown) => void };
-  /** Context label for error messages (e.g. "lead planner"). */
-  label?: string;
-}
-
-/**
- * Robust wrapper around `extractJson()`.
- *  - Extracts the first JSON object/array.
- *  - Parses it.
- *  - Verifies required top-level keys are present.
- *  - Optionally warns (not throws) when the raw response contains a
- *    second JSON object we're silently discarding.
- *  - Rethrows with the ORIGINAL raw text on any failure, so an operator
- *    can see exactly what the model returned.
- */
-export function extractAndValidateJson<T>(rawText: string, opts: JsonValidationOptions<T>): T {
-  const label = opts.label ?? "model output";
-  let extracted: string;
-  try {
-    extracted = extractJson(rawText);
-  } catch (err) {
-    throw new Error(`[${label}] extractJson failed: ${String(err)}\n--- raw ---\n${rawText.slice(0, 4000)}`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(extracted);
-  } catch (err) {
-    // beta.128: keep the extracted document ON the error. The b127 planning
-    // failure was a complete, balanced, 24k-char plan containing one invalid
-    // token (`"seq_note":undefined`). Everything needed to ask the model to
-    // fix that one token was in this function and thrown away here.
-    const parseErr = new Error(
-      `[${label}] JSON.parse failed: ${String(err)}\n--- extracted ---\n${extracted.slice(0, 2000)}\n--- raw ---\n${rawText.slice(0, 4000)}`,
-    ) as StructuredCallError;
-    parseErr.extractedText = extracted;
-    throw parseErr;
-  }
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error(`[${label}] JSON parsed to non-object: ${typeof parsed}\n--- extracted ---\n${extracted.slice(0, 2000)}`);
-  }
-  const rec = parsed as Record<string, unknown>;
-  const missing: string[] = [];
-  for (const key of opts.requiredKeys) {
-    if (!(String(key) in rec)) missing.push(String(key));
-  }
-  if (missing.length > 0) {
-    throw new Error(`[${label}] JSON missing required keys: ${missing.join(", ")}\n--- extracted ---\n${extracted.slice(0, 2000)}\n--- raw ---\n${rawText.slice(0, 4000)}`);
-  }
-  if (opts.typeCheck && !opts.typeCheck(parsed)) {
-    throw new Error(`[${label}] JSON failed typeCheck\n--- extracted ---\n${extracted.slice(0, 2000)}`);
-  }
-  // Trailing-JSON detection: if there's another `{`/`[` after the first object
-  // ends, we would have silently ignored it. Warn so operators can see it.
-  const warnOnTrailing = opts.warnOnTrailingJson !== false;
-  if (warnOnTrailing && opts.logger) {
-    const idx = rawText.indexOf(extracted);
-    if (idx >= 0) {
-      const tail = rawText.slice(idx + extracted.length);
-      const nextBracket = tail.search(/[{[]/);
-      if (nextBracket !== -1 && tail.slice(nextBracket, nextBracket + 200).match(/^[{[][\s\S]{4,}/)) {
-        opts.logger.warn(`[${label}] model output contained a second JSON object we ignored`, {
-          tailPreview: tail.slice(nextBracket, nextBracket + 200),
-          extractedLen: extracted.length,
-          rawLen: rawText.length,
-        });
-      }
-    }
-  }
-  return parsed as T;
-}
 
 export async function runClassifierSdk(params: {
   model: string;
@@ -2206,31 +1760,6 @@ export async function runLeadWorkerContextSdk(params: {
  * Adversary is told explicitly when chunking is in effect so its findings
  * can note incomplete coverage rather than silently missing it.
  */
-const DIFF_SINGLE_CHUNK_BYTES = 180_000;
-const CHUNK_MAX_BYTES = 180_000;
-
-export function splitDiffOnFileBoundaries(diff: string, maxBytes: number = CHUNK_MAX_BYTES): string[] {
-  if (diff.length <= maxBytes) return [diff];
-  const parts = diff.split(/(?=^diff --git )/m);
-  const chunks: string[] = [];
-  let cur = "";
-  for (const part of parts) {
-    if (part.length > maxBytes) {
-      // single file too big; emit any accumulated chunk, then truncate this file
-      if (cur) { chunks.push(cur); cur = ""; }
-      chunks.push(part.slice(0, maxBytes) + `\n[TRUNCATED: file diff was ${part.length} bytes, capped at ${maxBytes}]\n`);
-      continue;
-    }
-    if (cur.length + part.length > maxBytes) {
-      chunks.push(cur);
-      cur = part;
-    } else {
-      cur += part;
-    }
-  }
-  if (cur) chunks.push(cur);
-  return chunks;
-}
 
 function mergeVerdict(a: "pass" | "revise" | "block", b: "pass" | "revise" | "block"): "pass" | "revise" | "block" {
   const order = { pass: 0, revise: 1, block: 2 } as const;
@@ -2313,76 +1842,6 @@ export async function runAdversarySdk(params: {
   };
 }
 
-/**
- * Cost estimation table (USD per M tokens).
- *
- * Update policy: these prices WILL drift. `estimateSubTaskCost()` is used
- * only for BUDGET PROJECTIONS in the loop; the authoritative source of
- * truth is the `total_cost_usd` returned by the SDK on each call, which we
- * accumulate in the state store.
- *
- * `checkPriceDrift()` runs whenever we get a real SDK cost back and compares
- * it against our estimate. Drift > 20% logs a warning so we can update the
- * table. Pricing is also configurable at plugin config time via
- * `harness.models.price_overrides` (see config.ts), so operators can patch
- * without waiting for a release.
- */
-export const PRICES: Record<string, { input: number; output: number }> = {
-  // opus-tier (most capable, most expensive)
-  "claude-fable-5": { input: 10, output: 50 },
-  "claude-mythos-5": { input: 10, output: 50 },
-  // beta.61: aliases some deployments use for the opus-tier worker. Without
-  // these, a config that set worker to a bare "opus"/"claude-opus-*" string
-  // fell through to the sonnet fallback and was priced ~5x too low -- the
-  // dominant half of the b60 smoke's ~15x cost under-estimate (worker was
-  // swapped sonnet->opus, but the table had no opus key so the projection
-  // stayed at sonnet rates and the >20% drift warning silently never fired).
-  "claude-opus-4-8": { input: 15, output: 75 },
-  "claude-opus-4-6": { input: 15, output: 75 },
-  opus: { input: 15, output: 75 },
-  // beta.71: Opus 5 (launched 2026-07-24, API id "claude-opus-5"). Priced at
-  // $5 in / $25 out per Mtok -- HALF of Fable 5's 10/50 and half of Opus 4.8's
-  // 15/75. Without this entry a config that swaps models.lead Fable->opus-5
-  // would hit the beta.61 unknown-model fail-safe and be priced at the
-  // most-expensive tier (Fable's 50 output), over-reserving budget ~2x and
-  // firing a spurious drift warning on run 1. Opus 5's lower output price also
-  // does NOT change mostExpensivePrice() -- Fable's 50 stays the fail-safe top.
-  "claude-opus-5": { input: 5, output: 25 },
-  "opus-5": { input: 5, output: 25 },
-  "opus5": { input: 5, output: 25 },
-  // sonnet-tier
-  "claude-sonnet-5": { input: 3, output: 15 },
-  "claude-sonnet-4-6": { input: 3, output: 15 },
-  sonnet: { input: 3, output: 15 },
-  // haiku-tier
-  "claude-haiku-4-5": { input: 1, output: 5 },
-  haiku: { input: 1, output: 5 },
-};
-
-/**
- * beta.61: the price used when a model id is NOT in the table (and not
- * overridden). Previously this silently fell back to sonnet -- which
- * UNDER-estimates for a more expensive model and lets a run overshoot its
- * budget (exactly the b60 opus-priced-as-sonnet miss). A budget projection
- * must FAIL SAFE: an unknown model is assumed to be the MOST EXPENSIVE known
- * tier, so we over-reserve rather than under-reserve. Combined with the
- * checkPriceDrift unknown-model warning, an operator sees the mispricing on
- * run 1 and can add an exact price_override.
- */
-export function mostExpensivePrice(table: Record<string, { input: number; output: number }>): { input: number; output: number } {
-  let max = { input: 0, output: 0 };
-  for (const p of Object.values(table)) {
-    // rank by output price (the dominant term in the 20/80 split)
-    if (p.output > max.output || (p.output === max.output && p.input > max.input)) max = p;
-  }
-  return max.output > 0 ? max : { input: 15, output: 75 };
-}
-
-/** beta.61: true when a model id has neither a table entry nor an override. */
-export function isUnknownModel(model: string, overrides?: Record<string, { input: number; output: number }>): boolean {
-  const table = { ...PRICES, ...(overrides ?? {}) };
-  return !table[model];
-}
 
 /**
  * beta.61: fetch the list of live model ids from the Anthropic Models API
@@ -2416,66 +1875,3 @@ export async function fetchLiveModelIds(apiKey: string, opts?: { fetchImpl?: typ
   }
 }
 
-/**
- * beta.61: assess pricing health of the CONFIGURED models. Returns per-model
- * flags: `unpriced` (not in the price table/overrides -> projections fall back
- * to the most-expensive tier), and `notLive` (a live model list was fetched and
- * this id was absent -> possibly renamed/deprecated). `liveIds` null means the
- * Models API was unreachable, so `notLive` is left undefined (unknown, not
- * false). Pure/deterministic given inputs -- no network here (fetch is done by
- * fetchLiveModelIds and passed in) so it is unit-testable.
- */
-export function assessModelPricingHealth(
-  configuredModels: string[],
-  liveIds: string[] | null,
-  overrides?: Record<string, { input: number; output: number }>,
-): Array<{ model: string; unpriced: boolean; notLive?: boolean }> {
-  const seen = new Set<string>();
-  const out: Array<{ model: string; unpriced: boolean; notLive?: boolean }> = [];
-  for (const m of configuredModels) {
-    if (!m || seen.has(m)) continue;
-    seen.add(m);
-    const entry: { model: string; unpriced: boolean; notLive?: boolean } = {
-      model: m,
-      unpriced: isUnknownModel(m, overrides),
-    };
-    if (liveIds) entry.notLive = !liveIds.includes(m);
-    out.push(entry);
-  }
-  return out;
-}
-
-export function estimateSubTaskCost(model: string, tokens: number, overrides?: Record<string, { input: number; output: number }>): number {
-  const table = { ...PRICES, ...(overrides ?? {}) };
-  // beta.61: fail-safe fallback -- unknown model is priced at the MOST
-  // EXPENSIVE known tier (over-reserve), not silently at sonnet (under-reserve).
-  const p = table[model] ?? mostExpensivePrice(table);
-  // Rough 20/80 in/out split for planning purposes
-  return (tokens * 0.2 * p.input + tokens * 0.8 * p.output) / 1_000_000;
-}
-
-/**
- * Called after a real SDK call. Returns { drift, warn } where warn=true when
- * the actual cost deviates > 20% from our estimate for that model+tokens.
- * Callers should log the warning (with model + actual + estimate) so we
- * catch stale price tables in one run instead of over billing cycles.
- */
-export function checkPriceDrift(model: string, actualCostUsd: number, tokensIn: number, tokensOut: number, overrides?: Record<string, { input: number; output: number }>): { drift: number; warn: boolean; estimated: number; unknownModel?: boolean } {
-  const table = { ...PRICES, ...(overrides ?? {}) };
-  const p = table[model];
-  if (!p) {
-    // beta.61: an unknown model is itself a warn condition. Previously this
-    // silently no-op'd (warn:false) -- which is exactly why the b60 opus
-    // worker (no table entry) never surfaced its ~5x mispricing. Report the
-    // estimate computed at the fail-safe most-expensive price so the operator
-    // sees BOTH that the model is unpriced AND how far off the projection was.
-    const fallback = mostExpensivePrice(table);
-    const estimated = (tokensIn * fallback.input + tokensOut * fallback.output) / 1_000_000;
-    const drift = estimated > 0 && actualCostUsd > 0 ? Math.abs(actualCostUsd - estimated) / estimated : 0;
-    return { drift, warn: true, estimated, unknownModel: true };
-  }
-  const estimated = (tokensIn * p.input + tokensOut * p.output) / 1_000_000;
-  if (estimated <= 0 || actualCostUsd <= 0) return { drift: 0, warn: false, estimated };
-  const drift = Math.abs(actualCostUsd - estimated) / estimated;
-  return { drift, warn: drift > 0.2, estimated };
-}
