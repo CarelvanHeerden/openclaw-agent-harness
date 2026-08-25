@@ -1,5 +1,5 @@
 /**
- * Fable-5 adversarial reviewer.
+ * Adversarial reviewer.
  *
  * Reviews the diff produced by the workers, plus (optionally) live runtime
  * data from Vercel preview logs, and produces a `ReviewReport`.
@@ -179,4 +179,4 @@ export declare function isAdversaryFormatError(err: unknown): boolean;
  */
 export declare const ADVERSARY_FORMAT_RETRY_NUDGE: string;
 export declare function runAdversary(input: AdversaryInput, deps: AdversaryDeps): Promise<ReviewReport>;
-//# sourceMappingURL=fable5-adversary.d.ts.map
+//# sourceMappingURL=adversary.d.ts.map

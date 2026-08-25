@@ -170,7 +170,7 @@ test("beta.99: the truncation retry shrinks MECHANICALLY, not by polite request"
 });
 
 test("beta.99: the b67 corrective note now carries its own hard size limit", () => {
-  const src = S("src/orchestrator/fable5-lead.ts");
+  const src = S("src/orchestrator/lead.ts");
   assert.match(src, /SIZE LIMIT \(HARD\)/);
   assert.match(src, /a richer plan that gets cut off is a FAILED plan/i);
 });
@@ -282,7 +282,7 @@ test("beta.99: the top-up prompt forbids restating the plan and bounds its own s
 });
 
 test("beta.99: mergeWorkerContexts never overwrites context the lead already got right", async () => {
-  const lead = await import("../dist/orchestrator/fable5-lead.js").catch(() => null);
+  const lead = await import("../dist/orchestrator/lead.js").catch(() => null);
   if (!lead?.mergeWorkerContexts) return;
   const goodSpec = "in useTaxonomy() at src/hooks/useTaxonomy.ts:41, replace the hardcoded LABELS map";
   const plan = {
@@ -329,7 +329,7 @@ test("beta.99: the watchdog is stream-open, NOT first-token (partials are off)",
 });
 
 test("beta.99: mergeWorkerContexts rejects an insubstantive top-up", async () => {
-  const lead = await import("../dist/orchestrator/fable5-lead.js").catch(() => null);
+  const lead = await import("../dist/orchestrator/lead.js").catch(() => null);
   if (!lead?.mergeWorkerContexts) return;
   const plan = { subTasks: [{ seq: 1, taskMode: "mutate" }] };
   const merged = lead.mergeWorkerContexts(plan, [{ seq: 1, workerContext: { rationale: "vague", changeSpec: "do it" } }]);

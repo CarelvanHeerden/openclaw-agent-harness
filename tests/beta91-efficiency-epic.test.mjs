@@ -146,7 +146,7 @@ test("F1c: findingsMissingFile + retry nudge names offenders", () => {
 });
 
 test("F1c: adversary prompt REQUIRES file + runAdversary re-prompts once + ReviewFinding.file allows null", () => {
-  const adv = S("src/orchestrator/fable5-adversary.ts");
+  const adv = S("src/orchestrator/adversary.ts");
   assert.match(adv, /File attribution \(REQUIRED for diff-addressable findings\)/);
   assert.match(adv, /from "\.\/adversary-file-attribution\.js"/);
   assert.match(adv, /findingsMissingFile\(result\.parsed\.findings\)/);
@@ -158,7 +158,7 @@ test("F1c: adversary prompt REQUIRES file + runAdversary re-prompts once + Revie
 });
 
 test("F1c behavioural: runAdversary re-prompts once + fires onFileAttributionRetry (worse retry rejected)", async () => {
-  const { runAdversary } = await import("../dist/orchestrator/fable5-adversary.js");
+  const { runAdversary } = await import("../dist/orchestrator/adversary.js");
   let calls = 0;
   const events = [];
   // call 1: one file-less quality/medium finding. retry: WORSE (two file-less).
@@ -263,8 +263,8 @@ test("wiring: loop.ts imports and uses the surviving modules", () => {
   assert.ok(overrides.length >= 2, `expected >=2 modelOverride call sites, got ${overrides.length}`);
 });
 
-test("wiring: sonnet-worker + index thread modelOverride to the SDK model", () => {
-  const worker = S("src/orchestrator/sonnet-worker.ts");
+test("wiring: worker + index thread modelOverride to the SDK model", () => {
+  const worker = S("src/orchestrator/worker.ts");
   assert.match(worker, /modelOverride\?: string/);
   assert.match(worker, /model: modelOverride\?\.trim\(\) \|\| deps\.config\.models\.worker/);
   const index = S("src/index.ts");
@@ -286,8 +286,8 @@ test("wiring: config + manifest declare all new keys with conservative defaults"
   const cfg = S("src/config.ts");
   assert.match(cfg, /revise_scoping_enabled\?: boolean/);
   assert.match(cfg, /worker_mechanical\?: string/);
-  // complexity lives on LeadPlanSubTask (fable5-lead.ts), not config.ts
-  assert.match(S("src/orchestrator/fable5-lead.ts"), /complexity\?: "mechanical" \| "standard" \| "complex"/);
+  // complexity lives on LeadPlanSubTask (lead.ts), not config.ts
+  assert.match(S("src/orchestrator/lead.ts"), /complexity\?: "mechanical" \| "standard" \| "complex"/);
   // default: scoping ON
   assert.match(cfg, /revise_scoping_enabled: true/);
 

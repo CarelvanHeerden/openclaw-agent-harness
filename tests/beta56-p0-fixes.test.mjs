@@ -32,8 +32,8 @@ let adversaryMod = null;
 let leadMod = null;
 try {
   loopMod = await import("../dist/orchestrator/loop.js");
-  adversaryMod = await import("../dist/orchestrator/fable5-adversary.js");
-  leadMod = await import("../dist/orchestrator/fable5-lead.js");
+  adversaryMod = await import("../dist/orchestrator/adversary.js");
+  leadMod = await import("../dist/orchestrator/lead.js");
 } catch {
   loopMod = adversaryMod = leadMod = null;
 }
@@ -211,8 +211,8 @@ test("P0-4: an unlabelled sub-task with push wording gets contractScope='local' 
 // P0-5: single verification site (loop), worker path removed
 // ---------------------------------------------------------------------------
 
-test("P0-5: sonnet-worker no longer verifies (loop is the single verification site)", () => {
-  const src = S("src/orchestrator/sonnet-worker.ts");
+test("P0-5: worker no longer verifies (loop is the single verification site)", () => {
+  const src = S("src/orchestrator/worker.ts");
   assert.doesNotMatch(src, /buildVerifyProbes/, "worker deps must not carry verify probes");
   assert.doesNotMatch(src, /verifySubTaskOutput/, "worker must not run verification itself");
   assert.doesNotMatch(src, /wastedSpend/, "wastedSpend bookkeeping moved out with the verifier");
@@ -229,7 +229,7 @@ test("P0-5: loop still verifies every sub-task via inferVerifyContract (beta.67:
 });
 
 test("P0-5: worker result status comes from the SDK stop reason only", skipAll, async () => {
-  const worker = await import("../dist/orchestrator/sonnet-worker.js");
+  const worker = await import("../dist/orchestrator/worker.js");
   const res = await worker.runWorker(
     "/tmp/wt",
     { title: "t", motivation: "m", acceptanceCriteria: ["a"] },

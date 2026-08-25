@@ -308,7 +308,7 @@ test("describeUnresolvable is empty when nothing is stuck", skip, () => {
 // ---------------------------------------------------------------------------
 
 test("the adversary is asked for relatedFiles on multi-file fixes", () => {
-  const src = S("src/orchestrator/fable5-adversary.ts");
+  const src = S("src/orchestrator/adversary.ts");
   assert.match(src, /`relatedFiles` \(CRITICAL for multi-file fixes\)/);
   assert.match(src, /relatedFiles\?: string\[\] \| null;/);
 });

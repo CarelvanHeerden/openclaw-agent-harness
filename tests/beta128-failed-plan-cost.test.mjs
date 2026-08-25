@@ -95,7 +95,7 @@ test("a SUCCESSFUL plan's cost reaches the session row, not just the total", { s
 
 let runLeadPlanner;
 try {
-  ({ runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js"));
+  ({ runLeadPlanner } = await import("../dist/orchestrator/lead.js"));
 } catch {
   runLeadPlanner = null;
 }

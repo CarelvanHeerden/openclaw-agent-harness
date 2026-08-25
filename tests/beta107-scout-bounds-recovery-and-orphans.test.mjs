@@ -42,7 +42,7 @@ try {
   ({ boundScoutReportDetailed, boundScoutReport, SCOUT_REPORT_MAX_CHARS } = await import("../dist/orchestrator/lead-scout.js"));
   ({ mapFindingsToSubTasks, adoptOrphanFindings } = await import("../dist/orchestrator/revise-mapping.js"));
   ({ computeReviseScope } = await import("../dist/orchestrator/revise-scope.js"));
-  ({ runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js"));
+  ({ runLeadPlanner } = await import("../dist/orchestrator/lead.js"));
   ({ recoverSessions, __resetRecoveryResumeLedger } = await import("../dist/state/recovery.js"));
   ({ GitAdapter, isCommitMsgNoise } = await import("../dist/adapters/git-worktree.js"));
   ({ parseHarnessConfig } = await import("../dist/config.js"));

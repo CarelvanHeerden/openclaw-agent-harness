@@ -29,8 +29,8 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 let scout, runLeadPlanner, isRepoAllowed, buildAdversarySystemPrompt, parseHarnessConfig;
 try {
   scout = await import("../dist/orchestrator/lead-scout.js");
-  ({ runLeadPlanner, isRepoAllowed } = await import("../dist/orchestrator/fable5-lead.js"));
-  ({ buildAdversarySystemPrompt } = await import("../dist/orchestrator/fable5-adversary.js"));
+  ({ runLeadPlanner, isRepoAllowed } = await import("../dist/orchestrator/lead.js"));
+  ({ buildAdversarySystemPrompt } = await import("../dist/orchestrator/adversary.js"));
   ({ parseHarnessConfig } = await import("../dist/config.js"));
 } catch {
   scout = undefined;

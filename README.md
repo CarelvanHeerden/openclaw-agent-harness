@@ -1,6 +1,6 @@
 # openclaw-agent-harness
 
-*Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
+*Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a lead plans, workers write code in isolated git worktrees, and an adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
 > *Status: release candidate.* Version `1.0.0-rc.6`. 2268 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 >
@@ -138,7 +138,7 @@ All fields except `id` are optional. Callers that don't have OKF (or don't have 
 
 ## Why
 
-Your OpenClaw agent is where dev asks land, and Claude Code is where the actual writing gets done. This plugin closes the loop: crystallise the ask into a brief, plan atomic sub-tasks, execute them one at a time in Sonnet subprocesses inside a git worktree, and have a Fable-5 adversary sign off before a PR is opened. The agent orchestrates all of it via tools.
+Your OpenClaw agent is where dev asks land, and Claude Code is where the actual writing gets done. This plugin closes the loop: crystallise the ask into a brief, plan atomic sub-tasks, execute them one at a time in worker subprocesses inside a git worktree, and have an adversary sign off before a PR is opened. The agent orchestrates all of it via tools.
 
 Nothing pushes to a repo until an adversary has reviewed the code, and nothing pushes at all without a per-repo per-user PAT the requester owns. Precisely: an explicit `block` verdict never pushes; a human `:rocket:` overrides; and a run that ends abnormally — a verify timeout, a budget or wall-clock ceiling, a crashed review — pushes only if an *earlier* cycle was reviewed, in which case the PR is stamped `needs_human_review` and labelled `do-not-merge`. A session no adversary has ever reviewed keeps its commits in a preserved worktree instead of pushing them. See [SECURITY.md](SECURITY.md#what-the-push-invariant-actually-guarantees).
 
@@ -152,9 +152,9 @@ sequenceDiagram
   actor User
   participant Slack
   participant Harness as Harness (tools + dispatcher + crystalliser)
-  participant Lead as Fable-5 lead
-  participant Worker as Sonnet worker(s)
-  participant Adv as Fable-5 adversary
+  participant Lead as Lead planner
+  participant Worker as Worker(s)
+  participant Adv as Adversary
   participant GH as GitHub
 
   User->>Slack: Post dev request
@@ -192,9 +192,9 @@ This is the normal path. A `block` verdict never pushes; a human `:rocket:` over
 | Config JSON schema           | `src/config.schema.json`                         | Editor / doc integration                               |
 | PAT router                   | `src/auth/pat-router.ts`                         | Per-user, per-repo PAT resolution                      |
 | Prompt crystalliser          | `src/crystallise/prompt-refiner.ts`              | Classifier -> brief pipeline                           |
-| Fable-5 lead                 | `src/orchestrator/fable5-lead.ts`                | Plan validator (allow-list, branch prefix, sub-cap 20) |
-| Sonnet worker                | `src/orchestrator/sonnet-worker.ts`              | Runs one sub-task with `canUseTool` guard              |
-| Fable-5 adversary            | `src/orchestrator/fable5-adversary.ts`           | Reviews diff, runtime banner, safety-net              |
+| Lead planner         | `src/orchestrator/lead.ts`                | Plan validator (allow-list, branch prefix, sub-cap 20) |
+| Worker               | `src/orchestrator/worker.ts`              | Runs one sub-task with `canUseTool` guard              |
+| Adversary            | `src/orchestrator/adversary.ts`           | Reviews diff, runtime banner, safety-net              |
 | Orchestrator loop            | `src/orchestrator/loop.ts`                       | 3-cycle state machine + serial topo-ordered exec       |
 | Claude SDK adapter           | `src/adapters/claude-sdk.ts`                     | `@anthropic-ai/claude-agent-sdk` wrappers              |
 | Git worktree adapter         | `src/adapters/git-worktree.ts`                   | Allocate/commit/diff/push, per-session isolation       |

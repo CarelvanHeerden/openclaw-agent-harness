@@ -166,7 +166,7 @@ test("beta118: no adjacency at all is still a plain miss, not a shallow refusal"
 });
 
 test("beta118: the adversary must quote the triggering path for a registry finding", { skip }, () => {
-  const src = readFileSync(join(root, "src/orchestrator/fable5-adversary.ts"), "utf8");
+  const src = readFileSync(join(root, "src/orchestrator/adversary.ts"), "utf8");
   assert.match(src, /REGISTRY findings/, "the contract is stated");
   assert.match(src, /MUST quote the EXACT repo-relative path of the diff file that TRIGGERED/);
   assert.match(src, /`detail` is NEVER empty for a `medium`\+ finding/, "the empty detail that started this");

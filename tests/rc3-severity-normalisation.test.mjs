@@ -228,7 +228,7 @@ test("rc3: a downgraded verdict is reported, warned about, and shown on the PR",
   assert.equal(g.verdict, "pass");
   assert.equal(g.downgraded, true);
 
-  const adversary = S("src/orchestrator/fable5-adversary.ts");
+  const adversary = S("src/orchestrator/adversary.ts");
   assert.match(adversary, /verdictDowngraded: gated\.downgraded/);
   assert.match(adversary, /logger\.warn\("\[adversary\] verdict downgraded/);
 

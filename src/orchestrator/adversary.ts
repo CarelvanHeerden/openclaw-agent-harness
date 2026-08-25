@@ -1,5 +1,5 @@
 /**
- * Fable-5 adversarial reviewer.
+ * Adversarial reviewer.
  *
  * Reviews the diff produced by the workers, plus (optionally) live runtime
  * data from Vercel preview logs, and produces a `ReviewReport`.

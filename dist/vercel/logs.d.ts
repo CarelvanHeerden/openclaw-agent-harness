@@ -8,7 +8,7 @@
  * We treat READY as "ok" and ERROR (build or runtime) as "build_failed".
  * If no deployment appears in `preview_wait_seconds`, we return
  * `no_deploy_yet` and the adversary's runtime dimension is force-flagged
- * MEDIUM (see fable5-adversary.ts).
+ * MEDIUM (see adversary.ts).
  *
  * Optional (config-driven): if `harness.vercel.enabled` is false, this
  * module is never called and adversary review skips runtime silently.

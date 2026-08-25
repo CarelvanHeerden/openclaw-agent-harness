@@ -23,7 +23,7 @@
  * beta.9: extended with 6 new contract kinds and split `file_written` to use
  * fs.stat instead of git diff, fixing the untracked-file bug from beta.8.
  */
-import type { SubTaskVerify } from "./fable5-lead.js";
+import type { SubTaskVerify } from "./lead.js";
 export interface VerifyProbeResult {
     kind: SubTaskVerify["kind"];
     passed: boolean;

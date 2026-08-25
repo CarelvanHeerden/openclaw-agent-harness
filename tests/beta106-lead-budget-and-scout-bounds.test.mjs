@@ -29,7 +29,7 @@ let withTimeout, WorkerTimeoutError, runLeadPlanner, parseHarnessConfig, PLUGIN_
 let SCOUT_MAX_TURNS, buildScoutSystemPrompt, consumeWorkerStream;
 try {
   ({ withTimeout, WorkerTimeoutError } = await import("../dist/orchestrator/loop.js"));
-  ({ runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js"));
+  ({ runLeadPlanner } = await import("../dist/orchestrator/lead.js"));
   ({ parseHarnessConfig } = await import("../dist/config.js"));
   ({ PLUGIN_VERSION } = await import("../dist/version.js"));
   ({ SCOUT_MAX_TURNS, buildScoutSystemPrompt } = await import("../dist/orchestrator/lead-scout.js"));
@@ -256,7 +256,7 @@ test("beta106: the scout hard-stops and keeps what it already has", { skip }, ()
 });
 
 test("beta106: a timed-out scout is still a scout, and says so", { skip }, () => {
-  const lead = S("src/orchestrator/fable5-lead.ts");
+  const lead = S("src/orchestrator/lead.ts");
   assert.match(lead, /timedOut: result\?\.timedOut === true \? true : undefined/);
   assert.match(S("src/orchestrator/loop.ts"), /timedOut: plan\.scout\.timedOut === true/);
   assert.match(S("src/orchestrator/loop.ts"), /scoutBudgetSeconds: scoutBudget/);

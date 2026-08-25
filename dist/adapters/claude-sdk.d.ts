@@ -17,8 +17,8 @@
  * the SDK is missing.
  */
 import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crystallise/prompt-refiner.js";
-import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/fable5-lead.js";
-import type { ReviewReport } from "../orchestrator/fable5-adversary.js";
+import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/lead.js";
+import type { ReviewReport } from "../orchestrator/adversary.js";
 /**
  * beta.110: allow bootstrap to deny an operator-renamed secret env var (e.g. a
  * custom `credentials.key_env`). The denylist is static by design -- this is the

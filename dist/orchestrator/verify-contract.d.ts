@@ -36,7 +36,7 @@
  * are KEPT in inference output for sub-tasks that matched them in beta.8.
  * Consumers watching old audit event names will still see them fire.
  */
-import type { LeadPlanSubTask, SubTaskVerify } from "./fable5-lead.js";
+import type { LeadPlanSubTask, SubTaskVerify } from "./lead.js";
 /**
  * Infer the observable-side-effect contract for a sub-task.
  *

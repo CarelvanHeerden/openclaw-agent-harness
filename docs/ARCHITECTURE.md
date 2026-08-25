@@ -31,8 +31,8 @@ flowchart TB
       DIS["Dispatcher\nsession row + handoff"]
       CRY["Crystalliser\nhaiku classify + fable-5 refine"]
       LOOP["OrchestratorLoop\nstate machine"]
-      LEAD["Fable-5 lead\nplan validator"]
-      ADV["Fable-5 adversary\ndiff + runtime review"]
+      LEAD["Lead planner\nplan validator"]
+      ADV["Adversary\ndiff + runtime review"]
       BUD["Budget enforcer"]
       PAT["PAT router"]
       GUARD["Bash guard"]
@@ -43,8 +43,8 @@ flowchart TB
   end
 
   subgraph WORKERS["Claude Agent SDK subprocesses"]
-    W1["Sonnet worker #1"]
-    W2["Sonnet worker #N"]
+    W1["Worker #1"]
+    W2["Worker #N"]
   end
 
   subgraph EXT["External"]
@@ -99,9 +99,9 @@ sequenceDiagram
   participant Disp as Dispatcher
   participant Cry as Crystalliser
   participant Orch as OrchestratorLoop
-  participant Lead as Fable-5 lead
-  participant Worker as Sonnet worker(s)
-  participant Adv as Fable-5 adversary
+  participant Lead as Lead planner
+  participant Worker as Worker(s)
+  participant Adv as Adversary
   participant Git as Git worktree
   participant GH as GitHub
 
@@ -221,9 +221,9 @@ stateDiagram-v2
 |         +-- Prompt crystalliser  (single pass)              |
 |         +-- Session state store  (SQLite)                   |
 |         +-- Orchestrator                                    |
-|         |     +-- Fable-5 lead                              |
-|         |     +-- Sonnet workers  (spawned as sub-agents)   |
-|         |     +-- Fable-5 adversarial reviewer              |
+|         |     +-- Lead planner                      |
+|         |     +-- Workers (spawned as sub-agents)   |
+|         |     +-- Adversarial reviewer              |
 |         +-- Budget enforcer                                 |
 |         +-- PAT router                                      |
 |         +-- Git / GitHub bridge                             |
@@ -247,13 +247,13 @@ stateDiagram-v2
 
 2. **Crystallisation.** If intent = `dev_task`, one crystalliser call turns the request into a structured brief (repo, acceptance criteria, constraints). Where it needs more, it returns **one** clarifying question for the calling agent to relay — answered with `harness_answer`, not a multi-turn Slack loop. Output: a crystallised prompt stored in the session record.
 
-3. **Plan.** Fable-5 lead reads the crystallised prompt + a repo overview and produces a plan: a DAG of sub-tasks, each with a scope, expected outputs, and a suggested worker model.
+3. **Plan.** The lead reads the crystallised prompt + a repo overview and produces a plan: a DAG of sub-tasks, each with a scope, expected outputs, and a suggested worker model.
 
-4. **Execute.** For each ready sub-task, the lead spawns a Sonnet worker (Claude Agent SDK, own session). Workers get read access to the repo and write access only to their assigned paths (enforced via SDK permission mode + tool whitelist). Workers report structured results back to the lead.
+4. **Execute.** For each ready sub-task, the lead spawns a worker (Claude Agent SDK, own session). Workers get read access to the repo and write access only to their assigned paths (enforced via SDK permission mode + tool whitelist). Workers report structured results back to the lead.
 
 5. **Assemble.** Lead merges worker outputs into a single working diff on a session-scoped git worktree.
 
-6. **Adversarial review.** Fable-5 adversary reads:
+6. **Adversarial review.** The adversary reads:
    - the crystallised prompt (spec)
    - the current diff
    - the wider codebase (read-only)
@@ -315,7 +315,7 @@ stateDiagram-v2
   than a change-data-capture of every UPDATE — the exhaustive trail is the interaction
   log (`harness_logs`).
 
-### 3.5 Fable-5 lead
+### 3.5 Lead planner
 
 - One instance per session.
 - A structured planning call, not an agent with a tool belt: `runLeadPlanner` returns a
@@ -327,7 +327,7 @@ stateDiagram-v2
   files it imagined.
 - Model: `claude-fable-5`.
 
-### 3.6 Sonnet workers
+### 3.6 Workers
 
 - Ephemeral Claude Agent SDK sessions.
 - Sandboxed to specific paths within the session's git worktree.
@@ -343,7 +343,7 @@ stateDiagram-v2
 - Reports back a structured `WorkerResult` (`filesChanged`, commit SHAs, status, token
   and cost metrics).
 
-### 3.7 Fable-5 adversarial reviewer
+### 3.7 Adversarial reviewer
 
 - Fresh session per cycle, no prior context except:
   - the crystallised prompt,

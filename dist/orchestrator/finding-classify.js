@@ -20,7 +20,7 @@
  *   - `architectural`      — platform/deploy/size limits not addressable in a diff. NON-blocking.
  *   - `unproven_runtime`   — runtime dimension with no live deploy evidence. NON-blocking.
  *
- * The verdict gate (in fable5-adversary.ts `runAdversary`) then requires at least
+ * The verdict gate (in adversary.ts `runAdversary`) then requires at least
  * one NEW, blocking (diff_addressable + severity>=medium) finding to sustain a
  * `revise`. Everything else is surfaced on the PR body, not used to block
  * convergence. `block` verdicts are never downgraded here.

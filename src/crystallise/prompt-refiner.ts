@@ -10,7 +10,7 @@
  *      - "not_dev"      : chat / non-dev request, decline politely.
  *      - "unsafe"       : mentions secrets, deletion, etc.; refuse.
  *
- *   2. If dev_task: Fable-5 crystalliser produces a strict-schema brief:
+ *   2. If dev_task: the crystalliser produces a strict-schema brief:
  *      { title, motivation, acceptanceCriteria[], filesLikelyTouched[],
  *        outOfScope[], repoHint, riskLevel }.
  *

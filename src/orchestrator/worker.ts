@@ -1,5 +1,5 @@
 /**
- * Sonnet worker.
+ * Worker.
  *
  * Executes ONE sub-task inside a git worktree, using
  * `@anthropic-ai/claude-agent-sdk`'s `query()` with:
@@ -15,7 +15,7 @@
  */
 
 import type { HarnessConfig } from "../config.js";
-import type { LeadPlanSubTask } from "./fable5-lead.js";
+import type { LeadPlanSubTask } from "./lead.js";
 import { renderConventionsForPrompt } from "./repo-conventions.js";
 
 export interface WorkerResult {
@@ -181,7 +181,7 @@ const WORKER_CONTEXT_EXCERPT_MAX_CHARS = 4000;
  * unit tests. Returns "" when there is no context (cold behaviour).
  */
 export function renderWorkerContextBlock(
-  ctx?: import("./fable5-lead.js").WorkerContext,
+  ctx?: import("./lead.js").WorkerContext,
 ): string {
   if (!ctx) return "";
   const lines: string[] = [

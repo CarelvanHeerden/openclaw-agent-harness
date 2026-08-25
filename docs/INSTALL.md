@@ -248,7 +248,7 @@ Expected behaviour:
 
 1. The agent calls `harness_run` and reports a session id back to you.
 2. It may relay **one** clarifying question; answer it in the same conversation.
-3. Fable-5 lead plans a single Sonnet worker sub-task.
+3. The lead plans a single worker sub-task.
 4. Worker edits `README.md` and commits to a new branch — workers never push.
 5. Adversarial reviewer returns `pass`, `revise` or `block`.
 6. The harness pushes the branch under your GitHub identity and opens a PR

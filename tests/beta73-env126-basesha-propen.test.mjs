@@ -28,7 +28,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 
 const { classifyFinding } = await import("../dist/orchestrator/finding-classify.js");
-const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
 
 const F = (o) => ({ dimension: "fit", severity: "medium", title: "", detail: "", ...o });
 

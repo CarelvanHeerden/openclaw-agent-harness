@@ -22,8 +22,8 @@ import type {
   CrystallisedBrief,
   OkfConceptRef,
 } from "../crystallise/prompt-refiner.js";
-import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/fable5-lead.js";
-import type { ReviewReport } from "../orchestrator/fable5-adversary.js";
+import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/lead.js";
+import type { ReviewReport } from "../orchestrator/adversary.js";
 import { renderConventionsForPrompt } from "../orchestrator/repo-conventions.js";
 import { renderScoutForPrompt } from "../orchestrator/lead-scout.js";
 

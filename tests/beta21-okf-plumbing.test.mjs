@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 let crystallisePrompt, buildWorkerSystemPrompt, pickConceptsForSubTask, formatConceptBlockForCrystalliser;
 try {
   ({ crystallisePrompt } = await import("../dist/crystallise/prompt-refiner.js"));
-  ({ buildWorkerSystemPrompt, pickConceptsForSubTask } = await import("../dist/orchestrator/sonnet-worker.js"));
+  ({ buildWorkerSystemPrompt, pickConceptsForSubTask } = await import("../dist/orchestrator/worker.js"));
   ({ formatConceptBlockForCrystalliser } = await import("../dist/adapters/claude-sdk.js"));
 } catch {
   crystallisePrompt = null;

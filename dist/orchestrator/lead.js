@@ -1,5 +1,5 @@
 /**
- * Fable-5 lead.
+ * Lead planner.
  *
  * Given a crystallised brief, produces:
  *   - a sub-task decomposition (ordered list of atomic units of work)
@@ -620,4 +620,4 @@ function sanitizeRemoteSubTasks(plan, logger) {
         });
     }
 }
-//# sourceMappingURL=fable5-lead.js.map
+//# sourceMappingURL=lead.js.map

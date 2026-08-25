@@ -1,5 +1,5 @@
 /**
- * Fable-5 lead.
+ * Lead planner.
  *
  * Given a crystallised brief, produces:
  *   - a sub-task decomposition (ordered list of atomic units of work)
@@ -114,7 +114,7 @@ export type TaskMode = "observe" | "mutate" | "mixed";
  * absent = the pre-beta.66 cold behaviour.
  *
  * HARD BOUNDARY: warm context flows lead -> DEV-WORKER ONLY. The adversary
- * (fable5-adversary.ts) stays cold + independent and NEVER receives this.
+ * (adversary.ts) stays cold + independent and NEVER receives this.
  */
 export interface WorkerContext {
   /**

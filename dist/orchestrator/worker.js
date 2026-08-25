@@ -1,5 +1,5 @@
 /**
- * Sonnet worker.
+ * Worker.
  *
  * Executes ONE sub-task inside a git worktree, using
  * `@anthropic-ai/claude-agent-sdk`'s `query()` with:
@@ -327,4 +327,4 @@ firstTokenTimeoutSecondsOverride) {
         msToFirstToken: sdkResult.msToFirstToken,
     };
 }
-//# sourceMappingURL=sonnet-worker.js.map
+//# sourceMappingURL=worker.js.map

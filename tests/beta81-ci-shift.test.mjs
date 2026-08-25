@@ -75,7 +75,7 @@ const noSleep = async () => {};
 
 // ---- B1: worker prompt ----
 test("beta81/B1: worker prompt shifts verification to CI (no run-suite-to-green)", () => {
-  const src = S("src/orchestrator/sonnet-worker.ts");
+  const src = S("src/orchestrator/worker.ts");
   assert.match(src, /DO NOT run the test suite, a build, or lint "to green"/);
   assert.match(src, /GitHub CI runs the repo's declared checks AFTER the/);
   // does NOT tell the worker to run tests to green anymore.

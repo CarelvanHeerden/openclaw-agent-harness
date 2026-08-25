@@ -130,7 +130,7 @@ test("beta81/A: progress snapshot carries estimatedUsd + pctOfCap", () => {
 });
 
 test("beta81/B: worker prompt forbids running tests/build/lint locally to green (CI verifies)", () => {
-  const src = S("src/orchestrator/sonnet-worker.ts");
+  const src = S("src/orchestrator/worker.ts");
   assert.match(src, /DO NOT run the test suite, a build, or lint "to green"/i);
   assert.match(src, /GitHub CI runs the repo's declared checks AFTER the/i);
   assert.match(src, /CI does the verifying|CI verifies/i);

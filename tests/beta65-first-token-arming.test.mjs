@@ -228,8 +228,8 @@ test("beta65/P0: sdk_stream_open_timeout_seconds declared in manifest configSche
     "phase-2 manifest default must be lowered to 30");
 });
 
-test("beta65/P0: sonnet-worker threads BOTH windows into runWorkerModel (source)", () => {
-  const src = S("src/orchestrator/sonnet-worker.ts");
+test("beta65/P0: worker threads BOTH windows into runWorkerModel (source)", () => {
+  const src = S("src/orchestrator/worker.ts");
   // beta.113: phase 2 now takes the loop's per-attempt override first, falling
   // back to the same config value. Phase 1 is unchanged.
   assert.match(src, /firstTokenTimeoutSecondsOverride \?\? deps\.config\.loop\.sdk_first_token_timeout_seconds \?\? 30/);

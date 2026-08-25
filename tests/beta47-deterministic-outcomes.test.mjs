@@ -96,7 +96,7 @@ test("beta47 P2: source guards audit against a post-close write", () => {
 // ----------------------------------------------------------------------------
 let worker;
 try {
-  worker = await import("../dist/orchestrator/sonnet-worker.js");
+  worker = await import("../dist/orchestrator/worker.js");
 } catch {
   worker = null;
 }

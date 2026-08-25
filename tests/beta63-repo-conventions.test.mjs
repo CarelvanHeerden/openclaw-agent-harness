@@ -221,6 +221,6 @@ test("beta63: loop ingests conventions at plan-ready + runs final-verify checks 
 
 test("beta63: lead/worker/adversary prompts thread renderConventionsForPrompt (source)", () => {
   assert.match(S("src/adapters/claude-sdk.ts"), /renderConventionsForPrompt\(params\.brief\.repoConventions, "lead"\)/);
-  assert.match(S("src/orchestrator/sonnet-worker.ts"), /renderConventionsForPrompt\(brief\.repoConventions, "worker"\)/);
-  assert.match(S("src/orchestrator/fable5-adversary.ts"), /renderConventionsForPrompt\(input\.repoConventions, "adversary"\)/);
+  assert.match(S("src/orchestrator/worker.ts"), /renderConventionsForPrompt\(brief\.repoConventions, "worker"\)/);
+  assert.match(S("src/orchestrator/adversary.ts"), /renderConventionsForPrompt\(input\.repoConventions, "adversary"\)/);
 });

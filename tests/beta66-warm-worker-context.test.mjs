@@ -11,7 +11,7 @@
 //     workerContext present; unchanged cold prompt when absent (regression).
 //   - LeadPlanSubTask: workerContext is optional/additive (parse both shapes).
 //   - Lead prompt (claude-sdk.ts) instructs Fable to emit workerContext.
-//   - HARD BOUNDARY: adversary (fable5-adversary.ts) never references
+//   - HARD BOUNDARY: adversary (adversary.ts) never references
 //     workerContext — warm context is dev-worker-only.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -25,7 +25,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 
 let renderWorkerContextBlock, buildWorkerSystemPrompt;
 try {
-  ({ renderWorkerContextBlock, buildWorkerSystemPrompt } = await import("../dist/orchestrator/sonnet-worker.js"));
+  ({ renderWorkerContextBlock, buildWorkerSystemPrompt } = await import("../dist/orchestrator/worker.js"));
 } catch {
   renderWorkerContextBlock = null;
 }
@@ -136,7 +136,7 @@ test("beta66: cold sub-task prompt is unchanged (no context block)", { skip: bui
 
 // ---- source assertions: schema + lead prompt ----
 test("beta66: LeadPlanSubTask carries optional workerContext + WorkerContext type", () => {
-  const src = S("src/orchestrator/fable5-lead.ts");
+  const src = S("src/orchestrator/lead.ts");
   assert.match(src, /export interface WorkerContext/);
   assert.match(src, /workerContext\?: WorkerContext/);
   assert.match(src, /codeExcerpts\?:/);
@@ -152,7 +152,7 @@ test("beta66: lead prompt instructs Fable to emit workerContext (dev-worker only
 
 // ---- HARD BOUNDARY: adversary stays cold ----
 test("beta66: adversary NEVER references workerContext (cold + independent)", () => {
-  const src = S("src/orchestrator/fable5-adversary.ts");
+  const src = S("src/orchestrator/adversary.ts");
   assert.doesNotMatch(src, /workerContext/);
   assert.doesNotMatch(src, /WorkerContext/);
 });

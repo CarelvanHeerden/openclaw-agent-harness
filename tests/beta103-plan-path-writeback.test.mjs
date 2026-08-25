@@ -31,7 +31,7 @@ try {
   ({ computeReviseScope } = await import("../dist/orchestrator/revise-scope.js"));
   ({ mapFindingsToSubTasks } = await import("../dist/orchestrator/revise-mapping.js"));
   ({ parseHarnessConfig } = await import("../dist/config.js"));
-  ({ runWorker: runWorkerCore } = await import("../dist/orchestrator/sonnet-worker.js"));
+  ({ runWorker: runWorkerCore } = await import("../dist/orchestrator/worker.js"));
 } catch {
   applyPathCorrections = undefined;
 }

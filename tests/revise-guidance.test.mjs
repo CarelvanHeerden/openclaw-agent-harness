@@ -259,7 +259,7 @@ test("acceptanceCriteria is the carrier that reaches lead, worker and adversary"
   // its own: these three read that array. If any stopped, guidance would be
   // silently advisory again.
   assert.match(
-    S("src/orchestrator/sonnet-worker.ts"),
+    S("src/orchestrator/worker.ts"),
     /brief\.acceptanceCriteria\.map/,
     "the worker system prompt renders the criteria",
   );

@@ -41,6 +41,25 @@ the gateway validates an operator's config against that manifest with
 plugin offline, which is the beta.34 and rc.1 outage shape. Nobody's harness
 goes down over a knob that no longer does anything.
 
+### Role modules renamed off their model brands
+
+`sonnet-worker.ts` → `worker.ts`, `fable5-lead.ts` → `lead.ts`,
+`fable5-adversary.ts` → `adversary.ts`, with the docs and mermaid diagrams
+swept to match. v2 lets any model fill any role, so a filename asserting which
+model runs it is about to become false — `worker.ts` running Kimi K3 should not
+read as a bug.
+
+No behaviour change. Model IDs in config values are untouched, and so are the
+prompt strings: the lead planner's instruction still says a sub-task should be
+one a Sonnet worker can finish in a turn, because that sentence is calibrating
+sub-task size against a known capability level, and rewording it would change
+what the planner produces. M4 and M7 replace it with a declared capability
+floor rather than a brand name.
+
+Also removed 24 stale `dist/` artifacts for the renamed and deleted modules
+(`tsc` does not clean, and `dist/` is committed), plus four for
+`adapters/github-pr`, dead since beta.32.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**

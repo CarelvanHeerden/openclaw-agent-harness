@@ -12,7 +12,7 @@
 //     back to buildReviseDispatchHint (never worse than beta.66).
 //
 // HARD BOUNDARY: workerContext flows lead -> dev worker only; the adversary
-// stays cold + independent (asserted here against fable5-adversary.ts).
+// stays cold + independent (asserted here against adversary.ts).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -26,7 +26,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 let hasSubstantiveWorkerContext, subTasksMissingWorkerContext, LeadPlanValidationError, runLeadPlanner;
 try {
   ({ hasSubstantiveWorkerContext, subTasksMissingWorkerContext, LeadPlanValidationError, runLeadPlanner } =
-    await import("../dist/orchestrator/fable5-lead.js"));
+    await import("../dist/orchestrator/lead.js"));
 } catch {
   hasSubstantiveWorkerContext = null;
 }
@@ -265,8 +265,8 @@ test("P0a: index callLeadModel genuinely re-invokes the SDK with the corrective 
   assert.match(src, /correctiveNote,/);
 });
 test("BOUNDARY: the adversary NEVER references workerContext (stays cold)", () => {
-  const src = S("src/orchestrator/fable5-adversary.ts");
-  assert.equal(/workerContext/.test(src), false, "fable5-adversary.ts must not reference workerContext");
+  const src = S("src/orchestrator/adversary.ts");
+  assert.equal(/workerContext/.test(src), false, "adversary.ts must not reference workerContext");
 });
 test("config + manifest declare both beta.67 P0d keys", () => {
   const cfg = S("src/config.ts");

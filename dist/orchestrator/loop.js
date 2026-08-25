@@ -25,7 +25,7 @@
  * changes what `advance()` returns needs a SCENARIO test that asserts the run
  * behaved differently, not a unit test that asserts the decision differed.
  */
-import { elideFinalScopeSubTask } from "./fable5-lead.js";
+import { elideFinalScopeSubTask } from "./lead.js";
 import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync } from "node:fs";

@@ -17,7 +17,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const S = (p) => readFileSync(join(here, "..", p), "utf8");
 
 const regSrc = S("src/tools/registration.ts");
-const leadSrc = S("src/orchestrator/fable5-lead.ts");
+const leadSrc = S("src/orchestrator/lead.ts");
 const gitSrc = S("src/adapters/git-worktree.ts");
 const ghSrc = S("src/adapters/github.ts");
 const indexSrc = S("src/index.ts");

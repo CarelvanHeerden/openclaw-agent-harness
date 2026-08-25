@@ -89,7 +89,7 @@ test("the scout's cost is counted too", { skip }, async () => {
 
 let runLeadPlanner;
 try {
-  ({ runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js"));
+  ({ runLeadPlanner } = await import("../dist/orchestrator/lead.js"));
 } catch { runLeadPlanner = null; }
 const skipPlanner = runLeadPlanner === null ? "dist/ not built" : false;
 

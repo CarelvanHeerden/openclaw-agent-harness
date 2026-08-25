@@ -30,9 +30,9 @@ import type { BudgetEnforcer } from "../budgets/enforcer.js";
 import type { PatRouter } from "../auth/pat-router.js";
 import type { StateStore } from "../state/store.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
-import type { LeadPlan, LeadPlanSubTask } from "./fable5-lead.js";
-import type { ReviewReport, ReviewFinding } from "./fable5-adversary.js";
-import type { WorkerResult } from "./sonnet-worker.js";
+import type { LeadPlan, LeadPlanSubTask } from "./lead.js";
+import type { ReviewReport, ReviewFinding } from "./adversary.js";
+import type { WorkerResult } from "./worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 /**
  * beta.64 (P0-3): parse the file paths out of a `git diff --stat base..HEAD`

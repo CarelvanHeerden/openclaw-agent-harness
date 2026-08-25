@@ -1,5 +1,5 @@
 /**
- * Sonnet worker.
+ * Worker.
  *
  * Executes ONE sub-task inside a git worktree, using
  * `@anthropic-ai/claude-agent-sdk`'s `query()` with:
@@ -14,7 +14,7 @@
  * by the orchestrator after adversarial review passes.
  */
 import type { HarnessConfig } from "../config.js";
-import type { LeadPlanSubTask } from "./fable5-lead.js";
+import type { LeadPlanSubTask } from "./lead.js";
 export interface WorkerResult {
     status: "completed" | "failed" | "timeout" | "first_token_timeout";
     filesChanged: string[];
@@ -176,7 +176,7 @@ type WorkerConceptRef = {
  * beta.66: render the lead's WorkerContext into a prompt block. Exported for
  * unit tests. Returns "" when there is no context (cold behaviour).
  */
-export declare function renderWorkerContextBlock(ctx?: import("./fable5-lead.js").WorkerContext): string;
+export declare function renderWorkerContextBlock(ctx?: import("./lead.js").WorkerContext): string;
 export declare function buildWorkerSystemPrompt(brief: {
     title: string;
     motivation: string;
@@ -232,4 +232,4 @@ modelOverride?: string,
  */
 firstTokenTimeoutSecondsOverride?: number): Promise<WorkerResult>;
 export {};
-//# sourceMappingURL=sonnet-worker.d.ts.map
+//# sourceMappingURL=worker.d.ts.map

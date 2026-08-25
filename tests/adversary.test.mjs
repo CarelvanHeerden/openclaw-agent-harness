@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 let runtimeBanner, runAdversary, buildAdversarySystemPrompt;
 try {
-  ({ runtimeBanner, runAdversary, buildAdversarySystemPrompt } = await import("../dist/orchestrator/fable5-adversary.js"));
+  ({ runtimeBanner, runAdversary, buildAdversarySystemPrompt } = await import("../dist/orchestrator/adversary.js"));
 } catch {
   runtimeBanner = null;
 }

@@ -23,7 +23,7 @@ try {
 }
 let adversary;
 try {
-  adversary = await import("../dist/orchestrator/fable5-adversary.js");
+  adversary = await import("../dist/orchestrator/adversary.js");
 } catch {
   adversary = null;
 }
@@ -200,7 +200,7 @@ test("beta69: runAdversary keeps 'revise' when a NEW diff-addressable medium+ fi
 
 // ---- source-assertion wiring ----
 test("beta69: force-upgrade pass->revise is DELETED from runAdversary (source)", () => {
-  const src = S("src/orchestrator/fable5-adversary.ts");
+  const src = S("src/orchestrator/adversary.ts");
   assert.doesNotMatch(src, /if \(verdict === "pass"\) verdict = "revise";/);
   assert.match(src, /gateVerdict\(\{/);
   // the injected missing-runtime finding is now info, not medium

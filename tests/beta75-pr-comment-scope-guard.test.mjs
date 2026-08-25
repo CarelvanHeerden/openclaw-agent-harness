@@ -106,7 +106,7 @@ test("beta75 #1: renderReviewComment renders verdict + findings + updated-PR mar
 // ---------------------------------------------------------------------------
 
 test("beta75 #3: worker prompt makes a 'do NOT touch <file>' constraint a HARD boundary", () => {
-  const src = readFileSync(join(root, "src/orchestrator/sonnet-worker.ts"), "utf8");
+  const src = readFileSync(join(root, "src/orchestrator/worker.ts"), "utf8");
   assert.match(src, /SCOPE IS A HARD BOUNDARY/, "explicit scope-discipline rule present");
   assert.match(src, /do NOT touch\/modify\/edit/i, "names the do-not-touch pattern");
   assert.match(src, /reconstruct-then-revert|not to reconstruct|not \"to verify\"/i, "forbids temporary/reconstruct edits of forbidden files");

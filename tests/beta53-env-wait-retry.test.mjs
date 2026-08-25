@@ -134,7 +134,7 @@ test("beta53 wiring: P1b retry-with-context, ordered AFTER P2 (uncommittedFiles)
 });
 
 test("beta53 wiring: WorkerResult carries uncommittedFiles, worker threads dispatchHint", () => {
-  const worker = S("src/orchestrator/sonnet-worker.ts");
+  const worker = S("src/orchestrator/worker.ts");
   assert.match(worker, /uncommittedFiles\?: string\[\]/);
   assert.match(worker, /gitStatusPorcelain\?:/);
   assert.match(worker, /dispatchHint\?: string/);

@@ -264,7 +264,7 @@ test("beta116: a file-less codebase-fit finding does not force a full re-run", (
 
 test("beta116: the adversary is told the exact tokens, not just prose headings", async () => {
   const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../src/orchestrator/fable5-adversary.ts", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/orchestrator/adversary.ts", import.meta.url), "utf8");
   assert.match(src, /EXACTLY one of these five tokens/, "the prompt must name the enum it expects");
   for (const tok of ["`spec`", "`fit`", "`quality`", "`security`", "`runtime`"]) {
     assert.ok(src.includes(tok), `the prompt must show ${tok} as a literal token`);

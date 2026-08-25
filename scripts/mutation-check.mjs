@@ -82,14 +82,14 @@ const MUTATIONS = [
   },
   {
     name: "full commit-tip recording (b103): a two-commit turn records both",
-    file: "dist/orchestrator/sonnet-worker.js",
+    file: "dist/orchestrator/worker.js",
     find: "if (headBefore && headBefore !== baseSha)",
     replace: "if (false && headBefore !== baseSha)",
     tests: ["tests/beta103-plan-path-writeback.test.mjs"],
   },
   {
     name: "lead repo scout (b104): the report reaches the planning call",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     // Neutered to the pre-b104 blind plan: the scout still runs and still
     // costs a turn, but nothing it found reaches the lead. This is the exact
     // shape of the b102 defect -- seven fictional paths in one plan -- so the
@@ -107,7 +107,7 @@ const MUTATIONS = [
   },
   {
     name: "scout failure is non-fatal (b104): a throw plans blind, it does not kill the run",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     // Re-throwing turns a best-effort investigation into a new way to lose a
     // whole session -- the b98 failure class, which is why every path here
     // degrades instead of failing.
@@ -232,7 +232,7 @@ const MUTATIONS = [
   },
   {
     name: "truncation is reported (b107): reportChars 20049 must not need decoding",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "truncated: bounds.truncated ? true : undefined,",
     replace: "truncated: undefined,",
     tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
@@ -316,14 +316,14 @@ const MUTATIONS = [
   },
   {
     name: "session-scoped branches (b108): two threads must not collide on one PR",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "raw.branch = sessionScopedBranch(raw.branch, deps.sessionId);",
     replace: "raw.branch = raw.branch;",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
   {
     name: "branch suffix is idempotent (b108): a clarification re-plan must not stack it",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "if (b.endsWith(`-${suffix}`))\n        return b;",
     replace: "if (false)\n        return b;",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
@@ -662,7 +662,7 @@ const MUTATIONS = [
   },
   {
     name: "an ambiguous allow-list is not scouted (b113): scouting one of two candidates primes the plan for the wrong repo",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "if (entries.length !== 1)",
     replace: "if (false)",
     tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
@@ -837,7 +837,7 @@ const MUTATIONS = [
   },
   {
     name: "the adversary must name the trigger (b118): without it the registry finding has no owner to route to",
-    file: "src/orchestrator/fable5-adversary.ts",
+    file: "src/orchestrator/adversary.ts",
     find: "- REGISTRY findings",
     replace: "- Registry findings",
     tests: ["tests/beta118-orphan-routing.test.mjs"],
@@ -1144,7 +1144,7 @@ const MUTATIONS = [
     // The root cause. Without this the lead renames the branch on every
     // re-plan and b101's preservation looks up a name that no longer exists.
     name: "the session's branch is pinned (b122): a re-plan that renames the branch orphans everything committed to it",
-    file: "src/orchestrator/fable5-lead.ts",
+    file: "src/orchestrator/lead.ts",
     find: "        raw.branch = deps.pinnedSessionBranch;",
     replace: "        raw.branch = raw.branch;",
     tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
@@ -1484,7 +1484,7 @@ const MUTATIONS = [
   },
   {
     name: "every lead attempt is billed, including the ones whose plan we discard (b127 / #157)",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "leadCallCostUsd += raw.costUsd ?? 0;",
     replace: "leadCallCostUsd += 0;",
     tests: ["tests/beta127-lead-cost.test.mjs"],
@@ -1547,7 +1547,7 @@ const MUTATIONS = [
   },
   {
     name: "the planner carries its spend out on the throw (b128 / #157): the loop can only bank what it is handed",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "failed.costUsd = Number((leadCallCostUsd + (scoutOutcome?.costUsd ?? 0) + (failed.costUsd ?? 0)).toFixed(6));",
     replace: "failed.costUsd = failed.costUsd ?? 0;",
     tests: ["tests/beta128-failed-plan-cost.test.mjs"],

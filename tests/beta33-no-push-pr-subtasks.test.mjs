@@ -35,7 +35,7 @@ test("beta.33 prompt: lead is told NOT to plan push/PR sub-tasks", () => {
 
 let runLeadPlanner;
 try {
-  ({ runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js"));
+  ({ runLeadPlanner } = await import("../dist/orchestrator/lead.js"));
 } catch {
   runLeadPlanner = null;
 }

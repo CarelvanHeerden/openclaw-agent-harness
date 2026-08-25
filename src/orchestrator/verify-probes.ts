@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import type { HarnessConfig } from "../config.js";
 import type { GitAdapter } from "../adapters/git-worktree.js";
 import type { PatRouter } from "../auth/pat-router.js";
-import type { LeadPlan } from "./fable5-lead.js";
+import type { LeadPlan } from "./lead.js";
 import type { VerifyProbes } from "./verify.js";
 import { resolveContractPath } from "./path-match.js";
 

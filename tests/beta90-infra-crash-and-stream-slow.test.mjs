@@ -371,7 +371,7 @@ test("beta90 F2: consumeWorkerStream has stream-slow tick wired; observability o
   const tickBlock = sdk.slice(sdk.indexOf("STREAM-SLOW liveness detector"), sdk.indexOf("armStreamOpenWatchdog();"));
   assert.doesNotMatch(tickBlock, /abort\.abort\(\)/, "stream-slow tick must never abort");
   // must thread through the worker path
-  const worker = S("src/orchestrator/sonnet-worker.ts");
+  const worker = S("src/orchestrator/worker.ts");
   assert.match(worker, /onStreamSlow/);
   assert.match(worker, /streamIdleWarnSeconds: deps\.config\.loop\.worker_stream_idle_warn_seconds \?\? 90/);
 });

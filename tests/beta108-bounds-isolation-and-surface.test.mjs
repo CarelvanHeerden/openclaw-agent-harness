@@ -20,7 +20,7 @@ import {
   ADOPTABLE_SEVERITIES,
   mapFindingsToSubTasks,
 } from "../dist/orchestrator/revise-mapping.js";
-import { sessionScopedBranch } from "../dist/orchestrator/fable5-lead.js";
+import { sessionScopedBranch } from "../dist/orchestrator/lead.js";
 import { buildHeadline, mergeAdvice, renderWorklog } from "../dist/orchestrator/progress.js";
 import { buildHarnessHelp } from "../dist/tools/help-content.js";
 import { parseHarnessConfig } from "../dist/config.js";
@@ -209,7 +209,7 @@ function leadDeps(over = {}) {
 }
 
 test("beta108: the planner suffixes the branch the lead invented", async () => {
-  const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+  const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
   const plan = await runLeadPlanner(BRIEF(), leadDeps({ sessionId: "21c9c44e-4177-45f9" }));
   assert.notEqual(
     plan.branch,
@@ -220,14 +220,14 @@ test("beta108: the planner suffixes the branch the lead invented", async () => {
 });
 
 test("beta108: two sessions planning the SAME slug end on different branches", async () => {
-  const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+  const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
   const a = await runLeadPlanner(BRIEF(), leadDeps({ sessionId: "21c9c44e-4177" }));
   const b = await runLeadPlanner(BRIEF(), leadDeps({ sessionId: "06b91509-239d" }));
   assert.notEqual(a.branch, b.branch, "this is the cross-talk failure mode, end to end");
 });
 
 test("beta108: a revise plan keeps the pinned branch exactly", async () => {
-  const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+  const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
   const plan = await runLeadPlanner(
     BRIEF({ pinnedBranch: "harness/feat/grc-continuity-exercises-b106" }),
     leadDeps({ sessionId: "21c9c44e-4177" }),
@@ -240,13 +240,13 @@ test("beta108: a revise plan keeps the pinned branch exactly", async () => {
 });
 
 test("beta108: a planner given no session id is unchanged from b107", async () => {
-  const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+  const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
   const plan = await runLeadPlanner(BRIEF(), leadDeps());
   assert.equal(plan.branch, "harness/feat-db-field");
 });
 
 test("beta108: a revise keeps its pinned branch un-suffixed", () => {
-  const lead = S("src/orchestrator/fable5-lead.ts");
+  const lead = S("src/orchestrator/lead.ts");
   const i = lead.indexOf("if (brief.pinnedBranch)");
   const j = lead.indexOf("sanitizeRemoteSubTasks(raw", i);
   assert.ok(i > 0 && j > i);

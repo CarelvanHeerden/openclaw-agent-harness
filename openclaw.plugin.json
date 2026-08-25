@@ -1,7 +1,7 @@
 {
   "id": "openclaw-agent-harness",
   "name": "OpenClaw Agent Harness",
-  "description": "Multi-agent development harness: crystallise -> plan -> execute (Sonnet) -> adversarial review (Fable-5) -> PR.",
+  "description": "Multi-agent development harness: crystallise -> plan -> execute -> adversarial review -> PR.",
   "activation": {
     "onStartup": true
   },

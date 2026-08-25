@@ -83,9 +83,9 @@ import {
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair, type DeployRepairDeps, type DeployVerifyLite } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt, type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
-import { runLeadPlanner } from "./orchestrator/fable5-lead.js";
-import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/sonnet-worker.js";
-import { runAdversary as runAdversaryCore, type ReviewFinding } from "./orchestrator/fable5-adversary.js";
+import { runLeadPlanner } from "./orchestrator/lead.js";
+import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/worker.js";
+import { runAdversary as runAdversaryCore, type ReviewFinding } from "./orchestrator/adversary.js";
 import { discoverCheckScripts } from "./orchestrator/repo-conventions.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
@@ -910,7 +910,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           // beta.56 (P0-2): pass the FULL brief, not just the title. The
           // adversary judges spec fidelity against acceptance criteria; it
           // previously never saw them (and the title alone was also dropped
-          // by the prompt builder -- fixed in fable5-adversary.ts).
+          // by the prompt builder -- fixed in adversary.ts).
           crystallisedPrompt: [
             `Title: ${brief.title}`,
             `Motivation: ${brief.motivation}`,
