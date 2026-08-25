@@ -42,6 +42,7 @@ import { PatRouter } from "./auth/pat-router.js";
 import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
+import { guidanceCommentSection } from "./tools/revise-guidance.js";
 import {
   parseOkfBlocksFromContext,
   OkfConceptCache,
@@ -1088,7 +1089,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       // surfaces the current verdict/findings on the PR timeline. Best-effort:
       // NEVER fail the run on a comment error -- the code + PR already landed.
       try {
-        const commentBody = renderReviewComment(reviewReport, { updatedExisting: !!pr.updatedExisting });
+        const commentBody = renderReviewComment(reviewReport, {
+          updatedExisting: !!pr.updatedExisting,
+          operatorGuidance: brief.operatorGuidance,
+        });
         const c = await postPrComment({ repoFullName: plan.repo, prNumber: pr.number, body: commentBody, ghToken, apiBase: resolution.apiBase });
         if (!c.ok) {
           api.logger.warn("[harness] PR review comment post failed (non-fatal)", { repo: plan.repo, prNumber: pr.number, status: c.status, error: c.error });
@@ -2774,7 +2778,7 @@ function buildDeployRepairDeps(ctx: {
 // a specific out-of-scope finding) instead of it living only in the harness DB.
 function renderReviewComment(
   review: { verdict: string; findings: any[]; summary: string; costUsd?: number },
-  opts: { updatedExisting: boolean } = { updatedExisting: false },
+  opts: { updatedExisting: boolean; operatorGuidance?: string } = { updatedExisting: false },
 ): string {
   const verdict = String(review.verdict ?? "").toLowerCase();
   const emoji = verdict === "pass" ? "\u2705" : verdict === "block" ? "\u26d4" : "\u{1f501}";
@@ -2783,11 +2787,18 @@ function renderReviewComment(
       ? "No blocking findings from this review. The `harness_merge_pr` gate still applies."
       : "This review did NOT sign off (`" + verdict + "`). Address the findings below; `harness_merge_pr` will refuse a non-pass verdict.";
   const findings = review.findings ?? [];
+  // The operator's steer for this revise, above the verdict it was reviewed
+  // against. A revise updates an existing PR and createPullRequest only writes a
+  // body on first open (beta.75), so the PR body -- which does render guidance,
+  // via acceptanceCriteria -- is never rewritten for the case guidance exists
+  // for. Without this the steer would be invisible on the only PR it applies to.
+  const guidanceLines = opts.operatorGuidance ? guidanceCommentSection(opts.operatorGuidance) : [];
   const lines = [
     `## ${emoji} Harness adversarial review \u2014 verdict: \`${review.verdict}\`${opts.updatedExisting ? " (updated PR)" : ""}`,
     ``,
     gate,
     ``,
+    ...guidanceLines,
     review.summary ? review.summary : "",
     ``,
     findings.length ? `### Findings (${findings.length})` : "_No findings._",

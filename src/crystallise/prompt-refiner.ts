@@ -79,6 +79,16 @@ export interface CrystallisedBrief {
   reviseOfSessionId?: string;
   pinnedBranch?: string;
   /**
+   * Free-text direction from the human who requested a revise, describing what
+   * the fix must DO. Set by `harness_revise`'s `guidance` parameter.
+   *
+   * The instruction itself lives in `acceptanceCriteria`, which is what reaches
+   * the lead, the workers and the adversary; this field is the structured copy,
+   * so the PR review comment can render it as its own section without pattern-
+   * matching the criteria array. See src/tools/revise-guidance.ts.
+   */
+  operatorGuidance?: string;
+  /**
    * beta.101: set by harness_answer when re-driving a session out of
    * `awaiting_clarification`. The resume path re-plans, which allocates a fresh
    * worktree; without this marker allocation resets the session branch to base

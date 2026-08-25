@@ -87,7 +87,10 @@ test("beta49 A: harness_revise declares a dropFindings array param", () => {
 });
 
 test("beta49 A: dropFindings is threaded into buildReviseBrief", () => {
-  assert.match(regSrc, /buildReviseBrief\(row,\s*\{\s*dropFindings\s*\}\)/);
+  // `guidance` joined the options object later. The claim is that dropFindings
+  // reaches the builder and still drives exclusion on its own, so match its
+  // presence rather than the exact shape of the object it travels in.
+  assert.match(regSrc, /buildReviseBrief\(row,\s*\{[^}]*\bdropFindings\b[^}]*\}\)/);
   assert.match(regSrc, /const drop = new Set\(\(opts\.dropFindings \?\? \[\]\)/);
 });
 
@@ -116,7 +119,9 @@ test("beta49 C: acceptance criteria gains a premise-verify note only when demoti
 // Provenance: _reviseMeta is audited and stripped before reaching the loop.
 // ---------------------------------------------------------------------------
 test("beta49: _reviseMeta records total/dropped/demoted and is stripped before startSessionFromBrief", () => {
-  assert.match(regSrc, /_reviseMeta:\s*\{\s*total: allFindings\.length, dropped: droppedIdx, demoted: demotedIdx \}/);
+  // Open-ended at the tail: the operator guidance was added to this payload
+  // later. total/dropped/demoted are the b49 claim and must still be here.
+  assert.match(regSrc, /_reviseMeta:\s*\{\s*total: allFindings\.length, dropped: droppedIdx, demoted: demotedIdx[,}]/);
   // stripped via destructure so it never reaches crystallised_prompt
   assert.match(regSrc, /const \{ _reviseMeta, \.\.\.cleanBrief \} = built/);
   assert.match(regSrc, /brief:\s*cleanBrief,/);
