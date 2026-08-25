@@ -134,6 +134,44 @@ under any configuration. A `pass`-shaped default would have to travel through
 the caller as data, and every caller would have to remember to check it — which
 is exactly how a failed review becomes an approval.
 
+### The ACP backend, hardened
+
+The ACP adapter, the ACP-shaped bash guard, the capability matrix and the
+captured probe sessions come across from `harness/acp-worker`. Four things had
+to change first, and each is now a test and a mutation.
+
+**P0 — the child inherited everything.** The adapter spawned the agent with
+`{ ...process.env }`, handing OpenCode the vault key, the GitHub PAT and the
+Slack tokens. The SDK path has filtered its child since beta.57 and withheld the
+vault key specifically since beta.110, but that filter lived *inside* the SDK
+adapter, so a second spawn path did not inherit it. It now goes through
+`shared/env.ts`, which is what M3 moved it there for. `OPENCODE_CONFIG_CONTENT`
+is also added to interaction-log redaction: it carries the provider API keys as
+one JSON document, no shape pattern matches a JSON blob, and the key is named
+for what it contains rather than what it is.
+
+**Reaping the process group.** `child.kill()` reached the wrapper only.
+`opencode` spawns its own children, so a timeout left the real worker running —
+holding the worktree, talking to the model, spending. The child is now a group
+leader and the reap signals the whole group.
+
+**The token split was there all along.** The matrix recorded "ACP carries no
+input/output split" and the adapter reported zeros. That was concluded from the
+`usage_update` notification, which genuinely carries only context occupancy and
+cost. The split is on the `session/prompt` **result**, and it is sitting in the
+captured probe sessions:
+`{"inputTokens":10,"outputTokens":132,"totalTokens":2137,"cachedWriteTokens":1995}`.
+`usageSource` gains a third state, `tokens-only`, for local providers that
+report tokens but have no invoice — distinguishable from an agent that reported
+nothing, which must never read as zero spend.
+
+**The six tool-less roles.** The branch implemented the worker and nothing else.
+`runStructuredAcp` runs the structured shape over ACP, climbing the same M4
+ladder as the SDK path, with each rung a fresh session. Tools are refused twice:
+M6 configures the backend to have none, and a deny-all guard catches anything
+that arrives anyway — because `preflightAcpBackend`'s entire premise is that a
+backend silently ignoring its own permission config is a thing that happens.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**

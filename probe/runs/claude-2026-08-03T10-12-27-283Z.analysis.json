@@ -1,0 +1,88 @@
+{
+  "result": {
+    "agent": "claude",
+    "workspace": "/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-hpRqzX",
+    "tracePath": "/Users/carelvanheerden/PyCharm/openclaw-acp/probe/runs/claude-2026-08-03T10-12-27-283Z.jsonl",
+    "launch": "npx -y @zed-industries/claude-code-acp",
+    "initialize": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "promptCapabilities": {
+          "image": true,
+          "embeddedContext": true
+        },
+        "mcpCapabilities": {
+          "http": true,
+          "sse": true
+        },
+        "loadSession": true,
+        "sessionCapabilities": {
+          "fork": {},
+          "list": {},
+          "resume": {}
+        }
+      },
+      "agentInfo": {
+        "name": "@zed-industries/claude-code-acp",
+        "title": "Claude Code",
+        "version": "0.16.2"
+      },
+      "authMethods": [
+        {
+          "description": "Run `claude /login` in the terminal",
+          "name": "Log in with Claude Code",
+          "id": "claude-login"
+        }
+      ]
+    },
+    "sessionId": "af83d678-7a73-4337-a445-5b0f61372b32",
+    "error": "Authentication required",
+    "rpcError": {
+      "code": -32000,
+      "message": "Authentication required"
+    },
+    "exit": null,
+    "stderrTail": "Error handling request {\n  jsonrpc: '2.0',\n  id: 3,\n  method: 'session/prompt',\n  params: {\n    sessionId: 'af83d678-7a73-4337-a445-5b0f61372b32',\n    prompt: [ [Object] ]\n  }\n} { code: -32000, message: 'Authentication required', data: undefined }\n",
+    "notificationCount": 1,
+    "permissionRequests": []
+  },
+  "analysis": {
+    "agent": "claude",
+    "reachedPrompt": false,
+    "error": "Authentication required",
+    "stopReason": null,
+    "protocolVersion": 1,
+    "authMethods": [
+      "claude-login"
+    ],
+    "loadSession": true,
+    "usage": {
+      "emitted": false,
+      "count": 0,
+      "hasCost": false,
+      "lastCost": null,
+      "lastUsed": null,
+      "lastSize": null
+    },
+    "toolCalls": {
+      "total": 0,
+      "kinds": [],
+      "kindPresent": false,
+      "rawInputPresent": false,
+      "execCount": 0,
+      "execWithRawInput": 0,
+      "editCount": 0,
+      "locationsPresent": false
+    },
+    "diffContent": {
+      "present": false,
+      "count": 0
+    },
+    "permission": {
+      "count": 0,
+      "anyWithRawInput": false,
+      "kinds": [],
+      "samples": []
+    }
+  }
+}

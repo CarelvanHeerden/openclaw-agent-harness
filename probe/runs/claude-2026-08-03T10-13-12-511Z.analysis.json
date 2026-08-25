@@ -1,0 +1,166 @@
+{
+  "result": {
+    "agent": "claude",
+    "workspace": "/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-c8M9Pz",
+    "tracePath": "/Users/carelvanheerden/PyCharm/openclaw-acp/probe/runs/claude-2026-08-03T10-13-12-511Z.jsonl",
+    "launch": "npx -y @zed-industries/claude-code-acp",
+    "initialize": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "promptCapabilities": {
+          "image": true,
+          "embeddedContext": true
+        },
+        "mcpCapabilities": {
+          "http": true,
+          "sse": true
+        },
+        "loadSession": true,
+        "sessionCapabilities": {
+          "fork": {},
+          "list": {},
+          "resume": {}
+        }
+      },
+      "agentInfo": {
+        "name": "@zed-industries/claude-code-acp",
+        "title": "Claude Code",
+        "version": "0.16.2"
+      },
+      "authMethods": [
+        {
+          "description": "Run `claude /login` in the terminal",
+          "name": "Log in with Claude Code",
+          "id": "claude-login"
+        }
+      ]
+    },
+    "authenticateAttempted": "claude-login",
+    "authenticated": false,
+    "authenticateError": "Internal error",
+    "sessionId": "53735c81-f7c3-4b9f-b784-93ee2eb1d72b",
+    "sessionModels": {
+      "availableModels": [
+        {
+          "modelId": "default",
+          "name": "Default (recommended)",
+          "description": "Use the default model (currently Sonnet 4.5) · $3/$15 per Mtok"
+        },
+        {
+          "modelId": "opus",
+          "name": "Opus",
+          "description": "Opus 4.6 · Most capable for complex work · $5/$25 per Mtok"
+        },
+        {
+          "modelId": "opus[1m]",
+          "name": "Opus (1M context)",
+          "description": "Opus 4.6 for long sessions · $10/$37.50 per Mtok"
+        },
+        {
+          "modelId": "haiku",
+          "name": "Haiku",
+          "description": "Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok"
+        }
+      ],
+      "currentModelId": "default"
+    },
+    "sessionModes": {
+      "currentModeId": "default",
+      "availableModes": [
+        {
+          "id": "default",
+          "name": "Default",
+          "description": "Standard behavior, prompts for dangerous operations"
+        },
+        {
+          "id": "acceptEdits",
+          "name": "Accept Edits",
+          "description": "Auto-accept file edit operations"
+        },
+        {
+          "id": "plan",
+          "name": "Plan Mode",
+          "description": "Planning mode, no actual tool execution"
+        },
+        {
+          "id": "dontAsk",
+          "name": "Don't Ask",
+          "description": "Don't prompt for permissions, deny if not pre-approved"
+        },
+        {
+          "id": "bypassPermissions",
+          "name": "Bypass Permissions",
+          "description": "Bypass all permission checks"
+        }
+      ]
+    },
+    "error": "Authentication required",
+    "rpcError": {
+      "code": -32000,
+      "message": "Authentication required"
+    },
+    "exit": null,
+    "stderrTail": "Error handling request {\n  jsonrpc: '2.0',\n  id: 2,\n  method: 'authenticate',\n  params: { methodId: 'claude-login' }\n} {\n  code: -32603,\n  message: 'Internal error',\n  data: { details: 'Method not implemented.' }\n}\nError handling request {\n  jsonrpc: '2.0',\n  id: 4,\n  method: 'session/prompt',\n  params: {\n    sessionId: '53735c81-f7c3-4b9f-b784-93ee2eb1d72b',\n    prompt: [ [Object] ]\n  }\n} { code: -32000, message: 'Authentication required', data: undefined }\n",
+    "notificationCount": 1,
+    "permissionRequests": []
+  },
+  "analysis": {
+    "agent": "claude",
+    "reachedPrompt": false,
+    "error": "Authentication required",
+    "stopReason": null,
+    "protocolVersion": 1,
+    "authMethods": [
+      "claude-login"
+    ],
+    "agentInfo": {
+      "name": "@zed-industries/claude-code-acp",
+      "title": "Claude Code",
+      "version": "0.16.2"
+    },
+    "loadSession": true,
+    "sessionCapabilities": {
+      "fork": {},
+      "list": {},
+      "resume": {}
+    },
+    "modelSelection": {
+      "advertised": true,
+      "currentModelId": "default",
+      "availableModelIds": [
+        "default",
+        "opus",
+        "opus[1m]",
+        "haiku"
+      ]
+    },
+    "usage": {
+      "emitted": false,
+      "count": 0,
+      "hasCost": false,
+      "lastCost": null,
+      "lastUsed": null,
+      "lastSize": null
+    },
+    "toolCalls": {
+      "total": 0,
+      "kinds": [],
+      "kindPresent": false,
+      "rawInputPresent": false,
+      "execCount": 0,
+      "execWithRawInput": 0,
+      "editCount": 0,
+      "locationsPresent": false
+    },
+    "diffContent": {
+      "present": false,
+      "count": 0
+    },
+    "permission": {
+      "count": 0,
+      "anyWithRawInput": false,
+      "kinds": [],
+      "samples": []
+    }
+  }
+}

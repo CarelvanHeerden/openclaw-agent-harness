@@ -2546,6 +2546,56 @@ const MUTATIONS = [
     replace: "            const wasTruncated = true;",
     tests: ["tests/v2-backend-contract.test.mjs"],
   },
+
+  // ------------------------------------- v2.0.0 M5: the ACP backend
+  {
+    // The P0 as it actually shipped on the branch: nothing errors, the vault
+    // key simply arrives in the agent's environment. The SDK path has filtered
+    // since beta.57 and withheld this key since beta.110; a second spawn path
+    // did not inherit either, which is why the filter is shared now.
+    name: "the ACP child is filtered too (v2): a second spawn path handed the agent every secret",
+    file: "dist/adapters/acp.js",
+    find: "        env: buildAgentEnv({ NO_COLOR: \"1\", ...(agent.env ?? {}) }),",
+    replace: "        env: { ...process.env, NO_COLOR: \"1\", ...(agent.env ?? {}) },",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // Killing the wrapper alone orphans the process that is still holding the
+    // worktree and still spending against the model.
+    name: "the whole process group is reaped (v2): the wrapper dies and the real worker keeps spending",
+    file: "dist/adapters/acp.js",
+    find: "            process.kill(-pid, sig);",
+    replace: "            process.kill(pid, sig);",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // Without `detached` there is no process group to signal, so the negative
+    // pid above has nothing to reach.
+    name: "the ACP child leads a process group (v2): without it there is nothing for the reap to signal",
+    file: "dist/adapters/acp.js",
+    find: "        detached: true,",
+    replace: "        detached: false,",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // A structured role has no tools by configuration; this is the second
+    // layer, and preflightAcpBackend's entire premise is that the first one
+    // can be silently ignored by the backend.
+    name: "a tool-less role really is tool-less (v2): the deny-all guard is the layer that does not depend on backend config",
+    file: "dist/adapters/acp.js",
+    find: "        return { allow: false, reason: `role '${params.role}' runs with no tools` };",
+    replace: "        return { allow: true };",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // Reporting a measured zero where there was no measurement is the b125
+    // failure in a different guise: the run looks free.
+    name: "an unmeasured turn reports a gap (v2): a false zero makes an unmetered run look free",
+    file: "dist/adapters/acp.js",
+    find: "        if (u.inputTokens === undefined && u.outputTokens === undefined)\n            return;",
+    replace: "        if (false)\n            return;",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
 ];
 
 /**
