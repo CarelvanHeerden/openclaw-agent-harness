@@ -1004,7 +1004,9 @@
           },
           "request_file_roots": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "default": [],
             "description": "beta.120 (brief fidelity): directories harness_run's `requestPath` may read a specification from. EMPTY BY DEFAULT, which disables file reads -- the harness holds GitHub tokens and a brief's contents reach model prompts and PR bodies, so an operator must name the safe directories explicitly. Point this at wherever the calling runtime stores user-uploaded files. `~` is expanded and symlinks are resolved before the check. Motivation: on the b119 smoke the calling agent retyped a 10,710-byte spec as a 40-line summary and the feature changed (`performedAt` became `scheduledAt`); reading the bytes removes that hop."
           },
@@ -1017,13 +1019,20 @@
           },
           "confirm_before_spend": {
             "type": "string",
-            "enum": ["off", "high_risk", "always"],
+            "enum": [
+              "off",
+              "high_risk",
+              "always"
+            ],
             "default": "high_risk",
             "description": "beta.120 (brief fidelity): pause for a human to confirm the CRYSTALLISED brief before any planning or worker spend. 'off' = never (pre-beta.120). 'high_risk' = pause when the brief's riskLevel is at or above confirm_min_risk (default). 'always' = every run. Motivation: two b119 smokes spent ~$18 and ~2h each building a feature whose brief had been paraphrased upstream; the error was obvious on sight but nothing ever showed it to anyone. Crystallising costs cents, so the gate is nearly free. The session is created in awaiting_clarification and resumed with harness_answer: an unqualified approval runs it as-is, anything else is folded in as a correction first."
           },
           "confirm_min_risk": {
             "type": "string",
-            "enum": ["medium", "high"],
+            "enum": [
+              "medium",
+              "high"
+            ],
             "default": "high",
             "description": "beta.120: lowest riskLevel that triggers a confirmation under confirm_before_spend:'high_risk'. Default 'high'; set 'medium' for a wider net. There is deliberately NO budget threshold: estimated_usd is derived from the session budget rather than the task, so gating on it would silently turn 'high_risk' into 'always'."
           }
@@ -1090,7 +1099,7 @@
           "full_prompts": {
             "type": "boolean",
             "default": false,
-            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction \u2014 redaction on write is always applied."
+            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
           },
           "retention_days": {
             "type": "integer",
@@ -1104,7 +1113,7 @@
       "credentials": {
         "type": "object",
         "additionalProperties": false,
-        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them. Every key here is optional \u2014 the defaults are a working configuration, and $OAH_VAULT_KEY / $OAH_VAULT_KEY_FILE cover the same ground without touching config.",
+        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them. Every key here is optional — the defaults are a working configuration, and $OAH_VAULT_KEY / $OAH_VAULT_KEY_FILE cover the same ground without touching config.",
         "properties": {
           "dir": {
             "type": "string",
@@ -1118,7 +1127,310 @@
           },
           "key_file": {
             "type": "string",
-            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent \u2014 back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir \u2014 they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you."
+            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent — back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir — they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you."
+          }
+        }
+      },
+      "backends": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "v2: per-role backend and model selection. Absent means every role runs on claude-code, as in v1.",
+        "properties": {
+          "default": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the default (inherited by any role that does not override it) role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          },
+          "worker": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the worker role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          },
+          "scout": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the scout role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          },
+          "lead": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the lead role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          },
+          "adversary": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the adversary role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          },
+          "classifier": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the classifier role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          },
+          "crystalliser": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the crystalliser role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          },
+          "revise_spec": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the revise_spec role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          },
+          "worker_context": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Backend, model and declared capability tier for the worker_context role.",
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "claude-code",
+                  "opencode"
+                ],
+                "description": "Which agent backend runs this role. Default: claude-code."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "basic",
+                  "strong",
+                  "frontier"
+                ],
+                "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+              }
+            }
+          }
+        }
+      },
+      "providers": {
+        "type": "object",
+        "description": "v2: OpenAI-compatible endpoints made available to OpenCode roles. API keys live in the vault and are named by service, never inlined here.",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "npm": {
+              "type": "string",
+              "description": "AI-SDK package for this provider. Only @ai-sdk/openai-compatible is supported."
+            },
+            "name": {
+              "type": "string",
+              "description": "Display name, used in audit events and error messages."
+            },
+            "base_url": {
+              "type": "string",
+              "description": "Endpoint base URL. Must end in /v1, because the OpenAI-compatible shim appends the request path."
+            },
+            "api_key_service": {
+              "type": "string",
+              "description": "Vault credential service name holding this provider API key."
+            },
+            "local": {
+              "type": "boolean",
+              "description": "True for a provider that bills nothing. Cost reporting becomes token counts with no dollar figure attached."
+            },
+            "models": {
+              "type": "object",
+              "description": "Model ids this provider serves, with optional display names.",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Display name for this model."
+                  }
+                }
+              }
+            }
           }
         }
       }

@@ -2640,6 +2640,24 @@ const MUTATIONS = [
       replace: "        child.on(\"__never\", (err) => {",
       tests: ["tests/v2-opencode-preflight.test.mjs"],
   },
+  {
+    // The floor is the only thing standing between a 7B model and the
+    // adversary seat, where failure is a well-formed `pass`.
+    name: "the capability floor is enforced (v2): a weak judgement model fails invisibly, by returning pass",
+    file: "dist/adapters/role-config.js",
+    find: "        if (!tierAtLeast(r.tier, floor)) {",
+    replace: "        if (false && !tierAtLeast(r.tier, floor)) {",
+    tests: ["tests/v2-role-config.test.mjs"],
+  },
+  {
+    // Emitting an empty apiKey turns "the credential is missing" into a 401,
+    // which sends the operator to rotate a key that was never there.
+    name: "a keyless provider is dropped (v2): an empty apiKey reads as a wrong key, not a missing one",
+    file: "dist/adapters/role-config.js",
+    find: "                dropped.push({ provider: id, reason: `no credential '${p.api_key_service}' in the vault` });\n                continue;",
+    replace: "                dropped.push({ provider: id, reason: `no credential '${p.api_key_service}' in the vault` });",
+    tests: ["tests/v2-role-config.test.mjs"],
+  },
 ];
 
 /**

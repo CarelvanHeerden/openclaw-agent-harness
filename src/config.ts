@@ -12,6 +12,13 @@ export interface HarnessConfig {
   budgets: BudgetsConfig;
   repos: ReposConfig;
   models: ModelsConfig;
+  /**
+   * v2.0.0-beta.1: per-role backend selection. Optional, and absent means
+   * every role runs on claude-code exactly as it did in v1.
+   */
+  backends?: BackendsConfig;
+  /** v2.0.0-beta.1: OpenAI-compatible endpoints for OpenCode roles. */
+  providers?: ProvidersConfig;
   loop: LoopConfig;
   vercel: VercelConfig;
   storage: StorageConfig;
@@ -448,6 +455,64 @@ export interface ModelsAuthConfig {
    * Default: "ANTHROPIC_API_KEY".
    */
   api_key_env?: string;
+}
+
+/**
+ * v2.0.0-beta.1: which backend and model each role runs on.
+ *
+ * Absent means every role runs on `claude-code` exactly as it did in v1, which
+ * is the property that makes this block safe to add: an operator who upgrades
+ * and edits nothing sees no change. See `src/adapters/role-config.ts` for the
+ * merge rules and the validation.
+ */
+export interface BackendsConfig {
+  /** Applied to any role that does not override it. */
+  default?: RoleBackendEntry;
+  worker?: RoleBackendEntry;
+  scout?: RoleBackendEntry;
+  lead?: RoleBackendEntry;
+  adversary?: RoleBackendEntry;
+  classifier?: RoleBackendEntry;
+  crystalliser?: RoleBackendEntry;
+  revise_spec?: RoleBackendEntry;
+  worker_context?: RoleBackendEntry;
+}
+
+export interface RoleBackendEntry {
+  /** `claude-code` (default) or `opencode`. */
+  backend?: "claude-code" | "opencode";
+  /** `provider/model` for opencode; a bare model id is also accepted for claude-code. */
+  model?: string;
+  /**
+   * Operator's declaration of how capable this model is: `basic`, `strong` or
+   * `frontier`. The lead, adversary and crystalliser refuse to run below
+   * `strong`, because those are the roles where a weak model returns a
+   * well-formed wrong answer rather than an obvious failure.
+   */
+  tier?: "basic" | "strong" | "frontier";
+}
+
+/**
+ * OpenAI-compatible endpoints made available to OpenCode roles.
+ *
+ * Keys live in the vault and are named here by service, never inlined. They
+ * reach the agent only inside `OPENCODE_CONFIG_CONTENT`.
+ */
+export interface ProvidersConfig {
+  [providerId: string]: {
+    /** The AI-SDK package; only `@ai-sdk/openai-compatible` is supported. */
+    npm?: string;
+    /** Display name, used in audit events and error messages. */
+    name?: string;
+    /** Endpoint base URL. Must end in `/v1`. */
+    base_url?: string;
+    /** Vault service name holding this provider's API key. */
+    api_key_service?: string;
+    /** True for a provider that bills nothing: report tokens, not dollars. */
+    local?: boolean;
+    /** Model ids this provider serves, with optional display names. */
+    models?: Record<string, { name?: string }>;
+  };
 }
 
 export interface LoopConfig {

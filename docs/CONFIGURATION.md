@@ -594,4 +594,42 @@ beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces 
 - **`credentials.key_env`** — `string`, default `"OAH_VAULT_KEY"`. Env var checked for a raw 32-byte key (64 hex chars or base64). When set it OVERRIDES the key file. Renaming it also moves the worker-subprocess env strip, so the key never reaches a worker under either name.
 - **`credentials.key_file`** — `string`, no default; unset unless you set it. Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent — back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir — they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you.
 
+#### `backends`
+
+v2: per-role backend and model selection. Absent means every role runs on claude-code, as in v1.
+
+- **`backends.default.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.default.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.default.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.worker.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.worker.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.worker.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.scout.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.scout.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.scout.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.lead.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.lead.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.lead.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.adversary.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.adversary.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.adversary.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.classifier.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.classifier.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.classifier.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.crystalliser.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.crystalliser.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.crystalliser.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.revise_spec.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.revise_spec.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.revise_spec.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.worker_context.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.worker_context.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.worker_context.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+
+#### `providers`
+
+v2: OpenAI-compatible endpoints made available to OpenCode roles. API keys live in the vault and are named by service, never inlined here.
+
+- **`providers`** — `object`, no default; unset unless you set it. v2: OpenAI-compatible endpoints made available to OpenCode roles. API keys live in the vault and are named by service, never inlined here.
+
 <!-- END GENERATED CONFIG REFERENCE -->

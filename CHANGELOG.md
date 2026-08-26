@@ -204,6 +204,62 @@ as an asynchronous `error` event, not a throw from `spawn()`. Unhandled, it was
 an uncaught exception that took the whole harness process down rather than
 failing one turn — which in production is a mistyped `worker_backend`.
 
+### Per-role backends, custom providers, and a documentation check with teeth
+
+Two new optional config blocks. `backends` sets a `backend`, `model` and `tier`
+per role, with a `default` block for the rest; `providers` declares
+OpenAI-compatible endpoints whose **keys live in the vault and are named by
+service, never inlined**. Both are optional and absent means every role runs on
+`claude-code` exactly as in v1 — an operator who upgrades and edits nothing sees
+no change.
+
+Merging is per-field, not per-block, so a role that sets only `tier` keeps the
+default's backend and model. The alternative silently resets them, which is the
+kind of config behaviour that gets discovered in production.
+
+`tier` is the operator's **declaration** of what a model can do, and the lead,
+adversary and crystalliser refuse to run below `strong`. Those three are the
+roles where a weak model does not fail visibly: it returns
+`{"verdict":"pass","findings":[]}`, which is well-formed, cheap, and
+indistinguishable from a careful review that found nothing. A weak *worker*, by
+contrast, fails into a red build.
+
+Provider keys reach the agent only inside `OPENCODE_CONFIG_CONTENT` — the one
+variable allow-listed past the env deny-list, and redacted from the interaction
+log. They are written literally rather than as `{env:...}` references, because
+the env form would require the secret in the child's environment, which is the
+thing the deny-list exists to prevent. A provider whose key is missing from the
+vault is **dropped** rather than emitted with an empty `apiKey`: an absent
+provider fails as "unknown provider", where an empty key fails as a 401 that
+reads like the key is wrong rather than missing, and sends the operator off to
+rotate a credential that was never there.
+
+Validation reports every problem in one pass instead of dying on the first,
+because the surface is eight roles times two backends and the operator is
+editing JSON by hand. A `base_url` not ending in `/v1` is rejected up front: the
+OpenAI-compatible shim appends the request path, so otherwise it is a 404 on the
+first call and silence before it.
+
+**The documentation check.** `openclaw.plugin.json` is what the gateway
+enforces; `config.schema.json` is what the docs are generated from. The existing
+lockstep test guards schema-subset-of-manifest, because only that direction
+rejects an operator's whole config — the beta.34 and rc.1 outage. The reverse
+direction is a documentation gap, and this release closes it with a separate
+assertion carrying its own message, so the two failures stay distinguishable.
+
+It found 46 keys the gateway accepts that no generated documentation mentioned,
+not just the `worker_mechanical` this check was written to catch, plus 24 that
+were present but undescribed. Both are now synced from the manifest, and
+`docs/CONFIGURATION.md` covers 196 keys.
+
+47 keys remain undescribed in *either* file. They are frozen in a baseline that
+may shrink but never grow, rather than papered over: every one is a
+long-standing key whose meaning is not in doubt, and inventing prose for
+forty-seven of them in a refactor commit would produce confident-sounding
+descriptions written by someone reading the same key name the reader already
+has. A wrong description is worse than an honest gap, because it is believed.
+New keys arrive described or they do not arrive.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**
