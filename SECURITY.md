@@ -95,10 +95,36 @@ These are properties of the design, not bugs with fixes pending. Adding each row
 - **`safety.path_denylist`** blocks the SDK's `Read`/`Write` tools and direct file arguments to whitelisted commands. It does not survive an interpreter, a glob, a case change or git history — see the table.
 - **`safety.allow_network_commands`** removes `curl` and `wget` from the whitelist. It does not prevent network access; `python3`, `node` and `make` all reach the network freely.
 - **`safety.bash_denylist_tokens`** blocks the named binaries. It does not prevent what they do — a worker that wants to delete files can do it from Python.
-- **`ANTHROPIC_API_KEY` is readable by the worker.** It is injected into the SDK subprocess environment deliberately, so the embedded Claude Code binary does not fall back to interactive `/login` ([`src/adapters/claude-sdk.ts`](src/adapters/claude-sdk.ts)). A worker can print it. Scope and rotate that key accordingly.
+- **`ANTHROPIC_API_KEY` is readable by the worker.** It is injected into the SDK subprocess environment deliberately, so the embedded Claude Code binary does not fall back to interactive `/login` ([`src/adapters/claude-code.ts`](src/adapters/claude-code.ts)). A worker can print it. Scope and rotate that key accordingly.
 - **`.git/` is writable by the worker,** including `.git/hooks/`. A hook written during a session runs on the next git operation, outside the guard entirely.
 
 Real containment needs an OS boundary — a sandboxed process with denied egress, read-only mounts and a scoped filesystem view — not a command-line filter. [`docs/WORKER_ISOLATION.md`](docs/WORKER_ISOLATION.md) scopes what that would take and why it is not in this release.
+
+### `2.0.0`: third-party backends make this materially worse
+
+Stated here because nothing else in the v2 release addresses it, and because the change is easy to miss: none of the controls above got weaker, but the assumption holding them up did.
+
+Everything in "The threat model, stated plainly" rests on the worker being **capable but not adversarial**. Through `1.x` that was a reasonable thing to assume rather than enforce: the worker was always an Anthropic model reached through the Claude Code SDK, operating under a commercial agreement, with the vendor's own training and safety work behind it. The bash guard did not have to be a wall, because it was a speed bump in front of something that was not pushing on it.
+
+`2.0.0` lets an operator point any role at an arbitrary OpenCode backend, including a local `@ai-sdk/openai-compatible` endpoint serving weights of unknown provenance. **That assumption is now a configuration choice, and the harness cannot verify it.** The guard is unchanged and still admits `python3`, `node` and `make`, so a worker that wants out of it is one line of Python away — the difference is that the population of workers now includes ones nobody has vetted.
+
+What v2 *does* add is real, and worth being precise about, because it is easy to mistake for containment:
+
+- The permission round-trip is **verified live at startup**, not trusted from config, so a backend that silently stops asking is a startup refusal rather than an unguarded worker ([M6](docs/acp-capability-matrix.md)).
+- The ACP child gets the **same filtered environment** as the SDK path, so the vault key, `GH_TOKEN`, `VERCEL_TOKEN` and Slack tokens do not reach it.
+- The whole **process group is reaped** on abort and timeout, so a cancelled session cannot leave a model process spending.
+- The three judgement roles **refuse to run below a declared `strong` tier**, because a weak lead, adversary or crystalliser fails by returning a confident, well-formed, wrong answer.
+
+All four make the ACP path as good as the SDK path. None of them makes either path a sandbox.
+
+**Operating guidance until an OS boundary lands: run non-Anthropic workers on trusted repositories only.** Concretely — repositories whose contents, dependencies and CI you or your organisation control, where a prompt-injected README or a poisoned transitive dependency is not a realistic input. A third-party backend on an untrusted repository combines an unvetted worker with attacker-controlled instructions inside a guard that was never built to hold either, and the harness will not stop that.
+
+| | |
+| --- | --- |
+| **Owner** | Carel van Heerden |
+| **Exit criteria** | Read-only worker filesystem plus a default-deny egress proxy, per [`docs/WORKER_ISOLATION.md`](docs/WORKER_ISOLATION.md). Both, not either: a read-only mount without egress control still exfiltrates, and an egress proxy without a read-only mount still lets a worker write `.git/hooks/pre-commit`. |
+| **Until then** | Non-Anthropic workers are **trusted-repo-only**. This is documented, not enforced — the harness has no way to tell a trusted repository from an untrusted one. |
+| **Review** | Re-assessed each minor release; this section is wrong the day the exit criteria land, and should be deleted rather than softened. |
 
 ## What the push invariant actually guarantees
 

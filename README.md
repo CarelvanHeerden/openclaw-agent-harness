@@ -196,7 +196,11 @@ This is the normal path. A `block` verdict never pushes; a human `:rocket:` over
 | Worker               | `src/orchestrator/worker.ts`              | Runs one sub-task with `canUseTool` guard              |
 | Adversary            | `src/orchestrator/adversary.ts`           | Reviews diff, runtime banner, safety-net              |
 | Orchestrator loop            | `src/orchestrator/loop.ts`                       | 3-cycle state machine + serial topo-ordered exec       |
-| Claude SDK adapter           | `src/adapters/claude-sdk.ts`                     | `@anthropic-ai/claude-agent-sdk` wrappers              |
+| Claude Code backend          | `src/adapters/claude-code.ts`                    | `@anthropic-ai/claude-agent-sdk` wrappers              |
+| OpenCode (ACP) backend       | `src/adapters/acp.ts`                            | Agent Client Protocol, injected config, live guard probe |
+| Backend-agnostic shared code | `src/adapters/shared/`                           | JSON, pricing, diff, stream and env filtering; no backend imports |
+| Backend contract             | `src/adapters/backend.ts`                        | Role shapes, capability tiers and the judgement-role floor |
+| Per-role backend config      | `src/adapters/role-config.ts`                    | Resolves backend/model per role, vault-keyed providers |
 | Git worktree adapter         | `src/adapters/git-worktree.ts`                   | Allocate/commit/diff/push, per-session isolation       |
 | GitHub PR opener             | `src/adapters/github-pr.ts`                      | Push branch, POST /pulls (draft if verdict != pass)   |
 | GitHub PR-merged watcher     | `src/adapters/github-watcher.ts`                 | Detects merge/close, releases worktree                 |
