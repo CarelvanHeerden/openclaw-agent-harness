@@ -196,9 +196,14 @@ test("beta.99: bounded workerContext top-up satisfies the gate with no whole-pla
     config: { ...BASE_CFG, loop: { enforce_worker_context: true } },
     logger: { info() {}, warn() {} },
     callLeadModel: async (_b, _r, correctiveNote) => { calls.push({ correctiveNote }); return JSON.parse(JSON.stringify(badPlan)); },
+    // v2.0.0-beta.1: the top-up now reports its own spend alongside the
+    // contexts, so the lead can bill it. Shape changed; behaviour did not.
     callWorkerContextModel: async (_b, _plan, missingSeqs) => {
       topUpCalls.push(missingSeqs);
-      return missingSeqs.map((seq) => ({ seq, workerContext: { rationale: "why", changeSpec: REF_CHANGESPEC } }));
+      return {
+        contexts: missingSeqs.map((seq) => ({ seq, workerContext: { rationale: "why", changeSpec: REF_CHANGESPEC } })),
+        costUsd: 0.01,
+      };
     },
     allocateWorktree: async () => "/tmp/wt",
     estimateCost: () => 0,

@@ -1715,7 +1715,12 @@ export async function runLeadWorkerContextSdk(params: {
   apiKey?: string;
   maxOutputTokens?: number;
   logger?: { warn: (m: string, meta?: unknown) => void };
-}): Promise<Array<{ seq: number; workerContext: WorkerContext }>> {
+}): Promise<{
+  contexts: Array<{ seq: number; workerContext: WorkerContext }>;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+}> {
   const systemPrompt = [
     "You are the lead planner. A plan you already produced is ACCEPTED and will not be re-planned. Your ONLY job now is to supply the missing `workerContext` for the sub-task seqs named below, so a CHEAP worker can implement each one WITHOUT re-exploring the repo.",
     "Return STRICT JSON: { contexts: [ { seq: number, workerContext: WorkerContext } ] }",
@@ -1756,7 +1761,16 @@ export async function runLeadWorkerContextSdk(params: {
     logger: params.logger,
     validation: { requiredKeys: ["contexts"], label: "lead-worker-context" },
   });
-  return Array.isArray(r.parsed.contexts) ? r.parsed.contexts : [];
+  // v2.0.0-beta.1: return the spend alongside the contexts. This call was
+  // billed and reported nothing, and it fires on exactly the runs that are
+  // already going badly — a plan with thin workerContext — so its cost landed
+  // on the sessions least able to explain where the money went.
+  return {
+    contexts: Array.isArray(r.parsed.contexts) ? r.parsed.contexts : [],
+    costUsd: r.costUsd,
+    tokensIn: r.tokensIn,
+    tokensOut: r.tokensOut,
+  };
 }
 
 /**

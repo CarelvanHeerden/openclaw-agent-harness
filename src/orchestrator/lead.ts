@@ -420,7 +420,12 @@ export interface LeadDeps {
     brief: CrystallisedBrief,
     plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">,
     missingSeqs: number[],
-  ) => Promise<Array<{ seq: number; workerContext: WorkerContext }>>;
+  ) => Promise<{
+    contexts: Array<{ seq: number; workerContext: WorkerContext }>;
+    costUsd?: number;
+    tokensIn?: number;
+    tokensOut?: number;
+  }>;
 }
 
 /**
@@ -689,12 +694,28 @@ export async function runLeadPlanner(
             });
           }
         } else {
-          scoutOutcome = { ran: false, reportChars: 0, skippedReason: "empty_report", durationMs: Date.now() - startedAt };
+          // v2.0.0-beta.1: an empty report is still a BILLED call, and this is
+          // where a scout TIMEOUT lands — `scoutRepo` returns `timedOut: true`
+          // with an empty report rather than throwing, so the most expensive
+          // scout outcome (a full `lead_scout_timeout_seconds` burn, 420s by
+          // default) was the one whose cost was dropped. `costUsd` feeds the
+          // lead's `actualCostUsd` total, so this money left no trace at all.
+          scoutOutcome = {
+            ran: false, reportChars: 0, skippedReason: "empty_report",
+            costUsd: result?.costUsd,
+            durationMs: Date.now() - startedAt,
+            timedOut: result?.timedOut === true ? true : undefined,
+          };
           deps.logger.warn?.("[lead] beta.104: scout returned an empty report; planning blind (pre-b104 behaviour)", {
             repo: repoForScout,
+            timedOut: result?.timedOut === true,
+            costUsd: result?.costUsd ?? 0,
           });
         }
       } catch (err) {
+        // Cost is genuinely unknown here: the callable threw rather than
+        // returning, so there is no usage to read. Left absent rather than
+        // zeroed, which is the distinction this milestone exists to preserve.
         scoutOutcome = {
           ran: false, reportChars: 0, skippedReason: "error",
           error: String(err).slice(0, 300), durationMs: Date.now() - startedAt,
@@ -785,12 +806,17 @@ export async function runLeadPlanner(
       if (deps.callWorkerContextModel) {
         try {
           const topUp = await deps.callWorkerContextModel(brief, raw, missing);
-          const merged = mergeWorkerContexts(raw, topUp);
+          // v2.0.0-beta.1: bill the top-up. It joins `leadCallCostUsd`, which
+          // is what `actualCostUsd` is built from, so before this the call was
+          // free in the ledger and paid for in reality.
+          leadCallCostUsd += topUp.costUsd ?? 0;
+          const merged = mergeWorkerContexts(raw, topUp.contexts);
           const stillMissing = subTasksMissingWorkerContext(raw);
           deps.logger.info("[lead] bounded workerContext top-up applied (beta.99)", {
             requestedSeqs: missing,
             mergedSeqs: merged,
             stillMissing,
+            costUsd: topUp.costUsd ?? 0,
           });
           if (stillMissing.length === 0) break;
           // Partial success still shrinks the whole-plan re-ask below.

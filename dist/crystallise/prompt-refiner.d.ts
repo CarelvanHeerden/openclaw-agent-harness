@@ -147,13 +147,39 @@ export interface RepoConvention {
     /** True when this source's text was truncated to fit the budget. */
     truncated?: boolean;
 }
+/**
+ * What a role call spent.
+ *
+ * Every field is optional because a backend may know the token split without a
+ * dollar figure — that is the normal case for a local provider, where tokens
+ * are a real measurement and cost genuinely does not apply. `costUsd:
+ * undefined` therefore means "not billable or not known", which is the
+ * distinction the old hardcoded `costUsd: 0` erased.
+ */
+export interface RoleCost {
+    costUsd?: number;
+    tokensIn?: number;
+    tokensOut?: number;
+}
+/** Sum of what a crystallise pass spent, across the classifier and the brief. */
+export interface SpendTotals {
+    costUsd: number;
+    tokensIn: number;
+    tokensOut: number;
+    /**
+     * True when at least one call reported tokens but no cost, so `costUsd` is a
+     * floor rather than the total. Without this flag a local-model run and a
+     * free run are the same number.
+     */
+    partial: boolean;
+}
 export interface CrystalliserDeps {
     config: HarnessConfig;
     logger: {
         info: (m: string, meta?: unknown) => void;
         warn: (m: string, meta?: unknown) => void;
     };
-    callClassifier: (userText: string) => Promise<ClassifierResult>;
+    callClassifier: (userText: string) => Promise<ClassifierResult & Partial<RoleCost>>;
     /**
      * beta.21: the crystalliser callable now receives optional pre-known
      * concept references so the SDK-side prompt can enrich the brief with
@@ -161,7 +187,7 @@ export interface CrystalliserDeps {
      * that don't have OKF context (e.g. the legacy Slack listener path) pass
      * `undefined` and behaviour is identical to pre-beta.21.
      */
-    callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief>;
+    callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief & Partial<RoleCost>>;
 }
 /**
  * The pure orchestration -- takes injected callables so unit tests never
@@ -173,12 +199,15 @@ concepts?: OkfConceptRef[]): Promise<{
     kind: "brief";
     brief: CrystallisedBrief;
     classification: ClassifierResult;
+    spend: SpendTotals;
 } | {
     kind: "clarify";
     question: string;
+    spend: SpendTotals;
 } | {
     kind: "reject";
     reason: string;
     intent: ClassifierIntent;
+    spend: SpendTotals;
 }>;
 //# sourceMappingURL=prompt-refiner.d.ts.map

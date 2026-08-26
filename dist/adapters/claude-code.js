@@ -1404,7 +1404,16 @@ export async function runLeadWorkerContextSdk(params) {
         logger: params.logger,
         validation: { requiredKeys: ["contexts"], label: "lead-worker-context" },
     });
-    return Array.isArray(r.parsed.contexts) ? r.parsed.contexts : [];
+    // v2.0.0-beta.1: return the spend alongside the contexts. This call was
+    // billed and reported nothing, and it fires on exactly the runs that are
+    // already going badly — a plan with thin workerContext — so its cost landed
+    // on the sessions least able to explain where the money went.
+    return {
+        contexts: Array.isArray(r.parsed.contexts) ? r.parsed.contexts : [],
+        costUsd: r.costUsd,
+        tokensIn: r.tokensIn,
+        tokensOut: r.tokensOut,
+    };
 }
 /**
  * Adversary SDK call.

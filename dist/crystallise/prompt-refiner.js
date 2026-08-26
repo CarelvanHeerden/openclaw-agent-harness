@@ -18,6 +18,18 @@
  * starts. Users see it as a Slack thread reply and can react with a
  * confirming emoji before execution begins.
  */
+function addSpend(into, from) {
+    if (!from)
+        return;
+    if (typeof from.tokensIn === "number")
+        into.tokensIn += from.tokensIn;
+    if (typeof from.tokensOut === "number")
+        into.tokensOut += from.tokensOut;
+    if (typeof from.costUsd === "number")
+        into.costUsd += from.costUsd;
+    else if (typeof from.tokensIn === "number" || typeof from.tokensOut === "number")
+        into.partial = true;
+}
 /**
  * The pure orchestration -- takes injected callables so unit tests never
  * hit the network.
@@ -25,18 +37,26 @@
 export async function crystallisePrompt(userText, deps, 
 /** beta.21: OKF concepts pre-attached by the caller (typically the OpenClaw agent's context enrichment). Pass-through only — crystalliser does not crawl OKF itself. */
 concepts) {
+    // v2.0.0-beta.1: every exit carries what it spent. The early `clarify` and
+    // `reject` returns are the reason this matters — they still ran a classifier
+    // call, and reporting zero for them made rejected requests look free. A
+    // channel that rejects a hundred prompts a day was invisible in the ledger.
+    const spend = { costUsd: 0, tokensIn: 0, tokensOut: 0, partial: false };
     const cls = await deps.callClassifier(userText);
+    addSpend(spend, cls);
     deps.logger.info("[crystalliser] classifier", cls);
     if (cls.intent === "clarify") {
         return {
             kind: "clarify",
             question: cls.suggestedClarification ?? "Could you say a bit more about what you'd like me to do?",
+            spend,
         };
     }
     if (cls.intent === "not_dev" || cls.intent === "unsafe") {
-        return { kind: "reject", reason: cls.reason, intent: cls.intent };
+        return { kind: "reject", reason: cls.reason, intent: cls.intent, spend };
     }
     const brief = await deps.callCrystalliser(userText, cls, concepts);
+    addSpend(spend, brief);
     // beta.21: guarantee concepts land on the brief even if the SDK-side
     // crystalliser silently drops the field (e.g. pre-beta.21 model version).
     // The caller's concept list is authoritative when the SDK produces none.
@@ -62,11 +82,11 @@ concepts) {
                 explicit: Boolean(explicit),
                 question,
             });
-            return { kind: "clarify", question };
+            return { kind: "clarify", question, spend };
         }
     }
     validateBrief(brief);
-    return { kind: "brief", brief, classification: cls };
+    return { kind: "brief", brief, classification: cls, spend };
 }
 /**
  * beta.80 (F2): render the fork the crystalliser found into a single

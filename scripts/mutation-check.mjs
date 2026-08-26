@@ -2658,6 +2658,41 @@ const MUTATIONS = [
     replace: "                dropped.push({ provider: id, reason: `no credential '${p.api_key_service}' in the vault` });",
     tests: ["tests/v2-role-config.test.mjs"],
   },
+  {
+    // A truncated catalogue silently narrows pricing to whatever survived, and
+    // every budget downstream is computed from it.
+    name: "an implausible catalogue is refused (v2): a partial document silently narrows every price",
+    file: "dist/adapters/shared/model-catalogue.js",
+    find: "    if (providers.length < MIN_PLAUSIBLE_PROVIDERS) {",
+    replace: "    if (false && providers.length < MIN_PLAUSIBLE_PROVIDERS) {",
+    tests: ["tests/v2-pricing-catalogue.test.mjs"],
+  },
+  {
+    // The whole point of the `billable` flag: a local model must report tokens
+    // with NO dollar figure, because zero is indistinguishable from unmeasured.
+    name: "a local model reports no dollars (v2): a false zero is indistinguishable from an unmetered run",
+    file: "dist/adapters/shared/model-catalogue.js",
+    find: "        return { price: { input: 0, output: 0 }, source: \"local\", billable: false };",
+    replace: "        return { price: { input: 0, output: 0 }, source: \"local\", billable: true };",
+    tests: ["tests/v2-pricing-catalogue.test.mjs"],
+  },
+  {
+    // A rejected response must not overwrite the last good cache, or one bad
+    // fetch poisons pricing until the next successful one.
+    name: "a rejected refresh keeps the good cache (v2): one bad fetch must not poison pricing",
+    file: "dist/adapters/shared/model-catalogue.js",
+    find: "        const fresh = parseModelsDevCatalogue(raw, now);\n        deps.store.write(fresh);",
+    replace: "        deps.store.write(raw);\n        const fresh = parseModelsDevCatalogue(raw, now);",
+    tests: ["tests/v2-pricing-catalogue.test.mjs"],
+  },
+  {
+    // The crystallise reject/clarify paths still pay for a classifier call.
+    name: "the crystallise pass bills its classifier (v2): rejected requests looked free",
+    file: "dist/crystallise/prompt-refiner.js",
+    find: "    addSpend(spend, cls);",
+    replace: "    addSpend(spend, undefined);",
+    tests: ["tests/v2-pricing-catalogue.test.mjs"],
+  },
 ];
 
 /**

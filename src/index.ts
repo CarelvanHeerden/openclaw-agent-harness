@@ -393,14 +393,26 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       },
       concepts,
     );
-    // crystallisePrompt returns a discriminated union; add cost=0 for now
-    // (real cost is aggregated per-model call). Full cost tracking lives
-    // in Phase D telemetry work.
+    // v2.0.0-beta.1: report what the pass actually spent.
+    //
+    // Both `runClassifierSdk` and `runCrystalliserSdk` have always returned
+    // `costUsd`/`tokensIn`/`tokensOut`; the cost was measured and then dropped
+    // here, at the wiring, because `CrystalliserDeps` typed the callables as
+    // returning the bare result. Every crystallise pass therefore reported
+    // zero — including the reject and clarify paths, which still pay for a
+    // classifier call. `spend` now carries it through.
+    const costUsd = result.spend.costUsd;
+    if (result.spend.partial) {
+      api.logger.info("[crystalliser] cost is a floor: some calls reported tokens without a price", {
+        tokensIn: result.spend.tokensIn,
+        tokensOut: result.spend.tokensOut,
+      });
+    }
     return result.kind === "brief"
-      ? { kind: "brief" as const, brief: result.brief, costUsd: 0 }
+      ? { kind: "brief" as const, brief: result.brief, costUsd }
       : result.kind === "clarify"
-        ? { kind: "clarify" as const, question: result.question, costUsd: 0 }
-        : { kind: "reject" as const, intent: result.intent as "not_dev" | "unsafe", reason: result.reason ?? "", costUsd: 0 };
+        ? { kind: "clarify" as const, question: result.question, costUsd }
+        : { kind: "reject" as const, intent: result.intent as "not_dev" | "unsafe", reason: result.reason ?? "", costUsd };
   };
 
   const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
@@ -830,7 +842,11 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         maxOutputTokens: config.models.max_output_tokens,
         logger: api.logger,
       });
-      return { subTasks: r.subTasks };
+      // v2.0.0-beta.1: `runLeadReviseSpecSdk` reports what the turn cost and
+      // this return dropped it on the floor one line later. The turn re-emits
+      // the FULL sub-task list, so it is one of the more expensive calls the
+      // harness makes.
+      return { subTasks: r.subTasks, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
     },
 
 

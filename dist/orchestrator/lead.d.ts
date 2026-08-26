@@ -415,10 +415,15 @@ export interface LeadDeps {
      * whole-plan re-ask, so behaviour degrades to pre-beta.99 rather than
      * breaking.
      */
-    callWorkerContextModel?: (brief: CrystallisedBrief, plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">, missingSeqs: number[]) => Promise<Array<{
-        seq: number;
-        workerContext: WorkerContext;
-    }>>;
+    callWorkerContextModel?: (brief: CrystallisedBrief, plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">, missingSeqs: number[]) => Promise<{
+        contexts: Array<{
+            seq: number;
+            workerContext: WorkerContext;
+        }>;
+        costUsd?: number;
+        tokensIn?: number;
+        tokensOut?: number;
+    }>;
 }
 /**
  * beta.99 (P0-2): merge bounded top-up contexts into the plan IN PLACE.

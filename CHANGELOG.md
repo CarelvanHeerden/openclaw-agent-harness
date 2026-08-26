@@ -260,6 +260,68 @@ descriptions written by someone reading the same key name the reader already
 has. A wrong description is worse than an honest gap, because it is believed.
 New keys arrive described or they do not arrive.
 
+### Live pricing from models.dev, and the zeroes that meant "nobody looked"
+
+`PRICES` was a hand-maintained table, and beta.61 is the record of what happens
+when it falls behind: a worker swapped sonnet→opus was priced at sonnet rates
+because the table had no opus key, the projection ran ~5x light, and the >20%
+drift warning that should have caught it never fired *because* the model was
+unknown. v2 makes that worse by design — the point is to run models nobody here
+has priced, on endpoints nobody here operates.
+
+So pricing now comes from models.dev, cached in the state DB and keyed
+`provider/model`. The resolution ladder is: `price_overrides`, then the live
+catalogue, then `PRICES`, then the beta.61 fail-safe of the most expensive known
+tier — an unknown model **over**-reserves, because under-reserving lets a run
+overshoot and that failure is only visible on the invoice.
+
+It is treated as untrusted input, because it is: a 4.3MB third-party response
+feeding every budget decision downstream, which if malformed would not fail
+loudly but quietly change what the harness believes a run costs. The document's
+**shape** is validated all-or-nothing — a malformed provider rejects the whole
+response, because a half-applied catalogue is the one failure with no legible
+symptom, since the prices that survived look exactly like the prices that were
+checked. A response declaring fewer than 20 providers is refused outright: that
+is not a smaller catalogue, it is a different document. Per-model gaps are a
+different matter and are skipped, since models.dev legitimately lists models
+with no published price and rejecting over one would mean never having a
+catalogue at all.
+
+The fetch is bounded and never on the hot path. Cache answers immediately,
+refresh happens behind it, and a refresh that fails or is rejected leaves the
+last good cache untouched and writes an audit event — a refresh that has been
+failing for a month should be discoverable without reading source.
+
+**A local provider reports tokens and no dollars.** Not `costUsd: 0`, which is
+indistinguishable from a cost nobody measured. Since OpenCode returns a real
+token split, that is a genuine measurement.
+
+**The cost leaks.** That distinction is why the following were worth fixing:
+
+- Crystallise reported `costUsd: 0` on **every** pass. Both `runClassifierSdk`
+  and `runCrystalliserSdk` have always returned real figures; the wiring typed
+  the callables as returning the bare result and dropped them. The reject and
+  clarify paths are the sharp end — they still pay for a classifier call, so a
+  channel rejecting a hundred prompts a day cost real money and showed nothing.
+- The scout's cost was dropped when its report came back empty — which is
+  exactly where a **timeout** lands, since `scoutRepo` returns `timedOut: true`
+  with an empty report rather than throwing. The most expensive scout outcome, a
+  full 420-second burn, was the one leaving no trace.
+- The bounded `workerContext` top-up was billed and reported nothing. It fires
+  on runs that are already going badly, so its cost landed on the sessions least
+  able to explain where the money went.
+- The revise-spec turn had its cost handed to the wiring and discarded one line
+  later.
+
+Where cost is genuinely unknown — a call that threw rather than returned — it is
+left **absent** rather than zeroed, and a total containing tokens-without-price
+is flagged as a floor rather than a total.
+
+Noted while here: `runLeadReviseSpec` is declared on the loop's deps and wired
+in `index.ts`, but nothing calls it — beta.120's deterministic revise mapping
+took over the job. Left in place (removing a dep breaks direct constructors) but
+flagged in a comment as dead weight and a removal candidate.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**

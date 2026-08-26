@@ -566,12 +566,22 @@ export interface OrchestratorDeps {
    * regression). Optional: unwired OR throws -> fall back to
    * buildReviseDispatchHint (never worse than beta.66).
    */
+  /**
+   * beta.99: the revise-spec turn.
+   *
+   * NOTE (v2.0.0-beta.1): declared and wired in `index.ts`, but nothing in this
+   * file calls it — beta.120's deterministic revise mapping took over the job.
+   * Left in place rather than deleted because removing a dep is a breaking
+   * change for anyone constructing the loop directly, but it is dead weight and
+   * a candidate for removal. Its cost fields are threaded through anyway, so
+   * that reviving it does not reintroduce the leak this milestone closed.
+   */
   runLeadReviseSpec?: (params: {
     brief: CrystallisedBrief;
     plan: LeadPlan;
     review: ReviewReport;
     requester?: string;
-  }) => Promise<{ subTasks: LeadPlanSubTask[] }>;
+  }) => Promise<{ subTasks: LeadPlanSubTask[]; costUsd?: number; tokensIn?: number; tokensOut?: number }>;
   runWorker: (params: {
     brief: CrystallisedBrief;
     subTask: LeadPlanSubTask;

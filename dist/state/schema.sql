@@ -195,3 +195,18 @@ CREATE TABLE IF NOT EXISTS credential_routes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_credential_routes_requester ON credential_routes (slack_user_id, provider, org);
+
+-- v2.0.0-beta.1: cached models.dev pricing catalogue.
+--
+-- One row, holding the whole validated document. Stored whole rather than
+-- row-per-model because the validation rule is all-or-nothing: a partially
+-- applied catalogue is the one failure with no legible symptom, since the
+-- prices that survived look exactly like the prices that were checked.
+--
+-- Purely a cache. Losing it costs one refresh, and until that refresh lands
+-- pricing falls back to the built-in PRICES table.
+CREATE TABLE IF NOT EXISTS model_prices (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),  -- single row, enforced
+  fetched_at  INTEGER NOT NULL,                    -- epoch ms
+  payload     TEXT NOT NULL                        -- JSON: the parsed Catalogue
+);

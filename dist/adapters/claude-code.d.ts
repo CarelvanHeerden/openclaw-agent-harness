@@ -494,10 +494,15 @@ export declare function runLeadWorkerContextSdk(params: {
     logger?: {
         warn: (m: string, meta?: unknown) => void;
     };
-}): Promise<Array<{
-    seq: number;
-    workerContext: WorkerContext;
-}>>;
+}): Promise<{
+    contexts: Array<{
+        seq: number;
+        workerContext: WorkerContext;
+    }>;
+    costUsd: number;
+    tokensIn: number;
+    tokensOut: number;
+}>;
 export declare function runAdversarySdk(params: {
     model: string;
     systemPrompt: string;
