@@ -322,6 +322,65 @@ in `index.ts`, but nothing calls it — beta.120's deterministic revise mapping
 took over the job. Left in place (removing a dep breaks direct constructors) but
 flagged in a comment as dead weight and a removal candidate.
 
+### Replaying real OpenCode traffic, and what it found
+
+Every ACP test until now drove `tests/fixtures/fake-acp-agent.mjs` — a fixture
+written from the same understanding as the adapter, so the two agree by
+construction and a shared misreading of the protocol survives all of them.
+
+`tests/v2-acp-replay.test.mjs` drives `probe/runs/*.jsonl` instead: real wire
+transcripts captured from OpenCode 1.18.11 by `probe/acp-probe.mjs`, before the
+adapter existed. It cannot flatter the adapter, and the first thing it found was
+a bug the fixture could never have shown.
+
+**OpenCode sends `fs/write_text_file` despite our declining the capability.**
+`initialize` advertises `fs: {readTextFile: false, writeTextFile: false}`. The
+captures show OpenCode asking permission for an edit — correctly, through
+`session/request_permission` — and then asking *the client* to perform the
+write. The adapter answered `{}`, which is a **success** for a write that never
+happened. A worker delegating its edits would lose every one of them and then
+report the sub-task complete, with a green verify against a diff that was never
+written.
+
+It now refuses with JSON-RPC `-32601 method not found`, which is both honest and
+useful: the agent falls back to its own file tooling, which routes through
+`bash`/`edit` and therefore back through the permission round-trip and the
+guard. The refusal is safe *because* the captures show the permission request
+arrives first — a test asserts that ordering, since if the write had arrived
+without one, refusing would be the only thing standing between the agent and an
+unguarded edit.
+
+The same fix required a second one a layer down: the connection's request
+dispatcher caught every handler error and replied `result: {}`, so a refusal
+would have been swallowed back into the same lie. Handler failures now produce
+real JSON-RPC errors.
+
+Both are pinned by mutation, and by a test that observes the answer **from the
+agent's side** — the only place the difference between a refusal and a false
+success is visible at all.
+
+### The OpenCode version pin
+
+`opencode-ai@1.18.23`, baked into the `Dockerfile` rather than fetched with
+`npx -y opencode-ai@latest` at run time. `@latest` means the agent the container
+runs is chosen by whoever published most recently, so an image that passed its
+smoke test on Monday can be running different code on Tuesday — and the thing
+changing silently would be the process every worker tool call flows through.
+
+A mismatch **warns and runs** rather than refusing. OpenCode ships often, a hard
+pin would break a working install on a patch release nobody asked for, and the
+failure a strict pin guards against is not the one that hurts. The one that
+hurts is a build that quietly stops routing tool calls through
+`session/request_permission`, and M6's live probe catches that at startup by
+observation — which is stronger than any version string. The probe is the gate;
+this is the diagnostic that makes an incident answerable without a reproduction.
+
+`docs/V2_SMOKE.md` records what CI proves, and the three things it cannot:
+OpenCode issue #5674 (custom provider `options` reportedly dropped — **still
+unverified**, and local models should not be promised until it passes), the
+two-axis A/B matrix with its stopping rule fixed in advance, and one full
+session against a real repository.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**

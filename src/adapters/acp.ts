@@ -36,6 +36,7 @@ import { buildAgentEnv } from "./shared/env.js";
 import { runStructuredLadder } from "./shared/structured.js";
 import type { JsonValidationOptions } from "./shared/json.js";
 import type { BackendCapabilities } from "./backend.js";
+import { assessOpenCodeVersion, type VersionAssessment } from "./opencode-version.js";
 
 /** ACP stop reasons, per the v1 spec. */
 type AcpStopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
@@ -86,6 +87,16 @@ export interface AcpAgentSpec {
   args: string[];
   /** Extra environment for the child, merged over the inherited env. */
   env?: Record<string, string>;
+  /**
+   * M9: called when the launched agent's version is not the pinned one.
+   *
+   * A callback rather than a hard failure. The caller decides what to do with
+   * it — audit it, surface it, ignore it — because the SAFETY question is
+   * answered by the startup permission probe, which observes behaviour rather
+   * than trusting a version string. This is the diagnostic that makes an
+   * incident answerable without a reproduction.
+   */
+  onVersionMismatch?: (info: VersionAssessment & { agentName?: string }) => void;
 }
 
 export interface RunWorkerAcpParams {
@@ -145,6 +156,22 @@ export interface RunWorkerAcpResult {
 }
 
 const LOG_EXCERPT_MAX = 20_000;
+
+/**
+ * Thrown when the agent asks us to perform something we declined in
+ * `initialize`.
+ *
+ * Its own type so the connection can answer with `-32601 method not found`
+ * rather than a generic internal error — the agent then knows the capability
+ * is absent, not that we broke, and falls back to its own tooling instead of
+ * retrying.
+ */
+export class AcpClientCapabilityError extends Error {
+  constructor(readonly method: string) {
+    super(`client capability not offered: ${method}`);
+    this.name = "AcpClientCapabilityError";
+  }
+}
 
 /** Minimal ndjson JSON-RPC 2.0 peer over a child process's stdio. */
 class AcpConnection {
@@ -227,8 +254,25 @@ class AcpConnection {
       let result: unknown;
       try {
         result = await this.onRequest(method, msg["params"]);
-      } catch {
-        result = {};
+      } catch (err) {
+        // A handler that throws must produce a JSON-RPC ERROR, not an empty
+        // success. Collapsing every failure into `{}` told the agent its
+        // request had succeeded — which for `fs/write_text_file` meant a
+        // worker's edits vanished while it went on to report the sub-task
+        // done. An error is answerable: the agent falls back to its own
+        // tooling, which routes through the guard.
+        const capability = err instanceof AcpClientCapabilityError;
+        this.write({
+          jsonrpc: "2.0",
+          id,
+          error: {
+            // -32601 "method not found" is the honest code for a capability we
+            // explicitly declined in `initialize`.
+            code: capability ? -32601 : -32603,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+        return;
       }
       this.write({ jsonrpc: "2.0", id, result });
       return;
@@ -492,9 +536,27 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
         const allow = options.find((o) => o.kind === "allow_once") ?? options[0];
         return { outcome: { outcome: "selected", optionId: allow?.optionId } };
       }
-      // We advertise fs:false, so these should not arrive. Answer anyway to
-      // avoid deadlocking an agent that ignores our capabilities.
-      if (method === "fs/read_text_file") return { content: "" };
+      // We advertise `fs: {readTextFile: false, writeTextFile: false}`, so
+      // neither of these should arrive. The captured OpenCode 1.18.11 sessions
+      // in `probe/runs/` show it sending `fs/write_text_file` regardless, right
+      // after the `session/request_permission` for the same edit — it asks us
+      // for approval, then asks us to perform the write.
+      //
+      // Answering must not deadlock the agent, but it must also not LIE. The
+      // previous `return {}` read as success on a write that never happened,
+      // so a worker delegating its edits to the client silently lost all of
+      // them and then reported the sub-task complete. An error is the honest
+      // answer and it is also the useful one: the agent falls back to its own
+      // file tooling, which routes through `bash`/`edit` and therefore through
+      // the permission round-trip and the guard.
+      if (method === "fs/write_text_file") {
+        const p = rpcParams as { path?: string };
+        pushLog(`[acp] refused client-side write to ${String(p?.path ?? "?")}: fs capability is not offered`);
+        throw new AcpClientCapabilityError("fs/write_text_file");
+      }
+      if (method === "fs/read_text_file") {
+        throw new AcpClientCapabilityError("fs/read_text_file");
+      }
       return {};
     },
     (method, notifyParams) => {
@@ -506,10 +568,23 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
 
   let stopReason: WorkerStopReason = "tool_error";
   try {
-    await conn.request("initialize", {
+    const initResult = (await conn.request("initialize", {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-    });
+    })) as { agentInfo?: { name?: string; version?: string } } | undefined;
+
+    // M9: record what actually launched. Warn-on-mismatch rather than refuse —
+    // the startup permission probe is the safety gate, this is the diagnostic
+    // that answers "what were you running?" without a reproduction.
+    const agentVersion = initResult?.agentInfo?.version;
+    const versionCheck = assessOpenCodeVersion(agentVersion);
+    if (versionCheck.warn) {
+      pushLog(`[acp] version: ${versionCheck.message ?? "mismatch"}`);
+      agent.onVersionMismatch?.({
+        agentName: initResult?.agentInfo?.name,
+        ...versionCheck,
+      });
+    }
 
     if (resumeSessionId) {
       try {

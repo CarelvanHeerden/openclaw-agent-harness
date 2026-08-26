@@ -1,6 +1,7 @@
 import type { AcpToolCallForGuard } from "../safety/bash-guard.js";
 import type { JsonValidationOptions } from "./shared/json.js";
 import type { BackendCapabilities } from "./backend.js";
+import { type VersionAssessment } from "./opencode-version.js";
 /** The harness-side stop reasons the worker contract expects. */
 export type WorkerStopReason = "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled" | "first_token_timeout";
 /**
@@ -26,6 +27,18 @@ export interface AcpAgentSpec {
     args: string[];
     /** Extra environment for the child, merged over the inherited env. */
     env?: Record<string, string>;
+    /**
+     * M9: called when the launched agent's version is not the pinned one.
+     *
+     * A callback rather than a hard failure. The caller decides what to do with
+     * it — audit it, surface it, ignore it — because the SAFETY question is
+     * answered by the startup permission probe, which observes behaviour rather
+     * than trusting a version string. This is the diagnostic that makes an
+     * incident answerable without a reproduction.
+     */
+    onVersionMismatch?: (info: VersionAssessment & {
+        agentName?: string;
+    }) => void;
 }
 export interface RunWorkerAcpParams {
     agent: AcpAgentSpec;
@@ -94,6 +107,19 @@ export interface RunWorkerAcpResult {
         kind?: string | null;
         reason?: string;
     }>;
+}
+/**
+ * Thrown when the agent asks us to perform something we declined in
+ * `initialize`.
+ *
+ * Its own type so the connection can answer with `-32601 method not found`
+ * rather than a generic internal error — the agent then knows the capability
+ * is absent, not that we broke, and falls back to its own tooling instead of
+ * retrying.
+ */
+export declare class AcpClientCapabilityError extends Error {
+    readonly method: string;
+    constructor(method: string);
 }
 /**
  * Runs one worker turn against an ACP backend.

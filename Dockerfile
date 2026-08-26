@@ -55,6 +55,24 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*
 
+# v2.0.0-beta.1: the OpenCode backend, baked in at a pinned version.
+#
+# Baked rather than fetched with `npx -y opencode-ai@latest` at run time, which
+# is what the capability probe used. `@latest` means the agent the container
+# runs is decided by whoever published most recently, so an image that passed
+# its smoke test on Monday can be running different code on Tuesday with no
+# change on our side -- and the thing that would change silently is the process
+# the worker's tool calls flow through. It also puts a network fetch on the
+# startup path of every session.
+#
+# The version is warn-on-mismatch rather than enforced at runtime (see
+# src/adapters/opencode-version.ts): the real gate is the live permission probe
+# that runs at startup and refuses to proceed unless the tool-call round-trip
+# is observed. Keep this in lockstep with PINNED_OPENCODE_VERSION -- a test
+# asserts they agree.
+RUN npm install --global --no-fund --no-audit opencode-ai@1.18.23 \
+    && opencode --version
+
 USER openclaw
 WORKDIR /home/openclaw/app
 

@@ -2693,6 +2693,25 @@ const MUTATIONS = [
     replace: "    addSpend(spend, undefined);",
     tests: ["tests/v2-pricing-catalogue.test.mjs"],
   },
+  {
+    // Real captured OpenCode sends this despite our declining the capability.
+    // Answering `{}` is a success for a write we never performed, so a worker
+    // delegating its edits loses them and reports the sub-task done.
+    name: "a declined fs capability is REFUSED (v2): a false success loses the worker's edits silently",
+    file: "dist/adapters/acp.js",
+    find: "            throw new AcpClientCapabilityError(\"fs/write_text_file\");",
+    replace: "            return {};",
+    tests: ["tests/v2-acp-replay.test.mjs"],
+  },
+  {
+    // ...and the refusal must survive the dispatcher. Collapsing a throw back
+    // into an empty result restores the same lie one layer down.
+    name: "a handler throw becomes a JSON-RPC error (v2): swallowing it re-tells the lie one layer down",
+    file: "dist/adapters/acp.js",
+    find: "                        code: capability ? -32601 : -32603,",
+    replace: "                        code: capability ? 0 : -32603,",
+    tests: ["tests/v2-acp-replay.test.mjs"],
+  },
 ];
 
 /**
