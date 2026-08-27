@@ -596,12 +596,6 @@ export async function runLeadScoutSdk(params) {
         clearTimeout(timer);
     }
 }
-// ---- Structured-output helpers (classifier, crystalliser, lead, adversary) ----
-/**
- * beta.99 (P0-6): a `structuredCall` failure carrying the FULL raw model reply
- * and whether the call was cut off at the output ceiling, so callers can try
- * `repairTruncatedJson` rather than discard the work.
- */
 async function structuredCall(params) {
     const sdk = await loadSdk();
     const abort = new AbortController();
@@ -814,7 +808,7 @@ export async function runClassifierSdk(params) {
         "- unsafe: asks that would exfiltrate secrets, delete data, disable safeguards, or violate policy.",
         "Respond with the JSON object and NOTHING else -- no code fence, no prose, no leading text. Begin your reply with '{'.",
     ].join("\n");
-    const call = (userMessage) => structuredCall({
+    const call = (userMessage) => (params.execute ?? structuredCall)({
         model: params.model,
         systemPrompt,
         userMessage,
@@ -883,7 +877,7 @@ export async function runCrystalliserSdk(params) {
     ]
         .filter((line) => line.length > 0)
         .join("\n");
-    const r = await structuredCall({
+    const r = await (params.execute ?? structuredCall)({
         model: params.model,
         systemPrompt,
         userMessage: params.userText,
@@ -1072,7 +1066,7 @@ export async function runLeadSdk(params) {
     const userMessage = params.correctiveNote
         ? `${baseMessage}\n\nCORRECTION (your previous plan was rejected):\n${params.correctiveNote}`
         : baseMessage;
-    const call = (msg) => structuredCall({
+    const call = (msg) => (params.execute ?? structuredCall)({
         model: params.model,
         systemPrompt,
         userMessage: msg,
@@ -1339,7 +1333,7 @@ export async function runLeadReviseSpecSdk(params) {
         findings: findingLines,
         currentSubTasks: params.subTasks,
     });
-    const r = await structuredCall({
+    const r = await (params.execute ?? structuredCall)({
         model: params.model,
         systemPrompt,
         userMessage,
@@ -1394,7 +1388,7 @@ export async function runLeadWorkerContextSdk(params) {
         missingSeqs: params.missingSeqs,
         subTasksNeedingContext: targets,
     });
-    const r = await structuredCall({
+    const r = await (params.execute ?? structuredCall)({
         model: params.model,
         systemPrompt,
         userMessage,
@@ -1460,7 +1454,7 @@ async function reviewOnce(params, systemPrompt, userMessage, label) {
         validation: { requiredKeys: ["verdict", "findings", "summary"], label },
         logger: params.logger,
         attempt: async (correction) => {
-            const r = await structuredCall({
+            const r = await (params.execute ?? structuredCall)({
                 model: params.model,
                 systemPrompt,
                 userMessage: correction ? `${userMessage}\n\n${correction}` : userMessage,

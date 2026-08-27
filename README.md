@@ -201,6 +201,7 @@ This is the normal path. A `block` verdict never pushes; a human `:rocket:` over
 | Backend-agnostic shared code | `src/adapters/shared/`                           | JSON, pricing, diff, stream and env filtering; no backend imports |
 | Backend contract             | `src/adapters/backend.ts`                        | Role shapes, capability tiers and the judgement-role floor |
 | Per-role backend config      | `src/adapters/role-config.ts`                    | Resolves backend/model per role, vault-keyed providers |
+| Backend routing              | `src/adapters/backend-router.ts`                 | Picks the backend per role, gates on the live probe, prices the turn |
 | Git worktree adapter         | `src/adapters/git-worktree.ts`                   | Allocate/commit/diff/push, per-session isolation       |
 | GitHub PR opener             | `src/adapters/github-pr.ts`                      | Push branch, POST /pulls (draft if verdict != pass)   |
 | GitHub PR-merged watcher     | `src/adapters/github-watcher.ts`                 | Detects merge/close, releases worktree                 |

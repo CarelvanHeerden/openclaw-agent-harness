@@ -800,6 +800,51 @@ export async function runLeadScoutSdk(params: {
  * and whether the call was cut off at the output ceiling, so callers can try
  * `repairTruncatedJson` rather than discard the work.
  */
+/**
+ * The parameters every structured role call needs, whichever backend runs it.
+ *
+ * Extracted so a second backend can be substituted for the execution step
+ * WITHOUT the prompts moving. Each `run*Sdk` function below builds a system
+ * prompt and a user message that encode a great deal of hard-won behaviour —
+ * the beta.40 anti-persona preamble, the beta.99 sizing calibration, the exact
+ * JSON contract each role is validated against. Copying those into an
+ * OpenCode-shaped twin would create two texts that must be kept identical by
+ * discipline, and they would diverge on the first fix applied to one of them.
+ *
+ * So the prompt stays in exactly one place and only the execution swaps.
+ */
+export interface StructuredExecParams<T> {
+  model: string;
+  systemPrompt: string;
+  userMessage: string;
+  timeoutSeconds: number;
+  validation?: JsonValidationOptions<T>;
+  logger?: { warn: (m: string, meta?: unknown) => void };
+  apiKey?: string;
+  maxOutputTokens?: number;
+  streamOpenTimeoutSeconds?: number;
+  skipParse?: boolean;
+}
+
+export interface StructuredExecResult<T> {
+  parsed: T;
+  sdkSessionId: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  raw: string;
+  stopReason: string | null;
+}
+
+/**
+ * How a structured role's single turn is actually executed.
+ *
+ * Defaults to `structuredCall` — the Claude Code SDK path — so every existing
+ * caller is unchanged. `backend-router.ts` supplies an ACP-backed
+ * implementation for roles an operator has pointed at OpenCode.
+ */
+export type StructuredExecutor = <T>(params: StructuredExecParams<T>) => Promise<StructuredExecResult<T>>;
+
 async function structuredCall<T>(params: {
   model: string;
   systemPrompt: string;
@@ -1025,6 +1070,8 @@ async function structuredCall<T>(params: {
 
 
 export async function runClassifierSdk(params: {
+  /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+  execute?: StructuredExecutor;
   model: string;
   userText: string;
   timeoutSeconds: number;
@@ -1058,7 +1105,7 @@ export async function runClassifierSdk(params: {
   ].join("\n");
 
   const call = (userMessage: string) =>
-    structuredCall<ClassifierResult>({
+    (params.execute ?? structuredCall)<ClassifierResult>({
       model: params.model,
       systemPrompt,
       userMessage,
@@ -1089,6 +1136,8 @@ export async function runClassifierSdk(params: {
 }
 
 export async function runCrystalliserSdk(params: {
+  /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+  execute?: StructuredExecutor;
   model: string;
   userText: string;
   timeoutSeconds: number;
@@ -1156,7 +1205,7 @@ export async function runCrystalliserSdk(params: {
     .filter((line) => line.length > 0)
     .join("\n");
 
-  const r = await structuredCall<CrystallisedBrief>({
+  const r = await (params.execute ?? structuredCall)<CrystallisedBrief>({
     model: params.model,
     systemPrompt,
     userMessage: params.userText,
@@ -1191,6 +1240,8 @@ export function formatConceptBlockForCrystalliser(concepts?: OkfConceptRef[]): s
 }
 
 export async function runLeadSdk(params: {
+  /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+  execute?: StructuredExecutor;
   model: string;
   brief: CrystallisedBrief;
   reposAllowed: string[];
@@ -1395,7 +1446,7 @@ export async function runLeadSdk(params: {
     ? `${baseMessage}\n\nCORRECTION (your previous plan was rejected):\n${params.correctiveNote}`
     : baseMessage;
   const call = (msg: string) =>
-    structuredCall<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>({
+    (params.execute ?? structuredCall)<Omit<LeadPlan, "worktreePath" | "approxCostUsd">>({
       model: params.model,
       systemPrompt,
       userMessage: msg,
@@ -1638,6 +1689,8 @@ function salvageLeadPlan(
  * BOUNDARY: reads the adversary OUTPUT only; nothing flows back INTO it.
  */
 export async function runLeadReviseSpecSdk(params: {
+  /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+  execute?: StructuredExecutor;
   model: string;
   brief: CrystallisedBrief;
   subTasks: LeadPlanSubTask[];
@@ -1679,7 +1732,7 @@ export async function runLeadReviseSpecSdk(params: {
     currentSubTasks: params.subTasks,
   });
 
-  const r = await structuredCall<{ subTasks: LeadPlanSubTask[] }>({
+  const r = await (params.execute ?? structuredCall)<{ subTasks: LeadPlanSubTask[] }>({
     model: params.model,
     systemPrompt,
     userMessage,
@@ -1707,6 +1760,8 @@ export async function runLeadReviseSpecSdk(params: {
  * truncation is not a realistic failure mode.
  */
 export async function runLeadWorkerContextSdk(params: {
+  /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+  execute?: StructuredExecutor;
   model: string;
   brief: CrystallisedBrief;
   subTasks: LeadPlanSubTask[];
@@ -1751,7 +1806,7 @@ export async function runLeadWorkerContextSdk(params: {
     subTasksNeedingContext: targets,
   });
 
-  const r = await structuredCall<{ contexts: Array<{ seq: number; workerContext: WorkerContext }> }>({
+  const r = await (params.execute ?? structuredCall)<{ contexts: Array<{ seq: number; workerContext: WorkerContext }> }>({
     model: params.model,
     systemPrompt,
     userMessage,
@@ -1817,7 +1872,13 @@ type ReviewDoc = { verdict: "pass" | "revise" | "block"; findings: unknown[]; su
  * review crash, which preserves the worktree and refuses the push.
  */
 async function reviewOnce(
-  params: { model: string; timeoutSeconds: number; apiKey?: string; logger?: { warn: (m: string, meta?: unknown) => void } },
+  params: {
+    model: string;
+    timeoutSeconds: number;
+    apiKey?: string;
+    logger?: { warn: (m: string, meta?: unknown) => void };
+    execute?: StructuredExecutor;
+  },
   systemPrompt: string,
   userMessage: string,
   label: string,
@@ -1827,7 +1888,7 @@ async function reviewOnce(
     validation: { requiredKeys: ["verdict", "findings", "summary"], label },
     logger: params.logger,
     attempt: async (correction) => {
-      const r = await structuredCall<ReviewDoc>({
+      const r = await (params.execute ?? structuredCall)<ReviewDoc>({
         model: params.model,
         systemPrompt,
         userMessage: correction ? `${userMessage}\n\n${correction}` : userMessage,
@@ -1853,6 +1914,8 @@ async function reviewOnce(
 }
 
 export async function runAdversarySdk(params: {
+  /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+  execute?: StructuredExecutor;
   model: string;
   systemPrompt: string;
   diffText: string;

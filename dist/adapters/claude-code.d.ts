@@ -28,7 +28,7 @@
 import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/lead.js";
 import type { ReviewReport } from "../orchestrator/adversary.js";
-import { type LeadAttemptInfo } from "./shared/json.js";
+import { type JsonValidationOptions, type LeadAttemptInfo } from "./shared/json.js";
 import { type BackendCapabilities, type CapabilityTier } from "./backend.js";
 export { describeJsonSyntaxFault, extractAndValidateJson, extractJson, repairTruncatedJson, type JsonValidationOptions, type LeadAttemptInfo, type StructuredCallError, } from "./shared/json.js";
 export { splitDiffOnFileBoundaries } from "./shared/diff.js";
@@ -333,7 +333,58 @@ export declare function runLeadScoutSdk(params: {
     stopReason: string;
     timedOut?: boolean;
 }>;
+/**
+ * beta.99 (P0-6): a `structuredCall` failure carrying the FULL raw model reply
+ * and whether the call was cut off at the output ceiling, so callers can try
+ * `repairTruncatedJson` rather than discard the work.
+ */
+/**
+ * The parameters every structured role call needs, whichever backend runs it.
+ *
+ * Extracted so a second backend can be substituted for the execution step
+ * WITHOUT the prompts moving. Each `run*Sdk` function below builds a system
+ * prompt and a user message that encode a great deal of hard-won behaviour —
+ * the beta.40 anti-persona preamble, the beta.99 sizing calibration, the exact
+ * JSON contract each role is validated against. Copying those into an
+ * OpenCode-shaped twin would create two texts that must be kept identical by
+ * discipline, and they would diverge on the first fix applied to one of them.
+ *
+ * So the prompt stays in exactly one place and only the execution swaps.
+ */
+export interface StructuredExecParams<T> {
+    model: string;
+    systemPrompt: string;
+    userMessage: string;
+    timeoutSeconds: number;
+    validation?: JsonValidationOptions<T>;
+    logger?: {
+        warn: (m: string, meta?: unknown) => void;
+    };
+    apiKey?: string;
+    maxOutputTokens?: number;
+    streamOpenTimeoutSeconds?: number;
+    skipParse?: boolean;
+}
+export interface StructuredExecResult<T> {
+    parsed: T;
+    sdkSessionId: string;
+    costUsd: number;
+    tokensIn: number;
+    tokensOut: number;
+    raw: string;
+    stopReason: string | null;
+}
+/**
+ * How a structured role's single turn is actually executed.
+ *
+ * Defaults to `structuredCall` — the Claude Code SDK path — so every existing
+ * caller is unchanged. `backend-router.ts` supplies an ACP-backed
+ * implementation for roles an operator has pointed at OpenCode.
+ */
+export type StructuredExecutor = <T>(params: StructuredExecParams<T>) => Promise<StructuredExecResult<T>>;
 export declare function runClassifierSdk(params: {
+    /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+    execute?: StructuredExecutor;
     model: string;
     userText: string;
     timeoutSeconds: number;
@@ -344,6 +395,8 @@ export declare function runClassifierSdk(params: {
     tokensOut: number;
 }>;
 export declare function runCrystalliserSdk(params: {
+    /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+    execute?: StructuredExecutor;
     model: string;
     userText: string;
     timeoutSeconds: number;
@@ -383,6 +436,8 @@ export declare function runCrystalliserSdk(params: {
  */
 export declare function formatConceptBlockForCrystalliser(concepts?: OkfConceptRef[]): string;
 export declare function runLeadSdk(params: {
+    /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+    execute?: StructuredExecutor;
     model: string;
     brief: CrystallisedBrief;
     reposAllowed: string[];
@@ -448,6 +503,8 @@ export declare function runLeadSdk(params: {
  * BOUNDARY: reads the adversary OUTPUT only; nothing flows back INTO it.
  */
 export declare function runLeadReviseSpecSdk(params: {
+    /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+    execute?: StructuredExecutor;
     model: string;
     brief: CrystallisedBrief;
     subTasks: LeadPlanSubTask[];
@@ -484,6 +541,8 @@ export declare function runLeadReviseSpecSdk(params: {
  * truncation is not a realistic failure mode.
  */
 export declare function runLeadWorkerContextSdk(params: {
+    /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+    execute?: StructuredExecutor;
     model: string;
     brief: CrystallisedBrief;
     subTasks: LeadPlanSubTask[];
@@ -504,6 +563,8 @@ export declare function runLeadWorkerContextSdk(params: {
     tokensOut: number;
 }>;
 export declare function runAdversarySdk(params: {
+    /** v2: execution backend for this role. Defaults to the Claude Code SDK. */
+    execute?: StructuredExecutor;
     model: string;
     systemPrompt: string;
     diffText: string;

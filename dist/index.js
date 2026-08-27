@@ -43,6 +43,10 @@ import { parseOkfBlocksFromContext, OkfConceptCache, decideAutoForward, buildRew
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { CredentialVault, VAULT_KEY_ENV } from "./adapters/credential-vault.js";
+import { buildBackendRouter } from "./adapters/backend-router.js";
+import { runWorkerAcp } from "./adapters/acp.js";
+import { buildAcpGuard } from "./safety/bash-guard.js";
+import { catalogueStore } from "./state/price-cache.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { buildScoutSystemPrompt, buildScoutUserMessage, SCOUT_ALLOWED_TOOLS, SCOUT_DENIED_TOOLS, SCOUT_MAX_TURNS, } from "./orchestrator/lead-scout.js";
 import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getTokenScopes, mergePullRequest, postPrComment } from "./adapters/github.js";
@@ -95,6 +99,7 @@ export function bootstrapHarnessSync(api) {
             config,
             logger: api.logger,
             callClassifier: async () => runClassifierSdk({
+                execute: executorFor("classifier"),
                 model: config.models.classifier,
                 userText,
                 timeoutSeconds: 60,
@@ -104,6 +109,7 @@ export function bootstrapHarnessSync(api) {
             // crystalliser prompt. Undefined/empty is identical to pre-beta.21
             // behaviour.
             callCrystalliser: async (_userText, _cls, ctxConcepts) => runCrystalliserSdk({
+                execute: executorFor("crystalliser"),
                 model: config.models.lead,
                 userText,
                 timeoutSeconds: 120,
@@ -194,6 +200,105 @@ export function bootstrapHarnessSync(api) {
         vault = sealedVault(vaultOpenError);
     }
     const creds = new CredentialAdapter({ logger: api.logger, vault });
+    // v2.0.0-beta.1: per-role backend routing.
+    //
+    // `undefined` unless an operator declared a `backends` block that actually
+    // moves a role, so a v1 install gets no router, no probe, and none of this
+    // code path. Construction VALIDATES and throws on a bad configuration --
+    // caught here rather than propagated, because taking `register()` down would
+    // leave the operator without the `harness_health` that explains why.
+    let backendRouter;
+    let backendRouterError;
+    try {
+        backendRouter = buildBackendRouter({
+            backends: config.backends,
+            providers: config.providers,
+            // Synchronous by necessity: `register()` cannot await. The vault's own
+            // read is sync; only `CredentialAdapter` adds a promise.
+            resolveKey: (service) => {
+                try {
+                    return vault.get(service, "api_key");
+                }
+                catch {
+                    return undefined;
+                }
+            },
+            scratchDir: dataDir,
+            logger: api.logger,
+            audit: (event, payload) => { try {
+                state.audit(event, payload, "");
+            }
+            catch { /* audit must never break boot */ } },
+        });
+        if (backendRouter) {
+            api.logger.info("[harness] per-role backends configured", { roles: backendRouter.describe() });
+            state.audit("backend.routes", { roles: backendRouter.describe() }, "");
+        }
+    }
+    catch (err) {
+        // A rejected backend configuration must not be silently downgraded to the
+        // default. The operator asked for something specific; running something
+        // else and reporting success is how a cost or capability surprise gets
+        // blamed on the wrong thing weeks later. Recorded, surfaced, and every
+        // affected role refuses below.
+        backendRouterError = String(err);
+        api.logger.warn(`[harness] BACKEND CONFIGURATION REJECTED: ${backendRouterError}`);
+    }
+    /**
+     * The live probe, run once, lazily, on the first session that needs it.
+     *
+     * Not at register time: `register()` is synchronous, and a probe that spawns
+     * a process and waits for a permission round-trip is not something to do on
+     * the plugin loader's critical path. Lazily means the cost lands on the
+     * first run that actually uses OpenCode, and the failure lands there too --
+     * where there is a session to attach it to.
+     */
+    let backendProbe;
+    const ensureBackendReady = async () => {
+        if (backendRouterError)
+            throw new Error(`backend configuration rejected at startup: ${backendRouterError}`);
+        if (!backendRouter)
+            return;
+        backendProbe ??= (async () => {
+            // Cache-then-refresh: a same-day cache satisfies this without a fetch,
+            // and a failed fetch keeps whatever cache was already good. Awaited only
+            // once, and never fatal -- unpriced turns are a reporting problem.
+            await backendRouter.refreshPricing(catalogueStore(state.db));
+            await backendRouter.preflight();
+        })();
+        await backendProbe;
+    };
+    /**
+     * The executor for a structured role, or `undefined` to use the SDK path.
+     *
+     * Two things happen here that the router cannot do for itself.
+     *
+     * First, a REJECTED configuration must not read as "no configuration". The
+     * router is undefined in both cases, and returning `undefined` for both
+     * would send a role the operator explicitly moved back to Claude Code
+     * without saying so -- the silent downgrade this whole module exists to
+     * prevent. So a rejected config yields an executor that throws.
+     *
+     * Second, the probe is awaited on the structured path too. Tools are off for
+     * these roles and `runStructuredAcp` denies every call regardless, so the
+     * permission round-trip matters less here than it does for the worker; but
+     * the same gate also refreshes pricing and pins the version, and having one
+     * of the eight roles skip it is how the exception becomes the rule.
+     */
+    const executorFor = (role) => {
+        if (backendRouterError) {
+            return (async () => {
+                throw new Error(`backend configuration rejected at startup: ${backendRouterError}`);
+            });
+        }
+        const inner = backendRouter?.executorFor(role);
+        if (!inner)
+            return undefined;
+        return (async (params) => {
+            await ensureBackendReady();
+            return inner(params);
+        });
+    };
     // Anthropic API key resolver for the embedded Claude Agent SDK.
     // Vault-first, then env fallback. Memoised (including the "not found"
     // result) so we only hit the vault once per runtime generation.
@@ -368,6 +473,7 @@ export function bootstrapHarnessSync(api) {
                 // beta.67 (P0a): callLeadModel genuinely (re-)invokes the lead SDK so
                 // the ONE bounded re-ask actually re-plans with the corrective note.
                 callLeadModel: async (b, _repos, correctiveNote) => runLeadSdk({
+                    execute: executorFor("lead"),
                     model: config.models.lead,
                     brief: b,
                     reposAllowed: config.repos.allowed,
@@ -395,6 +501,7 @@ export function bootstrapHarnessSync(api) {
                 // whole-plan re-ask as the FIRST remedy for thin context; the
                 // whole-plan re-ask remains as the fallback inside runLeadPlanner.
                 callWorkerContextModel: async (b, plan, missingSeqs) => runLeadWorkerContextSdk({
+                    execute: executorFor("worker_context"),
                     model: config.models.lead,
                     brief: b,
                     subTasks: plan.subTasks,
@@ -438,6 +545,37 @@ export function bootstrapHarnessSync(api) {
                             commitIdentity: resolution.commitIdentity,
                             bootstrapDeps: false,
                         });
+                        if (backendRouterError)
+                            await ensureBackendReady();
+                        if (backendRouter?.backendFor("scout").backend === "opencode") {
+                            await ensureBackendReady();
+                            const s = await runWorkerAcp({
+                                agent: backendRouter.agentSpecFor("scout"),
+                                worktreePath: scoutWorktree,
+                                systemPrompt: buildScoutSystemPrompt(),
+                                userMessage: buildScoutUserMessage(scoutBrief),
+                                model: backendRouter.backendFor("scout").model ?? config.models.lead,
+                                timeoutSeconds: config.loop.lead_scout_timeout_seconds ?? 420,
+                                acpGuard: buildAcpGuard({
+                                    bash_whitelist: config.safety.bash_whitelist,
+                                    bash_denylist_tokens: config.safety.bash_denylist_tokens,
+                                    // The scout only reads. It gets the worker's path denylist
+                                    // and no write path at all.
+                                    path_denylist: config.safety.path_denylist,
+                                    allow_git_push: false,
+                                    allow_network_commands: false,
+                                }),
+                                secretToken: ghToken,
+                                logger: api.logger,
+                            });
+                            return {
+                                report: s.finalMessage,
+                                costUsd: backendRouter.priceTurn("scout", s).costUsd ?? 0,
+                                tokensIn: s.tokensIn,
+                                tokensOut: s.tokensOut,
+                                timedOut: s.stopReason === "timeout",
+                            };
+                        }
                         const r = await runLeadScoutSdk({
                             model: config.models.lead,
                             worktreePath: scoutWorktree,
@@ -525,6 +663,7 @@ export function bootstrapHarnessSync(api) {
         // a throw here falls back to buildReviseDispatchHint in the loop.
         runLeadReviseSpec: async ({ brief, plan, review }) => {
             const r = await runLeadReviseSpecSdk({
+                execute: executorFor("revise_spec"),
                 model: config.models.lead,
                 brief,
                 subTasks: plan.subTasks,
@@ -560,7 +699,47 @@ export function bootstrapHarnessSync(api) {
                 config,
                 logger: api.logger,
                 buildCanUseTool: () => canUseTool,
-                runWorkerModel: async (params) => runWorkerSdk({ ...params, apiKey: await anthropicApiKey(), maxOutputTokens: config.models.max_output_tokens }),
+                runWorkerModel: async (params) => {
+                    // Throws when the configuration was rejected, so a moved role
+                    // fails loudly instead of quietly running on the default backend.
+                    if (backendRouterError)
+                        await ensureBackendReady();
+                    if (backendRouter?.backendFor("worker").backend !== "opencode") {
+                        return runWorkerSdk({ ...params, apiKey: await anthropicApiKey(), maxOutputTokens: config.models.max_output_tokens });
+                    }
+                    // The guard is proven live before the first turn, not assumed from
+                    // the config we wrote: an agent that has stopped routing tool calls
+                    // through `session/request_permission` looks identical from its own
+                    // configuration file.
+                    await ensureBackendReady();
+                    const r = await runWorkerAcp({
+                        agent: backendRouter.agentSpecFor("worker"),
+                        worktreePath: params.worktreePath,
+                        systemPrompt: params.systemPrompt,
+                        userMessage: params.userMessage,
+                        model: backendRouter.backendFor("worker").model ?? params.model,
+                        resumeSessionId: params.resumeSessionId,
+                        timeoutSeconds: params.timeoutSeconds,
+                        streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
+                        firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
+                        streamIdleWarnSeconds: params.streamIdleWarnSeconds,
+                        onStreamSlow: params.onStreamSlow,
+                        // NOT params.canUseTool: that guard keys on Claude Code tool
+                        // names and would fall through to allow on every ACP call.
+                        acpGuard: buildAcpGuard({
+                            bash_whitelist: config.safety.bash_whitelist,
+                            bash_denylist_tokens: config.safety.bash_denylist_tokens,
+                            path_denylist: config.safety.path_denylist,
+                            allow_git_push: config.safety.allow_git_push,
+                            allow_network_commands: config.safety.allow_network_commands,
+                        }),
+                        logger: api.logger,
+                    });
+                    // Priced through the router so a provider that reports tokens
+                    // without a cost is billed off the catalogue rather than recorded
+                    // as a free turn.
+                    return { ...r, costUsd: backendRouter.priceTurn("worker", r).costUsd ?? 0 };
+                },
                 gitBaseSha: (wt) => git.baseSha(wt),
                 gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),
                 gitCommit: (wt, msg, id) => git.commit(wt, msg, id),
@@ -651,7 +830,11 @@ export function bootstrapHarnessSync(api) {
                         hadPriorFindings: info.hadPriorFindings,
                     }),
                     callAdversaryModel: async (params) => {
-                        const r = await runAdversarySdk({ ...params, apiKey: await anthropicApiKey() });
+                        const r = await runAdversarySdk({
+                            ...params,
+                            execute: executorFor("adversary"),
+                            apiKey: await anthropicApiKey(),
+                        });
                         return {
                             parsed: {
                                 verdict: r.parsed.verdict,

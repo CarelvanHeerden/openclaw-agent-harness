@@ -20,6 +20,10 @@ These run on every commit and need no OpenCode binary, no API key and no money.
 | A provider with no vault key is dropped, not sent an empty `apiKey` | `tests/v2-role-config.test.mjs` |
 | The pricing catalogue rejects a malformed or implausible response whole | `tests/v2-pricing-catalogue.test.mjs` |
 | Local providers report tokens and no dollars | `tests/v2-pricing-catalogue.test.mjs` |
+| All eight roles are routed from the dispatch path, so config is not inert | `tests/v2-backend-wiring.test.mjs` |
+| A rejected backend config refuses, rather than falling back to claude-code | `tests/v2-backend-wiring.test.mjs` |
+| The agentic roles get the ACP guard, never the SDK's `canUseTool` | `tests/v2-backend-wiring.test.mjs` |
+| `tokens-only` is priced; `unavailable` stays unmeasured; `local` is a real zero | `tests/v2-backend-wiring.test.mjs` |
 
 The replay tests are the load-bearing ones, and they are worth understanding
 before trusting them. Every other ACP test drives `tests/fixtures/fake-acp-agent.mjs`,
@@ -121,6 +125,18 @@ against a repository you control. Watch for:
 - Token and cost figures that are non-zero and plausible (see the cost-leak
   fixes in M8 — the failure mode here is a confident zero).
 - The worktree being clean afterwards, and no orphaned `opencode` process.
+- **That the role actually ran on OpenCode.** `tests/v2-backend-wiring.test.mjs`
+  proves the router routes, but only a real session proves the configured model
+  served the turn. Check `backend.routes` in the audit log against what the
+  provider's own dashboard says it was asked for. This is worth doing
+  explicitly because "complete and inert" is the exact failure this milestone
+  existed to fix, and a wire that is present but pointed at the wrong thing
+  looks identical from inside the harness.
+
+Then repeat the run with one **judgement** role — `adversary` is the useful one
+— on OpenCode, because the structured path and the agentic path share almost
+nothing: different entry point, different guard, different output contract.
+A green worker run says nothing about the other six roles.
 
 ## Version policy
 

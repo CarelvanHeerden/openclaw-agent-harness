@@ -2,6 +2,50 @@
 
 ## 2.0.0-beta.1 (unreleased)
 
+### Backends are wired into dispatch, so configuration now does something
+
+The nine milestones above built a complete OpenCode backend that the running
+plugin never touched. `acp.ts`, `role-config.ts`, `opencode-config.ts` and
+`model-catalogue.ts` were green, fully tested, and referenced from nothing on
+the dispatch path. A `backends` block passed manifest validation and was then
+ignored — the worst of the three available behaviours, because the operator has
+evidence they configured something and no evidence it did nothing.
+
+`adapters/backend-router.ts` closes that. All eight roles route through it:
+
+- The six tool-less roles (`classifier`, `crystalliser`, `lead`, `adversary`,
+  `revise_spec`, `worker_context`) swap only their **execution step**, via a
+  new injectable `StructuredExecutor`. The prompts do not move. Each of those
+  system prompts carries a great deal of accumulated behaviour, and a
+  backend-shaped twin of each would be two texts kept identical by discipline
+  that diverge on the first fix applied to either.
+- The two agentic roles (`worker`, `scout`) switch entry point to
+  `runWorkerAcp`, and are handed an **ACP-shaped guard** built by
+  `buildAcpGuard`. Not the SDK's `canUseTool`, which keys on Claude Code tool
+  names and would fall through to *allow* on every ACP call.
+
+Three refusals, all of which previously would have been silent:
+
+- **A rejected configuration is not a missing one.** Both used to leave the
+  router undefined, which would send a role the operator explicitly moved back
+  to Claude Code without saying so. Every affected role now throws.
+- **The live capability probe gates the first turn**, not the config. A backend
+  that has stopped routing tool calls through `session/request_permission`
+  reads as perfectly healthy from its own configuration file. Failing the probe
+  refuses to start rather than running the worker with the guard never
+  consulted.
+- **`tokens-only` usage is priced, not zeroed.** A provider reporting tokens
+  without a cost still bills; only a provider the operator declared `local`
+  bills nothing. This is the cost-leak class M8 removed from the SDK paths, and
+  it would have walked straight back in on the ACP one. `unavailable` stays
+  `undefined`: a hole in the ledger must not read as a free turn.
+
+Pricing refresh is now on the wire too — cache-then-refresh against the state
+DB, once, off the hot path, and never fatal.
+
+An install with no `backends` block gets no router, no probe and no network
+call. The v1 path is byte-for-byte unchanged.
+
 ### Parallel sub-task dispatch removed
 
 Parallelism shipped disabled for its entire life, behind two keys that had to be

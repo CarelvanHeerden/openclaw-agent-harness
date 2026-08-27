@@ -2712,6 +2712,57 @@ const MUTATIONS = [
     replace: "                        code: capability ? 0 : -32603,",
     tests: ["tests/v2-acp-replay.test.mjs"],
   },
+  {
+    // The failure that made this milestone necessary. Every v2 module was
+    // green and referenced from nothing the plugin ran, so a `backends` block
+    // validated and then did nothing at all. Returning undefined here is that
+    // exact state: configuration accepted, silently ignored.
+    name: "a moved role really moves (v2): returning no executor is how the whole backend went inert",
+    file: "dist/adapters/backend-router.js",
+    find: "        if (this.roles[role].backend !== \"opencode\")\n            return undefined;",
+    replace: "        return undefined;\n        if (false)",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // A probe that cannot prove the guard is live must stop the run. Treating
+    // a failure as a pass runs every tool call with the harness never
+    // consulted, which is indistinguishable from success right up until it
+    // isn't.
+    name: "a failed capability probe REFUSES to run (v2): passing it runs the worker unguarded",
+    file: "dist/adapters/backend-router.js",
+    find: "        if (!result.ok) {",
+    replace: "        if (false) {",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // The cost-leak class M8 removed from the SDK paths, reintroduced on the
+    // ACP one: a provider that reports tokens without a price is not free, and
+    // recording zero makes an unpriced turn look like a free turn.
+    name: "tokens-only usage is PRICED (v2): reporting zero re-opens the cost leak on the ACP path",
+    file: "dist/adapters/backend-router.js",
+    find: "        return { costUsd: costOf(usage.tokensIn, usage.tokensOut, res), priceSource: res.source };",
+    replace: "        return { costUsd: 0, priceSource: res.source };",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // "Unknown" and "free" are different facts. Collapsing them puts a
+    // measured-looking zero in the ledger for a turn nobody measured.
+    name: "an unmeasured turn stays unmeasured (v2): a zero here is a hole reported as a fact",
+    file: "dist/adapters/backend-router.js",
+    find: "            return { costUsd: undefined, priceSource: \"unmeasured\" };\n        if (usage.usageSource === \"acp-delta\")",
+    replace: "            return { costUsd: 0, priceSource: \"unmeasured\" };\n        if (usage.usageSource === \"acp-delta\")",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // A provider whose key is absent must be dropped, not emitted keyless. An
+    // unknown-provider error points at the config; a 401 sends the operator to
+    // rotate a credential that was never there.
+    name: "a keyless provider is DROPPED (v2): shipping it keyless debugs as a 401 instead of a config error",
+    file: "dist/adapters/role-config.js",
+    find: "        if (!key) {",
+    replace: "        if (false) {",
+    tests: ["tests/v2-backend-wiring.test.mjs", "tests/v2-role-config.test.mjs"],
+  },
 ];
 
 /**
