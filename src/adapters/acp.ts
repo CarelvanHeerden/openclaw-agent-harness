@@ -680,11 +680,19 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
 
   const costUsd = costBaseline !== null && costLatest !== null ? Math.max(0, costLatest - costBaseline) : 0;
 
+  // Computed once and shared with the return below. These were two separate
+  // expressions, and the logged one ignored `sawTokenSplit` -- so an agent that
+  // reported tokens but no cost (OpenCode against a custom provider does
+  // exactly this) was priced correctly off the catalogue while the log claimed
+  // `unavailable`. The operator-visible signal said the cost path was broken at
+  // the moment it was working, which is the most expensive kind of wrong.
+  const usageSource = acpUsageSource(sawAnyCost, sawTokenSplit);
+
   logger?.info("[acp] worker turn finished", {
     stopReason,
     sessionId,
     denied: denied.length,
-    usageSource: sawAnyCost ? "acp-delta" : "unavailable",
+    usageSource,
   });
 
   return {
@@ -701,7 +709,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     finalMessage: finalMessage.trim(),
     streamOpened,
     msToFirstToken,
-    usageSource: acpUsageSource(sawAnyCost, sawTokenSplit),
+    usageSource,
     contextUsed,
     contextSize,
     deniedToolCalls: denied,

@@ -1829,8 +1829,10 @@ export class OrchestratorLoop {
                     // scheduled).
                     {
                         const now = Date.now();
+                        const plannedModel = selectWorkerModel(st, this.deps.config.models);
+                        const ledgerModel = this.deps.describeWorkerModel?.(plannedModel) ?? plannedModel;
                         this.deps.state.db.prepare(`INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, started_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, now, now, now);
+             VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, ledgerModel, now, now, now);
                     }
                     // beta.63 (Part A): mark forward progress at sub-task START so a long
                     // executing phase (many sub-tasks) reads as live to the watchdog.

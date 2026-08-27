@@ -270,6 +270,22 @@ export interface OrchestratorDeps {
         tokensIn?: number;
         tokensOut?: number;
     }>;
+    /**
+     * What the worker will ACTUALLY run on, for the sub-task ledger.
+     *
+     * The ledger used to record `config.models.worker` unconditionally, which was
+     * wrong in two directions at once: it ignored beta.91's per-sub-task
+     * `modelOverride`, and from v2 it ignored per-role backend routing entirely —
+     * a turn served by OpenCode was filed under the Claude Code model name. That
+     * is not a cosmetic slip. The A/B matrix in docs/V2_SMOKE.md compares cost per
+     * merged PR across backends by reading exactly this column, so a mislabelled
+     * row does not merely lose information, it silently attributes one backend's
+     * spend to the other and flatters whichever one is not actually running.
+     *
+     * Optional so that pre-v2 stubs keep compiling; absent means "the planned
+     * model is the truth", which is correct for a single-backend install.
+     */
+    describeWorkerModel?: (plannedModel: string) => string;
     runWorker: (params: {
         brief: CrystallisedBrief;
         subTask: LeadPlanSubTask;

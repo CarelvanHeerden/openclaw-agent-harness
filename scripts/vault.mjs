@@ -52,6 +52,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--reveal") out.reveal = true;
     else if (a === "--dir") out.dir = argv[++i];
+    else if (a === "--config") out.config = argv[++i];
     else if (a === "--type") out.type = argv[++i];
     else if (a === "--notes") out.notes = argv[++i];
     else if (a === "--key-file") out.keyFile = argv[++i];
@@ -89,7 +90,14 @@ export function runtimeVaultDir({ home = process.env.HOME ?? ".", configPath, de
   let harness = {};
   try {
     const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
-    harness = raw?.plugins?.entries?.["openclaw-agent-harness"]?.config ?? {};
+    // Two shapes are legitimate. The gateway's openclaw.json nests the harness
+    // config under plugins.entries; a config handed straight to the plugin --
+    // what the local dev driver uses -- IS the harness config. Accepting only
+    // the first silently yields the default directory for the second, which
+    // reads as "the vault is empty" rather than "you opened the wrong vault".
+    harness =
+      raw?.plugins?.entries?.["openclaw-agent-harness"]?.config ??
+      (raw && typeof raw === "object" && (raw.storage || raw.credentials) ? raw : {});
   } catch {
     // No readable config is normal on a fresh box; fall through to defaults.
   }
@@ -103,14 +111,32 @@ export function runtimeVaultDir({ home = process.env.HOME ?? ".", configPath, de
 if (process.argv[1]?.endsWith("vault.mjs")) main();
 
 function main() {
+const COMMANDS = new Set(["list", "set", "get", "delete", "rotate"]);
+const USAGE =
+  "usage: vault.mjs <list|set|get|delete|rotate> [service] [--dir <path>] [--config <path>] [--type <token|api_key>]";
+
 const args = parseArgs(process.argv.slice(2));
 const [cmd, service] = args._;
-if (!cmd) {
-  console.error("usage: vault.mjs <list|set|get|delete|rotate> [service] [--dir <path>]");
+// Validated BEFORE the vault is opened. `CredentialVault.open` generates a key
+// file when it finds none, so reaching it with a bad command -- `--help`, which
+// parseArgs treats as a positional and so sails past a bare `if (!cmd)` -- used
+// to create a fresh vault in the default directory as a side effect of a typo,
+// then fail. An unrecognised argument must change nothing on disk.
+if (!cmd || !COMMANDS.has(cmd)) {
+  if (cmd) console.error(`vault: unknown command '${cmd}'`);
+  console.error(USAGE);
   process.exit(2);
 }
 
-const dir = resolve(args.dir ?? process.env.OAH_VAULT_DIR ?? runtimeVaultDir({ defaults: harnessDefaults() }));
+const dir = resolve(
+  args.dir ??
+    process.env.OAH_VAULT_DIR ??
+    // `--config` matters for any install whose harness config is not the
+    // gateway's own openclaw.json -- the local dev driver being the case that
+    // found this. Without it the CLI silently resolves a DIFFERENT vault than
+    // the runtime opens, which is the exact rc.2 failure this file documents.
+    runtimeVaultDir({ configPath: args.config, defaults: harnessDefaults() }),
+);
 
 const logger = {
   info: (m, meta) => console.error(m, meta ?? ""),

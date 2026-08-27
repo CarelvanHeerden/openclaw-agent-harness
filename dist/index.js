@@ -217,8 +217,16 @@ export function bootstrapHarnessSync(api) {
             // Synchronous by necessity: `register()` cannot await. The vault's own
             // read is sync; only `CredentialAdapter` adds a promise.
             resolveKey: (service) => {
+                // `api_key` first, then `token`. `vault.mjs set` stores `token` unless
+                // told otherwise, so looking up only `api_key` meant the documented way
+                // to seed a provider key produced an entry the router could not see --
+                // and the symptom, "provider dropped: no credential in the vault", is
+                // the one message that actively argues the operator did not store it.
+                // Reading both is safe: the two namespaces are per-service, so this can
+                // only find a key the operator put there under this exact name.
                 try {
-                    return vault.get(service, "api_key");
+                    const v = vault;
+                    return v.get(service, "api_key") ?? v.get(service, "token");
                 }
                 catch {
                     return undefined;
@@ -689,6 +697,16 @@ export function bootstrapHarnessSync(api) {
             // the FULL sub-task list, so it is one of the more expensive calls the
             // harness makes.
             return { subTasks: r.subTasks, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+        },
+        // Qualified with the backend when it is not the default, so the ledger says
+        // which engine served the turn and not merely which model was asked for.
+        // `claude-code` rows stay bare, so v1 history and v1 installs read exactly
+        // as they always did.
+        describeWorkerModel: (plannedModel) => {
+            const route = backendRouter?.backendFor("worker");
+            if (!route || route.backend !== "opencode")
+                return plannedModel;
+            return `opencode:${route.model ?? plannedModel}`;
         },
         runWorker: async ({ brief, subTask, plan, worktreePath, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, firstTokenTimeoutSecondsOverride }) => {
             const systemPrompt = buildWorkerSystemPrompt(brief, subTask);

@@ -43,7 +43,33 @@ Three things need a real binary, a real endpoint, or real money.
 
 ### 1. OpenCode issue #5674 — custom provider options
 
-**Status: unverified. Do not promise local models until this passes.**
+**Status: VERIFIED PASS on `opencode-ai@1.18.23`, 2026-08-27 (macOS, darwin 25.5.0).**
+Re-verify when the pin moves; a pass here does not imply a pass on 1.19.
+
+Method: a listener on `127.0.0.1:1234` that records the request and serves no
+model, with `ANTHROPIC_API_KEY` explicitly unset so a fallback would fail loudly
+instead of billing quietly. All three options survived the trip:
+
+| Configured | Observed at the endpoint |
+| --- | --- |
+| `baseURL: http://127.0.0.1:1234/v1` | `POST /v1/chat/completions` arrived |
+| `apiKey: sk-probe-5674` | `Authorization: Bearer sk-probe-5674` |
+| `model: local/probe-model` | `"model": "probe-model"` |
+
+So the dangerous case — OpenCode ignoring the endpoint and answering from its
+own default — did **not** occur, and local models are no longer blocked on this.
+
+**A second finding, which is now the more pressing one.** The probe endpoint
+returned a body the OpenAI-compatible shim could not parse, and OpenCode retried
+**3503 times in about three and a half minutes** with no ceiling and no visible
+backoff. It stopped only when killed. A worker pointed at an endpoint that is
+reachable but returning something malformed — a misconfigured local server, a
+proxy serving an HTML error page, a provider mid-incident — will therefore hammer
+it rather than fail. Against a metered endpoint that is a bill; against a local
+one it is a wedged run burning wall clock until the session deadline.
+
+Treat the ACP turn timeout as the only thing bounding this today, and prefer a
+short one when pointing a worker at an endpoint you do not control.
 
 The issue reports that a custom OpenAI-compatible provider's `options`
 (`baseURL`, `apiKey`) are dropped. If it reproduces on the pinned version, the
@@ -131,11 +157,29 @@ against a repository you control. Watch for:
 - The worktree being clean afterwards, and no orphaned `opencode` process.
 - **That the role actually ran on OpenCode.** `tests/v2-backend-wiring.test.mjs`
   proves the router routes, but only a real session proves the configured model
-  served the turn. Check `backend.routes` in the audit log against what the
-  provider's own dashboard says it was asked for. This is worth doing
-  explicitly because "complete and inert" is the exact failure this milestone
-  existed to fix, and a wire that is present but pointed at the wrong thing
-  looks identical from inside the harness.
+  served the turn. This is worth doing explicitly because "complete and inert"
+  is the exact failure this milestone existed to fix, and a wire that is present
+  but pointed at the wrong thing looks identical from inside the harness.
+
+  Two pieces of evidence, and the per-session one is the one that settles it:
+
+  ```sql
+  -- Per session: which engine served the turn, and what it cost.
+  SELECT worker_model, cost_usd, sdk_session_id FROM sub_tasks WHERE session_id = ?;
+  ```
+
+  An OpenCode row reads `opencode:<provider>/<model>` and carries an ACP
+  `sdk_session_id` (`ses_…`); a Claude Code row is a bare model id. Check the
+  cost against the provider's own dashboard.
+
+  `backend.routes` and `backend.preflight` are also in `audit_log`, but they are
+  written at **boot** with an empty `session_id`, because routing is decided in
+  `register()` before any session exists. So query them directly rather than
+  through a per-session audit view, which will show nothing:
+
+  ```sql
+  SELECT event, payload, created_at FROM audit_log WHERE event LIKE 'backend.%';
+  ```
 
 Then repeat the run with one **judgement** role — `adversary` is the useful one
 — on OpenCode, because the structured path and the agentic path share almost

@@ -190,6 +190,35 @@ test("tokens without cost is a THIRD state, not zero spend", async () => {
   assert.equal(r.usageSource, "tokens-only");
 });
 
+test("the LOGGED usage source is the one that was actually returned", async () => {
+  // Found by running, not by reading. The return value above has been asserted
+  // since M5 and was always right; the log line beside it computed the same
+  // idea a second time and forgot `sawTokenSplit`, so a real OpenCode turn --
+  // which reports tokens but no cost against a custom provider -- was priced
+  // correctly off the catalogue while announcing `unavailable`.
+  //
+  // Nobody was misled about money. They were misled about whether the money was
+  // being measured, which sent a smoke run looking for a costing bug that did
+  // not exist. The two values are one variable now, and this test is what keeps
+  // them one.
+  const logged = [];
+  const r = await runWorkerAcp({
+    agent: agent("tokens-no-cost"),
+    worktreePath: scratch(),
+    systemPrompt: "s",
+    userMessage: "u",
+    model: "",
+    timeoutSeconds: 20,
+    acpGuard: allowAll,
+    logger: { info: (m, meta) => logged.push({ m, meta }), warn: () => {} },
+  });
+
+  const finished = logged.find((l) => String(l.m).includes("worker turn finished"));
+  assert.ok(finished, "the adapter must announce the end of a turn");
+  assert.equal(finished.meta.usageSource, r.usageSource);
+  assert.equal(finished.meta.usageSource, "tokens-only");
+});
+
 test("an agent that reports nothing still reports a GAP, never a measured zero", async () => {
   const r = await runWorkerAcp({
     agent: agent("no-cost"),

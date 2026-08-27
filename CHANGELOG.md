@@ -2,6 +2,57 @@
 
 ## 2.0.0-beta.1
 
+### Smoke fixes: four things that were wrong while the run was green
+
+The first real session with `worker` on OpenCode shipped a PR in three minutes
+for $0.58, and the parts the milestone was built to prove all held — the live
+probe honoured a real denial against the real binary, the guard denied an
+`edit`, nothing was orphaned, the worktree was released. Everything below was
+wrong anyway, which is the only argument a smoke run ever needs to make: none of
+it was reachable from a test written out of the same understanding as the code.
+
+**OpenCode issue #5674 is verified, and it passes.** Custom provider `options`
+survive to the endpoint on 1.18.23: a listener on `127.0.0.1` received our
+`baseURL`, our `apiKey` and our model id, with `ANTHROPIC_API_KEY` unset so a
+fallback would have failed rather than billed. Local models are no longer
+blocked on it. The result and its method are recorded in `docs/V2_SMOKE.md`,
+which also now carries a second finding from the same experiment: an endpoint
+that answers but cannot be parsed draws **3503 requests in three and a half
+minutes** with no ceiling and no visible backoff.
+
+**The sub-task ledger recorded the configured model, not the one that ran.**
+`sub_tasks.worker_model` was written from `config.models.worker` unconditionally,
+so a turn served by OpenCode was filed under the Claude Code model name — and it
+had been ignoring beta.91's per-sub-task `modelOverride` for just as long. The
+A/B matrix in `docs/V2_SMOKE.md` decides whether a cheaper worker is worth
+adopting by reading that exact column, so this was not a mislabelled row: it
+attributed one backend's spend to the other and flattered whichever one was not
+running. The loop now takes a `describeWorkerModel` seam, and an OpenCode row
+reads `opencode:<provider>/<model>` while a `claude-code` row stays bare.
+
+**The ACP adapter logged a usage source it had not returned.** The value was
+computed twice, and the logged copy ignored `sawTokenSplit`. A real OpenCode turn
+against a custom provider reports tokens but no cost, so it was priced correctly
+off the catalogue at $0.17 while announcing `unavailable`. Nobody was misled
+about money; they were misled about whether money was being measured, which is
+what sent the smoke run hunting a costing bug that did not exist. One variable
+now, with a test on the log line and not only on the return.
+
+**`vault.mjs` created a vault before it understood the command.** `--help` is a
+positional as far as `parseArgs` is concerned, so it sailed past the `if (!cmd)`
+guard and reached `CredentialVault.open`, which generates a key file when it
+finds none — a typo left a fresh vault in the default directory and then errored.
+Commands are validated before anything is opened. The CLI also gained `--config`,
+and `runtimeVaultDir` now accepts a bare harness config as well as the gateway's
+nested `openclaw.json`, because a config handed straight to the plugin resolved
+the *default* directory and so presented as an empty vault rather than the wrong
+one — the rc.2 failure, wearing a different hat.
+
+**A provider key stored the documented way was invisible to the router.**
+`vault.mjs set` defaults to type `token`; the router looked up only `api_key`.
+The resulting message, `provider dropped: no credential in the vault`, actively
+argues the operator never stored it. The router reads both.
+
 ### Review fixes: the permission config guarded less than it claimed
 
 An external review of [#179](https://github.com/CarelvanHeerden/openclaw-agent-harness/pull/179)

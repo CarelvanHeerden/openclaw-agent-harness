@@ -37,6 +37,27 @@ let ran = 0;
 
 const MUTATIONS = [
   {
+    // Found by a real smoke run, not by review: the ledger recorded the
+    // CONFIGURED worker model for a turn OpenCode served. The A/B matrix reads
+    // this column, so the mutation is not "a label is wrong" -- it is one
+    // backend's spend filed under the other's name.
+    name: "v2 smoke: the sub-task ledger names the engine that actually ran",
+    file: "dist/orchestrator/loop.js",
+    find: "const ledgerModel = this.deps.describeWorkerModel?.(plannedModel) ?? plannedModel;",
+    replace: "const ledgerModel = this.deps.config.models.worker;",
+    tests: ["tests/v2-smoke-findings.test.mjs"],
+  },
+  {
+    // The return value was always right and always tested. The log beside it
+    // computed the same idea again and dropped `sawTokenSplit`, so a priced
+    // turn announced itself as unmeasured.
+    name: "v2 smoke: the logged usage source is the returned one",
+    file: "dist/adapters/acp.js",
+    find: "const usageSource = acpUsageSource(sawAnyCost, sawTokenSplit);",
+    replace: "const usageSource = sawAnyCost ? \"acp-delta\" : \"unavailable\";",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
     name: "preserveLocalBranch (b101): resume keeps the branch at its own tip",
     file: "dist/adapters/git-worktree.js",
     // b105 split the condition into named locals for the decision audit.
