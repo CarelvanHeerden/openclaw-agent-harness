@@ -24,6 +24,10 @@ These run on every commit and need no OpenCode binary, no API key and no money.
 | A rejected backend config refuses, rather than falling back to claude-code | `tests/v2-backend-wiring.test.mjs` |
 | The agentic roles get the ACP guard, never the SDK's `canUseTool` | `tests/v2-backend-wiring.test.mjs` |
 | `tokens-only` is priced; `unavailable` stays unmeasured; `local` is a real zero | `tests/v2-backend-wiring.test.mjs` |
+| The permission keys are exactly 1.18.23's, and dead keys stay out | `tests/v2-opencode-preflight.test.mjs` |
+| A hostile repo config cannot allow a named permission past us | `tests/v2-opencode-preflight.test.mjs` |
+| An agent that writes silently after a refusal fails the probe | `tests/v2-opencode-preflight.test.mjs` |
+| A child dying mid-resume fails fast, instead of hanging to the deadline | `tests/v2-acp-hardening.test.mjs` |
 
 The replay tests are the load-bearing ones, and they are worth understanding
 before trusting them. Every other ACP test drives `tests/fixtures/fake-acp-agent.mjs`,
@@ -137,6 +141,30 @@ Then repeat the run with one **judgement** role — `adversary` is the useful on
 — on OpenCode, because the structured path and the agentic path share almost
 nothing: different entry point, different guard, different output contract.
 A green worker run says nothing about the other six roles.
+
+### 4. Re-check the permission key list when the pin moves
+
+Not optional, and not a nicety. The harness guard runs only for tool calls
+OpenCode routes through `session/request_permission`, and the `permission`
+block decides what routes. Because OpenCode evaluates rules last-match-wins by
+insertion order, the injected wildcard does **not** cover a key we have not
+named: a permission added by a newer OpenCode, named and allowed by a
+repository's own `opencode.json`, sorts after our `"*"` and wins.
+
+So the guard's completeness is version-coupled. On every pin bump:
+
+1. Read the tool registry at the new tag (`packages/opencode/src/tool/registry.ts`)
+   and grep for `permission: "..."` literals. **Do not** use
+   `opencode.ai/config.json` as the source of truth — it sets
+   `additionalProperties`, accepts any typo, and still lists the dead `list` key.
+2. Reconcile `OPENCODE_PERMISSION_KEYS` and `OPENCODE_TOOL_IDS`. They are
+   different lists on purpose; `permission` is keyed by the name a tool asks
+   under, which is often not its id (`write` and `apply_patch` both ask under
+   `edit`).
+3. Update the expected sets in `tests/v2-opencode-preflight.test.mjs`.
+
+The exact-set test is *supposed* to go red on a bump. That failure is the
+review prompt, not an inconvenience to be silenced.
 
 ## Version policy
 

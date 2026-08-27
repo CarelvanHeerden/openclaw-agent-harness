@@ -2608,9 +2608,14 @@ const MUTATIONS = [
     {
       // Politeness without obedience. An agent that asks and proceeds anyway
       // offers no containment at all, and it LOOKS correct in the logs.
+      //
+      // rc: the anchor moved from `wrote` to `claimedWrite` when the probe
+      // stopped taking the model's word for it and started reading the disk.
+      // Same claim, and now only half of the check -- the disk half has its
+      // own mutation ("the probe reads the DISK, not the narration").
       name: "the probe checks the denial was honoured (v2): asking and then proceeding is not containment",
       file: "dist/adapters/acp.js",
-      find: "    if (wrote) {",
+      find: "    if (claimedWrite) {",
       replace: "    if (false) {",
       tests: ["tests/v2-opencode-preflight.test.mjs"],
     },
@@ -2762,6 +2767,58 @@ const MUTATIONS = [
     find: "        if (!key) {",
     replace: "        if (false) {",
     tests: ["tests/v2-backend-wiring.test.mjs", "tests/v2-role-config.test.mjs"],
+  },
+  {
+    // A request sent after the child died used to sit in the pending map
+    // forever: `write` is a no-op once closed, and the one-shot exit handler
+    // had already drained. The turn then hung to the sub-task deadline and
+    // blamed a timeout instead of the crash that actually happened.
+    name: "a post-close request rejects at once (rc): otherwise the turn hangs to the deadline and blames a timeout",
+    file: "dist/adapters/acp.js",
+    find: "        if (this.closed) {\n            return Promise.reject(this.closeError ?? new Error(`acp agent connection is closed; '${method}' cannot be sent`));\n        }",
+    replace: "",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // The probe used to confirm containment by asking the model whether it had
+    // complied. An agent that wrote through an unguarded path and did not
+    // narrate it passed -- the more dangerous bypass of the two.
+    name: "the probe reads the DISK, not the narration (rc): a silent write past a refusal passed cleanly",
+    file: "dist/adapters/acp.js",
+    find: "        markerOnDisk = existsSync(join(input.cwd, markerFile));",
+    replace: "        markerOnDisk = false;",
+    tests: ["tests/v2-opencode-preflight.test.mjs"],
+  },
+  {
+    // Naming every permission key is load-bearing, not decorative: OpenCode
+    // merges `permission` per key and evaluates last-match-wins by insertion
+    // order, so an unnamed key that a hostile repo allows beats our wildcard.
+    name: "every permission key is named (rc): an unnamed key is one a repo config can allow past the wildcard",
+    file: "dist/adapters/opencode-config.js",
+    find: "    for (const key of OPENCODE_PERMISSION_KEYS)",
+    replace: "    for (const key of [])",
+    tests: ["tests/v2-opencode-preflight.test.mjs"],
+  },
+  {
+    // The `probe ??= doTheThing()` bug, restored. A promise memo caches the
+    // settled value and a rejection IS a settled value, so one transient probe
+    // failure took every OpenCode role down until the gateway was restarted --
+    // by a human, on most hosts. Not retrying is the failure; failing closed
+    // was always fine.
+    name: "a failed probe is RETRIED (rc): memoising the rejection wedges the backend until a restart",
+    file: "dist/adapters/shared/once.js",
+    find: "                if (inFlight === attempt)\n                    inFlight = undefined;",
+    replace: "                ;",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // ...and the other half: if success is not memoised, the probe spawns a
+    // process on every single session instead of once.
+    name: "a successful probe is MEMOISED (rc): re-probing every session spawns a process per run",
+    file: "dist/adapters/shared/once.js",
+    find: "                done = true;",
+    replace: "                done = true;\n                inFlight = undefined;",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
   },
 ];
 

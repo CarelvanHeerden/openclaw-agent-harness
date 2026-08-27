@@ -345,3 +345,66 @@ test("the declaration is not the same thing as the guarantee", () => {
   assert.match(src, /M6 does not take that on\s*\n \* trust/);
   assert.match(src, /preflightAcpBackend/);
 });
+
+// ---------------------------------------------------------------------------
+// A request issued after the connection closed
+// ---------------------------------------------------------------------------
+
+test("a child that dies mid-resume fails the turn FAST, rather than hanging to the deadline", async () => {
+  // `request()` used to register a pending promise and call `write()`, which is
+  // a silent no-op once closed. The child's `error`/`exit` handlers fire ONCE
+  // and drain whatever was pending at that instant, so anything sent afterwards
+  // sat in the map forever. The turn then hung until subtask_deadline_seconds
+  // force-failed the whole sub-task -- minutes later, blaming a timeout.
+  //
+  // The reachable window is the resume path: `session/load` is awaited, the
+  // dying child rejects it, and the catch below it treats that as "this agent
+  // does not support resume" and falls through to `session/new` -- on a
+  // connection that has already closed. Resume plus a crash is an ordinary
+  // combination, not a contrived one.
+  const started = Date.now();
+  const turn = runWorkerAcp({
+    agent: agent("exit-on-session-load"),
+    worktreePath: scratch(),
+    systemPrompt: "s",
+    userMessage: "u",
+    model: "m",
+    // The resume path is what makes this reachable. session/load is awaited,
+    // the dying child rejects it, and the catch treats that as "no resume
+    // support" and falls through to session/new -- which is then issued on a
+    // connection that has already closed.
+    resumeSessionId: "prior-session",
+    // Generous on purpose: if the fix regresses, this test should FAIL on the
+    // assertion below rather than pass slowly because the timeout rescued it.
+    timeoutSeconds: 30,
+    acpGuard: allowAll,
+  }).catch((err) => ({ threw: err }));
+
+  // Raced against a short timer, because the un-fixed failure is an UNBOUNDED
+  // hang, not a slow return: nothing ever settles the promise, so the turn's
+  // own timeout cannot rescue it either. Without this the regression presents
+  // as the whole test file wedging, which is a true signal delivered in the
+  // least useful possible form.
+  const HANG_MS = 8_000;
+  const r = await Promise.race([
+    turn,
+    new Promise((resolve) => setTimeout(() => resolve({ hung: true }), HANG_MS).unref?.()),
+  ]);
+
+  assert.equal(
+    r.hung,
+    undefined,
+    `the turn never settled within ${HANG_MS}ms: a request issued after the connection closed is waiting ` +
+      `for a reply that cannot arrive`,
+  );
+
+  const elapsedMs = Date.now() - started;
+  assert.ok(elapsedMs < HANG_MS, `the turn should fail promptly, took ${elapsedMs}ms`);
+
+  const message = r.threw ? String(r.threw.message ?? r.threw) : String(r.logsExcerpt ?? "");
+  assert.match(
+    message,
+    /exited|could not be started|connection is closed/,
+    "the failure must name the dead child, not a generic timeout",
+  );
+});

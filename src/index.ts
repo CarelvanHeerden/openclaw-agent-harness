@@ -58,7 +58,7 @@ import { runWorkerAcp } from "./adapters/acp.js";
 import { buildAcpGuard } from "./safety/bash-guard.js";
 import type { RoleName } from "./adapters/backend.js";
 import { catalogueStore } from "./state/price-cache.js";
-import { refreshCatalogue } from "./adapters/shared/model-catalogue.js";
+import { memoiseSuccess } from "./adapters/shared/once.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import {
   buildScoutSystemPrompt,
@@ -529,18 +529,27 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
    * first run that actually uses OpenCode, and the failure lands there too --
    * where there is a session to attach it to.
    */
-  let backendProbe: Promise<void> | undefined;
+  //
+  // `memoiseSuccess`, NOT a `??=` promise memo. A memoised promise caches the
+  // settled value, and a rejection is a settled value -- so the first failure
+  // would be cached forever and every later session would await the same dead
+  // promise. `preflight()` sets its own flag only on success and is perfectly
+  // willing to retry; nothing would ever ask it to. One transient hiccup and
+  // every OpenCode role stays down until the gateway restarts, which on most
+  // hosts means a human. Failing closed is right; failing closed with no route
+  // back is not.
+  const backendProbe = memoiseSuccess(async () => {
+    // Cache-then-refresh: a same-day cache satisfies this without a fetch, and
+    // a failed fetch keeps whatever cache was already good. Awaited only once,
+    // and never fatal -- unpriced turns are a reporting problem.
+    await backendRouter!.refreshPricing(catalogueStore(state.db));
+    await backendRouter!.preflight();
+  });
+
   const ensureBackendReady = async (): Promise<void> => {
     if (backendRouterError) throw new Error(`backend configuration rejected at startup: ${backendRouterError}`);
     if (!backendRouter) return;
-    backendProbe ??= (async () => {
-      // Cache-then-refresh: a same-day cache satisfies this without a fetch,
-      // and a failed fetch keeps whatever cache was already good. Awaited only
-      // once, and never fatal -- unpriced turns are a reporting problem.
-      await backendRouter.refreshPricing(catalogueStore(state.db));
-      await backendRouter.preflight();
-    })();
-    await backendProbe;
+    await backendProbe();
   };
 
   /**
@@ -1036,6 +1045,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                 allow_git_push: config.safety.allow_git_push,
                 allow_network_commands: config.safety.allow_network_commands,
               }),
+              // Parity with the scout, which has always passed this. Without
+              // it `scrub()` is a no-op for worker logs -- and the worker is
+              // the role whose logs carry command lines, so it is the one that
+              // most needs scrubbing. The token is not in the child's filtered
+              // env, so this is defence in depth rather than the only cover.
+              secretToken: await resolveGitToken(resolution).catch(() => ""),
               logger: api.logger,
             });
             // Priced through the router so a provider that reports tokens

@@ -44,19 +44,101 @@ const scratch = () => mkdtempSync(resolve(tmpdir(), "acp-m6-"));
 // The configuration document
 // ---------------------------------------------------------------------------
 
-test("every known tool is named explicitly, and the wildcard still catches the rest", () => {
+/**
+ * The EXACT set, not a length floor.
+ *
+ * A floor was the original assertion and it hid three wrong entries and eight
+ * missing ones for a whole milestone: `>= 10` is satisfied just as happily by
+ * a list containing `todoread`, which does not exist, as by the real one.
+ *
+ * Pinned to the `v1.18.23` tag (`ef2880f3`), verified in the source and
+ * against the running binary. When the pin moves, this test is SUPPOSED to go
+ * red -- that is the review prompt to re-check the registry, and the whole
+ * reason the version is pinned in the first place.
+ */
+const EXPECTED_PERMISSION_KEYS = [
+  "bash", "edit", "read", "glob", "grep", "task", "todowrite", "webfetch",
+  "websearch", "skill", "lsp", "question", "external_directory", "doom_loop",
+  "plan_enter", "plan_exit", "write", "apply_patch", "mcp_*",
+];
+
+const EXPECTED_TOOL_IDS = [
+  "bash", "read", "glob", "grep", "edit", "write", "apply_patch", "task",
+  "webfetch", "websearch", "todowrite", "skill", "question", "lsp", "execute",
+  "plan_exit",
+];
+
+test("the permission keys are exactly OpenCode 1.18.23's, not a superset or a guess", () => {
+  assert.deepEqual(
+    [...cfg.OPENCODE_PERMISSION_KEYS].sort(),
+    [...EXPECTED_PERMISSION_KEYS].sort(),
+    "the permission key list has drifted from the pinned OpenCode version",
+  );
+
+  // The keys that do NOT exist in 1.18.23, and shipped anyway. `patch` is
+  // spelled `apply_patch`; `list` is dead in the schema; `todoread` never
+  // existed. Each one read as a guarded tool and guarded nothing.
+  for (const dead of ["patch", "list", "todoread"]) {
+    assert.equal(
+      cfg.OPENCODE_PERMISSION_KEYS.includes(dead),
+      false,
+      `'${dead}' is not a permission key in 1.18.23; naming it creates false confidence`,
+    );
+  }
+});
+
+test("the tool ids are a separate list from the permission keys, because they are different things", () => {
+  assert.deepEqual([...cfg.OPENCODE_TOOL_IDS].sort(), [...EXPECTED_TOOL_IDS].sort());
+  // Feeding the permission list to `tools` was the original bug: it disables
+  // things that are not tools, and misses `execute`, which is.
+  assert.equal(cfg.OPENCODE_TOOL_IDS.includes("execute"), true);
+  assert.equal(cfg.OPENCODE_TOOL_IDS.includes("external_directory"), false);
+  assert.equal(cfg.OPENCODE_TOOL_IDS.includes("mcp_*"), false);
+});
+
+test("every permission key is named explicitly, with the wildcard first", () => {
   const c = cfg.buildOpenCodeConfig();
-  assert.equal(c.permission["*"], "ask", "the wildcard is what covers a tool we have never seen");
-  for (const tool of cfg.OPENCODE_TOOLS) {
-    assert.equal(c.permission[tool], "ask", `${tool} must be named explicitly`);
+  for (const key of cfg.OPENCODE_PERMISSION_KEYS) {
+    assert.equal(c.permission[key], "ask", `${key} must be named explicitly`);
   }
   // The two the probe actually measured as dangerous by default.
   assert.equal(c.permission.bash, "ask");
   assert.equal(c.permission.edit, "ask");
-  // Naming them is not redundant with the wildcard: the docs do not settle
-  // whether a tool with its own permissive default beats "*" on precedence, and
-  // this is not a question to be answering at runtime.
-  assert.ok(cfg.OPENCODE_TOOLS.length >= 10, "the list should cover OpenCode's tool surface");
+  // The network egress channel the first list missed entirely.
+  assert.equal(c.permission.websearch, "ask");
+});
+
+test("the wildcard is emitted FIRST, because last-match-wins makes ordering load-bearing", () => {
+  // Not cosmetic. OpenCode evaluates rules last-match-wins by insertion order,
+  // so a catch-all emitted LAST would override every specific "ask" we set --
+  // harmless while everything is "ask", and a silent hole the moment it is not.
+  const keys = Object.keys(cfg.buildOpenCodeConfig().permission);
+  assert.equal(keys[0], "*", "the catch-all must be the first key, per OpenCode's precedence rules");
+});
+
+test("a hostile repo config cannot allow a named permission past us", () => {
+  // The real attack, and the reason naming keys is load-bearing rather than
+  // decorative. `permission` is deep-merged per key and our document merges
+  // LAST, but merging preserves the target's key ORDER -- so an overwritten
+  // key keeps the repo's position. A repo shipping {"*":"allow","websearch":
+  // "allow"} therefore beats an injected {"*":"ask"} outright: our wildcard
+  // lands at position 0, their websearch still sits after it, and last-match
+  // hands the model unguarded egress.
+  const repoConfig = { "*": "allow", websearch: "allow", bash: "allow" };
+  const ours = cfg.buildOpenCodeConfig().permission;
+
+  // remeda's mergeDeep: source overwrites target in place, new keys appended.
+  const merged = { ...repoConfig };
+  for (const [k, v] of Object.entries(ours)) merged[k] = v;
+
+  // Last-match-wins over insertion order, which is what OpenCode does.
+  const effective = (permission) =>
+    Object.entries(merged)
+      .filter(([rule]) => rule === permission || rule === "*")
+      .at(-1)?.[1];
+
+  assert.equal(effective("websearch"), "ask", "a named key must survive a hostile repo config");
+  assert.equal(effective("bash"), "ask");
 });
 
 test("nothing in the generated config is ever set to allow", () => {
@@ -69,9 +151,11 @@ test("nothing in the generated config is ever set to allow", () => {
 
 test("a tool-less role gets tools switched off as well as gated", () => {
   const c = cfg.buildOpenCodeConfig({ toolless: true });
-  for (const tool of cfg.OPENCODE_TOOLS) {
+  for (const tool of cfg.OPENCODE_TOOL_IDS) {
     assert.equal(c.tools[tool], false, `${tool} must be disabled for a structured role`);
-    assert.equal(c.permission[tool], "ask", "and still gated, in case tools:false is not honoured");
+  }
+  for (const key of cfg.OPENCODE_PERMISSION_KEYS) {
+    assert.equal(c.permission[key], "ask", "and still gated, in case tools:false is not honoured");
   }
   // An agentic role must NOT have tools disabled, or the worker cannot work.
   assert.equal(cfg.buildOpenCodeConfig().tools, undefined);
@@ -163,6 +247,23 @@ test("an agent that asks and then ignores the answer FAILS the probe", async () 
   assert.match(r.reasons[0], /asks and then\s+proceeds anyway|proceeds anyway/);
 });
 
+test("an agent that writes SILENTLY after a refusal FAILS the probe", async () => {
+  // The gap in the original probe. It asked the model whether it had complied
+  // -- `/created|written|wrote/` against the final message -- so an agent that
+  // bypassed the guard and simply did not narrate it passed cleanly. That is
+  // the more dangerous of the two bypasses, and it was the one that got
+  // through. The probe now reads the filesystem.
+  const dir = scratch();
+  const r = await probeAcpPermissionEnforcement({
+    agent: agent("probe-asks-then-writes-silently"),
+    cwd: dir,
+    timeoutSeconds: 20,
+  });
+  assert.equal(r.ok, false, "a silent write past a refusal must fail the probe");
+  assert.equal(r.sawPermissionRequest, true, "it did ask; the asking was never the problem");
+  assert.match(r.reasons[0], /WROTE .*\.txt to disk/, "the failure must name the evidence on disk");
+});
+
 test("a wedged agent FAILS the probe rather than hanging the harness", async () => {
   const r = await probeAcpPermissionEnforcement({
     agent: agent("silent"),
@@ -194,7 +295,7 @@ test("every failure path fails CLOSED", async () => {
   // Stated as one property: there is no route through the probe where "we could
   // not tell" comes back as ok, and "we could not tell" is precisely what the
   // broken case looks like from outside.
-  for (const scenario of ["probe-never-asks", "probe-asks-then-ignores", "silent", "no-first-token", "refusal"]) {
+  for (const scenario of ["probe-never-asks", "probe-asks-then-ignores", "probe-asks-then-writes-silently", "silent", "no-first-token", "refusal"]) {
     const r = await probeAcpPermissionEnforcement({
       agent: agent(scenario),
       cwd: scratch(),

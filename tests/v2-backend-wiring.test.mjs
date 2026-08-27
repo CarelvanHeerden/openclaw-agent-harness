@@ -288,3 +288,94 @@ test("a backend that fails the live probe refuses to run, rather than running un
   });
   await assert.rejects(() => router.preflight(), /capability probe/i);
 });
+
+// ---------------------------------------------------------------------------
+// The probe memo: success is cached, failure is not
+// ---------------------------------------------------------------------------
+
+const { memoiseSuccess } = await import("../dist/adapters/shared/once.js");
+
+test("a transient probe failure does NOT wedge the backend until a restart", async () => {
+  // The bug this replaced: `probe ??= doTheThing()`. A promise memo caches the
+  // SETTLED value, and a rejection is a settled value -- so the first failure
+  // was cached permanently. `preflight()` sets its own flag only on success and
+  // would happily retry, but nothing ever asked it to, because every later
+  // session awaited the same dead promise. One container hiccup and every
+  // OpenCode role stayed down until someone restarted the gateway.
+  let attempts = 0;
+  const run = memoiseSuccess(async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("spawn timed out");
+    return "ready";
+  });
+
+  await assert.rejects(() => run(), /spawn timed out/);
+  assert.equal(run.settled, false);
+
+  // The retry is the whole point: a failure must not be terminal.
+  assert.equal(await run(), "ready", "the second attempt must actually run");
+  assert.equal(attempts, 2);
+});
+
+test("a success is memoised, so the probe does not re-run on every session", async () => {
+  let attempts = 0;
+  const run = memoiseSuccess(async () => {
+    attempts += 1;
+    return attempts;
+  });
+
+  assert.equal(await run(), 1);
+  assert.equal(await run(), 1, "a settled success must be reused, not recomputed");
+  assert.equal(attempts, 1, "the probe spawns a process; running it per session is not free");
+  assert.equal(run.settled, true);
+});
+
+test("concurrent callers share one attempt rather than each spawning a probe", async () => {
+  let attempts = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const run = memoiseSuccess(async () => {
+    attempts += 1;
+    await gate;
+    return "ok";
+  });
+
+  const all = Promise.all([run(), run(), run()]);
+  release();
+  assert.deepEqual(await all, ["ok", "ok", "ok"]);
+  assert.equal(attempts, 1, "three sessions arriving together must not spawn three probes");
+});
+
+test("a stale rejection does not clear a newer attempt's memo", async () => {
+  // The identity check. Without it, a slow first failure landing after a second
+  // attempt has started would clear the second attempt's memo, and a third
+  // caller would spawn a redundant probe alongside one already in flight.
+  let attempts = 0;
+  let failFirst;
+  const first = new Promise((_, reject) => { failFirst = reject; });
+  const run = memoiseSuccess(async () => {
+    attempts += 1;
+    if (attempts === 1) return first;
+    return "second";
+  });
+
+  const p1 = run().catch((e) => `rejected: ${e.message}`);
+  failFirst(new Error("slow failure"));
+  assert.equal(await p1, "rejected: slow failure");
+
+  const p2 = run();
+  // The stale rejection has already settled; it must not disturb this attempt.
+  assert.equal(await p2, "second");
+  assert.equal(await run(), "second", "the successful attempt stays memoised");
+  assert.equal(attempts, 2);
+});
+
+test("the plugin uses the success-only memo for its probe, not a promise memo", () => {
+  const src = readFileSync(join(root, "src", "index.ts"), "utf8");
+  assert.match(src, /memoiseSuccess\(/, "the probe must not be memoised with a plain promise cache");
+  assert.doesNotMatch(
+    src,
+    /backendProbe \?\?=/,
+    "`??=` on a promise caches rejections forever, wedging the backend until a restart",
+  );
+});

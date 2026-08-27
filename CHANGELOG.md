@@ -1,6 +1,69 @@
 # Changelog
 
-## 2.0.0-beta.1 (unreleased)
+## 2.0.0-beta.1
+
+### Review fixes: the permission config guarded less than it claimed
+
+An external review of [#179](https://github.com/CarelvanHeerden/openclaw-agent-harness/pull/179)
+found the injected `permission` block naming twelve tools and missing
+`websearch`, a network egress channel. Checking that against the pinned
+OpenCode source turned up something worse than an incomplete list.
+
+**Permission keys are not tool ids.** The original list conflated them, and
+three of its twelve entries did nothing at all: `patch` is spelled
+`apply_patch`, `list` is a dead key retained in the published schema, and
+`todoread` does not exist anywhere in 1.18.23. The schema at
+`opencode.ai/config.json` sets `additionalProperties`, so it validates all
+three happily. `write` is real but inert as a permission key — writes ask under
+`edit`.
+
+**The wildcard was never the safety net this file claimed it was.** OpenCode
+deep-merges `permission` per key and evaluates rules **last-match-wins by
+insertion order**; `"*"` has no special standing. Merging preserves the
+target's key order, so a repository shipping `{"*": "allow", "websearch":
+"allow"}` defeats an injected `{"*": "ask"}` outright — our wildcard overwrites
+theirs at position 0, their `websearch: allow` still sorts after it, and the
+model gets unguarded egress. Naming a key overwrites it in place and closes it.
+
+So: `OPENCODE_PERMISSION_KEYS` (19 verified keys) and `OPENCODE_TOOL_IDS` (16)
+are now separate lists, because `permission` and `tools` are keyed differently
+and feeding one list to both was the original error. Tests assert the **exact**
+sets — the old assertion was `length >= 10`, which a list full of nonexistent
+keys satisfies just as well as a correct one.
+
+The residual hole is documented rather than papered over: the wildcard cannot
+protect a key we have not named, so a permission added by a future OpenCode and
+allowed by a hostile repository still wins. That is version-coupled by
+construction and is part of why `SECURITY.md` marks non-Anthropic workers
+trusted-repo-only.
+
+**A transient probe failure wedged the backend until a restart.** The lazy
+startup probe was cached with `probe ??= doTheThing()`, and a promise memo
+caches the *settled* value — a rejection included. `preflight()` sets its own
+flag only on success and would happily retry, but nothing ever asked it to,
+because every later session awaited the same dead promise. One container
+hiccup, spawn timeout or momentarily-unavailable binary, and every OpenCode
+role stayed down until someone restarted the gateway. Failing closed was right;
+failing closed with no route back was not. `adapters/shared/once.ts` now
+memoises success only, shares an in-flight attempt between concurrent callers,
+and re-runs after a failure.
+
+Also fixed from the same review:
+
+- **A request issued after the ACP connection closed hung forever.** `write()`
+  is a no-op once closed and the `exit` handler drains pending calls exactly
+  once, so anything sent afterwards never settled. Reachable via resume: a
+  child dying during `session/load` has its rejection swallowed by the
+  "agent does not support resume" catch, and the following `session/new` went
+  out on a dead connection. The turn then hung until the sub-task deadline and
+  blamed a timeout.
+- **The live probe asked the model whether it had complied.** It matched
+  `/created|written|wrote/` against the final message, so an agent that wrote
+  through an unguarded path without narrating it passed — the more dangerous of
+  the two bypasses. It now checks the filesystem for the marker.
+- **The worker's ACP turn passes `secretToken`**, as the scout already did.
+  Without it `scrub()` was a no-op for worker logs, which are the ones carrying
+  command lines.
 
 ### Backends are wired into dispatch, so configuration now does something
 
