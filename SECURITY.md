@@ -117,6 +117,32 @@ What v2 *does* add is real, and worth being precise about, because it is easy to
 
 All four make the ACP path as good as the SDK path. None of them makes either path a sandbox.
 
+#### `path_denylist` does not cover reads on the OpenCode backend
+
+One place the ACP path is measurably **weaker** than the SDK path, rather than merely no stronger. It is listed separately from the best-effort items above because those degrade under a determined worker, and this one does not apply at all.
+
+Measured on `opencode-ai@1.18.23`, a read permission request arrives as:
+
+```json
+{ "kind": "read", "title": "read", "locations": [], "rawInput": {} }
+```
+
+There is no path in any field, so there is nothing for `path_denylist` to match against. On the SDK path the same denylist blocks the `Read` tool by filename; on the OpenCode path **it does not apply to reads at all**, and an OpenCode worker can read anything inside its worktree that it can name — including files listed in `path_denylist`, and including `.env` if the repository carries one.
+
+The alternative was tried first and is worse. Failing closed means every read is refused, which does not produce a contained worker — it produces a worker that cannot read a file, therefore cannot change one, and reports this by narrating its intent and stopping. That is not a safe degradation, it is a backend that does not work, and it is indistinguishable in the log from a model that simply declined the task.
+
+So the harness allows the read and says so, rather than enforcing a control it cannot apply:
+
+- The relaxation is **narrow**. It applies only to `kind: "read"`, and only when the agent supplies no path. `edit`, `delete`, `move` and `search` still fail closed on a missing path, so nothing that *writes* is affected.
+- It is **conditional, not blanket**. When a path is present the denylist enforces exactly as before, so an agent that does supply one (Codex does) is fully guarded, and a future OpenCode that starts supplying one is guarded automatically with no change here.
+- It is **counted and announced**. The first unchecked read in a turn logs `path_denylist NOT enforced on read`, and the per-turn total is recorded as `unguardedReads` on the audit trail. A control that has quietly stopped applying is worse than one that was never claimed.
+
+**What this means in practice.** The vault is not exposed by this: `harness-vault/`, `vault.key` and `vault.db` live outside the worktree, and the vault key is stripped from the child's environment. The exposure is repository contents, which the worker is meant to read anyway — the loss is the ability to carve out specific files within a repository the worker is otherwise entitled to. Treat `path_denylist` as a Claude-Code-backend control, and treat any secret committed to a repository as readable by an OpenCode worker operating on it.
+
+The intended production install is a Docker container. That bounds damage to the container filesystem and its mounted worktree rather than the host, which is why this relaxation is accepted as a beta operating choice instead of leaving the backend unusable. Docker is **not** the OS boundary in [`docs/WORKER_ISOLATION.md`](docs/WORKER_ISOLATION.md): a container that can reach the network and write its own worktree is still an uncontained worker.
+
+This narrows to nothing under the same exit criteria as the section above: a scoped filesystem view enforces by mount what the denylist currently attempts by filename.
+
 **Operating guidance until an OS boundary lands: run non-Anthropic workers on trusted repositories only.** Concretely — repositories whose contents, dependencies and CI you or your organisation control, where a prompt-injected README or a poisoned transitive dependency is not a realistic input. A third-party backend on an untrusted repository combines an unvetted worker with attacker-controlled instructions inside a guard that was never built to hold either, and the harness will not stop that.
 
 | | |

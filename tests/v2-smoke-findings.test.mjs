@@ -239,7 +239,66 @@ test("--config is a real flag, not a documented intention", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. A provider key stored the documented way is a key the router can find.
+// 4. The read relaxation is exactly as narrow as SECURITY.md claims.
+// ---------------------------------------------------------------------------
+
+const { buildAcpGuard } = await import("../dist/safety/bash-guard.js");
+
+const guard = buildAcpGuard({
+  bash_whitelist: ["git", "echo"],
+  bash_denylist_tokens: ["rm"],
+  path_denylist: [".env", "harness-vault/", "vault.key"],
+  allow_git_push: false,
+  allow_network_commands: false,
+});
+
+test("a read with NO path is allowed, and reports that the denylist did not apply", async () => {
+  // The measured OpenCode 1.18.23 shape. Failing closed here refuses every
+  // read, which does not contain the worker -- it stops it working, and
+  // presents as a model that narrates intent and halts.
+  const v = await guard({ kind: "read", title: "read", locations: [], rawInput: {} });
+  assert.equal(v.allow, true);
+  assert.equal(v.unenforced, true, "an unapplied control must announce itself");
+  assert.match(v.reason, /path_denylist/);
+});
+
+test("a read that DOES name a denylisted path is still refused", async () => {
+  // The relaxation is conditional. An agent that supplies a path -- Codex does,
+  // and a future OpenCode may -- is guarded exactly as before.
+  const v = await guard({ kind: "read", title: "read .env", locations: [{ path: "/repo/.env" }] });
+  assert.equal(v.allow, false);
+  assert.match(v.reason, /denylisted/);
+  assert.notEqual(v.unenforced, true);
+});
+
+test("a read that names an allowed path is a plain allow, not an unenforced one", async () => {
+  const v = await guard({ kind: "read", locations: [{ path: "/repo/src/index.ts" }] });
+  assert.equal(v.allow, true);
+  assert.notEqual(v.unenforced, true, "a checked read must not be reported as unchecked");
+});
+
+test("NOTHING THAT WRITES degrades to allow on a missing path", async () => {
+  // The blast radius of the relaxation. If any of these ever starts allowing a
+  // pathless call, a worker can write anywhere with the guard reporting itself
+  // as healthy -- which is the failure the read case only narrowly is not.
+  for (const kind of ["edit", "delete", "move"]) {
+    const v = await guard({ kind, title: kind, locations: [], rawInput: {} });
+    assert.equal(v.allow, false, `${kind} must fail closed when it exposes no path`);
+    assert.match(v.reason, /failing closed/);
+  }
+  // Search too: a pattern-less search could enumerate secrets.
+  const s = await guard({ kind: "search", title: "search", rawInput: {} });
+  assert.equal(s.allow, false);
+});
+
+test("a denylisted edit is refused even though reads are relaxed", async () => {
+  const v = await guard({ kind: "edit", locations: [{ path: "/repo/vault.key" }] });
+  assert.equal(v.allow, false);
+  assert.match(v.reason, /denylisted/);
+});
+
+// ---------------------------------------------------------------------------
+// 5. A provider key stored the documented way is a key the router can find.
 // ---------------------------------------------------------------------------
 
 test("the router reads api_key AND token, because the CLI stores token by default", () => {

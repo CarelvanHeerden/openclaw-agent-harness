@@ -53,6 +53,50 @@ one — the rc.2 failure, wearing a different hat.
 The resulting message, `provider dropped: no credential in the vault`, actively
 argues the operator never stored it. The router reads both.
 
+### The OpenCode worker could not read a file
+
+Found by the second smoke, on a real brief against a real repository, and it is
+the reason that run produced nothing. The first smoke did not catch it because
+the task was to *create* a `LICENSE` file, and creating a file requires no read.
+
+Measured on `opencode-ai@1.18.23`, a read permission request arrives as
+`{"kind":"read","title":"read","locations":[],"rawInput":{}}` — no path in any
+field. The guard's fail-closed rule refused it, correctly by its own terms, and
+refusing every read does not contain a worker: it produces one that cannot read
+a file, therefore cannot change one, and reports this by announcing its intent
+and stopping. Three turns, `denied: 2` each, nothing committed, and the harness
+correctly caught the confabulated success and paused with the worktree
+preserved. What it could not do was say *why*.
+
+So two changes, and the second is the one that matters.
+
+**Denials are now evidence.** A refused call records the command or path, not
+just the kind, warns when it happens, and is written to the audit log as
+`loop.worker_tool_denied`. Previously the count went to a log line and the
+detail to a truncated excerpt that reached no durable store, so a worker that
+did nothing because the guard stopped it was indistinguishable, afterwards, from
+a worker that chose to do nothing.
+
+**Reads are allowed when the agent names no path, and this is disclosed rather
+than enforced.** The relaxation is deliberately narrow: it applies only to
+`kind: "read"` and only when no path is present, so `edit`, `delete`, `move` and
+`search` still fail closed and nothing that writes is affected. When a path *is*
+supplied the denylist enforces exactly as before, so Codex stays fully guarded
+and a future OpenCode that starts supplying one is guarded automatically. The
+first unchecked read in a turn warns, and the per-turn total is carried as
+`unguardedReads`.
+
+The consequence is stated plainly in `SECURITY.md`: **`path_denylist` does not
+apply to reads on the OpenCode backend.** The vault is unaffected — it lives
+outside the worktree and its key is stripped from the child — but any secret
+committed to a repository should be treated as readable by an OpenCode worker
+operating on it. The production install is Docker, which bounds the blast radius
+to the container rather than the host; that is why the relaxation is accepted
+rather than leaving the backend unusable. This is the first place the ACP path
+is measurably weaker than the SDK path rather than merely no stronger, and it
+narrows to nothing under the same exit criteria as the containment disclosure
+above.
+
 ### Review fixes: the permission config guarded less than it claimed
 
 An external review of [#179](https://github.com/CarelvanHeerden/openclaw-agent-harness/pull/179)

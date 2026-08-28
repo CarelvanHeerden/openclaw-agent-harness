@@ -61,6 +61,27 @@ export interface WorkerResult {
      */
     uncommittedFiles?: string[];
     /**
+     * v2 smoke: tool calls the guard refused this turn, with the command or path
+     * that was refused.
+     *
+     * A zero-side-effect turn has two very different causes -- the model chose
+     * not to act, or the guard would not let it -- and they call for opposite
+     * responses. Without this the two are indistinguishable, which is how a
+     * StitchGuard run reported `denied: 2` and left nobody able to say what.
+     * Only the ACP backend populates it; the SDK path guards through
+     * `canUseTool` and is unaffected.
+     */
+    deniedToolCalls?: Array<{
+        kind?: string | null;
+        title?: string;
+        reason?: string;
+    }>;
+    /**
+     * ACP only. Reads allowed this turn without a path_denylist check, because
+     * the agent named no file. Zero on the SDK path. See SECURITY.md.
+     */
+    unguardedReads?: number;
+    /**
      * beta.64 (P0-1): true once the SDK stream opened (system/init arrived).
      * Threaded up so the loop can emit `sdk_stream_opened` and distinguish a
      * POST-that-never-opened from a stream-opened-but-no-tokens hang.
@@ -121,6 +142,18 @@ export interface WorkerDeps {
         finalMessage?: string;
         streamOpened?: boolean;
         msToFirstToken?: number;
+        /**
+         * Populated by the ACP backend only. The SDK path guards through
+         * `canUseTool` and reports its refusals by its own route, so this stays
+         * undefined there rather than being faked as an empty list -- absent and
+         * "nothing was denied" are different claims.
+         */
+        deniedToolCalls?: Array<{
+            kind?: string | null;
+            title?: string;
+            reason?: string;
+        }>;
+        unguardedReads?: number;
     }>;
     /**
      * Injected git operations. Wraps `git -C <worktree>` calls.

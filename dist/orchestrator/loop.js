@@ -1927,6 +1927,25 @@ export class OrchestratorLoop {
            SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
            WHERE id = ?`).run(result.status, result.costUsd, JSON.stringify(result.filesChanged), result.commitSha ?? null, result.sdkSessionId ?? null, result.reason ?? null, Date.now(), Date.now(), subTaskId);
                     this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                    // v2 smoke: a refused tool call is a first-class audit event.
+                    //
+                    // It rides beside `worker_end_turn` rather than inside it because the
+                    // interesting query is "what did the guard block in this session", and
+                    // that should not require parsing a turn summary. A run whose worker
+                    // produced nothing is answerable now: either rows are here and the
+                    // guard stopped it, or they are not and the model simply did not act.
+                    if (result.deniedToolCalls?.length) {
+                        for (const d of result.deniedToolCalls) {
+                            this.deps.state.audit("loop.worker_tool_denied", {
+                                sessionId,
+                                seq: st.seq,
+                                cycle,
+                                kind: d.kind ?? null,
+                                title: String(d.title ?? "").slice(0, 300),
+                                reason: d.reason ?? "no reason given",
+                            }, sessionId);
+                        }
+                    }
                     // beta.48 (C1): always emit the worker's final message as a
                     // breadcrumb, on EVERY sub-task (not just failures). This eliminates
                     // the "opaque worker turn" blind spot (session dca2f3b5) where a
@@ -1951,6 +1970,7 @@ export class OrchestratorLoop {
                             filesTouched: result.filesChanged,
                             hasFinalMessage: fm.length > 0,
                             finalMessage: fm.slice(0, 4000),
+                            unguardedReads: result.unguardedReads ?? 0,
                         }, sessionId);
                         // beta.85: PER-SUB-TASK native progress. Pre-beta.85, native
                         // deliverProgress fired ONLY from setStatus = phase transitions

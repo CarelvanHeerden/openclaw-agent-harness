@@ -64,9 +64,15 @@ export interface RunWorkerAcpParams {
      * required parameter makes the unsafe wiring impossible to express.
      * Build it with `buildAcpGuard()`.
      */
+    /**
+     * `unenforced` means allowed, but with a control that could not be applied --
+     * today only a read whose path the agent withheld. Distinct from a plain
+     * allow so the adapter can count and announce it; see SECURITY.md.
+     */
     acpGuard: (call: AcpToolCallForGuard) => Promise<{
         allow: boolean;
         reason?: string;
+        unenforced?: boolean;
     }>;
     /** Redacted from logs and error text when present. */
     secretToken?: string;
@@ -102,11 +108,25 @@ export interface RunWorkerAcpResult {
     /** Context-window occupancy, the only token signal ACP actually carries. */
     contextUsed?: number;
     contextSize?: number;
-    /** Denials the guard issued this turn. Surfaced for the audit trail. */
+    /**
+     * Denials the guard issued this turn. Surfaced for the audit trail.
+     *
+     * `title` carries the command line or file path, which is the only part that
+     * makes a denial actionable; without it the count alone says a run was
+     * blocked but not by what.
+     */
     deniedToolCalls: Array<{
         kind?: string | null;
+        title?: string;
         reason?: string;
     }>;
+    /**
+     * Reads this turn that were allowed WITHOUT a `path_denylist` check, because
+     * the agent's permission request named no file. See SECURITY.md. A non-zero
+     * value is not an error; it is the measured extent of a disclosed gap, and it
+     * is recorded so the gap stays visible in an audit rather than in a comment.
+     */
+    unguardedReads: number;
 }
 /**
  * Thrown when the agent asks us to perform something we declined in

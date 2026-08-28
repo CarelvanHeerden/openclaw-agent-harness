@@ -120,7 +120,12 @@ export interface RunWorkerAcpParams {
    * required parameter makes the unsafe wiring impossible to express.
    * Build it with `buildAcpGuard()`.
    */
-  acpGuard: (call: AcpToolCallForGuard) => Promise<{ allow: boolean; reason?: string }>;
+  /**
+   * `unenforced` means allowed, but with a control that could not be applied --
+   * today only a read whose path the agent withheld. Distinct from a plain
+   * allow so the adapter can count and announce it; see SECURITY.md.
+   */
+  acpGuard: (call: AcpToolCallForGuard) => Promise<{ allow: boolean; reason?: string; unenforced?: boolean }>;
   /** Redacted from logs and error text when present. */
   secretToken?: string;
   logger?: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void };
@@ -153,8 +158,21 @@ export interface RunWorkerAcpResult {
   /** Context-window occupancy, the only token signal ACP actually carries. */
   contextUsed?: number;
   contextSize?: number;
-  /** Denials the guard issued this turn. Surfaced for the audit trail. */
-  deniedToolCalls: Array<{ kind?: string | null; reason?: string }>;
+  /**
+   * Denials the guard issued this turn. Surfaced for the audit trail.
+   *
+   * `title` carries the command line or file path, which is the only part that
+   * makes a denial actionable; without it the count alone says a run was
+   * blocked but not by what.
+   */
+  deniedToolCalls: Array<{ kind?: string | null; title?: string; reason?: string }>;
+  /**
+   * Reads this turn that were allowed WITHOUT a `path_denylist` check, because
+   * the agent's permission request named no file. See SECURITY.md. A non-zero
+   * value is not an error; it is the measured extent of a disclosed gap, and it
+   * is recorded so the gap stays visible in an audit rather than in a comment.
+   */
+  unguardedReads: number;
 }
 
 const LOG_EXCERPT_MAX = 20_000;
@@ -358,7 +376,9 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
 
   const startedAt = Date.now();
   const logs: string[] = [];
-  const denied: Array<{ kind?: string | null; reason?: string }> = [];
+  const denied: Array<{ kind?: string | null; title?: string; reason?: string }> = [];
+  /** Reads allowed without a denylist check, because the agent named no path. */
+  let unguardedReads = 0;
   let finalMessage = "";
   let streamOpened = false;
   let msToFirstToken: number | undefined;
@@ -555,14 +575,43 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
         const options = p?.options ?? [];
         const verdict = await acpGuard(call);
         if (!verdict.allow) {
-          denied.push({ kind: call.kind, reason: verdict.reason });
+          // `title` is the diagnostic field: for an `execute` it is the command
+          // line, for an `edit` the file. Recording only `kind` and `reason`
+          // meant a run could report "denied: 2" and leave nobody able to say
+          // WHICH two -- the excerpt that held it is truncated and reaches no
+          // durable store. A worker that quietly does nothing because the guard
+          // refused its first two calls is indistinguishable, after the fact,
+          // from a worker that simply did nothing.
+          const title = typeof call.title === "string" ? call.title : undefined;
+          denied.push({ kind: call.kind, title, reason: verdict.reason });
           pushLog(`[guard] DENIED ${String(call.kind)}: ${verdict.reason ?? "no reason"}`);
+          // Warn, not info: a denial is either the guard doing its job against
+          // something real, or the guard being wrong. Both are worth reading.
+          logger?.warn("[acp/guard] denied a tool call", {
+            kind: call.kind ?? null,
+            title: scrub(String(title ?? "").slice(0, 200)),
+            reason: verdict.reason ?? "no reason given",
+          });
           const reject = options.find((o) => o.kind === "reject_once") ?? options.find((o) => o.kind === "reject_always");
           // No reject option offered is itself a denial we cannot honour; the
           // cancelled outcome is the only safe fallback.
           return reject?.optionId
             ? { outcome: { outcome: "selected", optionId: reject.optionId } }
             : { outcome: { outcome: "cancelled" } };
+        }
+        // Allowed, but with a control that could not be applied. Counted and
+        // said once per turn rather than per call: a worker reading fifty files
+        // would otherwise bury the rest of the log, and the fact an operator
+        // needs is "reads went unchecked this turn", not fifty copies of it.
+        if (verdict.unenforced) {
+          unguardedReads += 1;
+          if (unguardedReads === 1) {
+            logger?.warn("[acp/guard] path_denylist NOT enforced on read", {
+              kind: call.kind ?? null,
+              reason: verdict.reason ?? "agent supplied no path",
+              note: "see SECURITY.md: OpenCode reads carry no path, so reads are allowed unchecked",
+            });
+          }
         }
         const allow = options.find((o) => o.kind === "allow_once") ?? options[0];
         return { outcome: { outcome: "selected", optionId: allow?.optionId } };
@@ -692,6 +741,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     stopReason,
     sessionId,
     denied: denied.length,
+    unguardedReads,
     usageSource,
   });
 
@@ -713,6 +763,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     contextUsed,
     contextSize,
     deniedToolCalls: denied,
+    unguardedReads,
   };
 }
 

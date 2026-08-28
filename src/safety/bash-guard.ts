@@ -408,7 +408,7 @@ export function buildAcpGuard(cfg: {
   path_denylist: string[];
   allow_git_push: boolean;
   allow_network_commands: boolean;
-}): (call: AcpToolCallForGuard) => Promise<{ allow: boolean; reason?: string }> {
+}): (call: AcpToolCallForGuard) => Promise<{ allow: boolean; reason?: string; unenforced?: boolean }> {
   const guard: GuardConfig = {
     whitelist: cfg.bash_whitelist,
     denylistTokens: cfg.bash_denylist_tokens,
@@ -451,8 +451,38 @@ export function buildAcpGuard(cfg: {
       case "move":
         return denyIfBlockedPaths(call, kind);
 
-      case "read":
-        return denyIfBlockedPaths(call, "read");
+      // READ IS THE ONE KIND THAT DEGRADES TO ALLOW, AND ONLY WHEN THE AGENT
+      // TELLS US NOTHING. Measured on opencode-ai@1.18.23, a read permission
+      // request is `{kind:"read", title:"read", locations:[], rawInput:{}}` --
+      // no path in any field, so there is nothing for the denylist to match.
+      //
+      // Failing closed here is the safe answer and it makes the backend
+      // useless: a worker that cannot read a file cannot change one, and it
+      // presents as a model that narrates its intent and then stops. That was
+      // found by a real StitchGuard run, not by review, because the small smoke
+      // that preceded it only CREATED a file and so never read anything.
+      //
+      // The trade is stated in SECURITY.md and is deliberately narrow. When a
+      // path IS supplied -- Codex supplies one, and a future OpenCode may --
+      // the denylist enforces exactly as before. `unenforced` is how the caller
+      // learns this happened, because a control that has silently stopped
+      // applying is worse than one that was never claimed.
+      case "read": {
+        const paths = acpPathsFromToolCall(call);
+        if (paths.length === 0) {
+          return {
+            allow: true,
+            unenforced: true,
+            reason: "read tool call exposed no path; path_denylist cannot be applied to it on this backend",
+          };
+        }
+        for (const p of paths) {
+          if (pathMatchesDenylist(p, cfg.path_denylist)) {
+            return { allow: false, reason: `read path '${p}' is denylisted` };
+          }
+        }
+        return { allow: true };
+      }
 
       case "search": {
         const pat = acpPatternFromToolCall(call);

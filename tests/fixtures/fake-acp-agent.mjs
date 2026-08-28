@@ -248,6 +248,13 @@ async function runTurn(id, sessionId) {
       update(sessionId, { sessionUpdate: "agent_message_chunk", content: { text: "done" } });
       return reply(id, { stopReason: "end_turn", usage: { totalTokens: 0 } });
 
+    // The measured OpenCode 1.18.23 read: asks, names no file.
+    case "pathless-read": {
+      await ask(sessionId, { kind: "read", title: "read", locations: [], rawInput: {} });
+      update(sessionId, { sessionUpdate: "agent_message_chunk", content: { text: "the file says hello" } });
+      return reply(id, { stopReason: "end_turn" });
+    }
+
     // ---- v2.0.0 M6: capability-probe scenarios ----
 
     // A correctly configured agent: asks before writing, honours the refusal.

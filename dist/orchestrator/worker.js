@@ -322,6 +322,8 @@ firstTokenTimeoutSecondsOverride) {
         reason: sdkResult.stopReason,
         logsExcerpt: sdkResult.logsExcerpt,
         finalMessage: sdkResult.finalMessage,
+        deniedToolCalls: sdkResult.deniedToolCalls,
+        unguardedReads: sdkResult.unguardedReads,
         uncommittedFiles,
         streamOpened: sdkResult.streamOpened,
         msToFirstToken: sdkResult.msToFirstToken,

@@ -48,6 +48,45 @@ const MUTATIONS = [
     tests: ["tests/v2-smoke-findings.test.mjs"],
   },
   {
+    // The read relaxation exists because OpenCode names no file on a read.
+    // Its whole safety rests on being narrow: if the SAME degradation reaches
+    // edit/delete/move, a worker writes anywhere while the guard reports
+    // itself healthy. This mutation widens it by exactly one step.
+    name: "v2 smoke: only READ degrades to allow on a missing path",
+    file: "dist/safety/bash-guard.js",
+    find: "return { allow: false, reason: `${label} tool call exposed no path to check (failing closed)` };",
+    replace: "return { allow: true, unenforced: true, reason: `${label} exposed no path` };",
+    tests: ["tests/v2-smoke-findings.test.mjs"],
+  },
+  {
+    // The other direction: silently dropping the flag turns a disclosed,
+    // counted gap back into an invisible one.
+    name: "v2 smoke: an unenforced read announces itself",
+    file: "dist/safety/bash-guard.js",
+    find: "                        unenforced: true,",
+    replace: "",
+    tests: ["tests/v2-smoke-findings.test.mjs", "tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // Counted-and-announced is the whole disclosure. Dropping the increment
+    // leaves the warning never firing and the audit claiming zero.
+    name: "v2 smoke: unguarded reads are counted, not just allowed",
+    file: "dist/adapters/acp.js",
+    find: "unguardedReads += 1;",
+    replace: "/* unguardedReads += 1; */",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // "denied: 2" with no way to learn which two is how a stalled OpenCode
+    // worker stayed undiagnosable. The count is not the evidence; the command
+    // or path is.
+    name: "v2 smoke: a denial records what was refused",
+    file: "dist/adapters/acp.js",
+    find: "denied.push({ kind: call.kind, title, reason: verdict.reason });",
+    replace: "denied.push({ kind: call.kind, reason: verdict.reason });",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
     // The return value was always right and always tested. The log beside it
     // computed the same idea again and dropped `sawTokenSplit`, so a priced
     // turn announced itself as unmeasured.

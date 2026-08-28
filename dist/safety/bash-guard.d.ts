@@ -133,6 +133,7 @@ export declare function buildAcpGuard(cfg: {
 }): (call: AcpToolCallForGuard) => Promise<{
     allow: boolean;
     reason?: string;
+    unenforced?: boolean;
 }>;
 /**
  * beta.57 (P2): shared path-denylist matcher (same semantics as the SDK

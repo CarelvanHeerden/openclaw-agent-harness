@@ -35,6 +35,7 @@ const FIXTURE = resolve(root, "tests/fixtures/fake-acp-agent.mjs");
 
 const { runWorkerAcp, runStructuredAcp, acpUsageSource, ACP_CAPABILITIES } =
   await import("../dist/adapters/acp.js");
+const { buildAcpGuard } = await import("../dist/safety/bash-guard.js");
 
 const allowAll = async () => ({ allow: true });
 const agent = (scenario, env) => ({
@@ -188,6 +189,70 @@ test("tokens without cost is a THIRD state, not zero spend", async () => {
   assert.equal(r.tokensOut, 7);
   assert.equal(r.costUsd, 0);
   assert.equal(r.usageSource, "tokens-only");
+});
+
+test("a denial records WHAT was refused, not just how many", async () => {
+  // A StitchGuard run reported `denied: 2` on a worker turn that committed
+  // nothing, and there was no way afterwards to say which two calls those were:
+  // the count went to the log, the detail went to a truncated excerpt, and
+  // neither reached a durable store. A zero-side-effect turn has two opposite
+  // causes -- the model declined to act, or the guard would not let it -- so
+  // the count alone cannot tell an operator which failure they are looking at.
+  const warned = [];
+  const denyExec = async (call) =>
+    call.kind === "execute" ? { allow: false, reason: "not on the bash whitelist" } : { allow: true };
+
+  const r = await runWorkerAcp({
+    agent: agent("denied-command"),
+    worktreePath: scratch(),
+    systemPrompt: "s",
+    userMessage: "u",
+    model: "",
+    timeoutSeconds: 20,
+    acpGuard: denyExec,
+    logger: { info: () => {}, warn: (m, meta) => warned.push({ m, meta }) },
+  });
+
+  assert.equal(r.deniedToolCalls.length, 1);
+  const [d] = r.deniedToolCalls;
+  assert.equal(d.kind, "execute");
+  assert.equal(d.reason, "not on the bash whitelist");
+  assert.ok(d.title && d.title.length > 0, "the refused command must be recorded, not just its kind");
+
+  // And it must be said out loud at the moment it happens, so a run that is
+  // being watched shows the denial rather than only its consequence.
+  const line = warned.find((w) => String(w.m).includes("denied a tool call"));
+  assert.ok(line, "a denial must warn when it happens");
+  assert.equal(line.meta.kind, "execute");
+  assert.match(line.meta.reason, /bash whitelist/);
+});
+
+test("a pathless OpenCode read is allowed, counted, and announced once", async () => {
+  // The measured 1.18.23 shape. Failing closed here is what made the worker
+  // unable to read a file; allowing silently is what would make path_denylist
+  // look enabled while doing nothing. Both are worse than allow-and-count.
+  const warned = [];
+  const r = await runWorkerAcp({
+    agent: agent("pathless-read"),
+    worktreePath: scratch(),
+    systemPrompt: "s",
+    userMessage: "u",
+    model: "",
+    timeoutSeconds: 20,
+    acpGuard: buildAcpGuard({
+      bash_whitelist: ["git", "echo"],
+      bash_denylist_tokens: ["rm"],
+      path_denylist: [".env", "vault.key"],
+      allow_git_push: false,
+      allow_network_commands: false,
+    }),
+    logger: { info: () => {}, warn: (m, meta) => warned.push({ m, meta }) },
+  });
+
+  assert.equal(r.deniedToolCalls.length, 0, "a pathless read must not be refused");
+  assert.equal(r.unguardedReads, 1);
+  const line = warned.find((w) => String(w.m).includes("path_denylist NOT enforced on read"));
+  assert.ok(line, "the first unchecked read must warn");
 });
 
 test("the LOGGED usage source is the one that was actually returned", async () => {
