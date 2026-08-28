@@ -58,14 +58,23 @@ test("bash-guard: beta.32 widened whitelist allows build/test/inspect commands",
     }
   });
 
-test("bash-guard: beta.32 still rejects file-mutating shell commands (path_denylist bypass guard)",
+test("bash-guard: beta.32 still rejects file-mutating copy/move/link commands (path_denylist bypass guard)",
   { skip: guardCommand === null }, () => {
-    // cp/mv/ln/tee/mkdir/touch are NOT whitelisted — a worker must use the SDK
+    // cp/mv/ln/tee/touch are NOT whitelisted — a worker must use the SDK
     // Write/Edit tools for file writes (those enforce path_denylist; bash args
-    // are not path-checked).
-    for (const cmd of ["cp secret .env", "mv a b", "ln -s x y", "tee /etc/passwd", "mkdir foo", "touch bar"]) {
+    // are not path-checked). mkdir is the exception: OpenCode cannot create
+    // parent directories through edit, so a Prisma migration stalls without it.
+    for (const cmd of ["cp secret .env", "mv a b", "ln -s x y", "tee /etc/passwd", "touch bar"]) {
       const res = guardCommand(cmd);
       assert.equal(res.allowed, false, `expected rejected: "${cmd}" got ${JSON.stringify(res)}`);
+    }
+  });
+
+test("bash-guard: mkdir is allowed, including mkdir -p",
+  { skip: guardCommand === null }, () => {
+    for (const cmd of ["mkdir foo", "mkdir -p prisma/migrations/20260828120000_add_policy_drive_export"]) {
+      const res = guardCommand(cmd);
+      assert.equal(res.allowed, true, `expected allowed: "${cmd}" got ${JSON.stringify(res)}`);
     }
   });
 

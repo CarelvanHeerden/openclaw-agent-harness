@@ -72,15 +72,16 @@ export function defaultGuardConfig(): GuardConfig {
   return {
     // beta.32: keep in sync with config.ts safety.bash_whitelist default.
     // Production uses the config value; this is the standalone fallback.
-    // Excludes file-mutating shell commands (writes go through SDK Write/Edit
-    // which enforce path_denylist).
+    // Excludes copy/move/link mutators (writes go through SDK Write/Edit
+    // which enforce path_denylist). `mkdir` is allowed: OpenCode cannot create
+    // parent directories through the edit tool.
     whitelist: [
       "git", "pnpm", "npm", "npx", "yarn", "node", "tsc", "tsx", "deno", "bun",
       "python", "python3", "pip", "pip3", "pytest", "go", "cargo", "make", "just",
       "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
       "find", "which", "echo", "printf", "test", "true", "false", "pwd",
       "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
-      "realpath", "xargs", "comm",
+      "realpath", "xargs", "comm", "mkdir",
     ],
     denylistTokens: DENYLIST_TOKEN_DEFAULTS,
     allowGitPush: false,

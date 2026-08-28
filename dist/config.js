@@ -187,18 +187,19 @@ const DEFAULTS = {
         // beta.32: widened so a worker can actually build/test/inspect to
         // self-verify a change. The old list lacked tsc/make/python/pytest/diff
         // etc., so a worker that ran a build or test after editing hit a hard
-        // reject. Deliberately EXCLUDES file-mutating shell commands
-        // (cp/mv/ln/tee/mkdir/touch): file writes must go through the SDK
-        // Write/Edit tools, which enforce `path_denylist` (bash args are NOT
-        // path-denylist-checked, so allowing `cp x .env` here would bypass it).
-        // bash_denylist_tokens below remain the hard safety guard.
+        // reject. Excludes file-mutating copy/move/link commands (cp/mv/ln/tee/touch):
+        // those writes must go through the SDK Write/Edit tools, which enforce
+        // `path_denylist` (bash args are NOT path-denylist-checked, so allowing
+        // `cp x .env` here would bypass it). `mkdir` is the exception: OpenCode's
+        // edit tool cannot create parent directories, so a Prisma migration (or any
+        // new path) stalls without it. bash_denylist_tokens remain the hard guard.
         bash_whitelist: [
             "git", "pnpm", "npm", "npx", "yarn", "node", "tsc", "tsx", "deno", "bun",
             "python", "python3", "pip", "pip3", "pytest", "go", "cargo", "make", "just",
             "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
             "find", "which", "echo", "printf", "test", "true", "false", "pwd",
             "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
-            "realpath", "xargs", "comm",
+            "realpath", "xargs", "comm", "mkdir",
         ],
         // beta.57 (P2): shells added as argument-token denies -- the whitelist
         // already excludes them as base commands, but `xargs sh -c`, `find -exec

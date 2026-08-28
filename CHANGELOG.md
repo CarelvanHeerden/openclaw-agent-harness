@@ -2,6 +2,16 @@
 
 ## 2.0.0-beta.1
 
+### `mkdir` is on the bash whitelist
+
+The StitchGuard OpenCode run could read files after the pathless-read relaxation,
+then stalled because `mkdir -p prisma/migrations/...` is not a whitelist entry.
+OpenCode's edit tool cannot create parent directories, so a Prisma migration (or
+any new path) cannot land without it. `cp`/`mv`/`ln`/`tee`/`touch` stay off the
+list: those still bypass `path_denylist` if allowed as bash. `mkdir` does too —
+bash arguments are still not path-checked — and that is accepted here because
+the intended install is Docker.
+
 ### Smoke fixes: four things that were wrong while the run was green
 
 The first real session with `worker` on OpenCode shipped a PR in three minutes
