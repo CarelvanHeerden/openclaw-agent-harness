@@ -72,16 +72,13 @@ export function defaultGuardConfig(): GuardConfig {
   return {
     // beta.32: keep in sync with config.ts safety.bash_whitelist default.
     // Production uses the config value; this is the standalone fallback.
-    // Excludes copy/move/link mutators (writes go through SDK Write/Edit
-    // which enforce path_denylist). `mkdir` is allowed: OpenCode cannot create
-    // parent directories through the edit tool.
     whitelist: [
       "git", "pnpm", "npm", "npx", "yarn", "node", "tsc", "tsx", "deno", "bun",
       "python", "python3", "pip", "pip3", "pytest", "go", "cargo", "make", "just",
       "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
       "find", "which", "echo", "printf", "test", "true", "false", "pwd",
       "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
-      "realpath", "xargs", "comm", "mkdir",
+      "realpath", "xargs", "comm", "mkdir", "cd", "cp", "mv", "touch",
     ],
     denylistTokens: DENYLIST_TOKEN_DEFAULTS,
     allowGitPush: false,
@@ -540,6 +537,13 @@ export function pathMatchesDenylist(p: string, patterns: readonly string[]): boo
 // cannot bypass the SDK Read guard.
 const FILE_READING_COMMANDS = new Set(["cat", "head", "tail", "grep", "rg", "sed", "awk", "cut", "sort", "uniq", "wc", "diff", "comm", "tr"]);
 
+// v2 OpenCode: mkdir/cp/mv/touch/cd are now whitelisted because the agent
+// cannot do ordinary file work without them. Their arguments are checked
+// against path_denylist the same way `cat` is, so `cp x .env` is still
+// refused when the denylist is loaded. `ln` and `tee` are not in this set
+// because they are not on the whitelist.
+const FILE_MUTATING_COMMANDS = new Set(["mkdir", "cp", "mv", "touch", "cd"]);
+
 // beta.57 (P2): interpreters that accept inline code via a flag. Inline code
 // is a fully unguarded escape hatch (`node -e "require('fs')..."`), so those
 // flags are rejected; running a script FILE (`node scripts/x.js`) stays fine.
@@ -663,8 +667,10 @@ export function guardCommand(cmd: string, cfg: GuardConfig = defaultGuardConfig(
     }
 
     // beta.57 (P2): path-denylist check on args of file-reading commands, so
-    // Bash cannot read what the SDK Read guard refuses.
-    if (pathDeny.length > 0 && FILE_READING_COMMANDS.has(effectiveBase)) {
+    // Bash cannot read what the SDK Read guard refuses. The same check covers
+    // the OpenCode mutators: a whitelisted `cp` that can write `.env` is the
+    // bypass this list used to exist to prevent.
+    if (pathDeny.length > 0 && (FILE_READING_COMMANDS.has(effectiveBase) || FILE_MUTATING_COMMANDS.has(effectiveBase))) {
       for (const a of seg.slice(cmdIdx + 1)) {
         if (a.startsWith("-")) continue;
         if (pathMatchesDenylist(a, pathDeny)) {

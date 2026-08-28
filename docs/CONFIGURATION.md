@@ -118,7 +118,7 @@ gateway accepts, see [Every setting](#every-setting) at the end.
               "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
               "find", "which", "echo", "printf", "test", "true", "false", "pwd",
               "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
-              "realpath", "xargs", "comm", "mkdir"
+              "realpath", "xargs", "comm", "mkdir", "cd", "cp", "mv", "touch"
             ],
             "bash_denylist_tokens": [
               "sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill"
@@ -526,7 +526,7 @@ beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness 
 #### `safety`
 
 - **`safety.worker_permission_mode`** — `"acceptEdits" | "bypassPermissions" | "plan"`, default `"acceptEdits"`.
-- **`safety.bash_whitelist`** — `string[]`, default `["git","pnpm","npm","npx","yarn","node","tsc","tsx","deno","bun","python","python3","pip","pip3","pytest","go","cargo","make","just","ls","cat","grep","rg","head","tail","wc","jq","yq","sed","awk","find","which","echo","printf","test","true","false","pwd","diff","sort","uniq","cut","tr","env","date","basename","dirname","realpath","xargs","comm","mkdir"]`.
+- **`safety.bash_whitelist`** — `string[]`, default `["git","pnpm","npm","npx","yarn","node","tsc","tsx","deno","bun","python","python3","pip","pip3","pytest","go","cargo","make","just","ls","cat","grep","rg","head","tail","wc","jq","yq","sed","awk","find","which","echo","printf","test","true","false","pwd","diff","sort","uniq","cut","tr","env","date","basename","dirname","realpath","xargs","comm","mkdir","cd","cp","mv","touch"]`.
 - **`safety.bash_denylist_tokens`** — `string[]`, default `["sudo","su","rm","shred","mkfs","dd","chmod","chown","chgrp","umount","mount","iptables","reboot","shutdown","halt","poweroff","kill","killall","pkill","sh","bash","zsh","dash","ksh","fish"]`.
 - **`safety.path_denylist`** — `string[]`, default `[".env",".env.*",".secrets/","/etc/","/root/","~/.ssh/","id_rsa","id_ed25519","harness-vault/","vault.key","vault.db"]`.
 - **`safety.allow_git_push`** — `boolean`, default `false`.

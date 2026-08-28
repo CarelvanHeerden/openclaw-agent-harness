@@ -2,6 +2,19 @@
 
 ## 2.0.0-beta.1
 
+### OpenCode's daily file tools are on the bash whitelist
+
+OpenCode prefixes every command with `cd $worktree && …`, and it cannot create
+directories or rename files through the ACP edit tool. After `mkdir` landed,
+the StitchGuard run immediately stalled on `cd … && npx tsc` and
+`cd … && git add`. The whitelist now includes `cd`, `cp`, `mv` and `touch`.
+`ln` and `tee` stay off; `rm` and `chmod` stay on the token denylist.
+
+Arguments of the new mutators are checked against `path_denylist`, so
+`cp secret .env` is still refused. That check is the same speed bump as `cat`:
+globs, case and interpreters still go around it. Accepted because the intended
+install is Docker.
+
 ### `mkdir` is on the bash whitelist
 
 The StitchGuard OpenCode run could read files after the pathless-read relaxation,
