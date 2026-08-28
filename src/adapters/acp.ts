@@ -30,7 +30,7 @@
  *     rather than a silent hole.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AcpToolCallForGuard } from "../safety/bash-guard.js";
 import { redactSecrets } from "./git-worktree.js";
@@ -129,6 +129,8 @@ export interface RunWorkerAcpParams {
   /** Redacted from logs and error text when present. */
   secretToken?: string;
   logger?: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void };
+  /** Names the trace file when `HARNESS_ACP_TRACE_DIR` is set. See `openFrameTrace`. */
+  traceLabel?: string;
 }
 
 export interface RunWorkerAcpResult {
@@ -177,6 +179,54 @@ export interface RunWorkerAcpResult {
 
 const LOG_EXCERPT_MAX = 20_000;
 
+// ---------------------------------------------------------------------------
+// Raw frame tracing
+// ---------------------------------------------------------------------------
+
+/**
+ * Every JSON-RPC line, in both directions, to a file.
+ *
+ * The adapter's own logging reports what it UNDERSTOOD: text it recognised,
+ * permissions it gated, a stop reason it mapped. When an agent returns an
+ * empty turn none of that helps, because the interesting frames are the ones
+ * no branch matched — an update kind we do not handle, an error delivered as a
+ * notification, a content shape `extractText` walks straight past. Those are
+ * invisible by construction, so a failure that lives in them cannot be
+ * diagnosed from logs at all.
+ *
+ * Off unless `HARNESS_ACP_TRACE_DIR` is set. It records prompts and model
+ * output verbatim, so it is a debugging instrument and not something to leave
+ * running: secrets are redacted on the same `secretToken` basis as the logs,
+ * which covers the token we know about and nothing else.
+ */
+interface FrameTrace {
+  record(direction: "in" | "out" | "stderr" | "meta", data: unknown): void;
+  readonly path: string;
+}
+
+function openFrameTrace(label: string, scrub: (s: string) => string): FrameTrace | undefined {
+  const dir = process.env.HARNESS_ACP_TRACE_DIR;
+  if (!dir) return undefined;
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    return undefined;
+  }
+  const safeLabel = label.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const path = join(dir, `${Date.now()}-${safeLabel}-${Math.random().toString(36).slice(2, 8)}.jsonl`);
+  return {
+    path,
+    record(direction, data) {
+      try {
+        const text = typeof data === "string" ? data : JSON.stringify(data);
+        appendFileSync(path, JSON.stringify({ t: Date.now(), direction, data: scrub(text ?? "") }) + "\n");
+      } catch {
+        /* tracing must never break a turn */
+      }
+    },
+  };
+}
+
 /**
  * Thrown when the agent asks us to perform something we declined in
  * `initialize`.
@@ -204,6 +254,7 @@ class AcpConnection {
     private readonly child: ChildProcessWithoutNullStreams,
     private readonly onRequest: (method: string, params: unknown) => Promise<unknown>,
     private readonly onNotify: (method: string, params: unknown) => void,
+    private readonly trace?: FrameTrace,
   ) {
     child.stdout.on("data", (c: Buffer) => this.ingest(c.toString()));
     // v2.0.0: a spawn failure -- a mistyped command, a binary that is not
@@ -253,6 +304,7 @@ class AcpConnection {
       const line = this.buf.slice(0, nl).trim();
       this.buf = this.buf.slice(nl + 1);
       if (!line) continue;
+      this.trace?.record("in", line);
       let msg: Record<string, unknown>;
       try {
         msg = JSON.parse(line) as Record<string, unknown>;
@@ -313,6 +365,7 @@ class AcpConnection {
 
   private write(obj: unknown): void {
     if (this.closed) return;
+    this.trace?.record("out", obj);
     try {
       this.child.stdin.write(JSON.stringify(obj) + "\n");
     } catch {
@@ -372,6 +425,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     acpGuard,
     secretToken,
     logger,
+    traceLabel,
   } = params;
 
   const startedAt = Date.now();
@@ -414,6 +468,17 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     if (logs.length < 400) logs.push(scrub(s));
   };
 
+  const trace = openFrameTrace(traceLabel ?? "worker", scrub);
+  trace?.record("meta", {
+    event: "turn_start",
+    label: traceLabel ?? "worker",
+    model,
+    worktreePath,
+    systemPromptChars: systemPrompt.length,
+    userMessageChars: userMessage.length,
+    timeoutSeconds,
+  });
+
   const child = spawn(agent.command, agent.args, {
     cwd: worktreePath,
     stdio: ["pipe", "pipe", "pipe"],
@@ -435,6 +500,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
 
   const stderrParts: string[] = [];
   child.stderr.on("data", (d: Buffer) => {
+    trace?.record("stderr", d.toString());
     if (stderrParts.length < 100) stderrParts.push(d.toString());
   });
 
@@ -562,6 +628,10 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
         break;
       }
       default:
+        // Named rather than silently skipped: an empty turn is most often a
+        // frame nobody matched, and the raw line alone does not say we ignored
+        // it on purpose.
+        trace?.record("meta", { event: "unhandled_update", sessionUpdate: kind ?? null, keys: Object.keys(update) });
         break;
     }
   };
@@ -644,6 +714,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
       const p = notifyParams as { update?: Record<string, unknown> };
       if (p?.update) handleUpdate(p.update);
     },
+    trace,
   );
 
   let stopReason: WorkerStopReason = "tool_error";
@@ -745,6 +816,19 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     usageSource,
   });
 
+  trace?.record("meta", {
+    event: "turn_end",
+    stopReason,
+    sessionId,
+    finalMessageChars: finalMessage.trim().length,
+    denied: denied.length,
+    unguardedReads,
+    usageSource,
+    tokensIn,
+    tokensOut,
+    stderr: scrub(stderrParts.join("").slice(-4000)),
+  });
+
   return {
     sdkSessionId: sessionId,
     stopReason,
@@ -820,9 +904,19 @@ export interface RunStructuredAcpParams<T> {
   maxAttempts?: number;
   secretToken?: string;
   logger?: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void };
+  /**
+   * Run ONE turn and hand back the raw reply unparsed.
+   *
+   * For a caller that drives its own `runStructuredLadder` — the adversary is
+   * the only one — because two ladders around one call is not a safety net, it
+   * is nine model calls where three were intended, and the inner one consumes
+   * the very text the outer one needs in order to retry usefully.
+   */
+  skipParse?: boolean;
 }
 
 export interface RunStructuredAcpResult<T> {
+  /** `undefined` when `skipParse` was set; the caller parses `raw` itself. */
   parsed: T;
   sdkSessionId: string;
   costUsd: number;
@@ -831,6 +925,16 @@ export interface RunStructuredAcpResult<T> {
   usageSource: RunWorkerAcpResult["usageSource"];
   /** True when the document was recovered from a truncated reply. */
   repaired: boolean;
+  /**
+   * The agent's final message, verbatim.
+   *
+   * Carried because a caller driving its own ladder has nothing else to work
+   * with: extraction, repair and the "you returned prose" correction all read
+   * this text. Returning a placeholder here reports every reply as empty no
+   * matter what the model said.
+   */
+  raw: string;
+  stopReason: WorkerStopReason | null;
 }
 
 /**
@@ -866,35 +970,77 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
     return { allow: false, reason: `role '${params.role}' runs with no tools` };
   };
 
+  let lastStopReason: WorkerStopReason | null = null;
+
+  const runTurn = async (correction: string | null) => {
+    const turn = await runWorkerAcp({
+      agent: params.agent,
+      worktreePath: params.cwd,
+      systemPrompt: params.systemPrompt,
+      userMessage: correction ? `${params.userMessage}\n\n${correction}` : params.userMessage,
+      model: params.model,
+      timeoutSeconds: params.timeoutSeconds,
+      streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
+      acpGuard: denyAll,
+      secretToken: params.secretToken,
+      logger: params.logger,
+      traceLabel: params.role,
+    });
+    if (!sessionId) sessionId = turn.sdkSessionId;
+    usageSource = turn.usageSource;
+    lastStopReason = turn.stopReason;
+    // An empty reply is the one failure the ladder cannot describe: it
+    // reports "no JSON in output" and prints nothing, because there IS
+    // nothing, and everything the agent did say went into logsExcerpt which
+    // this path discards. Whatever the agent put on stderr, and the stop
+    // reason it ended on, are the only evidence there is.
+    if (turn.finalMessage.trim().length === 0) {
+      params.logger?.warn(`[acp/${params.role}] turn produced NO text at all`, {
+        role: params.role,
+        stopReason: turn.stopReason,
+        denied: turn.deniedToolCalls.length,
+        tokensIn: turn.tokensIn,
+        tokensOut: turn.tokensOut,
+        usageSource: turn.usageSource,
+        contextUsed: turn.contextUsed ?? null,
+        contextSize: turn.contextSize ?? null,
+        logsTail: turn.logsExcerpt.slice(-1500),
+      });
+    }
+    return {
+      raw: turn.finalMessage,
+      costUsd: turn.costUsd,
+      tokensIn: turn.tokensIn,
+      tokensOut: turn.tokensOut,
+      sessionId: turn.sdkSessionId,
+      truncated: turn.stopReason === "max_tokens",
+    };
+  };
+
+  // The caller owns extraction, validation and retry. Climbing a second ladder
+  // underneath theirs would multiply the attempts and, worse, swallow the reply
+  // -- see `skipParse`.
+  if (params.skipParse) {
+    const turn = await runTurn(null);
+    return {
+      parsed: undefined as unknown as T,
+      sdkSessionId: turn.sessionId,
+      costUsd: turn.costUsd,
+      tokensIn: turn.tokensIn,
+      tokensOut: turn.tokensOut,
+      usageSource,
+      repaired: false,
+      raw: turn.raw,
+      stopReason: lastStopReason,
+    };
+  }
+
   const r = await runStructuredLadder<T>({
     role: params.role,
     validation: params.validation,
     maxAttempts: params.maxAttempts,
     logger: params.logger,
-    attempt: async (correction) => {
-      const turn = await runWorkerAcp({
-        agent: params.agent,
-        worktreePath: params.cwd,
-        systemPrompt: params.systemPrompt,
-        userMessage: correction ? `${params.userMessage}\n\n${correction}` : params.userMessage,
-        model: params.model,
-        timeoutSeconds: params.timeoutSeconds,
-        streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
-        acpGuard: denyAll,
-        secretToken: params.secretToken,
-        logger: params.logger,
-      });
-      if (!sessionId) sessionId = turn.sdkSessionId;
-      usageSource = turn.usageSource;
-      return {
-        raw: turn.finalMessage,
-        costUsd: turn.costUsd,
-        tokensIn: turn.tokensIn,
-        tokensOut: turn.tokensOut,
-        sessionId: turn.sdkSessionId,
-        truncated: turn.stopReason === "max_tokens",
-      };
-    },
+    attempt: runTurn,
   });
 
   return {
@@ -905,6 +1051,8 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
     tokensOut: r.tokensOut,
     usageSource,
     repaired: r.repaired,
+    raw: r.raw,
+    stopReason: lastStopReason,
   };
 }
 

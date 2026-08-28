@@ -292,6 +292,11 @@ export class BackendRouter {
         streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
         validation: params.validation ?? { requiredKeys: [], label: role },
         logger,
+        // Honoured, not ignored. The adversary drives its own ladder and reads
+        // `raw`; parsing here consumed the reply and handed back an empty
+        // string, so every verdict the model produced was reported to that
+        // ladder as "no JSON in output" with nothing after `--- raw ---`.
+        skipParse: params.skipParse,
       });
 
       const priced = this.priceTurn(role, out);
@@ -310,8 +315,8 @@ export class BackendRouter {
         costUsd: priced.costUsd ?? 0,
         tokensIn: out.tokensIn,
         tokensOut: out.tokensOut,
-        raw: "",
-        stopReason: null,
+        raw: out.raw,
+        stopReason: out.stopReason,
       };
     };
   }

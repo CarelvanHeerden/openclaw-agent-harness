@@ -30,7 +30,7 @@
  *     rather than a silent hole.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { redactSecrets } from "./git-worktree.js";
 import { buildAgentEnv } from "./shared/env.js";
@@ -49,6 +49,31 @@ const STOP_REASON_MAP = {
     max_turn_requests: "tool_error",
 };
 const LOG_EXCERPT_MAX = 20_000;
+function openFrameTrace(label, scrub) {
+    const dir = process.env.HARNESS_ACP_TRACE_DIR;
+    if (!dir)
+        return undefined;
+    try {
+        mkdirSync(dir, { recursive: true });
+    }
+    catch {
+        return undefined;
+    }
+    const safeLabel = label.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const path = join(dir, `${Date.now()}-${safeLabel}-${Math.random().toString(36).slice(2, 8)}.jsonl`);
+    return {
+        path,
+        record(direction, data) {
+            try {
+                const text = typeof data === "string" ? data : JSON.stringify(data);
+                appendFileSync(path, JSON.stringify({ t: Date.now(), direction, data: scrub(text ?? "") }) + "\n");
+            }
+            catch {
+                /* tracing must never break a turn */
+            }
+        },
+    };
+}
 /**
  * Thrown when the agent asks us to perform something we declined in
  * `initialize`.
@@ -71,14 +96,16 @@ class AcpConnection {
     child;
     onRequest;
     onNotify;
+    trace;
     nextId = 1;
     pending = new Map();
     buf = "";
     closed = false;
-    constructor(child, onRequest, onNotify) {
+    constructor(child, onRequest, onNotify, trace) {
         this.child = child;
         this.onRequest = onRequest;
         this.onNotify = onNotify;
+        this.trace = trace;
         child.stdout.on("data", (c) => this.ingest(c.toString()));
         // v2.0.0: a spawn failure -- a mistyped command, a binary that is not
         // installed -- arrives as an asynchronous `error` event, NOT as a throw
@@ -127,6 +154,7 @@ class AcpConnection {
             this.buf = this.buf.slice(nl + 1);
             if (!line)
                 continue;
+            this.trace?.record("in", line);
             let msg;
             try {
                 msg = JSON.parse(line);
@@ -191,6 +219,7 @@ class AcpConnection {
     write(obj) {
         if (this.closed)
             return;
+        this.trace?.record("out", obj);
         try {
             this.child.stdin.write(JSON.stringify(obj) + "\n");
         }
@@ -232,7 +261,7 @@ class AcpConnection {
  * enforced here by aborting the child.
  */
 export async function runWorkerAcp(params) {
-    const { agent, worktreePath, systemPrompt, userMessage, model, resumeSessionId, timeoutSeconds, streamOpenTimeoutSeconds = 120, firstTokenTimeoutSeconds = 30, streamIdleWarnSeconds = 90, onStreamSlow, acpGuard, secretToken, logger, } = params;
+    const { agent, worktreePath, systemPrompt, userMessage, model, resumeSessionId, timeoutSeconds, streamOpenTimeoutSeconds = 120, firstTokenTimeoutSeconds = 30, streamIdleWarnSeconds = 90, onStreamSlow, acpGuard, secretToken, logger, traceLabel, } = params;
     const startedAt = Date.now();
     const logs = [];
     const denied = [];
@@ -272,6 +301,16 @@ export async function runWorkerAcp(params) {
         if (logs.length < 400)
             logs.push(scrub(s));
     };
+    const trace = openFrameTrace(traceLabel ?? "worker", scrub);
+    trace?.record("meta", {
+        event: "turn_start",
+        label: traceLabel ?? "worker",
+        model,
+        worktreePath,
+        systemPromptChars: systemPrompt.length,
+        userMessageChars: userMessage.length,
+        timeoutSeconds,
+    });
     const child = spawn(agent.command, agent.args, {
         cwd: worktreePath,
         stdio: ["pipe", "pipe", "pipe"],
@@ -292,6 +331,7 @@ export async function runWorkerAcp(params) {
     });
     const stderrParts = [];
     child.stderr.on("data", (d) => {
+        trace?.record("stderr", d.toString());
         if (stderrParts.length < 100)
             stderrParts.push(d.toString());
     });
@@ -426,6 +466,10 @@ export async function runWorkerAcp(params) {
                 break;
             }
             default:
+                // Named rather than silently skipped: an empty turn is most often a
+                // frame nobody matched, and the raw line alone does not say we ignored
+                // it on purpose.
+                trace?.record("meta", { event: "unhandled_update", sessionUpdate: kind ?? null, keys: Object.keys(update) });
                 break;
         }
     };
@@ -505,7 +549,7 @@ export async function runWorkerAcp(params) {
         const p = notifyParams;
         if (p?.update)
             handleUpdate(p.update);
-    });
+    }, trace);
     let stopReason = "tool_error";
     try {
         const initResult = (await conn.request("initialize", {
@@ -604,6 +648,18 @@ export async function runWorkerAcp(params) {
         unguardedReads,
         usageSource,
     });
+    trace?.record("meta", {
+        event: "turn_end",
+        stopReason,
+        sessionId,
+        finalMessageChars: finalMessage.trim().length,
+        denied: denied.length,
+        unguardedReads,
+        usageSource,
+        tokensIn,
+        tokensOut,
+        stderr: scrub(stderrParts.join("").slice(-4000)),
+    });
     return {
         sdkSessionId: sessionId,
         stopReason,
@@ -691,36 +747,75 @@ export async function runStructuredAcp(params) {
         params.logger?.warn(`[acp/${params.role}] denied a tool call in a structured role; the backend is not honouring its tool configuration`, { role: params.role, kind: call.kind ?? null, title: call.title ?? null });
         return { allow: false, reason: `role '${params.role}' runs with no tools` };
     };
+    let lastStopReason = null;
+    const runTurn = async (correction) => {
+        const turn = await runWorkerAcp({
+            agent: params.agent,
+            worktreePath: params.cwd,
+            systemPrompt: params.systemPrompt,
+            userMessage: correction ? `${params.userMessage}\n\n${correction}` : params.userMessage,
+            model: params.model,
+            timeoutSeconds: params.timeoutSeconds,
+            streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
+            acpGuard: denyAll,
+            secretToken: params.secretToken,
+            logger: params.logger,
+            traceLabel: params.role,
+        });
+        if (!sessionId)
+            sessionId = turn.sdkSessionId;
+        usageSource = turn.usageSource;
+        lastStopReason = turn.stopReason;
+        // An empty reply is the one failure the ladder cannot describe: it
+        // reports "no JSON in output" and prints nothing, because there IS
+        // nothing, and everything the agent did say went into logsExcerpt which
+        // this path discards. Whatever the agent put on stderr, and the stop
+        // reason it ended on, are the only evidence there is.
+        if (turn.finalMessage.trim().length === 0) {
+            params.logger?.warn(`[acp/${params.role}] turn produced NO text at all`, {
+                role: params.role,
+                stopReason: turn.stopReason,
+                denied: turn.deniedToolCalls.length,
+                tokensIn: turn.tokensIn,
+                tokensOut: turn.tokensOut,
+                usageSource: turn.usageSource,
+                contextUsed: turn.contextUsed ?? null,
+                contextSize: turn.contextSize ?? null,
+                logsTail: turn.logsExcerpt.slice(-1500),
+            });
+        }
+        return {
+            raw: turn.finalMessage,
+            costUsd: turn.costUsd,
+            tokensIn: turn.tokensIn,
+            tokensOut: turn.tokensOut,
+            sessionId: turn.sdkSessionId,
+            truncated: turn.stopReason === "max_tokens",
+        };
+    };
+    // The caller owns extraction, validation and retry. Climbing a second ladder
+    // underneath theirs would multiply the attempts and, worse, swallow the reply
+    // -- see `skipParse`.
+    if (params.skipParse) {
+        const turn = await runTurn(null);
+        return {
+            parsed: undefined,
+            sdkSessionId: turn.sessionId,
+            costUsd: turn.costUsd,
+            tokensIn: turn.tokensIn,
+            tokensOut: turn.tokensOut,
+            usageSource,
+            repaired: false,
+            raw: turn.raw,
+            stopReason: lastStopReason,
+        };
+    }
     const r = await runStructuredLadder({
         role: params.role,
         validation: params.validation,
         maxAttempts: params.maxAttempts,
         logger: params.logger,
-        attempt: async (correction) => {
-            const turn = await runWorkerAcp({
-                agent: params.agent,
-                worktreePath: params.cwd,
-                systemPrompt: params.systemPrompt,
-                userMessage: correction ? `${params.userMessage}\n\n${correction}` : params.userMessage,
-                model: params.model,
-                timeoutSeconds: params.timeoutSeconds,
-                streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
-                acpGuard: denyAll,
-                secretToken: params.secretToken,
-                logger: params.logger,
-            });
-            if (!sessionId)
-                sessionId = turn.sdkSessionId;
-            usageSource = turn.usageSource;
-            return {
-                raw: turn.finalMessage,
-                costUsd: turn.costUsd,
-                tokensIn: turn.tokensIn,
-                tokensOut: turn.tokensOut,
-                sessionId: turn.sdkSessionId,
-                truncated: turn.stopReason === "max_tokens",
-            };
-        },
+        attempt: runTurn,
     });
     return {
         parsed: r.parsed,
@@ -730,6 +825,8 @@ export async function runStructuredAcp(params) {
         tokensOut: r.tokensOut,
         usageSource,
         repaired: r.repaired,
+        raw: r.raw,
+        stopReason: lastStopReason,
     };
 }
 /**

@@ -80,6 +80,8 @@ export interface RunWorkerAcpParams {
         info: (m: string, meta?: unknown) => void;
         warn: (m: string, meta?: unknown) => void;
     };
+    /** Names the trace file when `HARNESS_ACP_TRACE_DIR` is set. See `openFrameTrace`. */
+    traceLabel?: string;
 }
 export interface RunWorkerAcpResult {
     sdkSessionId: string;
@@ -177,8 +179,18 @@ export interface RunStructuredAcpParams<T> {
         info: (m: string, meta?: unknown) => void;
         warn: (m: string, meta?: unknown) => void;
     };
+    /**
+     * Run ONE turn and hand back the raw reply unparsed.
+     *
+     * For a caller that drives its own `runStructuredLadder` — the adversary is
+     * the only one — because two ladders around one call is not a safety net, it
+     * is nine model calls where three were intended, and the inner one consumes
+     * the very text the outer one needs in order to retry usefully.
+     */
+    skipParse?: boolean;
 }
 export interface RunStructuredAcpResult<T> {
+    /** `undefined` when `skipParse` was set; the caller parses `raw` itself. */
     parsed: T;
     sdkSessionId: string;
     costUsd: number;
@@ -187,6 +199,16 @@ export interface RunStructuredAcpResult<T> {
     usageSource: RunWorkerAcpResult["usageSource"];
     /** True when the document was recovered from a truncated reply. */
     repaired: boolean;
+    /**
+     * The agent's final message, verbatim.
+     *
+     * Carried because a caller driving its own ladder has nothing else to work
+     * with: extraction, repair and the "you returned prose" correction all read
+     * this text. Returning a placeholder here reports every reply as empty no
+     * matter what the model said.
+     */
+    raw: string;
+    stopReason: WorkerStopReason | null;
 }
 /**
  * Run one of the six tool-less roles over ACP.
