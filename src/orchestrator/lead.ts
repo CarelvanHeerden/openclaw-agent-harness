@@ -781,6 +781,22 @@ export async function runLeadPlanner(
       sanitizeRemoteSubTasks(raw, deps.logger);
       validatePlan(raw, deps.config);
     } catch (err) {
+      if (
+        attempt < maxAttempts &&
+        err instanceof LeadPlanValidationError &&
+        err.message.includes("no mutate or mixed sub-task")
+      ) {
+        correctiveNote =
+          "INVALID IMPLEMENTATION PLAN: your previous plan contained only read-only observe tasks. " +
+          "This brief requires code changes. Return a complete replacement plan with at least one " +
+          "taskMode:'mutate' or taskMode:'mixed' sub-task that writes and commits the implementation; " +
+          "observe tasks may only prepare or verify that mutation.";
+        deps.logger.warn?.("[lead] all-observe implementation plan rejected; re-asking once", {
+          attempt,
+          subTaskCount: raw?.subTasks?.length ?? 0,
+        });
+        continue;
+      }
       // beta.99 (P0-1): a FAILED re-ask must not destroy the plan we already
       // banked. Only a failure with nothing banked is terminal.
       if (attempt > 1 && lastValid) {
@@ -945,6 +961,11 @@ function validatePlan(
   }
   if (plan.subTasks.length > 20) {
     throw new Error(`lead plan has ${plan.subTasks.length} sub-tasks; hard cap is 20`);
+  }
+  if (plan.subTasks.every((st) => st.taskMode === "observe")) {
+    throw new LeadPlanValidationError(
+      "lead implementation plan has no mutate or mixed sub-task; it cannot produce a reviewable diff",
+    );
   }
   const seqs = new Set(plan.subTasks.map((s) => s.seq));
   if (seqs.size !== plan.subTasks.length) throw new Error("duplicate sub-task seq numbers");

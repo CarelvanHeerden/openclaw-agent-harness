@@ -1314,6 +1314,7 @@ export async function runLeadSdk(params: {
     "  { kind: 'file_written',   path: string }  -> the file exists in the worktree with fresh content",
     "  { kind: 'file_committed', path: string }  -> the file appears in a commit made during the sub-task",
     "  { kind: 'commit_made' }                   -> at least one new commit exists vs the sub-task's start",
+    "- THIS IS AN IMPLEMENTATION PLAN: it MUST contain at least one taskMode:'mutate' or taskMode:'mixed' sub-task that writes and commits code. An all-observe plan is invalid and cannot open a PR.",
     "- EVERY sub-task MUST carry an explicit `verify` array AND an explicit `taskMode`. For taskMode 'observe' the correct contract is `verify: []`. For taskMode 'mutate' the contract MUST include `{ kind: 'commit_made' }` plus a `file_written`/`file_committed` entry per load-bearing file. Do NOT omit these fields.",
     // beta.66 (warm-worker-context): THE FOUNDING GOAL of this harness. You are
     // the smart, expensive orchestrator. Your workers are CHEAPER models that
