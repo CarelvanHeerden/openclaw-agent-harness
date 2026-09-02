@@ -72,7 +72,7 @@ test("the agentic roles pass an ACP-shaped guard, not the SDK one", () => {
   const acpCalls = src.split("runWorkerAcp({").slice(1);
   assert.equal(acpCalls.length, 2, "expected exactly the worker and scout ACP call sites");
   for (const call of acpCalls) {
-    const body = call.slice(0, 2000);
+    const body = call.slice(0, 3500);
     assert.ok(
       /acpGuard: buildAcpGuard\(/.test(body) ||
         (/acpGuard: async \(call\)/.test(body) && /return workerGuard\(call\)/.test(body)),

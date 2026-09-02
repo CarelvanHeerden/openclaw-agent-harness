@@ -260,6 +260,7 @@ test("beta136: zero-change retry keeps evidence and confronts the false completi
 
 test("beta136: focused OpenCode workers cannot launch nested agents", () => {
   const index = S("src/index.ts");
+  assert.match(index, /call\.kind === "other" && call\.title === "todowrite"/);
   assert.match(index, /focused worker may not launch nested agents/);
   assert.match(index, /call\.kind === "think"/);
   assert.match(index, /raw\["subagent_type"\]/);

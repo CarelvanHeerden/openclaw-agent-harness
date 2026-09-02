@@ -1073,6 +1073,14 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                 const raw = call.rawInput && typeof call.rawInput === "object"
                   ? call.rawInput as Record<string, unknown>
                   : {};
+                // OpenCode exposes its in-session checklist as `kind:"other"`.
+                // It has no filesystem/network side effect, but the generic
+                // guard correctly rejects unknown kinds. Denying this exact
+                // tool makes high-effort Codex end the turn before its first
+                // read or edit, so allow only the named built-in checklist.
+                if (call.kind === "other" && call.title === "todowrite") {
+                  return { allow: true };
+                }
                 // Focused workers already receive a scoped plan and observe
                 // findings. OpenCode's `task` tool launches an unbounded nested
                 // agent; the live smoke left that call in_progress and silent
