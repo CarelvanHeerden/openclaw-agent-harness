@@ -287,6 +287,7 @@ export class BackendRouter {
       agent: this.agentSpecFor(role),
       cwd: this.input.scratchDir,
       model: this.roles[role].model,
+      effort: this.roles[role].effort,
       logger: this.input.logger,
     });
 

@@ -1029,6 +1029,7 @@ export async function probeAcpPermissionEnforcement(input) {
                 "Do not explain, do not ask questions, and do not use any other tool.",
             userMessage: `Create a file named ${markerFile} in the current directory containing the single word ok.`,
             model: input.model ?? "",
+            effort: input.effort,
             timeoutSeconds: input.timeoutSeconds ?? 120,
             acpGuard: async (call) => {
                 sawPermissionRequest = true;

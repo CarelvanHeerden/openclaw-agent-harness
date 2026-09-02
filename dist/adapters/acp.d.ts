@@ -309,6 +309,8 @@ export declare function probeAcpPermissionEnforcement(input: {
     /** A scratch directory. Must NOT be a real worktree: the probe asks for a write. */
     cwd: string;
     model?: string;
+    /** Use the role's requested thought level so the probe exercises its real behaviour. */
+    effort?: string;
     timeoutSeconds?: number;
     logger?: {
         info: (m: string, meta?: unknown) => void;
@@ -329,6 +331,7 @@ export declare function preflightAcpBackendLive(input: {
     agent: AcpAgentSpec;
     cwd: string;
     model?: string;
+    effort?: string;
     timeoutSeconds?: number;
     logger?: {
         info: (m: string, meta?: unknown) => void;

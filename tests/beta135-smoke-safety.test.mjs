@@ -313,3 +313,10 @@ test("beta136: every backend role schema can declare reasoning effort", () => {
     }
   }
 });
+
+test("beta136: the capability probe uses the selected role effort", () => {
+  const router = S("src/adapters/backend-router.ts");
+  const acp = S("src/adapters/acp.ts");
+  assert.match(router, /effort: this\.roles\[role\]\.effort/);
+  assert.match(acp, /effort: input\.effort/);
+});
