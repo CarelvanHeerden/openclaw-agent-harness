@@ -14,6 +14,7 @@
  * by the orchestrator after adversarial review passes.
  */
 import { renderConventionsForPrompt } from "./repo-conventions.js";
+import { renderObserveReportsBlock } from "./observe-handoff.js";
 /**
  * Beta.21: hard cap on injected concept content. A worker system prompt is
  * loaded on every SDK turn, so pulling in an entire long-form knowledge
@@ -39,6 +40,14 @@ export function renderWorkerContextBlock(ctx) {
         `The lead (a stronger model) already investigated this. TRUST and USE this`,
         `context; do NOT re-explore the repo to re-derive it. Implement the changeSpec`,
         `below. Only read files this context did not already give you.`,
+        // beta.134: the escape hatch. "Do not re-explore" without it reads as an
+        // absolute ban, and a worker that needs a fact this block does not contain
+        // is then left choosing between disobeying and inventing. At least one
+        // model picked inventing and reported edits it never made.
+        `If a path, symbol, or convention you need is NOT given above or in the`,
+        `findings block, READ THE REPO to find it. The instruction is "do not redo`,
+        `work already done for you", never "guess". Never describe an edit you have`,
+        `not actually made.`,
     ];
     if (ctx.rationale)
         lines.push(``, `### Why / how`, ctx.rationale);
@@ -106,6 +115,14 @@ export function buildWorkerSystemPrompt(brief, subTask) {
         }
     }
     lines.push(``, `## Your sub-task`, `Title: ${subTask.title}`, `Intent: ${subTask.intent}`, `Files likely touched: ${subTask.filesLikelyTouched.join(", ") || "(unspecified)"}`, `Success criteria for THIS sub-task:`, ...subTask.successCriteria.map((c) => `  - ${c}`));
+    // beta.134 (observe-handoff): the findings of the investigation sub-tasks
+    // this one depends on, verbatim. FIRST, ahead of the lead's plan-time
+    // context, because they are the newer and more authoritative account of the
+    // repo -- the lead guessed at planning time, the probe went and looked.
+    // Absent (no observe step, or nothing recorded) = unchanged behaviour.
+    const observeBlock = renderObserveReportsBlock(subTask.priorObserveReports ?? []);
+    if (observeBlock)
+        lines.push(observeBlock);
     // beta.66 (warm-worker-context): lead the worker with Fable's investigation
     // (rationale + exact change + code it already read + gotchas) BEFORE the
     // generic rules, so a cheaper worker implements mechanically instead of
@@ -119,7 +136,12 @@ export function buildWorkerSystemPrompt(brief, subTask) {
     // route.ts anyway; the adversary caught it and returned do_not_merge,
     // stranding an otherwise-good PR. A negative scope constraint is a HARD
     // boundary, not a suggestion.
-    `- SCOPE IS A HARD BOUNDARY. If the brief, success criteria, or intent says`, `  "do NOT touch/modify/edit <file-or-path>", "test-only", "do not change`, `  <X>", or otherwise forbids a file/area, you MUST NOT modify that file/area`, `  — not even temporarily, not "to verify", not to reconstruct-then-revert.`, `  If completing the sub-task seems to REQUIRE editing a forbidden file, do`, `  NOT do it: finish only the in-scope work and note the tension in your final`, `  message. A commit that touches a forbidden file FAILS review (the adversary`, `  will flag it out-of-scope and refuse merge), so a "working" change that`, `  breaks scope is worse than a smaller in-scope one. When in doubt, stay`, `  narrow: touch ONLY the files the sub-task explicitly requires.`, `- Do not run 'git push'. The orchestrator handles pushes.`, `- Do not install global packages, disable safeguards, or exfiltrate anything.`, `- If a bash command is refused, explain in prose and continue with an alternative approach.`, `- End your turn once the sub-task's success criteria are met.`, `- If an "Implementation context" block is present above, the lead already`, `  investigated this. Implement its changeSpec directly; do NOT re-explore the`, `  repo to re-derive what it already tells you. Only read files it did not cover.`, ``, `## Execution protocol (CRITICAL)`, `- You have EXACTLY ONE turn to complete this sub-task. Dispatch is one-shot.`, `- There is NO event stream from the harness back to you mid-turn. There is`, `  NO "Monitor event", no "ready signal", no background callback. NOTHING will`, `  ever notify you or resume you. If you end your turn waiting for such an`, `  event, the work simply does not get done and the sub-task FAILS.`, `- NEVER 'await', 'wait for', or 'poll for' a harness/monitor/install event.`, `  These mechanisms do not exist in this harness.`, `- If you TRULY need a one-off install to make an edit possible (rare -- e.g.`, `  \`npm ci\` so an import resolves for a scoped read), run it INLINE in a`, `  single Bash tool call that BLOCKS until the process exits, read its`, `  result, then continue in the SAME turn. Do not background it and wait.`, 
+    `- SCOPE IS A HARD BOUNDARY. If the brief, success criteria, or intent says`, `  "do NOT touch/modify/edit <file-or-path>", "test-only", "do not change`, `  <X>", or otherwise forbids a file/area, you MUST NOT modify that file/area`, `  — not even temporarily, not "to verify", not to reconstruct-then-revert.`, `  If completing the sub-task seems to REQUIRE editing a forbidden file, do`, `  NOT do it: finish only the in-scope work and note the tension in your final`, `  message. A commit that touches a forbidden file FAILS review (the adversary`, `  will flag it out-of-scope and refuse merge), so a "working" change that`, `  breaks scope is worse than a smaller in-scope one. When in doubt, stay`, `  narrow: touch ONLY the files the sub-task explicitly requires.`, `- Do not run 'git push'. The orchestrator handles pushes.`, `- Do not install global packages, disable safeguards, or exfiltrate anything.`, `- If a bash command is refused, explain in prose and continue with an alternative approach.`, `- End your turn once the sub-task's success criteria are met.`, `- If an "Implementation context" block is present above, the lead already`, `  investigated this. Implement its changeSpec directly; do NOT re-explore the`, `  repo to re-derive what it already tells you. Only read files it did not cover.`, 
+    // beta.134 (observe-handoff): the sub-task's intent may name an earlier
+    // sub-task's findings ("apply the paths reported by sub-task 1"). Those
+    // findings are now IN this prompt, so point at them explicitly -- and say
+    // what to do in the case that used to produce a fabricated summary.
+    `- If a "Findings from earlier sub-tasks" block is present above, it holds the`, `  facts your intent refers to when it cites an earlier sub-task. Work from`, `  those exact paths and names. If a fact you need is in NEITHER block, read`, `  the repo for it. Under no circumstances report work you did not do.`, ``, `## Execution protocol (CRITICAL)`, `- You have EXACTLY ONE turn to complete this sub-task. Dispatch is one-shot.`, `- There is NO event stream from the harness back to you mid-turn. There is`, `  NO "Monitor event", no "ready signal", no background callback. NOTHING will`, `  ever notify you or resume you. If you end your turn waiting for such an`, `  event, the work simply does not get done and the sub-task FAILS.`, `- NEVER 'await', 'wait for', or 'poll for' a harness/monitor/install event.`, `  These mechanisms do not exist in this harness.`, `- If you TRULY need a one-off install to make an edit possible (rare -- e.g.`, `  \`npm ci\` so an import resolves for a scoped read), run it INLINE in a`, `  single Bash tool call that BLOCKS until the process exits, read its`, `  result, then continue in the SAME turn. Do not background it and wait.`, 
     // beta.81 (Track B / B1): CI-VERIFICATION SHIFT. The worker WRITES + COMMITS
     // code; GitHub CI verifies it. The pre-beta.81 prompt told the worker to run
     // \`npm test\` / \`npx vitest run\` / \`npm run build\` / \`npx eslint .\` in-turn

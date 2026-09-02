@@ -17,6 +17,7 @@
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./lead.js";
 import { renderConventionsForPrompt } from "./repo-conventions.js";
+import { renderObserveReportsBlock } from "./observe-handoff.js";
 
 export interface WorkerResult {
   status: "completed" | "failed" | "timeout" | "first_token_timeout";
@@ -217,6 +218,14 @@ export function renderWorkerContextBlock(
     `The lead (a stronger model) already investigated this. TRUST and USE this`,
     `context; do NOT re-explore the repo to re-derive it. Implement the changeSpec`,
     `below. Only read files this context did not already give you.`,
+    // beta.134: the escape hatch. "Do not re-explore" without it reads as an
+    // absolute ban, and a worker that needs a fact this block does not contain
+    // is then left choosing between disobeying and inventing. At least one
+    // model picked inventing and reported edits it never made.
+    `If a path, symbol, or convention you need is NOT given above or in the`,
+    `findings block, READ THE REPO to find it. The instruction is "do not redo`,
+    `work already done for you", never "guess". Never describe an edit you have`,
+    `not actually made.`,
   ];
   if (ctx.rationale) lines.push(``, `### Why / how`, ctx.rationale);
   if (ctx.changeSpec) lines.push(``, `### Precise change to make`, ctx.changeSpec);
@@ -304,6 +313,14 @@ export function buildWorkerSystemPrompt(
     ...subTask.successCriteria.map((c) => `  - ${c}`),
   );
 
+  // beta.134 (observe-handoff): the findings of the investigation sub-tasks
+  // this one depends on, verbatim. FIRST, ahead of the lead's plan-time
+  // context, because they are the newer and more authoritative account of the
+  // repo -- the lead guessed at planning time, the probe went and looked.
+  // Absent (no observe step, or nothing recorded) = unchanged behaviour.
+  const observeBlock = renderObserveReportsBlock(subTask.priorObserveReports ?? []);
+  if (observeBlock) lines.push(observeBlock);
+
   // beta.66 (warm-worker-context): lead the worker with Fable's investigation
   // (rationale + exact change + code it already read + gotchas) BEFORE the
   // generic rules, so a cheaper worker implements mechanically instead of
@@ -337,6 +354,14 @@ export function buildWorkerSystemPrompt(
     `- If an "Implementation context" block is present above, the lead already`,
     `  investigated this. Implement its changeSpec directly; do NOT re-explore the`,
     `  repo to re-derive what it already tells you. Only read files it did not cover.`,
+    // beta.134 (observe-handoff): the sub-task's intent may name an earlier
+    // sub-task's findings ("apply the paths reported by sub-task 1"). Those
+    // findings are now IN this prompt, so point at them explicitly -- and say
+    // what to do in the case that used to produce a fabricated summary.
+    `- If a "Findings from earlier sub-tasks" block is present above, it holds the`,
+    `  facts your intent refers to when it cites an earlier sub-task. Work from`,
+    `  those exact paths and names. If a fact you need is in NEITHER block, read`,
+    `  the repo for it. Under no circumstances report work you did not do.`,
     ``,
     `## Execution protocol (CRITICAL)`,
     `- You have EXACTLY ONE turn to complete this sub-task. Dispatch is one-shot.`,

@@ -198,6 +198,19 @@ export interface LeadPlanSubTask {
    */
   workerContext?: WorkerContext;
   /**
+   * beta.134 (observe-handoff): the reports of the `observe` sub-tasks this one
+   * depends on, attached by the LOOP at dispatch time from what those probes
+   * actually returned. Never set by the lead planner, and never persisted into
+   * `lead_plan_json` -- it is a per-dispatch overlay, because the report is a
+   * run artefact (often several thousand chars) and not part of the plan.
+   *
+   * Without it a sub-task whose intent says "apply the paths reported by
+   * sub-task 1" is asking the worker for facts nobody gave it, while
+   * `workerContext` simultaneously forbids re-deriving them. See
+   * observe-handoff.ts.
+   */
+  priorObserveReports?: import("./observe-handoff.js").ObserveReport[];
+  /**
    * beta.91 (Fix 3): optional lead hint that this sub-task is mechanical
    * scaffolding (prisma model, migration, sidebar entry, barrel export) vs
    * standard/complex judgment work. When `mechanical` AND models.worker_mechanical

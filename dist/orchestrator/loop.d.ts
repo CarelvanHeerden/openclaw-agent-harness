@@ -765,6 +765,32 @@ export declare class OrchestratorLoop {
      */
     private priorObserveCompleted;
     /**
+     * beta.134 (observe-handoff): keep a completed observe sub-task's report so
+     * the sub-tasks that depend on it can be dispatched holding it.
+     *
+     * Only `observe` sub-tasks: a mutate's final message is a summary of edits
+     * the next worker can read out of the diff, whereas a probe's IS the
+     * deliverable -- it produces no commit, so the report is the entire result of
+     * the turn and dropping it drops the sub-task.
+     *
+     * A later cycle's re-probe overwrites the earlier one (the newer reading of
+     * the repo wins). Truncated on the way in, so nothing downstream has to hold
+     * a runaway report in memory for the rest of the run.
+     */
+    private recordObserveReport;
+    /**
+     * beta.134 (observe-handoff): a dispatch-time COPY of the sub-task carrying
+     * the reports of the probes it depends on. Returns `st` unchanged when there
+     * is nothing to hand down, so a plan with no observe step dispatches exactly
+     * as it did before.
+     *
+     * The audit line matters as much as the overlay: "the worker was handed
+     * sub-task 1's findings" and "the worker was told to apply findings it never
+     * received" produced identical trails, which is why the second went unnoticed
+     * through a whole run that reported success and shipped nothing.
+     */
+    private withObserveReports;
+    /**
      * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
      * audit breadcrumb. Fires exactly once per observe-mode sub-task terminal
      * success. Payload is intentionally similar to `loop.subtask_verification`

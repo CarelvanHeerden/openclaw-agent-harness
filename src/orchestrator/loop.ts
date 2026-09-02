@@ -197,6 +197,7 @@ import {
   type TimeExtensionTrigger,
 } from "./time-extension.js";
 import { selectWorkerModel } from "./worker-model-select.js";
+import { selectObserveReports, OBSERVE_REPORT_MAX_CHARS, type ObserveReport } from "./observe-handoff.js";
 export type LoopStatus =
   | "crystallising"
   | "planning"
@@ -1975,6 +1976,22 @@ export class OrchestratorLoop {
     // one more tolerant match rule. Accumulated across sub-tasks within the run.
     const discoveredRealPaths = new Set<string>();
 
+    // beta.134 (observe-handoff): the FINDINGS of each completed observe
+    // sub-task, keyed by seq, so the sub-tasks that depend on a probe are
+    // dispatched holding what the probe actually reported.
+    //
+    // `discoveredRealPaths` above already keeps the paths a probe TOUCHED,
+    // which is the machine-checkable residue of an investigation. This keeps
+    // the investigation itself -- which module owns what, which convention the
+    // repo really follows, which of the lead's assumptions turned out wrong --
+    // and that is the part a downstream worker's intent keeps referring to.
+    // Until now it was audited and discarded. See observe-handoff.ts.
+    //
+    // Run-level (outside the cycle loop) on purpose: a revise cycle that skips
+    // re-running a clean observe probe (`loop.observe_reprobe_skipped`) must
+    // still be able to hand cycle 1's report to cycle 2's implementers.
+    const observeReports = new Map<number, ObserveReport>();
+
     // 2. Execute/review cycles, then the ship gate, then possibly back again.
     //
     // beta.127: the cycle loop is wrapped in a ship-attempt loop. Before b127
@@ -2521,9 +2538,15 @@ export class OrchestratorLoop {
         // a single worker turn; beta.63 smoke #2's verify sub-task streamed zero
         // tokens and sat the full 1800s. runWorkerCallWithRetry emits the P0-1
         // sdk_stream_opened/sdk_first_token events + owns the retry.
+        // beta.134 (observe-handoff): overlay the reports of the probes this
+        // sub-task depends on. A COPY, never `st` itself: `st` is a live node
+        // of `plan`, which is serialised back into `sessions.lead_plan_json`,
+        // and a several-thousand-char report is a run artefact that has no
+        // business growing the stored plan on every cycle.
+        const dispatchSt = this.withObserveReports(sessionId, st, cycle, observeReports);
         const call = await this.runWorkerCallWithRetry({
           workerWorktree,
-          sessionId, st, cycle, brief, plan, requester: row.requester,
+          sessionId, st: dispatchSt, cycle, brief, plan, requester: row.requester,
           dispatchHint: reviseHint, workerStart, subTaskId,
         });
         if (call.outcome === "timeout") {
@@ -3651,6 +3674,12 @@ export class OrchestratorLoop {
           }
         }
 
+        // beta.134 (observe-handoff): this sub-task passed. If it was a probe,
+        // keep its report for the sub-tasks that depend on it. Recorded here,
+        // on the single terminal-success path, so a probe that FAILED never
+        // hands its half-finished account downstream as if it were fact.
+        this.recordObserveReport(sessionId, st, result, observeReports);
+
         done.add(st.seq);
       };
 
@@ -4693,6 +4722,77 @@ export class OrchestratorLoop {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * beta.134 (observe-handoff): keep a completed observe sub-task's report so
+   * the sub-tasks that depend on it can be dispatched holding it.
+   *
+   * Only `observe` sub-tasks: a mutate's final message is a summary of edits
+   * the next worker can read out of the diff, whereas a probe's IS the
+   * deliverable -- it produces no commit, so the report is the entire result of
+   * the turn and dropping it drops the sub-task.
+   *
+   * A later cycle's re-probe overwrites the earlier one (the newer reading of
+   * the repo wins). Truncated on the way in, so nothing downstream has to hold
+   * a runaway report in memory for the rest of the run.
+   */
+  private recordObserveReport(
+    sessionId: string,
+    st: LeadPlanSubTask,
+    result: WorkerResult,
+    into: Map<number, ObserveReport>,
+  ): void {
+    if (st.taskMode !== "observe") return;
+    const report = (result.finalMessage ?? "").trim();
+    if (!report) return;
+    into.set(st.seq, {
+      seq: st.seq,
+      title: st.title,
+      report: report.slice(0, OBSERVE_REPORT_MAX_CHARS),
+    });
+    this.deps.state.audit(
+      "loop.observe_report_recorded",
+      { sessionId, seq: st.seq, title: st.title, chars: report.length },
+      sessionId,
+    );
+  }
+
+  /**
+   * beta.134 (observe-handoff): a dispatch-time COPY of the sub-task carrying
+   * the reports of the probes it depends on. Returns `st` unchanged when there
+   * is nothing to hand down, so a plan with no observe step dispatches exactly
+   * as it did before.
+   *
+   * The audit line matters as much as the overlay: "the worker was handed
+   * sub-task 1's findings" and "the worker was told to apply findings it never
+   * received" produced identical trails, which is why the second went unnoticed
+   * through a whole run that reported success and shipped nothing.
+   */
+  private withObserveReports(
+    sessionId: string,
+    st: LeadPlanSubTask,
+    cycle: number,
+    recorded: ReadonlyMap<number, ObserveReport>,
+  ): LeadPlanSubTask {
+    const reports = selectObserveReports(st, recorded);
+    if (reports.length === 0) return st;
+    this.deps.state.audit(
+      "loop.observe_reports_handed_down",
+      {
+        sessionId,
+        cycle,
+        seq: st.seq,
+        fromSeqs: reports.map((r) => r.seq),
+        chars: reports.reduce((n, r) => n + r.report.length, 0),
+        via: st.dependsOn && st.dependsOn.length > 0 ? "dependsOn" : "earlier_observe",
+      },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, {
+      event: "observe_reports_handed_down", phase: "worker", seq: st.seq, cycle,
+    });
+    return { ...st, priorObserveReports: reports };
   }
 
   /**
