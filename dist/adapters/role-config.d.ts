@@ -50,7 +50,24 @@ export interface RoleBackendConfig {
     tier?: CapabilityTier;
 }
 export interface ProviderConfig {
-    /** The AI-SDK package. Only the OpenAI-compatible shim is supported today. */
+    /**
+     * The AI-SDK package.
+     *
+     * Absent has two meanings, and `resolveProviderNpm` is where they are told
+     * apart. With a `base_url` it means "the OpenAI-compatible shim against my
+     * endpoint", which is the original behaviour. Without one it means "a
+     * provider OpenCode already ships — I am only supplying the key", and
+     * nothing is emitted so OpenCode uses its own.
+     *
+     * That second case is not a convenience. `@ai-sdk/openai-compatible` sends
+     * `max_tokens`, and every OpenAI reasoning model rejects it outright:
+     * `Unsupported parameter: 'max_tokens' is not supported with this model.
+     * Use 'max_completion_tokens' instead.` The turn dies inside OpenCode with
+     * no text, which then reads as a capability-probe failure — the first
+     * all-roles run on OpenAI failed in nine seconds that way. `@ai-sdk/openai`
+     * sends the right parameter, and it reports per-turn cost as well, so usage
+     * arrives as `acp-delta` rather than tokens we price ourselves.
+     */
     npm?: string;
     /** Display name, surfaced in audit events and errors. */
     name?: string;
@@ -135,6 +152,17 @@ export declare function splitModelId(model: string): {
     provider?: string;
     model: string;
 };
+/** The AI-SDK packages a provider may name. Extending this needs a live turn to prove it. */
+export declare const SUPPORTED_PROVIDER_NPM: readonly ["@ai-sdk/openai-compatible", "@ai-sdk/openai"];
+/**
+ * Which package a provider block will actually load, or `undefined` for one
+ * OpenCode already knows.
+ *
+ * Single-sourced because `validateRoleConfig` and `buildProviderBlock` both
+ * need the answer, and the failure mode when they disagree is a configuration
+ * that validates and then runs as something else.
+ */
+export declare function resolveProviderNpm(p: ProviderConfig): string | undefined;
 /**
  * What a role will actually run on, after the three-level merge.
  *

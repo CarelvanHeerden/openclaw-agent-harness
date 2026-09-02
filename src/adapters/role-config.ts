@@ -63,7 +63,24 @@ export interface RoleBackendConfig {
 }
 
 export interface ProviderConfig {
-  /** The AI-SDK package. Only the OpenAI-compatible shim is supported today. */
+  /**
+   * The AI-SDK package.
+   *
+   * Absent has two meanings, and `resolveProviderNpm` is where they are told
+   * apart. With a `base_url` it means "the OpenAI-compatible shim against my
+   * endpoint", which is the original behaviour. Without one it means "a
+   * provider OpenCode already ships — I am only supplying the key", and
+   * nothing is emitted so OpenCode uses its own.
+   *
+   * That second case is not a convenience. `@ai-sdk/openai-compatible` sends
+   * `max_tokens`, and every OpenAI reasoning model rejects it outright:
+   * `Unsupported parameter: 'max_tokens' is not supported with this model.
+   * Use 'max_completion_tokens' instead.` The turn dies inside OpenCode with
+   * no text, which then reads as a capability-probe failure — the first
+   * all-roles run on OpenAI failed in nine seconds that way. `@ai-sdk/openai`
+   * sends the right parameter, and it reports per-turn cost as well, so usage
+   * arrives as `acp-delta` rather than tokens we price ourselves.
+   */
   npm?: string;
   /** Display name, surfaced in audit events and errors. */
   name?: string;
@@ -151,6 +168,25 @@ export function splitModelId(model: string): { provider?: string; model: string 
   return { provider: model.slice(0, i), model: model.slice(i + 1) };
 }
 
+/** The AI-SDK packages a provider may name. Extending this needs a live turn to prove it. */
+export const SUPPORTED_PROVIDER_NPM = ["@ai-sdk/openai-compatible", "@ai-sdk/openai"] as const;
+
+/**
+ * Which package a provider block will actually load, or `undefined` for one
+ * OpenCode already knows.
+ *
+ * Single-sourced because `validateRoleConfig` and `buildProviderBlock` both
+ * need the answer, and the failure mode when they disagree is a configuration
+ * that validates and then runs as something else.
+ */
+export function resolveProviderNpm(p: ProviderConfig): string | undefined {
+  if (p.npm) return p.npm;
+  // A custom endpoint needs a shim; the compat one is the only shim that takes
+  // an arbitrary baseURL. No endpoint means a built-in, so we name nothing and
+  // let OpenCode supply both package and URL.
+  return p.base_url ? "@ai-sdk/openai-compatible" : undefined;
+}
+
 /**
  * What a role will actually run on, after the three-level merge.
  *
@@ -204,14 +240,21 @@ export function validateRoleConfig(input: RolesConfigInput = {}): RoleConfigProb
   const providers = input.providers ?? {};
 
   for (const [id, p] of Object.entries(providers)) {
-    if (p.npm && p.npm !== "@ai-sdk/openai-compatible") {
+    if (p.npm && !(SUPPORTED_PROVIDER_NPM as readonly string[]).includes(p.npm)) {
       problems.push({
         provider: id,
-        message: `provider '${id}' declares npm '${p.npm}'; only '@ai-sdk/openai-compatible' is supported`,
+        message:
+          `provider '${id}' declares npm '${p.npm}'; supported: ${SUPPORTED_PROVIDER_NPM.join(", ")}`,
       });
     }
     if (!p.base_url) {
-      problems.push({ provider: id, message: `provider '${id}' has no base_url` });
+      // Required only for the compat shim, which has no endpoint of its own. A
+      // provider naming neither package nor URL is a built-in, and demanding a
+      // base_url for it would mean writing down an address OpenCode already
+      // knows, in a field that exists to override it.
+      if (resolveProviderNpm(p) === "@ai-sdk/openai-compatible") {
+        problems.push({ provider: id, message: `provider '${id}' has no base_url` });
+      }
     } else if (!/^https?:\/\//.test(p.base_url)) {
       problems.push({ provider: id, message: `provider '${id}' base_url must be an http(s) URL` });
     } else if (!p.base_url.replace(/\/+$/, "").endsWith("/v1")) {
@@ -311,7 +354,11 @@ export function buildProviderBlock(
       options.apiKey = key;
     }
 
-    const entry: Record<string, unknown> = { npm: p.npm ?? "@ai-sdk/openai-compatible", options };
+    // Absent when the provider is one OpenCode ships: naming a package there
+    // would override its own, which for OpenAI means swapping the SDK that
+    // sends `max_completion_tokens` for the one that sends `max_tokens`.
+    const npm = resolveProviderNpm(p);
+    const entry: Record<string, unknown> = npm ? { npm, options } : { options };
     if (p.name) entry.name = p.name;
     if (p.models) entry.models = p.models;
     block[id] = entry;

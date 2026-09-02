@@ -141,8 +141,11 @@ test("a base_url that does not end in /v1 is rejected", () => {
   );
 });
 
-test("a provider with no base_url, or a non-http one, is rejected", () => {
-  assert.ok(validateRoleConfig({ providers: { local: {} } })
+test("a shim provider with no base_url, or a non-http one, is rejected", () => {
+  // The shim has no endpoint of its own, so it must be given one. An EMPTY
+  // block is a different thing entirely -- a provider OpenCode already ships --
+  // and is accepted; see the built-in cases below.
+  assert.ok(validateRoleConfig({ providers: { local: { npm: "@ai-sdk/openai-compatible" } } })
     .some((p) => /no base_url/.test(p.message)));
   assert.ok(validateRoleConfig({ providers: { local: { base_url: "localhost:1234/v1" } } })
     .some((p) => /http\(s\) URL/.test(p.message)));
@@ -153,6 +156,49 @@ test("an unsupported npm package is rejected by name", () => {
     providers: { x: { npm: "@ai-sdk/anthropic", base_url: "http://h/v1" } },
   });
   assert.ok(problems.some((p) => p.provider === "x" && /@ai-sdk\/openai-compatible/.test(p.message)));
+});
+
+test("a provider naming neither package nor endpoint is a built-in, and is accepted", () => {
+  // The shape that makes OpenAI work at all. `@ai-sdk/openai-compatible` sends
+  // `max_tokens`, which every gpt-5.x model rejects outright, so the operator
+  // has to be able to say "use the provider you already ship, here is my key"
+  // -- and that means no npm and no base_url to demand.
+  const problems = validateRoleConfig({
+    providers: { openai: { api_key_service: "openai-key" } },
+  });
+  assert.deepEqual(problems, []);
+});
+
+test("a built-in provider emits no npm, so OpenCode keeps its own SDK", () => {
+  const { block } = buildProviderBlock(
+    { openai: { api_key_service: "openai-key" } },
+    () => "sk-secret-value",
+  );
+  assert.equal("npm" in block.openai, false, "naming a package here overrides the one that works");
+  assert.equal(block.openai.options.apiKey, "sk-secret-value");
+  assert.equal(block.openai.options.baseURL, undefined);
+});
+
+test("the OpenAI SDK may be named explicitly, for an endpoint that needs its own URL", () => {
+  const problems = validateRoleConfig({
+    providers: { azure: { npm: "@ai-sdk/openai", base_url: "https://x.openai.azure.com/v1" } },
+  });
+  assert.deepEqual(problems, []);
+  const { block } = buildProviderBlock(
+    { azure: { npm: "@ai-sdk/openai", base_url: "https://x.openai.azure.com/v1" } },
+    () => undefined,
+  );
+  assert.equal(block.azure.npm, "@ai-sdk/openai");
+});
+
+test("a custom endpoint with no package still defaults to the compat shim", () => {
+  // The original behaviour, and the reason `resolveProviderNpm` exists rather
+  // than a bare `p.npm`: absent means two different things depending on
+  // whether an endpoint was given.
+  assert.ok(validateRoleConfig({ providers: { local: { npm: "@ai-sdk/openai-compatible" } } })
+    .some((p) => /no base_url/.test(p.message)));
+  const { block } = buildProviderBlock({ local: { base_url: "http://h/v1" } }, () => undefined);
+  assert.equal(block.local.npm, "@ai-sdk/openai-compatible");
 });
 
 test("a role pointing at an undeclared provider is flagged, but only when custom providers exist", () => {
@@ -178,7 +224,9 @@ test("an opencode structured role with no model is rejected", () => {
 
 test("validation reports every problem, not just the first", () => {
   const problems = validateRoleConfig({
-    providers: { a: { base_url: "nope" }, b: {} },
+    // `b` names the shim so the missing base_url is still a fault: an empty
+    // block now means "a provider OpenCode ships", which is legitimate.
+    providers: { a: { base_url: "nope" }, b: { npm: "@ai-sdk/openai-compatible" } },
     roles: { lead: { tier: "basic" }, adversary: { tier: "basic" } },
   });
   // Two provider faults and two floor faults, in one pass.
