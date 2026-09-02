@@ -23,6 +23,7 @@
  *   node scripts/local-drive.mjs watch <sessionId>
  *   node scripts/local-drive.mjs answer <sessionId> "<answer>"
  *   node scripts/local-drive.mjs audit <sessionId> [--grep pat] [--tail 40] [--json]
+ *   node scripts/local-drive.mjs tool <tool-name> '<json>' [--watch]
  *   node scripts/local-drive.mjs sessions
  *   node scripts/local-drive.mjs cancel <sessionId>
  */
@@ -341,13 +342,19 @@ async function cmdAudit(sessionId, opts) {
 }
 
 /** Escape hatch: invoke any registered harness tool with a JSON payload. */
-async function cmdTool(name, jsonArg) {
+async function cmdTool(name, jsonArg, opts = {}) {
   const config = await boot();
   const requester = (config.slack?.authorised_users ?? ["U_LOCAL"])[0];
   const input = { requester, invokedBy: requester, ...JSON.parse(jsonArg || "{}") };
   const res = await call(name, input);
   console.log(text(res));
   if (res?.details) console.log(`\ndetails: ${JSON.stringify(res.details, null, 2)}`);
+  // Fire-and-forget tools start their loop in this process. Keep it alive when
+  // requested; the unconditional process.exit below would otherwise kill it.
+  const watchSessionId = res?.details?.sessionId ?? input.sessionId;
+  if (opts.watch && res?.details?.ok && watchSessionId) {
+    await watch(config, watchSessionId);
+  }
 }
 
 async function cmdSessions() {
@@ -401,7 +408,11 @@ try {
       await cmdAudit(positional[0], { grep: flag("grep"), tail: flag("tail") ? Number(flag("tail")) : undefined, json: has("json") });
       break;
     case "tool":
-      await cmdTool(positional[0], argv.slice(2).find((a) => a.trim().startsWith("{")));
+      await cmdTool(
+        positional[0],
+        argv.slice(2).find((a) => a.trim().startsWith("{")),
+        { watch: has("watch") },
+      );
       break;
     case "sessions":
       await cmdSessions();
