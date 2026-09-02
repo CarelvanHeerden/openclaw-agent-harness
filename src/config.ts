@@ -510,6 +510,13 @@ export interface ProvidersConfig {
     api_key_service?: string;
     /** True for a provider that bills nothing: report tokens, not dollars. */
     local?: boolean;
+    /**
+     * models.dev provider id to price this provider's models against, when it
+     * differs from the id above (e.g. `anthropic-compat` -> `anthropic`).
+     * Without it the catalogue misses and every turn bills at the
+     * most-expensive-known fail-safe.
+     */
+    pricing_provider?: string;
     /** Model ids this provider serves, with optional display names. */
     models?: Record<string, { name?: string }>;
   };

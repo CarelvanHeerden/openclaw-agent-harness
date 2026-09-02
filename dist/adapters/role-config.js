@@ -194,4 +194,24 @@ export function buildProviderBlock(providers, resolveKey) {
 export function localProviders(providers = {}) {
     return new Set(Object.entries(providers).filter(([, p]) => p.local).map(([id]) => id));
 }
+/**
+ * Rewrite a configured model id into the one the pricing catalogue knows.
+ *
+ * `anthropic-compat/claude-sonnet-4-5` addresses the endpoint; the catalogue
+ * calls the same model `anthropic/claude-sonnet-4-5`. Only the provider
+ * segment moves — the model segment is whatever the endpoint serves and is not
+ * ours to rename. See `ProviderConfig.pricing_provider` for what the mismatch
+ * cost.
+ *
+ * A bare id, an unknown provider, or a provider with no `pricing_provider`
+ * comes back untouched, so this is a no-op for every configuration that did
+ * not need it.
+ */
+export function pricingModelId(model, providers = {}) {
+    const { provider, model: bare } = splitModelId(model);
+    if (!provider)
+        return model;
+    const mapped = providers[provider]?.pricing_provider;
+    return mapped ? `${mapped}/${bare}` : model;
+}
 //# sourceMappingURL=role-config.js.map

@@ -23,7 +23,7 @@
  * three agents by default.
  */
 import { ROLE_SHAPES } from "./backend.js";
-import { buildProviderBlock, localProviders, resolveAllRoles, validateRoleConfig, } from "./role-config.js";
+import { buildProviderBlock, localProviders, pricingModelId, resolveAllRoles, validateRoleConfig, } from "./role-config.js";
 import { openCodeConfigEnv } from "./opencode-config.js";
 import { PINNED_OPENCODE_VERSION } from "./opencode-version.js";
 import { preflightAcpBackendLive, runStructuredAcp } from "./acp.js";
@@ -51,6 +51,8 @@ export class BackendRouter {
     local;
     probed = false;
     catalogue;
+    /** Models already reported as unpriced, so the warning fires once, not per turn. */
+    failSafeWarned = new Set();
     constructor(input) {
         this.input = input;
         const cfg = {
@@ -118,11 +120,39 @@ export class BackendRouter {
         const model = this.roles[role].model;
         if (!model)
             return { costUsd: undefined, priceSource: "unmeasured" };
+        // Priced under the catalogue's id, not the operator's label for the
+        // endpoint -- EXCEPT for a local one, which is not rewritten at all.
+        //
+        // `resolvePrice` reads "is this local" off the provider segment of the id
+        // it is given, and the rewritten segment names whoever PUBLISHES the
+        // model rather than who serves it. So rewriting a local provider made it
+        // stop matching and start billing catalogue rates for tokens that cost
+        // nothing. Skipping the rewrite keeps the ladder's own ordering intact --
+        // overrides above local, deliberately, because an operator who prices a
+        // local model has said something specific -- where widening the local set
+        // to cover mapped ids would let one local provider zero-rate a paid one
+        // that happens to share a publisher.
+        const priceKey = this.isLocal(role) ? model : pricingModelId(model, this.input.providers ?? {});
         const res = resolvePrice({
-            model,
+            model: priceKey,
+            overrides: this.input.priceOverrides,
             catalogue: this.catalogue,
             localProviders: this.local,
         });
+        // The fail-safe is a real answer to "what might this cost at worst", and a
+        // terrible answer to "what did this cost". It is also the only rung of the
+        // ladder that cannot be told from a correct one downstream: it returns a
+        // plausible number, the ledger records it, and nothing else fires. Said
+        // once per model so a misconfiguration is loud on the first turn and quiet
+        // for the rest of the run.
+        if (res.source === "fail-safe" && !this.failSafeWarned.has(model)) {
+            this.failSafeWarned.add(model);
+            this.input.logger.warn(`[backend] no price for '${model}'; billing it at the most-expensive-known rate ` +
+                `($${res.price.input}/$${res.price.output} per million). Costs and budget ceilings for this ` +
+                `run are over-stated. Set providers.<id>.pricing_provider if this endpoint serves a model ` +
+                `models.dev already prices, or models.price_overrides if it does not.`, { role, model, pricedAs: priceKey });
+            this.input.audit("backend.price_fail_safe", { role, model, pricedAs: priceKey, price: res.price });
+        }
         // `costOf` returns undefined for a non-billable model. That is a real zero
         // — a local endpoint issues no invoice — as distinct from the `undefined`
         // above, which means nobody measured.

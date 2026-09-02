@@ -77,6 +77,31 @@ export interface ProviderConfig {
      * "nobody looked".
      */
     local?: boolean;
+    /**
+     * The models.dev provider id these models are priced under.
+     *
+     * Needed because a provider id here is an OPERATOR'S LABEL, and the pricing
+     * catalogue is keyed by models.dev's. They diverge for the most ordinary
+     * reason: OpenCode ships built-in providers called `anthropic` and `openai`,
+     * a custom block sharing an id gets deep-merged into the built-in one, and
+     * the way out is to name yours something else. `anthropic-compat` and
+     * `openai-compat` are that workaround — and every model under them missed
+     * the catalogue completely, fell past `PRICES`, and was billed at the
+     * most-expensive-known fail-safe of $15/$75 per million. For Sonnet 4.5 at
+     * $3/$15 that is exactly 5x on both terms, so every v2 cost figure and every
+     * budget ceiling was wrong by that factor in the direction that stops runs
+     * early.
+     *
+     * Nothing announced it. The fail-safe returns a number, so the ledger showed
+     * a plausible dollar figure, and the one log line that would have said
+     * otherwise only fires when the cost is `undefined`. See `priceTurn`, which
+     * now warns when a turn prices this way.
+     *
+     * Explicit rather than inferred: stripping a `-compat` suffix would guess,
+     * and a wrong guess here is silent by the same mechanism. Absent means the
+     * provider id already IS the catalogue id, which is the common case.
+     */
+    pricing_provider?: string;
     models?: Record<string, {
         name?: string;
     }>;
@@ -153,4 +178,18 @@ export declare function buildProviderBlock(providers: Record<string, ProviderCon
 };
 /** Providers an operator declared local, so cost reporting stays token-only. */
 export declare function localProviders(providers?: Record<string, ProviderConfig>): Set<string>;
+/**
+ * Rewrite a configured model id into the one the pricing catalogue knows.
+ *
+ * `anthropic-compat/claude-sonnet-4-5` addresses the endpoint; the catalogue
+ * calls the same model `anthropic/claude-sonnet-4-5`. Only the provider
+ * segment moves — the model segment is whatever the endpoint serves and is not
+ * ours to rename. See `ProviderConfig.pricing_provider` for what the mismatch
+ * cost.
+ *
+ * A bare id, an unknown provider, or a provider with no `pricing_provider`
+ * comes back untouched, so this is a no-op for every configuration that did
+ * not need it.
+ */
+export declare function pricingModelId(model: string, providers?: Record<string, ProviderConfig>): string;
 //# sourceMappingURL=role-config.d.ts.map

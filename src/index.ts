@@ -513,6 +513,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         } catch { return undefined; }
       },
       scratchDir: dataDir,
+      // The same overrides the v1 paths use. Omitting them here made
+      // `models.price_overrides` a no-op on OpenCode -- see `priceOverrides`.
+      priceOverrides: config.models.price_overrides,
       logger: api.logger,
       audit: (event, payload) => { try { state.audit(event, payload, ""); } catch { /* audit must never break boot */ } },
     });

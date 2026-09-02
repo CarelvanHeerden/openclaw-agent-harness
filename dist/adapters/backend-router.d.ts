@@ -26,7 +26,7 @@ import { type RoleName } from "./backend.js";
 import type { StructuredExecutor } from "./claude-code.js";
 import { type ProviderConfig, type ResolvedRoleBackend, type RoleBackendConfig } from "./role-config.js";
 import { type AcpAgentSpec } from "./acp.js";
-import { type CatalogueStore } from "./shared/model-catalogue.js";
+import { type CatalogueStore, type ModelPrice } from "./shared/model-catalogue.js";
 export declare class BackendConfigError extends Error {
     readonly problems: string[];
     constructor(problems: string[]);
@@ -50,6 +50,17 @@ export interface BackendRouterInput {
         command: string;
         args: string[];
     };
+    /**
+     * `models.price_overrides`, the top of the resolution ladder.
+     *
+     * Passed in because it was not. `resolvePrice` accepts overrides and honours
+     * them above everything else, and this router called it without them — so
+     * the documented escape hatch for a model the catalogue does not price was
+     * inert on the one backend most likely to run such a model. An operator
+     * following the advice in the startup pricing warning would have seen no
+     * change and no reason why.
+     */
+    priceOverrides?: Record<string, ModelPrice>;
 }
 /** How OpenCode is launched when the operator has not said otherwise. */
 export declare function defaultOpenCodeCommand(): {
@@ -63,6 +74,8 @@ export declare class BackendRouter {
     private readonly local;
     private probed;
     private catalogue;
+    /** Models already reported as unpriced, so the warning fires once, not per turn. */
+    private readonly failSafeWarned;
     constructor(input: BackendRouterInput);
     /** Roles the operator has moved off the default backend. */
     get openCodeRoles(): RoleName[];

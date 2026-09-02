@@ -1417,6 +1417,10 @@
               "type": "boolean",
               "description": "True for a provider that bills nothing. Cost reporting becomes token counts with no dollar figure attached."
             },
+            "pricing_provider": {
+              "type": "string",
+              "description": "models.dev provider id to price this provider's models against, when it differs from the key above. Needed for the -compat naming that avoids clashing with OpenCode's built-in providers: 'anthropic-compat' must price as 'anthropic', or the catalogue misses and every turn bills at the most-expensive-known fail-safe ($15/$75 per million), over-stating cost and tripping budget ceilings early."
+            },
             "models": {
               "type": "object",
               "description": "Model ids this provider serves, with optional display names.",
