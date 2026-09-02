@@ -274,6 +274,8 @@ export async function runWorkerAcp(params) {
     let sessionId = "";
     let costBaseline = null;
     let costLatest = null;
+    /** Divides a resumed session's prior spend from this turn's own. See `usage_update`. */
+    let promptSent = false;
     let contextUsed;
     let contextSize;
     let sawAnyCost = false;
@@ -451,9 +453,27 @@ export async function runWorkerAcp(params) {
                 const cost = update["cost"];
                 if (cost && typeof cost.amount === "number") {
                     sawAnyCost = true;
-                    // Cumulative per session, so the first figure is this turn's baseline.
-                    if (costBaseline === null)
+                    // Cumulative per SESSION -- and this call creates the session it
+                    // prompts, so the cumulative figure and this turn's cost are the same
+                    // number.
+                    //
+                    // Treating the first figure as a baseline assumed a session that
+                    // outlived the turn. It does not: one `usage_update` arrives per
+                    // prompt, baseline and latest were set from it in the same
+                    // statement, and every turn subtracted its own cost from itself and
+                    // reported zero. OpenCode against the built-in OpenAI provider sends
+                    // `cost: {amount: 0.059802}` and the ledger recorded $0.00 for the
+                    // whole session -- with `usageSource: "acp-delta"` claiming the
+                    // figure was measured, which is worse than the hole it replaced,
+                    // because a budget ceiling cannot trip on it.
+                    //
+                    // A figure arriving BEFORE the prompt is genuinely a baseline: that
+                    // is a resumed session carrying earlier spend, and it must still be
+                    // subtracted.
+                    if (!promptSent)
                         costBaseline = cost.amount;
+                    else if (costBaseline === null)
+                        costBaseline = 0;
                     costLatest = cost.amount;
                 }
                 break;
@@ -597,6 +617,10 @@ export async function runWorkerAcp(params) {
                 pushLog(`[acp] session/set_model unsupported; backend config owns the model`);
             }
         }
+        // Set before the await, not after: `usage_update` arrives while the prompt
+        // is in flight, and it is this flag that tells that figure apart from a
+        // resumed session's opening balance.
+        promptSent = true;
         const res = await conn.request("session/prompt", {
             sessionId,
             prompt: [{ type: "text", text: `${systemPrompt}\n\n---\n\n${userMessage}` }],

@@ -58,10 +58,24 @@ test("acp-adapter: completes a turn and maps end_turn", skip, async () => {
   assert.ok(typeof r.msToFirstToken === "number");
 });
 
-test("acp-adapter: cost is the DELTA of the agent's cumulative figure", skip, async () => {
-  // Agent reports 0.10 then 0.30 cumulative; this turn cost 0.20.
+test("acp-adapter: cost is the agent's cumulative figure for a session we opened", skip, async () => {
+  // Agent reports 0.10 then 0.30 cumulative DURING this prompt, so the turn
+  // cost 0.30. This assertion used to read 0.20, on the assumption that the
+  // first figure was an opening balance -- but `runWorkerAcp` creates the
+  // session it prompts, so there is no earlier spend to subtract, and every
+  // real turn reported its own cost as its baseline and billed zero.
   const r = await run("happy");
-  assert.ok(Math.abs(r.costUsd - 0.2) < 1e-9, `expected 0.20, got ${r.costUsd}`);
+  assert.ok(Math.abs(r.costUsd - 0.3) < 1e-9, `expected 0.30, got ${r.costUsd}`);
+  assert.equal(r.usageSource, "acp-delta");
+});
+
+test("acp-adapter: a single end-of-turn cost is the whole cost, not zero", skip, async () => {
+  // The shape OpenCode actually sends against the built-in OpenAI provider:
+  // one usage_update carrying the turn's total. Subtracting it from itself
+  // reported $0.00 for an entire session while claiming the figure was
+  // measured -- a ledger a budget ceiling cannot trip on.
+  const r = await run("token-split");
+  assert.ok(Math.abs(r.costUsd - 0.05) < 1e-9, `expected 0.05, got ${r.costUsd}`);
   assert.equal(r.usageSource, "acp-delta");
 });
 
