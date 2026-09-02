@@ -75,12 +75,14 @@ export function resolveRoleBackend(role, input = {}) {
     const fallback = input.default ?? {};
     const backend = own.backend ?? fallback.backend ?? DEFAULT_BACKEND;
     const model = own.model ?? fallback.model;
+    const effort = own.effort ?? fallback.effort;
     const tier = own.tier ?? fallback.tier ?? "strong";
     const { provider } = model ? splitModelId(model) : {};
     return {
         role,
         backend,
         model,
+        effort,
         provider,
         tier,
         inherited: own.backend === undefined && own.model === undefined,

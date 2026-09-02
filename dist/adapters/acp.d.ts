@@ -46,6 +46,8 @@ export interface RunWorkerAcpParams {
     systemPrompt: string;
     userMessage: string;
     model: string;
+    /** ACP thought-level value (OpenCode exposes this as config id `effort`). */
+    effort?: string;
     resumeSessionId?: string;
     timeoutSeconds: number;
     streamOpenTimeoutSeconds?: number;
@@ -170,6 +172,8 @@ export interface RunStructuredAcpParams<T> {
     systemPrompt: string;
     userMessage: string;
     model: string;
+    /** ACP thought-level value, when the role configured one. */
+    effort?: string;
     timeoutSeconds: number;
     streamOpenTimeoutSeconds?: number;
     validation: JsonValidationOptions<T>;

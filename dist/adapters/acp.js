@@ -261,7 +261,7 @@ class AcpConnection {
  * enforced here by aborting the child.
  */
 export async function runWorkerAcp(params) {
-    const { agent, worktreePath, systemPrompt, userMessage, model, resumeSessionId, timeoutSeconds, streamOpenTimeoutSeconds = 120, firstTokenTimeoutSeconds = 30, streamIdleWarnSeconds = 90, onStreamSlow, acpGuard, secretToken, logger, traceLabel, } = params;
+    const { agent, worktreePath, systemPrompt, userMessage, model, effort, resumeSessionId, timeoutSeconds, streamOpenTimeoutSeconds = 120, firstTokenTimeoutSeconds = 30, streamIdleWarnSeconds = 90, onStreamSlow, acpGuard, secretToken, logger, traceLabel, } = params;
     const startedAt = Date.now();
     const logs = [];
     const denied = [];
@@ -588,10 +588,16 @@ export async function runWorkerAcp(params) {
                 ...versionCheck,
             });
         }
+        let sessionConfig = [];
         if (resumeSessionId) {
             try {
-                await conn.request("session/load", { sessionId: resumeSessionId, cwd: worktreePath, mcpServers: [] });
+                const loaded = await conn.request("session/load", {
+                    sessionId: resumeSessionId,
+                    cwd: worktreePath,
+                    mcpServers: [],
+                });
                 sessionId = resumeSessionId;
+                sessionConfig = loaded?.configOptions ?? [];
             }
             catch (err) {
                 // session/load is optional in the spec and unsupported by some agents.
@@ -605,16 +611,59 @@ export async function runWorkerAcp(params) {
                 mcpServers: [],
             });
             sessionId = created?.sessionId ?? "";
+            sessionConfig = created?.configOptions ?? [];
         }
-        // Only some agents advertise model selection over ACP (Claude Code does,
-        // OpenCode does not). Failure is non-fatal: the backend's own config then
-        // owns the model choice.
-        if (model) {
-            try {
-                await conn.request("session/set_model", { sessionId, modelId: model });
+        const optionId = (o) => o.configId ?? o.id;
+        const setConfigOption = async (option, value) => {
+            const configId = optionId(option);
+            if (!configId)
+                throw new Error("ACP config option has no id");
+            const allowed = option.options?.some((x) => x.value === value) ?? true;
+            if (!allowed) {
+                throw new Error(`ACP config option '${configId}' does not offer '${value}' ` +
+                    `(available: ${(option.options ?? []).map((x) => String(x.value)).join(", ")})`);
             }
-            catch {
-                pushLog(`[acp] session/set_model unsupported; backend config owns the model`);
+            const updated = await conn.request("session/set_config_option", { sessionId, configId, type: "id", value });
+            const options = updated?.configOptions ?? [];
+            const applied = options.find((x) => optionId(x) === configId);
+            if (!applied || applied.currentValue !== value) {
+                throw new Error(`ACP config option '${configId}' was not confirmed as '${value}' ` +
+                    `(reported: ${String(applied?.currentValue ?? "missing")})`);
+            }
+            pushLog(`[acp] configured ${configId}=${value}`);
+            return options;
+        };
+        // Prefer the stable config-options surface advertised by modern ACP
+        // agents. Keep the legacy method only as compatibility for older agents.
+        if (model) {
+            const modelOption = sessionConfig.find((o) => o.category === "model" || optionId(o) === "model");
+            if (modelOption) {
+                try {
+                    sessionConfig = await setConfigOption(modelOption, model);
+                }
+                catch (err) {
+                    throw new Error(`could not apply ACP model '${model}': ${String(err)}`);
+                }
+            }
+            else {
+                try {
+                    await conn.request("session/set_model", { sessionId, modelId: model });
+                }
+                catch {
+                    pushLog(`[acp] session/set_model unsupported; backend config owns the model`);
+                }
+            }
+        }
+        if (effort) {
+            const effortOption = sessionConfig.find((o) => o.category === "thought_level" || optionId(o) === "effort");
+            if (!effortOption) {
+                throw new Error(`requested ACP effort '${effort}', but the agent did not advertise a thought-level config option`);
+            }
+            try {
+                sessionConfig = await setConfigOption(effortOption, effort);
+            }
+            catch (err) {
+                throw new Error(`could not apply ACP effort '${effort}': ${String(err)}`);
             }
         }
         // Set before the await, not after: `usage_update` arrives while the prompt
@@ -779,6 +828,7 @@ export async function runStructuredAcp(params) {
             systemPrompt: params.systemPrompt,
             userMessage: correction ? `${params.userMessage}\n\n${correction}` : params.userMessage,
             model: params.model,
+            effort: params.effort,
             timeoutSeconds: params.timeoutSeconds,
             streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
             acpGuard: denyAll,

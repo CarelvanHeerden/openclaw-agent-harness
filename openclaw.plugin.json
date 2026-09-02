@@ -1153,6 +1153,18 @@
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
               },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+              },
               "tier": {
                 "type": "string",
                 "enum": [
@@ -1180,6 +1192,18 @@
               "model": {
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
               },
               "tier": {
                 "type": "string",
@@ -1209,6 +1233,18 @@
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
               },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+              },
               "tier": {
                 "type": "string",
                 "enum": [
@@ -1236,6 +1272,18 @@
               "model": {
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
               },
               "tier": {
                 "type": "string",
@@ -1265,6 +1313,18 @@
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
               },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+              },
               "tier": {
                 "type": "string",
                 "enum": [
@@ -1292,6 +1352,18 @@
               "model": {
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
               },
               "tier": {
                 "type": "string",
@@ -1321,6 +1393,18 @@
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
               },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+              },
               "tier": {
                 "type": "string",
                 "enum": [
@@ -1349,6 +1433,18 @@
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
               },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+              },
               "tier": {
                 "type": "string",
                 "enum": [
@@ -1376,6 +1472,18 @@
               "model": {
                 "type": "string",
                 "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+              },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
               },
               "tier": {
                 "type": "string",

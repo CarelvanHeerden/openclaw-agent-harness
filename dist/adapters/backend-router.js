@@ -271,6 +271,7 @@ export class BackendRouter {
                 // The role's configured model wins: `params.model` is the Anthropic id
                 // from `models.*`, which means nothing to another provider.
                 model: r.model ?? params.model,
+                effort: r.effort,
                 timeoutSeconds: params.timeoutSeconds,
                 streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
                 validation: params.validation ?? { requiredKeys: [], label: role },
@@ -308,6 +309,7 @@ export class BackendRouter {
             role,
             backend: this.roles[role].backend,
             model: this.roles[role].model,
+            effort: this.roles[role].effort,
             tier: this.roles[role].tier,
         }));
     }

@@ -483,6 +483,8 @@ export interface RoleBackendEntry {
   backend?: "claude-code" | "opencode";
   /** `provider/model` for opencode; a bare model id is also accepted for claude-code. */
   model?: string;
+  /** OpenCode reasoning effort/variant. Undefined leaves the backend default. */
+  effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
   /**
    * Operator's declaration of how capable this model is: `basic`, `strong` or
    * `frontier`. The lead, adversary and crystalliser refuse to run below

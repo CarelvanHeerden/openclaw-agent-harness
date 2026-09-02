@@ -141,6 +141,7 @@ export declare class BackendRouter {
         role: RoleName;
         backend: string;
         model?: string;
+        effort?: string;
         tier: string;
     }>;
 }

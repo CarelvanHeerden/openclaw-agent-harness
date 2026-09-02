@@ -33,6 +33,32 @@ const update = (sessionId, u) =>
 
 const SESSION = "fake-session-1";
 let permissionAnswer = null;
+let configuredModel = "default-model";
+let configuredEffort = "none";
+
+const configOptions = () => [
+  {
+    id: "model",
+    category: "model",
+    type: "select",
+    currentValue: configuredModel,
+    options: [
+      { value: "default-model", name: "Default" },
+      { value: "some-model", name: "Some model" },
+    ],
+  },
+  {
+    id: "effort",
+    category: "thought_level",
+    type: "select",
+    currentValue: configuredEffort,
+    options: [
+      { value: "none", name: "None" },
+      { value: "medium", name: "Medium" },
+      { value: "high", name: "High" },
+    ],
+  },
+];
 
 function handle(msg) {
   // Response to a request we (the agent) made -- i.e. the permission decision.
@@ -67,10 +93,27 @@ function handle(msg) {
     // "this agent does not support resume" and falls through to session/new --
     // on a connection that is now closed.
     if (scenario === "exit-on-session-load") process.exit(4);
-    return reply(id, {});
+    return reply(
+      id,
+      scenario === "config-options" ? { configOptions: configOptions() } : {},
+    );
   }
 
-  if (method === "session/new") return reply(id, { sessionId: SESSION });
+  if (method === "session/new") {
+    return reply(
+      id,
+      scenario === "config-options"
+        ? { sessionId: SESSION, configOptions: configOptions() }
+        : { sessionId: SESSION },
+    );
+  }
+
+  if (method === "session/set_config_option") {
+    if (scenario !== "config-options") return replyErr(id, "session/set_config_option not supported");
+    if (params?.configId === "model") configuredModel = params.value;
+    if (params?.configId === "effort") configuredEffort = params.value;
+    return reply(id, { configOptions: configOptions() });
+  }
 
   if (method === "session/set_model") {
     if (scenario === "no-model-select") return replyErr(id, "session/set_model not supported");
@@ -88,6 +131,13 @@ let params_last = null;
 
 async function runTurn(id, sessionId) {
   switch (scenario) {
+    case "config-options":
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { text: `configured:${configuredModel}:${configuredEffort}` },
+      });
+      return reply(id, { stopReason: "end_turn" });
+
     // Never emits anything and never answers: exercises the stream-open watchdog.
     case "silent":
       return;

@@ -46,12 +46,13 @@ test("a role inherits the default block field by field, not wholesale", () => {
   // The trap: merging whole blocks would make a role that sets only `tier`
   // silently lose the default's backend and model.
   const cfg = {
-    default: { backend: "opencode", model: "local/qwen", tier: "strong" },
+    default: { backend: "opencode", model: "local/qwen", effort: "medium", tier: "strong" },
     roles: { worker: { tier: "basic" } },
   };
   const worker = resolveRoleBackend("worker", cfg);
   assert.equal(worker.backend, "opencode", "setting tier dropped the inherited backend");
   assert.equal(worker.model, "local/qwen", "setting tier dropped the inherited model");
+  assert.equal(worker.effort, "medium", "setting tier dropped the inherited effort");
   assert.equal(worker.tier, "basic", "the role's own tier did not win");
 });
 

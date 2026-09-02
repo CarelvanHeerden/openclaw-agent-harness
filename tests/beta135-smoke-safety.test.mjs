@@ -248,3 +248,37 @@ test("beta135: observe reports are durable across the accepted continuation", ()
   assert.match(loop, /hydrateObserveReports\(sessionId, plan\)/);
   assert.match(loop, /loop\.observe_reports_hydrated/);
 });
+
+test("beta136: zero-change retry keeps evidence and confronts the false completion", () => {
+  const loop = S("src/orchestrator/loop.ts");
+  assert.match(loop, /subTask: dispatchSt/);
+  assert.match(loop, /resumeSessionId: result\.sdkSessionId/);
+  assert.match(loop, /worktreePath: workerWorktree/);
+  assert.match(loop, /ZERO filesystem changes and ZERO commits/);
+  assert.match(loop, /Git is authoritative/);
+});
+
+test("beta136: focused OpenCode workers cannot launch nested agents", () => {
+  const index = S("src/index.ts");
+  assert.match(index, /focused worker may not launch nested agents/);
+  assert.match(index, /call\.kind === "think"/);
+  assert.match(index, /raw\["subagent_type"\]/);
+});
+
+test("beta136: every backend role schema can declare reasoning effort", () => {
+  for (const file of ["src/config.schema.json", "openclaw.plugin.json"]) {
+    const schema = JSON.parse(S(file));
+    const root = file === "openclaw.plugin.json" ? schema.configSchema : schema;
+    const roles = root.properties.backends.properties;
+    for (const role of [
+      "default", "worker", "scout", "lead", "adversary",
+      "classifier", "crystalliser", "revise_spec", "worker_context",
+    ]) {
+      assert.deepEqual(
+        roles[role].properties.effort.enum,
+        ["none", "low", "medium", "high", "xhigh", "max"],
+        `${file}: ${role}.effort missing`,
+      );
+    }
+  }
+});

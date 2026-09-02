@@ -43,6 +43,13 @@ export interface RoleBackendConfig {
      */
     model?: string;
     /**
+     * Backend reasoning effort/variant. OpenCode exposes this as the ACP
+     * `thought_level` config option (currently id `effort`). Undefined preserves
+     * the backend default; agentic reasoning models should normally use at least
+     * `medium`.
+     */
+    effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+    /**
      * What the operator asserts this model can do. See `CapabilityTier`: it is a
      * declaration, not a measurement, and it exists so the three judgement roles
      * can refuse a model the operator has not vouched for.
@@ -134,6 +141,8 @@ export interface ResolvedRoleBackend {
     backend: BackendId;
     /** Undefined means "let the backend pick", which only claude-code can do. */
     model?: string;
+    /** Requested ACP thought level, inherited per-field like model and tier. */
+    effort?: RoleBackendConfig["effort"];
     /** The provider segment of `provider/model`, when the model is qualified. */
     provider?: string;
     tier: CapabilityTier;

@@ -3151,8 +3151,8 @@ export class OrchestratorLoop {
               envWaitRetried = true;
               const wrote = result.uncommittedFiles ?? [];
               const hint = wrote.length > 0
-                ? `IMPORTANT: your PREVIOUS turn wrote these files to the worktree but never committed them: ${wrote.join(", ")}. There is NO background watcher, NO "Monitor event", NO completion notification, and NO event stream -- harness dispatch is one-shot and NOTHING will ever notify or resume you. Do NOT wait for any install/build/lint/test to "notify" you. Simply \`git add\` and \`git commit\` the work you already did, complete any remaining success criteria INLINE (run any command -- including the test suite, tsc, or lint -- directly in a single BLOCKING Bash call and read its output in THIS turn; or skip a missing tool and note it in the commit message), and end your turn.`
-                : `IMPORTANT: your PREVIOUS turn ended waiting for something that does not exist (a "Monitor event", a "background watcher", a "completion notification", or similar). The harness has NO such mechanism -- dispatch is one-shot and nothing will notify or resume you. Complete this sub-task NOW without waiting for anything. To run tests/build/lint/install, execute the command DIRECTLY in a single blocking Bash call in THIS turn and read its output; do not background it and do not wait for a signal. If a tool (eslint/tsc/lint) is not installed, run \`npm ci\` INLINE first, OR skip that step and note it in the commit message. Make the required edit, commit it, and end your turn.`;
+                ? `OBSERVABLE STATE CHECK: your previous turn left these files uncommitted: ${wrote.join(", ")}. The harness inspected Git, so this is not an interpretation of your prose. Complete any remaining edits, then \`git add\` and \`git commit\` them before reporting completion.`
+                : `OBSERVABLE STATE CHECK: your previous turn produced ZERO filesystem changes and ZERO commits, regardless of what its final message claimed. Git is authoritative. Continue this SAME sub-task now: use direct read/edit/bash tools, make the required changes, inspect \`git status --short\`, and commit them. Do not report completion until the commit command has succeeded and you can quote its hash.`;
               this.deps.interactionLog?.log(sessionId, { event: "env_wait_retry", phase: "worker", seq: st.seq, cycle, partialWork: wrote.length > 0 });
               this.deps.state.audit(
                 "loop.worker_env_wait_retry",
@@ -3166,7 +3166,7 @@ export class OrchestratorLoop {
                 },
                 sessionId,
               );
-              this.deps.logger.warn("[loop] env-wait hallucination detected; retrying sub-task once with corrective context", {
+              this.deps.logger.warn("[loop] zero-change completion failed Git verification; retrying in the same worker session", {
                 sessionId, seq: st.seq, partialWork: wrote.length > 0,
               });
               try {
@@ -3174,7 +3174,17 @@ export class OrchestratorLoop {
                 const onRetryStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
                 const retry = await withTimeout(
                   this.deps.runWorker({
-                    brief, subTask: st, plan, requester: row.requester,
+                    brief,
+                    // Keep the dispatch overlay: the previous retry silently
+                    // dropped priorObserveReports and forced the model to
+                    // rediscover facts the first attempt had been given.
+                    subTask: dispatchSt,
+                    plan,
+                    worktreePath: workerWorktree,
+                    requester: row.requester,
+                    // Resume so the model sees its own tool history and false
+                    // completion claim. A fresh session can simply repeat it.
+                    resumeSessionId: result.sdkSessionId,
                     // Compose the revise context (if any) with the corrective hint.
                     dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
                     // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.

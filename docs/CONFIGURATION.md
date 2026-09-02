@@ -600,30 +600,39 @@ v2: per-role backend and model selection. Absent means every role runs on claude
 
 - **`backends.default.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.default.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.default.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.default.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 - **`backends.worker.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.worker.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.worker.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.worker.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 - **`backends.scout.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.scout.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.scout.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.scout.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 - **`backends.lead.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.lead.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.lead.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.lead.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 - **`backends.adversary.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.adversary.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.adversary.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.adversary.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 - **`backends.classifier.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.classifier.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.classifier.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.classifier.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 - **`backends.crystalliser.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.crystalliser.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.crystalliser.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.crystalliser.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 - **`backends.revise_spec.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.revise_spec.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.revise_spec.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.revise_spec.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 - **`backends.worker_context.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
 - **`backends.worker_context.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.worker_context.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
 - **`backends.worker_context.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
 
 #### `providers`

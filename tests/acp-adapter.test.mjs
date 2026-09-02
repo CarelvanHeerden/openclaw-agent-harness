@@ -178,6 +178,31 @@ test("acp-adapter: unsupported session/set_model is non-fatal", skip, async () =
   assert.match(r.logsExcerpt, /set_model unsupported/);
 });
 
+test("acp-adapter: applies and verifies stable model and effort config options", skip, async () => {
+  const r = await run("config-options", { model: "some-model", effort: "high" });
+  assert.equal(r.stopReason, "end_turn");
+  assert.equal(r.finalMessage, "configured:some-model:high");
+  assert.match(r.logsExcerpt, /configured model=some-model/);
+  assert.match(r.logsExcerpt, /configured effort=high/);
+});
+
+test("acp-adapter: reapplies verified effort on a resumed session", skip, async () => {
+  const r = await run("config-options", {
+    model: "some-model",
+    effort: "medium",
+    resumeSessionId: "fake-session-1",
+  });
+  assert.equal(r.stopReason, "end_turn");
+  assert.equal(r.finalMessage, "configured:some-model:medium");
+});
+
+test("acp-adapter: requested effort fails closed when the agent does not advertise it", skip, async () => {
+  const r = await run("happy", { effort: "high" });
+  assert.equal(r.stopReason, "tool_error");
+  assert.match(r.logsExcerpt, /did not advertise a thought-level config option/);
+  assert.equal(r.finalMessage, "");
+});
+
 // --- preflight: the failure mode that is invisible at runtime ---
 
 test("acp-preflight: opencode with no permission block fails closed", skip, () => {

@@ -101,12 +101,28 @@ export interface AcpAgentSpec {
   onVersionMismatch?: (info: VersionAssessment & { agentName?: string }) => void;
 }
 
+interface AcpSessionConfigOption {
+  id?: string;
+  configId?: string;
+  category?: string;
+  type?: string;
+  currentValue?: unknown;
+  options?: Array<{ value?: unknown }>;
+}
+
+interface AcpSessionConfigResult {
+  sessionId?: string;
+  configOptions?: AcpSessionConfigOption[];
+}
+
 export interface RunWorkerAcpParams {
   agent: AcpAgentSpec;
   worktreePath: string;
   systemPrompt: string;
   userMessage: string;
   model: string;
+  /** ACP thought-level value (OpenCode exposes this as config id `effort`). */
+  effort?: string;
   resumeSessionId?: string;
   timeoutSeconds: number;
   streamOpenTimeoutSeconds?: number;
@@ -416,6 +432,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     systemPrompt,
     userMessage,
     model,
+    effort,
     resumeSessionId,
     timeoutSeconds,
     streamOpenTimeoutSeconds = 120,
@@ -756,10 +773,16 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
       });
     }
 
+    let sessionConfig: AcpSessionConfigOption[] = [];
     if (resumeSessionId) {
       try {
-        await conn.request("session/load", { sessionId: resumeSessionId, cwd: worktreePath, mcpServers: [] });
+        const loaded = await conn.request<AcpSessionConfigResult>("session/load", {
+          sessionId: resumeSessionId,
+          cwd: worktreePath,
+          mcpServers: [],
+        });
         sessionId = resumeSessionId;
+        sessionConfig = loaded?.configOptions ?? [];
       } catch (err) {
         // session/load is optional in the spec and unsupported by some agents.
         // A fresh session plus the dispatch hint is the documented fallback.
@@ -767,21 +790,76 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
       }
     }
     if (!sessionId) {
-      const created = await conn.request<{ sessionId?: string }>("session/new", {
+      const created = await conn.request<AcpSessionConfigResult>("session/new", {
         cwd: worktreePath,
         mcpServers: [],
       });
       sessionId = created?.sessionId ?? "";
+      sessionConfig = created?.configOptions ?? [];
     }
 
-    // Only some agents advertise model selection over ACP (Claude Code does,
-    // OpenCode does not). Failure is non-fatal: the backend's own config then
-    // owns the model choice.
+    const optionId = (o: AcpSessionConfigOption): string | undefined => o.configId ?? o.id;
+    const setConfigOption = async (
+      option: AcpSessionConfigOption,
+      value: string,
+    ): Promise<AcpSessionConfigOption[]> => {
+      const configId = optionId(option);
+      if (!configId) throw new Error("ACP config option has no id");
+      const allowed = option.options?.some((x) => x.value === value) ?? true;
+      if (!allowed) {
+        throw new Error(
+          `ACP config option '${configId}' does not offer '${value}' ` +
+          `(available: ${(option.options ?? []).map((x) => String(x.value)).join(", ")})`,
+        );
+      }
+      const updated = await conn.request<{ configOptions?: AcpSessionConfigOption[] }>(
+        "session/set_config_option",
+        { sessionId, configId, type: "id", value },
+      );
+      const options = updated?.configOptions ?? [];
+      const applied = options.find((x) => optionId(x) === configId);
+      if (!applied || applied.currentValue !== value) {
+        throw new Error(
+          `ACP config option '${configId}' was not confirmed as '${value}' ` +
+          `(reported: ${String(applied?.currentValue ?? "missing")})`,
+        );
+      }
+      pushLog(`[acp] configured ${configId}=${value}`);
+      return options;
+    };
+
+    // Prefer the stable config-options surface advertised by modern ACP
+    // agents. Keep the legacy method only as compatibility for older agents.
     if (model) {
+      const modelOption = sessionConfig.find((o) => o.category === "model" || optionId(o) === "model");
+      if (modelOption) {
+        try {
+          sessionConfig = await setConfigOption(modelOption, model);
+        } catch (err) {
+          throw new Error(`could not apply ACP model '${model}': ${String(err)}`);
+        }
+      } else {
+        try {
+          await conn.request("session/set_model", { sessionId, modelId: model });
+        } catch {
+          pushLog(`[acp] session/set_model unsupported; backend config owns the model`);
+        }
+      }
+    }
+
+    if (effort) {
+      const effortOption = sessionConfig.find(
+        (o) => o.category === "thought_level" || optionId(o) === "effort",
+      );
+      if (!effortOption) {
+        throw new Error(
+          `requested ACP effort '${effort}', but the agent did not advertise a thought-level config option`,
+        );
+      }
       try {
-        await conn.request("session/set_model", { sessionId, modelId: model });
-      } catch {
-        pushLog(`[acp] session/set_model unsupported; backend config owns the model`);
+        sessionConfig = await setConfigOption(effortOption, effort);
+      } catch (err) {
+        throw new Error(`could not apply ACP effort '${effort}': ${String(err)}`);
       }
     }
 
@@ -921,6 +999,8 @@ export interface RunStructuredAcpParams<T> {
   systemPrompt: string;
   userMessage: string;
   model: string;
+  /** ACP thought-level value, when the role configured one. */
+  effort?: string;
   timeoutSeconds: number;
   streamOpenTimeoutSeconds?: number;
   validation: JsonValidationOptions<T>;
@@ -1002,6 +1082,7 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
       systemPrompt: params.systemPrompt,
       userMessage: correction ? `${params.userMessage}\n\n${correction}` : params.userMessage,
       model: params.model,
+      effort: params.effort,
       timeoutSeconds: params.timeoutSeconds,
       streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
       acpGuard: denyAll,

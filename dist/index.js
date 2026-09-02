@@ -575,6 +575,7 @@ export function bootstrapHarnessSync(api) {
                                 systemPrompt: buildScoutSystemPrompt(),
                                 userMessage: buildScoutUserMessage(scoutBrief),
                                 model: backendRouter.backendFor("scout").model ?? config.models.lead,
+                                effort: backendRouter.backendFor("scout").effort,
                                 timeoutSeconds: config.loop.lead_scout_timeout_seconds ?? 420,
                                 acpGuard: buildAcpGuard({
                                     bash_whitelist: config.safety.bash_whitelist,
@@ -742,12 +743,20 @@ export function bootstrapHarnessSync(api) {
                     // through `session/request_permission` looks identical from its own
                     // configuration file.
                     await ensureBackendReady();
+                    const workerGuard = buildAcpGuard({
+                        bash_whitelist: config.safety.bash_whitelist,
+                        bash_denylist_tokens: config.safety.bash_denylist_tokens,
+                        path_denylist: config.safety.path_denylist,
+                        allow_git_push: config.safety.allow_git_push,
+                        allow_network_commands: config.safety.allow_network_commands,
+                    });
                     const r = await runWorkerAcp({
                         agent: backendRouter.agentSpecFor("worker"),
                         worktreePath: params.worktreePath,
                         systemPrompt: params.systemPrompt,
                         userMessage: params.userMessage,
                         model: backendRouter.backendFor("worker").model ?? params.model,
+                        effort: backendRouter.backendFor("worker").effort,
                         resumeSessionId: params.resumeSessionId,
                         timeoutSeconds: params.timeoutSeconds,
                         streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
@@ -756,13 +765,23 @@ export function bootstrapHarnessSync(api) {
                         onStreamSlow: params.onStreamSlow,
                         // NOT params.canUseTool: that guard keys on Claude Code tool
                         // names and would fall through to allow on every ACP call.
-                        acpGuard: buildAcpGuard({
-                            bash_whitelist: config.safety.bash_whitelist,
-                            bash_denylist_tokens: config.safety.bash_denylist_tokens,
-                            path_denylist: config.safety.path_denylist,
-                            allow_git_push: config.safety.allow_git_push,
-                            allow_network_commands: config.safety.allow_network_commands,
-                        }),
+                        acpGuard: async (call) => {
+                            const raw = call.rawInput && typeof call.rawInput === "object"
+                                ? call.rawInput
+                                : {};
+                            // Focused workers already receive a scoped plan and observe
+                            // findings. OpenCode's `task` tool launches an unbounded nested
+                            // agent; the live smoke left that call in_progress and silent
+                            // for eight minutes. Keep workers in their own finite turn.
+                            if (call.kind === "think" &&
+                                (call.title === "task" || typeof raw["subagent_type"] === "string")) {
+                                return {
+                                    allow: false,
+                                    reason: "focused worker may not launch nested agents; use direct read/edit/bash tools",
+                                };
+                            }
+                            return workerGuard(call);
+                        },
                         // Parity with the scout, which has always passed this. Without
                         // it `scrub()` is a no-op for worker logs -- and the worker is
                         // the role whose logs carry command lines, so it is the one that
