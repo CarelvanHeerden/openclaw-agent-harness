@@ -397,6 +397,26 @@ test("beta135: accepted clarification preserves a sub_tasks row's commit_sha", a
   assert.equal(after.commit_sha, before.commit_sha, "the accepted commit remains in the primary ledger");
 });
 
+test("beta137: accepted contract paths replace stale paths in the stored plan", async () => {
+  const s = await runScenario();
+  await s.answer("Accept the placement and proceed.");
+
+  const row = s.state.db.prepare(`SELECT lead_plan_json FROM sessions WHERE id='S1'`).get();
+  const plan = JSON.parse(row.lead_plan_json);
+  const task = plan.subTasks.find((candidate) => candidate.seq === 2);
+  assert.ok(task.filesLikelyTouched.includes(REAL), "accepted real path becomes declared scope");
+  assert.equal(task.filesLikelyTouched.includes(FICTIONAL), false, "disproven scope path is removed");
+  assert.equal(
+    task.verify.some((probe) => probe.path === FICTIONAL),
+    false,
+    "the stale contract cannot fail again on a later review cycle",
+  );
+  assert.ok(
+    s.state.audits.some((a) => a.event === "tool.answer_contract_paths_persisted"),
+    "the durable correction is auditable",
+  );
+});
+
 test("beta102: the append-only audit log still holds every commit after continuation", async () => {
   const s = await runScenario();
   await s.answer("Accept the placement and proceed.");

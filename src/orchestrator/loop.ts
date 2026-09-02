@@ -2403,7 +2403,16 @@ export class OrchestratorLoop {
       // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
       // instead of hard-failing. Carries the ONE question to surface + the
       // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
-      const clarify = { question: null as string | null, seq: -1, subtask: null as { title: string; intent: string } | null };
+      const clarify = {
+        question: null as string | null,
+        seq: -1,
+        subtask: null as {
+          title: string;
+          intent: string;
+          expectedPaths?: string[];
+          actualPaths?: string[];
+        } | null,
+      };
 
       const runOneInner = async (st: LeadPlanSubTask, workerWorktree: string): Promise<void> => {
         // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
@@ -3710,7 +3719,12 @@ export class OrchestratorLoop {
               }
               clarify.question = buildContractClarification(mismatch);
               clarify.seq = st.seq;
-              clarify.subtask = { title: st.title, intent: st.intent };
+              clarify.subtask = {
+                title: st.title,
+                intent: st.intent,
+                expectedPaths: expected,
+                actualPaths: actual,
+              };
             }
             return;
           }
@@ -7616,7 +7630,12 @@ export class OrchestratorLoop {
     seq: number,
     cycles: number,
     totalCostUsd: number,
-    subtask?: { title: string; intent: string } | null,
+    subtask?: {
+      title: string;
+      intent: string;
+      expectedPaths?: string[];
+      actualPaths?: string[];
+    } | null,
   ): LoopOutcome {
     this.setStatus(sessionId, "awaiting_clarification");
     this.deps.state.db.prepare(
