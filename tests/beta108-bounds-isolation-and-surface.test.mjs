@@ -379,7 +379,7 @@ test("beta108: the early exit is guarded on every precondition", () => {
   assert.match(block, /cycleBaseSha/, "an unreadable sha must not read as 'no change'");
   assert.match(block, /tipNow === cycleBaseSha/);
   assert.match(block, /loop\.cycle_no_change_early_exit/);
-  assert.match(block, /shipped_no_change_cycle/);
+  assert.match(block, /carriedBlocking/, "the carried review must still govern whether shipping is safe");
 });
 
 test("beta108: the cycle base sha is captured BEFORE the workers run", () => {

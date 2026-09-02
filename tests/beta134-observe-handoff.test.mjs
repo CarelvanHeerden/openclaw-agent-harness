@@ -29,9 +29,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const S = (p) => readFileSync(join(root, p), "utf8");
 
-let selectObserveReports, renderObserveReportsBlock, buildWorkerSystemPrompt;
+let selectObserveReports, renderObserveReportsBlock, recoverObserveReports, buildWorkerSystemPrompt;
 try {
-  ({ selectObserveReports, renderObserveReportsBlock } = await import("../dist/orchestrator/observe-handoff.js"));
+  ({ selectObserveReports, renderObserveReportsBlock, recoverObserveReports } = await import("../dist/orchestrator/observe-handoff.js"));
   ({ buildWorkerSystemPrompt } = await import("../dist/orchestrator/worker.js"));
 } catch {
   selectObserveReports = null;
@@ -151,6 +151,42 @@ test("beta134: a plan with no observe step prompts exactly as before", { skip },
   assert.match(prompt, /## Rules/);
 });
 
+test("beta135: observe reports recover after a clarification restart", { skip }, () => {
+  const tasks = [
+    { seq: 1, title: "Map the repo", taskMode: "observe" },
+    { seq: 2, title: "Implement", taskMode: "mutate" },
+  ];
+  const recovered = recoverObserveReports(tasks, [
+    {
+      event: "loop.observe_report_recorded",
+      payload: JSON.stringify({ seq: 1, title: "Map the repo", report: "exact/path.ts owns the feature" }),
+    },
+  ]);
+  assert.equal(recovered.get(1)?.report, "exact/path.ts owns the feature");
+  assert.equal(recovered.has(2), false, "mutate summaries are not probe reports");
+});
+
+test("beta135: recovery uses the newest report and supports beta134 rows", { skip }, () => {
+  const tasks = [{ seq: 1, title: "Map the repo", taskMode: "observe" }];
+  const recovered = recoverObserveReports(tasks, [
+    {
+      event: "loop.observe_report_recorded",
+      payload: JSON.stringify({ seq: 1, report: "new report" }),
+    },
+    {
+      event: "loop.worker_end_turn",
+      payload: JSON.stringify({ seq: 1, finalMessage: "old beta134 report" }),
+    },
+  ]);
+  assert.equal(recovered.get(1)?.report, "new report");
+
+  const legacy = recoverObserveReports(tasks, [{
+    event: "loop.worker_end_turn",
+    payload: JSON.stringify({ seq: 1, finalMessage: "legacy report" }),
+  }]);
+  assert.equal(legacy.get(1)?.report, "legacy report");
+});
+
 // ---- the contradiction that caused the fabrication ----
 test("beta134: 'do NOT re-explore' now has an escape hatch", { skip }, () => {
   const prompt = buildWorkerSystemPrompt(
@@ -173,7 +209,7 @@ test("beta134: the loop records probe reports and hands them down", () => {
   assert.match(src, /loop\.observe_reports_handed_down/);
   // run-level, so a skipped re-probe on a revise cycle can still hand down
   // cycle 1's report
-  assert.match(src, /const observeReports = new Map<number, ObserveReport>\(\)/);
+  assert.match(src, /const observeReports = this\.hydrateObserveReports\(sessionId, plan\)/);
 });
 
 test("beta134: the overlay is a copy — the stored plan never carries a report", () => {

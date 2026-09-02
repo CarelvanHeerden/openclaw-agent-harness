@@ -99,4 +99,43 @@ export function renderObserveReportsBlock(reports) {
     }
     return lines.join("\n");
 }
+/**
+ * Rebuild the latest report for every observe sub-task from newest-first audit
+ * rows. New rows carry the full capped report; `worker_end_turn` is the
+ * backwards-compatible beta.134 fallback.
+ */
+export function recoverObserveReports(subTasks, rows) {
+    const out = new Map();
+    const observeBySeq = new Map(subTasks
+        .filter((st) => st.taskMode === "observe")
+        .map((st) => [st.seq, st]));
+    for (const row of rows) {
+        let payload;
+        try {
+            payload = JSON.parse(row.payload);
+        }
+        catch {
+            continue;
+        }
+        const seq = payload.seq;
+        if (typeof seq !== "number" || out.has(seq))
+            continue;
+        const st = observeBySeq.get(seq);
+        if (!st)
+            continue;
+        const report = (row.event === "loop.observe_report_recorded"
+            ? payload.report
+            : row.event === "loop.worker_end_turn"
+                ? payload.finalMessage
+                : undefined)?.trim();
+        if (!report)
+            continue;
+        out.set(seq, {
+            seq,
+            title: payload.title?.trim() || st.title,
+            report: report.slice(0, OBSERVE_REPORT_MAX_CHARS),
+        });
+    }
+    return out;
+}
 //# sourceMappingURL=observe-handoff.js.map

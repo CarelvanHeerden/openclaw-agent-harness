@@ -157,7 +157,13 @@ import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedger
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths, type SuspectPlanPath } from "./plan-path-validate.js";
 import { applyPathCorrections, describePathCorrections, type PathCorrection } from "./plan-path-writeback.js";
-import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, describeBasenameRescue } from "./basename-rescue.js";
+import {
+  proposeBasenameRescue,
+  proposeDirectoryRescue,
+  repoDirsFromFiles,
+  describeBasenameRescue,
+  rescueMatchesContractPath,
+} from "./basename-rescue.js";
 import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult, type CheckScript } from "./repo-conventions.js";
@@ -197,7 +203,13 @@ import {
   type TimeExtensionTrigger,
 } from "./time-extension.js";
 import { selectWorkerModel } from "./worker-model-select.js";
-import { selectObserveReports, OBSERVE_REPORT_MAX_CHARS, type ObserveReport } from "./observe-handoff.js";
+import {
+  selectObserveReports,
+  recoverObserveReports,
+  OBSERVE_REPORT_MAX_CHARS,
+  type ObserveReport,
+  type ObserveReportAuditRow,
+} from "./observe-handoff.js";
 export type LoopStatus =
   | "crystallising"
   | "planning"
@@ -1534,14 +1546,38 @@ export class OrchestratorLoop {
     this.setStatus(sessionId, "planning");
     await this.deps.reportProgress?.(sessionId, "planning");
     let plan: LeadPlan;
+    // beta.135: an accepted contract mismatch is a continuation of the plan
+    // that produced the accepted commit, not a request for a new plan. Load it
+    // before emitting a lead request so the trail cannot claim a model call
+    // happened when it did not.
+    let acceptedContinuation: { plan: LeadPlan; completedSeqs: Set<number> } | null = null;
+    if (brief.resumeExistingPlan) {
+      try {
+        acceptedContinuation = this.loadAcceptedContinuation(sessionId);
+      } catch (err) {
+        this.deps.state.audit(
+          "loop.plan_resume_failed",
+          { sessionId, error: String(err) },
+          sessionId,
+        );
+        return this.finaliseFailedPreserveWorktree(
+          sessionId,
+          `plan_resume_failed: ${String(err)}`,
+          row.cycles_ran,
+          row.cost_usd,
+        );
+      }
+    }
     // beta.63 (Part B): log the lead SDK call boundaries (request/response) into
     // the durable interaction log. A request with no matching response is the
     // exact hang signature the b60 stall left behind.
     const leadStart = Date.now();
-    this.deps.interactionLog?.logSdkRequest(sessionId, {
-      role: "lead", model: this.deps.config.models.lead, phase: "plan",
-      prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
-    });
+    if (!acceptedContinuation) {
+      this.deps.interactionLog?.logSdkRequest(sessionId, {
+        role: "lead", model: this.deps.config.models.lead, phase: "plan",
+        prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
+      });
+    }
     // beta.127 (#157): planning happens before the cycle ledger opens, so the
     // lead's spend is parked here and folded into `totalCost` at its
     // declaration.
@@ -1552,6 +1588,10 @@ export class OrchestratorLoop {
     // second lead call in full, which is the thing b132's recovery guard and
     // dead-listener ship exist to stop happening unasked.
     let leadPlanningCostUsd = 0;
+    const scoutBudget =
+      !acceptedContinuation && this.deps.config.loop.lead_repo_scout_enabled !== false
+        ? Math.max(0, this.deps.config.loop.lead_scout_timeout_seconds ?? 420)
+        : 0;
     try {
       // beta.43: bound the lead-planner SDK call by lead_timeout_seconds. The
       // lead await was UNBOUNDED (beta.42 only bounded the worker). A hung
@@ -1571,11 +1611,7 @@ export class OrchestratorLoop {
       // Adding the scout's own ceiling keeps `lead_timeout_seconds` meaning what
       // its name and docs say -- the time the PLANNER gets -- however the scout
       // knob is set.
-      const scoutBudget =
-        this.deps.config.loop.lead_repo_scout_enabled !== false
-          ? Math.max(0, this.deps.config.loop.lead_scout_timeout_seconds ?? 420)
-          : 0;
-      plan = await withTimeout(
+      plan = acceptedContinuation?.plan ?? await withTimeout(
         this.deps.runLead(brief, {
           requester: row.requester,
           sessionId,
@@ -1610,18 +1646,20 @@ export class OrchestratorLoop {
         this.deps.config.loop.lead_timeout_seconds + scoutBudget,
         "lead_timeout_seconds",
       );
-      this.deps.interactionLog?.logSdkResponse(sessionId, {
-        role: "lead", model: this.deps.config.models.lead, phase: "plan",
-        finishReason: "end_turn", durationMs: Date.now() - leadStart,
-        outputChars: JSON.stringify(plan).length, toolCalls: [],
-        // beta.127 (#157): the second half of the same omission. Every worker
-        // and adversary `sdk_response` in the interaction log carries a cost;
-        // the lead's carried `costUsd: null`, which reads as "this call was
-        // free" rather than "nobody passed the number through". The b126 smoke
-        // was diagnosed off this log, and the lead's 311 seconds on Opus
-        // appeared as null next to a worker's 0.5299.
-        costUsd: plan.actualCostUsd ?? 0,
-      });
+      if (!acceptedContinuation) {
+        this.deps.interactionLog?.logSdkResponse(sessionId, {
+          role: "lead", model: this.deps.config.models.lead, phase: "plan",
+          finishReason: "end_turn", durationMs: Date.now() - leadStart,
+          outputChars: JSON.stringify(plan).length, toolCalls: [],
+          // beta.127 (#157): the second half of the same omission. Every worker
+          // and adversary `sdk_response` in the interaction log carries a cost;
+          // the lead's carried `costUsd: null`, which reads as "this call was
+          // free" rather than "nobody passed the number through". The b126 smoke
+          // was diagnosed off this log, and the lead's 311 seconds on Opus
+          // appeared as null next to a worker's 0.5299.
+          costUsd: plan.actualCostUsd ?? 0,
+        });
+      }
       // beta.94 (Feature 1a): elide the idle-prone trailing PURE-OBSERVE scope
       // "final verification" sub-task (the b93 seq-12 stall). It has nothing to
       // write, so a worker can go idle on it indefinitely while adding zero
@@ -1664,7 +1702,9 @@ export class OrchestratorLoop {
       // whether another cycle is affordable, so planning spend was invisible
       // to every one of those decisions -- and a run that died IN planning
       // reported $0.00 having burned real tokens.
-      leadPlanningCostUsd = plan.actualCostUsd ?? 0;
+      // The stored plan's `actualCostUsd` is historical. Charging it again on
+      // an accepted continuation would bill the same lead/scout turn twice.
+      leadPlanningCostUsd = acceptedContinuation ? 0 : (plan.actualCostUsd ?? 0);
       // beta.128 (#157, second half): PERSIST it. b127 folded the lead into the
       // in-memory `totalCost` -- which fixed the affordability arithmetic -- and
       // stopped there, so `sessions.cost_usd` still counted only workers and
@@ -1675,20 +1715,33 @@ export class OrchestratorLoop {
         this.addCost(sessionId, leadPlanningCostUsd);
         await this.deps.budget.recordSpend(row.requester, leadPlanningCostUsd, sessionId);
       }
-      this.deps.state.audit(
-        "loop.plan_ready",
-        {
-          sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel,
-          leadCostUsd: Number(leadPlanningCostUsd.toFixed(4)),
-          scoutCostUsd: Number((plan.scout?.costUsd ?? 0).toFixed(4)),
-        },
-        sessionId,
-      );
+      if (acceptedContinuation) {
+        this.deps.state.audit(
+          "loop.plan_resumed_after_contract_accept",
+          {
+            sessionId,
+            subTasks: plan.subTasks.length,
+            completedSeqs: [...acceptedContinuation.completedSeqs],
+            leadCostUsd: 0,
+          },
+          sessionId,
+        );
+      } else {
+        this.deps.state.audit(
+          "loop.plan_ready",
+          {
+            sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel,
+            leadCostUsd: Number(leadPlanningCostUsd.toFixed(4)),
+            scoutCostUsd: Number((plan.scout?.costUsd ?? 0).toFixed(4)),
+          },
+          sessionId,
+        );
+      }
       // beta.104: record whether the lead actually SAW the repo before it
       // planned. Emitted on both outcomes -- a smoke report must be able to
       // attribute a plan full of fictional paths to a scout that never ran,
       // which is precisely what b102 could not do for the dispatch hint.
-      if (plan.scout) {
+      if (!acceptedContinuation && plan.scout) {
         this.deps.state.audit(
           "loop.lead_scout",
           {
@@ -1990,7 +2043,7 @@ export class OrchestratorLoop {
     // Run-level (outside the cycle loop) on purpose: a revise cycle that skips
     // re-running a clean observe probe (`loop.observe_reprobe_skipped`) must
     // still be able to hand cycle 1's report to cycle 2's implementers.
-    const observeReports = new Map<number, ObserveReport>();
+    const observeReports = this.hydrateObserveReports(sessionId, plan);
 
     // 2. Execute/review cycles, then the ship gate, then possibly back again.
     //
@@ -2050,6 +2103,11 @@ export class OrchestratorLoop {
       const cycleBaseSha = this.deps.worktreeHeadSha
         ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
         : "";
+      // A recovery can prove a prior review finding resolved without moving
+      // HEAD (for example, contract auto-resolution discovers that an earlier
+      // commit already satisfies the path). Such a cycle deserves a fresh
+      // review; it is not the "worker made no progress" case.
+      let cycleResolvedContractWithoutCommit = false;
 
       // beta.92: DETERMINISTIC finding -> sub-task mapping REPLACES the deleted
       // LLM revise-spec turn (beta.67). The revise-spec turn kept exceeding its
@@ -2287,7 +2345,15 @@ export class OrchestratorLoop {
         }
       }
 
-      const done = new Set<number>();
+      // beta.135: on the first cycle after an accepted clarification, the
+      // existing plan's already-completed rows are dependencies already
+      // satisfied, not work to dispatch again. Later revise cycles start cold
+      // as before so finding-targeted work can run normally.
+      const done = new Set<number>(
+        cycle === 1 && acceptedContinuation
+          ? acceptedContinuation.completedSeqs
+          : [],
+      );
       // rc.3: `preservedReason` carries the human-readable reason out of a
       // terminal path that already handled its own transition, so the outcome
       // reported to the caller says what actually happened.
@@ -3494,7 +3560,7 @@ export class OrchestratorLoop {
                   proposeDirectoryRescue({ expected, actual });
                 if (rescue) {
                   const rescued = contract.map((v) =>
-                    "path" in v && v.path === rescue.from ? { ...v, path: rescue.to } : v,
+                    "path" in v && rescueMatchesContractPath(v.path, rescue) ? { ...v, path: rescue.to } : v,
                   );
                   const rescueProbes = this.deps.buildVerifyProbes({
                     plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
@@ -3521,6 +3587,7 @@ export class OrchestratorLoop {
                     sessionId,
                   );
                   if (reverified.ok) {
+                    cycleResolvedContractWithoutCommit = true;
                     // Fold the correction into the plan through the same b103
                     // writeback path a learned remap uses, so a later revise
                     // cycle scopes against the real path too.
@@ -3612,6 +3679,7 @@ export class OrchestratorLoop {
               };
               const auto = autoResolveContract(mismatch);
               if (auto.resolved && this.deps.config.loop.auto_resolve_satisfied_contract !== false) {
+                cycleResolvedContractWithoutCommit = true;
                 this.deps.state.audit(
                   "loop.contract_auto_resolved",
                   { sessionId, seq: st.seq, cycle, expected, actual, coveredEarlier: auto.coveredEarlier, reason: auto.reason },
@@ -3700,6 +3768,7 @@ export class OrchestratorLoop {
         // unambiguous: whatever `failed.err` holds here is settled, because
         // the sub-task that set it has fully returned.
         if (failed.err) break;
+        if (done.has(st.seq)) continue;
 
         const unmet = (st.dependsOn ?? []).filter((d) => !done.has(d));
         if (unmet.length > 0) {
@@ -3925,18 +3994,64 @@ export class OrchestratorLoop {
         this.deps.worktreeHeadSha
       ) {
         const tipNow = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
-        if (tipNow && tipNow === cycleBaseSha) {
+        if (tipNow && tipNow === cycleBaseSha && !cycleResolvedContractWithoutCommit) {
+          const carriedBlocking = this.countBlockingFindings(lastReview.findings ?? []);
           this.deps.state.audit(
             "loop.cycle_no_change_early_exit",
-            { sessionId, cycle, headSha: tipNow, carriedFindings: lastReview.findings?.length ?? 0 },
+            {
+              sessionId,
+              cycle,
+              headSha: tipNow,
+              carriedVerdict: lastReview.verdict,
+              carriedFindings: lastReview.findings?.length ?? 0,
+              carriedBlocking,
+            },
             sessionId,
           );
-          this.deps.logger.info(
-            "[loop] revise cycle produced no commits; skipping a re-review of an unchanged diff and shipping on the prior verdict (beta.108)",
-            { sessionId, cycle, headSha: tipNow },
+          // beta.135: "carry the prior verdict" means obey it, not merely copy
+          // it into the eventual PR body. beta.108 unconditionally broke to the
+          // ship path here, even when the carried review was `revise` with
+          // blocking HIGH/CRITICAL findings. The policy-Drive smoke therefore
+          // opened a persistence-only PR after the adversary explicitly said
+          // the entire export workflow and tests were absent.
+          if (
+            lastReview.verdict === "pass" ||
+            (
+              lastReview.verdict === "revise" &&
+              carriedBlocking === 0 &&
+              this.deps.config.loop.ship_when_no_blocking_findings !== false
+            )
+          ) {
+            this.deps.logger.info(
+              "[loop] revise cycle produced no commits; unchanged diff retains a shippable prior verdict",
+              { sessionId, cycle, headSha: tipNow, verdict: lastReview.verdict, carriedBlocking },
+            );
+            terminalDoneReason =
+              lastReview.verdict === "pass"
+                ? "shipped_no_change_after_pass"
+                : "shipped_no_change_no_blocking_findings";
+            break;
+          }
+          const reason =
+            lastReview.verdict === "block"
+              ? "no_change_cycle_carried_adversary_block"
+              : "no_change_cycle_with_blocking_findings";
+          this.deps.logger.error(
+            "[loop] revise cycle produced no commits while blocking findings remain; refusing to open a misleading PR",
+            {
+              sessionId,
+              cycle,
+              headSha: tipNow,
+              verdict: lastReview.verdict,
+              carriedBlocking,
+            },
           );
-          terminalDoneReason = "shipped_no_change_cycle";
-          break;
+          this.deps.state.audit(
+            "loop.cycle_no_change_blocked",
+            { sessionId, cycle, headSha: tipNow, verdict: lastReview.verdict, carriedBlocking, reason },
+            sessionId,
+          );
+          return this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
         }
       }
 
@@ -4725,6 +4840,49 @@ export class OrchestratorLoop {
   }
 
   /**
+   * beta.135: load the exact plan being continued after an operator accepts a
+   * committed sub-task whose verification contract named the wrong path.
+   *
+   * Fail closed. Falling back to a fresh lead call here is the data-loss mode
+   * this helper exists to remove: a replacement plan is free to omit pending
+   * work. Completed rows from the latest cycle seed the scheduler's `done` set,
+   * preserving dependency satisfaction while leaving the full plan intact for
+   * final scope checks and adversarial review.
+   */
+  private loadAcceptedContinuation(
+    sessionId: string,
+  ): { plan: LeadPlan; completedSeqs: Set<number> } {
+    const row = this.deps.state.db
+      .prepare(`SELECT lead_plan_json FROM sessions WHERE id = ?`)
+      .get(sessionId) as { lead_plan_json: string | null } | undefined;
+    if (!row?.lead_plan_json) {
+      throw new Error(`accepted clarification cannot resume: session ${sessionId} has no stored lead plan`);
+    }
+    let plan: LeadPlan;
+    try {
+      plan = JSON.parse(row.lead_plan_json) as LeadPlan;
+    } catch (err) {
+      throw new Error(`accepted clarification cannot resume: stored lead plan is invalid JSON (${String(err)})`);
+    }
+    if (!plan || !Array.isArray(plan.subTasks) || plan.subTasks.length === 0 || !plan.worktreePath) {
+      throw new Error(`accepted clarification cannot resume: stored lead plan is incomplete`);
+    }
+    const completedRows = this.deps.state.db
+      .prepare(
+        `SELECT seq
+           FROM sub_tasks
+          WHERE session_id = ?
+            AND cycle = (SELECT MAX(cycle) FROM sub_tasks WHERE session_id = ?)
+            AND status IN ('completed', 'completed_no_change')`,
+      )
+      .all(sessionId, sessionId) as Array<{ seq: number }>;
+    return {
+      plan,
+      completedSeqs: new Set(completedRows.map((r) => r.seq)),
+    };
+  }
+
+  /**
    * beta.134 (observe-handoff): keep a completed observe sub-task's report so
    * the sub-tasks that depend on it can be dispatched holding it.
    *
@@ -4753,9 +4911,67 @@ export class OrchestratorLoop {
     });
     this.deps.state.audit(
       "loop.observe_report_recorded",
-      { sessionId, seq: st.seq, title: st.title, chars: report.length },
+      {
+        sessionId,
+        seq: st.seq,
+        title: st.title,
+        chars: report.length,
+        // Durable handoff. `harness_answer` and process recovery start a new
+        // runInner invocation, so an in-memory map alone loses the probe at
+        // exactly the boundary where later dependants need it.
+        report: report.slice(0, OBSERVE_REPORT_MAX_CHARS),
+      },
       sessionId,
     );
+  }
+
+  /**
+   * beta.135: rebuild the observe handoff map from the durable audit trail.
+   *
+   * New rows use `loop.observe_report_recorded.report` (8k cap). The
+   * `loop.worker_end_turn.finalMessage` fallback keeps reports produced by
+   * beta.134 before this persistence fix resumable too (that older event is
+   * capped at 4k). Latest report per seq wins.
+   */
+  private hydrateObserveReports(
+    sessionId: string,
+    plan: LeadPlan,
+  ): Map<number, ObserveReport> {
+    if (!plan.subTasks.some((st) => st.taskMode === "observe")) return new Map();
+    try {
+      const rows = this.deps.state.db
+        .prepare(
+          `SELECT event, payload
+             FROM audit_log
+            WHERE session_id = ?
+              AND event IN ('loop.observe_report_recorded', 'loop.worker_end_turn')
+            ORDER BY id DESC
+            LIMIT 500`,
+        )
+        .all(sessionId) as unknown as ObserveReportAuditRow[];
+      const out = recoverObserveReports(plan.subTasks, rows);
+      if (out.size > 0) {
+        this.deps.state.audit(
+          "loop.observe_reports_hydrated",
+          {
+            sessionId,
+            fromSeqs: [...out.keys()].sort((a, b) => a - b),
+            chars: [...out.values()].reduce((n, r) => n + r.report.length, 0),
+          },
+          sessionId,
+        );
+      }
+      return out;
+    } catch (err) {
+      // Best effort: a fresh run has no rows, and a read failure must not block
+      // normal execution. The absence remains visible because no hydrated
+      // breadcrumb is emitted.
+      this.deps.logger.warn("[loop] observe report hydration failed; continuing without prior probe reports", {
+        sessionId,
+        err: String(err),
+      });
+      return new Map();
+    }
   }
 
   /**

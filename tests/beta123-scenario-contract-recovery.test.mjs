@@ -49,7 +49,15 @@ test("beta123: an auto-resolved contract lets the run finish", { skip }, async (
   const s = await runScenario({
     subTasks: [
       mutateSubTask({ seq: 1, title: "write alpha", path: "src/alpha.ts" }),
-      mutateSubTask({ seq: 2, title: "extend alpha", path: "src/alpha.ts" }),
+      mutateSubTask({
+        seq: 2,
+        title: "extend alpha",
+        path: "src/alpha.ts",
+        // beta.ts is the worker's explicit auxiliary output, not scope drift.
+        // Declaring it keeps this scenario about contract auto-resolution
+        // rather than the separate no-change-with-blocking-findings gate.
+        extra: { filesLikelyTouched: ["src/alpha.ts", "src/beta.ts"] },
+      }),
     ],
     worker: async (params, ctx) => {
       const seq = params.subTask.seq;

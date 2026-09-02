@@ -1678,7 +1678,8 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         // stripped the requirement from the brief so the re-plan built no
         // migration at all. `accept` records that the work is already done
         // WITHOUT removing it from what the adversary reviews against.
-        if (/^accept\b/i.test(trimmed) || /^keep(-|\s)?commit\b/i.test(trimmed)) {
+        const acceptsCommittedWork = /^accept\b/i.test(trimmed) || /^keep(-|\s)?commit\b/i.test(trimmed);
+        if (acceptsCommittedWork) {
           let paused: { title?: string; intent?: string } = {};
           try { if (row.clarification_subtask) paused = JSON.parse(row.clarification_subtask); } catch { /* ignore */ }
           const what = ((paused.title ?? "") || (paused.intent ?? "")).trim();
@@ -1688,6 +1689,31 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               ? `ALREADY DONE (operator-confirmed): "${what.slice(0, 300)}" was completed and COMMITTED on this branch; the plan's contract path for it was wrong, not the work. Do not redo it and do not plan it again. It remains in scope for review -- the change must still be present and correct in the final diff.`
               : `ALREADY DONE (operator-confirmed): the previously-blocked sub-task ${seq} was completed and committed on this branch. Do not redo it; it remains in scope for review.`,
           );
+          // beta.135: accepting a correct commit settles THIS contract
+          // disagreement; it is not a request for the lead to replace the
+          // feature plan. Mark the paused ledger row complete and tell runInner
+          // to load the existing plan, where the remaining sub-tasks are still
+          // present. The old full re-plan reduced the policy-Drive smoke's
+          // five-step plan to one observe step and silently dropped the actual
+          // export implementation.
+          liveDb().prepare(
+            `UPDATE sub_tasks
+                SET status = 'completed',
+                    summary = ?,
+                    completed_at = COALESCE(completed_at, ?),
+                    updated_at = ?
+              WHERE session_id = ? AND seq = ?
+                AND cycle = (SELECT MAX(cycle) FROM sub_tasks WHERE session_id = ? AND seq = ?)`,
+          ).run(
+            `operator accepted committed work; the plan contract path was wrong${what ? ` (${what.slice(0, 200)})` : ""}`,
+            Date.now(),
+            Date.now(),
+            sessionId,
+            seq,
+            sessionId,
+            seq,
+          );
+          brief.resumeExistingPlan = true;
           liveState().audit("tool.answer_contract_accepted", { sessionId, seq, what: what.slice(0, 120) }, sessionId);
         } else if (/^skip\b/i.test(trimmed)) {
           // beta.58 (D1/D2): DURABLE skip. The prior beta.55 form phrased the

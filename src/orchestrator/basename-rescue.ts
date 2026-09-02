@@ -49,6 +49,19 @@ function normalise(p: string): string {
   return (p ?? "").trim().replace(/^\.?\//, "").replace(/\/+$/, "");
 }
 
+/**
+ * Does a raw contract path name the rescue's normalised `from` path?
+ *
+ * Rescue producers normalise their inputs so `prisma/migrations/` can be
+ * recognised as the directory `prisma/migrations`. The caller must use the
+ * same comparison when applying the proposal; a literal equality check makes
+ * the proposal audit as "rescued" while silently leaving the original
+ * directory contract in place.
+ */
+export function rescueMatchesContractPath(path: string, rescue: BasenameRescue): boolean {
+  return normalise(path) === normalise(rescue.from);
+}
+
 function dirnameOf(p: string): string {
   const i = normalise(p).lastIndexOf("/");
   return i < 0 ? "" : normalise(p).slice(0, i);

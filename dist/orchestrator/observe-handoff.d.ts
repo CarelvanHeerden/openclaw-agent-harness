@@ -69,4 +69,19 @@ export declare function selectObserveReports(subTask: {
  * so a plan without an observe step produces a byte-identical prompt.
  */
 export declare function renderObserveReportsBlock(reports: readonly ObserveReport[]): string;
+/** The small audit-row shape needed to recover reports after a pause/restart. */
+export interface ObserveReportAuditRow {
+    event: string;
+    payload: string;
+}
+/**
+ * Rebuild the latest report for every observe sub-task from newest-first audit
+ * rows. New rows carry the full capped report; `worker_end_turn` is the
+ * backwards-compatible beta.134 fallback.
+ */
+export declare function recoverObserveReports(subTasks: ReadonlyArray<{
+    seq: number;
+    title: string;
+    taskMode?: string;
+}>, rows: readonly ObserveReportAuditRow[]): Map<number, ObserveReport>;
 //# sourceMappingURL=observe-handoff.d.ts.map

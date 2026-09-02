@@ -98,6 +98,19 @@ export interface CrystallisedBrief {
    */
   resumeFromClarification?: boolean;
   /**
+   * beta.135: an `accept` answer to a contract-path clarification resumes the
+   * plan already stored on the session instead of asking the lead to invent a
+   * replacement plan.
+   *
+   * The accepted commit is already on the branch and the human settled only
+   * whether its contract path was wrong. Re-planning the whole feature can
+   * discard every still-pending sub-task; the policy-Drive smoke turned an
+   * original five-step plan into one read-only observe step and then opened a
+   * persistence-only PR. This marker is durable so crash recovery makes the
+   * same continuation decision.
+   */
+  resumeExistingPlan?: boolean;
+  /**
    * beta.63 (convention-awareness Fix 1): the checked-out repo's declared
    * convention files (.cursor/rules/**, .cursorrules, CONTRIBUTING.md,
    * CONVENTIONS.md, AGENTS.md, .github/CONTRIBUTING.md) + repo check scripts,

@@ -765,6 +765,17 @@ export declare class OrchestratorLoop {
      */
     private priorObserveCompleted;
     /**
+     * beta.135: load the exact plan being continued after an operator accepts a
+     * committed sub-task whose verification contract named the wrong path.
+     *
+     * Fail closed. Falling back to a fresh lead call here is the data-loss mode
+     * this helper exists to remove: a replacement plan is free to omit pending
+     * work. Completed rows from the latest cycle seed the scheduler's `done` set,
+     * preserving dependency satisfaction while leaving the full plan intact for
+     * final scope checks and adversarial review.
+     */
+    private loadAcceptedContinuation;
+    /**
      * beta.134 (observe-handoff): keep a completed observe sub-task's report so
      * the sub-tasks that depend on it can be dispatched holding it.
      *
@@ -778,6 +789,15 @@ export declare class OrchestratorLoop {
      * a runaway report in memory for the rest of the run.
      */
     private recordObserveReport;
+    /**
+     * beta.135: rebuild the observe handoff map from the durable audit trail.
+     *
+     * New rows use `loop.observe_report_recorded.report` (8k cap). The
+     * `loop.worker_end_turn.finalMessage` fallback keeps reports produced by
+     * beta.134 before this persistence fix resumable too (that older event is
+     * capped at 4k). Latest report per seq wins.
+     */
+    private hydrateObserveReports;
     /**
      * beta.134 (observe-handoff): a dispatch-time COPY of the sub-task carrying
      * the reports of the probes it depends on. Returns `st` unchanged when there
