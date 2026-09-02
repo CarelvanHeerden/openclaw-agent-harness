@@ -56,6 +56,7 @@ import { CredentialVault, VAULT_KEY_ENV, type CredentialRecord } from "./adapter
 import { buildBackendRouter, type BackendRouter } from "./adapters/backend-router.js";
 import { runWorkerAcp } from "./adapters/acp.js";
 import { buildAcpGuard } from "./safety/bash-guard.js";
+import { focusedWorkerAcpGuard } from "./safety/focused-worker-acp-guard.js";
 import type { RoleName } from "./adapters/backend.js";
 import { catalogueStore } from "./state/price-cache.js";
 import { memoiseSuccess } from "./adapters/shared/once.js";
@@ -1069,33 +1070,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               onStreamSlow: params.onStreamSlow,
               // NOT params.canUseTool: that guard keys on Claude Code tool
               // names and would fall through to allow on every ACP call.
-              acpGuard: async (call) => {
-                const raw = call.rawInput && typeof call.rawInput === "object"
-                  ? call.rawInput as Record<string, unknown>
-                  : {};
-                // OpenCode exposes its in-session checklist as `kind:"other"`.
-                // It has no filesystem/network side effect, but the generic
-                // guard correctly rejects unknown kinds. Denying this exact
-                // tool makes high-effort Codex end the turn before its first
-                // read or edit, so allow only the named built-in checklist.
-                if (call.kind === "other" && call.title === "todowrite") {
-                  return { allow: true };
-                }
-                // Focused workers already receive a scoped plan and observe
-                // findings. OpenCode's `task` tool launches an unbounded nested
-                // agent; the live smoke left that call in_progress and silent
-                // for eight minutes. Keep workers in their own finite turn.
-                if (
-                  call.kind === "think" &&
-                  (call.title === "task" || typeof raw["subagent_type"] === "string")
-                ) {
-                  return {
-                    allow: false,
-                    reason: "focused worker may not launch nested agents; use direct read/edit/bash tools",
-                  };
-                }
-                return workerGuard(call);
-              },
+              acpGuard: focusedWorkerAcpGuard(workerGuard),
               // Parity with the scout, which has always passed this. Without
               // it `scrub()` is a no-op for worker logs -- and the worker is
               // the role whose logs carry command lines, so it is the one that

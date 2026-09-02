@@ -19,11 +19,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const S = (p) => readFileSync(join(root, p), "utf8");
 
-let rescue;
+let rescue, focusedWorkerAcpGuard;
 try {
   rescue = await import("../dist/orchestrator/basename-rescue.js");
+  ({ focusedWorkerAcpGuard } = await import("../dist/safety/focused-worker-acp-guard.js"));
 } catch {
   rescue = null;
+  focusedWorkerAcpGuard = null;
 }
 
 test("beta135: trailing slash still matches a normalised directory rescue", { skip: !rescue }, () => {
@@ -259,11 +261,39 @@ test("beta136: zero-change retry keeps evidence and confronts the false completi
 });
 
 test("beta136: focused OpenCode workers cannot launch nested agents", () => {
-  const index = S("src/index.ts");
-  assert.match(index, /call\.kind === "other" && call\.title === "todowrite"/);
-  assert.match(index, /focused worker may not launch nested agents/);
-  assert.match(index, /call\.kind === "think"/);
-  assert.match(index, /raw\["subagent_type"\]/);
+  const guard = S("src/safety/focused-worker-acp-guard.ts");
+  assert.match(guard, /call\.kind === "other" && call\.title === "todowrite"/);
+  assert.match(guard, /focused worker may not launch nested agents/);
+  assert.match(guard, /call\.kind === "think"/);
+  assert.match(guard, /raw\["subagent_type"\]/);
+});
+
+test("beta136: the focused guard allows only the inert checklist and delegates everything else", {
+  skip: !focusedWorkerAcpGuard,
+}, async () => {
+  const delegated = [];
+  const guard = focusedWorkerAcpGuard(async (call) => {
+    delegated.push(call);
+    return { allow: false, reason: "base guard" };
+  });
+
+  assert.deepEqual(await guard({ kind: "other", title: "todowrite" }), { allow: true });
+  assert.equal(delegated.length, 0);
+
+  const nested = await guard({
+    kind: "think",
+    title: "task",
+    rawInput: { subagent_type: "general" },
+  });
+  assert.equal(nested.allow, false);
+  assert.match(nested.reason, /may not launch nested agents/);
+  assert.equal(delegated.length, 0);
+
+  assert.deepEqual(await guard({ kind: "execute", title: "git status" }), {
+    allow: false,
+    reason: "base guard",
+  });
+  assert.equal(delegated.length, 1);
 });
 
 test("beta136: every backend role schema can declare reasoning effort", () => {
