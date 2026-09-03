@@ -257,6 +257,15 @@ test("beta137: accepted continuation remembers each sub-task's latest completion
   );
 });
 
+test("beta137: a resumed review replaces its same-cycle predecessor", () => {
+  const loop = S("src/orchestrator/loop.ts");
+  const start = loop.indexOf("private saveReview");
+  const body = loop.slice(start, start + 1200);
+  assert.match(body, /ON CONFLICT\(id\) DO UPDATE SET/);
+  assert.match(body, /findings = excluded\.findings/);
+  assert.match(body, /cost_usd = excluded\.cost_usd/);
+});
+
 test("beta135: observe reports are durable across the accepted continuation", () => {
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /report: report\.slice\(0, OBSERVE_REPORT_MAX_CHARS\)/);

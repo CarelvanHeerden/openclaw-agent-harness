@@ -1326,7 +1326,14 @@ export class OrchestratorLoop {
     this.deps.state.db
       .prepare(
         `INSERT INTO reviews (id, session_id, cycle, verdict, findings, summary, cost_usd, sdk_session_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           verdict = excluded.verdict,
+           findings = excluded.findings,
+           summary = excluded.summary,
+           cost_usd = excluded.cost_usd,
+           sdk_session_id = excluded.sdk_session_id,
+           created_at = excluded.created_at`,
       )
       .run(
         `${sessionId}-r${cycle}`,
