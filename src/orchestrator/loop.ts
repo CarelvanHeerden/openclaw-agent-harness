@@ -5175,6 +5175,28 @@ export class OrchestratorLoop {
         // ignore malformed audit rows
       }
     }
+    const completed = this.deps.state.db
+      .prepare(
+        `SELECT current.seq, current.status, current.summary
+           FROM sub_tasks current
+          WHERE current.session_id = ?
+            AND current.cycle = (
+              SELECT MAX(latest.cycle)
+                FROM sub_tasks latest
+               WHERE latest.session_id = current.session_id
+                 AND latest.seq = current.seq
+            )
+            AND current.status IN ('completed', 'completed_no_change')`,
+      )
+      .all(sessionId) as Array<{ seq: number; status: string; summary: string | null }>;
+    for (const task of completed) {
+      if (!bySeq.has(task.seq)) continue;
+      bySeq.set(task.seq, {
+        seq: task.seq,
+        ok: true,
+        summary: task.summary || `sub-task ${task.status}`,
+      });
+    }
     return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
   }
 

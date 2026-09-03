@@ -266,6 +266,15 @@ test("beta137: a resumed review replaces its same-cycle predecessor", () => {
   assert.match(body, /cost_usd = excluded\.cost_usd/);
 });
 
+test("beta137: resolved contracts are reported to the adversary as passing", () => {
+  const loop = S("src/orchestrator/loop.ts");
+  const start = loop.indexOf("private readLocalVerification");
+  const body = loop.slice(start, start + 2500);
+  assert.match(body, /current\.status IN \('completed', 'completed_no_change'\)/);
+  assert.match(body, /ok: true/);
+  assert.match(body, /MAX\(latest\.cycle\)/);
+});
+
 test("beta135: observe reports are durable across the accepted continuation", () => {
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /report: report\.slice\(0, OBSERVE_REPORT_MAX_CHARS\)/);
