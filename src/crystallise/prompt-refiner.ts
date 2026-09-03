@@ -10,7 +10,7 @@
  *      - "not_dev"      : chat / non-dev request, decline politely.
  *      - "unsafe"       : mentions secrets, deletion, etc.; refuse.
  *
- *   2. If dev_task: Fable-5 crystalliser produces a strict-schema brief:
+ *   2. If dev_task: the crystalliser produces a strict-schema brief:
  *      { title, motivation, acceptanceCriteria[], filesLikelyTouched[],
  *        outOfScope[], repoHint, riskLevel }.
  *
@@ -98,6 +98,19 @@ export interface CrystallisedBrief {
    */
   resumeFromClarification?: boolean;
   /**
+   * beta.135: an `accept` answer to a contract-path clarification resumes the
+   * plan already stored on the session instead of asking the lead to invent a
+   * replacement plan.
+   *
+   * The accepted commit is already on the branch and the human settled only
+   * whether its contract path was wrong. Re-planning the whole feature can
+   * discard every still-pending sub-task; the policy-Drive smoke turned an
+   * original five-step plan into one read-only observe step and then opened a
+   * persistence-only PR. This marker is durable so crash recovery makes the
+   * same continuation decision.
+   */
+  resumeExistingPlan?: boolean;
+  /**
    * beta.63 (convention-awareness Fix 1): the checked-out repo's declared
    * convention files (.cursor/rules/**, .cursorrules, CONTRIBUTING.md,
    * CONVENTIONS.md, AGENTS.md, .github/CONTRIBUTING.md) + repo check scripts,
@@ -148,10 +161,46 @@ export interface RepoConvention {
   truncated?: boolean;
 }
 
+/**
+ * What a role call spent.
+ *
+ * Every field is optional because a backend may know the token split without a
+ * dollar figure — that is the normal case for a local provider, where tokens
+ * are a real measurement and cost genuinely does not apply. `costUsd:
+ * undefined` therefore means "not billable or not known", which is the
+ * distinction the old hardcoded `costUsd: 0` erased.
+ */
+export interface RoleCost {
+  costUsd?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+}
+
+/** Sum of what a crystallise pass spent, across the classifier and the brief. */
+export interface SpendTotals {
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  /**
+   * True when at least one call reported tokens but no cost, so `costUsd` is a
+   * floor rather than the total. Without this flag a local-model run and a
+   * free run are the same number.
+   */
+  partial: boolean;
+}
+
+function addSpend(into: SpendTotals, from: Partial<RoleCost> | undefined): void {
+  if (!from) return;
+  if (typeof from.tokensIn === "number") into.tokensIn += from.tokensIn;
+  if (typeof from.tokensOut === "number") into.tokensOut += from.tokensOut;
+  if (typeof from.costUsd === "number") into.costUsd += from.costUsd;
+  else if (typeof from.tokensIn === "number" || typeof from.tokensOut === "number") into.partial = true;
+}
+
 export interface CrystalliserDeps {
   config: HarnessConfig;
   logger: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void };
-  callClassifier: (userText: string) => Promise<ClassifierResult>;
+  callClassifier: (userText: string) => Promise<ClassifierResult & Partial<RoleCost>>;
   /**
    * beta.21: the crystalliser callable now receives optional pre-known
    * concept references so the SDK-side prompt can enrich the brief with
@@ -159,7 +208,7 @@ export interface CrystalliserDeps {
    * that don't have OKF context (e.g. the legacy Slack listener path) pass
    * `undefined` and behaviour is identical to pre-beta.21.
    */
-  callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief>;
+  callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief & Partial<RoleCost>>;
 }
 
 /**
@@ -172,24 +221,33 @@ export async function crystallisePrompt(
   /** beta.21: OKF concepts pre-attached by the caller (typically the OpenClaw agent's context enrichment). Pass-through only — crystalliser does not crawl OKF itself. */
   concepts?: OkfConceptRef[],
 ): Promise<
-  | { kind: "brief"; brief: CrystallisedBrief; classification: ClassifierResult }
-  | { kind: "clarify"; question: string }
-  | { kind: "reject"; reason: string; intent: ClassifierIntent }
+  | { kind: "brief"; brief: CrystallisedBrief; classification: ClassifierResult; spend: SpendTotals }
+  | { kind: "clarify"; question: string; spend: SpendTotals }
+  | { kind: "reject"; reason: string; intent: ClassifierIntent; spend: SpendTotals }
 > {
+  // v2.0.0-beta.1: every exit carries what it spent. The early `clarify` and
+  // `reject` returns are the reason this matters — they still ran a classifier
+  // call, and reporting zero for them made rejected requests look free. A
+  // channel that rejects a hundred prompts a day was invisible in the ledger.
+  const spend: SpendTotals = { costUsd: 0, tokensIn: 0, tokensOut: 0, partial: false };
+
   const cls = await deps.callClassifier(userText);
+  addSpend(spend, cls);
   deps.logger.info("[crystalliser] classifier", cls);
 
   if (cls.intent === "clarify") {
     return {
       kind: "clarify",
       question: cls.suggestedClarification ?? "Could you say a bit more about what you'd like me to do?",
+      spend,
     };
   }
   if (cls.intent === "not_dev" || cls.intent === "unsafe") {
-    return { kind: "reject", reason: cls.reason, intent: cls.intent };
+    return { kind: "reject", reason: cls.reason, intent: cls.intent, spend };
   }
 
   const brief = await deps.callCrystalliser(userText, cls, concepts);
+  addSpend(spend, brief);
   // beta.21: guarantee concepts land on the brief even if the SDK-side
   // crystalliser silently drops the field (e.g. pre-beta.21 model version).
   // The caller's concept list is authoritative when the SDK produces none.
@@ -217,12 +275,12 @@ export async function crystallisePrompt(
         explicit: Boolean(explicit),
         question,
       });
-      return { kind: "clarify", question };
+      return { kind: "clarify", question, spend };
     }
   }
 
   validateBrief(brief);
-  return { kind: "brief", brief, classification: cls };
+  return { kind: "brief", brief, classification: cls, spend };
 }
 
 /**

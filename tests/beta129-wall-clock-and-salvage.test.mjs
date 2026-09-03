@@ -701,7 +701,7 @@ test("disabling the wait restores b120: land it, ask nothing", skipDist, async (
   );
 });
 
-test("a granted extension buys a cycle the loop actually runs, and the PR is recorded when opened", async (t) => {
+test("a granted extension buys a cycle, but no progress with blocking findings does not open a PR", async (t) => {
   const scenario = await loadScenario();
   if (!scenario) return t.skip("git/scenario harness unavailable");
 
@@ -759,8 +759,13 @@ test("a granted extension buys a cycle the loop actually runs, and the PR is rec
     2,
     "an extension the loop bound ignores is not an extension -- b124 and b127 both learned this the hard way",
   );
-  assert.equal(r.events("loop.pr_opened").length, 1, "and the PR must be recorded the moment it exists");
-  assert.equal(r.session().final_pr_url, "https://github.com/o/r/pull/11");
+  assert.equal(
+    r.events("loop.pr_opened").length,
+    0,
+    "the extra cycle changed nothing while a HIGH finding remained, so opening a PR would misrepresent completion",
+  );
+  assert.equal(r.session().final_pr_url, null);
+  assert.equal(r.events("loop.cycle_no_change_blocked").length, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -858,8 +863,8 @@ test("the CI section reports what CI concluded, not what the first poll could no
 test("the header finds a PR that was opened mid-run", () => {
   const src = S("scripts/smoke-report.mjs");
   assert.match(src, /loop\.pr_opened/, "since b127 the PR exists long before final_pr_url is written");
-  const loop = S("src/orchestrator/loop.ts");
-  assert.match(loop, /this\.deps\.state\.audit\("loop\.pr_opened"/);
+  const loop = S("dist/orchestrator/loop.js");
+  assert.match(loop, /^\s*this\.deps\.state\.audit\("loop\.pr_opened"/m);
   assert.match(
     loop,
     /UPDATE sessions SET final_pr_url = \?, pr_number = \?, updated_at = \? WHERE id = \?/,

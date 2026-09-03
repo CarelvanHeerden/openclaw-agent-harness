@@ -21,7 +21,7 @@
  * that blocked on those would block every run forever. An error in a file you
  * just edited is yours to deal with either way.
  */
-import type { ReviewFinding } from "./fable5-adversary.js";
+import type { ReviewFinding } from "./adversary.js";
 export interface TscError {
     file: string;
     line: number;

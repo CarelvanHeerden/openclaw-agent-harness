@@ -19,7 +19,7 @@ import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import type { HarnessConfig, TokenPointer } from "./config.js";
-import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedListenerFlag } from "./config.js";
+import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedListenerFlag, declaresRemovedParallelKeys } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { decideDrainAction, type DrainProgressSample } from "./state/teardown-drain.js";
 import { decideRecoveryResume } from "./state/recovery-guard.js";
@@ -53,6 +53,13 @@ import {
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { CredentialVault, VAULT_KEY_ENV, type CredentialRecord } from "./adapters/credential-vault.js";
+import { buildBackendRouter, type BackendRouter } from "./adapters/backend-router.js";
+import { runWorkerAcp } from "./adapters/acp.js";
+import { buildAcpGuard } from "./safety/bash-guard.js";
+import { focusedWorkerAcpGuard } from "./safety/focused-worker-acp-guard.js";
+import type { RoleName } from "./adapters/backend.js";
+import { catalogueStore } from "./state/price-cache.js";
+import { memoiseSuccess } from "./adapters/shared/once.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import {
   buildScoutSystemPrompt,
@@ -79,13 +86,13 @@ import {
   fetchLiveModelIds,
   assessModelPricingHealth,
   registerDeniedSdkEnvVar,
-} from "./adapters/claude-sdk.js";
+} from "./adapters/claude-code.js";
 import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair, type DeployRepairDeps, type DeployVerifyLite } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt, type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
-import { runLeadPlanner } from "./orchestrator/fable5-lead.js";
-import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/sonnet-worker.js";
-import { runAdversary as runAdversaryCore, type ReviewFinding } from "./orchestrator/fable5-adversary.js";
+import { runLeadPlanner } from "./orchestrator/lead.js";
+import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/worker.js";
+import { runAdversary as runAdversaryCore, type ReviewFinding } from "./orchestrator/adversary.js";
 import { discoverCheckScripts } from "./orchestrator/repo-conventions.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
@@ -372,6 +379,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         config,
         logger: api.logger,
         callClassifier: async () => runClassifierSdk({
+          execute: executorFor("classifier"),
           model: config.models.classifier,
           userText,
           timeoutSeconds: 60,
@@ -381,6 +389,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // crystalliser prompt. Undefined/empty is identical to pre-beta.21
         // behaviour.
         callCrystalliser: async (_userText, _cls, ctxConcepts) => runCrystalliserSdk({
+          execute: executorFor("crystalliser"),
           model: config.models.lead,
           userText,
           timeoutSeconds: 120,
@@ -393,14 +402,26 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       },
       concepts,
     );
-    // crystallisePrompt returns a discriminated union; add cost=0 for now
-    // (real cost is aggregated per-model call). Full cost tracking lives
-    // in Phase D telemetry work.
+    // v2.0.0-beta.1: report what the pass actually spent.
+    //
+    // Both `runClassifierSdk` and `runCrystalliserSdk` have always returned
+    // `costUsd`/`tokensIn`/`tokensOut`; the cost was measured and then dropped
+    // here, at the wiring, because `CrystalliserDeps` typed the callables as
+    // returning the bare result. Every crystallise pass therefore reported
+    // zero — including the reject and clarify paths, which still pay for a
+    // classifier call. `spend` now carries it through.
+    const costUsd = result.spend.costUsd;
+    if (result.spend.partial) {
+      api.logger.info("[crystalliser] cost is a floor: some calls reported tokens without a price", {
+        tokensIn: result.spend.tokensIn,
+        tokensOut: result.spend.tokensOut,
+      });
+    }
     return result.kind === "brief"
-      ? { kind: "brief" as const, brief: result.brief, costUsd: 0 }
+      ? { kind: "brief" as const, brief: result.brief, costUsd }
       : result.kind === "clarify"
-        ? { kind: "clarify" as const, question: result.question, costUsd: 0 }
-        : { kind: "reject" as const, intent: result.intent as "not_dev" | "unsafe", reason: result.reason ?? "", costUsd: 0 };
+        ? { kind: "clarify" as const, question: result.question, costUsd }
+        : { kind: "reject" as const, intent: result.intent as "not_dev" | "unsafe", reason: result.reason ?? "", costUsd };
   };
 
   const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
@@ -463,6 +484,118 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   }
 
   const creds = new CredentialAdapter({ logger: api.logger, vault });
+
+  // v2.0.0-beta.1: per-role backend routing.
+  //
+  // `undefined` unless an operator declared a `backends` block that actually
+  // moves a role, so a v1 install gets no router, no probe, and none of this
+  // code path. Construction VALIDATES and throws on a bad configuration --
+  // caught here rather than propagated, because taking `register()` down would
+  // leave the operator without the `harness_health` that explains why.
+  let backendRouter: BackendRouter | undefined;
+  let backendRouterError: string | undefined;
+  try {
+    backendRouter = buildBackendRouter({
+      backends: config.backends,
+      providers: config.providers,
+      // Synchronous by necessity: `register()` cannot await. The vault's own
+      // read is sync; only `CredentialAdapter` adds a promise.
+      resolveKey: (service) => {
+        // `api_key` first, then `token`. `vault.mjs set` stores `token` unless
+        // told otherwise, so looking up only `api_key` meant the documented way
+        // to seed a provider key produced an entry the router could not see --
+        // and the symptom, "provider dropped: no credential in the vault", is
+        // the one message that actively argues the operator did not store it.
+        // Reading both is safe: the two namespaces are per-service, so this can
+        // only find a key the operator put there under this exact name.
+        try {
+          const v = vault as CredentialStore;
+          return v.get(service, "api_key") ?? v.get(service, "token");
+        } catch { return undefined; }
+      },
+      scratchDir: dataDir,
+      // The same overrides the v1 paths use. Omitting them here made
+      // `models.price_overrides` a no-op on OpenCode -- see `priceOverrides`.
+      priceOverrides: config.models.price_overrides,
+      logger: api.logger,
+      audit: (event, payload) => { try { state.audit(event, payload, ""); } catch { /* audit must never break boot */ } },
+    });
+    if (backendRouter) {
+      api.logger.info("[harness] per-role backends configured", { roles: backendRouter.describe() });
+      state.audit("backend.routes", { roles: backendRouter.describe() }, "");
+    }
+  } catch (err) {
+    // A rejected backend configuration must not be silently downgraded to the
+    // default. The operator asked for something specific; running something
+    // else and reporting success is how a cost or capability surprise gets
+    // blamed on the wrong thing weeks later. Recorded, surfaced, and every
+    // affected role refuses below.
+    backendRouterError = String(err);
+    api.logger.warn(`[harness] BACKEND CONFIGURATION REJECTED: ${backendRouterError}`);
+  }
+
+  /**
+   * The live probe, run once, lazily, on the first session that needs it.
+   *
+   * Not at register time: `register()` is synchronous, and a probe that spawns
+   * a process and waits for a permission round-trip is not something to do on
+   * the plugin loader's critical path. Lazily means the cost lands on the
+   * first run that actually uses OpenCode, and the failure lands there too --
+   * where there is a session to attach it to.
+   */
+  //
+  // `memoiseSuccess`, NOT a `??=` promise memo. A memoised promise caches the
+  // settled value, and a rejection is a settled value -- so the first failure
+  // would be cached forever and every later session would await the same dead
+  // promise. `preflight()` sets its own flag only on success and is perfectly
+  // willing to retry; nothing would ever ask it to. One transient hiccup and
+  // every OpenCode role stays down until the gateway restarts, which on most
+  // hosts means a human. Failing closed is right; failing closed with no route
+  // back is not.
+  const backendProbe = memoiseSuccess(async () => {
+    // Cache-then-refresh: a same-day cache satisfies this without a fetch, and
+    // a failed fetch keeps whatever cache was already good. Awaited only once,
+    // and never fatal -- unpriced turns are a reporting problem.
+    await backendRouter!.refreshPricing(catalogueStore(state.db));
+    await backendRouter!.preflight();
+  });
+
+  const ensureBackendReady = async (): Promise<void> => {
+    if (backendRouterError) throw new Error(`backend configuration rejected at startup: ${backendRouterError}`);
+    if (!backendRouter) return;
+    await backendProbe();
+  };
+
+  /**
+   * The executor for a structured role, or `undefined` to use the SDK path.
+   *
+   * Two things happen here that the router cannot do for itself.
+   *
+   * First, a REJECTED configuration must not read as "no configuration". The
+   * router is undefined in both cases, and returning `undefined` for both
+   * would send a role the operator explicitly moved back to Claude Code
+   * without saying so -- the silent downgrade this whole module exists to
+   * prevent. So a rejected config yields an executor that throws.
+   *
+   * Second, the probe is awaited on the structured path too. Tools are off for
+   * these roles and `runStructuredAcp` denies every call regardless, so the
+   * permission round-trip matters less here than it does for the worker; but
+   * the same gate also refreshes pricing and pins the version, and having one
+   * of the eight roles skip it is how the exception becomes the rule.
+   */
+  const executorFor = (role: RoleName) => {
+    if (backendRouterError) {
+      return (async () => {
+        throw new Error(`backend configuration rejected at startup: ${backendRouterError}`);
+      }) as unknown as ReturnType<BackendRouter["executorFor"]>;
+    }
+    const inner = backendRouter?.executorFor(role);
+    if (!inner) return undefined;
+    return (async (params) => {
+      await ensureBackendReady();
+      return inner(params);
+    }) as typeof inner;
+  };
 
   // Anthropic API key resolver for the embedded Claude Agent SDK.
   // Vault-first, then env fallback. Memoised (including the "not found"
@@ -660,6 +793,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // the ONE bounded re-ask actually re-plans with the corrective note.
         callLeadModel: async (b, _repos, correctiveNote) =>
           runLeadSdk({
+            execute: executorFor("lead"),
             model: config.models.lead,
             brief: b,
             reposAllowed: config.repos.allowed,
@@ -688,6 +822,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // whole-plan re-ask remains as the fallback inside runLeadPlanner.
         callWorkerContextModel: async (b, plan, missingSeqs) =>
           runLeadWorkerContextSdk({
+            execute: executorFor("worker_context"),
             model: config.models.lead,
             brief: b,
             subTasks: plan.subTasks,
@@ -731,6 +866,37 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               commitIdentity: resolution.commitIdentity,
               bootstrapDeps: false,
             });
+            if (backendRouterError) await ensureBackendReady();
+            if (backendRouter?.backendFor("scout").backend === "opencode") {
+              await ensureBackendReady();
+              const s = await runWorkerAcp({
+                agent: backendRouter.agentSpecFor("scout"),
+                worktreePath: scoutWorktree,
+                systemPrompt: buildScoutSystemPrompt(),
+                userMessage: buildScoutUserMessage(scoutBrief),
+                model: backendRouter.backendFor("scout").model ?? config.models.lead,
+                effort: backendRouter.backendFor("scout").effort,
+                timeoutSeconds: config.loop.lead_scout_timeout_seconds ?? 420,
+                acpGuard: buildAcpGuard({
+                  bash_whitelist: config.safety.bash_whitelist,
+                  bash_denylist_tokens: config.safety.bash_denylist_tokens,
+                  // The scout only reads. It gets the worker's path denylist
+                  // and no write path at all.
+                  path_denylist: config.safety.path_denylist,
+                  allow_git_push: false,
+                  allow_network_commands: false,
+                }),
+                secretToken: ghToken,
+                logger: api.logger,
+              });
+              return {
+                report: s.finalMessage,
+                costUsd: backendRouter.priceTurn("scout", s).costUsd ?? 0,
+                tokensIn: s.tokensIn,
+                tokensOut: s.tokensOut,
+                timedOut: s.stopReason === "timeout",
+              };
+            }
             const r = await runLeadScoutSdk({
               model: config.models.lead,
               worktreePath: scoutWorktree,
@@ -819,6 +985,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     // a throw here falls back to buildReviseDispatchHint in the loop.
     runLeadReviseSpec: async ({ brief, plan, review }) => {
       const r = await runLeadReviseSpecSdk({
+        execute: executorFor("revise_spec"),
         model: config.models.lead,
         brief,
         subTasks: plan.subTasks,
@@ -830,10 +997,23 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         maxOutputTokens: config.models.max_output_tokens,
         logger: api.logger,
       });
-      return { subTasks: r.subTasks };
+      // v2.0.0-beta.1: `runLeadReviseSpecSdk` reports what the turn cost and
+      // this return dropped it on the floor one line later. The turn re-emits
+      // the FULL sub-task list, so it is one of the more expensive calls the
+      // harness makes.
+      return { subTasks: r.subTasks, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
     },
 
 
+    // Qualified with the backend when it is not the default, so the ledger says
+    // which engine served the turn and not merely which model was asked for.
+    // `claude-code` rows stay bare, so v1 history and v1 installs read exactly
+    // as they always did.
+    describeWorkerModel: (plannedModel) => {
+      const route = backendRouter?.backendFor("worker");
+      if (!route || route.backend !== "opencode") return plannedModel;
+      return `opencode:${route.model ?? plannedModel}`;
+    },
     runWorker: async ({ brief, subTask, plan, worktreePath, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, firstTokenTimeoutSecondsOverride }) => {
       const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
       const canUseTool = buildBashGuard(config.safety);
@@ -856,8 +1036,54 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           config,
           logger: api.logger,
           buildCanUseTool: () => canUseTool,
-          runWorkerModel: async (params) =>
-            runWorkerSdk({ ...params, apiKey: await anthropicApiKey(), maxOutputTokens: config.models.max_output_tokens }),
+          runWorkerModel: async (params) => {
+            // Throws when the configuration was rejected, so a moved role
+            // fails loudly instead of quietly running on the default backend.
+            if (backendRouterError) await ensureBackendReady();
+            if (backendRouter?.backendFor("worker").backend !== "opencode") {
+              return runWorkerSdk({ ...params, apiKey: await anthropicApiKey(), maxOutputTokens: config.models.max_output_tokens });
+            }
+            // The guard is proven live before the first turn, not assumed from
+            // the config we wrote: an agent that has stopped routing tool calls
+            // through `session/request_permission` looks identical from its own
+            // configuration file.
+            await ensureBackendReady();
+            const workerGuard = buildAcpGuard({
+              bash_whitelist: config.safety.bash_whitelist,
+              bash_denylist_tokens: config.safety.bash_denylist_tokens,
+              path_denylist: config.safety.path_denylist,
+              allow_git_push: config.safety.allow_git_push,
+              allow_network_commands: config.safety.allow_network_commands,
+            });
+            const r = await runWorkerAcp({
+              agent: backendRouter.agentSpecFor("worker"),
+              worktreePath: params.worktreePath,
+              systemPrompt: params.systemPrompt,
+              userMessage: params.userMessage,
+              model: backendRouter.backendFor("worker").model ?? params.model,
+              effort: backendRouter.backendFor("worker").effort,
+              resumeSessionId: params.resumeSessionId,
+              timeoutSeconds: params.timeoutSeconds,
+              streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
+              firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
+              streamIdleWarnSeconds: params.streamIdleWarnSeconds,
+              onStreamSlow: params.onStreamSlow,
+              // NOT params.canUseTool: that guard keys on Claude Code tool
+              // names and would fall through to allow on every ACP call.
+              acpGuard: focusedWorkerAcpGuard(workerGuard),
+              // Parity with the scout, which has always passed this. Without
+              // it `scrub()` is a no-op for worker logs -- and the worker is
+              // the role whose logs carry command lines, so it is the one that
+              // most needs scrubbing. The token is not in the child's filtered
+              // env, so this is defence in depth rather than the only cover.
+              secretToken: await resolveGitToken(resolution).catch(() => ""),
+              logger: api.logger,
+            });
+            // Priced through the router so a provider that reports tokens
+            // without a cost is billed off the catalogue rather than recorded
+            // as a free turn.
+            return { ...r, costUsd: backendRouter.priceTurn("worker", r).costUsd ?? 0 };
+          },
           gitBaseSha: (wt) => git.baseSha(wt),
           gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),
           gitCommit: (wt, msg, id) => git.commit(wt, msg, id),
@@ -910,7 +1136,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           // beta.56 (P0-2): pass the FULL brief, not just the title. The
           // adversary judges spec fidelity against acceptance criteria; it
           // previously never saw them (and the title alone was also dropped
-          // by the prompt builder -- fixed in fable5-adversary.ts).
+          // by the prompt builder -- fixed in adversary.ts).
           crystallisedPrompt: [
             `Title: ${brief.title}`,
             `Motivation: ${brief.motivation}`,
@@ -956,7 +1182,11 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               hadPriorFindings: info.hadPriorFindings,
             }),
           callAdversaryModel: async (params) => {
-            const r = await runAdversarySdk({ ...params, apiKey: await anthropicApiKey() });
+            const r = await runAdversarySdk({
+              ...params,
+              execute: executorFor("adversary"),
+              apiKey: await anthropicApiKey(),
+            });
             return {
               parsed: {
                 verdict: r.parsed.verdict,
@@ -1224,57 +1454,6 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       }
       return outcome;
     },
-
-    /**
-     * beta.117: parallel-worker slot lifecycle.
-     *
-     * The slot path is derived from the session worktree's own directory name
-     * plus the slot number, so slots land beside the session checkout under the
-     * same worktrees root and inherit its disk headroom checks. Deriving it
-     * from the DB session UUID instead would be wrong: the allocator names
-     * session directories `pending-<ts>-<hex>`, and b16 was exactly the bug of
-     * reconstructing a worktree path from the wrong id.
-     */
-    allocatePooledWorktree: async ({ sessionId, repoFullName, sessionBranch, slotBranch, slot }) => {
-      const row = state.db.prepare(`SELECT worktree_path, requester FROM sessions WHERE id = ?`).get(sessionId) as
-        | { worktree_path?: string; requester?: string }
-        | undefined;
-      const sessionPath = row?.worktree_path;
-      if (!sessionPath) throw new Error(`cannot site a parallel slot: session ${sessionId} has no worktree_path`);
-      const slotPath = `${sessionPath}-w${slot}`;
-      // The slot's commits are merged into the session branch and pushed under
-      // the session's identity, so they must be authored by that same identity
-      // or the PR shows two authors for one piece of work.
-      const resolution = pat.resolve({
-        slackUserId: row?.requester ?? config.slack.authorised_users[0]!,
-        gitHubUser: repoFullName.split("/")[0]!,
-        repoFullName,
-      });
-      api.logger.info("[harness] creating a parallel worker slot", { sessionId, slot, slotBranch, slotPath });
-      const started = Date.now();
-      const wt = await git.allocatePooled({
-        repoFullName,
-        sessionBranch,
-        slotBranch,
-        slotPath,
-        commitIdentity: resolution.commitIdentity,
-      });
-      state.audit(
-        "harness.parallel_slot_created",
-        { sessionId, slot, slotBranch, slotPath, durationMs: Date.now() - started },
-        sessionId,
-      );
-      return wt;
-    },
-    resetPooledWorktree: async (worktreePath: string, sha: string) => git.resetPooled(worktreePath, sha),
-    releasePooledWorktree: async ({ repoFullName, worktreePath, slotBranch }) => {
-      const outcome = await git.releasePooled(worktreePath, repoFullName, slotBranch);
-      if (!outcome.ok) {
-        api.logger.warn("[harness] parallel slot release did not succeed", { worktreePath, error: outcome.error });
-      }
-      return outcome;
-    },
-    gitRun: (cwd: string, args: string[]) => git.runIn(cwd, args),
 
     buildVerifyProbes: createVerifyProbes({ git, pat, config, resolveGitToken }),
 
@@ -1878,6 +2057,19 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     api.logger.info(
       "[harness] tool-driven mode -- the harness does NOT listen to Slack. " +
         "Drive it via harness_run / harness_start_session / harness_merge_pr tools.",
+    );
+  }
+
+  // v2.0.0: parallel sub-task dispatch is gone. Warn rather than refuse: a
+  // config naming these keys is not wrong, it is old, and refusing it would
+  // take the plugin offline over a setting that no longer does anything.
+  const removedParallelKeys = declaresRemovedParallelKeys(rawConfig);
+  if (removedParallelKeys.length > 0) {
+    api.logger.warn(
+      `[harness] loop.${removedParallelKeys.join(", loop.")} ` +
+        `${removedParallelKeys.length === 1 ? "was" : "were"} removed in v2.0.0 and ${removedParallelKeys.length === 1 ? "is" : "are"} now IGNORED. ` +
+        "Sub-tasks run one at a time, in the session worktree. " +
+        `Remove ${removedParallelKeys.length === 1 ? "this key" : "these keys"} from your config.`,
     );
   }
 

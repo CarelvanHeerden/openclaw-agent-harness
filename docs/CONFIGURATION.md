@@ -118,7 +118,7 @@ gateway accepts, see [Every setting](#every-setting) at the end.
               "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
               "find", "which", "echo", "printf", "test", "true", "false", "pwd",
               "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
-              "realpath", "xargs", "comm"
+              "realpath", "xargs", "comm", "mkdir", "cd", "cp", "mv", "touch"
             ],
             "bash_denylist_tokens": [
               "sudo", "su", "rm", "shred", "mkfs", "dd", "chmod", "chown", "chgrp", "umount", "mount", "iptables", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill"
@@ -422,7 +422,7 @@ setting it REPLACES the default rather than extending it.
 - **`loop.time_extension_ask_enabled`** — `boolean`, default `true`. beta.129: when the wall clock cannot fit another cycle but findings remain open, ask the operator for more time instead of silently shipping a half-reviewed branch. Answer with harness_answer; a reply carrying a time clause ('2 more hours') sets the new ceiling. Disable to restore the b120 behaviour of landing whatever exists.
 - **`loop.time_extension_wait_seconds`** — `integer`, default `300`. beta.129: how long the loop waits in place for an answer to the time-extension question before shipping anyway. An unanswered question must never be the reason a deliverable is missing from GitHub. Set 0 to disable waiting.
 - **`loop.time_extension_default_seconds`** — `integer`, default `1800`. beta.129: seconds added when the operator approves an extension without naming a figure. A reply with its own time clause wins over this.
-- **`loop.subtask_concurrency`** — `integer`, default `1`.
+- **`loop.subtask_concurrency`** — `integer`, no default; unset unless you set it. REMOVED in v2.0.0 and now ignored. Sub-tasks run one at a time in the session worktree. Still declared here ONLY so an existing config naming it validates: this manifest is additionalProperties:false, so dropping the key would reject the operator's entire plugin config rather than remove a setting. Delete it from your config.
 - **`loop.stuck_loop_seconds`** — `integer`, default `2700`. beta.40: reclaim threshold for a wedged loop. If run() is asked to start a session still marked running by the module-level re-entrancy guard, but its last_checkpoint_at/updated_at has not advanced for this many seconds, the tracked loop is treated as dead (torn down with a prior runtime on plugin re-register), the stale guard entry is force-cleared, and the fresh run proceeds. Must exceed a normal long worker SDK call so a busy loop is never reclaimed.
 - **`loop.teardown_drain_seconds`** — `integer`, default `3600`. beta.41: max seconds teardown() waits for a still-running loop from the runtime being torn down to finish before closing its state DB. A plugin re-register (OKF / gateway auto-discovery churn when plugins.allow is empty) schedules a fire-and-forget teardown of the previous runtime; closing the DB out from under an in-flight loop.run() crashes the run. Draining first prevents that. Bounded so a wedged loop can't block teardown forever.
 - **`loop.stall_watchdog_seconds`** — `integer`, default `90`. beta.42: active stall-watchdog delay. When the re-entrancy guard skips a re-entry (loop.run_skipped_already_running) it arms a timer for this long, then re-checks the session's progress; if none, the wedged loop's stale guard handle is force-deregistered (loop.wedge_detected) so recovery/next-run can reclaim it. Makes beta.40's passive reclaim active -- a loop that wedges with no further re-register is now noticed.
@@ -442,7 +442,7 @@ setting it REPLACES the default rather than extending it.
 - **`loop.revise_spec_timeout_seconds`** — `integer`, default `180`. beta.84 (#2): hard timeout (seconds) on the Fable revise-spec turn. The turn is an unbounded lead-model call that has spun ~570s then failed on the ambient cron lane cap (beta.73 signature, session 1c744d70) -- ~10 min burned before falling back to raw findings. Bounding it makes the raw-findings fallback FAST (audited loop.revise_spec_timeout) instead of eating the lane cap. 0 disables the bound. Default 180.
 - **`loop.skip_observe_reprobe_on_revise`** — `boolean`, default `true`. beta.70 (F5): skip an observe-only sub-task's re-probe on a revise cycle when the same seq already completed cleanly in a prior cycle (PR #870 re-ran the seq-1 probe for 58s/$0.29 despite the revise-spec saying 'no changes'). Default true.
 - **`loop.revise_scoping_enabled`** — `boolean`, default `true`. beta.91 (Fix 1): on a revise cycle, skip sub-tasks whose file scope does not intersect any review finding's file (already-correct from a prior cycle; the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks). A finding with no resolvable file makes the cycle unscopable => run every sub-task (conservative). Never skips a sub-task a kept one depends on. Default true; false restores beta.90 run-all.
-- **`loop.parallel_independent_subtasks`** — `boolean`, default `false`. beta.117: run independent sub-tasks (disjoint declared file scope, no dependency) concurrently, up to subtask_concurrency. Each concurrent worker gets its OWN checkout on its own branch, and its commits are merged back into the session branch one at a time; two workers touching the same undeclared file surface as a merge conflict against a named sub-task instead of silently corrupting each other. Costs one `npm ci` per slot, once per cycle. Default false. Set true AND subtask_concurrency > 1 to parallelise.
+- **`loop.parallel_independent_subtasks`** — `boolean`, no default; unset unless you set it. REMOVED in v2.0.0 and now ignored. Parallel sub-task dispatch, its worktree pool and its merge-back are deleted; the session worktree is the isolation boundary and workers commit to it serially. Still declared here ONLY so an existing config naming it validates: this manifest is additionalProperties:false, so dropping the key would reject the operator's entire plugin config rather than remove a setting. Delete it from your config.
 - **`loop.deterministic_revise_mapping`** — `boolean`, default `true`. beta.92: use the DETERMINISTIC finding->sub-task mapping on a revise cycle instead of the deleted LLM revise-spec turn (which kept timing out on the cron lane cap across b89/b90/b91 and falling back to a raw finding-dump that induced worker confabs). Maps each diff-addressable finding (spec|quality|security, .file required) to the sub-task(s) owning its file via strict resolveContractPath; broadcasts meta (fit|runtime) findings + mapping-misses to all sub-tasks (never dropped). Default true; false restores the beta.56 whole-review raw hint fallback.
 - **`loop.worker_confab_detect`** — `boolean`, default `true`. beta.92 (log-only): emit loop.worker_confab_suspected when the worker's final message lexically claims it left a contract-REQUIRED (non-relaxed) file untouched (the b91 seq-6 confab). No behaviour change -- verification still decides pass/fail. Default true; false disables the detector.
 - **`loop.contract_rederive_enabled`** — `boolean`, default `true`. beta.76 + beta.93 kill-switch: correct a stale lead-guessed contract path against the repo's real touched layout BEFORE verification (with the beta.93 exact-match short-circuit + same-basename evidence guards, so a correctly-committed path is never rewritten -- the session de0cba9f false-positive). Default true; false disables re-derivation entirely (verify against the declared path verbatim, relying on the beta.50+ tolerant match rules).
@@ -526,7 +526,7 @@ beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness 
 #### `safety`
 
 - **`safety.worker_permission_mode`** — `"acceptEdits" | "bypassPermissions" | "plan"`, default `"acceptEdits"`.
-- **`safety.bash_whitelist`** — `string[]`, default `["git","pnpm","npm","npx","yarn","node","tsc","tsx","deno","bun","python","python3","pip","pip3","pytest","go","cargo","make","just","ls","cat","grep","rg","head","tail","wc","jq","yq","sed","awk","find","which","echo","printf","test","true","false","pwd","diff","sort","uniq","cut","tr","env","date","basename","dirname","realpath","xargs","comm"]`.
+- **`safety.bash_whitelist`** — `string[]`, default `["git","pnpm","npm","npx","yarn","node","tsc","tsx","deno","bun","python","python3","pip","pip3","pytest","go","cargo","make","just","ls","cat","grep","rg","head","tail","wc","jq","yq","sed","awk","find","which","echo","printf","test","true","false","pwd","diff","sort","uniq","cut","tr","env","date","basename","dirname","realpath","xargs","comm","mkdir","cd","cp","mv","touch"]`.
 - **`safety.bash_denylist_tokens`** — `string[]`, default `["sudo","su","rm","shred","mkfs","dd","chmod","chown","chgrp","umount","mount","iptables","reboot","shutdown","halt","poweroff","kill","killall","pkill","sh","bash","zsh","dash","ksh","fish"]`.
 - **`safety.path_denylist`** — `string[]`, default `[".env",".env.*",".secrets/","/etc/","/root/","~/.ssh/","id_rsa","id_ed25519","harness-vault/","vault.key","vault.db"]`.
 - **`safety.allow_git_push`** — `boolean`, default `false`.
@@ -593,5 +593,52 @@ beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces 
 - **`credentials.dir`** — `string`, default `"harness-vault"`. Directory holding vault.db and (by default) vault.key. Relative paths resolve against the harness data dir, NOT the git worktree, so the vault survives worktree teardown.
 - **`credentials.key_env`** — `string`, default `"OAH_VAULT_KEY"`. Env var checked for a raw 32-byte key (64 hex chars or base64). When set it OVERRIDES the key file. Renaming it also moves the worker-subprocess env strip, so the key never reaches a worker under either name.
 - **`credentials.key_file`** — `string`, no default; unset unless you set it. Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent — back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir — they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you.
+
+#### `backends`
+
+v2: per-role backend and model selection. Absent means every role runs on claude-code, as in v1.
+
+- **`backends.default.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.default.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.default.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.default.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.worker.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.worker.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.worker.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.worker.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.scout.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.scout.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.scout.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.scout.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.lead.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.lead.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.lead.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.lead.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.adversary.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.adversary.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.adversary.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.adversary.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.classifier.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.classifier.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.classifier.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.classifier.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.crystalliser.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.crystalliser.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.crystalliser.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.crystalliser.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.revise_spec.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.revise_spec.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.revise_spec.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.revise_spec.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+- **`backends.worker_context.backend`** — `"claude-code" | "opencode"`, no default; unset unless you set it. Which agent backend runs this role. Default: claude-code.
+- **`backends.worker_context.model`** — `string`, no default; unset unless you set it. Model id. Use provider/model form for opencode; a bare id is accepted for claude-code.
+- **`backends.worker_context.effort`** — `"none" | "low" | "medium" | "high" | "xhigh" | "max"`, no default; unset unless you set it. OpenCode reasoning effort/variant. Undefined leaves the backend default.
+- **`backends.worker_context.tier`** — `"basic" | "strong" | "frontier"`, no default; unset unless you set it. Operator declaration of model capability. lead, adversary and crystalliser require at least strong.
+
+#### `providers`
+
+v2: OpenAI-compatible endpoints made available to OpenCode roles. API keys live in the vault and are named by service, never inlined here.
+
+- **`providers`** — `object`, no default; unset unless you set it. v2: OpenAI-compatible endpoints made available to OpenCode roles. API keys live in the vault and are named by service, never inlined here.
 
 <!-- END GENERATED CONFIG REFERENCE -->

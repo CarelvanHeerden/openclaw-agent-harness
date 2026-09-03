@@ -158,7 +158,7 @@ test("beta.54: worker prompt has CI-shift verification clause + hard-stop rule",
   // yourself" clause: the worker no longer runs the suite/build/lint as a
   // verification gate -- GitHub CI does. The hard-stop rule + the
   // no-async-test-runner denial are UNCHANGED (they prevent confabulation).
-  const src = readFileSync(join(root, "src/orchestrator/sonnet-worker.ts"), "utf8");
+  const src = readFileSync(join(root, "src/orchestrator/worker.ts"), "utf8");
   assert.match(src, /DO NOT run the test suite, a build, or lint "to green"/i, "CI-shift verification clause present");
   assert.match(src, /GitHub CI runs the repo's declared checks AFTER the/i, "CI is the verification spine");
   assert.match(src, /HARD STOP RULE/, "hard-stop rule present");

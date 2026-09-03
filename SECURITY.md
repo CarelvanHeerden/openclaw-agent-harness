@@ -95,10 +95,62 @@ These are properties of the design, not bugs with fixes pending. Adding each row
 - **`safety.path_denylist`** blocks the SDK's `Read`/`Write` tools and direct file arguments to whitelisted commands. It does not survive an interpreter, a glob, a case change or git history — see the table.
 - **`safety.allow_network_commands`** removes `curl` and `wget` from the whitelist. It does not prevent network access; `python3`, `node` and `make` all reach the network freely.
 - **`safety.bash_denylist_tokens`** blocks the named binaries. It does not prevent what they do — a worker that wants to delete files can do it from Python.
-- **`ANTHROPIC_API_KEY` is readable by the worker.** It is injected into the SDK subprocess environment deliberately, so the embedded Claude Code binary does not fall back to interactive `/login` ([`src/adapters/claude-sdk.ts`](src/adapters/claude-sdk.ts)). A worker can print it. Scope and rotate that key accordingly.
+- **`ANTHROPIC_API_KEY` is readable by the worker.** It is injected into the SDK subprocess environment deliberately, so the embedded Claude Code binary does not fall back to interactive `/login` ([`src/adapters/claude-code.ts`](src/adapters/claude-code.ts)). A worker can print it. Scope and rotate that key accordingly.
 - **`.git/` is writable by the worker,** including `.git/hooks/`. A hook written during a session runs on the next git operation, outside the guard entirely.
 
 Real containment needs an OS boundary — a sandboxed process with denied egress, read-only mounts and a scoped filesystem view — not a command-line filter. [`docs/WORKER_ISOLATION.md`](docs/WORKER_ISOLATION.md) scopes what that would take and why it is not in this release.
+
+### `2.0.0`: third-party backends make this materially worse
+
+Stated here because nothing else in the v2 release addresses it, and because the change is easy to miss: none of the controls above got weaker, but the assumption holding them up did.
+
+Everything in "The threat model, stated plainly" rests on the worker being **capable but not adversarial**. Through `1.x` that was a reasonable thing to assume rather than enforce: the worker was always an Anthropic model reached through the Claude Code SDK, operating under a commercial agreement, with the vendor's own training and safety work behind it. The bash guard did not have to be a wall, because it was a speed bump in front of something that was not pushing on it.
+
+`2.0.0` lets an operator point any role at an arbitrary OpenCode backend, including a local `@ai-sdk/openai-compatible` endpoint serving weights of unknown provenance. **That assumption is now a configuration choice, and the harness cannot verify it.** The guard is unchanged and still admits `python3`, `node` and `make`, so a worker that wants out of it is one line of Python away — the difference is that the population of workers now includes ones nobody has vetted.
+
+What v2 *does* add is real, and worth being precise about, because it is easy to mistake for containment:
+
+- The permission round-trip is **verified live at startup**, not trusted from config, so a backend that silently stops asking is a startup refusal rather than an unguarded worker ([M6](docs/acp-capability-matrix.md)).
+- The ACP child gets the **same filtered environment** as the SDK path, so the vault key, `GH_TOKEN`, `VERCEL_TOKEN` and Slack tokens do not reach it.
+- The whole **process group is reaped** on abort and timeout, so a cancelled session cannot leave a model process spending.
+- The three judgement roles **refuse to run below a declared `strong` tier**, because a weak lead, adversary or crystalliser fails by returning a confident, well-formed, wrong answer.
+
+All four make the ACP path as good as the SDK path. None of them makes either path a sandbox.
+
+#### `path_denylist` does not cover reads on the OpenCode backend
+
+One place the ACP path is measurably **weaker** than the SDK path, rather than merely no stronger. It is listed separately from the best-effort items above because those degrade under a determined worker, and this one does not apply at all.
+
+Measured on `opencode-ai@1.18.23`, a read permission request arrives as:
+
+```json
+{ "kind": "read", "title": "read", "locations": [], "rawInput": {} }
+```
+
+There is no path in any field, so there is nothing for `path_denylist` to match against. On the SDK path the same denylist blocks the `Read` tool by filename; on the OpenCode path **it does not apply to reads at all**, and an OpenCode worker can read anything inside its worktree that it can name — including files listed in `path_denylist`, and including `.env` if the repository carries one.
+
+The alternative was tried first and is worse. Failing closed means every read is refused, which does not produce a contained worker — it produces a worker that cannot read a file, therefore cannot change one, and reports this by narrating its intent and stopping. That is not a safe degradation, it is a backend that does not work, and it is indistinguishable in the log from a model that simply declined the task.
+
+So the harness allows the read and says so, rather than enforcing a control it cannot apply:
+
+- The relaxation is **narrow**. It applies only to `kind: "read"`, and only when the agent supplies no path. `edit`, `delete`, `move` and `search` still fail closed on a missing path, so nothing that *writes* is affected.
+- It is **conditional, not blanket**. When a path is present the denylist enforces exactly as before, so an agent that does supply one (Codex does) is fully guarded, and a future OpenCode that starts supplying one is guarded automatically with no change here.
+- It is **counted and announced**. The first unchecked read in a turn logs `path_denylist NOT enforced on read`, and the per-turn total is recorded as `unguardedReads` on the audit trail. A control that has quietly stopped applying is worse than one that was never claimed.
+
+**What this means in practice.** The vault is not exposed by this: `harness-vault/`, `vault.key` and `vault.db` live outside the worktree, and the vault key is stripped from the child's environment. The exposure is repository contents, which the worker is meant to read anyway — the loss is the ability to carve out specific files within a repository the worker is otherwise entitled to. Treat `path_denylist` as a Claude-Code-backend control, and treat any secret committed to a repository as readable by an OpenCode worker operating on it.
+
+The intended production install is a Docker container. That bounds damage to the container filesystem and its mounted worktree rather than the host, which is why this relaxation is accepted as a beta operating choice instead of leaving the backend unusable. Docker is **not** the OS boundary in [`docs/WORKER_ISOLATION.md`](docs/WORKER_ISOLATION.md): a container that can reach the network and write its own worktree is still an uncontained worker.
+
+This narrows to nothing under the same exit criteria as the section above: a scoped filesystem view enforces by mount what the denylist currently attempts by filename.
+
+**Operating guidance until an OS boundary lands: run non-Anthropic workers on trusted repositories only.** Concretely — repositories whose contents, dependencies and CI you or your organisation control, where a prompt-injected README or a poisoned transitive dependency is not a realistic input. A third-party backend on an untrusted repository combines an unvetted worker with attacker-controlled instructions inside a guard that was never built to hold either, and the harness will not stop that.
+
+| | |
+| --- | --- |
+| **Owner** | Carel van Heerden |
+| **Exit criteria** | Read-only worker filesystem plus a default-deny egress proxy, per [`docs/WORKER_ISOLATION.md`](docs/WORKER_ISOLATION.md). Both, not either: a read-only mount without egress control still exfiltrates, and an egress proxy without a read-only mount still lets a worker write `.git/hooks/pre-commit`. |
+| **Until then** | Non-Anthropic workers are **trusted-repo-only**. This is documented, not enforced — the harness has no way to tell a trusted repository from an untrusted one. |
+| **Review** | Re-assessed each minor release; this section is wrong the day the exit criteria land, and should be deleted rather than softened. |
 
 ## What the push invariant actually guarantees
 

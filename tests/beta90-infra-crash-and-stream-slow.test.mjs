@@ -61,7 +61,7 @@ test("beta90: isInfraCrash matches INFRA classes, not QUALITY errors", () => {
 // ---------------------------------------------------------------------------
 // Unit: evaluateStreamSlowTick (pure tick logic)
 // ---------------------------------------------------------------------------
-const { evaluateStreamSlowTick } = await import("../dist/adapters/claude-sdk.js");
+const { evaluateStreamSlowTick } = await import("../dist/adapters/claude-code.js");
 
 test("beta90: stream-slow tick fires only when idle past threshold; advancing resets; disabled never fires", () => {
   const idleWarnMs = 90_000;
@@ -363,15 +363,20 @@ test("beta90 F1: infra-crash module exports + is imported by the loop (source)",
 });
 
 test("beta90 F2: consumeWorkerStream has stream-slow tick wired; observability only (source)", () => {
-  const sdk = S("src/adapters/claude-sdk.ts");
+  const sdk = S("src/adapters/claude-code.ts");
   assert.match(sdk, /onStreamSlow\?:/);
   assert.match(sdk, /streamIdleWarnSeconds\?:/);
-  assert.match(sdk, /export function evaluateStreamSlowTick/);
+  // v2.0.0: the tick arithmetic moved to adapters/shared/stream.ts -- "has this
+  // stream gone quiet" is the same question on either backend -- so the adapter
+  // now imports it rather than defining it. What b90 is about is that the
+  // detector is WIRED and stays observability-only, which is asserted below.
+  assert.match(sdk, /evaluateStreamSlowTick/);
+  assert.match(S("src/adapters/shared/stream.ts"), /export function evaluateStreamSlowTick/);
   // stream-slow is observability only: the detector must not call abort in its tick
   const tickBlock = sdk.slice(sdk.indexOf("STREAM-SLOW liveness detector"), sdk.indexOf("armStreamOpenWatchdog();"));
   assert.doesNotMatch(tickBlock, /abort\.abort\(\)/, "stream-slow tick must never abort");
   // must thread through the worker path
-  const worker = S("src/orchestrator/sonnet-worker.ts");
+  const worker = S("src/orchestrator/worker.ts");
   assert.match(worker, /onStreamSlow/);
   assert.match(worker, /streamIdleWarnSeconds: deps\.config\.loop\.worker_stream_idle_warn_seconds \?\? 90/);
 });

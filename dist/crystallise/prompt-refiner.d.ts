@@ -10,7 +10,7 @@
  *      - "not_dev"      : chat / non-dev request, decline politely.
  *      - "unsafe"       : mentions secrets, deletion, etc.; refuse.
  *
- *   2. If dev_task: Fable-5 crystalliser produces a strict-schema brief:
+ *   2. If dev_task: the crystalliser produces a strict-schema brief:
  *      { title, motivation, acceptanceCriteria[], filesLikelyTouched[],
  *        outOfScope[], repoHint, riskLevel }.
  *
@@ -93,6 +93,19 @@ export interface CrystallisedBrief {
      */
     resumeFromClarification?: boolean;
     /**
+     * beta.135: an `accept` answer to a contract-path clarification resumes the
+     * plan already stored on the session instead of asking the lead to invent a
+     * replacement plan.
+     *
+     * The accepted commit is already on the branch and the human settled only
+     * whether its contract path was wrong. Re-planning the whole feature can
+     * discard every still-pending sub-task; the policy-Drive smoke turned an
+     * original five-step plan into one read-only observe step and then opened a
+     * persistence-only PR. This marker is durable so crash recovery makes the
+     * same continuation decision.
+     */
+    resumeExistingPlan?: boolean;
+    /**
      * beta.63 (convention-awareness Fix 1): the checked-out repo's declared
      * convention files (.cursor/rules/**, .cursorrules, CONTRIBUTING.md,
      * CONVENTIONS.md, AGENTS.md, .github/CONTRIBUTING.md) + repo check scripts,
@@ -147,13 +160,39 @@ export interface RepoConvention {
     /** True when this source's text was truncated to fit the budget. */
     truncated?: boolean;
 }
+/**
+ * What a role call spent.
+ *
+ * Every field is optional because a backend may know the token split without a
+ * dollar figure — that is the normal case for a local provider, where tokens
+ * are a real measurement and cost genuinely does not apply. `costUsd:
+ * undefined` therefore means "not billable or not known", which is the
+ * distinction the old hardcoded `costUsd: 0` erased.
+ */
+export interface RoleCost {
+    costUsd?: number;
+    tokensIn?: number;
+    tokensOut?: number;
+}
+/** Sum of what a crystallise pass spent, across the classifier and the brief. */
+export interface SpendTotals {
+    costUsd: number;
+    tokensIn: number;
+    tokensOut: number;
+    /**
+     * True when at least one call reported tokens but no cost, so `costUsd` is a
+     * floor rather than the total. Without this flag a local-model run and a
+     * free run are the same number.
+     */
+    partial: boolean;
+}
 export interface CrystalliserDeps {
     config: HarnessConfig;
     logger: {
         info: (m: string, meta?: unknown) => void;
         warn: (m: string, meta?: unknown) => void;
     };
-    callClassifier: (userText: string) => Promise<ClassifierResult>;
+    callClassifier: (userText: string) => Promise<ClassifierResult & Partial<RoleCost>>;
     /**
      * beta.21: the crystalliser callable now receives optional pre-known
      * concept references so the SDK-side prompt can enrich the brief with
@@ -161,7 +200,7 @@ export interface CrystalliserDeps {
      * that don't have OKF context (e.g. the legacy Slack listener path) pass
      * `undefined` and behaviour is identical to pre-beta.21.
      */
-    callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief>;
+    callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief & Partial<RoleCost>>;
 }
 /**
  * The pure orchestration -- takes injected callables so unit tests never
@@ -173,12 +212,15 @@ concepts?: OkfConceptRef[]): Promise<{
     kind: "brief";
     brief: CrystallisedBrief;
     classification: ClassifierResult;
+    spend: SpendTotals;
 } | {
     kind: "clarify";
     question: string;
+    spend: SpendTotals;
 } | {
     kind: "reject";
     reason: string;
     intent: ClassifierIntent;
+    spend: SpendTotals;
 }>;
 //# sourceMappingURL=prompt-refiner.d.ts.map

@@ -30,9 +30,9 @@ import type { BudgetEnforcer } from "../budgets/enforcer.js";
 import type { PatRouter } from "../auth/pat-router.js";
 import type { StateStore } from "../state/store.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
-import type { LeadPlan, LeadPlanSubTask } from "./fable5-lead.js";
-import type { ReviewReport, ReviewFinding } from "./fable5-adversary.js";
-import type { WorkerResult } from "./sonnet-worker.js";
+import type { LeadPlan, LeadPlanSubTask } from "./lead.js";
+import type { ReviewReport, ReviewFinding } from "./adversary.js";
+import type { WorkerResult } from "./worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 /**
  * beta.64 (P0-3): parse the file paths out of a `git diff --stat base..HEAD`
@@ -249,6 +249,16 @@ export interface OrchestratorDeps {
      * regression). Optional: unwired OR throws -> fall back to
      * buildReviseDispatchHint (never worse than beta.66).
      */
+    /**
+     * beta.99: the revise-spec turn.
+     *
+     * NOTE (v2.0.0-beta.1): declared and wired in `index.ts`, but nothing in this
+     * file calls it — beta.120's deterministic revise mapping took over the job.
+     * Left in place rather than deleted because removing a dep is a breaking
+     * change for anyone constructing the loop directly, but it is dead weight and
+     * a candidate for removal. Its cost fields are threaded through anyway, so
+     * that reviving it does not reintroduce the leak this milestone closed.
+     */
     runLeadReviseSpec?: (params: {
         brief: CrystallisedBrief;
         plan: LeadPlan;
@@ -256,7 +266,26 @@ export interface OrchestratorDeps {
         requester?: string;
     }) => Promise<{
         subTasks: LeadPlanSubTask[];
+        costUsd?: number;
+        tokensIn?: number;
+        tokensOut?: number;
     }>;
+    /**
+     * What the worker will ACTUALLY run on, for the sub-task ledger.
+     *
+     * The ledger used to record `config.models.worker` unconditionally, which was
+     * wrong in two directions at once: it ignored beta.91's per-sub-task
+     * `modelOverride`, and from v2 it ignored per-role backend routing entirely —
+     * a turn served by OpenCode was filed under the Claude Code model name. That
+     * is not a cosmetic slip. The A/B matrix in docs/V2_SMOKE.md compares cost per
+     * merged PR across backends by reading exactly this column, so a mislabelled
+     * row does not merely lose information, it silently attributes one backend's
+     * spend to the other and flatters whichever one is not actually running.
+     *
+     * Optional so that pre-v2 stubs keep compiling; absent means "the planned
+     * model is the truth", which is correct for a single-backend install.
+     */
+    describeWorkerModel?: (plannedModel: string) => string;
     runWorker: (params: {
         brief: CrystallisedBrief;
         subTask: LeadPlanSubTask;
@@ -562,32 +591,6 @@ export interface OrchestratorDeps {
         path?: string;
         error?: string;
     }>;
-    /**
-     * beta.117: lifecycle for one parallel-worker slot checkout.
-     *
-     * Only consulted when effective concurrency exceeds 1, so a serial run --
-     * still the default -- never allocates a slot and behaves exactly as it did
-     * before b117. Optional so the many tests that stub the orchestrator do not
-     * all have to grow a git implementation.
-     */
-    allocatePooledWorktree?: (params: {
-        sessionId: string;
-        repoFullName: string;
-        sessionBranch: string;
-        slotBranch: string;
-        slot: number;
-    }) => Promise<string>;
-    resetPooledWorktree?: (worktreePath: string, sha: string) => Promise<void>;
-    releasePooledWorktree?: (params: {
-        repoFullName: string;
-        worktreePath: string;
-        slotBranch: string;
-    }) => Promise<{
-        ok: boolean;
-        error?: string;
-    }>;
-    /** `git -C <cwd> <args>`, rejecting on non-zero exit. Used for merge-back. */
-    gitRun?: (cwd: string, args: string[]) => Promise<string>;
 }
 /**
  * beta.97 (Fix #7): is the adversary finding count CONVERGING across cycles?
@@ -629,11 +632,6 @@ export declare function isConvergingFindingTrend(counts: number[] | undefined): 
 export declare function isConvergingBlockingTrend(blocking: number[] | undefined): boolean;
 export declare class OrchestratorLoop {
     private readonly deps;
-    /**
-     * beta.117: serialises merge-back into the session worktree. One per loop
-     * instance, which is one per process -- the only worktree it guards.
-     */
-    private readonly mergeBackMutex;
     constructor(deps: OrchestratorDeps);
     /**
      * Pure state-transition rule (unit-tested).
@@ -724,21 +722,6 @@ export declare class OrchestratorLoop {
      * The guard is registered/cleared here so EVERY entry path (fresh run and
      * recovery auto-resume both call `run()`) is covered and can't be forgotten.
      */
-    /**
-     * beta.117: bring one parallel worker's commits onto the session branch.
-     *
-     * Serialised across the whole loop instance by {@link mergeBackMutex}: git
-     * will not take two concurrent index operations in one worktree, and a lock
-     * turns that race into a queue.
-     *
-     * A conflict here is the mechanism working, not a bug. Two workers writing
-     * the same file that neither declared used to corrupt each other invisibly in
-     * the shared worktree; now it surfaces as a named conflict against a specific
-     * sub-task. The sub-task is marked failed so the cycle's own machinery
-     * re-runs it -- by which point the other worker's change is already on the
-     * branch, so the retry sees it and adapts.
-     */
-    private mergeBackSlot;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
     /**
      * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is
@@ -781,6 +764,52 @@ export declare class OrchestratorLoop {
      * error returns null (never blocks the run).
      */
     private priorObserveCompleted;
+    /**
+     * beta.135: load the exact plan being continued after an operator accepts a
+     * committed sub-task whose verification contract named the wrong path.
+     *
+     * Fail closed. Falling back to a fresh lead call here is the data-loss mode
+     * this helper exists to remove: a replacement plan is free to omit pending
+     * work. Completed rows from the latest cycle seed the scheduler's `done` set,
+     * preserving dependency satisfaction while leaving the full plan intact for
+     * final scope checks and adversarial review.
+     */
+    private loadAcceptedContinuation;
+    /**
+     * beta.134 (observe-handoff): keep a completed observe sub-task's report so
+     * the sub-tasks that depend on it can be dispatched holding it.
+     *
+     * Only `observe` sub-tasks: a mutate's final message is a summary of edits
+     * the next worker can read out of the diff, whereas a probe's IS the
+     * deliverable -- it produces no commit, so the report is the entire result of
+     * the turn and dropping it drops the sub-task.
+     *
+     * A later cycle's re-probe overwrites the earlier one (the newer reading of
+     * the repo wins). Truncated on the way in, so nothing downstream has to hold
+     * a runaway report in memory for the rest of the run.
+     */
+    private recordObserveReport;
+    /**
+     * beta.135: rebuild the observe handoff map from the durable audit trail.
+     *
+     * New rows use `loop.observe_report_recorded.report` (8k cap). The
+     * `loop.worker_end_turn.finalMessage` fallback keeps reports produced by
+     * beta.134 before this persistence fix resumable too (that older event is
+     * capped at 4k). Latest report per seq wins.
+     */
+    private hydrateObserveReports;
+    /**
+     * beta.134 (observe-handoff): a dispatch-time COPY of the sub-task carrying
+     * the reports of the probes it depends on. Returns `st` unchanged when there
+     * is nothing to hand down, so a plan with no observe step dispatches exactly
+     * as it did before.
+     *
+     * The audit line matters as much as the overlay: "the worker was handed
+     * sub-task 1's findings" and "the worker was told to apply findings it never
+     * received" produced identical trails, which is why the second went unnoticed
+     * through a whole run that reported success and shipped nothing.
+     */
+    private withObserveReports;
     /**
      * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
      * audit breadcrumb. Fires exactly once per observe-mode sub-task terminal

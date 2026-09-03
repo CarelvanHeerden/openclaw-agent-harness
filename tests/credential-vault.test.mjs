@@ -28,7 +28,7 @@ import {
   parseVaultKey,
 } from "../dist/adapters/credential-vault.js";
 import { CredentialAdapter } from "../dist/adapters/credentials.js";
-import { buildSdkEnv, registerDeniedSdkEnvVar } from "../dist/adapters/claude-sdk.js";
+import { buildSdkEnv, registerDeniedSdkEnvVar } from "../dist/adapters/claude-code.js";
 import { buildBashGuard } from "../dist/safety/bash-guard.js";
 import { parseHarnessConfig } from "../dist/config.js";
 

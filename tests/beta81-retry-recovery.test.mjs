@@ -238,7 +238,7 @@ test("beta81/C4: recoverSessions HARD-STOPS a bouncing session (marks failed, re
 // runLeadSdk against a fake SDK and asserts a second call actually happens and
 // which rung it takes. What is left here is the wiring b81 was about.
 test("beta81: runLeadSdk has a retry-once-on-extractJson-failure guard threaded from config", () => {
-  const sdk = S("src/adapters/claude-sdk.ts");
+  const sdk = S("src/adapters/claude-code.ts");
   assert.match(sdk, /jsonRetryEnabled\?: boolean/);
   assert.match(sdk, /if \(params\.jsonRetryEnabled === false\) throw err;/, "the config gate must still short-circuit the retry");
   assert.match(sdk, /retrying ONCE with a terse output-contract re-assertion/);

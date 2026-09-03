@@ -10,7 +10,7 @@ try {
 
 let adversary;
 try {
-  adversary = await import("../dist/orchestrator/fable5-adversary.js");
+  adversary = await import("../dist/orchestrator/adversary.js");
 } catch {
   adversary = null;
 }

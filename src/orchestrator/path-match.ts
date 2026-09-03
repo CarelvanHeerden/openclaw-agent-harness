@@ -121,6 +121,22 @@ export function pathMatchRule(committed: string, contract: string): string | nul
   const t = normalisePath(contract);
   if (!c || !t) return null;
 
+  // A lead may declare a directory scope as `<dir>/**` when the concrete file
+  // is generated at execution time (notably timestamped Prisma migrations).
+  // Treat only a trailing recursive glob as structural: the committed path
+  // must be strictly below that directory. This deliberately does not
+  // implement arbitrary wildcard matching, which would weaken contract
+  // verification for ordinary files.
+  if (t.endsWith("/**")) {
+    const dir = t.slice(0, -3);
+    const cg = stripRouteGroups(c);
+    const dg = stripRouteGroups(dir);
+    if (cg.startsWith(`${dg}/`) || cg.includes(`/${dg}/`)) {
+      return "directory-glob";
+    }
+    return null;
+  }
+
   // 1. exact
   if (c === t) return "exact";
 
@@ -192,12 +208,13 @@ export function anyPathMatches(committedFiles: string[], contract: string): bool
 const RULE_RANK: Record<string, number> = {
   exact: 0,
   "route-group": 1,
-  "timestamp-prefix": 2,
-  suffix: 3,
-  "basename-dir": 4,
-  basename: 5,
-  "basename-unique": 6,
-  "test-file-unique": 7,
+  "directory-glob": 2,
+  "timestamp-prefix": 3,
+  suffix: 4,
+  "basename-dir": 5,
+  basename: 6,
+  "basename-unique": 7,
+  "test-file-unique": 8,
 };
 
 /**
@@ -245,6 +262,7 @@ export function isStructuralRule(rule: string | null): boolean {
   return (
     rule === "exact" ||
     rule === "route-group" ||
+    rule === "directory-glob" ||
     rule === "timestamp-prefix" ||
     rule === "suffix" ||
     rule === "basename-dir"

@@ -130,7 +130,7 @@ test("beta81/A: progress snapshot carries estimatedUsd + pctOfCap", () => {
 });
 
 test("beta81/B: worker prompt forbids running tests/build/lint locally to green (CI verifies)", () => {
-  const src = S("src/orchestrator/sonnet-worker.ts");
+  const src = S("src/orchestrator/worker.ts");
   assert.match(src, /DO NOT run the test suite, a build, or lint "to green"/i);
   assert.match(src, /GitHub CI runs the repo's declared checks AFTER the/i);
   assert.match(src, /CI does the verifying|CI verifies/i);
@@ -170,7 +170,7 @@ test("beta81/C4: recovery circuit breaker wired + lead JSON retry present", () =
   const rec = S("src/state/recovery.ts");
   assert.match(rec, /recordResumeAndCheckBreaker/);
   assert.match(rec, /recovery_bounce_loop|breaker.*tripped|tripped/i);
-  const sdk = S("src/adapters/claude-sdk.ts");
+  const sdk = S("src/adapters/claude-code.ts");
   assert.match(sdk, /anti-prose-drift|retrying ONCE with a terse output-contract/i);
   assert.match(sdk, /jsonRetryEnabled/);
 });

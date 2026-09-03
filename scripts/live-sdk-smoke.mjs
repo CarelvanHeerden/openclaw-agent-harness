@@ -15,7 +15,7 @@
  * tags. Never on every push.
  */
 
-import { runClassifierSdk } from "../dist/adapters/claude-sdk.js";
+import { runClassifierSdk } from "../dist/adapters/claude-code.js";
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.log("LIVE SDK smoke SKIPPED: ANTHROPIC_API_KEY not set");

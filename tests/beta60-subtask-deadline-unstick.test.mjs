@@ -51,14 +51,19 @@ test("beta60: manifest declares subtask_deadline_seconds (additionalProperties:f
   assert.match(src, /"default":\s*2100/);
 });
 
-// ---- Fix #1: dispatcher bounds the whole runOne ----
-test("beta60: dispatcher wraps runOne in withTimeout(subtask_deadline_seconds), not just runWorker", () => {
+// ---- Fix #1: the whole sub-task is bounded, not just the worker call ----
+test("beta60: the sub-task walk wraps runOneInner in withTimeout(subtask_deadline_seconds), not just runWorker", () => {
+  // v2.0.0: `runOne` was the parallel dispatcher's per-sub-task wrapper -- it
+  // leased a pooled worktree, ran the sub-task, and merged back. With parallel
+  // dispatch removed the wrapper has no job left, so the serial walk bounds
+  // `runOneInner` directly. What b60 is about is unchanged: the bound must
+  // cover the git/IO around the worker, which is where the 5h30m hang was.
   const src = S("src/orchestrator/loop.ts");
   assert.match(
     src,
     // b106 added a label argument so the timeout error names its own knob.
-    /withTimeout\(runOne\(st\), this\.deps\.config\.loop\.subtask_deadline_seconds(, "subtask_deadline_seconds")?\)/,
-    "runOne must be bounded by subtask_deadline_seconds at the dispatcher",
+    /withTimeout\(\s*runOneInner\(st, plan\.worktreePath\),\s*this\.deps\.config\.loop\.subtask_deadline_seconds,\s*"subtask_deadline_seconds",\s*\)/,
+    "the whole sub-task must be bounded by subtask_deadline_seconds",
   );
   // on deadline: audit + mark the stuck row failed + set failed.err
   assert.match(src, /loop\.subtask_deadline_exceeded/);

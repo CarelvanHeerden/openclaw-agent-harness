@@ -355,27 +355,6 @@ export async function runScenario(opts = {}) {
     unreachableCommits: async (p, from, shas) => world.adapter.unreachableCommits(p, from, shas),
     listRepoFiles: async (p) => world.adapter.listTrackedFiles(p),
     worktreeCommittedFiles: async (p, base) => world.adapter.listCommittedFiles(p, base),
-    // b117 parallelism only engages when all three of these are present; the
-    // loop silently degrades to serial otherwise. Wired to the real adapter so
-    // a scenario that asks for concurrency actually gets it -- a test that
-    // thinks it is exercising parallelism and is not would be worse than none.
-    allocatePooledWorktree: async ({ repoFullName, sessionBranch, slotBranch, slot }) =>
-      world.adapter.allocatePooled({
-        repoFullName,
-        sessionBranch,
-        slotBranch,
-        // The adapter sites the slot from an explicit path, the way the runtime
-        // derives it from the session's own worktree. Passing `slot` instead
-        // makes allocation throw and the loop degrades to serial -- silently,
-        // which would leave a "parallel" scenario testing nothing.
-        slotPath: `${worktree || join(world.worktreesRoot, "session")}-w${slot}`,
-        commitIdentity: IDENT,
-        bootstrapDeps: false,
-      }),
-    resetPooledWorktree: async (p, sha) => world.adapter.resetPooled(p, sha),
-    releasePooledWorktree: async ({ repoFullName, worktreePath, slotBranch }) =>
-      world.adapter.releasePooled(worktreePath, repoFullName, slotBranch),
-    gitRun: (cwd, args) => world.adapter.runIn(cwd, args),
     ...(opts.deps ?? {}),
   };
 

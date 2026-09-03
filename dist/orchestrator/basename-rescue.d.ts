@@ -48,6 +48,16 @@ export interface BasenameRescue {
     reason: string;
 }
 /**
+ * Does a raw contract path name the rescue's normalised `from` path?
+ *
+ * Rescue producers normalise their inputs so `prisma/migrations/` can be
+ * recognised as the directory `prisma/migrations`. The caller must use the
+ * same comparison when applying the proposal; a literal equality check makes
+ * the proposal audit as "rescued" while silently leaving the original
+ * directory contract in place.
+ */
+export declare function rescueMatchesContractPath(path: string, rescue: BasenameRescue): boolean;
+/**
  * Would a rescue be safe here, and if so what is it?
  *
  * Returns `undefined` -- meaning "escalate to a human, as before" -- unless

@@ -29,7 +29,7 @@ export declare const CONDITIONAL_FINDING_RE: RegExp;
  * Extract the human-readable text of a stored finding (schema is loose).
  *
  * beta.72 (D-B): the adversary's `ReviewFinding` puts its substance in `title`
- * + `detail` (fable5-adversary.ts), but the pre-beta.72 extractor only looked
+ * + `detail` (adversary.ts), but the pre-beta.72 extractor only looked
  * at `message/finding/detail/description` and used `??` -- which does NOT fall
  * through an EMPTY string. A finding whose text lived in `title` (with an empty
  * `detail`) therefore rendered as an empty brief line: Staging's #876 revise

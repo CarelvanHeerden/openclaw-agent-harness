@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 let splitDiffOnFileBoundaries, checkPriceDrift;
 try {
-  ({ splitDiffOnFileBoundaries, checkPriceDrift } = await import("../dist/adapters/claude-sdk.js"));
+  ({ splitDiffOnFileBoundaries, checkPriceDrift } = await import("../dist/adapters/claude-code.js"));
 } catch {
   splitDiffOnFileBoundaries = null;
 }

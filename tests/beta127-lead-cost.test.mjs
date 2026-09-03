@@ -89,7 +89,7 @@ test("the scout's cost is counted too", { skip }, async () => {
 
 let runLeadPlanner;
 try {
-  ({ runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js"));
+  ({ runLeadPlanner } = await import("../dist/orchestrator/lead.js"));
 } catch { runLeadPlanner = null; }
 const skipPlanner = runLeadPlanner === null ? "dist/ not built" : false;
 
@@ -101,8 +101,13 @@ const BRIEF = () => ({
 const PLAN_REPLY = (costUsd) => ({
   repo: "o/r", branch: "harness/feat-x", riskLevel: "low", reviewChecklist: [],
   subTasks: [{
-    seq: 1, title: "t", intent: "i", filesLikelyTouched: [],
-    successCriteria: ["s"], estimatedTokens: 10, taskMode: "observe",
+    seq: 1, title: "t", intent: "i", filesLikelyTouched: ["src/a.ts"],
+    successCriteria: ["s"], estimatedTokens: 10, taskMode: "mutate",
+    verify: [{ kind: "commit_made" }],
+    workerContext: {
+      rationale: "The implementation brief requires a concrete source change.",
+      changeSpec: "Edit src/a.ts to implement the requested continuity behavior and commit it.",
+    },
   }],
   costUsd,
 });
@@ -129,6 +134,30 @@ test("the planner reports what the model actually charged", { skip: skipPlanner 
   // The field this was confused with. `approxCostUsd` is a forecast of what the
   // PLAN costs to execute; it is not, and never was, the planner's bill.
   assert.notEqual(plan.actualCostUsd, plan.approxCostUsd);
+});
+
+test("an all-observe implementation plan is rejected and re-planned with mutation work", { skip: skipPlanner }, async () => {
+  let n = 0;
+  const plan = await runLeadPlanner(BRIEF(), leadDeps({
+    callLeadModel: async (_brief, _allowed, correctiveNote) => {
+      n += 1;
+      if (n === 1) {
+        return {
+          repo: "o/r", branch: "harness/feat-x", riskLevel: "low", reviewChecklist: [],
+          subTasks: [{
+            seq: 1, title: "inspect", intent: "inspect only", filesLikelyTouched: [],
+            successCriteria: ["report"], estimatedTokens: 10, taskMode: "observe", verify: [],
+          }],
+          costUsd: 2,
+        };
+      }
+      assert.match(correctiveNote, /at least one taskMode:'mutate'/);
+      return PLAN_REPLY(3);
+    },
+  }));
+  assert.equal(n, 2);
+  assert.equal(plan.subTasks[0].taskMode, "mutate");
+  assert.equal(plan.actualCostUsd, 5, "the rejected planning attempt is still billed");
 });
 
 test("a plan the planner threw away was still paid for", { skip: skipPlanner }, async () => {

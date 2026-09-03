@@ -28,7 +28,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 
 const { classifyFinding } = await import("../dist/orchestrator/finding-classify.js");
-const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
 
 const F = (o) => ({ dimension: "fit", severity: "medium", title: "", detail: "", ...o });
 
@@ -85,7 +85,11 @@ function leadDeps({ branchExists, capture }) {
       repo: "Stitch-Vercel/ProjectThanos",
       branch: "harness/fresh-generated-name",
       riskLevel: "low",
-      subTasks: [{ seq: 1, title: "t", intent: "i", taskMode: "observe", filesLikelyTouched: [], successCriteria: ["ok"] }],
+      subTasks: [{
+        seq: 1, title: "t", intent: "i", taskMode: "mutate",
+        filesLikelyTouched: ["src/a.ts"], successCriteria: ["ok"],
+        verify: [{ kind: "commit_made" }],
+      }],
     }),
     allocateWorktree: async (repo, branch) => {
       capture.repo = repo;

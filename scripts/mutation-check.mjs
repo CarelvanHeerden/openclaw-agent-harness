@@ -37,6 +37,66 @@ let ran = 0;
 
 const MUTATIONS = [
   {
+    // Found by a real smoke run, not by review: the ledger recorded the
+    // CONFIGURED worker model for a turn OpenCode served. The A/B matrix reads
+    // this column, so the mutation is not "a label is wrong" -- it is one
+    // backend's spend filed under the other's name.
+    name: "v2 smoke: the sub-task ledger names the engine that actually ran",
+    file: "dist/orchestrator/loop.js",
+    find: "const ledgerModel = this.deps.describeWorkerModel?.(plannedModel) ?? plannedModel;",
+    replace: "const ledgerModel = this.deps.config.models.worker;",
+    tests: ["tests/v2-smoke-findings.test.mjs"],
+  },
+  {
+    // The read relaxation exists because OpenCode names no file on a read.
+    // Its whole safety rests on being narrow: if the SAME degradation reaches
+    // edit/delete/move, a worker writes anywhere while the guard reports
+    // itself healthy. This mutation widens it by exactly one step.
+    name: "v2 smoke: only READ degrades to allow on a missing path",
+    file: "dist/safety/bash-guard.js",
+    find: "return { allow: false, reason: `${label} tool call exposed no path to check (failing closed)` };",
+    replace: "return { allow: true, unenforced: true, reason: `${label} exposed no path` };",
+    tests: ["tests/v2-smoke-findings.test.mjs"],
+  },
+  {
+    // The other direction: silently dropping the flag turns a disclosed,
+    // counted gap back into an invisible one.
+    name: "v2 smoke: an unenforced read announces itself",
+    file: "dist/safety/bash-guard.js",
+    find: "                        unenforced: true,",
+    replace: "",
+    tests: ["tests/v2-smoke-findings.test.mjs", "tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // Counted-and-announced is the whole disclosure. Dropping the increment
+    // leaves the warning never firing and the audit claiming zero.
+    name: "v2 smoke: unguarded reads are counted, not just allowed",
+    file: "dist/adapters/acp.js",
+    find: "unguardedReads += 1;",
+    replace: "/* unguardedReads += 1; */",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // "denied: 2" with no way to learn which two is how a stalled OpenCode
+    // worker stayed undiagnosable. The count is not the evidence; the command
+    // or path is.
+    name: "v2 smoke: a denial records what was refused",
+    file: "dist/adapters/acp.js",
+    find: "denied.push({ kind: call.kind, title, reason: verdict.reason });",
+    replace: "denied.push({ kind: call.kind, reason: verdict.reason });",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // The return value was always right and always tested. The log beside it
+    // computed the same idea again and dropped `sawTokenSplit`, so a priced
+    // turn announced itself as unmeasured.
+    name: "v2 smoke: the logged usage source is the returned one",
+    file: "dist/adapters/acp.js",
+    find: "const usageSource = acpUsageSource(sawAnyCost, sawTokenSplit);",
+    replace: "const usageSource = sawAnyCost ? \"acp-delta\" : \"unavailable\";",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
     name: "preserveLocalBranch (b101): resume keeps the branch at its own tip",
     file: "dist/adapters/git-worktree.js",
     // b105 split the condition into named locals for the decision audit.
@@ -82,14 +142,14 @@ const MUTATIONS = [
   },
   {
     name: "full commit-tip recording (b103): a two-commit turn records both",
-    file: "dist/orchestrator/sonnet-worker.js",
+    file: "dist/orchestrator/worker.js",
     find: "if (headBefore && headBefore !== baseSha)",
     replace: "if (false && headBefore !== baseSha)",
     tests: ["tests/beta103-plan-path-writeback.test.mjs"],
   },
   {
     name: "lead repo scout (b104): the report reaches the planning call",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     // Neutered to the pre-b104 blind plan: the scout still runs and still
     // costs a turn, but nothing it found reaches the lead. This is the exact
     // shape of the b102 defect -- seven fictional paths in one plan -- so the
@@ -107,7 +167,7 @@ const MUTATIONS = [
   },
   {
     name: "scout failure is non-fatal (b104): a throw plans blind, it does not kill the run",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     // Re-throwing turns a best-effort investigation into a new way to lose a
     // whole session -- the b98 failure class, which is why every path here
     // degrades instead of failing.
@@ -117,7 +177,7 @@ const MUTATIONS = [
   },
   {
     name: "full scout report (b104): a multi-message report is not cut to its last chunk",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "allText: opts.accumulateAllText ? allText.join(\"\\n\\n\") : undefined,",
     replace: "allText: undefined,",
     tests: ["tests/beta104-lead-repo-scout.test.mjs"],
@@ -195,21 +255,21 @@ const MUTATIONS = [
   },
   {
     name: "scout turn cap (b106): the wall clock alone cannot bound a tool call in flight",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "...(params.maxTurns && params.maxTurns > 0 ? { maxTurns: params.maxTurns } : {}),",
     replace: "...({}),",
     tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
   },
   {
     name: "scout hard stop (b106): the harness stops waiting and keeps the partial report",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "const hardStopMs = params.timeoutSeconds * 1000 + 30_000;",
     replace: "const hardStopMs = 24 * 60 * 60 * 1000;",
     tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
   },
   {
     name: "streamed scout text (b106): a caller that gives up can still salvage prose",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "opts.onText?.(text);",
     replace: "void text;",
     tests: ["tests/beta106-lead-budget-and-scout-bounds.test.mjs"],
@@ -232,7 +292,7 @@ const MUTATIONS = [
   },
   {
     name: "truncation is reported (b107): reportChars 20049 must not need decoding",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "truncated: bounds.truncated ? true : undefined,",
     replace: "truncated: undefined,",
     tests: ["tests/beta107-scout-bounds-recovery-and-orphans.test.mjs"],
@@ -316,14 +376,14 @@ const MUTATIONS = [
   },
   {
     name: "session-scoped branches (b108): two threads must not collide on one PR",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "raw.branch = sessionScopedBranch(raw.branch, deps.sessionId);",
     replace: "raw.branch = raw.branch;",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
   {
     name: "branch suffix is idempotent (b108): a clarification re-plan must not stack it",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "if (b.endsWith(`-${suffix}`))\n        return b;",
     replace: "if (false)\n        return b;",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
@@ -338,7 +398,7 @@ const MUTATIONS = [
   {
     name: "no-change early exit (b108): re-reviewing an unchanged diff is pure cost",
     file: "dist/orchestrator/loop.js",
-    find: "if (tipNow && tipNow === cycleBaseSha) {",
+    find: "if (tipNow && tipNow === cycleBaseSha && !cycleResolvedContractWithoutCommit) {",
     replace: "if (false) {",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
@@ -662,7 +722,7 @@ const MUTATIONS = [
   },
   {
     name: "an ambiguous allow-list is not scouted (b113): scouting one of two candidates primes the plan for the wrong repo",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "if (entries.length !== 1)",
     replace: "if (false)",
     tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
@@ -744,57 +804,26 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/beta116-finding-routing.test.mjs"],
   },
-  // --- beta.117: parallel sub-tasks work in isolation ----------------------
+  // --- v2.0.0: parallel sub-tasks removed ----------------------------------
+  // The seven b117 mutations that lived here are gone with the mechanism they
+  // policed (worktree-pool.js, merge-back.js, and the `clean -fd` that kept a
+  // slot's node_modules). They are replaced by the two below, which guard the
+  // removal itself: a serial dispatcher and a config migration that accepts the
+  // dead keys rather than rejecting the operator's whole config.
   {
-    name: "slots are siblings (b117): a child ref cannot coexist with the session branch, so git refuses to create it",
-    file: "dist/orchestrator/worktree-pool.js",
-    find: "return `${(sessionBranch ?? \"\").replace(/[/\\-]+$/, \"\")}-w${slot}`;",
-    replace: "return `${(sessionBranch ?? \"\").replace(/[/\\-]+$/, \"\")}/w${slot}`;",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+    name: "sub-tasks run one at a time (v2): a concurrent dispatcher shares one worktree and one git index",
+    file: "dist/orchestrator/loop.js",
+    find: "                    if (failed.err)\n                        break;",
+    replace: "                    if (false)\n                        break;",
+    tests: ["tests/v2-strip-parallel.test.mjs"],
   },
   {
-    name: "a reused slot is repositioned (b117): a stale tree diffs against the wrong base",
-    file: "dist/orchestrator/worktree-pool.js",
-    find: "            await this.deps.reset(existing, sha);",
+    name: "removed keys are dropped, not obeyed (v2): a stale subtask_concurrency must not read as live config",
+    file: "dist/config.js",
+    find: "        delete merged.loop[k];",
     replace: "",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
+    tests: ["tests/v2-strip-parallel.test.mjs"],
   },
-  {
-    name: "a released slot goes to the longest waiter (b117): otherwise a third sub-task blocks forever",
-    file: "dist/orchestrator/worktree-pool.js",
-    find: "        const next = this.waiters.shift();",
-    replace: "        const next = undefined;",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
-  },
-  {
-    name: "a failed create is retryable (b117): one transient disk error must not shrink the pool for the run",
-    file: "dist/orchestrator/worktree-pool.js",
-    find: "                this.uncreated.unshift(slot);",
-    replace: "",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
-  },
-  {
-    name: "a conflicted merge is aborted (b117): a repo left mid-merge fails every later sub-task in the cycle",
-    file: "dist/orchestrator/merge-back.js",
-    find: '        await git.run(req.sessionWorktree, ["merge", "--abort"]).catch(() => undefined);',
-    replace: "",
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
-  },
-  {
-    name: "merge-back reports conflicts (b117): swallowing one silently drops a sub-task's work from the branch",
-    file: "dist/orchestrator/merge-back.js",
-    find: '            reason: paths.length > 0 ? "conflict" : "error",',
-    replace: '            reason: "error",',
-    tests: ["tests/beta117-parallel-isolation.test.mjs"],
-  },
-  {
-    name: "clean -fd keeps ignored files (b117): adding -x deletes the node_modules the slot paid 25s to install",
-    file: "dist/adapters/git-worktree.js",
-    find: '        await this.run(["-C", worktreePath, "clean", "-fd"]);',
-    replace: '        await this.run(["-C", worktreePath, "clean", "-fdx"]);',
-    tests: ["tests/beta117-slot-reset.test.mjs"],
-  },
-  // --- beta.117: parallel sub-tasks work in isolation ----------------------
   {
     name: "runtime stays a broadcast (b116): its file is where behaviour was seen, not a defect to edit",
     file: "dist/orchestrator/finding-dimension.js",
@@ -859,16 +888,11 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/beta118-orphan-routing.test.mjs"],
   },
-  {
-    name: "the slot count is read before drain (b118): after it, the pool is empty and the audit always says zero",
-    file: "dist/orchestrator/loop.js",
-    find: "                const slots = pool.createdCount;\n                await pool.drain();",
-    replace: "                await pool.drain();\n                const slots = pool.createdCount;",
-    tests: ["tests/beta118-orphan-routing.test.mjs"],
-  },
+  // The b118 slot-count mutation went out with the worktree pool in v2.0.0.
+  // There is no pool left to drain, so there is no read order to police.
   {
     name: "the adversary must name the trigger (b118): without it the registry finding has no owner to route to",
-    file: "src/orchestrator/fable5-adversary.ts",
+    file: "src/orchestrator/adversary.ts",
     find: "- REGISTRY findings",
     replace: "- Registry findings",
     tests: ["tests/beta118-orphan-routing.test.mjs"],
@@ -1175,7 +1199,7 @@ const MUTATIONS = [
     // The root cause. Without this the lead renames the branch on every
     // re-plan and b101's preservation looks up a name that no longer exists.
     name: "the session's branch is pinned (b122): a re-plan that renames the branch orphans everything committed to it",
-    file: "src/orchestrator/fable5-lead.ts",
+    file: "src/orchestrator/lead.ts",
     find: "        raw.branch = deps.pinnedSessionBranch;",
     replace: "        raw.branch = raw.branch;",
     tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
@@ -1268,20 +1292,22 @@ const MUTATIONS = [
   // NOT a mutation: `failed.seq !== seq` in the b123 retraction guard.
   //
   // The guard stops a rescue on one sub-task from clearing a DIFFERENT
-  // sub-task's genuine failure -- possible only under b117 parallelism, where
-  // several sub-tasks share the one `failed` slot. Reproducing it needs a
-  // rescue to be mid-flight at the moment another seq records a failure, and
-  // the scenario harness can force that interleaving with a gate but cannot
-  // reliably make the pooled slot produce a rescuable mismatch: the b100
-  // reconciler settles the path first, so no rescue fires and there is nothing
-  // to retract. A mutation here would therefore survive for want of a fixture,
-  // reporting a coverage gap that is really a harness limitation.
+  // sub-task's genuine failure. v2.0.0 removed parallel dispatch, which is the
+  // only thing that made that reachable at runtime: sub-tasks now run one at a
+  // time and the cycle breaks on a live failure before the next one starts, so
+  // no rescue can observe another seq's failure to clear. The guard is kept
+  // because it states which failure is being retracted and would be wrong the
+  // moment anything else writes to the accumulator -- but it is now defensive,
+  // and no scenario can construct a case that distinguishes a targeted clear
+  // from a blanket one. A mutation here would survive for want of a reachable
+  // path, reporting a coverage gap that is really a property of the design.
   //
   // What IS covered: "the retraction is recorded against the seq that recorded
-  // the failure" pins the audit payload, and "a rescue on one sub-task cannot
-  // bury another's real failure" pins the outcome under concurrency 2. Neither
-  // distinguishes a targeted clear from a blanket one. Left deliberately, and
-  // named here so the gap is visible rather than assumed closed.
+  // the failure" pins the audit payload, "a rescue on one sub-task cannot bury
+  // another's real failure" pins the serial outcome, and "retraction is keyed
+  // to the seq that recorded the failure" asserts the comparison structurally
+  // against the source. Named here so the gap stays visible rather than assumed
+  // closed.
   {
     name: "time and money are parsed separately (b123): 'a time budget of 3 hours' read as a $3 cap",
     file: "dist/tools/brief-confirmation.js",
@@ -1325,35 +1351,35 @@ const MUTATIONS = [
   // wrong. These pin the signal.
   {
     name: "truncation is read off the DOCUMENT (b126): b125 waited for a stop_reason the SDK never sent",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: 'const wasTruncated = stopReason === "max_tokens" || looksTruncatedJson(raw);',
     replace: 'const wasTruncated = stopReason === "max_tokens";',
     tests: ["tests/beta126-lead-retry-ladder.test.mjs", "tests/beta126-truncation-by-shape.test.mjs"],
   },
   {
     name: "an unclosed container is truncation, not prose (b126): the sentence that sent an operator after tools: []",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/shared/json.js",
     find: "if (looksTruncatedJson(text)) {",
     replace: "if (false) {",
     tests: ["tests/beta126-truncation-by-shape.test.mjs", "tests/beta97-blocker-fixes.test.mjs"],
   },
   {
     name: "the shape check respects string state (b126): a brace inside a string would fake every truncation",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/shared/json.js",
     find: "if (!/[{[]/.test(text))",
     replace: "if (false)",
     tests: ["tests/beta126-truncation-by-shape.test.mjs"],
   },
   {
     name: "a failed attempt is still billed (b126): two Opus calls were recorded as $0.00",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "err.costUsd = costUsd;",
     replace: "err.costUsd = 0;",
     tests: ["tests/beta126-lead-retry-ladder.test.mjs"],
   },
   {
     name: "a retry bills for BOTH attempts (b126): attempt 1's spend vanished on every retried plan",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "costUsd: spentSoFar + r2.costUsd,",
     replace: "costUsd: r2.costUsd,",
     tests: ["tests/beta126-lead-retry-ladder.test.mjs"],
@@ -1513,7 +1539,7 @@ const MUTATIONS = [
   },
   {
     name: "every lead attempt is billed, including the ones whose plan we discard (b127 / #157)",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "leadCallCostUsd += raw.costUsd ?? 0;",
     replace: "leadCallCostUsd += 0;",
     tests: ["tests/beta127-lead-cost.test.mjs"],
@@ -1527,7 +1553,7 @@ const MUTATIONS = [
     // Without the rung the run dies holding a plan that is one token from
     // usable -- which is exactly what f75f7db6 did.
     name: "a complete-but-invalid plan gets its re-ask (b128): the seq_note:undefined death",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "if (fault && params.leadSyntaxRetryEnabled !== false) {",
     replace: "if (false) {",
     tests: ["tests/beta128-invalid-json-rung.test.mjs"],
@@ -1537,7 +1563,7 @@ const MUTATIONS = [
     // does not name the fault is the b127 message that gave it nothing to act
     // on, dressed up as a new rung.
     name: "the re-ask names the offending literal (b128): a correction with no fault in it is noise",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/shared/json.js",
     find: "lines.push(`The token \\`${located.token}\\` is a JavaScript literal, not a JSON value. JSON has no ` +",
     replace: "lines.push(``.slice(0) +",
     tests: ["tests/beta128-invalid-json-rung.test.mjs"],
@@ -1546,14 +1572,14 @@ const MUTATIONS = [
     // String-awareness. Blaming an `undefined` that lives inside a string
     // sends the model to rewrite a healthy field.
     name: "the fault scan respects string state (b128): prose is allowed to say 'undefined'",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/shared/json.js",
     find: "if (inString)\n            continue;\n        for (const token of NON_JSON_LITERALS) {",
     replace: "if (false)\n            continue;\n        for (const token of NON_JSON_LITERALS) {",
     tests: ["tests/beta128-invalid-json-rung.test.mjs"],
   },
   {
     name: "every attempt is reported, not just the fatal one (b128): a recovered truncation left no trace",
-    file: "dist/adapters/claude-sdk.js",
+    file: "dist/adapters/claude-code.js",
     find: "params.onAttempt?.(info);",
     replace: "void info;",
     tests: ["tests/beta128-invalid-json-rung.test.mjs"],
@@ -1576,7 +1602,7 @@ const MUTATIONS = [
   },
   {
     name: "the planner carries its spend out on the throw (b128 / #157): the loop can only bank what it is handed",
-    file: "dist/orchestrator/fable5-lead.js",
+    file: "dist/orchestrator/lead.js",
     find: "failed.costUsd = Number((leadCallCostUsd + (scoutOutcome?.costUsd ?? 0) + (failed.costUsd ?? 0)).toFixed(6));",
     replace: "failed.costUsd = failed.costUsd ?? 0;",
     tests: ["tests/beta128-failed-plan-cost.test.mjs"],
@@ -1996,8 +2022,8 @@ const MUTATIONS = [
 
   // ------------------------------------------------- the credential vault
   {
-    name: "vault key env strip: the worker subprocess never inherits the key",
-    file: "dist/adapters/claude-sdk.js",
+    name: "vault key env strip: no agent subprocess ever inherits the key",
+    file: "dist/adapters/shared/env.js",
     // Dropped from the exact denylist. The regex beside it does NOT cover this
     // name -- it matches API_KEY / ACCESS_KEY / PRIVATE_KEY, not a bare _KEY
     // suffix -- so removing the entry really does hand the key to the child.
@@ -2531,6 +2557,328 @@ const MUTATIONS = [
     find: "              guidance: _reviseMeta?.guidance ?? null,",
     replace: "              // guidance: _reviseMeta?.guidance ?? null,",
     tests: ["tests/revise-guidance.test.mjs"],
+  },
+
+  // ------------------------------------- v2.0.0 M4: the backend contract
+  {
+    // The silent one. A backend that never asks permission is indistinguishable
+    // from a backend whose every request was approved -- so if this check goes,
+    // a worker runs to completion with bash-guard, the path deny-list and the
+    // no-push rule all inert, and nothing in the run looks wrong.
+    name: "an ungated backend cannot run a worker (v2): the permission callback IS the containment boundary",
+    file: "dist/adapters/backend.js",
+    find: "        if (!caps.toolPermissionCallback) {",
+    replace: "        if (false) {",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+  {
+    // A weak adversary does not fail loudly, it returns a well-formed pass.
+    name: "the judgement roles hold their floor (v2): a weak reviewer rubber-stamps rather than erroring",
+    file: "dist/adapters/backend.js",
+    find: "    if (!tierAtLeast(declaredTier, floor)) {",
+    replace: "    if (false) {",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+  {
+    // The whole point of the ladder's exit. Returning a document instead of
+    // throwing turns "no reviewer was reachable" into "the reviewer approved".
+    name: "an exhausted ladder throws (v2): a pass-shaped default converts an outage into an approval",
+    file: "dist/adapters/shared/structured.js",
+    find: "            if (i === maxAttempts - 1)\n                throw exhausted(opts.role, attempts, costUsd, lastRaw, err);\n            // Rung 4: retry, told what went wrong.",
+    replace: "            if (i === maxAttempts - 1)\n                return { parsed: { verdict: \"pass\", findings: [], summary: \"\" }, raw: lastRaw, costUsd, tokensIn, tokensOut, sessionId, attempts, repaired: false };\n            // Rung 4: retry, told what went wrong.",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+  {
+    // b98: three calls, three identical truncations, twelve minutes, no plan.
+    // Repair is free and must be tried before a retry is spent.
+    name: "a truncation is repaired before it is re-asked (v2): re-asking a capped model re-truncates identically",
+    file: "dist/adapters/shared/structured.js",
+    find: "            if (wasTruncated) {\n                const repairedText = repairTruncatedJson(call.raw);",
+    replace: "            if (false) {\n                const repairedText = repairTruncatedJson(call.raw);",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+  {
+    // Repairing a document that was never cut off papers over a genuine
+    // contract violation and reports it as a recovery.
+    name: "repair is truncation-only (v2): closing a complete-but-wrong document hides the fault",
+    file: "dist/adapters/shared/structured.js",
+    find: "            const wasTruncated = call.truncated === true || looksTruncatedJson(call.raw);",
+    replace: "            const wasTruncated = true;",
+    tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+
+  // ------------------------------------- v2.0.0 M5: the ACP backend
+  {
+    // The P0 as it actually shipped on the branch: nothing errors, the vault
+    // key simply arrives in the agent's environment. The SDK path has filtered
+    // since beta.57 and withheld this key since beta.110; a second spawn path
+    // did not inherit either, which is why the filter is shared now.
+    name: "the ACP child is filtered too (v2): a second spawn path handed the agent every secret",
+    file: "dist/adapters/acp.js",
+    find: "        env: buildAgentEnv({ NO_COLOR: \"1\", ...(agent.env ?? {}) }),",
+    replace: "        env: { ...process.env, NO_COLOR: \"1\", ...(agent.env ?? {}) },",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // Killing the wrapper alone orphans the process that is still holding the
+    // worktree and still spending against the model.
+    name: "the whole process group is reaped (v2): the wrapper dies and the real worker keeps spending",
+    file: "dist/adapters/acp.js",
+    find: "            process.kill(-pid, sig);",
+    replace: "            process.kill(pid, sig);",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // Without `detached` there is no process group to signal, so the negative
+    // pid above has nothing to reach.
+    name: "the ACP child leads a process group (v2): without it there is nothing for the reap to signal",
+    file: "dist/adapters/acp.js",
+    find: "        detached: true,",
+    replace: "        detached: false,",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // A structured role has no tools by configuration; this is the second
+    // layer, and preflightAcpBackend's entire premise is that the first one
+    // can be silently ignored by the backend.
+    name: "a tool-less role really is tool-less (v2): the deny-all guard is the layer that does not depend on backend config",
+    file: "dist/adapters/acp.js",
+    find: "        return { allow: false, reason: `role '${params.role}' runs with no tools` };",
+    replace: "        return { allow: true };",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // Reporting a measured zero where there was no measurement is the b125
+    // failure in a different guise: the run looks free.
+    name: "an unmeasured turn reports a gap (v2): a false zero makes an unmetered run look free",
+    file: "dist/adapters/acp.js",
+    find: "        if (u.inputTokens === undefined && u.outputTokens === undefined)\n            return;",
+    replace: "        if (false)\n            return;",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+
+  // ------------------------------------- v2.0.0 M6: config and the live probe
+  {
+      name: "the probe requires a real permission request (v2): reading config proves the config, not the behaviour",
+      file: "dist/adapters/acp.js",
+      find: "    if (!sawPermissionRequest) {",
+      replace: "    if (false) {",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+    },
+    {
+      // Politeness without obedience. An agent that asks and proceeds anyway
+      // offers no containment at all, and it LOOKS correct in the logs.
+      //
+      // rc: the anchor moved from `wrote` to `claimedWrite` when the probe
+      // stopped taking the model's word for it and started reading the disk.
+      // Same claim, and now only half of the check -- the disk half has its
+      // own mutation ("the probe reads the DISK, not the narration").
+      name: "the probe checks the denial was honoured (v2): asking and then proceeding is not containment",
+      file: "dist/adapters/acp.js",
+      find: "    if (claimedWrite) {",
+      replace: "    if (false) {",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+    },
+    {
+      // A clean config that does not translate into behaviour is the entire
+      // failure mode; skipping the probe on a clean read reinstates it.
+      name: "a clean config does not skip the probe (v2): the config is not the behaviour",
+      file: "dist/adapters/acp.js",
+      find: "    return probeAcpPermissionEnforcement(input);",
+      replace: "    return { ...stat, sawPermissionRequest: true, denialHonoured: true, detail: \"static only\" };",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+    },
+    {
+      // The wildcard is the net that catches a tool this list has not heard of.
+      name: "the permission wildcard is set (v2): a tool we have never seen must still have to ask",
+      file: "dist/adapters/opencode-config.js",
+      find: "        \"*\": \"ask\",",
+      replace: "        \"*\": \"allow\",",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+    },
+    {
+      // A spawn failure arriving as an unhandled event took the whole harness
+      // down rather than failing one turn.
+      name: "a spawn failure fails the turn (v2): an unhandled error event takes the whole harness down",
+      file: "dist/adapters/acp.js",
+      find: "        child.on(\"error\", (err) => {",
+      replace: "        child.on(\"__never\", (err) => {",
+      tests: ["tests/v2-opencode-preflight.test.mjs"],
+  },
+  {
+    // The floor is the only thing standing between a 7B model and the
+    // adversary seat, where failure is a well-formed `pass`.
+    name: "the capability floor is enforced (v2): a weak judgement model fails invisibly, by returning pass",
+    file: "dist/adapters/role-config.js",
+    find: "        if (!tierAtLeast(r.tier, floor)) {",
+    replace: "        if (false && !tierAtLeast(r.tier, floor)) {",
+    tests: ["tests/v2-role-config.test.mjs"],
+  },
+  {
+    // Emitting an empty apiKey turns "the credential is missing" into a 401,
+    // which sends the operator to rotate a key that was never there.
+    name: "a keyless provider is dropped (v2): an empty apiKey reads as a wrong key, not a missing one",
+    file: "dist/adapters/role-config.js",
+    find: "                dropped.push({ provider: id, reason: `no credential '${p.api_key_service}' in the vault` });\n                continue;",
+    replace: "                dropped.push({ provider: id, reason: `no credential '${p.api_key_service}' in the vault` });",
+    tests: ["tests/v2-role-config.test.mjs"],
+  },
+  {
+    // A truncated catalogue silently narrows pricing to whatever survived, and
+    // every budget downstream is computed from it.
+    name: "an implausible catalogue is refused (v2): a partial document silently narrows every price",
+    file: "dist/adapters/shared/model-catalogue.js",
+    find: "    if (providers.length < MIN_PLAUSIBLE_PROVIDERS) {",
+    replace: "    if (false && providers.length < MIN_PLAUSIBLE_PROVIDERS) {",
+    tests: ["tests/v2-pricing-catalogue.test.mjs"],
+  },
+  {
+    // The whole point of the `billable` flag: a local model must report tokens
+    // with NO dollar figure, because zero is indistinguishable from unmeasured.
+    name: "a local model reports no dollars (v2): a false zero is indistinguishable from an unmetered run",
+    file: "dist/adapters/shared/model-catalogue.js",
+    find: "        return { price: { input: 0, output: 0 }, source: \"local\", billable: false };",
+    replace: "        return { price: { input: 0, output: 0 }, source: \"local\", billable: true };",
+    tests: ["tests/v2-pricing-catalogue.test.mjs"],
+  },
+  {
+    // A rejected response must not overwrite the last good cache, or one bad
+    // fetch poisons pricing until the next successful one.
+    name: "a rejected refresh keeps the good cache (v2): one bad fetch must not poison pricing",
+    file: "dist/adapters/shared/model-catalogue.js",
+    find: "        const fresh = parseModelsDevCatalogue(raw, now);\n        deps.store.write(fresh);",
+    replace: "        deps.store.write(raw);\n        const fresh = parseModelsDevCatalogue(raw, now);",
+    tests: ["tests/v2-pricing-catalogue.test.mjs"],
+  },
+  {
+    // The crystallise reject/clarify paths still pay for a classifier call.
+    name: "the crystallise pass bills its classifier (v2): rejected requests looked free",
+    file: "dist/crystallise/prompt-refiner.js",
+    find: "    addSpend(spend, cls);",
+    replace: "    addSpend(spend, undefined);",
+    tests: ["tests/v2-pricing-catalogue.test.mjs"],
+  },
+  {
+    // Real captured OpenCode sends this despite our declining the capability.
+    // Answering `{}` is a success for a write we never performed, so a worker
+    // delegating its edits loses them and reports the sub-task done.
+    name: "a declined fs capability is REFUSED (v2): a false success loses the worker's edits silently",
+    file: "dist/adapters/acp.js",
+    find: "            throw new AcpClientCapabilityError(\"fs/write_text_file\");",
+    replace: "            return {};",
+    tests: ["tests/v2-acp-replay.test.mjs"],
+  },
+  {
+    // ...and the refusal must survive the dispatcher. Collapsing a throw back
+    // into an empty result restores the same lie one layer down.
+    name: "a handler throw becomes a JSON-RPC error (v2): swallowing it re-tells the lie one layer down",
+    file: "dist/adapters/acp.js",
+    find: "                        code: capability ? -32601 : -32603,",
+    replace: "                        code: capability ? 0 : -32603,",
+    tests: ["tests/v2-acp-replay.test.mjs"],
+  },
+  {
+    // The failure that made this milestone necessary. Every v2 module was
+    // green and referenced from nothing the plugin ran, so a `backends` block
+    // validated and then did nothing at all. Returning undefined here is that
+    // exact state: configuration accepted, silently ignored.
+    name: "a moved role really moves (v2): returning no executor is how the whole backend went inert",
+    file: "dist/adapters/backend-router.js",
+    find: "        if (this.roles[role].backend !== \"opencode\")\n            return undefined;",
+    replace: "        return undefined;\n        if (false)",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // A probe that cannot prove the guard is live must stop the run. Treating
+    // a failure as a pass runs every tool call with the harness never
+    // consulted, which is indistinguishable from success right up until it
+    // isn't.
+    name: "a failed capability probe REFUSES to run (v2): passing it runs the worker unguarded",
+    file: "dist/adapters/backend-router.js",
+    find: "        if (!result.ok) {",
+    replace: "        if (false) {",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // The cost-leak class M8 removed from the SDK paths, reintroduced on the
+    // ACP one: a provider that reports tokens without a price is not free, and
+    // recording zero makes an unpriced turn look like a free turn.
+    name: "tokens-only usage is PRICED (v2): reporting zero re-opens the cost leak on the ACP path",
+    file: "dist/adapters/backend-router.js",
+    find: "        return { costUsd: costOf(usage.tokensIn, usage.tokensOut, res), priceSource: res.source };",
+    replace: "        return { costUsd: 0, priceSource: res.source };",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // "Unknown" and "free" are different facts. Collapsing them puts a
+    // measured-looking zero in the ledger for a turn nobody measured.
+    name: "an unmeasured turn stays unmeasured (v2): a zero here is a hole reported as a fact",
+    file: "dist/adapters/backend-router.js",
+    find: "            return { costUsd: undefined, priceSource: \"unmeasured\" };\n        if (usage.usageSource === \"acp-delta\")",
+    replace: "            return { costUsd: 0, priceSource: \"unmeasured\" };\n        if (usage.usageSource === \"acp-delta\")",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // A provider whose key is absent must be dropped, not emitted keyless. An
+    // unknown-provider error points at the config; a 401 sends the operator to
+    // rotate a credential that was never there.
+    name: "a keyless provider is DROPPED (v2): shipping it keyless debugs as a 401 instead of a config error",
+    file: "dist/adapters/role-config.js",
+    find: "        if (!key) {",
+    replace: "        if (false) {",
+    tests: ["tests/v2-backend-wiring.test.mjs", "tests/v2-role-config.test.mjs"],
+  },
+  {
+    // A request sent after the child died used to sit in the pending map
+    // forever: `write` is a no-op once closed, and the one-shot exit handler
+    // had already drained. The turn then hung to the sub-task deadline and
+    // blamed a timeout instead of the crash that actually happened.
+    name: "a post-close request rejects at once (rc): otherwise the turn hangs to the deadline and blames a timeout",
+    file: "dist/adapters/acp.js",
+    find: "        if (this.closed) {\n            return Promise.reject(this.closeError ?? new Error(`acp agent connection is closed; '${method}' cannot be sent`));\n        }",
+    replace: "",
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    // The probe used to confirm containment by asking the model whether it had
+    // complied. An agent that wrote through an unguarded path and did not
+    // narrate it passed -- the more dangerous bypass of the two.
+    name: "the probe reads the DISK, not the narration (rc): a silent write past a refusal passed cleanly",
+    file: "dist/adapters/acp.js",
+    find: "        markerOnDisk = existsSync(join(input.cwd, markerFile));",
+    replace: "        markerOnDisk = false;",
+    tests: ["tests/v2-opencode-preflight.test.mjs"],
+  },
+  {
+    // Naming every permission key is load-bearing, not decorative: OpenCode
+    // merges `permission` per key and evaluates last-match-wins by insertion
+    // order, so an unnamed key that a hostile repo allows beats our wildcard.
+    name: "every permission key is named (rc): an unnamed key is one a repo config can allow past the wildcard",
+    file: "dist/adapters/opencode-config.js",
+    find: "    for (const key of OPENCODE_PERMISSION_KEYS)",
+    replace: "    for (const key of [])",
+    tests: ["tests/v2-opencode-preflight.test.mjs"],
+  },
+  {
+    // The `probe ??= doTheThing()` bug, restored. A promise memo caches the
+    // settled value and a rejection IS a settled value, so one transient probe
+    // failure took every OpenCode role down until the gateway was restarted --
+    // by a human, on most hosts. Not retrying is the failure; failing closed
+    // was always fine.
+    name: "a failed probe is RETRIED (rc): memoising the rejection wedges the backend until a restart",
+    file: "dist/adapters/shared/once.js",
+    find: "                if (inFlight === attempt)\n                    inFlight = undefined;",
+    replace: "                ;",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    // ...and the other half: if success is not memoised, the probe spawns a
+    // process on every single session instead of once.
+    name: "a successful probe is MEMOISED (rc): re-probing every session spawns a process per run",
+    file: "dist/adapters/shared/once.js",
+    find: "                done = true;",
+    replace: "                done = true;\n                inFlight = undefined;",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
   },
 ];
 

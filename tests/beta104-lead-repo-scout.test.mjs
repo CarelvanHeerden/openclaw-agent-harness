@@ -29,8 +29,8 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 let scout, runLeadPlanner, isRepoAllowed, buildAdversarySystemPrompt, parseHarnessConfig;
 try {
   scout = await import("../dist/orchestrator/lead-scout.js");
-  ({ runLeadPlanner, isRepoAllowed } = await import("../dist/orchestrator/fable5-lead.js"));
-  ({ buildAdversarySystemPrompt } = await import("../dist/orchestrator/fable5-adversary.js"));
+  ({ runLeadPlanner, isRepoAllowed } = await import("../dist/orchestrator/lead.js"));
+  ({ buildAdversarySystemPrompt } = await import("../dist/orchestrator/adversary.js"));
   ({ parseHarnessConfig } = await import("../dist/config.js"));
 } catch {
   scout = undefined;
@@ -239,7 +239,7 @@ test("beta104: the scout's tool allow-list contains no way to mutate the worktre
 });
 
 test("beta104: the SDK call enforces read-only three times over", { skip }, () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   const fn = src.slice(src.indexOf("export async function runLeadScoutSdk"));
   const body = fn.slice(0, fn.indexOf("\n// ---- Structured-output helpers"));
   assert.match(body, /tools: \[\.\.\.params\.allowedTools\]/, "the allow-list is the authoritative switch");
@@ -281,7 +281,7 @@ test("beta104: index.ts builds the adversary prompt from a projection, not the b
 // ---------------------------------------------------------------------------
 
 test("beta104: the lead is no longer told codeExcerpts is code it read", { skip }, () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.ok(!src.includes("the ACTUAL code you read, verbatim, with `path` and `startLine`"),
     "the pre-b104 wording demanded excerpts from a toolless call — it mandated fabrication");
   assert.match(src, /code quoted from your repo investigation below/);
@@ -289,14 +289,14 @@ test("beta104: the lead is no longer told codeExcerpts is code it read", { skip 
 });
 
 test("beta104: the report is sent ONCE — system prompt only, stripped from the brief JSON", { skip }, () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /const \{ repoScoutReport: _scoutInSystemPrompt, \.\.\.briefForMessage \} = params\.brief;/);
   assert.match(src, /JSON\.stringify\(briefForMessage\)/,
     "sending the report in both places pays for it twice and buries the framing");
 });
 
 test("beta104: the planning call itself still has no tools", { skip }, () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   const at = src.indexOf("async function structuredCall");
   const sc = src.slice(at, src.indexOf("export async function runCrystalliserSdk", at));
   assert.match(sc, /\n {8}tools: \[\],/,
@@ -345,7 +345,7 @@ async function* multiMessageStream() {
 }
 
 test("beta104: a report spanning several messages is returned whole, not just its last chunk", { skip }, async () => {
-  const { consumeWorkerStream } = await import("../dist/adapters/claude-sdk.js");
+  const { consumeWorkerStream } = await import("../dist/adapters/claude-code.js");
   const r = await consumeWorkerStream(multiMessageStream(), new AbortController(), { accumulateAllText: true });
   assert.ok(r.allText.includes("(portal), not (app)"), "the FIRST text block carries the finding that matters most");
   assert.ok(r.allText.includes("__tests__/"));
@@ -353,14 +353,14 @@ test("beta104: a report spanning several messages is returned whole, not just it
 });
 
 test("beta104: the worker path is unchanged — no accumulation unless asked", { skip }, async () => {
-  const { consumeWorkerStream } = await import("../dist/adapters/claude-sdk.js");
+  const { consumeWorkerStream } = await import("../dist/adapters/claude-code.js");
   const r = await consumeWorkerStream(multiMessageStream(), new AbortController(), {});
   assert.equal(r.allText, undefined, "workers want the concluding statement alone; this must not change under them");
   assert.match(r.finalMessage, /__tests__/);
 });
 
 test("beta104: the scout call opts into accumulation", { skip }, () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   const fn = src.slice(src.indexOf("export async function runLeadScoutSdk"));
   assert.match(fn.slice(0, 4000), /accumulateAllText: true/);
 });

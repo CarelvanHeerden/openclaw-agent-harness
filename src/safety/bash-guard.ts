@@ -72,15 +72,13 @@ export function defaultGuardConfig(): GuardConfig {
   return {
     // beta.32: keep in sync with config.ts safety.bash_whitelist default.
     // Production uses the config value; this is the standalone fallback.
-    // Excludes file-mutating shell commands (writes go through SDK Write/Edit
-    // which enforce path_denylist).
     whitelist: [
       "git", "pnpm", "npm", "npx", "yarn", "node", "tsc", "tsx", "deno", "bun",
       "python", "python3", "pip", "pip3", "pytest", "go", "cargo", "make", "just",
       "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
       "find", "which", "echo", "printf", "test", "true", "false", "pwd",
       "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
-      "realpath", "xargs", "comm",
+      "realpath", "xargs", "comm", "mkdir", "cd", "cp", "mv", "touch",
     ],
     denylistTokens: DENYLIST_TOKEN_DEFAULTS,
     allowGitPush: false,
@@ -309,6 +307,215 @@ export function buildBashGuard(cfg: {
 }
 
 /**
+ * ACP tool-call shape, reduced to the fields the guard needs. Mirrors the
+ * spec's `ToolCall`/`ToolCallUpdate` as delivered on a `session/request_permission`.
+ * Every field except the kind discriminator is OPTIONAL in the spec, which is
+ * exactly why this guard fails closed.
+ */
+export interface AcpToolCallForGuard {
+  kind?: string | null;
+  rawInput?: unknown;
+  locations?: ReadonlyArray<{ path?: string | null } | null> | null;
+  title?: string | null;
+}
+
+/**
+ * Pulls the shell command out of an ACP `execute` tool call.
+ *
+ * Measured shapes (see docs/acp-capability-matrix.md):
+ *   OpenCode -> { command, cwd }
+ *   Codex    -> { command, cwd, parsed_cmd, call_id, ... }
+ * Returns null when no command string is present, which the caller MUST treat
+ * as a denial rather than a pass.
+ */
+export function acpCommandFromToolCall(call: AcpToolCallForGuard): string | null {
+  const raw = call.rawInput as Record<string, unknown> | null | undefined;
+  if (!raw || typeof raw !== "object") return null;
+  const cmd = raw["command"];
+  return typeof cmd === "string" && cmd.trim().length > 0 ? cmd : null;
+}
+
+/**
+ * Collects every filesystem path an ACP tool call would touch.
+ *
+ * Sources, all of which occur in practice:
+ *   - `locations[].path` (protocol-normalised; OpenCode and Codex both populate it)
+ *   - `rawInput.filepath` (OpenCode) / `file_path` (Claude Code SDK) / `path`
+ *   - `rawInput.changes` KEYS (Codex edits carry no path field at all -- the
+ *     affected paths are the keys of the changes object)
+ */
+export function acpPathsFromToolCall(call: AcpToolCallForGuard): string[] {
+  const out = new Set<string>();
+  for (const loc of call.locations ?? []) {
+    const p = loc?.path;
+    if (typeof p === "string" && p.length > 0) out.add(p);
+  }
+  const raw = call.rawInput as Record<string, unknown> | null | undefined;
+  if (raw && typeof raw === "object") {
+    for (const k of ["filepath", "file_path", "path", "notebook_path", "abs_path"]) {
+      const v = raw[k];
+      if (typeof v === "string" && v.length > 0) out.add(v);
+    }
+    const changes = raw["changes"];
+    if (changes && typeof changes === "object" && !Array.isArray(changes)) {
+      for (const k of Object.keys(changes as Record<string, unknown>)) {
+        if (k.length > 0) out.add(k);
+      }
+    }
+  }
+  return [...out];
+}
+
+/** Search-style calls expose a pattern rather than a path. */
+function acpPatternFromToolCall(call: AcpToolCallForGuard): string | null {
+  const raw = call.rawInput as Record<string, unknown> | null | undefined;
+  if (!raw || typeof raw !== "object") return null;
+  for (const k of ["pattern", "glob", "query", "regex", "file_pattern"]) {
+    const v = raw[k];
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return null;
+}
+
+/**
+ * Builds a permission handler for an ACP backend, to be wired to
+ * `session/request_permission`.
+ *
+ * Why this exists as a separate entry point from `buildBashGuard`: that guard
+ * keys on Claude Code's tool NAMES (`Bash`, `Write`, `Read`, ...) and ends in
+ * `return { allow: true }`. Point it at any other backend and every call falls
+ * through to allowed, silently voiding the whitelist and both denylists while
+ * still reading as enabled in config. ACP instead gives us a protocol-normalised
+ * `ToolKind`, which is a sounder thing to key on than a vendor's tool names.
+ *
+ * FAIL-CLOSED, and deliberately so. `kind`, `rawInput` and `locations` are all
+ * optional in the ACP spec, so "we could not determine what this call does" is
+ * a denial, not a pass. The probe showed `rawInput` arriving EMPTY on the
+ * initial `status: "pending"` update and only being filled in at
+ * `status: "in_progress"` -- i.e. once the tool is already running -- so a
+ * guard that shrugged at missing input would be trivially bypassable.
+ *
+ * NOTE: this only protects calls the backend actually asks about. An agent
+ * configured not to request permission never reaches this code at all. See
+ * `docs/acp-capability-matrix.md`; enforcing that config is a separate,
+ * mandatory preflight.
+ */
+export function buildAcpGuard(cfg: {
+  bash_whitelist: string[];
+  bash_denylist_tokens: string[];
+  path_denylist: string[];
+  allow_git_push: boolean;
+  allow_network_commands: boolean;
+}): (call: AcpToolCallForGuard) => Promise<{ allow: boolean; reason?: string; unenforced?: boolean }> {
+  const guard: GuardConfig = {
+    whitelist: cfg.bash_whitelist,
+    denylistTokens: cfg.bash_denylist_tokens,
+    allowGitPush: cfg.allow_git_push,
+    allowNetworkCommands: cfg.allow_network_commands,
+    pathDenylist: cfg.path_denylist,
+  };
+
+  const denyIfBlockedPaths = (
+    call: AcpToolCallForGuard,
+    label: string,
+  ): { allow: boolean; reason?: string } => {
+    const paths = acpPathsFromToolCall(call);
+    if (paths.length === 0) {
+      return { allow: false, reason: `${label} tool call exposed no path to check (failing closed)` };
+    }
+    for (const p of paths) {
+      if (pathMatchesDenylist(p, cfg.path_denylist)) {
+        return { allow: false, reason: `${label} path '${p}' is denylisted` };
+      }
+    }
+    return { allow: true };
+  };
+
+  return async (call: AcpToolCallForGuard) => {
+    const kind = typeof call.kind === "string" ? call.kind.toLowerCase() : "";
+
+    switch (kind) {
+      case "execute": {
+        const cmd = acpCommandFromToolCall(call);
+        if (cmd === null) {
+          return { allow: false, reason: "execute tool call carried no command string (failing closed)" };
+        }
+        const r = guardCommand(cmd, guard);
+        return { allow: r.allowed, reason: r.reason };
+      }
+
+      case "edit":
+      case "delete":
+      case "move":
+        return denyIfBlockedPaths(call, kind);
+
+      // READ IS THE ONE KIND THAT DEGRADES TO ALLOW, AND ONLY WHEN THE AGENT
+      // TELLS US NOTHING. Measured on opencode-ai@1.18.23, a read permission
+      // request is `{kind:"read", title:"read", locations:[], rawInput:{}}` --
+      // no path in any field, so there is nothing for the denylist to match.
+      //
+      // Failing closed here is the safe answer and it makes the backend
+      // useless: a worker that cannot read a file cannot change one, and it
+      // presents as a model that narrates its intent and then stops. That was
+      // found by a real StitchGuard run, not by review, because the small smoke
+      // that preceded it only CREATED a file and so never read anything.
+      //
+      // The trade is stated in SECURITY.md and is deliberately narrow. When a
+      // path IS supplied -- Codex supplies one, and a future OpenCode may --
+      // the denylist enforces exactly as before. `unenforced` is how the caller
+      // learns this happened, because a control that has silently stopped
+      // applying is worse than one that was never claimed.
+      case "read": {
+        const paths = acpPathsFromToolCall(call);
+        if (paths.length === 0) {
+          return {
+            allow: true,
+            unenforced: true,
+            reason: "read tool call exposed no path; path_denylist cannot be applied to it on this backend",
+          };
+        }
+        for (const p of paths) {
+          if (pathMatchesDenylist(p, cfg.path_denylist)) {
+            return { allow: false, reason: `read path '${p}' is denylisted` };
+          }
+        }
+        return { allow: true };
+      }
+
+      case "search": {
+        const pat = acpPatternFromToolCall(call);
+        if (pat === null) {
+          // A search we cannot inspect could enumerate secrets (`**/.env`).
+          return { allow: false, reason: "search tool call exposed no pattern to check (failing closed)" };
+        }
+        if (pathMatchesDenylist(pat, cfg.path_denylist)) {
+          return { allow: false, reason: `search pattern '${pat}' hits denylist` };
+        }
+        return { allow: true };
+      }
+
+      case "fetch":
+        if (!cfg.allow_network_commands) {
+          return { allow: false, reason: "network fetch is not permitted (allow_network_commands=false)" };
+        }
+        return { allow: true };
+
+      // Pure reasoning, no side effect to guard.
+      case "think":
+        return { allow: true };
+
+      default:
+        return {
+          allow: false,
+          reason: kind
+            ? `unrecognised ACP tool kind '${kind}' (failing closed)`
+            : "ACP tool call carried no kind (failing closed)",
+        };
+    }
+  };
+}
+
+/**
  * beta.57 (P2): shared path-denylist matcher (same semantics as the SDK
  * Read/Write guard in buildBashGuard).
  */
@@ -329,6 +536,13 @@ export function pathMatchesDenylist(p: string, patterns: readonly string[]): boo
 // path-looking args are checked against the path denylist so `cat .env`
 // cannot bypass the SDK Read guard.
 const FILE_READING_COMMANDS = new Set(["cat", "head", "tail", "grep", "rg", "sed", "awk", "cut", "sort", "uniq", "wc", "diff", "comm", "tr"]);
+
+// v2 OpenCode: mkdir/cp/mv/touch/cd are now whitelisted because the agent
+// cannot do ordinary file work without them. Their arguments are checked
+// against path_denylist the same way `cat` is, so `cp x .env` is still
+// refused when the denylist is loaded. `ln` and `tee` are not in this set
+// because they are not on the whitelist.
+const FILE_MUTATING_COMMANDS = new Set(["mkdir", "cp", "mv", "touch", "cd"]);
 
 // beta.57 (P2): interpreters that accept inline code via a flag. Inline code
 // is a fully unguarded escape hatch (`node -e "require('fs')..."`), so those
@@ -453,8 +667,10 @@ export function guardCommand(cmd: string, cfg: GuardConfig = defaultGuardConfig(
     }
 
     // beta.57 (P2): path-denylist check on args of file-reading commands, so
-    // Bash cannot read what the SDK Read guard refuses.
-    if (pathDeny.length > 0 && FILE_READING_COMMANDS.has(effectiveBase)) {
+    // Bash cannot read what the SDK Read guard refuses. The same check covers
+    // the OpenCode mutators: a whitelisted `cp` that can write `.env` is the
+    // bypass this list used to exist to prevent.
+    if (pathDeny.length > 0 && (FILE_READING_COMMANDS.has(effectiveBase) || FILE_MUTATING_COMMANDS.has(effectiveBase))) {
       for (const a of seg.slice(cmdIdx + 1)) {
         if (a.startsWith("-")) continue;
         if (pathMatchesDenylist(a, pathDeny)) {

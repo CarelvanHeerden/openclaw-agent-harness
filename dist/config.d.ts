@@ -11,6 +11,13 @@ export interface HarnessConfig {
     budgets: BudgetsConfig;
     repos: ReposConfig;
     models: ModelsConfig;
+    /**
+     * v2.0.0-beta.1: per-role backend selection. Optional, and absent means
+     * every role runs on claude-code exactly as it did in v1.
+     */
+    backends?: BackendsConfig;
+    /** v2.0.0-beta.1: OpenAI-compatible endpoints for OpenCode roles. */
+    providers?: ProvidersConfig;
     loop: LoopConfig;
     vercel: VercelConfig;
     storage: StorageConfig;
@@ -439,6 +446,72 @@ export interface ModelsAuthConfig {
      */
     api_key_env?: string;
 }
+/**
+ * v2.0.0-beta.1: which backend and model each role runs on.
+ *
+ * Absent means every role runs on `claude-code` exactly as it did in v1, which
+ * is the property that makes this block safe to add: an operator who upgrades
+ * and edits nothing sees no change. See `src/adapters/role-config.ts` for the
+ * merge rules and the validation.
+ */
+export interface BackendsConfig {
+    /** Applied to any role that does not override it. */
+    default?: RoleBackendEntry;
+    worker?: RoleBackendEntry;
+    scout?: RoleBackendEntry;
+    lead?: RoleBackendEntry;
+    adversary?: RoleBackendEntry;
+    classifier?: RoleBackendEntry;
+    crystalliser?: RoleBackendEntry;
+    revise_spec?: RoleBackendEntry;
+    worker_context?: RoleBackendEntry;
+}
+export interface RoleBackendEntry {
+    /** `claude-code` (default) or `opencode`. */
+    backend?: "claude-code" | "opencode";
+    /** `provider/model` for opencode; a bare model id is also accepted for claude-code. */
+    model?: string;
+    /** OpenCode reasoning effort/variant. Undefined leaves the backend default. */
+    effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+    /**
+     * Operator's declaration of how capable this model is: `basic`, `strong` or
+     * `frontier`. The lead, adversary and crystalliser refuse to run below
+     * `strong`, because those are the roles where a weak model returns a
+     * well-formed wrong answer rather than an obvious failure.
+     */
+    tier?: "basic" | "strong" | "frontier";
+}
+/**
+ * OpenAI-compatible endpoints made available to OpenCode roles.
+ *
+ * Keys live in the vault and are named here by service, never inlined. They
+ * reach the agent only inside `OPENCODE_CONFIG_CONTENT`.
+ */
+export interface ProvidersConfig {
+    [providerId: string]: {
+        /** The AI-SDK package; only `@ai-sdk/openai-compatible` is supported. */
+        npm?: string;
+        /** Display name, used in audit events and error messages. */
+        name?: string;
+        /** Endpoint base URL. Must end in `/v1`. */
+        base_url?: string;
+        /** Vault service name holding this provider's API key. */
+        api_key_service?: string;
+        /** True for a provider that bills nothing: report tokens, not dollars. */
+        local?: boolean;
+        /**
+         * models.dev provider id to price this provider's models against, when it
+         * differs from the id above (e.g. `anthropic-compat` -> `anthropic`).
+         * Without it the catalogue misses and every turn bills at the
+         * most-expensive-known fail-safe.
+         */
+        pricing_provider?: string;
+        /** Model ids this provider serves, with optional display names. */
+        models?: Record<string, {
+            name?: string;
+        }>;
+    };
+}
 export interface LoopConfig {
     max_cycles: number;
     /**
@@ -493,8 +566,6 @@ export interface LoopConfig {
      * Default 1800.
      */
     time_extension_default_seconds: number;
-    /** Max sub-tasks a cycle will run concurrently. Default 1 (sequential). */
-    subtask_concurrency: number;
     /**
      * beta.40: stuck-loop reclaim threshold (seconds). The beta.38 re-entrancy
      * guard (`runningSessions`) is module-scoped and survives a plugin
@@ -720,15 +791,6 @@ export interface LoopConfig {
      * depends on. true (default) enables; false restores beta.90 (run-all).
      */
     revise_scoping_enabled?: boolean;
-    /**
-     * beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no
-     * dependency) to run concurrently up to subtask_concurrency. The dispatcher
-     * already honours subtask_concurrency + dependsOn; this flag additionally
-     * enforces a file-overlap guard so two workers never write the same file in
-     * the shared worktree. false (default) keeps beta.90 serial behaviour even if
-     * subtask_concurrency > 1; set true AND subtask_concurrency > 1 to parallelise.
-     */
-    parallel_independent_subtasks?: boolean;
     /**
      * beta.92: use the DETERMINISTIC finding->sub-task mapping (revise-mapping.ts)
      * on a revise cycle instead of the deleted LLM revise-spec turn. Maps each
@@ -1407,6 +1469,29 @@ export declare function validatePatHierarchy(pr: PatRoutingConfig): void;
  * listener that was deleted ninety-nine releases ago.
  */
 export declare function declaresRemovedListenerFlag(input: unknown): boolean;
+/**
+ * v2.0.0: `loop` keys that parallel sub-task dispatch owned, now removed.
+ *
+ * Kept as data rather than prose because three things must agree on the list:
+ * the parse-time drop below, the startup warning, and the manifest entries
+ * that let such a config through the gateway at all.
+ */
+export declare const REMOVED_LOOP_KEYS: readonly ["subtask_concurrency", "parallel_independent_subtasks"];
+/**
+ * PURE: which removed parallelism keys did this config carry?
+ *
+ * v2.0.0. Read off the RAW input, because `parseHarnessConfig` drops them and
+ * the parsed config can no longer answer -- the same shape as
+ * {@link declaresRemovedListenerFlag}.
+ *
+ * These keys MUST stay declared in `openclaw.plugin.json`. The gateway
+ * validates an operator's config against that manifest with
+ * `additionalProperties: false`, so deleting them there would not "remove a
+ * setting" -- it would reject the operator's ENTIRE plugin config the moment
+ * an existing one still named them, which is the beta.34 and rc.1 outage. They
+ * are accepted, ignored, and warned about instead.
+ */
+export declare function declaresRemovedParallelKeys(input: unknown): string[];
 export declare function parseHarnessConfig(input: unknown): HarnessConfig;
 /**
  * beta.78 (Feature 3): pure budget-coherence assessment.

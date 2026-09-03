@@ -18,7 +18,7 @@
  * This module is the translation layer: job log in, `ReviewFinding[]` out,
  * shaped so the existing revise machinery routes them like any other finding.
  */
-import type { ReviewFinding } from "./fable5-adversary.js";
+import type { ReviewFinding } from "./adversary.js";
 export interface CiFindingOptions {
     /** Cap on findings produced, so a catastrophic red build cannot flood a cycle. */
     maxFindings?: number;

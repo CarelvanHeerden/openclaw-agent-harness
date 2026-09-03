@@ -108,7 +108,7 @@ test("beta.55 B2: awaiting_clarification is NOT in recovery NON_TERMINAL (stays 
 });
 
 test("beta.55 B1: classifier prompt nudges clarify on action-changing ambiguity (beta.80: wording strengthened to first-class)", () => {
-  const sdk = S("src/adapters/claude-sdk.ts");
+  const sdk = S("src/adapters/claude-code.ts");
   // beta.80 superseded the beta.55 wording -- clarify is now first-class, and
   // the trigger is a wrong reading changing WHAT gets built. The INTENT (nudge
   // clarify on action-changing ambiguity) is preserved + strengthened.

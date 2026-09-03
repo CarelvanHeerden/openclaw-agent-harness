@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const S = (p) => readFileSync(join(here, "..", p), "utf8");
 
-const { buildWorkerSystemPrompt } = await import("../dist/orchestrator/sonnet-worker.js");
+const { buildWorkerSystemPrompt } = await import("../dist/orchestrator/worker.js");
 
 // ---------------------------------------------------------------------------
 // Part 1: worker system-prompt hardening

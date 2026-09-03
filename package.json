@@ -1,7 +1,7 @@
 {
   "name": "openclaw-agent-harness",
-  "version": "1.0.0-rc.6",
-  "description": "Multi-agent orchestration harness for OpenClaw. Fable-5 lead + Sonnet workers + adversarial reviewer, driven from Slack.",
+  "version": "2.0.0-rc.1",
+  "description": "Multi-agent orchestration harness for OpenClaw. Lead planner + workers + adversarial reviewer, driven from Slack.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

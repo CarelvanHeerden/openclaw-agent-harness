@@ -34,7 +34,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 const {
   isElidableFinalScopeSubTask,
   elideFinalScopeSubTask,
-} = await import("../dist/orchestrator/fable5-lead.js");
+} = await import("../dist/orchestrator/lead.js");
 const { collectDeclaredScopeFiles } = await import("../dist/orchestrator/loop.js");
 
 const observeScopeSubTask = (seq, extra = {}) => ({
@@ -355,7 +355,7 @@ test("beta94 F1b: scope check is a no-op when disabled or no base sha",
 // ---------------------------------------------------------------------------
 
 // Drive N ticks through the callback returned by makeStreamSlowCallback. The
-// per-tick shape matches sonnet-worker's onStreamSlow contract.
+// per-tick shape matches worker's onStreamSlow contract.
 async function driveTicks(loop, cb, { count, tokensOut, elapsedMs }) {
   for (let i = 0; i < count; i++) {
     cb({ idleMs: 90_000, elapsedMs, tokensOut, label: "worker" });
@@ -497,12 +497,12 @@ test("beta94: config clamps — consecutive-slow [2,20], min-elapsed [60,3600]",
 // Source-wiring assertions
 // ---------------------------------------------------------------------------
 test("beta94 F1: source wiring — lead exports the elision, loop imports + audits it", () => {
-  const lead = S("src/orchestrator/fable5-lead.ts");
+  const lead = S("src/orchestrator/lead.ts");
   assert.match(lead, /export function isElidableFinalScopeSubTask/);
   assert.match(lead, /export function elideFinalScopeSubTask/);
   assert.match(lead, /scope\|boundar\|final/);
   const loop = S("src/orchestrator/loop.ts");
-  assert.match(loop, /import \{ elideFinalScopeSubTask \} from ".\/fable5-lead.js"/);
+  assert.match(loop, /import \{ elideFinalScopeSubTask \} from ".\/lead.js"/);
   assert.match(loop, /loop\.final_verify_subtask_elided/);
   assert.match(loop, /runFinalScopeCheck/);
   assert.match(loop, /loop\.final_scope_check_ran/);

@@ -1,0 +1,203 @@
+{
+  "result": {
+    "agent": "opencode",
+    "workspace": "/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx",
+    "tracePath": "/Users/carelvanheerden/PyCharm/openclaw-acp/probe/runs/opencode-2026-08-03T10-15-41-840Z.jsonl",
+    "launch": "npx -y opencode-ai@latest acp",
+    "initialize": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "loadSession": true,
+        "mcpCapabilities": {
+          "http": true,
+          "sse": true
+        },
+        "promptCapabilities": {
+          "embeddedContext": true,
+          "image": true
+        },
+        "sessionCapabilities": {
+          "close": {},
+          "fork": {},
+          "list": {},
+          "resume": {}
+        }
+      },
+      "authMethods": [
+        {
+          "description": "Run `opencode auth login` in the terminal",
+          "name": "Login with opencode",
+          "id": "opencode-login"
+        }
+      ],
+      "agentInfo": {
+        "name": "OpenCode",
+        "version": "1.18.11"
+      }
+    },
+    "authenticateAttempted": "opencode-login",
+    "authenticated": true,
+    "sessionId": "ses_038e0b839ffeZuFksa7dmUZeoB",
+    "sessionModels": null,
+    "sessionModes": null,
+    "promptResponse": {
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 109,
+        "outputTokens": 3,
+        "totalTokens": 8176,
+        "cachedReadTokens": 8064
+      },
+      "_meta": {}
+    },
+    "exit": null,
+    "stderrTail": "",
+    "notificationCount": 12,
+    "permissionRequests": [
+      {
+        "kind": "execute",
+        "title": "echo acp-probe-marker",
+        "hasRawInput": true,
+        "rawInputKeys": [
+          "command"
+        ],
+        "rawInput": {
+          "command": "echo acp-probe-marker"
+        },
+        "locations": [],
+        "optionKinds": [
+          "allow_once",
+          "allow_always",
+          "reject_once"
+        ]
+      },
+      {
+        "kind": "edit",
+        "title": "/private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt",
+        "hasRawInput": true,
+        "rawInputKeys": [
+          "filepath",
+          "diff"
+        ],
+        "rawInput": {
+          "filepath": "/private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt",
+          "diff": "Index: /private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt\n===================================================================\n--- /private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt\n+++ /private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt\n@@ -0,0 +1,1 @@\n+ok\n\\ No newline at end of file\n"
+        },
+        "locations": [
+          {
+            "path": "/private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt"
+          }
+        ],
+        "optionKinds": [
+          "allow_once",
+          "allow_always",
+          "reject_once"
+        ]
+      }
+    ]
+  },
+  "analysis": {
+    "agent": "opencode",
+    "reachedPrompt": true,
+    "error": null,
+    "stopReason": "end_turn",
+    "protocolVersion": 1,
+    "authMethods": [
+      "opencode-login"
+    ],
+    "agentInfo": {
+      "name": "OpenCode",
+      "version": "1.18.11"
+    },
+    "loadSession": true,
+    "sessionCapabilities": {
+      "close": {},
+      "fork": {},
+      "list": {},
+      "resume": {}
+    },
+    "modelSelection": {
+      "advertised": false,
+      "currentModelId": null,
+      "availableModelIds": []
+    },
+    "usage": {
+      "emitted": true,
+      "count": 1,
+      "hasCost": true,
+      "lastCost": {
+        "amount": 0,
+        "currency": "USD"
+      },
+      "lastUsed": 8173,
+      "lastSize": 200000
+    },
+    "toolCalls": {
+      "total": 8,
+      "kinds": [
+        "execute",
+        "edit"
+      ],
+      "kindPresent": true,
+      "rawInputPresent": true,
+      "execCount": 4,
+      "execWithRawInput": 4,
+      "editCount": 2,
+      "locationsPresent": true
+    },
+    "diffContent": {
+      "present": false,
+      "count": 0
+    },
+    "permission": {
+      "count": 2,
+      "anyWithRawInput": true,
+      "kinds": [
+        "execute",
+        "edit"
+      ],
+      "samples": [
+        {
+          "kind": "execute",
+          "title": "echo acp-probe-marker",
+          "hasRawInput": true,
+          "rawInputKeys": [
+            "command"
+          ],
+          "rawInput": {
+            "command": "echo acp-probe-marker"
+          },
+          "locations": [],
+          "optionKinds": [
+            "allow_once",
+            "allow_always",
+            "reject_once"
+          ]
+        },
+        {
+          "kind": "edit",
+          "title": "/private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt",
+          "hasRawInput": true,
+          "rawInputKeys": [
+            "filepath",
+            "diff"
+          ],
+          "rawInput": {
+            "filepath": "/private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt",
+            "diff": "Index: /private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt\n===================================================================\n--- /private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt\n+++ /private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt\n@@ -0,0 +1,1 @@\n+ok\n\\ No newline at end of file\n"
+          },
+          "locations": [
+            {
+              "path": "/private/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-cZLHHx/probe-artifact.txt"
+            }
+          ],
+          "optionKinds": [
+            "allow_once",
+            "allow_always",
+            "reject_once"
+          ]
+        }
+      ]
+    }
+  }
+}

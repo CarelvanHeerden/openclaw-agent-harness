@@ -37,7 +37,7 @@
  * Consumers watching old audit event names will still see them fire.
  */
 
-import type { LeadPlanSubTask, SubTaskVerify } from "./fable5-lead.js";
+import type { LeadPlanSubTask, SubTaskVerify } from "./lead.js";
 
 const PUSH_RE = /\b(push(ed|es|ing)?|push to (origin|remote)|remote sha|ls-remote)\b/i;
 const VERIFY_REMOTE_RE = /\b(verify (remote|pushed)|verify remote sha|ls-remote|confirm push)\b/i;

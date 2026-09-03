@@ -182,14 +182,14 @@ test("beta80: classifier clarify still returns a question (unchanged path)", { s
 // ---- source assertions: prompts ----
 
 test("beta80: crystalliser prompt carries the REPO-ONLY reframe rule", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /REPO-ONLY INVARIANT/);
   assert.match(src, /never as the acceptance criterion itself/i);
   assert.match(src, /Do NOT satisfy such a request by writing MARKDOWN docs/i);
 });
 
 test("beta80: crystalliser prompt carries the BIMODALITY self-report instruction", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /BIMODALITY SELF-REPORT/);
   assert.match(src, /interpretations/);
   assert.match(src, /clarificationNeeded/);
@@ -197,14 +197,14 @@ test("beta80: crystalliser prompt carries the BIMODALITY self-report instruction
 });
 
 test("beta80: classifier prompt no longer suppresses clarify + makes it first-class", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.doesNotMatch(src, /clarify is the exception for a real, action-changing ambiguity, not the default/);
   assert.match(src, /clarify is a normal, expected outcome, not a last resort/i);
   assert.match(src, /BIMODAL -- it has >= 2 valid readings/);
 });
 
 test("beta80: crystalliser SDK params thread repoOnlyInvariant + bimodalClarify", () => {
-  const sdk = S("src/adapters/claude-sdk.ts");
+  const sdk = S("src/adapters/claude-code.ts");
   assert.match(sdk, /repoOnlyInvariant\?: boolean/);
   assert.match(sdk, /bimodalClarify\?: boolean/);
   const idx = S("src/index.ts");

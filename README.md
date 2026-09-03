@@ -1,8 +1,9 @@
 # openclaw-agent-harness
 
-*Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a Fable-5 lead plans, Sonnet workers write code in isolated git worktrees, and a Fable-5 adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
+*Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a lead plans, workers write code in isolated git worktrees, and an adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: release candidate.* Version `1.0.0-rc.6`. 2268 tests green. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for the Anthropic API key and verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> *Status: release candidate.* Version `2.0.0-rc.1`. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for model-provider credentials and the verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> Documentation snapshot reviewed as of `2.0.0-rc.1`.
 >
 > **beta.136:** the two settings that default to off are now documented where you would look for them: `repos.never_commit_paths` keeps a regenerated tree out of the commit, and without `brief.request_file_roots` a `harness_run({ requestPath })` is refused. Both are in [CONFIGURATION.md](docs/CONFIGURATION.md).
 > **beta.135:** onboarding asks which org, so one person can hold a separate token per org and per provider instead of one token standing for everything.
@@ -138,7 +139,7 @@ All fields except `id` are optional. Callers that don't have OKF (or don't have 
 
 ## Why
 
-Your OpenClaw agent is where dev asks land, and Claude Code is where the actual writing gets done. This plugin closes the loop: crystallise the ask into a brief, plan atomic sub-tasks, execute them in parallel Sonnet subprocesses inside a git worktree, and have a Fable-5 adversary sign off before a PR is opened. The agent orchestrates all of it via tools.
+Your OpenClaw agent is where dev asks land, and Claude Code is where the actual writing gets done. This plugin closes the loop: crystallise the ask into a brief, plan atomic sub-tasks, execute them one at a time in worker subprocesses inside a git worktree, and have an adversary sign off before a PR is opened. The agent orchestrates all of it via tools.
 
 Nothing pushes to a repo until an adversary has reviewed the code, and nothing pushes at all without a per-repo per-user PAT the requester owns. Precisely: an explicit `block` verdict never pushes; a human `:rocket:` overrides; and a run that ends abnormally — a verify timeout, a budget or wall-clock ceiling, a crashed review — pushes only if an *earlier* cycle was reviewed, in which case the PR is stamped `needs_human_review` and labelled `do-not-merge`. A session no adversary has ever reviewed keeps its commits in a preserved worktree instead of pushing them. See [SECURITY.md](SECURITY.md#what-the-push-invariant-actually-guarantees).
 
@@ -152,9 +153,9 @@ sequenceDiagram
   actor User
   participant Slack
   participant Harness as Harness (tools + dispatcher + crystalliser)
-  participant Lead as Fable-5 lead
-  participant Worker as Sonnet worker(s)
-  participant Adv as Fable-5 adversary
+  participant Lead as Lead planner
+  participant Worker as Worker(s)
+  participant Adv as Adversary
   participant GH as GitHub
 
   User->>Slack: Post dev request
@@ -164,7 +165,7 @@ sequenceDiagram
   Lead-->>Harness: repo + branch + sub-task DAG + checklist
 
   loop up to max_cycles
-    par bounded concurrency
+    loop each sub-task in topo order
       Harness->>Worker: run sub-task (bash-guarded, in worktree)
       Worker-->>Harness: diff + cost (commit, no push)
     end
@@ -192,11 +193,16 @@ This is the normal path. A `block` verdict never pushes; a human `:rocket:` over
 | Config JSON schema           | `src/config.schema.json`                         | Editor / doc integration                               |
 | PAT router                   | `src/auth/pat-router.ts`                         | Per-user, per-repo PAT resolution                      |
 | Prompt crystalliser          | `src/crystallise/prompt-refiner.ts`              | Classifier -> brief pipeline                           |
-| Fable-5 lead                 | `src/orchestrator/fable5-lead.ts`                | Plan validator (allow-list, branch prefix, sub-cap 20) |
-| Sonnet worker                | `src/orchestrator/sonnet-worker.ts`              | Runs one sub-task with `canUseTool` guard              |
-| Fable-5 adversary            | `src/orchestrator/fable5-adversary.ts`           | Reviews diff, runtime banner, safety-net              |
-| Orchestrator loop            | `src/orchestrator/loop.ts`                       | 3-cycle state machine + parallel exec + topo sort      |
-| Claude SDK adapter           | `src/adapters/claude-sdk.ts`                     | `@anthropic-ai/claude-agent-sdk` wrappers              |
+| Lead planner         | `src/orchestrator/lead.ts`                | Plan validator (allow-list, branch prefix, sub-cap 20) |
+| Worker               | `src/orchestrator/worker.ts`              | Runs one sub-task with `canUseTool` guard              |
+| Adversary            | `src/orchestrator/adversary.ts`           | Reviews diff, runtime banner, safety-net              |
+| Orchestrator loop            | `src/orchestrator/loop.ts`                       | 3-cycle state machine + serial topo-ordered exec       |
+| Claude Code backend          | `src/adapters/claude-code.ts`                    | `@anthropic-ai/claude-agent-sdk` wrappers              |
+| OpenCode (ACP) backend       | `src/adapters/acp.ts`                            | Agent Client Protocol, injected config, live guard probe |
+| Backend-agnostic shared code | `src/adapters/shared/`                           | JSON, pricing, diff, stream and env filtering; no backend imports |
+| Backend contract             | `src/adapters/backend.ts`                        | Role shapes, capability tiers and the judgement-role floor |
+| Per-role backend config      | `src/adapters/role-config.ts`                    | Resolves backend/model per role, vault-keyed providers |
+| Backend routing              | `src/adapters/backend-router.ts`                 | Picks the backend per role, gates on the live probe, prices the turn |
 | Git worktree adapter         | `src/adapters/git-worktree.ts`                   | Allocate/commit/diff/push, per-session isolation       |
 | GitHub PR opener             | `src/adapters/github-pr.ts`                      | Push branch, POST /pulls (draft if verdict != pass)   |
 | GitHub PR-merged watcher     | `src/adapters/github-watcher.ts`                 | Detects merge/close, releases worktree                 |
@@ -305,7 +311,7 @@ DM-flow privacy note: the harness deletes **its own** onboarding prompt after st
 git clone https://github.com/CarelvanHeerden/openclaw-agent-harness
 cd openclaw-agent-harness
 npm ci
-npm test        # runs 2268 tests as of 1.0.0-rc.6
+npm test        # builds and runs the complete test suite
 npm run smoke   # boots the plugin against a fake OpenClaw API (both modes)
 ```
 
@@ -319,7 +325,7 @@ For repeatable smoke tests, `harness_bootstrap_test_repo` creates a fresh dispos
 
 - `npm run typecheck` -- strict TS, no `any` leaks in `src/`
 - `npm run build` -- emits `dist/` + copies `schema.sql`
-- `npm test` -- Node test runner, 2268 tests as of `1.0.0-rc.6`
+- `npm test` -- builds and runs the complete Node test suite
 - `npm run test:no-build` -- the same tests against the committed `dist/`, no build
 - `npm run smoke` -- post-build bootstrap sanity
 
@@ -336,7 +342,7 @@ against exactly the code the gateway loads -- which is the thing you want to
 verify anyway -- with no toolchain beyond Node:
 
 ```bash
-npm run test:no-build   # 2268 tests, no devDependencies required
+npm run test:no-build   # 2484 tests, no devDependencies required
 ```
 
 This is the supported way to check a release for yourself rather than taking the

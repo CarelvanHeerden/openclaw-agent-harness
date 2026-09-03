@@ -60,6 +60,11 @@
               "default": "moneybag"
             }
           }
+        },
+        "native_progress_delivery": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.77: harness direct-posts progress/terminal headlines to Slack via the vault bot token when credential_service is set and a session has a real Slack binding (channel + non-synthetic thread). Independent of the wedge-prone agent api.sendMessage turn. Set false to force poll-only. Does not affect clarifications/inbound."
         }
       }
     },
@@ -86,7 +91,8 @@
         "daily_max_usd": {
           "type": "number",
           "minimum": 0,
-          "default": 200
+          "default": 200,
+          "description": "Hard daily spend ceiling (USD); basis for the deploy-repair budget. Must be >= daily_warn_usd."
         },
         "monthly_warn_ratio": {
           "type": "number",
@@ -131,7 +137,8 @@
         },
         "draft_pr_on_nonpass": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "beta.32: when the adversary verdict is not a clean pass, open the PR as a GitHub draft. Default false, because draft PRs are rejected with HTTP 422 on repos that do not support them (private repos on free plans), which would kill the run at the very last step; even when true the live path retries as a non-draft PR on a 422 rather than failing. The verdict warning goes in the PR body either way. Added to the manifest in b124: the key was read by the code and defaulted in config since b32, but was absent here, so the gateway rejected any config that tried to set it."
         },
         "never_commit_paths": {
           "type": "array",
@@ -220,6 +227,10 @@
               "description": "Environment variable to read on vault miss. Defaults to ANTHROPIC_API_KEY."
             }
           }
+        },
+        "worker_mechanical": {
+          "type": "string",
+          "description": "beta.91 (Fix 3): optional cheaper/faster model for mechanical scaffolding sub-tasks (prisma models, migration, sidebar entry, barrel exports). When set, mechanical sub-tasks dispatch on this model; lead + adversary + non-mechanical workers stay on the strong models. Absent = every sub-task uses `worker`."
         }
       }
     },
@@ -253,7 +264,8 @@
           "type": "integer",
           "minimum": 30,
           "maximum": 7200,
-          "default": 900
+          "default": 900,
+          "description": "beta.43: max seconds the lead-planner SDK call may run before it is treated as a hang and the run fails cleanly (loop.lead_timeout). The lead await was unbounded (beta.42 only bounded the worker); a healthy long plan was indistinguishable from a wedge."
         },
         "session_hard_timeout_seconds": {
           "type": "integer",
@@ -284,51 +296,61 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 8,
-          "default": 1
+          "deprecated": true,
+          "description": "REMOVED in v2.0.0 and ignored. Accepted so an existing config still validates. Delete it."
         },
         "parallel_independent_subtasks": {
           "type": "boolean",
-          "default": false
+          "deprecated": true,
+          "description": "REMOVED in v2.0.0 and ignored. Accepted so an existing config still validates. Delete it."
         },
         "stuck_loop_seconds": {
           "type": "integer",
           "minimum": 300,
           "maximum": 86400,
-          "default": 2700
+          "default": 2700,
+          "description": "beta.40: reclaim threshold for a wedged loop. If run() is asked to start a session still marked running by the module-level re-entrancy guard, but its last_checkpoint_at/updated_at has not advanced for this many seconds, the tracked loop is treated as dead (torn down with a prior runtime on plugin re-register), the stale guard entry is force-cleared, and the fresh run proceeds. Must exceed a normal long worker SDK call so a busy loop is never reclaimed."
         },
         "teardown_drain_seconds": {
           "type": "integer",
           "minimum": 30,
           "maximum": 86400,
-          "default": 3600
+          "default": 3600,
+          "description": "beta.41: max seconds teardown() waits for a still-running loop from the runtime being torn down to finish before closing its state DB. A plugin re-register (OKF / gateway auto-discovery churn when plugins.allow is empty) schedules a fire-and-forget teardown of the previous runtime; closing the DB out from under an in-flight loop.run() crashes the run. Draining first prevents that. Bounded so a wedged loop can't block teardown forever."
         },
         "stall_watchdog_seconds": {
           "type": "integer",
           "minimum": 10,
           "maximum": 3600,
-          "default": 90
+          "default": 90,
+          "description": "beta.42: active stall-watchdog delay. When the re-entrancy guard skips a re-entry (loop.run_skipped_already_running) it arms a timer for this long, then re-checks the session's progress; if none, the wedged loop's stale guard handle is force-deregistered (loop.wedge_detected) so recovery/next-run can reclaim it. Makes beta.40's passive reclaim active -- a loop that wedges with no further re-register is now noticed."
         },
         "env_wait_retry_enabled": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn 'Monitor event' (env-wait hallucination) and made no committed change, re-invoke the sub-task ONCE with corrective context (branched on whether it wrote-but-didn't-commit) instead of failing the run. Set false to disable the retry; the failure is still tagged loop.worker_env_wait_hallucination."
         },
         "clarification_escalation_enabled": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "beta.55 (B2): when a worker refuses/confabulates a sub-task even after the beta.54 async-coord retry, pause the session in 'awaiting_clarification' (persisting the worker's question + paused seq, preserving the worktree) and surface it via harness_progress for a human to answer with harness_answer, instead of hard-failing the run. Set false to keep the terminal-fail behaviour."
         },
         "subtask_deadline_seconds": {
           "type": "integer",
           "minimum": 60,
           "maximum": 86400,
-          "default": 2100
+          "default": 2100,
+          "description": "beta.60: max wall-clock seconds a single sub-task's dispatch (runOne) may run before it is force-failed. beta.42 bounded only the worker SDK call, but runOne also awaits unbounded git/IO (worktreeHeadSha, readReactions, verify probes, recordSpend) between the row-flip-to-running and the worker spawn; a hang in any of those wedged the whole dispatcher (b59 PR#858 seq-7: 5h30m silent, row stuck running with sdk_session_id=null and no worker process). This bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin."
         },
         "worker_timeout_retry_enabled": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "beta.64 (P0-2): when a worker sub-task fails with a first_token_timeout OR a worker timeout, RETRY it ONCE on a FRESH SDK session (no resumeSessionId) before flipping the run terminal. The retry re-verifies; a pass completes the sub-task, a fail falls through to the existing terminal path using the retry's result. Max 1 retry per sub-task."
         },
         "best_effort_verify": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "beta.64 (P0-3): BEST-EFFORT VERIFY. If a VERIFY sub-task (observe-mode, the last/verify sub-task) times out even after the P0-2 retry, AND the prior mutate sub-task's verify_probe was GREEN, AND git diff-stat shows only expected files touched, mark the run verify_skipped (reason worker_timeout), push the branch, and open the PR flagged merge_recommendation=needs_human_review (reusing the beta.62 graceful-PR machinery) rather than discarding shippable work. This is what SHOULD have happened in beta.63 smoke #2 -- the code was shippable, only the verifier hung."
         },
         "scripted_verify_fallback": {
           "type": "boolean",
@@ -339,17 +361,20 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 100,
-          "default": 3
+          "default": 3,
+          "description": "beta.81 (Track C / C4): recovery-resume circuit breaker. When MORE than this many recovery.auto_resuming events fire for the SAME session within recovery_resume_window_seconds, the harness HARD-STOPS that session (marks it failed, reason recovery_bounce_loop) and surfaces it to a human instead of resuming again (forensic d01a7484 bounce loop)."
         },
         "recovery_resume_window_seconds": {
           "type": "integer",
           "minimum": 1,
           "maximum": 86400,
-          "default": 60
+          "default": 60,
+          "description": "beta.81 (Track C / C4): window (seconds) over which recovery_max_resumes auto-resumes for a single session trip the circuit breaker."
         },
         "recovery_resume_at_subtask": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "beta.81 (Track C / C3): when a session left mid-executing is recovered, RESUME AT the failed/incomplete sub-task (mark the orphaned running sub-task failed, preserve completed sub-task commits) instead of re-planning the whole session from scratch (which re-burns completed sub-tasks). Set false to restore the pre-beta.81 full-restart recovery behaviour."
         },
         "recovery_replan_guard": {
           "type": "boolean",
@@ -358,7 +383,8 @@
         },
         "lead_json_retry_enabled": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "beta.81 (Track C): give the LEAD re-plan SDK call the same retry-once-on-extractJson-failure guard the classifier has, so a transient prose-drift (lead returns prose instead of the JSON plan contract) does not hard-crash the plan."
         },
         "require_worker_context_strict": {
           "type": "boolean",
@@ -523,6 +549,132 @@
           "maximum": 1800,
           "default": 300,
           "description": "beta.113: ceiling for the escalated first-token window."
+        },
+        "budget_reserve_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.9,
+          "default": 0.15,
+          "description": "beta.61: fraction of the total session budget held in reserve for the pending adversary review + push while a cycle's review hasn't run yet. The pre-sub-task projection adds this reserve so the loop aborts early (before a sub-task that would leave no room to finish the cycle) instead of completing all sub-tasks and dying one review short of a PR (the b60 smoke failure). Clamped [0,0.9]."
+        },
+        "graceful_pr_on_review_crash": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.62 (fix #2/#3): when a cycle-N adversary review CRASHES (SDK/parse/persist error) instead of returning a verdict, and a PRIOR cycle already produced a completed review AND this cycle's own sub-task self-verification was fully green, open the PR anyway with merge_recommendation='needs_human_review' rather than discarding the adversary-motivated commits (the b60-attempt-2 silent-review-crash failure: 8 good commits, seq-6 self-verify green, cycle-2 review crashed, work thrown away). When the graceful path is NOT taken, the worktree is preserved (not released) so the commit chain stays inspectable. Set false to keep the hard-fail-and-release behaviour."
+        },
+        "session_stall_seconds": {
+          "type": "integer",
+          "minimum": 300,
+          "maximum": 86400,
+          "default": 1800,
+          "description": "beta.63 (Part A): session-level stall watchdog window. A session writes session.last_progress_at on EVERY state transition; the watchdog checks non-terminal executing/reviewing/finalising sessions where now-last_progress_at exceeds this and emits a loud loop.session_stalled, attempts bounded self-recovery (re-tick the loop-runner), and if unrecoverable transitions to a terminal failed(reason=stalled_no_progress) PRESERVING the worktree and, if the branch has commits, opening a graceful push+PR flagged needs_human_review. Must exceed the longest legit phase (adversary review + push); clamped to >=300."
+        },
+        "stall_auto_terminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.63 (Part A): sub-flag gating the AUTO-TERMINAL transition of a stalled session. When false, the watchdog still DETECTS + LOGS + attempts recovery, but never forces the terminal failed transition (detection/observability on, auto-transition off, kept separately toggleable per Carel)."
+        },
+        "stall_graceful_pr": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.63 (Part A): on an UNRECOVERABLE stall with commits on the branch, attempt a graceful push + PR flagged needs_human_review (beta.62 pattern) so a near-done deliverable is not evaporated. Set false to fail-and-preserve-worktree only."
+        },
+        "stall_sweep_interval_seconds": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 600,
+          "default": 60,
+          "description": "beta.67 (Bug A): EXTERNAL stall-sweep cadence (seconds). beta.63's checkStalls runs IN-PROCESS, so a dead loop-runner process cannot watchdog its own death (beta.66 smoke #4). This is the tick interval for the EXTERNAL stall-sweep service (registered like pr-watcher / retention-nightly) that runs loop.sweepStalls() independent of any loop process: it runs the existing checkStalls fast path AND reaps sessions with a pending cancel flag whose loop is dead (terminal failed reason=cancelled_dead_loop, worktree preserved). Default 60; clamped [15,600]."
+        },
+        "enforce_worker_context": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.67 (P0a): enforce SUBSTANTIVE workerContext (rationale + file-anchored changeSpec/excerpt) on mutate/mixed sub-tasks at validatePlan. true (default) -> one bounded lead re-ask then hard-throw; false -> WARN-only escape hatch. Enforces the founding orchestrator-split goal (cheap workers implement from Fable's investigation instead of re-scanning)."
+        },
+        "revise_spec_turn_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.67 (P0b): run ONE Fable revise-spec turn between the adversary and cycle-2 workers to refresh workerContext with a resolved changeSpec, so workers never see the raw adversary findings (the beta.63/64 no-op regression). false -> beta.66 raw-findings behaviour; a revise-spec failure also falls back. Default true."
+        },
+        "revise_spec_timeout_seconds": {
+          "type": "integer",
+          "default": 180,
+          "description": "beta.84 (#2): hard timeout (seconds) on the Fable revise-spec turn. The turn is an unbounded lead-model call that has spun ~570s then failed on the ambient cron lane cap (beta.73 signature, session 1c744d70) -- ~10 min burned before falling back to raw findings. Bounding it makes the raw-findings fallback FAST (audited loop.revise_spec_timeout) instead of eating the lane cap. 0 disables the bound. Default 180."
+        },
+        "skip_observe_reprobe_on_revise": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.70 (F5): skip an observe-only sub-task's re-probe on a revise cycle when the same seq already completed cleanly in a prior cycle (PR #870 re-ran the seq-1 probe for 58s/$0.29 despite the revise-spec saying 'no changes'). Default true."
+        },
+        "revise_scoping_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.91 (Fix 1): on a revise cycle, skip sub-tasks whose file scope does not intersect any review finding's file (already-correct from a prior cycle; the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks). A finding with no resolvable file makes the cycle unscopable => run every sub-task (conservative). Never skips a sub-task a kept one depends on. Default true; false restores beta.90 run-all."
+        },
+        "deterministic_revise_mapping": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.92: use the DETERMINISTIC finding->sub-task mapping on a revise cycle instead of the deleted LLM revise-spec turn (which kept timing out on the cron lane cap across b89/b90/b91 and falling back to a raw finding-dump that induced worker confabs). Maps each diff-addressable finding (spec|quality|security, .file required) to the sub-task(s) owning its file via strict resolveContractPath; broadcasts meta (fit|runtime) findings + mapping-misses to all sub-tasks (never dropped). Default true; false restores the beta.56 whole-review raw hint fallback."
+        },
+        "worker_confab_detect": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.92 (log-only): emit loop.worker_confab_suspected when the worker's final message lexically claims it left a contract-REQUIRED (non-relaxed) file untouched (the b91 seq-6 confab). No behaviour change -- verification still decides pass/fail. Default true; false disables the detector."
+        },
+        "contract_rederive_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.76 + beta.93 kill-switch: correct a stale lead-guessed contract path against the repo's real touched layout BEFORE verification (with the beta.93 exact-match short-circuit + same-basename evidence guards, so a correctly-committed path is never rewritten -- the session de0cba9f false-positive). Default true; false disables re-derivation entirely (verify against the declared path verbatim, relying on the beta.50+ tolerant match rules)."
+        },
+        "sdk_first_token_timeout_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 1800,
+          "default": 30,
+          "description": "beta.64 (P0-1) / beta.65 (P0): PHASE-2 first-token watchdog window (seconds). Armed inside consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on the first assistant content block (text/tool_use). No first content block within this window => abort with the distinct stopReason first_token_timeout so the loop retries on a fresh session. beta.65 split-phase redesign: phase 2 (stream-open -> first-token) is always near-instant on success (4-5ms in smoke #3), so the default is LOWERED 90 -> 30. The pre-stream stall is covered by sdk_stream_open_timeout_seconds (phase 1). Clamped [10,1800]."
+        },
+        "sdk_stream_open_timeout_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 600,
+          "default": 120,
+          "description": "beta.65 (P0): PHASE-1 stream-open watchdog window (seconds). A SEPARATE timer armed at CALL INITIATION (top of consumeWorkerStream, BEFORE the stream opens) and disarmed when the stream opens (system/init). If the stream never opens within this window, the call is aborted with the same distinct stopReason first_token_timeout so the loop retries on a FRESH SDK session. Covers the beta.64 gap: a PRE-STREAM POST hang (SDK streaming POST never returns its first byte -- smoke #3: 28+min silence, no sdk_stream_opened, no abort) that beta.64's stream-open-armed watchdog never saw. Phase 1 is highly variable even on success (smoke #3: 47s / 422s-succeeded / >1800s-hung), so a legit-but-slow open like 422s WILL be aborted -- CORRECT, because the abort routes into the same first_token_timeout -> one-fresh-session retry path (a cold/unpooled open is fast on retry). Clamped [10,600]."
+        },
+        "worker_stream_idle_warn_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 600,
+          "default": 90,
+          "description": "beta.90 (Feature 2): worker STREAM-SLOW idle-warn window (seconds). Inside consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick watches for token/message activity; if the stream goes IDLE (no delta) for this many seconds it emits loop.worker_stream_slow and bumps the session liveness heartbeat (last_progress_at) so harness_progress surfaces 'worker stream idle Ns' instead of the phase looking wedged. OBSERVABILITY ONLY -- it NEVER aborts (a slow stream recovered on b89; a blunt abort would have wrongly killed it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went idle ~15 min with no signal in harness_progress. Default 90; clamped [30,600]."
+        },
+        "deterministic_final_scope_check": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.94 (Feature 1): DETERMINISTIC FINAL SCOPE CHECK. (a) Elide a trailing PURE-OBSERVE scope/boundary 'final verification' sub-task from the worker plan (taskMode observe, no mutate verify, description matches scope|boundar|final-verif|nothing-outside) -- it has nothing to write so a worker can go idle on it indefinitely (the b93 seq-12 stall) while adding zero signal. Audited as loop.final_verify_subtask_elided. (b) After the last mutate sub-task, compare the files committed in <base>..HEAD against the UNION of every sub-task's declared file scope; a committed file outside the union folds into the adversary review as a fit/medium ReviewFinding (never a hard fail). Audited as loop.final_scope_check_ran / loop.final_scope_check_out_of_scope. Default true."
+        },
+        "worker_idle_abort_enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "beta.94 (Feature 2): NARROW IDLE-NO-WORK ABORT. loop.worker_idle_no_work fires (LOG-ONLY) when the conjunction holds: >= worker_idle_consecutive_slow consecutive worker_stream_slow ticks, all with tokensOut===0, cumulative elapsed > worker_idle_min_elapsed_seconds, AND no worktree writes during the sub-task (the b93 seq-12 signature). When this flag is TRUE the same conjunction ALSO aborts the sub-task cleanly via the existing WorkerTimeoutError / {outcome:'timeout'} terminal path (worktree preserved -- no new terminal path). Default FALSE (beta.90 observability-only behaviour preserved)."
+        },
+        "worker_idle_consecutive_slow": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 20,
+          "default": 3,
+          "description": "beta.94 (Feature 2): number of CONSECUTIVE loop.worker_stream_slow ticks (all with tokensOut===0) required before loop.worker_idle_no_work may fire. Default 3; clamped [2,20]."
+        },
+        "worker_idle_min_elapsed_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600,
+          "default": 900,
+          "description": "beta.94 (Feature 2): minimum cumulative elapsed (seconds) inside the worker stream before loop.worker_idle_no_work may fire. Default 900 (15 min); clamped [60,3600]."
+        },
+        "revise_targeted_planbase_window": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.95: on a revise cycle, verify a TARGETED contract file against the branch fork-point window (plan_base_sha..HEAD) rather than the worker-session-start window. Without it, a file cycle 1 already touched has an mtime older than cycle 2's sub-task start and its cycle-1 commit sits outside the narrower range, so file_written and file_committed both false-fail on a genuine cycle-2 edit. false restores the b94 window. Added to the manifest in b124: this was documented as a kill-switch since b95 and read in three places, but the gateway would reject any config that pulled it."
         }
       }
     },
@@ -534,25 +686,29 @@
           "type": "integer",
           "minimum": 30,
           "maximum": 7200,
-          "default": 900
+          "default": 900,
+          "description": "beta.81 (B2): max wall-clock seconds the harness waits for CI to finish after pushing a branch before it treats the wait as a SOFT checkpoint (surfaces 'CI still running after N min on <sha>' and offers a resumable continue-watching -- never a hard fail). Clamped [30, 7200]."
         },
         "poll_interval_seconds": {
           "type": "integer",
           "minimum": 5,
           "maximum": 300,
-          "default": 20
+          "default": 20,
+          "description": "beta.81 (B2): poll interval (seconds) for the post-push CI wait; the harness re-queries getCombinedStatus(headSha) every this-many seconds until it is not pending or the wait_timeout_seconds elapses. Clamped [5, 300]."
         },
         "none_grace_seconds": {
           "type": "integer",
           "minimum": 0,
           "maximum": 300,
-          "default": 45
+          "default": 45,
+          "description": "beta.91 (F4): grace window (seconds) for an authored-this-cycle CI workflow to REGISTER on GitHub before the harness concludes 'no CI'. Fixes the b90 bug where the harness shipped a merge recommendation 0.5s after push, before its own workflow registered, then CI later caught a real typecheck error. Only applies when a workflow was authored this cycle; a genuine no-CI repo still returns none fast. A still-none result after the grace window is a distinct NON-blocking authored_workflow_never_registered outcome (merge still recommended, but the human sees CI did not verify the SHA). 0 disables (beta.90 terminate-on-first-none). Clamped [0, 300]."
         },
         "permanent_denial_polls": {
           "type": "integer",
           "minimum": 1,
           "maximum": 20,
-          "default": 2
+          "default": 2,
+          "description": "beta.124: how many CONSECUTIVE polls answered 401/403/404 before the harness stops polling CI and reports the denial as the outcome. A denial is an answer, not a delay: the b123 smoke asked the check-runs API 44 times over 896 seconds (12% of the run's wall clock), was told 403 every time, and ended on 'could NOT determine CI state' -- which does not tell anyone what to fix. Stopping early instead reports the remedy. Not 1, because a lone 403 can be a secondary rate limit or a token mid-rotation; two in a row is a fact about the configuration. The merge recommendation is unchanged -- an unreadable gate is still needs_human_review, never a pass. Minimum 1."
         },
         "max_repair_cycles": {
           "type": "integer",
@@ -568,9 +724,11 @@
         },
         "workflow_runs_fallback": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "beta.125: when the Checks API is permanently denied (401/403/404), read the commit's CI from the Actions workflow-runs API instead of giving up. b124 reported the denial and told the operator to grant 'Checks: read' -- a permission that does not exist. Fine-grained PATs cannot call the Checks API at all; GitHub lists it as a known limitation and its own REST reference is wrong on this point. The same token's 'Actions: read', which IS supported, lists every workflow run on the sha with the same status/conclusion vocabulary, so on any repo whose CI is GitHub Actions the verdict was always one endpoint away. Only fires on a permanent denial -- a transient 5xx is still re-polled against the real endpoint. A green obtained this way is reported as a green WITH a caveat naming the source, because a check run posted by a third-party GitHub App is invisible to this endpoint. Set false to restore b124 behaviour."
         }
-      }
+      },
+      "description": "beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness polls the commit's combined GitHub status/check-runs and treats CI as the verification spine."
     },
     "vercel": {
       "type": "object",
@@ -618,9 +776,11 @@
               "type": "number",
               "minimum": 0,
               "maximum": 1,
-              "default": 0.25
+              "default": 0.25,
+              "description": "Repair budget as a fraction of budgets.daily_max_usd, shared across all attempts."
             }
-          }
+          },
+          "description": "beta.36: post-merge deploy-repair loop. On a merged PR whose Vercel deploy ERRORs, auto-attempt fixes (up to max_attempts new PRs) from the build logs; if still failing, revert all merges and leave the last attempt open for review."
         }
       }
     },
@@ -649,6 +809,11 @@
           "minimum": 30,
           "maximum": 3650,
           "default": 365
+        },
+        "min_free_disk_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1073741824
         }
       }
     },
@@ -848,7 +1013,8 @@
           "type": "string",
           "description": "beta.78: vault service-name pattern for harness_onboard token storage. Placeholders {userid} {provider}. Default git-pat:{userid}."
         }
-      }
+      },
+      "description": "Git credential routing. beta.25 hierarchical shape (github/gitlab -> org -> person -> {token,name,email,slack_user_id}) plus legacy flat fields. See docs/GITHUB_AUTH.md."
     },
     "credentials": {
       "type": "object",
@@ -868,6 +1034,563 @@
         "key_file": {
           "type": "string",
           "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600. Generated on first boot if absent -- back it up, because without it every stored credential is unrecoverable."
+        }
+      }
+    },
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "beta.63 (convention-awareness Fix 1): brief construction / repo-convention ingest tuning.",
+      "properties": {
+        "ingest_repo_conventions": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.63 (Fix 1): at brief build, ingest the checked-out repo's declared convention files (.cursor/rules/**, .cursorrules, CONTRIBUTING.md, CONVENTIONS.md, AGENTS.md, .github/CONTRIBUTING.md) into the optional brief field repoConventions[] so the lead + worker + adversary SDK prompts (which get NO OpenClaw context injection) explicitly carry them."
+        },
+        "convention_char_budget": {
+          "type": "integer",
+          "minimum": 500,
+          "maximum": 200000,
+          "default": 10000,
+          "description": "beta.63 (Fix 1): total char budget for the ingested conventions block. Over budget, the LONGEST sources are truncated first with a note, rather than dropping sources silently."
+        },
+        "repo_only_invariant": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.80 (F1): the crystalliser is told the harness is a REPO tool. External-API side-effect acceptance criteria are reframed into 'build the code + a test', never 'perform the live call'. Live API calls are legitimate only as test/verify steps against code just written. Set false to restore the pre-beta.80 crystalliser prompt."
+        },
+        "bimodal_clarify": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.80 (F2): the crystalliser self-reports competing readings of a brief; when >= bimodal_min_interpretations distinct readings (or an explicit clarificationNeeded) exist, the run PAUSES for a hard clarify (pause-and-wait, no session started) instead of guessing one reading. Set false to always proceed."
+        },
+        "bimodal_min_interpretations": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10,
+          "default": 2,
+          "description": "beta.80 (F2): how many distinct crystalliser interpretations force a clarify pause. Default 2."
+        },
+        "request_file_roots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "beta.120 (brief fidelity): directories harness_run's `requestPath` may read a specification from. EMPTY BY DEFAULT, which disables file reads -- the harness holds GitHub tokens and a brief's contents reach model prompts and PR bodies, so an operator must name the safe directories explicitly. Point this at wherever the calling runtime stores user-uploaded files. `~` is expanded and symlinks are resolved before the check. Motivation: on the b119 smoke the calling agent retyped a 10,710-byte spec as a 40-line summary and the feature changed (`performedAt` became `scheduledAt`); reading the bytes removes that hop."
+        },
+        "request_file_max_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 5242880,
+          "default": 262144,
+          "description": "beta.120: hard cap on a file read via harness_run's `requestPath`. Default 262144 (256 KB)."
+        },
+        "confirm_before_spend": {
+          "type": "string",
+          "enum": [
+            "off",
+            "high_risk",
+            "always"
+          ],
+          "default": "high_risk",
+          "description": "beta.120 (brief fidelity): pause for a human to confirm the CRYSTALLISED brief before any planning or worker spend. 'off' = never (pre-beta.120). 'high_risk' = pause when the brief's riskLevel is at or above confirm_min_risk (default). 'always' = every run. Motivation: two b119 smokes spent ~$18 and ~2h each building a feature whose brief had been paraphrased upstream; the error was obvious on sight but nothing ever showed it to anyone. Crystallising costs cents, so the gate is nearly free. The session is created in awaiting_clarification and resumed with harness_answer: an unqualified approval runs it as-is, anything else is folded in as a correction first."
+        },
+        "confirm_min_risk": {
+          "type": "string",
+          "enum": [
+            "medium",
+            "high"
+          ],
+          "default": "high",
+          "description": "beta.120: lowest riskLevel that triggers a confirmation under confirm_before_spend:'high_risk'. Default 'high'; set 'medium' for a wider net. There is deliberately NO budget threshold: estimated_usd is derived from the session budget rather than the task, so gating on it would silently turn 'high_risk' into 'always'."
+        }
+      }
+    },
+    "verify": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "beta.63 (convention-awareness Fix 2): final-verify repo-check-script runner.",
+      "properties": {
+        "run_repo_check_scripts": {
+          "type": "boolean",
+          "default": false,
+          "description": "beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the verification spine -- verification is CI-only now (Carel: 'I do not want it to run locally, ever'). Default false. When true (opt-in), the final-verify sub-task runs repo-declared check scripts inline in the worktree (beta.63 behaviour) as REVISE-worthy findings. The runner plumbing is otherwise kept only for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task, NOT as a verify gate."
+        },
+        "check_script_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "okf:check",
+            "lint",
+            "typecheck",
+            "test"
+          ],
+          "description": "beta.63 (Fix 2): allowlist of package.json script names the harness may run in final-verify. A discovered script NOT on this list is NEVER run."
+        },
+        "check_script_timeout_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 7200,
+          "default": 600,
+          "description": "beta.63 (Fix 2): per-check-script wall-clock timeout (seconds). A timed-out script is treated as unrunnable (non-fatal log + note), not a hard fail."
+        },
+        "typecheck_gate": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.111: run the repo's own typecheck script before review and raise a `high` finding for errors in files this branch changed. The adversary reviews the diff, not the compiler: ProjectThanos PR #932 survived three revise runs with `TS2551: Property 'ownerUserId' does not exist`, introduced by the b108 revise, and that repo's CI does not run a typecheck so CI stayed green. Errors in untouched files are ignored, so a repo with pre-existing breakage (#932 also carries 71 unrelated failing tests) is still usable. One script per cycle, unlike run_repo_check_scripts which runs the whole suite and stays off by default."
+        },
+        "check_script_heap_retry_mb": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 65536,
+          "default": 8192,
+          "description": "beta.70 (F4): V8 heap ceiling (MB) applied via NODE_OPTIONS on the retry after a check script dies of a heap OOM (exit 134 / 'Ineffective mark-compacts near heap limit'). On Thanos-scale repos tsc --noEmit OOMs at the 4 GB default; 8 GB clears it. A persisted OOM after the retry becomes a BLOCKING finding. Default 8192."
+        }
+      }
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "beta.63 (Part B): durable, structured, append-only interaction log written OUTSIDE the git worktree (in the harness data dir). Captures every SDK/LLM call, state transition, verify probe, and stall/recovery event so a near-completion failure leaves a complete, greppable trail that survives a worktree release + container restart. Secret redaction on write is mandatory and NOT disableable.",
+      "properties": {
+        "interaction_log_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "beta.63 (Part B): master switch for the interaction log."
+        },
+        "dir": {
+          "type": "string",
+          "description": "beta.63 (Part B): directory for the JSONL logs. Default <dataDir>/logs where dataDir is the directory holding the state DB. Leave empty for the default."
+        },
+        "full_prompts": {
+          "type": "boolean",
+          "default": false,
+          "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
+        },
+        "retention_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650,
+          "default": 14,
+          "description": "beta.63 (Part B): prune per-session log files older than this many days."
+        }
+      }
+    },
+    "backends": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "v2: per-role backend and model selection. Absent means every role runs on claude-code, as in v1.",
+      "properties": {
+        "default": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the default (inherited by any role that does not override it) role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        },
+        "worker": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the worker role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        },
+        "scout": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the scout role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        },
+        "lead": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the lead role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        },
+        "adversary": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the adversary role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        },
+        "classifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the classifier role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        },
+        "crystalliser": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the crystalliser role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        },
+        "revise_spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the revise_spec role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        },
+        "worker_context": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Backend, model and declared capability tier for the worker_context role.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "claude-code",
+                "opencode"
+              ],
+              "description": "Which agent backend runs this role. Default: claude-code."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model id. Use provider/model form for opencode; a bare id is accepted for claude-code."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "OpenCode reasoning effort/variant. Undefined leaves the backend default."
+            },
+            "tier": {
+              "type": "string",
+              "enum": [
+                "basic",
+                "strong",
+                "frontier"
+              ],
+              "description": "Operator declaration of model capability. lead, adversary and crystalliser require at least strong."
+            }
+          }
+        }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "description": "v2: OpenAI-compatible endpoints made available to OpenCode roles. API keys live in the vault and are named by service, never inlined here.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "npm": {
+            "type": "string",
+            "description": "AI-SDK package for this provider. Only @ai-sdk/openai-compatible is supported."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name, used in audit events and error messages."
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Endpoint base URL. Must end in /v1, because the OpenAI-compatible shim appends the request path."
+          },
+          "api_key_service": {
+            "type": "string",
+            "description": "Vault credential service name holding this provider API key."
+          },
+          "local": {
+            "type": "boolean",
+            "description": "True for a provider that bills nothing. Cost reporting becomes token counts with no dollar figure attached."
+          },
+          "pricing_provider": {
+            "type": "string",
+            "description": "models.dev provider id to price this provider's models against, when it differs from the key above. Needed for the -compat naming that avoids clashing with OpenCode's built-in providers: 'anthropic-compat' must price as 'anthropic', or the catalogue misses and every turn bills at the most-expensive-known fail-safe ($15/$75 per million), over-stating cost and tripping budget ceilings early."
+          },
+          "models": {
+            "type": "object",
+            "description": "Model ids this provider serves, with optional display names.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Display name for this model."
+                }
+              }
+            }
+          }
         }
       }
     }

@@ -52,7 +52,7 @@
  * own view of the diff from the diff.
  *
  * This module is pure -- prompt construction and bounding only. The SDK call
- * lives in claude-sdk.ts and the orchestration in fable5-lead.ts.
+ * lives in claude-sdk.ts and the orchestration in lead.ts.
  */
 
 /**

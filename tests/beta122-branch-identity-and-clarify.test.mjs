@@ -54,7 +54,7 @@ const skip = { skip: rescue === null ? "dist not built" : false };
 // ---------------------------------------------------------------------------
 
 test("the lead uses the session's existing branch verbatim, whatever it proposes", skip, async () => {
-  const lead = await import("../dist/orchestrator/fable5-lead.js");
+  const lead = await import("../dist/orchestrator/lead.js");
   const { sessionScopedBranch } = lead;
   // This is what b108 actually guarantees, and it is not enough on its own:
   // the SUFFIX is stable, so two different stems still produce two different
@@ -66,7 +66,7 @@ test("the lead uses the session's existing branch verbatim, whatever it proposes
 });
 
 test("pinnedSessionBranch overrides whatever the lead invented", () => {
-  const src = S("src/orchestrator/fable5-lead.ts");
+  const src = S("src/orchestrator/lead.ts");
   const i = src.indexOf("deps.pinnedSessionBranch");
   assert.ok(i > 0, "the lead must consult the session's pinned branch");
   const window = src.slice(i, i + 600);

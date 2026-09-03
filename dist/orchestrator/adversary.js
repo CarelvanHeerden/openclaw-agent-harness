@@ -1,0 +1,333 @@
+/**
+ * Adversarial reviewer.
+ *
+ * Reviews the diff produced by the workers, plus (optionally) live runtime
+ * data from Vercel preview logs, and produces a `ReviewReport`.
+ *
+ * Dimensions reviewed (documented so the adversary prompt can quote them):
+ *   1. Spec fidelity: does the diff satisfy every acceptance criterion?
+ *   2. Codebase fit: does it match existing patterns/conventions?
+ *   3. Quality: types, tests, lint, no `any`, no dead code, no TODO leaks.
+ *   4. Security: no secrets, no obvious injection/XSS, no dangerous deps.
+ *   5. Runtime: preview deploy status, log errors, unhandled promise rejections.
+ *
+ * Runtime sources are pluggable behind `harness.vercel.enabled`:
+ *   - vercel: automatic bridge (preview build + event logs)
+ *   - manual: uploaded via `harness_upload_logs` tool (any deploy target)
+ *   - none:   nothing available; adversary must not sign off on runtime
+ *
+ * Runtime rule (unchanged): if the runtime data is missing or shows
+ * `no_deploy_yet`/`build_failed`/`unavailable`, the adversary gets an
+ * explicit banner and MUST refuse to sign off on the runtime dimension.
+ */
+import { renderConventionsForPrompt } from "./repo-conventions.js";
+import { classifyFinding, gateVerdict } from "./finding-classify.js";
+import { findingsMissingFile, buildFileAttributionRetryNudge } from "./adversary-file-attribution.js";
+/**
+ * Adversary prompt-preamble helper. Injected verbatim into the adversary's
+ * system prompt so runtime dimension is never silently skipped.
+ */
+export function runtimeBanner(input) {
+    if (!input.runtime) {
+        return "NO RUNTIME DATA AVAILABLE (runtime bridge disabled).";
+    }
+    const p = input.runtime.provider === "manual"
+        ? "MANUAL UPLOAD"
+        : input.runtime.provider === "local"
+            ? "LOCAL VERIFICATION"
+            : "Vercel preview";
+    // beta.7 fix #1: local provider carries observable-side-effect checks.
+    // These are hard facts (a branch either exists on origin or it does not),
+    // so they DO count as runtime data for sub-tasks with observable outputs.
+    if (input.runtime.provider === "local") {
+        const lines = (input.runtime.localVerification ?? [])
+            .map((v) => `  - sub-task ${v.seq}: ${v.ok ? "VERIFIED" : "FAILED"} — ${v.summary}`)
+            .join("\n");
+        const failed = input.runtime.errorCount ?? 0;
+        if (failed > 0) {
+            return `RUNTIME DATA (LOCAL VERIFICATION): ${failed} observable side-effect(s) FAILED. A worker reported success but the output does not exist. Treat as CRITICAL — do NOT sign off.\n${lines}`;
+        }
+        return `RUNTIME DATA (LOCAL VERIFICATION): all observable side-effects verified against git/provider/disk.\n${lines}`;
+    }
+    switch (input.runtime.status) {
+        case "ok":
+            if (input.runtime.provider === "manual") {
+                return `RUNTIME DATA (${p}${input.runtime.source ? `, ${input.runtime.source}` : ""}${input.runtime.uploadedBy ? `, uploaded by ${input.runtime.uploadedBy}` : ""}) - ${input.runtime.errorCount ?? "unknown"} error(s) in the excerpt.`;
+            }
+            return `RUNTIME DATA: ${p} ${input.runtime.deploymentUrl ?? "(unknown url)"} - ${input.runtime.errorCount ?? 0} error(s) in logs.`;
+        case "no_deploy_yet":
+            return "NO RUNTIME DATA AVAILABLE: preview deploy has not completed within the wait window. Do NOT sign off on runtime concerns; flag as MEDIUM.";
+        case "build_failed":
+            return `RUNTIME DATA: build FAILED for ${p} ${input.runtime.deploymentUrl ?? "(unknown url)"}. Treat as CRITICAL unless the diff intentionally breaks the build.`;
+        case "unavailable":
+            return `NO RUNTIME DATA AVAILABLE: ${p} bridge returned an error. Do NOT sign off on runtime concerns; flag as MEDIUM.`;
+    }
+}
+export function buildAdversarySystemPrompt(input) {
+    return [
+        "You are an adversarial code reviewer. Your job is to find EVERY reason this diff should not ship.",
+        "Do not be diplomatic. Be exhaustive but honest.",
+        "",
+        // beta.56 (P0-2): the brief was never in the prompt. The adversary was
+        // asked to judge "spec fidelity" while `crystallisedPrompt` was accepted
+        // as input and then dropped on the floor -- it reviewed against only the
+        // lead's checklist paraphrase, inflating spurious `revise` verdicts.
+        "## The brief (SOURCE OF TRUTH for spec fidelity)",
+        input.crystallisedPrompt,
+        "",
+        "## Dimensions",
+        // beta.116: each heading states the EXACT token to put in `dimension`. The
+        // prose headings alone produced `codebase-fit` 21 times against `fit` once,
+        // and the router understood only `fit`, so those findings were routed to
+        // nobody and re-raised every cycle. The harness now normalises what it
+        // receives, but naming the token here stops the drift at source.
+        "Set `dimension` to EXACTLY one of these five tokens: `spec`, `fit`, `quality`, `security`, `runtime`.",
+        "1. `spec` — spec fidelity: does the diff satisfy each acceptance criterion?",
+        "2. `fit` — codebase fit: does it match existing patterns/conventions?",
+        "3. `quality` — types, tests, lint, `any` leaks, TODOs, dead code.",
+        "4. `security` — secrets in code, injection, XSS, dangerous deps.",
+        "5. `runtime` — see runtime banner. If the banner says NO RUNTIME DATA AVAILABLE, do NOT sign off on runtime — but this alone is NOT a reason to `revise`: the harness decides whether to push for a preview deploy, and the missing-runtime concern is surfaced on the PR for human review. If the banner shows LOCAL VERIFICATION passed (0 failures), treat the runtime dimension as SATISFIED for a change with no user-facing/deploy-observable surface (API logic, internal query, config): do NOT emit a 'no runtime data' finding in that case.",
+        "",
+        // beta.48 (C3): the ROOT cause of the #858 revise dead-end. In session
+        // 21da9f9c the adversary emitted finding 10 with an UNVERIFIED
+        // CONDITIONAL -- "IF no existing 'grc' directories exist, this introduces
+        // a second naming convention". The premise was false (89 lib + 8
+        // component files, 398 refs already used grc/), but the conditional got
+        // flattened downstream into an unconditional rename mandate. When the
+        // beta.47 lead (correctly) stripped the escape hatch, the worker was
+        // forced to confront a false-premise instruction and (correctly) refused
+        // -- dead-ending the run. The adversary HAS repo access; it must resolve
+        // its own conditionals rather than pass them downstream.
+        "## Finding discipline (CRITICAL)",
+        "- Do NOT emit a finding whose severity or recommended action depends on an UNRESOLVED CONDITIONAL about repo state ('if X exists...', 'assuming Y is not used elsewhere...', 'unless Z is an established convention...'). You have repo access: RUN THE CHECK (grep/ls/read) and resolve the conditional YOURSELF before finalising the finding.",
+        "- After checking: if the condition holds, emit a DEFINITE finding stating what you verified ('grep confirms 0 other files use path P, so introducing P here creates a new convention'). If it does NOT hold, DROP the finding (or downgrade it) -- do not pass a false or unverified premise downstream. A conditional finding becomes an unconditional mandate by the time it reaches the worker, who then either does the wrong thing or refuses.",
+        "- Naming/convention findings specifically: before claiming something introduces a NEW convention, grep the repo for the EXISTING prevalence of both the old and proposed names. Report the counts. A rename that leaves N siblings behind is usually worse than the status quo.",
+        "",
+        // beta.91 (F1 companion): the revise-cycle SCOPING optimisation can only
+        // skip an already-correct sub-task when it knows which file each finding
+        // targets. Left optional, the adversary returns file-less findings
+        // (b90 DR/BCP: targetCount:0 on all 12) and scoping stays inert. So every
+        // diff-addressable finding MUST name its file.
+        "## File attribution (REQUIRED for diff-addressable findings)",
+        "- For ANY finding that points at a concrete code defect in the diff (a type error, a missing tenant/authz scope, a wrong header, a dead branch, a bug, a missing/incorrect line), set `file` to the EXACT repo-relative path from the diff (e.g. `src/app/api/grc/continuity-exercises/route.ts`) and `line` when you can. You have the full diff -- you can always name the file. A `medium`+ finding in dimension spec/quality/security WITHOUT a `file` will be REJECTED and you will be re-prompted.",
+        "- Only META findings may omit `file` (set `file: null`): a missing-test/coverage complaint where the file is 'wherever the test would go', or a purely architectural comment that isn't tied to one diff line.",
+        // beta.118: a finding whose `file` is a shared REGISTRY the diff does not
+        // touch (help-content, a sidebar, a route table, an i18n catalogue) has no
+        // owner among the sub-tasks -- nobody planned to edit it. The router then
+        // falls back to directory adjacency, and on b117 every sub-task under
+        // `src/` tied at a depth of one, so a help-content finding about a UI page
+        // was handed to the CRUD-API sub-task, which ignored it. The router now
+        // refuses that tie; naming the trigger here is what restores a real owner.
+        "- REGISTRY findings ('you added X, now register it in Y'): when `file` is a shared registry file that the diff does NOT modify, `detail` MUST quote the EXACT repo-relative path of the diff file that TRIGGERED the requirement -- the new page, route or component that needs registering. Write it as a full path, e.g. \"src/app/(portal)/grc/continuity-resilience/page.tsx introduces a new UI surface, so src/lib/help/help-content.ts needs an entry\". Naming only the registry file, or describing the trigger in words ('the new UI surface'), leaves the finding with no owner and it will NOT be fixed.",
+        "- `detail` is NEVER empty for a `medium`+ finding. A title alone is not a finding: state what is wrong, where, and what would resolve it.",
+        // beta.119: the b118 smoke raised "the upload route discards the kind/title
+        // fields the drawer sends" in all three cycles and never fixed it. Routing
+        // was correct -- the route file's owner was targeted every time -- but that
+        // worker could not act: persisting the fields needed a Prisma column it did
+        // not own, and removing the dead dropdown needed the drawer it did not own.
+        // It declined, the loop read the no-change as "already correct", and the
+        // run hit the ceiling. Whoever must ALSO change has to be named structurally
+        // (prose is parsed as a fallback, but the field is what routing trusts).
+        "- `relatedFiles` (CRITICAL for multi-file fixes): if resolving the finding requires editing files BEYOND `file`, list their exact repo-relative paths in `relatedFiles`. A route that cannot persist a field until the Prisma model gains a column: `relatedFiles: [\"prisma/schema.prisma\"]`. A dead UI control that should be removed from the component rendering it: `relatedFiles: [\"src/components/grc/continuity-exercise-drawer.tsx\"]`. Leave it out ONLY when the fix is genuinely contained in `file`. A finding whose fix spans files but names only one of them is handed to a worker who CANNOT complete it, and it will be re-raised unfixed every cycle.",
+        "- When a finding offers a CHOICE of remedies ('either drop the UI, or add the column'), put the paths for BOTH options in `relatedFiles` and state the trade-off in `detail`. Every worker involved needs to see the same choice.",
+        "",
+        "## Runtime banner",
+        runtimeBanner(input),
+        "",
+        "## Review checklist (from the lead planner)",
+        ...input.reviewChecklist.map((c) => `- ${c}`),
+        // beta.63 (Fix 1): carry the repo's declared conventions so the adversary
+        // flags a change that violates them even when CI is green (the PR #859
+        // okf:check-drift-with-green-CI class).
+        renderConventionsForPrompt(input.repoConventions, "adversary"),
+        // beta.69 (F3): cross-cycle finding provenance. Without this the adversary
+        // re-emits the same findings every cycle (the D1/D3 churn spiral of
+        // session 1f2e6642: cycle 2 had 0 convention findings and still revised).
+        ...(input.priorFindings && input.priorFindings.length > 0
+            ? [
+                "",
+                "## Findings from the PRIOR cycle (the worker already attempted to address these)",
+                ...input.priorFindings.map((f) => `- [${f.severity}/${f.dimension}] ${f.title}`),
+                "Do NOT repeat any of the above findings unless you can state SPECIFICALLY why the worker's attempted fix is insufficient. Re-raising an already-addressed finding without that justification just churns the loop.",
+            ]
+            : []),
+        "",
+        "## Verdict rules",
+        "- `pass`: no NEW, diff-addressable finding above `low`. Missing runtime data (when local verification is green), absence of a test script the repo does not declare, and platform/deploy limits are NOT reasons to withhold `pass` — surface them as `info`/`low` notes.",
+        "- `revise`: at least one NEW finding, at `medium`+ severity, that a worker can fix by editing THIS diff in another cycle. Do not `revise` solely on recycled or non-diff-addressable concerns.",
+        "- `block`: findings that require a redesign, a scope change, or human intervention.",
+        "",
+        "Return a strict JSON object matching the ReviewReport schema. No prose outside the JSON.",
+    ].join("\n");
+}
+/**
+ * beta.70 (F3): the adversary's response was not the verdict JSON. In PR #870
+ * the cycle-2 adversary emitted a bash pre-flight discovery step as its ENTIRE
+ * final message ({command, description}) instead of {verdict, findings,
+ * summary}, so the parser threw "JSON missing required keys" and the run
+ * crash-recovered to `needs_human_review` -- producing NO real verdict after
+ * 4 min of adversary tokens. This detects that class from the thrown error so
+ * `runAdversary` can retry ONCE with a hardened "verdict JSON only" nudge
+ * before giving up.
+ */
+export function isAdversaryFormatError(err) {
+    const msg = String(err?.message ?? err);
+    return /JSON missing required keys|JSON\.parse failed|extractJson failed|parsed to non-object|failed typeCheck/i.test(msg);
+}
+/**
+ * beta.70 (F3): appended to the system prompt on the format-retry. Hammers the
+ * ONE thing that failed: return the verdict object, do not call a tool, do not
+ * explore -- you already have the full diff.
+ */
+export const ADVERSARY_FORMAT_RETRY_NUDGE = [
+    "",
+    "## RESPONSE FORMAT (RETRY -- your previous response was rejected)",
+    "Your previous response was NOT a valid ReviewReport. You likely emitted a tool/bash call (e.g. {\"command\": ..., \"description\": ...}) or prose instead of the verdict object.",
+    "You ALREADY HAVE the full diff below and the brief above. Do NOT explore the filesystem, do NOT run any command, do NOT call any tool.",
+    "Respond with EXACTLY ONE JSON object and NOTHING else: { \"verdict\": \"pass\"|\"revise\"|\"block\", \"findings\": [...], \"summary\": \"...\" }.",
+    "If you cannot find a blocking defect in the diff, the correct answer is verdict \"pass\" with your notes as info/low findings.",
+].join("\n");
+export async function runAdversary(input, deps) {
+    const systemPrompt = buildAdversarySystemPrompt(input);
+    const diffText = await deps.readDiff(input.diffPath);
+    let result;
+    try {
+        result = await deps.callAdversaryModel({
+            systemPrompt,
+            diffText,
+            model: input.model,
+            timeoutSeconds: input.timeoutSeconds,
+        });
+    }
+    catch (err) {
+        // beta.70 (F3): retry ONCE on a format error with a hardened nudge. Any
+        // other error (timeout, SDK failure) propagates unchanged to the loop's
+        // review-crash handler.
+        if (!isAdversaryFormatError(err))
+            throw err;
+        deps.logger.warn("[adversary] response was not a verdict JSON (likely a tool-call); retrying once with a format nudge", {
+            error: String(err?.message ?? err).slice(0, 300),
+        });
+        result = await deps.callAdversaryModel({
+            systemPrompt: systemPrompt + ADVERSARY_FORMAT_RETRY_NUDGE,
+            diffText,
+            model: input.model,
+            timeoutSeconds: input.timeoutSeconds,
+        });
+        deps.logger.info("[adversary] format-retry succeeded", { verdict: result.parsed.verdict });
+    }
+    // beta.91 (F1 companion): require `file` on diff-addressable findings so F1
+    // revise-scoping is not inert. If >= 1 medium+ spec/quality/security finding
+    // came back file-less, re-prompt ONCE naming the offenders. Second failure =>
+    // KEEP the unfiled findings (F1 treats the cycle unscopable => run all; a lost
+    // optimisation, never a lost review). Never hard-fails.
+    {
+        const missing = findingsMissingFile(result.parsed.findings);
+        if (missing.length > 0) {
+            deps.logger.warn("[adversary] diff-addressable finding(s) missing `file`; re-prompting once for file attribution", {
+                missing: missing.length,
+            });
+            try {
+                const retry = await deps.callAdversaryModel({
+                    systemPrompt: systemPrompt + buildFileAttributionRetryNudge(missing),
+                    diffText,
+                    model: input.model,
+                    timeoutSeconds: input.timeoutSeconds,
+                });
+                const stillMissing = findingsMissingFile(retry.parsed.findings);
+                // Accept the retry result only if it is not WORSE (fewer or equal
+                // unfiled diff-addressable findings). Keeps the better of the two.
+                const applied = stillMissing.length <= missing.length;
+                if (applied) {
+                    result = retry;
+                    deps.logger.info("[adversary] file-attribution retry applied", {
+                        before: missing.length, after: stillMissing.length,
+                    });
+                }
+                else {
+                    deps.logger.warn("[adversary] file-attribution retry came back WORSE; keeping original findings", {
+                        before: missing.length, after: stillMissing.length,
+                    });
+                }
+                // beta.91 (Staging pass-2 nit): surface before/after so a WORSE retry
+                // (rejected by the guard) is visible in prod -- the priorFindings
+                // conflation edge Staging traced would show up here.
+                try {
+                    deps.onFileAttributionRetry?.({
+                        before: missing.length,
+                        after: stillMissing.length,
+                        applied,
+                        hadPriorFindings: !!(input.priorFindings && input.priorFindings.length > 0),
+                    });
+                }
+                catch { /* observability must never fail the review */ }
+            }
+            catch (err) {
+                // A retry failure (timeout/format) is non-fatal: keep the original
+                // findings (unfiled). F1 stays safe (unscopable => run all).
+                deps.logger.warn("[adversary] file-attribution retry failed (non-fatal; keeping original findings)", {
+                    err: String(err?.message ?? err).slice(0, 200),
+                });
+            }
+        }
+    }
+    // beta.69 (F1/F4): runtime evidence is genuinely absent ONLY when there is no
+    // runtime snapshot at all, OR a non-local snapshot in no_deploy_yet/unavailable.
+    // A GREEN local-verification snapshot (provider=local, status=ok) COUNTS as
+    // runtime evidence for logic-only changes and must NOT trigger the guard.
+    const runtimeUnavailable = !input.runtime ||
+        (input.runtime.provider !== "local" &&
+            ["no_deploy_yet", "unavailable"].includes(input.runtime.status));
+    const findings = [...result.parsed.findings];
+    // beta.69: surface the missing-runtime concern as a NON-blocking `info` note
+    // (not a MEDIUM that forces revise). The old force-upgrade of `pass`->`revise`
+    // is DELETED: it made every un-pushed diff structurally unable to converge
+    // (forensic 1f2e6642 revised 3x on this alone). The concern still reaches the
+    // PR body, and reachedCleanPass=false / do_not_merge still forces human merge
+    // approval, so nothing is lost.
+    if (runtimeUnavailable && !findings.some((f) => f.dimension === "runtime")) {
+        findings.push({
+            dimension: "runtime",
+            severity: "info",
+            title: "No runtime data",
+            detail: "Adversary did not have preview-deploy logs at review time. Runtime dimension is unproven — surfaced for human review, non-blocking.",
+        });
+    }
+    // beta.69 (F1): the verdict gate. A `revise` survives only on >= 1 NEW,
+    // diff-addressable, medium+ finding; otherwise it is a converged `pass`.
+    const classifyCtx = {
+        repoHasTestScript: input.repoHasTestScript === true,
+        runtimeUnavailable,
+    };
+    const gated = gateVerdict({
+        verdict: result.parsed.verdict,
+        findings,
+        ctx: classifyCtx,
+        priorFindings: input.priorFindings,
+    });
+    if (gated.downgraded) {
+        // rc.3: warn, not info. This line is the only account of a `revise` the
+        // system chose to treat as a `pass`, and it decides whether the PR is
+        // auto-mergeable.
+        deps.logger.warn("[adversary] verdict downgraded revise->pass (no new diff-addressable medium+ finding)", {
+            findings: findings.length,
+            newBlocking: gated.newBlocking.length,
+            demoted: findings
+                .filter((f) => classifyFinding(f, classifyCtx) !== "diff_addressable")
+                .map((f) => `${f.severity}/${classifyFinding(f, classifyCtx)}: ${f.title}`)
+                .slice(0, 10),
+        });
+    }
+    const verdict = gated.verdict;
+    return {
+        verdict,
+        verdictDowngraded: gated.downgraded,
+        findings,
+        summary: result.parsed.summary,
+        sdkSessionId: result.sdkSessionId,
+        costUsd: result.costUsd,
+        tokensIn: result.tokensIn,
+        tokensOut: result.tokensOut,
+    };
+}
+//# sourceMappingURL=adversary.js.map

@@ -205,8 +205,10 @@ test("beta123: a revise verdict runs a second cycle and then ships", { skip }, a
   let turn = 0;
   const s = await runScenario({
     // The revise worker must genuinely change something. A cycle whose worker
-    // no-ops takes the `cycle_no_change_early_exit` path and ships WITHOUT a
-    // re-review -- correct, and not what this test is about.
+    // no-ops takes the `cycle_no_change_early_exit` path; beta.135 refuses to
+    // ship there while this blocking HIGH finding is still carried forward.
+    // That failure path is covered by beta135-smoke-safety; this test is about
+    // a genuine fix receiving a fresh passing review.
     worker: async ({ subTask, worktreePath, plan }, { world }) => {
       turn++;
       const wt = worktreePath ?? plan.worktreePath;

@@ -20,7 +20,7 @@ import {
   ADOPTABLE_SEVERITIES,
   mapFindingsToSubTasks,
 } from "../dist/orchestrator/revise-mapping.js";
-import { sessionScopedBranch } from "../dist/orchestrator/fable5-lead.js";
+import { sessionScopedBranch } from "../dist/orchestrator/lead.js";
 import { buildHeadline, mergeAdvice, renderWorklog } from "../dist/orchestrator/progress.js";
 import { buildHarnessHelp } from "../dist/tools/help-content.js";
 import { parseHarnessConfig } from "../dist/config.js";
@@ -209,7 +209,7 @@ function leadDeps(over = {}) {
 }
 
 test("beta108: the planner suffixes the branch the lead invented", async () => {
-  const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+  const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
   const plan = await runLeadPlanner(BRIEF(), leadDeps({ sessionId: "21c9c44e-4177-45f9" }));
   assert.notEqual(
     plan.branch,
@@ -220,14 +220,14 @@ test("beta108: the planner suffixes the branch the lead invented", async () => {
 });
 
 test("beta108: two sessions planning the SAME slug end on different branches", async () => {
-  const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+  const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
   const a = await runLeadPlanner(BRIEF(), leadDeps({ sessionId: "21c9c44e-4177" }));
   const b = await runLeadPlanner(BRIEF(), leadDeps({ sessionId: "06b91509-239d" }));
   assert.notEqual(a.branch, b.branch, "this is the cross-talk failure mode, end to end");
 });
 
 test("beta108: a revise plan keeps the pinned branch exactly", async () => {
-  const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+  const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
   const plan = await runLeadPlanner(
     BRIEF({ pinnedBranch: "harness/feat/grc-continuity-exercises-b106" }),
     leadDeps({ sessionId: "21c9c44e-4177" }),
@@ -240,13 +240,13 @@ test("beta108: a revise plan keeps the pinned branch exactly", async () => {
 });
 
 test("beta108: a planner given no session id is unchanged from b107", async () => {
-  const { runLeadPlanner } = await import("../dist/orchestrator/fable5-lead.js");
+  const { runLeadPlanner } = await import("../dist/orchestrator/lead.js");
   const plan = await runLeadPlanner(BRIEF(), leadDeps());
   assert.equal(plan.branch, "harness/feat-db-field");
 });
 
 test("beta108: a revise keeps its pinned branch un-suffixed", () => {
-  const lead = S("src/orchestrator/fable5-lead.ts");
+  const lead = S("src/orchestrator/lead.ts");
   const i = lead.indexOf("if (brief.pinnedBranch)");
   const j = lead.indexOf("sanitizeRemoteSubTasks(raw", i);
   assert.ok(i > 0 && j > i);
@@ -379,7 +379,7 @@ test("beta108: the early exit is guarded on every precondition", () => {
   assert.match(block, /cycleBaseSha/, "an unreadable sha must not read as 'no change'");
   assert.match(block, /tipNow === cycleBaseSha/);
   assert.match(block, /loop\.cycle_no_change_early_exit/);
-  assert.match(block, /shipped_no_change_cycle/);
+  assert.match(block, /carriedBlocking/, "the carried review must still govern whether shipping is safe");
 });
 
 test("beta108: the cycle base sha is captured BEFORE the workers run", () => {
@@ -693,16 +693,24 @@ test("beta108: new keys are declared in both schemas", () => {
   }
 });
 
-test("beta108: parallel sub-tasks remain OFF", () => {
-  // Deliberate, and the reason belongs in a test so it is not quietly reversed:
-  // every sub-task shares ONE worktree (plan.worktreePath) and GitAdapter.commit
-  // stages with an unscoped `git add -A`, so the first worker to commit sweeps
-  // the other's half-finished edits into its own commit. The b91 overlap guard
-  // compares DECLARED scope only, and b106 measured committedCount 141 against
-  // declaredCount 7. Enabling this needs per-sub-task worktrees first.
-  const c = parseHarnessConfig(MINIMAL_CONFIG);
-  assert.equal(c.loop.parallel_independent_subtasks, false);
-  assert.equal(c.loop.subtask_concurrency, 1);
+test("beta108: parallel sub-tasks are GONE, not merely off", () => {
+  // The original reason they were off still holds and is why they were deleted
+  // rather than fixed: every sub-task shares ONE worktree (plan.worktreePath)
+  // and GitAdapter.commit stages with an unscoped `git add -A`, so two
+  // concurrent workers sweep each other's half-finished edits into their
+  // commits. The b91 overlap guard compares DECLARED scope only, and b106
+  // measured committedCount 141 against declaredCount 7.
+  //
+  // v2.0.0 removed the mechanism. The keys are still ACCEPTED (the gateway
+  // manifest is additionalProperties:false, so dropping them would reject an
+  // operator's whole config) but they are dropped at parse time, so nothing
+  // downstream can read a setting nothing obeys.
+  const c = parseHarnessConfig({
+    ...MINIMAL_CONFIG,
+    loop: { ...(MINIMAL_CONFIG.loop ?? {}), parallel_independent_subtasks: true, subtask_concurrency: 8 },
+  });
+  assert.equal(c.loop.parallel_independent_subtasks, undefined, "the removed key must not survive parse");
+  assert.equal(c.loop.subtask_concurrency, undefined, "the removed key must not survive parse");
   assert.match(S("src/adapters/git-worktree.ts"), /"add", "-A"/);
 });
 

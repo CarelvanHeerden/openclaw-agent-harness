@@ -26,7 +26,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 
 let consumeWorkerStream = null;
 try {
-  ({ consumeWorkerStream } = await import("../dist/adapters/claude-sdk.js"));
+  ({ consumeWorkerStream } = await import("../dist/adapters/claude-code.js"));
 } catch {
   consumeWorkerStream = null;
 }
@@ -128,14 +128,14 @@ test("beta64/P0-1: interaction-log exposes sdk_stream_opened + sdk_first_token e
 });
 
 test("beta64/P0-1: runWorkerSdk threads firstTokenTimeoutSeconds into consumeWorkerStream (source)", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /firstTokenTimeoutSeconds\?: number/);
   assert.match(src, /consumeWorkerStream\(stream, abort, \{\s*firstTokenTimeoutSeconds: params\.firstTokenTimeoutSeconds,/);
   assert.match(src, /stopReason = "first_token_timeout"/);
 });
 
-test("beta64/P0-1: sonnet-worker maps first_token_timeout status + carries streamOpened/msToFirstToken (source)", () => {
-  const src = S("src/orchestrator/sonnet-worker.ts");
+test("beta64/P0-1: worker maps first_token_timeout status + carries streamOpened/msToFirstToken (source)", () => {
+  const src = S("src/orchestrator/worker.ts");
   assert.match(src, /"first_token_timeout"/);
   // beta.65: phase-2 default lowered 90 -> 30 in the split-phase redesign.
   // beta.113: the loop now widens this per retry attempt, so the config value

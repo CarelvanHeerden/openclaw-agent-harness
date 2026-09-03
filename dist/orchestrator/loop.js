@@ -25,8 +25,8 @@
  * changes what `advance()` returns needs a SCENARIO test that asserts the run
  * behaved differently, not a unit test that asserts the decision differed.
  */
-import { elideFinalScopeSubTask } from "./fable5-lead.js";
-import { estimateSubTaskCost } from "../adapters/claude-sdk.js";
+import { elideFinalScopeSubTask } from "./lead.js";
+import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -145,7 +145,7 @@ import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedger
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-validate.js";
 import { applyPathCorrections, describePathCorrections } from "./plan-path-writeback.js";
-import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, describeBasenameRescue } from "./basename-rescue.js";
+import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, describeBasenameRescue, rescueMatchesContractPath, } from "./basename-rescue.js";
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { blocksMerge, classifyFinding, isBlockingFinding } from "./finding-classify.js";
@@ -160,9 +160,7 @@ import { planTouchesWorkflows, describeMissingWorkflowScope } from "./workflow-s
 import { ABORT_REASONS_WORTH_SHIPPING, describeAbortSalvage, shouldReserveTimeToShip } from "./abort-salvage.js";
 import { TIME_EXTENSION_SEQ, parseTimeExtensionReply, renderTimeExtensionMarker, renderTimeExtensionQuestion, } from "./time-extension.js";
 import { selectWorkerModel } from "./worker-model-select.js";
-import { canDispatchConcurrently, resolveEffectiveConcurrency } from "./parallel-safety.js";
-import { WorktreePool } from "./worktree-pool.js";
-import { Mutex, mergeBackSubTask } from "./merge-back.js";
+import { selectObserveReports, recoverObserveReports, OBSERVE_REPORT_MAX_CHARS, } from "./observe-handoff.js";
 /**
  * beta.38: module-level set of session ids whose loop is CURRENTLY running in
  * THIS process. The single source of truth for "is this session's loop alive?"
@@ -501,11 +499,6 @@ export function isConvergingBlockingTrend(blocking) {
 }
 export class OrchestratorLoop {
     deps;
-    /**
-     * beta.117: serialises merge-back into the session worktree. One per loop
-     * instance, which is one per process -- the only worktree it guards.
-     */
-    mergeBackMutex = new Mutex();
     constructor(deps) {
         this.deps = deps;
     }
@@ -828,7 +821,14 @@ export class OrchestratorLoop {
     saveReview(sessionId, cycle, report) {
         this.deps.state.db
             .prepare(`INSERT INTO reviews (id, session_id, cycle, verdict, findings, summary, cost_usd, sdk_session_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           verdict = excluded.verdict,
+           findings = excluded.findings,
+           summary = excluded.summary,
+           cost_usd = excluded.cost_usd,
+           sdk_session_id = excluded.sdk_session_id,
+           created_at = excluded.created_at`)
             .run(`${sessionId}-r${cycle}`, sessionId, cycle, report.verdict, JSON.stringify(report.findings), report.summary, report.costUsd, report.sdkSessionId ?? null, Date.now());
     }
     /**
@@ -839,57 +839,6 @@ export class OrchestratorLoop {
      * The guard is registered/cleared here so EVERY entry path (fresh run and
      * recovery auto-resume both call `run()`) is covered and can't be forgotten.
      */
-    /**
-     * beta.117: bring one parallel worker's commits onto the session branch.
-     *
-     * Serialised across the whole loop instance by {@link mergeBackMutex}: git
-     * will not take two concurrent index operations in one worktree, and a lock
-     * turns that race into a queue.
-     *
-     * A conflict here is the mechanism working, not a bug. Two workers writing
-     * the same file that neither declared used to corrupt each other invisibly in
-     * the shared worktree; now it surfaces as a named conflict against a specific
-     * sub-task. The sub-task is marked failed so the cycle's own machinery
-     * re-runs it -- by which point the other worker's change is already on the
-     * branch, so the retry sees it and adapts.
-     */
-    async mergeBackSlot(args) {
-        const { sessionId, cycle, st, lease, baseSha, plan, failed } = args;
-        const gitRun = this.deps.gitRun;
-        if (!gitRun)
-            return;
-        const git = {
-            run: gitRun,
-            headSha: async (cwd) => (await gitRun(cwd, ["rev-parse", "HEAD"])).trim(),
-        };
-        const res = await this.mergeBackMutex.run(() => mergeBackSubTask(git, {
-            sessionWorktree: plan.worktreePath,
-            workerWorktree: lease.path,
-            workerBranch: lease.branch,
-            baseSha,
-            seq: st.seq,
-        }));
-        if (res.ok) {
-            if (res.landed.length > 0) {
-                this.deps.state.audit("loop.parallel_merge_back", { sessionId, cycle, seq: st.seq, slot: lease.slot, commits: res.landed.length, fastForward: res.fastForward, headSha: res.headSha }, sessionId);
-            }
-            return;
-        }
-        this.deps.state.audit("loop.parallel_merge_back_conflict", { sessionId, cycle, seq: st.seq, slot: lease.slot, reason: res.reason, conflictedPaths: res.conflictedPaths, detail: res.detail }, sessionId);
-        this.deps.logger.error("[loop] a parallel sub-task could not be merged back; its work is NOT on the branch", {
-            sessionId, cycle, seq: st.seq, reason: res.reason, conflictedPaths: res.conflictedPaths,
-        });
-        this.deps.interactionLog?.log(sessionId, {
-            event: "parallel_merge_back_conflict", phase: "worker", seq: st.seq, cycle, conflictedPaths: res.conflictedPaths,
-        });
-        this.deps.state.db
-            .prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
-            .run(`parallel merge-back ${res.reason}: ${res.detail}`, Date.now(), sessionId, cycle, st.seq);
-        if (!failed.err) {
-            failed.err = `parallel_merge_back_${res.reason} (seq ${st.seq}): ${res.detail}`;
-            failed.seq = st.seq;
-        }
-    }
     async run(sessionId, brief) {
         if (runningSessions.has(sessionId)) {
             // beta.40: the guard entry exists -- but is the tracked loop actually
@@ -1062,14 +1011,30 @@ export class OrchestratorLoop {
         this.setStatus(sessionId, "planning");
         await this.deps.reportProgress?.(sessionId, "planning");
         let plan;
+        // beta.135: an accepted contract mismatch is a continuation of the plan
+        // that produced the accepted commit, not a request for a new plan. Load it
+        // before emitting a lead request so the trail cannot claim a model call
+        // happened when it did not.
+        let acceptedContinuation = null;
+        if (brief.resumeExistingPlan) {
+            try {
+                acceptedContinuation = this.loadAcceptedContinuation(sessionId);
+            }
+            catch (err) {
+                this.deps.state.audit("loop.plan_resume_failed", { sessionId, error: String(err) }, sessionId);
+                return this.finaliseFailedPreserveWorktree(sessionId, `plan_resume_failed: ${String(err)}`, row.cycles_ran, row.cost_usd);
+            }
+        }
         // beta.63 (Part B): log the lead SDK call boundaries (request/response) into
         // the durable interaction log. A request with no matching response is the
         // exact hang signature the b60 stall left behind.
         const leadStart = Date.now();
-        this.deps.interactionLog?.logSdkRequest(sessionId, {
-            role: "lead", model: this.deps.config.models.lead, phase: "plan",
-            prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
-        });
+        if (!acceptedContinuation) {
+            this.deps.interactionLog?.logSdkRequest(sessionId, {
+                role: "lead", model: this.deps.config.models.lead, phase: "plan",
+                prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
+            });
+        }
         // beta.127 (#157): planning happens before the cycle ledger opens, so the
         // lead's spend is parked here and folded into `totalCost` at its
         // declaration.
@@ -1080,6 +1045,9 @@ export class OrchestratorLoop {
         // second lead call in full, which is the thing b132's recovery guard and
         // dead-listener ship exist to stop happening unasked.
         let leadPlanningCostUsd = 0;
+        const scoutBudget = !acceptedContinuation && this.deps.config.loop.lead_repo_scout_enabled !== false
+            ? Math.max(0, this.deps.config.loop.lead_scout_timeout_seconds ?? 420)
+            : 0;
         try {
             // beta.43: bound the lead-planner SDK call by lead_timeout_seconds. The
             // lead await was UNBOUNDED (beta.42 only bounded the worker). A hung
@@ -1099,10 +1067,7 @@ export class OrchestratorLoop {
             // Adding the scout's own ceiling keeps `lead_timeout_seconds` meaning what
             // its name and docs say -- the time the PLANNER gets -- however the scout
             // knob is set.
-            const scoutBudget = this.deps.config.loop.lead_repo_scout_enabled !== false
-                ? Math.max(0, this.deps.config.loop.lead_scout_timeout_seconds ?? 420)
-                : 0;
-            plan = await withTimeout(this.deps.runLead(brief, {
+            plan = acceptedContinuation?.plan ?? await withTimeout(this.deps.runLead(brief, {
                 requester: row.requester,
                 sessionId,
                 // beta.122 (CRITICAL): a re-plan may not RENAME the session's branch.
@@ -1134,18 +1099,20 @@ export class OrchestratorLoop {
                     catch { /* an audit write must never fail an allocation */ }
                 },
             }), this.deps.config.loop.lead_timeout_seconds + scoutBudget, "lead_timeout_seconds");
-            this.deps.interactionLog?.logSdkResponse(sessionId, {
-                role: "lead", model: this.deps.config.models.lead, phase: "plan",
-                finishReason: "end_turn", durationMs: Date.now() - leadStart,
-                outputChars: JSON.stringify(plan).length, toolCalls: [],
-                // beta.127 (#157): the second half of the same omission. Every worker
-                // and adversary `sdk_response` in the interaction log carries a cost;
-                // the lead's carried `costUsd: null`, which reads as "this call was
-                // free" rather than "nobody passed the number through". The b126 smoke
-                // was diagnosed off this log, and the lead's 311 seconds on Opus
-                // appeared as null next to a worker's 0.5299.
-                costUsd: plan.actualCostUsd ?? 0,
-            });
+            if (!acceptedContinuation) {
+                this.deps.interactionLog?.logSdkResponse(sessionId, {
+                    role: "lead", model: this.deps.config.models.lead, phase: "plan",
+                    finishReason: "end_turn", durationMs: Date.now() - leadStart,
+                    outputChars: JSON.stringify(plan).length, toolCalls: [],
+                    // beta.127 (#157): the second half of the same omission. Every worker
+                    // and adversary `sdk_response` in the interaction log carries a cost;
+                    // the lead's carried `costUsd: null`, which reads as "this call was
+                    // free" rather than "nobody passed the number through". The b126 smoke
+                    // was diagnosed off this log, and the lead's 311 seconds on Opus
+                    // appeared as null next to a worker's 0.5299.
+                    costUsd: plan.actualCostUsd ?? 0,
+                });
+            }
             // beta.94 (Feature 1a): elide the idle-prone trailing PURE-OBSERVE scope
             // "final verification" sub-task (the b93 seq-12 stall). It has nothing to
             // write, so a worker can go idle on it indefinitely while adding zero
@@ -1185,7 +1152,9 @@ export class OrchestratorLoop {
             // whether another cycle is affordable, so planning spend was invisible
             // to every one of those decisions -- and a run that died IN planning
             // reported $0.00 having burned real tokens.
-            leadPlanningCostUsd = plan.actualCostUsd ?? 0;
+            // The stored plan's `actualCostUsd` is historical. Charging it again on
+            // an accepted continuation would bill the same lead/scout turn twice.
+            leadPlanningCostUsd = acceptedContinuation ? 0 : (plan.actualCostUsd ?? 0);
             // beta.128 (#157, second half): PERSIST it. b127 folded the lead into the
             // in-memory `totalCost` -- which fixed the affordability arithmetic -- and
             // stopped there, so `sessions.cost_usd` still counted only workers and
@@ -1196,16 +1165,26 @@ export class OrchestratorLoop {
                 this.addCost(sessionId, leadPlanningCostUsd);
                 await this.deps.budget.recordSpend(row.requester, leadPlanningCostUsd, sessionId);
             }
-            this.deps.state.audit("loop.plan_ready", {
-                sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel,
-                leadCostUsd: Number(leadPlanningCostUsd.toFixed(4)),
-                scoutCostUsd: Number((plan.scout?.costUsd ?? 0).toFixed(4)),
-            }, sessionId);
+            if (acceptedContinuation) {
+                this.deps.state.audit("loop.plan_resumed_after_contract_accept", {
+                    sessionId,
+                    subTasks: plan.subTasks.length,
+                    completedSeqs: [...acceptedContinuation.completedSeqs],
+                    leadCostUsd: 0,
+                }, sessionId);
+            }
+            else {
+                this.deps.state.audit("loop.plan_ready", {
+                    sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel,
+                    leadCostUsd: Number(leadPlanningCostUsd.toFixed(4)),
+                    scoutCostUsd: Number((plan.scout?.costUsd ?? 0).toFixed(4)),
+                }, sessionId);
+            }
             // beta.104: record whether the lead actually SAW the repo before it
             // planned. Emitted on both outcomes -- a smoke report must be able to
             // attribute a plan full of fictional paths to a scout that never ran,
             // which is precisely what b102 could not do for the dispatch hint.
-            if (plan.scout) {
+            if (!acceptedContinuation && plan.scout) {
                 this.deps.state.audit("loop.lead_scout", {
                     sessionId,
                     ran: plan.scout.ran,
@@ -1458,6 +1437,21 @@ export class OrchestratorLoop {
         // verified -- killing the path-drift class at the source instead of adding
         // one more tolerant match rule. Accumulated across sub-tasks within the run.
         const discoveredRealPaths = new Set();
+        // beta.134 (observe-handoff): the FINDINGS of each completed observe
+        // sub-task, keyed by seq, so the sub-tasks that depend on a probe are
+        // dispatched holding what the probe actually reported.
+        //
+        // `discoveredRealPaths` above already keeps the paths a probe TOUCHED,
+        // which is the machine-checkable residue of an investigation. This keeps
+        // the investigation itself -- which module owns what, which convention the
+        // repo really follows, which of the lead's assumptions turned out wrong --
+        // and that is the part a downstream worker's intent keeps referring to.
+        // Until now it was audited and discarded. See observe-handoff.ts.
+        //
+        // Run-level (outside the cycle loop) on purpose: a revise cycle that skips
+        // re-running a clean observe probe (`loop.observe_reprobe_skipped`) must
+        // still be able to hand cycle 1's report to cycle 2's implementers.
+        const observeReports = this.hydrateObserveReports(sessionId, plan);
         // 2. Execute/review cycles, then the ship gate, then possibly back again.
         //
         // beta.127: the cycle loop is wrapped in a ship-attempt loop. Before b127
@@ -1515,6 +1509,11 @@ export class OrchestratorLoop {
                 const cycleBaseSha = this.deps.worktreeHeadSha
                     ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
                     : "";
+                // A recovery can prove a prior review finding resolved without moving
+                // HEAD (for example, contract auto-resolution discovers that an earlier
+                // commit already satisfies the path). Such a cycle deserves a fresh
+                // review; it is not the "worker made no progress" case.
+                let cycleResolvedContractWithoutCommit = false;
                 // beta.92: DETERMINISTIC finding -> sub-task mapping REPLACES the deleted
                 // LLM revise-spec turn (beta.67). The revise-spec turn kept exceeding its
                 // lane-cap timeout (b73 signature) across THREE smokes (b89/b90/b91) and
@@ -1702,16 +1701,13 @@ export class OrchestratorLoop {
                         this.deps.state.audit("loop.revise_scope_skipped", { sessionId, cycle, reason: scope.reason, findingCount: (lastReview.findings ?? []).length, unfiledFindingCount }, sessionId);
                     }
                 }
-                // beta.91 (Fix 2): effective concurrency. Serial (1) unless the feature is
-                // on AND subtask_concurrency > 1. The dispatcher additionally enforces a
-                // file-overlap guard (canDispatchConcurrently) below.
-                const concurrency = resolveEffectiveConcurrency({
-                    subtaskConcurrency: this.deps.config.loop.subtask_concurrency ?? 1,
-                    parallelEnabled: this.deps.config.loop.parallel_independent_subtasks === true,
-                });
-                const inFlight = [];
-                const inFlightSubTasks = new Map();
-                const done = new Set();
+                // beta.135: on the first cycle after an accepted clarification, the
+                // existing plan's already-completed rows are dependencies already
+                // satisfied, not work to dispatch again. Later revise cycles start cold
+                // as before so finding-targeted work can run normally.
+                const done = new Set(cycle === 1 && acceptedContinuation
+                    ? acceptedContinuation.completedSeqs
+                    : []);
                 // rc.3: `preservedReason` carries the human-readable reason out of a
                 // terminal path that already handled its own transition, so the outcome
                 // reported to the caller says what actually happened.
@@ -1736,13 +1732,12 @@ export class OrchestratorLoop {
                  * terminal decision. It is not a race -- there is no timing in it. The
                  * flag is simply never unset.
                  *
-                 * Retraction is keyed to the SEQ THAT RECORDED THE FAILURE. Under b117
-                 * parallelism several sub-tasks share this one slot, so a blanket clear
-                 * would let a rescue on seq 10 silently erase a genuine failure on seq 4.
-                 * If the slot no longer belongs to this seq we leave it entirely alone:
-                 * some other sub-task's failure is the live one and it must still stop
-                 * the run.
-                 */
+             * Retraction is keyed to the SEQ THAT RECORDED THE FAILURE, so a rescue can
+             * only ever clear its own sub-task's failure. Sub-tasks run one at a time,
+             * so the slot's owner is unambiguous; the key is kept because a blanket
+             * clear would be wrong the moment anything else writes to this accumulator,
+             * and because it states which failure is being retracted.
+             */
                 const retractFailure = (seq, why) => {
                     if (failed.seq !== seq || failed.err === null)
                         return;
@@ -1754,54 +1749,14 @@ export class OrchestratorLoop {
                         sessionId, seq, why,
                     });
                 };
-                /**
-                 * beta.117: isolated checkouts for concurrent workers.
-                 *
-                 * Built only when concurrency > 1 AND the adapter can actually create
-                 * slots. Everything below tolerates a null pool by running serially, so a
-                 * stubbed orchestrator or a repo the adapter cannot pool degrades to
-                 * pre-b117 behaviour instead of failing.
-                 *
-                 * Sized to `concurrency`, not `concurrency - 1`. Letting one worker keep
-                 * using the session worktree looks like a free slot and is not: that
-                 * checkout is the MERGE TARGET, and a merge into a tree another worker is
-                 * actively editing either aborts on a dirty tree or mixes that worker's
-                 * uncommitted edits into someone else's merge. Once parallel, the session
-                 * worktree is an integration checkout only, and every worker gets a slot.
-                 *
-                 * Slots are created lazily, so a cycle whose sub-tasks never actually
-                 * overlap still pays for just one.
-                 */
-                const canPool = concurrency > 1 &&
-                    !!this.deps.allocatePooledWorktree &&
-                    !!this.deps.resetPooledWorktree &&
-                    !!this.deps.gitRun &&
-                    !!plan.branch;
-                const pool = canPool
-                    ? new WorktreePool({
-                        size: concurrency,
-                        sessionBranch: plan.branch,
-                        deps: {
-                            create: async (slot, slotBranch) => this.deps.allocatePooledWorktree({
-                                sessionId, repoFullName: plan.repo, sessionBranch: plan.branch, slotBranch, slot,
-                            }),
-                            reset: async (wt, sha) => this.deps.resetPooledWorktree(wt.path, sha),
-                            destroy: async (wt) => {
-                                await this.deps.releasePooledWorktree?.({
-                                    repoFullName: plan.repo, worktreePath: wt.path, slotBranch: wt.branch,
-                                });
-                            },
-                            logger: this.deps.logger,
-                        },
-                    })
-                    : null;
-                if (pool) {
-                    this.deps.state.audit("loop.parallel_enabled", { sessionId, cycle, concurrency, poolSize: concurrency }, sessionId);
-                }
                 // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
                 // instead of hard-failing. Carries the ONE question to surface + the
                 // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
-                const clarify = { question: null, seq: -1, subtask: null };
+                const clarify = {
+                    question: null,
+                    seq: -1,
+                    subtask: null,
+                };
                 const runOneInner = async (st, workerWorktree) => {
                     // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
                     // intersect any finding -> its prior-cycle commit is already correct and
@@ -1942,8 +1897,10 @@ export class OrchestratorLoop {
                     // scheduled).
                     {
                         const now = Date.now();
+                        const plannedModel = selectWorkerModel(st, this.deps.config.models);
+                        const ledgerModel = this.deps.describeWorkerModel?.(plannedModel) ?? plannedModel;
                         this.deps.state.db.prepare(`INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, started_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, this.deps.config.models.worker, now, now, now);
+             VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`).run(subTaskId, sessionId, cycle, st.seq, st.title, ledgerModel, now, now, now);
                     }
                     // beta.63 (Part A): mark forward progress at sub-task START so a long
                     // executing phase (many sub-tasks) reads as live to the watchdog.
@@ -1986,9 +1943,15 @@ export class OrchestratorLoop {
                     // a single worker turn; beta.63 smoke #2's verify sub-task streamed zero
                     // tokens and sat the full 1800s. runWorkerCallWithRetry emits the P0-1
                     // sdk_stream_opened/sdk_first_token events + owns the retry.
+                    // beta.134 (observe-handoff): overlay the reports of the probes this
+                    // sub-task depends on. A COPY, never `st` itself: `st` is a live node
+                    // of `plan`, which is serialised back into `sessions.lead_plan_json`,
+                    // and a several-thousand-char report is a run artefact that has no
+                    // business growing the stored plan on every cycle.
+                    const dispatchSt = this.withObserveReports(sessionId, st, cycle, observeReports);
                     const call = await this.runWorkerCallWithRetry({
                         workerWorktree,
-                        sessionId, st, cycle, brief, plan, requester: row.requester,
+                        sessionId, st: dispatchSt, cycle, brief, plan, requester: row.requester,
                         dispatchHint: reviseHint, workerStart, subTaskId,
                     });
                     if (call.outcome === "timeout") {
@@ -2038,6 +2001,25 @@ export class OrchestratorLoop {
            SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
            WHERE id = ?`).run(result.status, result.costUsd, JSON.stringify(result.filesChanged), result.commitSha ?? null, result.sdkSessionId ?? null, result.reason ?? null, Date.now(), Date.now(), subTaskId);
                     this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                    // v2 smoke: a refused tool call is a first-class audit event.
+                    //
+                    // It rides beside `worker_end_turn` rather than inside it because the
+                    // interesting query is "what did the guard block in this session", and
+                    // that should not require parsing a turn summary. A run whose worker
+                    // produced nothing is answerable now: either rows are here and the
+                    // guard stopped it, or they are not and the model simply did not act.
+                    if (result.deniedToolCalls?.length) {
+                        for (const d of result.deniedToolCalls) {
+                            this.deps.state.audit("loop.worker_tool_denied", {
+                                sessionId,
+                                seq: st.seq,
+                                cycle,
+                                kind: d.kind ?? null,
+                                title: String(d.title ?? "").slice(0, 300),
+                                reason: d.reason ?? "no reason given",
+                            }, sessionId);
+                        }
+                    }
                     // beta.48 (C1): always emit the worker's final message as a
                     // breadcrumb, on EVERY sub-task (not just failures). This eliminates
                     // the "opaque worker turn" blind spot (session dca2f3b5) where a
@@ -2062,6 +2044,7 @@ export class OrchestratorLoop {
                             filesTouched: result.filesChanged,
                             hasFinalMessage: fm.length > 0,
                             finalMessage: fm.slice(0, 4000),
+                            unguardedReads: result.unguardedReads ?? 0,
                         }, sessionId);
                         // beta.85: PER-SUB-TASK native progress. Pre-beta.85, native
                         // deliverProgress fired ONLY from setStatus = phase transitions
@@ -2430,8 +2413,8 @@ export class OrchestratorLoop {
                                 envWaitRetried = true;
                                 const wrote = result.uncommittedFiles ?? [];
                                 const hint = wrote.length > 0
-                                    ? `IMPORTANT: your PREVIOUS turn wrote these files to the worktree but never committed them: ${wrote.join(", ")}. There is NO background watcher, NO "Monitor event", NO completion notification, and NO event stream -- harness dispatch is one-shot and NOTHING will ever notify or resume you. Do NOT wait for any install/build/lint/test to "notify" you. Simply \`git add\` and \`git commit\` the work you already did, complete any remaining success criteria INLINE (run any command -- including the test suite, tsc, or lint -- directly in a single BLOCKING Bash call and read its output in THIS turn; or skip a missing tool and note it in the commit message), and end your turn.`
-                                    : `IMPORTANT: your PREVIOUS turn ended waiting for something that does not exist (a "Monitor event", a "background watcher", a "completion notification", or similar). The harness has NO such mechanism -- dispatch is one-shot and nothing will notify or resume you. Complete this sub-task NOW without waiting for anything. To run tests/build/lint/install, execute the command DIRECTLY in a single blocking Bash call in THIS turn and read its output; do not background it and do not wait for a signal. If a tool (eslint/tsc/lint) is not installed, run \`npm ci\` INLINE first, OR skip that step and note it in the commit message. Make the required edit, commit it, and end your turn.`;
+                                    ? `OBSERVABLE STATE CHECK: your previous turn left these files uncommitted: ${wrote.join(", ")}. The harness inspected Git, so this is not an interpretation of your prose. Complete any remaining edits, then \`git add\` and \`git commit\` them before reporting completion.`
+                                    : `OBSERVABLE STATE CHECK: your previous turn produced ZERO filesystem changes and ZERO commits, regardless of what its final message claimed. Git is authoritative. Continue this SAME sub-task now: use direct read/edit/bash tools, make the required changes, inspect \`git status --short\`, and commit them. Do not report completion until the commit command has succeeded and you can quote its hash.`;
                                 this.deps.interactionLog?.log(sessionId, { event: "env_wait_retry", phase: "worker", seq: st.seq, cycle, partialWork: wrote.length > 0 });
                                 this.deps.state.audit("loop.worker_env_wait_retry", {
                                     sessionId, seq: st.seq, cycle,
@@ -2441,14 +2424,24 @@ export class OrchestratorLoop {
                                     phrasingMatched,
                                     priorFinalMessage: (result.finalMessage ?? "").slice(0, 500),
                                 }, sessionId);
-                                this.deps.logger.warn("[loop] env-wait hallucination detected; retrying sub-task once with corrective context", {
+                                this.deps.logger.warn("[loop] zero-change completion failed Git verification; retrying in the same worker session", {
                                     sessionId, seq: st.seq, partialWork: wrote.length > 0,
                                 });
                                 try {
                                     // beta.90 (Feature 2): stream-slow liveness on the retry too.
                                     const onRetryStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
                                     const retry = await withTimeout(this.deps.runWorker({
-                                        brief, subTask: st, plan, requester: row.requester,
+                                        brief,
+                                        // Keep the dispatch overlay: the previous retry silently
+                                        // dropped priorObserveReports and forced the model to
+                                        // rediscover facts the first attempt had been given.
+                                        subTask: dispatchSt,
+                                        plan,
+                                        worktreePath: workerWorktree,
+                                        requester: row.requester,
+                                        // Resume so the model sees its own tool history and false
+                                        // completion claim. A fresh session can simply repeat it.
+                                        resumeSessionId: result.sdkSessionId,
                                         // Compose the revise context (if any) with the corrective hint.
                                         dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
                                         // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
@@ -2784,7 +2777,7 @@ export class OrchestratorLoop {
                                     const rescue = proposeBasenameRescue({ expected, actual, repoDirs: repoDirsFromFiles(repoFiles) }) ??
                                         proposeDirectoryRescue({ expected, actual });
                                     if (rescue) {
-                                        const rescued = contract.map((v) => "path" in v && v.path === rescue.from ? { ...v, path: rescue.to } : v);
+                                        const rescued = contract.map((v) => "path" in v && rescueMatchesContractPath(v.path, rescue) ? { ...v, path: rescue.to } : v);
                                         const rescueProbes = this.deps.buildVerifyProbes({
                                             plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
                                         });
@@ -2802,6 +2795,7 @@ export class OrchestratorLoop {
                                             verified: reverified.ok, summary: reverified.summary,
                                         }, sessionId);
                                         if (reverified.ok) {
+                                            cycleResolvedContractWithoutCommit = true;
                                             // Fold the correction into the plan through the same b103
                                             // writeback path a learned remap uses, so a later revise
                                             // cycle scopes against the real path too.
@@ -2874,6 +2868,7 @@ export class OrchestratorLoop {
                                 };
                                 const auto = autoResolveContract(mismatch);
                                 if (auto.resolved && this.deps.config.loop.auto_resolve_satisfied_contract !== false) {
+                                    cycleResolvedContractWithoutCommit = true;
                                     this.deps.state.audit("loop.contract_auto_resolved", { sessionId, seq: st.seq, cycle, expected, actual, coveredEarlier: auto.coveredEarlier, reason: auto.reason }, sessionId);
                                     this.deps.interactionLog?.log(sessionId, {
                                         event: "contract_auto_resolved", phase: "worker", seq: st.seq, cycle, coveredEarlier: auto.coveredEarlier,
@@ -2890,7 +2885,12 @@ export class OrchestratorLoop {
                                 }
                                 clarify.question = buildContractClarification(mismatch);
                                 clarify.seq = st.seq;
-                                clarify.subtask = { title: st.title, intent: st.intent };
+                                clarify.subtask = {
+                                    title: st.title,
+                                    intent: st.intent,
+                                    expectedPaths: expected,
+                                    actualPaths: actual,
+                                };
                             }
                             return;
                         }
@@ -2927,157 +2927,72 @@ export class OrchestratorLoop {
                             });
                         }
                     }
+                    // beta.134 (observe-handoff): this sub-task passed. If it was a probe,
+                    // keep its report for the sub-tasks that depend on it. Recorded here,
+                    // on the single terminal-success path, so a probe that FAILED never
+                    // hands its half-finished account downstream as if it were fact.
+                    this.recordObserveReport(sessionId, st, result, observeReports);
                     done.add(st.seq);
                 };
                 /**
-                 * beta.117: run one sub-task, in its own checkout when running parallel.
+                 * v2.0.0: sub-tasks run one at a time, in the session worktree.
                  *
-                 * Serial runs (still the default) take the early path and are byte-for-byte
-                 * the pre-b117 behaviour: the sub-task works directly in the session
-                 * worktree and commits straight onto the session branch.
-                 *
-                 * When parallel, the sub-task gets a leased slot instead and its commits
-                 * are merged back afterwards. The merge-back sits in a `finally` on
-                 * purpose. `runOneInner` has more than a dozen early returns -- revise
-                 * skips, clarification pauses, contract mismatches, verification failures
-                 * -- and a worker can have committed real work before reaching any of
-                 * them. Merging back on the success path alone would strand those commits
-                 * on a slot branch that gets deleted at the end of the run, which is the
-                 * b100 lost-commit failure reintroduced by the back door.
+                 * That checkout IS the isolation boundary -- one session, one worktree,
+                 * one branch -- so a serial worker commits straight onto the session
+                 * branch and there is nothing to merge back. b117's slot pool and
+                 * merge-back existed only to make CONCURRENT workers safe in a shared
+                 * tree; with concurrency gone they are pure liability, so they are gone
+                 * too. See the v2 CHANGELOG entry for the measurement that motivated it.
                  */
-                const runOne = async (st) => {
-                    // No pool, or nothing for a worker to do: use the session worktree.
-                    if (!pool?.enabled || reviseScopeSkip.has(st.seq)) {
-                        return runOneInner(st, plan.worktreePath);
-                    }
-                    const sessionTip = this.deps.worktreeHeadSha
-                        ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
-                        : "";
-                    if (!sessionTip) {
-                        // Without a start point we cannot position a slot, and a slot at the
-                        // wrong base produces a diff against the wrong tree. Degrade to
-                        // serial rather than guess.
-                        this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "session_tip_unavailable" }, sessionId);
-                        return runOneInner(st, plan.worktreePath);
-                    }
-                    let lease;
-                    try {
-                        lease = await pool.acquire(sessionTip);
-                    }
-                    catch (err) {
-                        // Disk, npm, or git trouble creating a slot must cost this sub-task
-                        // its parallelism, not the run.
-                        this.deps.state.audit("loop.parallel_slot_degraded", { sessionId, cycle, seq: st.seq, reason: "acquire_failed", err: String(err) }, sessionId);
-                        this.deps.logger.warn("[loop] could not lease a parallel slot; running this sub-task in the session worktree", { sessionId, seq: st.seq, err: String(err) });
-                        return runOneInner(st, plan.worktreePath);
-                    }
-                    try {
-                        return await runOneInner(st, lease.path);
-                    }
-                    finally {
-                        try {
-                            await this.mergeBackSlot({ sessionId, cycle, st, lease, baseSha: sessionTip, plan, failed });
-                        }
-                        finally {
-                            pool.release(lease);
-                        }
-                    }
-                };
-                // Dispatcher: greedily fill up to `concurrency` in-flight, respecting dependsOn.
-                let idx = 0;
-                while (idx < ordered.length || inFlight.length > 0) {
-                    if (failed.err) {
-                        // beta.123 (sweep): the same class as the retraction above, one level
-                        // up. A sub-task records its failure BEFORE its rescue has run, and
-                        // the rescue awaits git IO. Under b117 parallelism a sibling
-                        // finishing in that window hands control back here, we observe a
-                        // failure that is about to be retracted, and we stop dispatching the
-                        // rest of the cycle. The run then reviews a partial cycle and calls
-                        // it done -- silent under-delivery rather than a visible failure,
-                        // which is the worse shape of the two.
-                        //
-                        // Draining first costs nothing when there is nothing in flight (the
-                        // serial default), and turns the guess into an answer.
-                        if (inFlight.length > 0) {
-                            await Promise.allSettled([...inFlight]);
-                            if (!failed.err)
-                                continue;
-                        }
+                for (const st of ordered) {
+                    // beta.123 (sweep): a sub-task can record a failure that a recovery
+                    // path is about to retract, so the accumulator is read at the top of
+                    // each iteration rather than mid-flight. Serial execution makes this
+                    // unambiguous: whatever `failed.err` holds here is settled, because
+                    // the sub-task that set it has fully returned.
+                    if (failed.err)
+                        break;
+                    if (done.has(st.seq))
+                        continue;
+                    const unmet = (st.dependsOn ?? []).filter((d) => !done.has(d));
+                    if (unmet.length > 0) {
+                        // topoSortSubTasks already ordered these, so an unmet dependency at
+                        // this point is a cycle or a dangling reference the sort could not
+                        // resolve -- a data bug in the plan, not a scheduling state.
+                        failed.err = `subtask ${st.seq} has unresolved dependencies`;
+                        failed.seq = st.seq;
                         break;
                     }
-                    // Fill
-                    while (idx < ordered.length &&
-                        inFlight.length < concurrency &&
-                        (ordered[idx].dependsOn ?? []).every((d) => done.has(d)) &&
-                        // beta.91 (Fix 2): only start a second worker when its file scope is
-                        // known-disjoint from every in-flight worker (shared worktree write
-                        // safety). With concurrency=1 this is always true (inFlight empty).
-                        canDispatchConcurrently(ordered[idx], [...inFlightSubTasks.values()])) {
-                        const st = ordered[idx];
-                        // beta.60: bound the ENTIRE runOne, not just the worker SDK call.
-                        // beta.42 wrapped runWorker in withTimeout, but runOne ALSO awaits
-                        // unbounded git/IO before and after the worker (worktreeHeadSha,
-                        // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
-                        // hang in ANY of those froze the dispatcher at `await
-                        // Promise.race(inFlight)` forever with the sub-task row stuck
-                        // `running`, sdk_session_id=null, cost_usd=0, and NO worker process
-                        // spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent, no
-                        // auto-recovery, because nothing re-called run() to arm the
-                        // stall-watchdog). Bounding runOne converts any such hang into a
-                        // clean SubTaskDeadlineError -> failed.err -> terminal.
-                        const p = withTimeout(runOne(st), this.deps.config.loop.subtask_deadline_seconds, "subtask_deadline_seconds")
-                            .catch((err) => {
-                            if (err instanceof WorkerTimeoutError) {
-                                this.deps.state.audit("loop.subtask_deadline_exceeded", { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds }, sessionId);
-                                this.deps.logger.error("[loop] sub-task exceeded subtask_deadline_seconds (dispatch hang, likely a stalled git/IO await before or after the worker); failing the run", { sessionId, seq: st.seq, seconds: this.deps.config.loop.subtask_deadline_seconds });
-                                // mark the stuck row failed so it doesn't linger as `running`
-                                this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`).run(`sub-task dispatch exceeded ${this.deps.config.loop.subtask_deadline_seconds}s (stalled IO)`, Date.now(), sessionId, cycle, st.seq);
-                                if (!failed.err) {
-                                    failed.err = `subtask_deadline_exceeded (seq ${st.seq})`;
-                                    failed.seq = st.seq;
-                                }
+                    // beta.60: bound the ENTIRE sub-task, not just the worker SDK call.
+                    // beta.42 wrapped runWorker in withTimeout, but a sub-task ALSO awaits
+                    // unbounded git/IO before and after the worker (worktreeHeadSha,
+                    // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
+                    // hang in ANY of those froze the run forever with the sub-task row
+                    // stuck `running`, sdk_session_id=null, cost_usd=0, and NO worker
+                    // process spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent,
+                    // no auto-recovery, because nothing re-called run() to arm the
+                    // stall-watchdog). Bounding it converts any such hang into a clean
+                    // SubTaskDeadlineError -> failed.err -> terminal.
+                    await withTimeout(runOneInner(st, plan.worktreePath), this.deps.config.loop.subtask_deadline_seconds, "subtask_deadline_seconds").catch((err) => {
+                        if (err instanceof WorkerTimeoutError) {
+                            this.deps.state.audit("loop.subtask_deadline_exceeded", { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds }, sessionId);
+                            this.deps.logger.error("[loop] sub-task exceeded subtask_deadline_seconds (dispatch hang, likely a stalled git/IO await before or after the worker); failing the run", { sessionId, seq: st.seq, seconds: this.deps.config.loop.subtask_deadline_seconds });
+                            // mark the stuck row failed so it doesn't linger as `running`
+                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`).run(`sub-task dispatch exceeded ${this.deps.config.loop.subtask_deadline_seconds}s (stalled IO)`, Date.now(), sessionId, cycle, st.seq);
+                            if (!failed.err) {
+                                failed.err = `subtask_deadline_exceeded (seq ${st.seq})`;
+                                failed.seq = st.seq;
                             }
-                            else {
-                                // runOne handles its own errors internally; a throw here is
-                                // unexpected -- surface it rather than silently dropping.
-                                if (!failed.err) {
-                                    failed.err = `subtask_dispatch_error: ${String(err)}`;
-                                    failed.seq = st.seq;
-                                }
+                        }
+                        else {
+                            // runOneInner handles its own errors internally; a throw here is
+                            // unexpected -- surface it rather than silently dropping.
+                            if (!failed.err) {
+                                failed.err = `subtask_dispatch_error: ${String(err)}`;
+                                failed.seq = st.seq;
                             }
-                        })
-                            .finally(() => {
-                            const i = inFlight.indexOf(p);
-                            if (i >= 0)
-                                inFlight.splice(i, 1);
-                            inFlightSubTasks.delete(p);
-                        });
-                        inFlight.push(p);
-                        inFlightSubTasks.set(p, st);
-                        idx++;
-                    }
-                    if (inFlight.length === 0 && idx < ordered.length) {
-                        // Blocked -- dependency not met yet and no in-flight to unblock. Data bug.
-                        failed.err = `subtask ${ordered[idx].seq} has unresolved dependencies`;
-                        failed.seq = ordered[idx].seq;
-                        break;
-                    }
-                    if (inFlight.length > 0) {
-                        await Promise.race(inFlight);
-                    }
-                }
-                await Promise.allSettled(inFlight);
-                // beta.117: slots are per-cycle. A revise cycle re-plans which sub-tasks
-                // run, and a slot still holding the previous cycle's tree would start a
-                // worker from the wrong base. Draining here also means a run that fails
-                // mid-cycle does not leave checkouts behind for the reaper to find.
-                if (pool) {
-                    // beta.118: read the count BEFORE draining. `drain()` clears the slot
-                    // map, so reading after it always audited `slots: 0` -- and this line is
-                    // the only evidence of how much parallelism a run actually bought.
-                    const slots = pool.createdCount;
-                    await pool.drain();
-                    this.deps.state.audit("loop.parallel_pool_drained", { sessionId, cycle, slots }, sessionId);
+                        }
+                    });
                 }
                 if (failed.err) {
                     // beta.55 (B2): a resumable clarification pause takes precedence over a
@@ -3252,11 +3167,45 @@ export class OrchestratorLoop {
                     cycleBaseSha &&
                     this.deps.worktreeHeadSha) {
                     const tipNow = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
-                    if (tipNow && tipNow === cycleBaseSha) {
-                        this.deps.state.audit("loop.cycle_no_change_early_exit", { sessionId, cycle, headSha: tipNow, carriedFindings: lastReview.findings?.length ?? 0 }, sessionId);
-                        this.deps.logger.info("[loop] revise cycle produced no commits; skipping a re-review of an unchanged diff and shipping on the prior verdict (beta.108)", { sessionId, cycle, headSha: tipNow });
-                        terminalDoneReason = "shipped_no_change_cycle";
-                        break;
+                    if (tipNow && tipNow === cycleBaseSha && !cycleResolvedContractWithoutCommit) {
+                        const carriedBlocking = this.countBlockingFindings(lastReview.findings ?? []);
+                        this.deps.state.audit("loop.cycle_no_change_early_exit", {
+                            sessionId,
+                            cycle,
+                            headSha: tipNow,
+                            carriedVerdict: lastReview.verdict,
+                            carriedFindings: lastReview.findings?.length ?? 0,
+                            carriedBlocking,
+                        }, sessionId);
+                        // beta.135: "carry the prior verdict" means obey it, not merely copy
+                        // it into the eventual PR body. beta.108 unconditionally broke to the
+                        // ship path here, even when the carried review was `revise` with
+                        // blocking HIGH/CRITICAL findings. The policy-Drive smoke therefore
+                        // opened a persistence-only PR after the adversary explicitly said
+                        // the entire export workflow and tests were absent.
+                        if (lastReview.verdict === "pass" ||
+                            (lastReview.verdict === "revise" &&
+                                carriedBlocking === 0 &&
+                                this.deps.config.loop.ship_when_no_blocking_findings !== false)) {
+                            this.deps.logger.info("[loop] revise cycle produced no commits; unchanged diff retains a shippable prior verdict", { sessionId, cycle, headSha: tipNow, verdict: lastReview.verdict, carriedBlocking });
+                            terminalDoneReason =
+                                lastReview.verdict === "pass"
+                                    ? "shipped_no_change_after_pass"
+                                    : "shipped_no_change_no_blocking_findings";
+                            break;
+                        }
+                        const reason = lastReview.verdict === "block"
+                            ? "no_change_cycle_carried_adversary_block"
+                            : "no_change_cycle_with_blocking_findings";
+                        this.deps.logger.error("[loop] revise cycle produced no commits while blocking findings remain; refusing to open a misleading PR", {
+                            sessionId,
+                            cycle,
+                            headSha: tipNow,
+                            verdict: lastReview.verdict,
+                            carriedBlocking,
+                        });
+                        this.deps.state.audit("loop.cycle_no_change_blocked", { sessionId, cycle, headSha: tipNow, verdict: lastReview.verdict, carriedBlocking, reason }, sessionId);
+                        return this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
                     }
                 }
                 let report;
@@ -3973,6 +3922,154 @@ export class OrchestratorLoop {
         }
     }
     /**
+     * beta.135: load the exact plan being continued after an operator accepts a
+     * committed sub-task whose verification contract named the wrong path.
+     *
+     * Fail closed. Falling back to a fresh lead call here is the data-loss mode
+     * this helper exists to remove: a replacement plan is free to omit pending
+     * work. Completed rows from the latest cycle seed the scheduler's `done` set,
+     * preserving dependency satisfaction while leaving the full plan intact for
+     * final scope checks and adversarial review.
+     */
+    loadAcceptedContinuation(sessionId) {
+        const row = this.deps.state.db
+            .prepare(`SELECT lead_plan_json FROM sessions WHERE id = ?`)
+            .get(sessionId);
+        if (!row?.lead_plan_json) {
+            throw new Error(`accepted clarification cannot resume: session ${sessionId} has no stored lead plan`);
+        }
+        let plan;
+        try {
+            plan = JSON.parse(row.lead_plan_json);
+        }
+        catch (err) {
+            throw new Error(`accepted clarification cannot resume: stored lead plan is invalid JSON (${String(err)})`);
+        }
+        if (!plan || !Array.isArray(plan.subTasks) || plan.subTasks.length === 0 || !plan.worktreePath) {
+            throw new Error(`accepted clarification cannot resume: stored lead plan is incomplete`);
+        }
+        const completedRows = this.deps.state.db
+            .prepare(`SELECT current.seq
+           FROM sub_tasks current
+          WHERE current.session_id = ?
+            AND current.cycle = (
+              SELECT MAX(latest.cycle)
+                FROM sub_tasks latest
+               WHERE latest.session_id = current.session_id
+                 AND latest.seq = current.seq
+            )
+            AND current.status IN ('completed', 'completed_no_change')`)
+            .all(sessionId);
+        return {
+            plan,
+            completedSeqs: new Set(completedRows.map((r) => r.seq)),
+        };
+    }
+    /**
+     * beta.134 (observe-handoff): keep a completed observe sub-task's report so
+     * the sub-tasks that depend on it can be dispatched holding it.
+     *
+     * Only `observe` sub-tasks: a mutate's final message is a summary of edits
+     * the next worker can read out of the diff, whereas a probe's IS the
+     * deliverable -- it produces no commit, so the report is the entire result of
+     * the turn and dropping it drops the sub-task.
+     *
+     * A later cycle's re-probe overwrites the earlier one (the newer reading of
+     * the repo wins). Truncated on the way in, so nothing downstream has to hold
+     * a runaway report in memory for the rest of the run.
+     */
+    recordObserveReport(sessionId, st, result, into) {
+        if (st.taskMode !== "observe")
+            return;
+        const report = (result.finalMessage ?? "").trim();
+        if (!report)
+            return;
+        into.set(st.seq, {
+            seq: st.seq,
+            title: st.title,
+            report: report.slice(0, OBSERVE_REPORT_MAX_CHARS),
+        });
+        this.deps.state.audit("loop.observe_report_recorded", {
+            sessionId,
+            seq: st.seq,
+            title: st.title,
+            chars: report.length,
+            // Durable handoff. `harness_answer` and process recovery start a new
+            // runInner invocation, so an in-memory map alone loses the probe at
+            // exactly the boundary where later dependants need it.
+            report: report.slice(0, OBSERVE_REPORT_MAX_CHARS),
+        }, sessionId);
+    }
+    /**
+     * beta.135: rebuild the observe handoff map from the durable audit trail.
+     *
+     * New rows use `loop.observe_report_recorded.report` (8k cap). The
+     * `loop.worker_end_turn.finalMessage` fallback keeps reports produced by
+     * beta.134 before this persistence fix resumable too (that older event is
+     * capped at 4k). Latest report per seq wins.
+     */
+    hydrateObserveReports(sessionId, plan) {
+        if (!plan.subTasks.some((st) => st.taskMode === "observe"))
+            return new Map();
+        try {
+            const rows = this.deps.state.db
+                .prepare(`SELECT event, payload
+             FROM audit_log
+            WHERE session_id = ?
+              AND event IN ('loop.observe_report_recorded', 'loop.worker_end_turn')
+            ORDER BY id DESC
+            LIMIT 500`)
+                .all(sessionId);
+            const out = recoverObserveReports(plan.subTasks, rows);
+            if (out.size > 0) {
+                this.deps.state.audit("loop.observe_reports_hydrated", {
+                    sessionId,
+                    fromSeqs: [...out.keys()].sort((a, b) => a - b),
+                    chars: [...out.values()].reduce((n, r) => n + r.report.length, 0),
+                }, sessionId);
+            }
+            return out;
+        }
+        catch (err) {
+            // Best effort: a fresh run has no rows, and a read failure must not block
+            // normal execution. The absence remains visible because no hydrated
+            // breadcrumb is emitted.
+            this.deps.logger.warn("[loop] observe report hydration failed; continuing without prior probe reports", {
+                sessionId,
+                err: String(err),
+            });
+            return new Map();
+        }
+    }
+    /**
+     * beta.134 (observe-handoff): a dispatch-time COPY of the sub-task carrying
+     * the reports of the probes it depends on. Returns `st` unchanged when there
+     * is nothing to hand down, so a plan with no observe step dispatches exactly
+     * as it did before.
+     *
+     * The audit line matters as much as the overlay: "the worker was handed
+     * sub-task 1's findings" and "the worker was told to apply findings it never
+     * received" produced identical trails, which is why the second went unnoticed
+     * through a whole run that reported success and shipped nothing.
+     */
+    withObserveReports(sessionId, st, cycle, recorded) {
+        const reports = selectObserveReports(st, recorded);
+        if (reports.length === 0)
+            return st;
+        this.deps.state.audit("loop.observe_reports_handed_down", {
+            sessionId,
+            cycle,
+            seq: st.seq,
+            fromSeqs: reports.map((r) => r.seq),
+            chars: reports.reduce((n, r) => n + r.report.length, 0),
+            via: st.dependsOn && st.dependsOn.length > 0 ? "dependsOn" : "earlier_observe",
+        }, sessionId);
+        this.deps.interactionLog?.log(sessionId, {
+            event: "observe_reports_handed_down", phase: "worker", seq: st.seq, cycle,
+        });
+        return { ...st, priorObserveReports: reports };
+    }
+    /**
      * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
      * audit breadcrumb. Fires exactly once per observe-mode sub-task terminal
      * success. Payload is intentionally similar to `loop.subtask_verification`
@@ -4071,6 +4168,27 @@ export class OrchestratorLoop {
             catch {
                 // ignore malformed audit rows
             }
+        }
+        const completed = this.deps.state.db
+            .prepare(`SELECT current.seq, current.status, current.summary
+           FROM sub_tasks current
+          WHERE current.session_id = ?
+            AND current.cycle = (
+              SELECT MAX(latest.cycle)
+                FROM sub_tasks latest
+               WHERE latest.session_id = current.session_id
+                 AND latest.seq = current.seq
+            )
+            AND current.status IN ('completed', 'completed_no_change')`)
+            .all(sessionId);
+        for (const task of completed) {
+            if (!bySeq.has(task.seq))
+                continue;
+            bySeq.set(task.seq, {
+                seq: task.seq,
+                ok: true,
+                summary: task.summary || `sub-task ${task.status}`,
+            });
         }
         return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
     }

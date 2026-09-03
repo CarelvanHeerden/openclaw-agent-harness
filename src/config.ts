@@ -12,6 +12,13 @@ export interface HarnessConfig {
   budgets: BudgetsConfig;
   repos: ReposConfig;
   models: ModelsConfig;
+  /**
+   * v2.0.0-beta.1: per-role backend selection. Optional, and absent means
+   * every role runs on claude-code exactly as it did in v1.
+   */
+  backends?: BackendsConfig;
+  /** v2.0.0-beta.1: OpenAI-compatible endpoints for OpenCode roles. */
+  providers?: ProvidersConfig;
   loop: LoopConfig;
   vercel: VercelConfig;
   storage: StorageConfig;
@@ -450,6 +457,73 @@ export interface ModelsAuthConfig {
   api_key_env?: string;
 }
 
+/**
+ * v2.0.0-beta.1: which backend and model each role runs on.
+ *
+ * Absent means every role runs on `claude-code` exactly as it did in v1, which
+ * is the property that makes this block safe to add: an operator who upgrades
+ * and edits nothing sees no change. See `src/adapters/role-config.ts` for the
+ * merge rules and the validation.
+ */
+export interface BackendsConfig {
+  /** Applied to any role that does not override it. */
+  default?: RoleBackendEntry;
+  worker?: RoleBackendEntry;
+  scout?: RoleBackendEntry;
+  lead?: RoleBackendEntry;
+  adversary?: RoleBackendEntry;
+  classifier?: RoleBackendEntry;
+  crystalliser?: RoleBackendEntry;
+  revise_spec?: RoleBackendEntry;
+  worker_context?: RoleBackendEntry;
+}
+
+export interface RoleBackendEntry {
+  /** `claude-code` (default) or `opencode`. */
+  backend?: "claude-code" | "opencode";
+  /** `provider/model` for opencode; a bare model id is also accepted for claude-code. */
+  model?: string;
+  /** OpenCode reasoning effort/variant. Undefined leaves the backend default. */
+  effort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
+  /**
+   * Operator's declaration of how capable this model is: `basic`, `strong` or
+   * `frontier`. The lead, adversary and crystalliser refuse to run below
+   * `strong`, because those are the roles where a weak model returns a
+   * well-formed wrong answer rather than an obvious failure.
+   */
+  tier?: "basic" | "strong" | "frontier";
+}
+
+/**
+ * OpenAI-compatible endpoints made available to OpenCode roles.
+ *
+ * Keys live in the vault and are named here by service, never inlined. They
+ * reach the agent only inside `OPENCODE_CONFIG_CONTENT`.
+ */
+export interface ProvidersConfig {
+  [providerId: string]: {
+    /** The AI-SDK package; only `@ai-sdk/openai-compatible` is supported. */
+    npm?: string;
+    /** Display name, used in audit events and error messages. */
+    name?: string;
+    /** Endpoint base URL. Must end in `/v1`. */
+    base_url?: string;
+    /** Vault service name holding this provider's API key. */
+    api_key_service?: string;
+    /** True for a provider that bills nothing: report tokens, not dollars. */
+    local?: boolean;
+    /**
+     * models.dev provider id to price this provider's models against, when it
+     * differs from the id above (e.g. `anthropic-compat` -> `anthropic`).
+     * Without it the catalogue misses and every turn bills at the
+     * most-expensive-known fail-safe.
+     */
+    pricing_provider?: string;
+    /** Model ids this provider serves, with optional display names. */
+    models?: Record<string, { name?: string }>;
+  };
+}
+
 export interface LoopConfig {
   max_cycles: number;
   /**
@@ -504,8 +578,6 @@ export interface LoopConfig {
    * Default 1800.
    */
   time_extension_default_seconds: number;
-  /** Max sub-tasks a cycle will run concurrently. Default 1 (sequential). */
-  subtask_concurrency: number;
   /**
    * beta.40: stuck-loop reclaim threshold (seconds). The beta.38 re-entrancy
    * guard (`runningSessions`) is module-scoped and survives a plugin
@@ -731,15 +803,6 @@ export interface LoopConfig {
    * depends on. true (default) enables; false restores beta.90 (run-all).
    */
   revise_scoping_enabled?: boolean;
-  /**
-   * beta.91 (Fix 2): allow independent sub-tasks (disjoint file scope, no
-   * dependency) to run concurrently up to subtask_concurrency. The dispatcher
-   * already honours subtask_concurrency + dependsOn; this flag additionally
-   * enforces a file-overlap guard so two workers never write the same file in
-   * the shared worktree. false (default) keeps beta.90 serial behaviour even if
-   * subtask_concurrency > 1; set true AND subtask_concurrency > 1 to parallelise.
-   */
-  parallel_independent_subtasks?: boolean;
   /**
    * beta.92: use the DETERMINISTIC finding->sub-task mapping (revise-mapping.ts)
    * on a revise cycle instead of the deleted LLM revise-spec turn. Maps each
@@ -1480,7 +1543,6 @@ const DEFAULTS: HarnessConfig = {
     time_extension_ask_enabled: true,
     time_extension_wait_seconds: 300,
     time_extension_default_seconds: 1800,
-    subtask_concurrency: 1,
     stuck_loop_seconds: 2700,
     teardown_drain_seconds: 3600,
     stall_watchdog_seconds: 90,
@@ -1501,7 +1563,6 @@ const DEFAULTS: HarnessConfig = {
     skip_observe_reprobe_on_revise: true,
     revise_scoping_enabled: true,
     revise_targeted_planbase_window: true,
-    parallel_independent_subtasks: false,
     deterministic_revise_mapping: true,
     worker_confab_detect: true,
     contract_rederive_enabled: true,
@@ -1592,20 +1653,20 @@ const DEFAULTS: HarnessConfig = {
   safety: {
     worker_permission_mode: "acceptEdits",
     // beta.32: widened so a worker can actually build/test/inspect to
-    // self-verify a change. The old list lacked tsc/make/python/pytest/diff
-    // etc., so a worker that ran a build or test after editing hit a hard
-    // reject. Deliberately EXCLUDES file-mutating shell commands
-    // (cp/mv/ln/tee/mkdir/touch): file writes must go through the SDK
-    // Write/Edit tools, which enforce `path_denylist` (bash args are NOT
-    // path-denylist-checked, so allowing `cp x .env` here would bypass it).
-    // bash_denylist_tokens below remain the hard safety guard.
+    // self-verify a change. v2 OpenCode additionally needs `cd` (it prefixes
+    // every command with `cd $worktree && …`), `mkdir`/`cp`/`mv`/`touch`
+    // (its edit tool cannot create parent directories or rename files).
+    // `ln` and `tee` stay off: a symlink or a redirected write is how you
+    // plant a file the path denylist never sees. `rm`/`chmod` stay on the
+    // token denylist. Bash args of the new mutators ARE path-checked, so
+    // `cp x .env` is still refused when the denylist is loaded.
     bash_whitelist: [
       "git", "pnpm", "npm", "npx", "yarn", "node", "tsc", "tsx", "deno", "bun",
       "python", "python3", "pip", "pip3", "pytest", "go", "cargo", "make", "just",
       "ls", "cat", "grep", "rg", "head", "tail", "wc", "jq", "yq", "sed", "awk",
       "find", "which", "echo", "printf", "test", "true", "false", "pwd",
       "diff", "sort", "uniq", "cut", "tr", "env", "date", "basename", "dirname",
-      "realpath", "xargs", "comm",
+      "realpath", "xargs", "comm", "mkdir", "cd", "cp", "mv", "touch",
     ],
     // beta.57 (P2): shells added as argument-token denies -- the whitelist
     // already excludes them as base commands, but `xargs sh -c`, `find -exec
@@ -1745,6 +1806,35 @@ export function declaresRemovedListenerFlag(input: unknown): boolean {
   return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");
 }
 
+/**
+ * v2.0.0: `loop` keys that parallel sub-task dispatch owned, now removed.
+ *
+ * Kept as data rather than prose because three things must agree on the list:
+ * the parse-time drop below, the startup warning, and the manifest entries
+ * that let such a config through the gateway at all.
+ */
+export const REMOVED_LOOP_KEYS = ["subtask_concurrency", "parallel_independent_subtasks"] as const;
+
+/**
+ * PURE: which removed parallelism keys did this config carry?
+ *
+ * v2.0.0. Read off the RAW input, because `parseHarnessConfig` drops them and
+ * the parsed config can no longer answer -- the same shape as
+ * {@link declaresRemovedListenerFlag}.
+ *
+ * These keys MUST stay declared in `openclaw.plugin.json`. The gateway
+ * validates an operator's config against that manifest with
+ * `additionalProperties: false`, so deleting them there would not "remove a
+ * setting" -- it would reject the operator's ENTIRE plugin config the moment
+ * an existing one still named them, which is the beta.34 and rc.1 outage. They
+ * are accepted, ignored, and warned about instead.
+ */
+export function declaresRemovedParallelKeys(input: unknown): string[] {
+  const loop = (input as { loop?: unknown } | null | undefined)?.loop;
+  if (!loop || typeof loop !== "object") return [];
+  return REMOVED_LOOP_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(loop, k));
+}
+
 export function parseHarnessConfig(input: unknown): HarnessConfig {
   const merged = mergeDeep(DEFAULTS, input);
 
@@ -1752,6 +1842,13 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   // it: the schemas keep the property so such a config still validates, but
   // nothing downstream should be able to read a setting nothing obeys.
   delete (merged.slack as unknown as Record<string, unknown>).listener_enabled;
+
+  // v2.0.0: same treatment for the parallelism keys. Dropping them here is what
+  // stops a stale `subtask_concurrency: 4` from reading as live configuration
+  // in a dump or a log when nothing obeys it any more.
+  for (const k of REMOVED_LOOP_KEYS) {
+    delete (merged.loop as unknown as Record<string, unknown>)[k];
+  }
 
   // Hard validation on safety-critical fields.
   //

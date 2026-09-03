@@ -31,8 +31,8 @@ flowchart TB
       DIS["Dispatcher\nsession row + handoff"]
       CRY["Crystalliser\nhaiku classify + fable-5 refine"]
       LOOP["OrchestratorLoop\nstate machine"]
-      LEAD["Fable-5 lead\nplan validator"]
-      ADV["Fable-5 adversary\ndiff + runtime review"]
+      LEAD["Lead planner\nplan validator"]
+      ADV["Adversary\ndiff + runtime review"]
       BUD["Budget enforcer"]
       PAT["PAT router"]
       GUARD["Bash guard"]
@@ -43,8 +43,8 @@ flowchart TB
   end
 
   subgraph WORKERS["Claude Agent SDK subprocesses"]
-    W1["Sonnet worker #1"]
-    W2["Sonnet worker #N"]
+    W1["Worker #1"]
+    W2["Worker #N"]
   end
 
   subgraph EXT["External"]
@@ -64,7 +64,7 @@ flowchart TB
   DIS --> CRY
   CRY --> LOOP
   LOOP --> LEAD
-  LOOP -->|spawn, serial unless subtask_concurrency over 1| W1 & W2
+  LOOP -->|spawn, one sub-task at a time in topo order| W1 & W2
   W1 & W2 -->|edit + commit, no push| WT
   LOOP --> ADV
   ADV -.reads.-> WT
@@ -99,9 +99,9 @@ sequenceDiagram
   participant Disp as Dispatcher
   participant Cry as Crystalliser
   participant Orch as OrchestratorLoop
-  participant Lead as Fable-5 lead
-  participant Worker as Sonnet worker(s)
-  participant Adv as Fable-5 adversary
+  participant Lead as Lead planner
+  participant Worker as Worker(s)
+  participant Adv as Adversary
   participant Git as Git worktree
   participant GH as GitHub
 
@@ -130,7 +130,7 @@ sequenceDiagram
 
     loop up to max_cycles
       Orch->>Orch: topoSort sub-tasks
-      par bounded concurrency
+      loop each sub-task, one at a time
         Orch->>Worker: run(subTask) [bash-guarded]
         Worker->>Git: edit + commit (no push)
         Worker-->>Orch: WorkerResult (files, cost, sha)
@@ -221,9 +221,9 @@ stateDiagram-v2
 |         +-- Prompt crystalliser  (single pass)              |
 |         +-- Session state store  (SQLite)                   |
 |         +-- Orchestrator                                    |
-|         |     +-- Fable-5 lead                              |
-|         |     +-- Sonnet workers  (spawned as sub-agents)   |
-|         |     +-- Fable-5 adversarial reviewer              |
+|         |     +-- Lead planner                      |
+|         |     +-- Workers (spawned as sub-agents)   |
+|         |     +-- Adversarial reviewer              |
 |         +-- Budget enforcer                                 |
 |         +-- PAT router                                      |
 |         +-- Git / GitHub bridge                             |
@@ -247,13 +247,13 @@ stateDiagram-v2
 
 2. **Crystallisation.** If intent = `dev_task`, one crystalliser call turns the request into a structured brief (repo, acceptance criteria, constraints). Where it needs more, it returns **one** clarifying question for the calling agent to relay — answered with `harness_answer`, not a multi-turn Slack loop. Output: a crystallised prompt stored in the session record.
 
-3. **Plan.** Fable-5 lead reads the crystallised prompt + a repo overview and produces a plan: a DAG of sub-tasks, each with a scope, expected outputs, and a suggested worker model.
+3. **Plan.** The lead reads the crystallised prompt + a repo overview and produces a plan: a DAG of sub-tasks, each with a scope, expected outputs, and a suggested worker model.
 
-4. **Execute.** For each ready sub-task, the lead spawns a Sonnet worker (Claude Agent SDK, own session). Workers get read access to the repo and write access only to their assigned paths (enforced via SDK permission mode + tool whitelist). Workers report structured results back to the lead.
+4. **Execute.** For each ready sub-task, the lead spawns a worker (Claude Agent SDK, own session). Workers get read access to the repo and write access only to their assigned paths (enforced via SDK permission mode + tool whitelist). Workers report structured results back to the lead.
 
 5. **Assemble.** Lead merges worker outputs into a single working diff on a session-scoped git worktree.
 
-6. **Adversarial review.** Fable-5 adversary reads:
+6. **Adversarial review.** The adversary reads:
    - the crystallised prompt (spec)
    - the current diff
    - the wider codebase (read-only)
@@ -315,7 +315,7 @@ stateDiagram-v2
   than a change-data-capture of every UPDATE — the exhaustive trail is the interaction
   log (`harness_logs`).
 
-### 3.5 Fable-5 lead
+### 3.5 Lead planner
 
 - One instance per session.
 - A structured planning call, not an agent with a tool belt: `runLeadPlanner` returns a
@@ -327,20 +327,23 @@ stateDiagram-v2
   files it imagined.
 - Model: `claude-fable-5`.
 
-### 3.6 Sonnet workers
+### 3.6 Workers
 
 - Ephemeral Claude Agent SDK sessions.
 - Sandboxed to specific paths within the session's git worktree.
-- Bash whitelist (`safety.bash_whitelist`): around fifty base commands — the git/package/language toolchain (`git`, `npm`, `pnpm`, `yarn`, `node`, `tsc`, `python`, `pytest`, `go`, `cargo`, `make`) and read-only shell utilities (`ls`, `cat`, `rg`, `jq`, `sed`, `awk`, `find`). Shells themselves are excluded as base commands *and* denied as argument tokens, because `xargs sh -c`, `find -exec bash` and `env sh` otherwise smuggle an unguarded shell through a whitelisted host. `git push` is governed separately by `safety.allow_git_push`, which is `false` by default. See `src/config.ts` for the authoritative list.
+- Bash whitelist (`safety.bash_whitelist`): the git/package/language toolchain (`git`, `npm`, `pnpm`, `yarn`, `node`, `tsc`, `python`, `pytest`, `go`, `cargo`, `make`), inspection utilities (`ls`, `cat`, `rg`, `jq`, `sed`, `awk`, `find`), and the file tools OpenCode actually uses (`cd`, `mkdir`, `cp`, `mv`, `touch`). `ln` and `tee` stay off. Shells themselves are excluded as base commands *and* denied as argument tokens, because `xargs sh -c`, `find -exec bash` and `env sh` otherwise smuggle an unguarded shell through a whitelisted host. `git push` is governed separately by `safety.allow_git_push`, which is `false` by default. See `src/config.ts` for the authoritative list.
 - Path deny-list (`safety.path_denylist`): `.env`, `.env.*`, `.secrets/`, `/etc/`, `/root/`, `~/.ssh/`, `id_rsa`, `id_ed25519`, `harness-vault/`, `vault.key`, `vault.db`. The last three keep a worker out of the harness's own credential vault. The deny-list is enforced on the Read/Write/Edit tools; bash arguments are not path-checked, which is why the whitelist above is narrow and `bash_denylist_tokens` exists as the hard guard.
 - Vault key material never reaches the worker environment at all: `OAH_VAULT_KEY` and `OAH_VAULT_KEY_FILE` are stripped from the subprocess env, and renaming the key variable via `credentials.key_env` moves the strip with it.
 - Model: `claude-sonnet-5`.
-- Workers run **serially by default**: concurrency needs both `loop.subtask_concurrency > 1`
-  and `loop.parallel_independent_subtasks`.
+- Workers run **one at a time**, in topological order, in the session worktree. That
+  checkout is the isolation boundary — one session, one branch — so a worker commits
+  straight onto the session branch. Parallel sub-task dispatch was removed in v2.0.0;
+  `loop.subtask_concurrency` and `loop.parallel_independent_subtasks` are still accepted
+  from an existing config but are ignored.
 - Reports back a structured `WorkerResult` (`filesChanged`, commit SHAs, status, token
   and cost metrics).
 
-### 3.7 Fable-5 adversarial reviewer
+### 3.7 Adversarial reviewer
 
 - Fresh session per cycle, no prior context except:
   - the crystallised prompt,

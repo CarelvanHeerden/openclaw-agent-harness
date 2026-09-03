@@ -68,6 +68,74 @@ export declare function buildBashGuard(cfg: {
     reason?: string;
 }>;
 /**
+ * ACP tool-call shape, reduced to the fields the guard needs. Mirrors the
+ * spec's `ToolCall`/`ToolCallUpdate` as delivered on a `session/request_permission`.
+ * Every field except the kind discriminator is OPTIONAL in the spec, which is
+ * exactly why this guard fails closed.
+ */
+export interface AcpToolCallForGuard {
+    kind?: string | null;
+    rawInput?: unknown;
+    locations?: ReadonlyArray<{
+        path?: string | null;
+    } | null> | null;
+    title?: string | null;
+}
+/**
+ * Pulls the shell command out of an ACP `execute` tool call.
+ *
+ * Measured shapes (see docs/acp-capability-matrix.md):
+ *   OpenCode -> { command, cwd }
+ *   Codex    -> { command, cwd, parsed_cmd, call_id, ... }
+ * Returns null when no command string is present, which the caller MUST treat
+ * as a denial rather than a pass.
+ */
+export declare function acpCommandFromToolCall(call: AcpToolCallForGuard): string | null;
+/**
+ * Collects every filesystem path an ACP tool call would touch.
+ *
+ * Sources, all of which occur in practice:
+ *   - `locations[].path` (protocol-normalised; OpenCode and Codex both populate it)
+ *   - `rawInput.filepath` (OpenCode) / `file_path` (Claude Code SDK) / `path`
+ *   - `rawInput.changes` KEYS (Codex edits carry no path field at all -- the
+ *     affected paths are the keys of the changes object)
+ */
+export declare function acpPathsFromToolCall(call: AcpToolCallForGuard): string[];
+/**
+ * Builds a permission handler for an ACP backend, to be wired to
+ * `session/request_permission`.
+ *
+ * Why this exists as a separate entry point from `buildBashGuard`: that guard
+ * keys on Claude Code's tool NAMES (`Bash`, `Write`, `Read`, ...) and ends in
+ * `return { allow: true }`. Point it at any other backend and every call falls
+ * through to allowed, silently voiding the whitelist and both denylists while
+ * still reading as enabled in config. ACP instead gives us a protocol-normalised
+ * `ToolKind`, which is a sounder thing to key on than a vendor's tool names.
+ *
+ * FAIL-CLOSED, and deliberately so. `kind`, `rawInput` and `locations` are all
+ * optional in the ACP spec, so "we could not determine what this call does" is
+ * a denial, not a pass. The probe showed `rawInput` arriving EMPTY on the
+ * initial `status: "pending"` update and only being filled in at
+ * `status: "in_progress"` -- i.e. once the tool is already running -- so a
+ * guard that shrugged at missing input would be trivially bypassable.
+ *
+ * NOTE: this only protects calls the backend actually asks about. An agent
+ * configured not to request permission never reaches this code at all. See
+ * `docs/acp-capability-matrix.md`; enforcing that config is a separate,
+ * mandatory preflight.
+ */
+export declare function buildAcpGuard(cfg: {
+    bash_whitelist: string[];
+    bash_denylist_tokens: string[];
+    path_denylist: string[];
+    allow_git_push: boolean;
+    allow_network_commands: boolean;
+}): (call: AcpToolCallForGuard) => Promise<{
+    allow: boolean;
+    reason?: string;
+    unenforced?: boolean;
+}>;
+/**
  * beta.57 (P2): shared path-denylist matcher (same semantics as the SDK
  * Read/Write guard in buildBashGuard).
  */

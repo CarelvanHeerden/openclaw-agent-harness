@@ -1,0 +1,118 @@
+{
+  "result": {
+    "agent": "opencode",
+    "workspace": "/var/folders/r9/s_nfnqfs3dx_p8nvrwz8xvfc0000gn/T/acp-probe-F3wufA",
+    "tracePath": "/Users/carelvanheerden/PyCharm/openclaw-acp/probe/runs/opencode-2026-08-03T10-14-00-330Z.jsonl",
+    "launch": "npx -y opencode-ai@latest acp",
+    "initialize": {
+      "protocolVersion": 1,
+      "agentCapabilities": {
+        "loadSession": true,
+        "mcpCapabilities": {
+          "http": true,
+          "sse": true
+        },
+        "promptCapabilities": {
+          "embeddedContext": true,
+          "image": true
+        },
+        "sessionCapabilities": {
+          "close": {},
+          "fork": {},
+          "list": {},
+          "resume": {}
+        }
+      },
+      "authMethods": [
+        {
+          "description": "Run `opencode auth login` in the terminal",
+          "name": "Login with opencode",
+          "id": "opencode-login"
+        }
+      ],
+      "agentInfo": {
+        "name": "OpenCode",
+        "version": "1.18.11"
+      }
+    },
+    "authenticateAttempted": "opencode-login",
+    "authenticated": true,
+    "sessionId": "ses_038e23407ffeoU4j3XKfq8NeBc",
+    "sessionModels": null,
+    "sessionModes": null,
+    "promptResponse": {
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 131,
+        "outputTokens": 3,
+        "totalTokens": 8198,
+        "cachedReadTokens": 8064
+      },
+      "_meta": {}
+    },
+    "exit": null,
+    "stderrTail": "",
+    "notificationCount": 30,
+    "permissionRequests": []
+  },
+  "analysis": {
+    "agent": "opencode",
+    "reachedPrompt": true,
+    "error": null,
+    "stopReason": "end_turn",
+    "protocolVersion": 1,
+    "authMethods": [
+      "opencode-login"
+    ],
+    "agentInfo": {
+      "name": "OpenCode",
+      "version": "1.18.11"
+    },
+    "loadSession": true,
+    "sessionCapabilities": {
+      "close": {},
+      "fork": {},
+      "list": {},
+      "resume": {}
+    },
+    "modelSelection": {
+      "advertised": false,
+      "currentModelId": null,
+      "availableModelIds": []
+    },
+    "usage": {
+      "emitted": true,
+      "count": 1,
+      "hasCost": true,
+      "lastCost": {
+        "amount": 0,
+        "currency": "USD"
+      },
+      "lastUsed": 8195,
+      "lastSize": 200000
+    },
+    "toolCalls": {
+      "total": 8,
+      "kinds": [
+        "execute",
+        "edit"
+      ],
+      "kindPresent": true,
+      "rawInputPresent": true,
+      "execCount": 4,
+      "execWithRawInput": 4,
+      "editCount": 2,
+      "locationsPresent": true
+    },
+    "diffContent": {
+      "present": false,
+      "count": 0
+    },
+    "permission": {
+      "count": 0,
+      "anyWithRawInput": false,
+      "kinds": [],
+      "samples": []
+    }
+  }
+}

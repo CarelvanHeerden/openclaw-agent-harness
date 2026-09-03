@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(resolve(here, "..", "src", "adapters", "claude-sdk.ts"), "utf8");
+const src = readFileSync(resolve(here, "..", "src", "adapters", "claude-code.ts"), "utf8");
 
 // ============================================================
 // 1. permissionMode: "plan" is GONE from the structured extractors
@@ -116,4 +116,35 @@ test("beta.40: short briefs do NOT trigger the retry (rethrow instead)", () => {
     /if\s*\(params\.userText\.length\s*<=\s*CLASSIFY_TRUNCATE_CHARS\)\s*throw err/,
     "a brief already <= the truncation threshold must rethrow, not pointlessly retry",
   );
+});
+
+test("beta135: the retry preview cannot describe itself as missing user input", async (t) => {
+  let runClassifierSdk;
+  try {
+    ({ runClassifierSdk } = await import("../dist/adapters/claude-code.js"));
+  } catch {
+    return t.skip("dist/ not built");
+  }
+  const calls = [];
+  const result = await runClassifierSdk({
+    model: "test",
+    userText: "# Implementation Request\nBuild a feature.\n" + "requirements\n".repeat(100),
+    timeoutSeconds: 1,
+    execute: async (input) => {
+      calls.push(input);
+      if (calls.length === 1) throw new Error("first structured attempt failed");
+      return {
+        parsed: { intent: "dev_task", reason: "visible implementation request" },
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+      };
+    },
+  });
+  assert.equal(result.intent, "dev_task");
+  assert.equal(calls.length, 2);
+  assert.doesNotMatch(calls[1].userMessage, /brief truncated/i);
+  assert.match(calls[1].userMessage, /retained.*complete request/is);
+  assert.match(calls[1].userMessage, /NOT missing user input/);
+  assert.match(calls[1].systemPrompt, /Do NOT choose clarify merely because/i);
 });

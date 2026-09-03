@@ -16,7 +16,7 @@
  * converging review, and the only reason the work survived at all was that git
  * had not yet GC'd the objects out of a cached clone.
  */
-import type { ReviewReport } from "./fable5-adversary.js";
+import type { ReviewReport } from "./adversary.js";
 /**
  * Abort reasons that mean "we ran out of runway", not "this is wrong". These
  * ship what they have.

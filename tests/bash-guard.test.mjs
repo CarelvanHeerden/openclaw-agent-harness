@@ -58,15 +58,49 @@ test("bash-guard: beta.32 widened whitelist allows build/test/inspect commands",
     }
   });
 
-test("bash-guard: beta.32 still rejects file-mutating shell commands (path_denylist bypass guard)",
+test("bash-guard: ln and tee stay off the whitelist",
   { skip: guardCommand === null }, () => {
-    // cp/mv/ln/tee/mkdir/touch are NOT whitelisted — a worker must use the SDK
-    // Write/Edit tools for file writes (those enforce path_denylist; bash args
-    // are not path-checked).
-    for (const cmd of ["cp secret .env", "mv a b", "ln -s x y", "tee /etc/passwd", "mkdir foo", "touch bar"]) {
+    for (const cmd of ["ln -s x y", "tee /etc/passwd"]) {
       const res = guardCommand(cmd);
       assert.equal(res.allowed, false, `expected rejected: "${cmd}" got ${JSON.stringify(res)}`);
     }
+  });
+
+test("bash-guard: OpenCode's daily file tools are allowed",
+  { skip: guardCommand === null }, () => {
+    for (const cmd of [
+      "mkdir -p prisma/migrations/20260828120000_add_policy_drive_export",
+      "cd /tmp/wt && git status",
+      "cd /tmp/wt && npx tsc --noEmit",
+      "cp src/a.ts src/b.ts",
+      "mv src/old.ts src/new.ts",
+      "touch src/index.ts",
+    ]) {
+      const res = guardCommand(cmd);
+      assert.equal(res.allowed, true, `expected allowed: "${cmd}" got ${JSON.stringify(res)}`);
+    }
+  });
+
+test("bash-guard: mkdir/cp/mv/touch/cd still honour path_denylist",
+  { skip: guardCommand === null }, async () => {
+    const { parseHarnessConfig } = await import("../dist/config.js");
+    const safety = parseHarnessConfig({
+      slack: { authorised_users: ["U1"] },
+      repos: { allowed: ["a/*"], default_base_branch: "main" },
+    }).safety;
+    const cfg = {
+      whitelist: safety.bash_whitelist,
+      denylistTokens: safety.bash_denylist_tokens,
+      allowGitPush: safety.allow_git_push,
+      allowNetworkCommands: safety.allow_network_commands,
+      pathDenylist: safety.path_denylist,
+    };
+    const guard = (cmd) => guardCommand(cmd, cfg);
+    for (const cmd of ["cp secret .env", "mv .env stolen", "touch .env", "mkdir .secrets/", "cd ~/.ssh/"]) {
+      assert.equal(guard(cmd).allowed, false, `"${cmd}" must still hit the denylist`);
+    }
+    assert.equal(guard("cp src/a.ts src/b.ts").allowed, true);
+    assert.equal(guard("cd /tmp/wt && git add -A && git status").allowed, true);
   });
 
 /* ------------------------------------------------------------------ *

@@ -18,7 +18,7 @@
  * This module is the translation layer: job log in, `ReviewFinding[]` out,
  * shaped so the existing revise machinery routes them like any other finding.
  */
-import type { ReviewFinding } from "./fable5-adversary.js";
+import type { ReviewFinding } from "./adversary.js";
 
 /** Paths that look like they belong to the repo rather than to a tool. */
 const PATH_RE = /\b((?:src|app|lib|test|tests|packages|apps|prisma|components|pages|server|scripts)\/[\w.@/-]+\.[a-z]{1,4})\b/gi;

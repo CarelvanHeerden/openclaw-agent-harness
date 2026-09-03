@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 let buildSdkEnv;
 try {
-  ({ buildSdkEnv } = await import("../dist/adapters/claude-sdk.js"));
+  ({ buildSdkEnv } = await import("../dist/adapters/claude-code.js"));
 } catch {
   buildSdkEnv = null;
 }

@@ -24,7 +24,7 @@
  * fs.stat instead of git diff, fixing the untracked-file bug from beta.8.
  */
 
-import type { SubTaskVerify } from "./fable5-lead.js";
+import type { SubTaskVerify } from "./lead.js";
 import { anyPathMatches } from "./path-match.js";
 
 export interface VerifyProbeResult {

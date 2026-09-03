@@ -58,7 +58,7 @@ If the container is restarted mid-session:
 4. Resuming uses `sessions.last_worker_sdk_session` (written at every checkpoint)
    to continue the last worker via the SDK's `resume()`.
 5. If no per-worker session exists (interrupted during planning), the harness
-   resumes from the crystallised prompt with the Fable-5 lead replay path.
+   resumes from the crystallised prompt with the lead replay path.
 
 ## Cost forensics
 

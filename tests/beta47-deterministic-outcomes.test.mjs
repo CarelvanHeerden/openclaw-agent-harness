@@ -24,7 +24,7 @@ const read = (p) => readFileSync(join(root, p), "utf8");
 // ----------------------------------------------------------------------------
 // P1: lead-prompt determinism rules (source assertions on the system prompt).
 // ----------------------------------------------------------------------------
-const sdkSrc = read("src/adapters/claude-sdk.ts");
+const sdkSrc = read("src/adapters/claude-code.ts");
 
 test("beta47 P1: lead prompt forbids unchecked escape hatches on mutations", () => {
   assert.match(sdkSrc, /DETERMINISTIC OUTCOMES/);
@@ -96,7 +96,7 @@ test("beta47 P2: source guards audit against a post-close write", () => {
 // ----------------------------------------------------------------------------
 let worker;
 try {
-  worker = await import("../dist/orchestrator/sonnet-worker.js");
+  worker = await import("../dist/orchestrator/worker.js");
 } catch {
   worker = null;
 }

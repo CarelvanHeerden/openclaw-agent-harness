@@ -22,7 +22,7 @@
  * just edited is yours to deal with either way.
  */
 
-import type { ReviewFinding } from "./fable5-adversary.js";
+import type { ReviewFinding } from "./adversary.js";
 import { pathMatches } from "./path-match.js";
 
 export interface TscError {

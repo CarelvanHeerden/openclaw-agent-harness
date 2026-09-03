@@ -12,7 +12,7 @@
 //     back to buildReviseDispatchHint (never worse than beta.66).
 //
 // HARD BOUNDARY: workerContext flows lead -> dev worker only; the adversary
-// stays cold + independent (asserted here against fable5-adversary.ts).
+// stays cold + independent (asserted here against adversary.ts).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -26,7 +26,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 let hasSubstantiveWorkerContext, subTasksMissingWorkerContext, LeadPlanValidationError, runLeadPlanner;
 try {
   ({ hasSubstantiveWorkerContext, subTasksMissingWorkerContext, LeadPlanValidationError, runLeadPlanner } =
-    await import("../dist/orchestrator/fable5-lead.js"));
+    await import("../dist/orchestrator/lead.js"));
 } catch {
   hasSubstantiveWorkerContext = null;
 }
@@ -196,9 +196,14 @@ test("beta.99: bounded workerContext top-up satisfies the gate with no whole-pla
     config: { ...BASE_CFG, loop: { enforce_worker_context: true } },
     logger: { info() {}, warn() {} },
     callLeadModel: async (_b, _r, correctiveNote) => { calls.push({ correctiveNote }); return JSON.parse(JSON.stringify(badPlan)); },
+    // v2.0.0-beta.1: the top-up now reports its own spend alongside the
+    // contexts, so the lead can bill it. Shape changed; behaviour did not.
     callWorkerContextModel: async (_b, _plan, missingSeqs) => {
       topUpCalls.push(missingSeqs);
-      return missingSeqs.map((seq) => ({ seq, workerContext: { rationale: "why", changeSpec: REF_CHANGESPEC } }));
+      return {
+        contexts: missingSeqs.map((seq) => ({ seq, workerContext: { rationale: "why", changeSpec: REF_CHANGESPEC } })),
+        costUsd: 0.01,
+      };
     },
     allocateWorktree: async () => "/tmp/wt",
     estimateCost: () => 0,
@@ -248,7 +253,7 @@ test("beta.92 SUPERSEDES P0b: loop no longer runs the timed LLM revise-spec turn
   assert.match(src, /buildScopedReviseHint/);
 });
 test("P0b: revise-spec SDK adapter reads findings + refreshes workerContext", () => {
-  const src = S("src/adapters/claude-sdk.ts");
+  const src = S("src/adapters/claude-code.ts");
   assert.match(src, /export async function runLeadReviseSpecSdk/);
   assert.match(src, /REVISION SPEC turn/);
   assert.match(src, /workerContext/);
@@ -265,8 +270,8 @@ test("P0a: index callLeadModel genuinely re-invokes the SDK with the corrective 
   assert.match(src, /correctiveNote,/);
 });
 test("BOUNDARY: the adversary NEVER references workerContext (stays cold)", () => {
-  const src = S("src/orchestrator/fable5-adversary.ts");
-  assert.equal(/workerContext/.test(src), false, "fable5-adversary.ts must not reference workerContext");
+  const src = S("src/orchestrator/adversary.ts");
+  assert.equal(/workerContext/.test(src), false, "adversary.ts must not reference workerContext");
 });
 test("config + manifest declare both beta.67 P0d keys", () => {
   const cfg = S("src/config.ts");

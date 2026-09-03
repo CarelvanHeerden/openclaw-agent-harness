@@ -42,6 +42,14 @@ test("beta50: exact match", () => {
   assert.equal(pathMatchRule("./src/a/b.ts", "src/a/b.ts"), "exact"); // ./ normalised
 });
 
+test("beta136: a trailing recursive glob matches generated files beneath its directory", () => {
+  const migration = "prisma/migrations/20260902120000_policy_drive_export_persistence/migration.sql";
+  assert.equal(pathMatchRule(migration, "prisma/migrations/**"), "directory-glob");
+  assert.equal(pathMatches(migration, "prisma/migrations/**"), true);
+  assert.equal(pathMatches("prisma/schema.prisma", "prisma/migrations/**"), false);
+  assert.equal(pathMatches("prisma/migrations.ts", "prisma/migrations/**"), false);
+});
+
 // ---------------------------------------------------------------------------
 // route groups (Next.js) in various positions.
 // ---------------------------------------------------------------------------

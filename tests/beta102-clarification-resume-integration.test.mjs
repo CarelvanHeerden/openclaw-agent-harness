@@ -366,45 +366,58 @@ test("beta102: no rescue ref is needed on a correct resume", async () => {
 
 // --- 4. the backstop: if the branch DOES lose work, nothing ships ------------
 
-test("beta102: when a resume orphans commits anyway, the guard fails the run and blocks the PR", async () => {
-  // Defence in depth. Fix 1 prevents the known cause; this proves that if some
-  // other path ever loses commits, the run stops instead of reviewing and
-  // shipping a diff missing the work -- which is precisely what b100 did.
+test("beta135: accepting a contract mismatch cannot enter the destructive re-allocation path", async () => {
+  // `breakResume` sabotages the old re-plan allocator. An accept continuation
+  // no longer allocates at all, so the sabotage must be unreachable.
   const s = await runScenario({ breakResume: true });
   await s.answer("Accept the placement and proceed.");
 
   const unreachable = s.state.audits.filter((a) => a.event === "loop.ledger_commits_unreachable");
-  assert.equal(unreachable.length, 1, "the guard must fire when the ledger cannot be reached from HEAD");
-  assert.equal(unreachable[0].payload.unreachable.length, 2, "both orphaned commits named");
-
-  const row = s.state.db.prepare(`SELECT status, final_pr_url FROM sessions WHERE id='S1'`).get();
-  assert.equal(row.status, "failed", "must fail rather than ship an incomplete branch");
-  assert.ok(!row.final_pr_url, "no PR may be opened");
-
-  // And the b101 net kept the work recoverable rather than destroying it.
+  assert.equal(unreachable.length, 0, "no allocation means no commits can be orphaned");
+  assert.ok(
+    s.state.audits.some((a) => a.event === "loop.plan_resumed_after_contract_accept"),
+    "the stored-plan continuation must be visible",
+  );
   const rescue = git(["for-each-ref", "--format=%(refname)", "refs/harness-rescue/"], s.w.bare).split("\n").filter(Boolean);
-  assert.equal(rescue.length, 1, "the orphaned tip was parked");
-  assert.equal(git(["rev-parse", rescue[0]], s.w.bare), s.preCommits[1]);
+  assert.equal(rescue.length, 0, "nothing moved, so no rescue ref is needed");
+  assert.equal(git(["rev-parse", "refs/heads/harness/feat-x"], s.w.bare), s.preCommits[1]);
 });
 
-// --- 5. the ledger must survive a re-plan clobbering sub_tasks rows ----------
+// --- 5. an accept continuation must not clobber sub_tasks rows ---------------
 
-test("beta102: a clarification re-plan CLOBBERS a sub_tasks row's commit_sha", async () => {
-  // Documents the defect that motivated the audit-log union. sub_tasks ids are
-  // `<session>-c<cycle>-s<seq>` written with INSERT OR REPLACE, and the resume
-  // re-plans from cycle 1 -- so the new plan's seq 1 overwrites the original.
+test("beta135: accepted clarification preserves a sub_tasks row's commit_sha", async () => {
   const s = await runScenario();
-  const before = s.state.db.prepare(`SELECT commit_sha FROM sub_tasks WHERE id='S1-c1-s1'`).get();
+  const before = s.state.db.prepare(`SELECT commit_sha, description FROM sub_tasks WHERE id='S1-c1-s1'`).get();
   assert.ok(before.commit_sha, "seq 1 recorded its commit before the pause");
 
   await s.answer("Accept the placement and proceed.");
 
   const after = s.state.db.prepare(`SELECT commit_sha, description FROM sub_tasks WHERE id='S1-c1-s1'`).get();
-  assert.equal(after.description, "audit", "the row now belongs to the RE-PLAN's sub-task");
-  assert.ok(!after.commit_sha, "and the original commit_sha is gone -- sub_tasks alone is not a reliable ledger");
+  assert.equal(after.description, before.description, "the row still belongs to the original plan");
+  assert.equal(after.commit_sha, before.commit_sha, "the accepted commit remains in the primary ledger");
 });
 
-test("beta102: the append-only audit log still holds every commit after the re-plan", async () => {
+test("beta137: accepted contract paths replace stale paths in the stored plan", async () => {
+  const s = await runScenario();
+  await s.answer("Accept the placement and proceed.");
+
+  const row = s.state.db.prepare(`SELECT lead_plan_json FROM sessions WHERE id='S1'`).get();
+  const plan = JSON.parse(row.lead_plan_json);
+  const task = plan.subTasks.find((candidate) => candidate.seq === 2);
+  assert.ok(task.filesLikelyTouched.includes(REAL), "accepted real path becomes declared scope");
+  assert.equal(task.filesLikelyTouched.includes(FICTIONAL), false, "disproven scope path is removed");
+  assert.equal(
+    task.verify.some((probe) => probe.path === FICTIONAL),
+    false,
+    "the stale contract cannot fail again on a later review cycle",
+  );
+  assert.ok(
+    s.state.audits.some((a) => a.event === "tool.answer_contract_paths_persisted"),
+    "the durable correction is auditable",
+  );
+});
+
+test("beta102: the append-only audit log still holds every commit after continuation", async () => {
   const s = await runScenario();
   await s.answer("Accept the placement and proceed.");
   const shas = s.state.audits

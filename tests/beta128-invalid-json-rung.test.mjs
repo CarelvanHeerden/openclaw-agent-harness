@@ -26,7 +26,7 @@ import assert from "node:assert/strict";
 
 let runLeadSdk, __setSdkForTests, describeJsonSyntaxFault;
 try {
-  ({ runLeadSdk, __setSdkForTests, describeJsonSyntaxFault } = await import("../dist/adapters/claude-sdk.js"));
+  ({ runLeadSdk, __setSdkForTests, describeJsonSyntaxFault } = await import("../dist/adapters/claude-code.js"));
 } catch {
   runLeadSdk = null;
 }

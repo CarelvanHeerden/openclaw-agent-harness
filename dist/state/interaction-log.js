@@ -78,6 +78,12 @@ export function redactValue(value, key) {
 const SECRET_KEYS = new Set([
     "token", "secret", "password", "pat", "apikey", "credential", "credentials",
     "privatekey", "accesstoken", "authorization", "auth",
+    // v2.0.0: the OpenCode configuration is injected into the ACP child as a
+    // whole JSON document in one environment variable, and that document holds
+    // the provider API keys. Nothing else here would catch it: the key is named
+    // for what it CONTAINS rather than what it is, none of the shape patterns
+    // match a JSON blob, and the value is far too big to eyeball in a log.
+    "opencodeconfigcontent",
 ]);
 const isSecretKey = (key) => SECRET_KEYS.has(key.toLowerCase().replace(/[_-]/g, ""));
 /**

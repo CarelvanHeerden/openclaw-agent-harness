@@ -77,8 +77,8 @@ test("beta48 P5: a disallowed base command is still rejected", { skip: !guard },
 // ----------------------------------------------------------------------------
 // C1: worker final message capture + loop.worker_end_turn breadcrumb (source).
 // ----------------------------------------------------------------------------
-const sdkSrc = read("src/adapters/claude-sdk.ts");
-const workerSrc = read("src/orchestrator/sonnet-worker.ts");
+const sdkSrc = read("src/adapters/claude-code.ts");
+const workerSrc = read("src/orchestrator/worker.ts");
 const loopSrc = read("src/orchestrator/loop.ts");
 
 test("beta48 C1: SDK adapter captures the worker's final assistant message", () => {
@@ -120,7 +120,7 @@ test("beta48 C2: refusal detection requires zero side-effects + non-empty messag
 // ----------------------------------------------------------------------------
 // C3: adversary conditional-finding discipline (source).
 // ----------------------------------------------------------------------------
-const advSrc = read("src/orchestrator/fable5-adversary.ts");
+const advSrc = read("src/orchestrator/adversary.ts");
 
 test("beta48 C3: adversary prompt forbids unresolved-conditional findings", () => {
   assert.match(advSrc, /Finding discipline/);

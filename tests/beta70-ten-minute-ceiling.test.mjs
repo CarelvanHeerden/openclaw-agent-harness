@@ -24,7 +24,7 @@ try { classify = await import("../dist/orchestrator/finding-classify.js"); } cat
 let conventions = null;
 try { conventions = await import("../dist/orchestrator/repo-conventions.js"); } catch { /* build first */ }
 let adversary = null;
-try { adversary = await import("../dist/orchestrator/fable5-adversary.js"); } catch { /* build first */ }
+try { adversary = await import("../dist/orchestrator/adversary.js"); } catch { /* build first */ }
 
 const F = (over = {}) => ({
   dimension: over.dimension ?? "quality",
@@ -201,7 +201,7 @@ test("beta70 F4: a PERSISTED OOM after retry is a blocking (oom:true) failure", 
 // Source-assertion wiring (the pieces that live in loop.ts / prompts)
 // ---------------------------------------------------------------------------
 test("beta70 F1: worker prompt forbids repo-wide generators/typecheck in-turn", () => {
-  const w = S("src/orchestrator/sonnet-worker.ts");
+  const w = S("src/orchestrator/worker.ts");
   assert.match(w, /DO NOT run repo-wide generators/);
   assert.match(w, /npm run okf/);
   assert.match(w, /convention-check phase/);
@@ -225,7 +225,7 @@ test("beta70 F2: loop convention-fold only force-revises on a BLOCKING finding",
 });
 
 test("beta70 F3: runAdversary wires the format-error retry", () => {
-  const a = S("src/orchestrator/fable5-adversary.ts");
+  const a = S("src/orchestrator/adversary.ts");
   assert.match(a, /isAdversaryFormatError/);
   assert.match(a, /ADVERSARY_FORMAT_RETRY_NUDGE/);
   assert.match(a, /retrying once with a format nudge/);

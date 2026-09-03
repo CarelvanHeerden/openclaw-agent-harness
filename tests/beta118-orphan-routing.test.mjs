@@ -166,23 +166,13 @@ test("beta118: no adjacency at all is still a plain miss, not a shallow refusal"
 });
 
 test("beta118: the adversary must quote the triggering path for a registry finding", { skip }, () => {
-  const src = readFileSync(join(root, "src/orchestrator/fable5-adversary.ts"), "utf8");
+  const src = readFileSync(join(root, "src/orchestrator/adversary.ts"), "utf8");
   assert.match(src, /REGISTRY findings/, "the contract is stated");
   assert.match(src, /MUST quote the EXACT repo-relative path of the diff file that TRIGGERED/);
   assert.match(src, /`detail` is NEVER empty for a `medium`\+ finding/, "the empty detail that started this");
 });
 
-test("beta118: the drained-slot count is read BEFORE the pool is cleared", { skip }, () => {
-  // `drain()` empties the slot map, so reading `createdCount` after it always
-  // audited 0 -- and that line is the only record of how much parallelism a run
-  // actually bought. b117 created two slots and reported none.
-  const js = readFileSync(join(root, "dist/orchestrator/loop.js"), "utf8");
-  const i = js.indexOf("parallel_pool_drained");
-  assert.ok(i > 0, "the audit still exists");
-  const window = js.slice(Math.max(0, i - 400), i);
-  const readAt = window.lastIndexOf("createdCount");
-  const drainAt = window.lastIndexOf("drain()");
-  assert.ok(readAt > 0, "the count is captured near the audit");
-  assert.ok(readAt < drainAt, "captured before drain(), not after");
-  assert.ok(!/slots:\s*\w+\.createdCount/.test(js), "and not re-read inline at audit time");
-});
+// The b118 fix for `parallel_pool_drained` (reading `createdCount` before
+// `drain()` cleared it) went out with the pool itself in v2.0.0. There is no
+// slot count left to audit, so the test that policed the read order is gone
+// too; v2-strip-parallel.test.mjs asserts the audit no longer exists at all.

@@ -973,7 +973,7 @@ export function registerHarnessTools(api, runtime) {
                 }
                 else {
                     try {
-                        const { runClassifierSdk } = await import("../adapters/claude-sdk.js");
+                        const { runClassifierSdk } = await import("../adapters/claude-code.js");
                         await runClassifierSdk({
                             model: liveConfig().models.classifier,
                             userText: "ping",
@@ -1228,7 +1228,7 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
             const row = liveDb()
-                .prepare(`SELECT status, crystallised_prompt, clarification_question, clarification_seq, clarification_subtask,
+                .prepare(`SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_subtask,
                     clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd
                FROM sessions WHERE id = ?`)
                 .get(sessionId);
@@ -1406,7 +1406,8 @@ export function registerHarnessTools(api, runtime) {
             // stripped the requirement from the brief so the re-plan built no
             // migration at all. `accept` records that the work is already done
             // WITHOUT removing it from what the adversary reviews against.
-            if (/^accept\b/i.test(trimmed) || /^keep(-|\s)?commit\b/i.test(trimmed)) {
+            const acceptsCommittedWork = /^accept\b/i.test(trimmed) || /^keep(-|\s)?commit\b/i.test(trimmed);
+            if (acceptsCommittedWork) {
                 let paused = {};
                 try {
                     if (row.clarification_subtask)
@@ -1414,10 +1415,55 @@ export function registerHarnessTools(api, runtime) {
                 }
                 catch { /* ignore */ }
                 const what = ((paused.title ?? "") || (paused.intent ?? "")).trim();
+                const expectedPaths = new Set((paused.expectedPaths ?? []).filter((p) => typeof p === "string" && !!p.trim()));
+                const actualPaths = (paused.actualPaths ?? []).filter((p) => typeof p === "string" && !!p.trim());
+                // Persist what "the contract path was wrong" means. Without this,
+                // the stored plan is resumed unchanged and the same stale path
+                // reappears on every revise cycle, forcing the operator to accept the
+                // identical mismatch repeatedly. Accepted actual paths become the
+                // task's declared scope; only the disproven path checks are removed.
+                if (row.lead_plan_json && (expectedPaths.size > 0 || actualPaths.length > 0)) {
+                    try {
+                        const storedPlan = JSON.parse(row.lead_plan_json);
+                        const task = storedPlan.subTasks?.find((candidate) => candidate.seq === seq);
+                        if (task) {
+                            task.filesLikelyTouched = [
+                                ...(task.filesLikelyTouched ?? []).filter((p) => !expectedPaths.has(p)),
+                                ...actualPaths,
+                            ].filter((p, i, all) => all.indexOf(p) === i);
+                            task.verify = (task.verify ?? []).filter((probe) => !probe.path || !expectedPaths.has(probe.path));
+                            liveDb()
+                                .prepare(`UPDATE sessions SET lead_plan_json = ?, updated_at = ? WHERE id = ?`)
+                                .run(JSON.stringify(storedPlan), Date.now(), sessionId);
+                            liveState().audit("tool.answer_contract_paths_persisted", { sessionId, seq, removed: [...expectedPaths], added: actualPaths }, sessionId);
+                        }
+                    }
+                    catch (err) {
+                        return {
+                            content: [{ type: "text", text: `Could not persist the accepted contract correction: ${String(err)}` }],
+                            details: { ok: false, planUpdateFailed: true, sessionId },
+                        };
+                    }
+                }
                 brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
                 brief.acceptanceCriteria.push(what
                     ? `ALREADY DONE (operator-confirmed): "${what.slice(0, 300)}" was completed and COMMITTED on this branch; the plan's contract path for it was wrong, not the work. Do not redo it and do not plan it again. It remains in scope for review -- the change must still be present and correct in the final diff.`
                     : `ALREADY DONE (operator-confirmed): the previously-blocked sub-task ${seq} was completed and committed on this branch. Do not redo it; it remains in scope for review.`);
+                // beta.135: accepting a correct commit settles THIS contract
+                // disagreement; it is not a request for the lead to replace the
+                // feature plan. Mark the paused ledger row complete and tell runInner
+                // to load the existing plan, where the remaining sub-tasks are still
+                // present. The old full re-plan reduced the policy-Drive smoke's
+                // five-step plan to one observe step and silently dropped the actual
+                // export implementation.
+                liveDb().prepare(`UPDATE sub_tasks
+                SET status = 'completed',
+                    summary = ?,
+                    completed_at = COALESCE(completed_at, ?),
+                    updated_at = ?
+              WHERE session_id = ? AND seq = ?
+                AND cycle = (SELECT MAX(cycle) FROM sub_tasks WHERE session_id = ? AND seq = ?)`).run(`operator accepted committed work; the plan contract path was wrong${what ? ` (${what.slice(0, 200)})` : ""}`, Date.now(), Date.now(), sessionId, seq, sessionId, seq);
+                brief.resumeExistingPlan = true;
                 liveState().audit("tool.answer_contract_accepted", { sessionId, seq, what: what.slice(0, 120) }, sessionId);
             }
             else if (/^skip\b/i.test(trimmed)) {

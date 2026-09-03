@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 
 import { computeReviseScope } from "../dist/orchestrator/revise-scope.js";
 import { declaredCovers, firstTokenWindowForAttempt } from "../dist/orchestrator/loop.js";
-import { resolveScoutRepo } from "../dist/orchestrator/fable5-lead.js";
+import { resolveScoutRepo } from "../dist/orchestrator/lead.js";
 import { parseHarnessConfig } from "../dist/config.js";
 
 // parseHarnessConfig rejects a config with no authorised users and no repos.

@@ -1,5 +1,623 @@
 # Changelog
 
+## 2.0.0-rc.1
+
+First v2 release candidate. OpenCode is a first-class backend across agentic
+and structured roles, with verified ACP model and reasoning-effort selection,
+provider-aware pricing, credential-vault integration, and focused worker tool
+policy.
+
+Live smoke testing also hardened observe-report handoff, zero-change retries,
+contract-path correction and recursive-glob matching, accepted continuation,
+same-cycle review resumption, implementation-plan validation, and evidence
+reconciliation across chunked adversary reviews.
+
+## 2.0.0-beta.1
+
+### OpenCode's daily file tools are on the bash whitelist
+
+OpenCode prefixes every command with `cd $worktree && …`, and it cannot create
+directories or rename files through the ACP edit tool. After `mkdir` landed,
+the StitchGuard run immediately stalled on `cd … && npx tsc` and
+`cd … && git add`. The whitelist now includes `cd`, `cp`, `mv` and `touch`.
+`ln` and `tee` stay off; `rm` and `chmod` stay on the token denylist.
+
+Arguments of the new mutators are checked against `path_denylist`, so
+`cp secret .env` is still refused. That check is the same speed bump as `cat`:
+globs, case and interpreters still go around it. Accepted because the intended
+install is Docker.
+
+### `mkdir` is on the bash whitelist
+
+The StitchGuard OpenCode run could read files after the pathless-read relaxation,
+then stalled because `mkdir -p prisma/migrations/...` is not a whitelist entry.
+OpenCode's edit tool cannot create parent directories, so a Prisma migration (or
+any new path) cannot land without it. `cp`/`mv`/`ln`/`tee`/`touch` stay off the
+list: those still bypass `path_denylist` if allowed as bash. `mkdir` does too —
+bash arguments are still not path-checked — and that is accepted here because
+the intended install is Docker.
+
+### Smoke fixes: four things that were wrong while the run was green
+
+The first real session with `worker` on OpenCode shipped a PR in three minutes
+for $0.58, and the parts the milestone was built to prove all held — the live
+probe honoured a real denial against the real binary, the guard denied an
+`edit`, nothing was orphaned, the worktree was released. Everything below was
+wrong anyway, which is the only argument a smoke run ever needs to make: none of
+it was reachable from a test written out of the same understanding as the code.
+
+**OpenCode issue #5674 is verified, and it passes.** Custom provider `options`
+survive to the endpoint on 1.18.23: a listener on `127.0.0.1` received our
+`baseURL`, our `apiKey` and our model id, with `ANTHROPIC_API_KEY` unset so a
+fallback would have failed rather than billed. Local models are no longer
+blocked on it. The result and its method are recorded in `docs/V2_SMOKE.md`,
+which also now carries a second finding from the same experiment: an endpoint
+that answers but cannot be parsed draws **3503 requests in three and a half
+minutes** with no ceiling and no visible backoff.
+
+**The sub-task ledger recorded the configured model, not the one that ran.**
+`sub_tasks.worker_model` was written from `config.models.worker` unconditionally,
+so a turn served by OpenCode was filed under the Claude Code model name — and it
+had been ignoring beta.91's per-sub-task `modelOverride` for just as long. The
+A/B matrix in `docs/V2_SMOKE.md` decides whether a cheaper worker is worth
+adopting by reading that exact column, so this was not a mislabelled row: it
+attributed one backend's spend to the other and flattered whichever one was not
+running. The loop now takes a `describeWorkerModel` seam, and an OpenCode row
+reads `opencode:<provider>/<model>` while a `claude-code` row stays bare.
+
+**The ACP adapter logged a usage source it had not returned.** The value was
+computed twice, and the logged copy ignored `sawTokenSplit`. A real OpenCode turn
+against a custom provider reports tokens but no cost, so it was priced correctly
+off the catalogue at $0.17 while announcing `unavailable`. Nobody was misled
+about money; they were misled about whether money was being measured, which is
+what sent the smoke run hunting a costing bug that did not exist. One variable
+now, with a test on the log line and not only on the return.
+
+**`vault.mjs` created a vault before it understood the command.** `--help` is a
+positional as far as `parseArgs` is concerned, so it sailed past the `if (!cmd)`
+guard and reached `CredentialVault.open`, which generates a key file when it
+finds none — a typo left a fresh vault in the default directory and then errored.
+Commands are validated before anything is opened. The CLI also gained `--config`,
+and `runtimeVaultDir` now accepts a bare harness config as well as the gateway's
+nested `openclaw.json`, because a config handed straight to the plugin resolved
+the *default* directory and so presented as an empty vault rather than the wrong
+one — the rc.2 failure, wearing a different hat.
+
+**A provider key stored the documented way was invisible to the router.**
+`vault.mjs set` defaults to type `token`; the router looked up only `api_key`.
+The resulting message, `provider dropped: no credential in the vault`, actively
+argues the operator never stored it. The router reads both.
+
+### The OpenCode worker could not read a file
+
+Found by the second smoke, on a real brief against a real repository, and it is
+the reason that run produced nothing. The first smoke did not catch it because
+the task was to *create* a `LICENSE` file, and creating a file requires no read.
+
+Measured on `opencode-ai@1.18.23`, a read permission request arrives as
+`{"kind":"read","title":"read","locations":[],"rawInput":{}}` — no path in any
+field. The guard's fail-closed rule refused it, correctly by its own terms, and
+refusing every read does not contain a worker: it produces one that cannot read
+a file, therefore cannot change one, and reports this by announcing its intent
+and stopping. Three turns, `denied: 2` each, nothing committed, and the harness
+correctly caught the confabulated success and paused with the worktree
+preserved. What it could not do was say *why*.
+
+So two changes, and the second is the one that matters.
+
+**Denials are now evidence.** A refused call records the command or path, not
+just the kind, warns when it happens, and is written to the audit log as
+`loop.worker_tool_denied`. Previously the count went to a log line and the
+detail to a truncated excerpt that reached no durable store, so a worker that
+did nothing because the guard stopped it was indistinguishable, afterwards, from
+a worker that chose to do nothing.
+
+**Reads are allowed when the agent names no path, and this is disclosed rather
+than enforced.** The relaxation is deliberately narrow: it applies only to
+`kind: "read"` and only when no path is present, so `edit`, `delete`, `move` and
+`search` still fail closed and nothing that writes is affected. When a path *is*
+supplied the denylist enforces exactly as before, so Codex stays fully guarded
+and a future OpenCode that starts supplying one is guarded automatically. The
+first unchecked read in a turn warns, and the per-turn total is carried as
+`unguardedReads`.
+
+The consequence is stated plainly in `SECURITY.md`: **`path_denylist` does not
+apply to reads on the OpenCode backend.** The vault is unaffected — it lives
+outside the worktree and its key is stripped from the child — but any secret
+committed to a repository should be treated as readable by an OpenCode worker
+operating on it. The production install is Docker, which bounds the blast radius
+to the container rather than the host; that is why the relaxation is accepted
+rather than leaving the backend unusable. This is the first place the ACP path
+is measurably weaker than the SDK path rather than merely no stronger, and it
+narrows to nothing under the same exit criteria as the containment disclosure
+above.
+
+### Review fixes: the permission config guarded less than it claimed
+
+An external review of [#179](https://github.com/CarelvanHeerden/openclaw-agent-harness/pull/179)
+found the injected `permission` block naming twelve tools and missing
+`websearch`, a network egress channel. Checking that against the pinned
+OpenCode source turned up something worse than an incomplete list.
+
+**Permission keys are not tool ids.** The original list conflated them, and
+three of its twelve entries did nothing at all: `patch` is spelled
+`apply_patch`, `list` is a dead key retained in the published schema, and
+`todoread` does not exist anywhere in 1.18.23. The schema at
+`opencode.ai/config.json` sets `additionalProperties`, so it validates all
+three happily. `write` is real but inert as a permission key — writes ask under
+`edit`.
+
+**The wildcard was never the safety net this file claimed it was.** OpenCode
+deep-merges `permission` per key and evaluates rules **last-match-wins by
+insertion order**; `"*"` has no special standing. Merging preserves the
+target's key order, so a repository shipping `{"*": "allow", "websearch":
+"allow"}` defeats an injected `{"*": "ask"}` outright — our wildcard overwrites
+theirs at position 0, their `websearch: allow` still sorts after it, and the
+model gets unguarded egress. Naming a key overwrites it in place and closes it.
+
+So: `OPENCODE_PERMISSION_KEYS` (19 verified keys) and `OPENCODE_TOOL_IDS` (16)
+are now separate lists, because `permission` and `tools` are keyed differently
+and feeding one list to both was the original error. Tests assert the **exact**
+sets — the old assertion was `length >= 10`, which a list full of nonexistent
+keys satisfies just as well as a correct one.
+
+The residual hole is documented rather than papered over: the wildcard cannot
+protect a key we have not named, so a permission added by a future OpenCode and
+allowed by a hostile repository still wins. That is version-coupled by
+construction and is part of why `SECURITY.md` marks non-Anthropic workers
+trusted-repo-only.
+
+**A transient probe failure wedged the backend until a restart.** The lazy
+startup probe was cached with `probe ??= doTheThing()`, and a promise memo
+caches the *settled* value — a rejection included. `preflight()` sets its own
+flag only on success and would happily retry, but nothing ever asked it to,
+because every later session awaited the same dead promise. One container
+hiccup, spawn timeout or momentarily-unavailable binary, and every OpenCode
+role stayed down until someone restarted the gateway. Failing closed was right;
+failing closed with no route back was not. `adapters/shared/once.ts` now
+memoises success only, shares an in-flight attempt between concurrent callers,
+and re-runs after a failure.
+
+Also fixed from the same review:
+
+- **A request issued after the ACP connection closed hung forever.** `write()`
+  is a no-op once closed and the `exit` handler drains pending calls exactly
+  once, so anything sent afterwards never settled. Reachable via resume: a
+  child dying during `session/load` has its rejection swallowed by the
+  "agent does not support resume" catch, and the following `session/new` went
+  out on a dead connection. The turn then hung until the sub-task deadline and
+  blamed a timeout.
+- **The live probe asked the model whether it had complied.** It matched
+  `/created|written|wrote/` against the final message, so an agent that wrote
+  through an unguarded path without narrating it passed — the more dangerous of
+  the two bypasses. It now checks the filesystem for the marker.
+- **The worker's ACP turn passes `secretToken`**, as the scout already did.
+  Without it `scrub()` was a no-op for worker logs, which are the ones carrying
+  command lines.
+
+### Backends are wired into dispatch, so configuration now does something
+
+The nine milestones above built a complete OpenCode backend that the running
+plugin never touched. `acp.ts`, `role-config.ts`, `opencode-config.ts` and
+`model-catalogue.ts` were green, fully tested, and referenced from nothing on
+the dispatch path. A `backends` block passed manifest validation and was then
+ignored — the worst of the three available behaviours, because the operator has
+evidence they configured something and no evidence it did nothing.
+
+`adapters/backend-router.ts` closes that. All eight roles route through it:
+
+- The six tool-less roles (`classifier`, `crystalliser`, `lead`, `adversary`,
+  `revise_spec`, `worker_context`) swap only their **execution step**, via a
+  new injectable `StructuredExecutor`. The prompts do not move. Each of those
+  system prompts carries a great deal of accumulated behaviour, and a
+  backend-shaped twin of each would be two texts kept identical by discipline
+  that diverge on the first fix applied to either.
+- The two agentic roles (`worker`, `scout`) switch entry point to
+  `runWorkerAcp`, and are handed an **ACP-shaped guard** built by
+  `buildAcpGuard`. Not the SDK's `canUseTool`, which keys on Claude Code tool
+  names and would fall through to *allow* on every ACP call.
+
+Three refusals, all of which previously would have been silent:
+
+- **A rejected configuration is not a missing one.** Both used to leave the
+  router undefined, which would send a role the operator explicitly moved back
+  to Claude Code without saying so. Every affected role now throws.
+- **The live capability probe gates the first turn**, not the config. A backend
+  that has stopped routing tool calls through `session/request_permission`
+  reads as perfectly healthy from its own configuration file. Failing the probe
+  refuses to start rather than running the worker with the guard never
+  consulted.
+- **`tokens-only` usage is priced, not zeroed.** A provider reporting tokens
+  without a cost still bills; only a provider the operator declared `local`
+  bills nothing. This is the cost-leak class M8 removed from the SDK paths, and
+  it would have walked straight back in on the ACP one. `unavailable` stays
+  `undefined`: a hole in the ledger must not read as a free turn.
+
+Pricing refresh is now on the wire too — cache-then-refresh against the state
+DB, once, off the hot path, and never fatal.
+
+An install with no `backends` block gets no router, no probe and no network
+call. The v1 path is byte-for-byte unchanged.
+
+### Parallel sub-task dispatch removed
+
+Parallelism shipped disabled for its entire life, behind two keys that had to be
+set together. beta.117 finally made it *safe* — a pooled worktree per concurrent
+worker, its own ephemeral branch, a mutex-serialised merge-back so two workers
+could not take the git index at once — and then measured what it bought:
+**41m38s at concurrency 2, against beta.116's 41m00s on the same brief.**
+
+It cost an `npm ci` per slot per cycle, a merge-back that could conflict and
+strand a sub-task's commits, and a class of interleaving that every recovery
+path in the loop had to keep reasoning about. beta.123 is the clearest example:
+a rescue retracting a failure had to be keyed to the sub-task that recorded it,
+because a blanket clear could erase a *different* sub-task's genuine failure and
+turn a hard stop into a silent partial delivery.
+
+So the mechanism is gone rather than switched off. The session worktree is the
+isolation boundary — one session, one checkout, one branch — and sub-tasks run
+one at a time in topological order, committing straight onto the session branch.
+There is nothing to merge back.
+
+Deleted: `parallel-safety.ts`, `worktree-pool.ts`, `merge-back.ts`, the pooled
+slot lifecycle in the git adapter, and the greedy dispatcher (now a `for...of`
+over the topo-sorted sub-tasks).
+
+Unchanged, because none of it is sub-task dispatch: session worktree allocation
+and its orphan-reaper protection, the per-session re-entrancy guard, the
+`subtask_deadline_seconds` bound on the whole sub-task, the worker idle-abort
+race, and the SQLite busy timeout.
+
+**Config migration — accepted, ignored, warned.** `loop.subtask_concurrency` and
+`loop.parallel_independent_subtasks` are dropped at parse time, so nothing can
+read a setting nothing obeys, and the harness warns once at startup naming the
+keys it ignored. They stay *declared* in `openclaw.plugin.json` deliberately:
+the gateway validates an operator's config against that manifest with
+`additionalProperties: false`, so deleting them there would not remove a setting
+— it would reject the operator's entire plugin config at boot and take the
+plugin offline, which is the beta.34 and rc.1 outage shape. Nobody's harness
+goes down over a knob that no longer does anything.
+
+### Role modules renamed off their model brands
+
+`sonnet-worker.ts` → `worker.ts`, `fable5-lead.ts` → `lead.ts`,
+`fable5-adversary.ts` → `adversary.ts`, with the docs and mermaid diagrams
+swept to match. v2 lets any model fill any role, so a filename asserting which
+model runs it is about to become false — `worker.ts` running Kimi K3 should not
+read as a bug.
+
+No behaviour change. Model IDs in config values are untouched, and so are the
+prompt strings: the lead planner's instruction still says a sub-task should be
+one a Sonnet worker can finish in a turn, because that sentence is calibrating
+sub-task size against a known capability level, and rewording it would change
+what the planner produces. M4 and M7 replace it with a declared capability
+floor rather than a brand name.
+
+Also removed 24 stale `dist/` artifacts for the renamed and deleted modules
+(`tsc` does not clean, and `dist/` is committed), plus four for
+`adapters/github-pr`, dead since beta.32.
+
+### The Claude adapter split, so a second backend can exist
+
+`claude-sdk.ts` was 2,481 lines holding two unrelated things: the Claude Agent
+SDK integration, and a pile of code that lived there only because that is where
+it was first needed. It is now `claude-code.ts` plus `adapters/shared/`:
+
+- `shared/json.ts` — extract → validate → repair → retry, and the error that
+  ladder throws.
+- `shared/pricing.ts` — the price table and the projection arithmetic.
+- `shared/diff.ts` — chunking a diff on `diff --git` boundaries.
+- `shared/stream.ts` — the "has this stream gone quiet" tick.
+- `shared/env.ts` — the environment deny-list.
+
+Behaviour is unchanged; the code moved verbatim.
+
+**The gate:** exactly one file in `src/` may import
+`@anthropic-ai/claude-agent-sdk`, enforced by a test. It checks *imports*, not
+mentions — `config.ts` documents the `models.anthropic` block and names the SDK
+in prose, correctly, and rewording a true comment to satisfy a grep would make
+the gate weaker rather than stronger.
+
+**Why the env filter is the load-bearing part.** A second copy of shared code
+drifts, and the drift that matters here is not cosmetic. `shared/env.ts` is the
+only thing keeping `OAH_VAULT_KEY` and the GitHub PAT out of an agent
+subprocess, and the ACP branch already spawns OpenCode with the full
+`process.env` — precisely because it grew its own spawn path rather than reusing
+this one. One filter, used by both backends, means a new backend inherits the
+protection instead of having to remember it. `extra` is applied *after* the
+filter, so passing a secret to a child is explicit and greppable at the call
+site; nothing is ever allow-listed by pattern.
+
+### The backend contract: declared capabilities, and one structured-output ladder
+
+`adapters/backend.ts` states what the harness asks of a model backend: eight
+roles in two shapes (two agentic — worker and scout; six structured), the
+capabilities a backend declares, and the floor each role requires. A mismatch is
+refused with a sentence naming both sides.
+
+The floor that matters is `toolPermissionCallback`. A backend that cannot gate
+tool calls cannot run a worker, because bash-guard, the path deny-list and the
+no-push rule are all enforced through that callback — without it they are three
+functions nobody calls. That gap is silent: a backend that never asks for
+permission looks exactly like one whose every request was approved. M6 verifies
+it with a live probe rather than trusting the declaration.
+
+Capability tiers (`frontier` / `strong` / `basic`) are an operator assertion,
+not a measurement. `lead`, `adversary` and `crystalliser` require at least
+`strong`, because those three fail *quietly*: a weak worker produces code that
+does not compile, but a weak adversary returns `{"verdict":"pass"}`, which is
+well-formed, cheap, and indistinguishable from a careful review. The other five
+roles accept `basic`.
+
+This also retires the last brand name in a prompt. The lead's "ATOMIC sub-tasks
+a Sonnet worker can complete in one turn" was calibrating decomposition against
+a capability level, so it now derives from the worker's declared tier — a
+`basic` worker is told to cut finer, a `frontier` one may span related files.
+
+**One ladder, and where it fails.** `shared/structured.ts` holds extract →
+validate → repair → retry, ordered by cost: extraction and repair are free, a
+retry is a whole model call. A truncated reply is repaired before it is
+re-asked, because re-asking a model that hit its output ceiling reproduces the
+truncation — that was b98, three identical failures and twelve minutes for no
+plan. A retry is told what went wrong, and told *differently* for a truncation
+(be more concise) than for prose drift (restate the contract).
+
+The adversary previously had no ladder at all while the lead had an elaborate
+one, which was never a decision — just where the bugs were found. It is the
+wrong way round: a lost plan costs a retry, a lost review costs a review.
+
+Exhaustion **throws**, and there is no route from it to `pass` for any role
+under any configuration. A `pass`-shaped default would have to travel through
+the caller as data, and every caller would have to remember to check it — which
+is exactly how a failed review becomes an approval.
+
+### The ACP backend, hardened
+
+The ACP adapter, the ACP-shaped bash guard, the capability matrix and the
+captured probe sessions come across from `harness/acp-worker`. Four things had
+to change first, and each is now a test and a mutation.
+
+**P0 — the child inherited everything.** The adapter spawned the agent with
+`{ ...process.env }`, handing OpenCode the vault key, the GitHub PAT and the
+Slack tokens. The SDK path has filtered its child since beta.57 and withheld the
+vault key specifically since beta.110, but that filter lived *inside* the SDK
+adapter, so a second spawn path did not inherit it. It now goes through
+`shared/env.ts`, which is what M3 moved it there for. `OPENCODE_CONFIG_CONTENT`
+is also added to interaction-log redaction: it carries the provider API keys as
+one JSON document, no shape pattern matches a JSON blob, and the key is named
+for what it contains rather than what it is.
+
+**Reaping the process group.** `child.kill()` reached the wrapper only.
+`opencode` spawns its own children, so a timeout left the real worker running —
+holding the worktree, talking to the model, spending. The child is now a group
+leader and the reap signals the whole group.
+
+**The token split was there all along.** The matrix recorded "ACP carries no
+input/output split" and the adapter reported zeros. That was concluded from the
+`usage_update` notification, which genuinely carries only context occupancy and
+cost. The split is on the `session/prompt` **result**, and it is sitting in the
+captured probe sessions:
+`{"inputTokens":10,"outputTokens":132,"totalTokens":2137,"cachedWriteTokens":1995}`.
+`usageSource` gains a third state, `tokens-only`, for local providers that
+report tokens but have no invoice — distinguishable from an agent that reported
+nothing, which must never read as zero spend.
+
+**The six tool-less roles.** The branch implemented the worker and nothing else.
+`runStructuredAcp` runs the structured shape over ACP, climbing the same M4
+ladder as the SDK path, with each rung a fresh session. Tools are refused twice:
+M6 configures the backend to have none, and a deny-all guard catches anything
+that arrives anyway — because `preflightAcpBackend`'s entire premise is that a
+backend silently ignoring its own permission config is a thing that happens.
+
+### Configuring OpenCode to ask, and proving that it does
+
+The M2 capability probe measured OpenCode on default configuration running four
+shell commands and two file edits while issuing **zero** permission requests.
+Nothing errored. The harness guard was simply never called, so `bash_whitelist`
+and `path_denylist` were inert while still reading as enabled in
+`openclaw.json`.
+
+`adapters/opencode-config.ts` generates the configuration, with `"*": "ask"`
+plus every known tool named explicitly — the wildcard covers a tool added by a
+version we have not seen, and the explicit entries remove the question of
+whether a tool's own permissive default beats `"*"` on precedence. It travels as
+`OPENCODE_CONFIG_CONTENT` rather than a file in the worktree, because a file
+there would put the control inside the thing the worker can edit.
+
+**The probe is separate from the configuration, and that is the point.**
+`probeAcpPermissionEnforcement` drives a real turn, asks for a real file write,
+and requires the `session/request_permission` round-trip to happen. It *denies*
+the call, because a probe that approves is half a test — an agent that asks and
+then proceeds anyway offers no containment, and the denial path is the one the
+containment story rests on.
+
+It fails closed on every axis: no permission request, a timeout, a spawn
+failure, an agent that proceeds after refusal. There is no path where "we could
+not tell" produces a pass, because that is exactly what the broken case looks
+like from outside. A clean static config check does **not** skip it.
+
+Writing the "cannot be launched" case found a real bug: a spawn failure arrives
+as an asynchronous `error` event, not a throw from `spawn()`. Unhandled, it was
+an uncaught exception that took the whole harness process down rather than
+failing one turn — which in production is a mistyped `worker_backend`.
+
+### Per-role backends, custom providers, and a documentation check with teeth
+
+Two new optional config blocks. `backends` sets a `backend`, `model` and `tier`
+per role, with a `default` block for the rest; `providers` declares
+OpenAI-compatible endpoints whose **keys live in the vault and are named by
+service, never inlined**. Both are optional and absent means every role runs on
+`claude-code` exactly as in v1 — an operator who upgrades and edits nothing sees
+no change.
+
+Merging is per-field, not per-block, so a role that sets only `tier` keeps the
+default's backend and model. The alternative silently resets them, which is the
+kind of config behaviour that gets discovered in production.
+
+`tier` is the operator's **declaration** of what a model can do, and the lead,
+adversary and crystalliser refuse to run below `strong`. Those three are the
+roles where a weak model does not fail visibly: it returns
+`{"verdict":"pass","findings":[]}`, which is well-formed, cheap, and
+indistinguishable from a careful review that found nothing. A weak *worker*, by
+contrast, fails into a red build.
+
+Provider keys reach the agent only inside `OPENCODE_CONFIG_CONTENT` — the one
+variable allow-listed past the env deny-list, and redacted from the interaction
+log. They are written literally rather than as `{env:...}` references, because
+the env form would require the secret in the child's environment, which is the
+thing the deny-list exists to prevent. A provider whose key is missing from the
+vault is **dropped** rather than emitted with an empty `apiKey`: an absent
+provider fails as "unknown provider", where an empty key fails as a 401 that
+reads like the key is wrong rather than missing, and sends the operator off to
+rotate a credential that was never there.
+
+Validation reports every problem in one pass instead of dying on the first,
+because the surface is eight roles times two backends and the operator is
+editing JSON by hand. A `base_url` not ending in `/v1` is rejected up front: the
+OpenAI-compatible shim appends the request path, so otherwise it is a 404 on the
+first call and silence before it.
+
+**The documentation check.** `openclaw.plugin.json` is what the gateway
+enforces; `config.schema.json` is what the docs are generated from. The existing
+lockstep test guards schema-subset-of-manifest, because only that direction
+rejects an operator's whole config — the beta.34 and rc.1 outage. The reverse
+direction is a documentation gap, and this release closes it with a separate
+assertion carrying its own message, so the two failures stay distinguishable.
+
+It found 46 keys the gateway accepts that no generated documentation mentioned,
+not just the `worker_mechanical` this check was written to catch, plus 24 that
+were present but undescribed. Both are now synced from the manifest, and
+`docs/CONFIGURATION.md` covers 196 keys.
+
+47 keys remain undescribed in *either* file. They are frozen in a baseline that
+may shrink but never grow, rather than papered over: every one is a
+long-standing key whose meaning is not in doubt, and inventing prose for
+forty-seven of them in a refactor commit would produce confident-sounding
+descriptions written by someone reading the same key name the reader already
+has. A wrong description is worse than an honest gap, because it is believed.
+New keys arrive described or they do not arrive.
+
+### Live pricing from models.dev, and the zeroes that meant "nobody looked"
+
+`PRICES` was a hand-maintained table, and beta.61 is the record of what happens
+when it falls behind: a worker swapped sonnet→opus was priced at sonnet rates
+because the table had no opus key, the projection ran ~5x light, and the >20%
+drift warning that should have caught it never fired *because* the model was
+unknown. v2 makes that worse by design — the point is to run models nobody here
+has priced, on endpoints nobody here operates.
+
+So pricing now comes from models.dev, cached in the state DB and keyed
+`provider/model`. The resolution ladder is: `price_overrides`, then the live
+catalogue, then `PRICES`, then the beta.61 fail-safe of the most expensive known
+tier — an unknown model **over**-reserves, because under-reserving lets a run
+overshoot and that failure is only visible on the invoice.
+
+It is treated as untrusted input, because it is: a 4.3MB third-party response
+feeding every budget decision downstream, which if malformed would not fail
+loudly but quietly change what the harness believes a run costs. The document's
+**shape** is validated all-or-nothing — a malformed provider rejects the whole
+response, because a half-applied catalogue is the one failure with no legible
+symptom, since the prices that survived look exactly like the prices that were
+checked. A response declaring fewer than 20 providers is refused outright: that
+is not a smaller catalogue, it is a different document. Per-model gaps are a
+different matter and are skipped, since models.dev legitimately lists models
+with no published price and rejecting over one would mean never having a
+catalogue at all.
+
+The fetch is bounded and never on the hot path. Cache answers immediately,
+refresh happens behind it, and a refresh that fails or is rejected leaves the
+last good cache untouched and writes an audit event — a refresh that has been
+failing for a month should be discoverable without reading source.
+
+**A local provider reports tokens and no dollars.** Not `costUsd: 0`, which is
+indistinguishable from a cost nobody measured. Since OpenCode returns a real
+token split, that is a genuine measurement.
+
+**The cost leaks.** That distinction is why the following were worth fixing:
+
+- Crystallise reported `costUsd: 0` on **every** pass. Both `runClassifierSdk`
+  and `runCrystalliserSdk` have always returned real figures; the wiring typed
+  the callables as returning the bare result and dropped them. The reject and
+  clarify paths are the sharp end — they still pay for a classifier call, so a
+  channel rejecting a hundred prompts a day cost real money and showed nothing.
+- The scout's cost was dropped when its report came back empty — which is
+  exactly where a **timeout** lands, since `scoutRepo` returns `timedOut: true`
+  with an empty report rather than throwing. The most expensive scout outcome, a
+  full 420-second burn, was the one leaving no trace.
+- The bounded `workerContext` top-up was billed and reported nothing. It fires
+  on runs that are already going badly, so its cost landed on the sessions least
+  able to explain where the money went.
+- The revise-spec turn had its cost handed to the wiring and discarded one line
+  later.
+
+Where cost is genuinely unknown — a call that threw rather than returned — it is
+left **absent** rather than zeroed, and a total containing tokens-without-price
+is flagged as a floor rather than a total.
+
+Noted while here: `runLeadReviseSpec` is declared on the loop's deps and wired
+in `index.ts`, but nothing calls it — beta.120's deterministic revise mapping
+took over the job. Left in place (removing a dep breaks direct constructors) but
+flagged in a comment as dead weight and a removal candidate.
+
+### Replaying real OpenCode traffic, and what it found
+
+Every ACP test until now drove `tests/fixtures/fake-acp-agent.mjs` — a fixture
+written from the same understanding as the adapter, so the two agree by
+construction and a shared misreading of the protocol survives all of them.
+
+`tests/v2-acp-replay.test.mjs` drives `probe/runs/*.jsonl` instead: real wire
+transcripts captured from OpenCode 1.18.11 by `probe/acp-probe.mjs`, before the
+adapter existed. It cannot flatter the adapter, and the first thing it found was
+a bug the fixture could never have shown.
+
+**OpenCode sends `fs/write_text_file` despite our declining the capability.**
+`initialize` advertises `fs: {readTextFile: false, writeTextFile: false}`. The
+captures show OpenCode asking permission for an edit — correctly, through
+`session/request_permission` — and then asking *the client* to perform the
+write. The adapter answered `{}`, which is a **success** for a write that never
+happened. A worker delegating its edits would lose every one of them and then
+report the sub-task complete, with a green verify against a diff that was never
+written.
+
+It now refuses with JSON-RPC `-32601 method not found`, which is both honest and
+useful: the agent falls back to its own file tooling, which routes through
+`bash`/`edit` and therefore back through the permission round-trip and the
+guard. The refusal is safe *because* the captures show the permission request
+arrives first — a test asserts that ordering, since if the write had arrived
+without one, refusing would be the only thing standing between the agent and an
+unguarded edit.
+
+The same fix required a second one a layer down: the connection's request
+dispatcher caught every handler error and replied `result: {}`, so a refusal
+would have been swallowed back into the same lie. Handler failures now produce
+real JSON-RPC errors.
+
+Both are pinned by mutation, and by a test that observes the answer **from the
+agent's side** — the only place the difference between a refusal and a false
+success is visible at all.
+
+### The OpenCode version pin
+
+`opencode-ai@1.18.23`, baked into the `Dockerfile` rather than fetched with
+`npx -y opencode-ai@latest` at run time. `@latest` means the agent the container
+runs is chosen by whoever published most recently, so an image that passed its
+smoke test on Monday can be running different code on Tuesday — and the thing
+changing silently would be the process every worker tool call flows through.
+
+A mismatch **warns and runs** rather than refusing. OpenCode ships often, a hard
+pin would break a working install on a patch release nobody asked for, and the
+failure a strict pin guards against is not the one that hurts. The one that
+hurts is a build that quietly stops routing tool calls through
+`session/request_permission`, and M6's live probe catches that at startup by
+observation — which is stronger than any version string. The probe is the gate;
+this is the diagnostic that makes an incident answerable without a reproduction.
+
+`docs/V2_SMOKE.md` records what CI proves, and the three things it cannot:
+OpenCode issue #5674 (custom provider `options` reportedly dropped — **still
+unverified**, and local models should not be promised until it passes), the
+two-axis A/B matrix with its stopping rule fixed in advance, and one full
+session against a real repository.
+
 ## 1.0.0-rc.6
 
 **`harness_revise` can now be told what to do, not only what to ignore.**
