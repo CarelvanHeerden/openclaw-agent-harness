@@ -863,8 +863,8 @@ test("the CI section reports what CI concluded, not what the first poll could no
 test("the header finds a PR that was opened mid-run", () => {
   const src = S("scripts/smoke-report.mjs");
   assert.match(src, /loop\.pr_opened/, "since b127 the PR exists long before final_pr_url is written");
-  const loop = S("src/orchestrator/loop.ts");
-  assert.match(loop, /this\.deps\.state\.audit\("loop\.pr_opened"/);
+  const loop = S("dist/orchestrator/loop.js");
+  assert.match(loop, /^\s*this\.deps\.state\.audit\("loop\.pr_opened"/m);
   assert.match(
     loop,
     /UPDATE sessions SET final_pr_url = \?, pr_number = \?, updated_at = \? WHERE id = \?/,
