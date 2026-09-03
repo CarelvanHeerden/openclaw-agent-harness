@@ -244,6 +244,19 @@ test("beta135: accepted continuation skips completed tasks without calling the l
   assert.ok(s.sawEvent("loop.observe_reports_hydrated"));
 });
 
+test("beta137: accepted continuation remembers each sub-task's latest completion", () => {
+  const loop = S("src/orchestrator/loop.ts");
+  const start = loop.indexOf("private loadAcceptedContinuation");
+  const body = loop.slice(start, start + 2500);
+  assert.match(body, /latest\.seq = current\.seq/);
+  assert.match(body, /MAX\(latest\.cycle\)/);
+  assert.doesNotMatch(
+    body,
+    /MAX\(cycle\) FROM sub_tasks WHERE session_id = \?\)/,
+    "a partial newer cycle must not hide completions from an earlier cycle",
+  );
+});
+
 test("beta135: observe reports are durable across the accepted continuation", () => {
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /report: report\.slice\(0, OBSERVE_REPORT_MAX_CHARS\)/);

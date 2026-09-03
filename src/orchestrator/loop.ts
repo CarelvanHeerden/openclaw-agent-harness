@@ -4893,13 +4893,18 @@ export class OrchestratorLoop {
     }
     const completedRows = this.deps.state.db
       .prepare(
-        `SELECT seq
-           FROM sub_tasks
-          WHERE session_id = ?
-            AND cycle = (SELECT MAX(cycle) FROM sub_tasks WHERE session_id = ?)
-            AND status IN ('completed', 'completed_no_change')`,
+        `SELECT current.seq
+           FROM sub_tasks current
+          WHERE current.session_id = ?
+            AND current.cycle = (
+              SELECT MAX(latest.cycle)
+                FROM sub_tasks latest
+               WHERE latest.session_id = current.session_id
+                 AND latest.seq = current.seq
+            )
+            AND current.status IN ('completed', 'completed_no_change')`,
       )
-      .all(sessionId, sessionId) as Array<{ seq: number }>;
+      .all(sessionId) as Array<{ seq: number }>;
     return {
       plan,
       completedSeqs: new Set(completedRows.map((r) => r.seq)),
