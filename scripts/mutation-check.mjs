@@ -398,7 +398,7 @@ const MUTATIONS = [
   {
     name: "no-change early exit (b108): re-reviewing an unchanged diff is pure cost",
     file: "dist/orchestrator/loop.js",
-    find: "if (tipNow && tipNow === cycleBaseSha) {",
+    find: "if (tipNow && tipNow === cycleBaseSha && !cycleResolvedContractWithoutCommit) {",
     replace: "if (false) {",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
