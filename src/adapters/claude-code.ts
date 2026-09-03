@@ -1941,6 +1941,10 @@ export async function runAdversarySdk(params: {
 
   // Slow path: chunked.
   const chunks = splitDiffOnFileBoundaries(params.diffText);
+  const changedFiles = [...params.diffText.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)]
+    .map((match) => match[2])
+    .filter((file, index, all) => all.indexOf(file) === index);
+  const changedFileManifest = changedFiles.slice(0, 500).join("\n");
   let verdict: "pass" | "revise" | "block" = "pass";
   const findings: unknown[] = [];
   const summaries: string[] = [];
@@ -1951,10 +1955,13 @@ export async function runAdversarySdk(params: {
 
   for (let i = 0; i < chunks.length; i++) {
     const chunkPrompt = params.systemPrompt +
-      `\n\nNOTE: this diff was too large to review in one pass. This is CHUNK ${i + 1} OF ${chunks.length} (${diffBytes} bytes total). Findings from prior chunks are attached below; include chunk-level context in your response. Verdict is aggregated across all chunks.`;
+      `\n\nNOTE: this diff was too large to review in one pass. This is CHUNK ${i + 1} OF ${chunks.length} (${diffBytes} bytes total). ` +
+      "The changed-file manifest and summaries/findings from prior chunks are attached below. Verdict is aggregated across all chunks. " +
+      "A related implementation or test may be in another chunk. Never report that required code or tests are absent merely because they are not visible in THIS chunk. " +
+      "Only file an absence finding when the global changed-file manifest and prior summaries support it; otherwise report concrete defects in the code shown.";
     const chunkUserMsg = i === 0
-      ? `Here is CHUNK ${i + 1}/${chunks.length} of the diff:\n\n${chunks[i]}`
-      : `Prior chunks produced these findings so far:\n\n${JSON.stringify(findings, null, 2).slice(0, 8000)}\n\nHere is CHUNK ${i + 1}/${chunks.length}:\n\n${chunks[i]}`;
+      ? `Global changed-file manifest:\n${changedFileManifest}\n\nHere is CHUNK ${i + 1}/${chunks.length} of the diff:\n\n${chunks[i]}`
+      : `Global changed-file manifest:\n${changedFileManifest}\n\nPrior chunk summaries:\n${summaries.join("\n\n").slice(0, 8000)}\n\nPrior chunks produced these findings so far:\n\n${JSON.stringify(findings, null, 2).slice(0, 8000)}\n\nHere is CHUNK ${i + 1}/${chunks.length}:\n\n${chunks[i]}`;
     const r = await reviewOnce(params, chunkPrompt, chunkUserMsg, `adversary-chunk-${i + 1}/${chunks.length}`);
     verdict = mergeVerdict(verdict, r.parsed.verdict);
     findings.push(...(Array.isArray(r.parsed.findings) ? r.parsed.findings : []));

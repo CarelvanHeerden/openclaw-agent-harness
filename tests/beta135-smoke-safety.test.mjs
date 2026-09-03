@@ -275,6 +275,15 @@ test("beta137: resolved contracts are reported to the adversary as passing", () 
   assert.match(body, /MAX\(latest\.cycle\)/);
 });
 
+test("beta137: chunked reviews cannot infer missing tests from one chunk", () => {
+  const adapter = S("src/adapters/claude-code.ts");
+  const start = adapter.indexOf("const changedFiles =");
+  const body = adapter.slice(start, start + 2500);
+  assert.match(body, /Global changed-file manifest/);
+  assert.match(body, /Prior chunk summaries/);
+  assert.match(body, /Never report that required code or tests are absent merely because/);
+});
+
 test("beta135: observe reports are durable across the accepted continuation", () => {
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /report: report\.slice\(0, OBSERVE_REPORT_MAX_CHARS\)/);
