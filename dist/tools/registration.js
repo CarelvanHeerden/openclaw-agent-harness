@@ -1228,7 +1228,7 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
             }
             const row = liveDb()
-                .prepare(`SELECT status, crystallised_prompt, clarification_question, clarification_seq, clarification_subtask,
+                .prepare(`SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_subtask,
                     clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd
                FROM sessions WHERE id = ?`)
                 .get(sessionId);
@@ -1415,6 +1415,36 @@ export function registerHarnessTools(api, runtime) {
                 }
                 catch { /* ignore */ }
                 const what = ((paused.title ?? "") || (paused.intent ?? "")).trim();
+                const expectedPaths = new Set((paused.expectedPaths ?? []).filter((p) => typeof p === "string" && !!p.trim()));
+                const actualPaths = (paused.actualPaths ?? []).filter((p) => typeof p === "string" && !!p.trim());
+                // Persist what "the contract path was wrong" means. Without this,
+                // the stored plan is resumed unchanged and the same stale path
+                // reappears on every revise cycle, forcing the operator to accept the
+                // identical mismatch repeatedly. Accepted actual paths become the
+                // task's declared scope; only the disproven path checks are removed.
+                if (row.lead_plan_json && (expectedPaths.size > 0 || actualPaths.length > 0)) {
+                    try {
+                        const storedPlan = JSON.parse(row.lead_plan_json);
+                        const task = storedPlan.subTasks?.find((candidate) => candidate.seq === seq);
+                        if (task) {
+                            task.filesLikelyTouched = [
+                                ...(task.filesLikelyTouched ?? []).filter((p) => !expectedPaths.has(p)),
+                                ...actualPaths,
+                            ].filter((p, i, all) => all.indexOf(p) === i);
+                            task.verify = (task.verify ?? []).filter((probe) => !probe.path || !expectedPaths.has(probe.path));
+                            liveDb()
+                                .prepare(`UPDATE sessions SET lead_plan_json = ?, updated_at = ? WHERE id = ?`)
+                                .run(JSON.stringify(storedPlan), Date.now(), sessionId);
+                            liveState().audit("tool.answer_contract_paths_persisted", { sessionId, seq, removed: [...expectedPaths], added: actualPaths }, sessionId);
+                        }
+                    }
+                    catch (err) {
+                        return {
+                            content: [{ type: "text", text: `Could not persist the accepted contract correction: ${String(err)}` }],
+                            details: { ok: false, planUpdateFailed: true, sessionId },
+                        };
+                    }
+                }
                 brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
                 brief.acceptanceCriteria.push(what
                     ? `ALREADY DONE (operator-confirmed): "${what.slice(0, 300)}" was completed and COMMITTED on this branch; the plan's contract path for it was wrong, not the work. Do not redo it and do not plan it again. It remains in scope for review -- the change must still be present and correct in the final diff.`

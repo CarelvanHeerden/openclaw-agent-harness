@@ -821,7 +821,14 @@ export class OrchestratorLoop {
     saveReview(sessionId, cycle, report) {
         this.deps.state.db
             .prepare(`INSERT INTO reviews (id, session_id, cycle, verdict, findings, summary, cost_usd, sdk_session_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           verdict = excluded.verdict,
+           findings = excluded.findings,
+           summary = excluded.summary,
+           cost_usd = excluded.cost_usd,
+           sdk_session_id = excluded.sdk_session_id,
+           created_at = excluded.created_at`)
             .run(`${sessionId}-r${cycle}`, sessionId, cycle, report.verdict, JSON.stringify(report.findings), report.summary, report.costUsd, report.sdkSessionId ?? null, Date.now());
     }
     /**
@@ -1745,7 +1752,11 @@ export class OrchestratorLoop {
                 // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
                 // instead of hard-failing. Carries the ONE question to surface + the
                 // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
-                const clarify = { question: null, seq: -1, subtask: null };
+                const clarify = {
+                    question: null,
+                    seq: -1,
+                    subtask: null,
+                };
                 const runOneInner = async (st, workerWorktree) => {
                     // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
                     // intersect any finding -> its prior-cycle commit is already correct and
@@ -2874,7 +2885,12 @@ export class OrchestratorLoop {
                                 }
                                 clarify.question = buildContractClarification(mismatch);
                                 clarify.seq = st.seq;
-                                clarify.subtask = { title: st.title, intent: st.intent };
+                                clarify.subtask = {
+                                    title: st.title,
+                                    intent: st.intent,
+                                    expectedPaths: expected,
+                                    actualPaths: actual,
+                                };
                             }
                             return;
                         }
@@ -3933,12 +3949,17 @@ export class OrchestratorLoop {
             throw new Error(`accepted clarification cannot resume: stored lead plan is incomplete`);
         }
         const completedRows = this.deps.state.db
-            .prepare(`SELECT seq
-           FROM sub_tasks
-          WHERE session_id = ?
-            AND cycle = (SELECT MAX(cycle) FROM sub_tasks WHERE session_id = ?)
-            AND status IN ('completed', 'completed_no_change')`)
-            .all(sessionId, sessionId);
+            .prepare(`SELECT current.seq
+           FROM sub_tasks current
+          WHERE current.session_id = ?
+            AND current.cycle = (
+              SELECT MAX(latest.cycle)
+                FROM sub_tasks latest
+               WHERE latest.session_id = current.session_id
+                 AND latest.seq = current.seq
+            )
+            AND current.status IN ('completed', 'completed_no_change')`)
+            .all(sessionId);
         return {
             plan,
             completedSeqs: new Set(completedRows.map((r) => r.seq)),
@@ -4147,6 +4168,27 @@ export class OrchestratorLoop {
             catch {
                 // ignore malformed audit rows
             }
+        }
+        const completed = this.deps.state.db
+            .prepare(`SELECT current.seq, current.status, current.summary
+           FROM sub_tasks current
+          WHERE current.session_id = ?
+            AND current.cycle = (
+              SELECT MAX(latest.cycle)
+                FROM sub_tasks latest
+               WHERE latest.session_id = current.session_id
+                 AND latest.seq = current.seq
+            )
+            AND current.status IN ('completed', 'completed_no_change')`)
+            .all(sessionId);
+        for (const task of completed) {
+            if (!bySeq.has(task.seq))
+                continue;
+            bySeq.set(task.seq, {
+                seq: task.seq,
+                ok: true,
+                summary: task.summary || `sub-task ${task.status}`,
+            });
         }
         return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
     }

@@ -85,7 +85,11 @@ function leadDeps({ branchExists, capture }) {
       repo: "Stitch-Vercel/ProjectThanos",
       branch: "harness/fresh-generated-name",
       riskLevel: "low",
-      subTasks: [{ seq: 1, title: "t", intent: "i", taskMode: "observe", filesLikelyTouched: [], successCriteria: ["ok"] }],
+      subTasks: [{
+        seq: 1, title: "t", intent: "i", taskMode: "mutate",
+        filesLikelyTouched: ["src/a.ts"], successCriteria: ["ok"],
+        verify: [{ kind: "commit_made" }],
+      }],
     }),
     allocateWorktree: async (repo, branch) => {
       capture.repo = repo;

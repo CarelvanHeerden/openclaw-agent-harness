@@ -1,6 +1,6 @@
 {
   "name": "openclaw-agent-harness",
-  "version": "2.0.0-beta.1",
+  "version": "2.0.0-rc.1",
   "description": "Multi-agent orchestration harness for OpenClaw. Lead planner + workers + adversarial reviewer, driven from Slack.",
   "type": "module",
   "main": "dist/index.js",

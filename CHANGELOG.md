@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.0-rc.1
+
+First v2 release candidate. OpenCode is a first-class backend across agentic
+and structured roles, with verified ACP model and reasoning-effort selection,
+provider-aware pricing, credential-vault integration, and focused worker tool
+policy.
+
+Live smoke testing also hardened observe-report handoff, zero-change retries,
+contract-path correction and recursive-glob matching, accepted continuation,
+same-cycle review resumption, implementation-plan validation, and evidence
+reconciliation across chunked adversary reviews.
+
 ## 2.0.0-beta.1
 
 ### OpenCode's daily file tools are on the bash whitelist

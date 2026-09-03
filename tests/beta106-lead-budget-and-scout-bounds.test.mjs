@@ -324,7 +324,11 @@ function leadDeps(over = {}) {
     allocateWorktree: async () => "/tmp/wt-real",
     callLeadModel: async () => ({
       repo: "o/r", branch: "harness/feat-x", riskLevel: "low", reviewChecklist: [],
-      subTasks: [{ seq: 1, title: "t", intent: "i", filesLikelyTouched: [], successCriteria: ["s"], estimatedTokens: 10, taskMode: "observe" }],
+      subTasks: [{
+        seq: 1, title: "t", intent: "i", filesLikelyTouched: ["src/a.ts"],
+        successCriteria: ["s"], estimatedTokens: 10, taskMode: "mutate",
+        verify: [{ kind: "commit_made" }],
+      }],
     }),
     estimateCost: () => 0,
     ...over,
@@ -339,7 +343,11 @@ test("beta106: a scout that reports a timeout still hands its partial report to 
       sawReport = b.repoScoutReport;
       return {
         repo: "o/r", branch: "harness/feat-x", riskLevel: "low", reviewChecklist: [],
-        subTasks: [{ seq: 1, title: "t", intent: "i", filesLikelyTouched: [], successCriteria: ["s"], estimatedTokens: 10, taskMode: "observe" }],
+        subTasks: [{
+          seq: 1, title: "t", intent: "i", filesLikelyTouched: ["src/a.ts"],
+          successCriteria: ["s"], estimatedTokens: 10, taskMode: "mutate",
+          verify: [{ kind: "commit_made" }],
+        }],
       };
     },
   }));
