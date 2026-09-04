@@ -128,7 +128,13 @@ test("beta53 wiring: P1b retry-with-context, ordered AFTER P2 (uncommittedFiles)
   assert.match(src, /env_wait_retry_enabled !== false/);
   // branches on partial-work using uncommittedFiles from P2
   assert.match(src, /result\.uncommittedFiles/);
-  assert.match(src, /at most ONE env-wait retry per sub-task|let envWaitRetried = false/);
+  // rc.2 turned the one-shot retry into a bounded loop. The single-retry budget
+  // is preserved for the cases b53 was written for (`retryBudget` is 1 unless
+  // the outcome is one rc.2 can say something new about), so this now pins the
+  // counter and its bound rather than the old boolean.
+  assert.match(src, /let protocolRetries = 0;/);
+  assert.match(src, /protocolRetries < retryBudget/);
+  assert.match(src, /const retryBudget = harnessCorrectable \? maxProtocolAttempts - 1 : 1;/);
   // only no-change kinds are retryable (never a confabulated push/PR)
   assert.match(src, /ENV_WAIT_RETRYABLE_KINDS/);
 });
