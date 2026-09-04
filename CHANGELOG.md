@@ -62,6 +62,94 @@ New audit events: `loop.worker_recoverable_tool_denial`,
 `loop.worker_noop_end_turn`, `loop.worker_protocol_retry`,
 `loop.worker_retry_exhausted`, `loop.worker_genuine_blocker`.
 
+### A cancel was logged and then ignored
+
+Same run. The operator cancelled a session sitting in `awaiting_clarification`.
+`harness_cancel` did what it has always done — set `reactions_json.abort` and
+report that "the loop will terminate at its next checkpoint" — and there was no
+next checkpoint. A clarification pause is not a suspended loop: the loop
+returns, deregisters, and the process goes idle waiting for an answer. Nothing
+was left to read the flag. The reaction poller skips `awaiting_clarification`,
+the dead-loop sweep queried only `executing|planning|reviewing`, and restart
+recovery excludes it deliberately. The cancel was recorded, acknowledged, and
+never happened.
+
+Cancellation now belongs to the loop, which is the only thing that knows whether
+a run is live. A session with no running loop is terminated on the spot, through
+the salvaging path, so a cancel holding commits preserves its worktree instead of
+deleting it. A session with a live loop still stops cooperatively — an in-flight
+model call cannot be torn out from under itself — but the flag is written first
+and unconditionally. Cancelling a terminal session is now a success, not an
+error: "cancel it again to be sure" used to read as a cancel that had not
+worked. Two concurrent cancels cannot both run a finaliser, and the stall sweep
+now covers paused sessions, so a restart mid-cancel still converges.
+
+New audit events: `loop.cancel_requested`, `loop.cancel_terminated`.
+
+### Answering a clarification restarted the session instead of resuming it
+
+Answering re-drove through `status='planning'`, which meant a fresh lead call.
+Three things followed. The plan was rebuilt, so sub-tasks unrelated to the
+question were re-derived and renumbered. The scheduler's completed set starts
+empty on a new plan and only `accept` seeded it, so sub-tasks that had already
+run — with their commits already on the branch — were dispatched a second time.
+And the operator's decision went into the brief's acceptance criteria, which the
+*lead* reads, so the worker that asked the question never saw the answer and ran
+into the same wall.
+
+An answer given against a stored plan now continues that plan: same numbering,
+completed work left alone, and the decision delivered as a dispatch hint to the
+sub-task that asked for it. `skip` retires the paused sub-task in the ledger and
+carries on, keeping beta.58's content-keyed prohibition for any later re-plan. A
+session with no plan yet — a pre-spend brief confirmation — still plans, because
+there is nothing to resume. A resumed run no longer buys a second plan, which
+also makes beta.132's parked lead-cost comment true for the first time.
+
+New audit events: `tool.answer_resume_in_place`, `loop.subtask_resumed_with_answer`.
+
+### Progress narration counted as a completed research task
+
+An observe sub-task correctly has an empty verification contract — it produces a
+report, not a commit — so "the worker ended its turn" was the entire completion
+test. A probe that ended on "Now let me check the workbook headers…" therefore
+passed. Worse, an observe sub-task's report *is* its final message, handed to
+dependent sub-tasks under the heading "These are the VERBATIM reports … Use the
+exact paths, names, and conventions below". A stated intention became evidence,
+and the next worker planned against it.
+
+A probe that only narrates is now retried on the same budget as the mutate path,
+with a prompt saying the report is the deliverable and asking what it *found*.
+On exhaustion the sub-task fails with a record rather than a question. Emptiness
+is deliberately left alone: a silent probe hands nothing downstream, so only the
+case that travels is blocked.
+
+### Startup warned about Claude models for roles running elsewhere
+
+The Anthropic pricing-health check read `config.models.*` for all four roles
+unconditionally. An install with every role on OpenCode/OpenRouter still got
+startup warnings and a `harness.model_pricing_unpriced` audit naming Claude ids
+nothing was going to call, which reads as "the harness is still on Claude". It
+now asks only about roles actually routed to Anthropic, and names them in the
+audit. The startup route table also fills in the legacy model for roles still on
+Claude, which previously logged `model: undefined` — half the table an operator
+reads to answer "what is running my work" was blank.
+
+### Temp files, without permitting `rm`
+
+The bash guard denies inline interpreter code, so inspecting anything means
+writing a script. It also denies `rm`. Every inspection therefore left a file
+the worker could not remove, and an undeclared committed file is a blocking
+out-of-scope finding — so the worker was asked to delete a file it was not
+permitted to delete, on every revise cycle. The retry prompt shipped above made
+this worse by explicitly instructing it to "then delete it".
+
+`.harness-scratch/` is now the one disposable directory in a worktree: excluded
+from git so it cannot be staged or committed even by the worker's own `git add
+-A`, and swept before every commit, following the beta.107 precedent for
+commit-message scratch. Workers are told about it up front and told to leave
+files there. The guard is unchanged — `rm` is still denied, and recovery no
+longer wants it.
+
 ### The OpenCode backend was unreachable on the way people install this
 
 rc.1 launched the agent as the bare string `opencode` and left putting it there

@@ -400,7 +400,9 @@ test("beta110: a failed review still emits phase_timing", () => {
 test("beta110: commit() excludes BEFORE it stages", () => {
   const src = S("src/adapters/git-worktree.ts");
   const i = src.indexOf("async commit(worktreePath");
-  const body = src.slice(i, i + 600);
+  // Window widened in rc.2: the scratch-directory sweep sits between the
+  // function head and the staging call. The ordering claim is unchanged.
+  const body = src.slice(i, i + 1000);
   assert.ok(
     body.indexOf("applyHarnessExcludes") < body.indexOf('"add", "-A"'),
     "excluding after staging would be useless",

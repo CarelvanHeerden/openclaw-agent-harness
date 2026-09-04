@@ -55,6 +55,27 @@ const COMMIT_MSG_NOISE_RE = /(^|\/)\.?(git-?)?commit-?(msg|message)[^/]*$|(^|\/)
 export function isCommitMsgNoise(path) {
     return COMMIT_MSG_NOISE_RE.test(path ?? "");
 }
+/**
+ * rc.2: the one directory in a worktree a worker may treat as disposable.
+ *
+ * The bash guard denies inline interpreter code (`python3 -c`), so the way to
+ * inspect anything is to write a script and run it. It also denies `rm`. Those
+ * two rules together mean every inspection a worker performs leaves a file
+ * behind that it cannot remove — and an undeclared committed file is an
+ * out-of-scope write, which b94 raises as a blocking `fit` finding. The worker
+ * is then asked to delete a file it is not permitted to delete, on every revise
+ * cycle, forever. b107 hit exactly this with commit-message scratch and solved
+ * it by sweeping harness-side rather than by relaxing the guard.
+ *
+ * So: scratch goes here, the harness excludes it from git and deletes it, and
+ * the worker never needs `rm`. The guard is untouched.
+ */
+export const HARNESS_SCRATCH_DIR = ".harness-scratch";
+/** Is this path inside the disposable scratch directory? */
+export function isHarnessScratch(path) {
+    const p = (path ?? "").trim().replace(/^\.\//, "");
+    return p === HARNESS_SCRATCH_DIR || p.startsWith(`${HARNESS_SCRATCH_DIR}/`);
+}
 export function looksLikeDiskExhaustion(text) {
     return DISK_EXHAUSTION_RE.test(text ?? "");
 }
@@ -88,6 +109,9 @@ export const HARNESS_EXCLUDE_PATTERNS = [
     "_cacache/",
     ".git-commit-msg.txt",
     ".commit-msg-tmp.txt",
+    // rc.2: the worker's disposable scratch. Excluded rather than merely swept,
+    // so that even a worker running its own `git add -A` cannot commit it.
+    `${HARNESS_SCRATCH_DIR}/`,
     // The credential vault resolves against the harness data dir, so these should
     // never appear inside a worktree at all. They are listed anyway because the
     // failure above was caused by a path a model chose freely, and a private key
@@ -1093,6 +1117,29 @@ esac
         return swept;
     }
     /**
+     * rc.2: empty the worker's scratch directory before staging.
+     *
+     * `.harness-scratch/` is in `HARNESS_EXCLUDE_PATTERNS`, so git will not stage
+     * it and it cannot reach a commit or a PR diff. Deleting it as well keeps it
+     * out of `git status --porcelain`, which the loop reads as "work the worker
+     * left uncommitted" — a leftover inspection script is not unfinished work,
+     * and reporting it as such sends the next turn off to commit a temp file.
+     *
+     * The whole directory goes, not selected files inside it: its entire purpose
+     * is being disposable, and anything a worker meant to keep does not belong
+     * in a directory the harness has told it is scratch.
+     */
+    async sweepScratchDir(worktreePath) {
+        const dir = resolve(worktreePath, HARNESS_SCRATCH_DIR);
+        try {
+            await rm(dir, { recursive: true, force: true });
+        }
+        catch {
+            return false; // never let housekeeping break a commit
+        }
+        return true;
+    }
+    /**
      * beta.110: append the harness's own exclusions to `.git/info/exclude`.
      *
      * Idempotent, best-effort, and additive -- an existing exclude file is read
@@ -1264,6 +1311,9 @@ esac
     }
     async commit(worktreePath, message, identity) {
         await this.sweepCommitMsgScratch(worktreePath);
+        // rc.2: the worker's disposable scratch, for the same reason and at the
+        // same point -- it cannot delete these itself, because `rm` is denied.
+        await this.sweepScratchDir(worktreePath);
         // beta.110: both BEFORE the unscoped `add -A`. A tooling cache written into
         // the worktree is not the project's work and must never reach a commit --
         // the named list catches the ones we predicted, the magnitude check catches

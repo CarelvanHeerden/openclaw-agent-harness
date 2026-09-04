@@ -18,6 +18,7 @@ import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./lead.js";
 import { renderConventionsForPrompt } from "./repo-conventions.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
+import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 
 export interface WorkerResult {
   status: "completed" | "failed" | "timeout" | "first_token_timeout";
@@ -349,7 +350,12 @@ export function buildWorkerSystemPrompt(
     `  narrow: touch ONLY the files the sub-task explicitly requires.`,
     `- Do not run 'git push'. The orchestrator handles pushes.`,
     `- Do not install global packages, disable safeguards, or exfiltrate anything.`,
-    `- If a bash command is refused, explain in prose and continue with an alternative approach.`,
+    `- If a bash command is refused, the refusal usually names the permitted alternative. Take it and`,
+    `  carry on -- a denial is not a reason to stop, and it is not something to report back instead of`,
+    `  doing the work.`,
+    `- Inline interpreter code ('python3 -c', 'node -e') and heredocs are refused. To inspect anything,`,
+    `  write a script to '${HARNESS_SCRATCH_DIR}/' and run it from there. LEAVE IT BEHIND: that directory`,
+    `  is excluded from git and the harness deletes it for you. 'rm' is denied and you do not need it.`,
     `- End your turn once the sub-task's success criteria are met.`,
     `- If an "Implementation context" block is present above, the lead already`,
     `  investigated this. Implement its changeSpec directly; do NOT re-explore the`,

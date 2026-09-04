@@ -120,6 +120,8 @@ export type LoopOutcome = {
     cycles: number;
     totalCostUsd: number;
 };
+/** The statuses from which a session never moves again. */
+export declare const TERMINAL_STATUSES: readonly string[];
 /** beta.53: true when the worker awaited a non-existent env/monitor event. */
 export declare function matchesEnvWaitHallucination(text: string): boolean;
 /** beta.54: true when the worker confabulated an async coordination primitive. */
@@ -1064,6 +1066,39 @@ export declare class OrchestratorLoop {
      * aborted because the user's daily_max_usd would be exceeded. Never throws.
      */
     private warnDailyMaxHit;
+    /**
+     * rc.2: cancel a session from ANY state, immediately and idempotently.
+     *
+     * WHAT HAPPENED. An operator cancelled a session sitting in
+     * `awaiting_clarification`. `harness_cancel` did the only thing it has ever
+     * done -- set `reactions_json.abort = true` -- on the documented promise that
+     * "the loop reads it on its next checkpoint". There was no next checkpoint.
+     * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
+     * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
+     * idle waiting for `harness_answer`. Nothing was left to read the flag. The
+     * Slack reaction poller skips `awaiting_clarification`, the dead-loop sweep
+     * queries only `executing|planning|reviewing`, and recovery excludes it on
+     * purpose. So the cancel was recorded, acknowledged, and never happened.
+     *
+     * THE RULE. Cancellation is the operator's, not the loop's. Where a loop is
+     * running we still have to ask it to stop -- an in-flight model call cannot be
+     * torn out from under itself -- but where there is NO loop, there is nothing
+     * to cooperate with and the harness must simply end the session itself.
+     *
+     * Idempotent in both directions: cancelling a terminal session succeeds
+     * without writing anything, and two concurrent cancels cannot both terminate.
+     */
+    cancelSession(sessionId: string, opts?: {
+        reason?: string;
+        requester?: string;
+    }): Promise<{
+        ok: boolean;
+        notFound?: boolean;
+        status?: string;
+        alreadyTerminal?: boolean;
+        terminatedNow?: boolean;
+        loopRunning?: boolean;
+    }>;
     private finaliseAbort;
     /**
      * beta.120 (fix 1, CRITICAL): an abort must never destroy work.
