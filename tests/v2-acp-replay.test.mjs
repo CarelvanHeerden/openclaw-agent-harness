@@ -315,7 +315,21 @@ test("the pinned version is a single source of truth", () => {
   assert.match(ver, /PINNED_OPENCODE_PACKAGE = `opencode-ai@\$\{PINNED_OPENCODE_VERSION\}`/,
     "the package spec is not derived from the pinned version");
 
-  const docker = readFileSync(resolve(root, "Dockerfile"), "utf8");
-  assert.ok(docker.includes(`opencode-ai@${PINNED_OPENCODE_VERSION}`),
-    `the Dockerfile does not install opencode-ai@${PINNED_OPENCODE_VERSION}`);
+  // The pin lived in the Dockerfile until the packaging fix, which was the
+  // whole defect: OpenClaw installs a plugin with `npm install --omit=dev` and
+  // never builds our Dockerfile, so the pin governed the one environment that
+  // did not need it and nothing about the one that did. `package.json` is what
+  // actually decides which OpenCode an installed plugin gets, so that is what
+  // has to agree with the constant.
+  const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+  assert.equal(pkg.dependencies?.["opencode-ai"], PINNED_OPENCODE_VERSION,
+    `package.json must declare opencode-ai as a PRODUCTION dependency at exactly ${PINNED_OPENCODE_VERSION}`);
+
+  // Exact, not a range. A caret would let `npm install` pick a version the
+  // permission-key list has never been reconciled against, and that list is
+  // version-coupled: OpenCode merges permission rules last-match-wins, so a key
+  // added by a newer release and allowed by a repo's own opencode.json sorts
+  // after our injected wildcard and wins.
+  assert.doesNotMatch(pkg.dependencies["opencode-ai"], /[\^~*x]|\s-\s/,
+    "the opencode-ai dependency must be an exact version, not a range");
 });
