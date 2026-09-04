@@ -39,6 +39,8 @@ import {
   classifyWorkerOutcome,
   buildProtocolRetryHint,
   describeContractForRetry,
+  observeReportIsNarration,
+  buildClarificationResumeHint,
   type WorkerOutcome,
 } from "./worker-outcome.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
@@ -268,6 +270,18 @@ export type LoopOutcome =
  * plugin re-register the same way `runtime-registry` does.
  */
 const runningSessions = new Set<string>();
+
+/** The statuses from which a session never moves again. */
+export const TERMINAL_STATUSES: readonly string[] = ["done", "failed", "aborted"];
+
+/**
+ * rc.2: sessions with a cancel mid-flight.
+ *
+ * `cancelSession` awaits the salvage path, so two cancels arriving in the same
+ * tick would both pass the terminal check and both run a finaliser. Module
+ * scope matches `runningSessions`: one process owns a session at a time.
+ */
+const cancellingSessions = new Set<string>();
 
 /**
  * beta.52/53: detect a worker that ended its turn WAITING for a mid-turn event
@@ -1599,7 +1613,7 @@ export class OrchestratorLoop {
     // that produced the accepted commit, not a request for a new plan. Load it
     // before emitting a lead request so the trail cannot claim a model call
     // happened when it did not.
-    let acceptedContinuation: { plan: LeadPlan; completedSeqs: Set<number> } | null = null;
+    let acceptedContinuation: ReturnType<OrchestratorLoop["loadAcceptedContinuation"]> | null = null;
     if (brief.resumeExistingPlan) {
       try {
         acceptedContinuation = this.loadAcceptedContinuation(sessionId);
@@ -1632,10 +1646,15 @@ export class OrchestratorLoop {
     // declaration.
     //
     // beta.132: this used to claim it "stays 0 on a resumed run that skips
-    // planning, so a resume cannot bill the same plan twice". No resume path
-    // skips planning -- every one of them re-plans from scratch and bills a
-    // second lead call in full, which is the thing b132's recovery guard and
-    // dead-listener ship exist to stop happening unasked.
+    // planning, so a resume cannot bill the same plan twice". At the time that
+    // was wrong -- every resume re-planned from scratch and billed a second
+    // lead call in full, which is what b132's recovery guard and dead-listener
+    // ship exist to stop happening unasked.
+    //
+    // rc.2: it is true again, and for the original reason. Any clarification
+    // answered against a stored plan resumes that plan (`resumeExistingPlan`),
+    // so `runLead` is not called and this genuinely stays 0. A re-plan is now
+    // the exception -- a session that had no plan yet.
     let leadPlanningCostUsd = 0;
     const scoutBudget =
       !acceptedContinuation && this.deps.config.loop.lead_repo_scout_enabled !== false
@@ -2525,9 +2544,31 @@ export class OrchestratorLoop {
         // so the note stays short and unambiguous rather than a plan-wide dump.
         const mine = new Set((st.filesLikelyTouched ?? []).map((p) => p.trim().replace(/^\.\//, "")));
         const mySuspects = planPathSuspects.filter((s) => mine.has(s.path));
-        const reviseHint = mySuspects.length
+        const hintWithSuspects = mySuspects.length
           ? `${baseReviseHint ? `${baseReviseHint}\n\n` : ""}${describeSuspectPlanPaths(mySuspects)}`
           : baseReviseHint;
+        // rc.2: the operator's answer, handed to the sub-task that asked for it
+        // and to no other. Consumed once -- the answer stays in the session row
+        // for the audit trail, but a later cycle re-running this seq is doing
+        // different work and must not be told it is resuming.
+        const isResumedSeq = cycle === 1 && acceptedContinuation?.resumeSeq === st.seq && Boolean(acceptedContinuation?.resumeAnswer);
+        const reviseHint = isResumedSeq
+          ? `${hintWithSuspects ? `${hintWithSuspects}\n\n` : ""}${buildClarificationResumeHint({
+              question: acceptedContinuation?.resumeQuestion,
+              answer: acceptedContinuation!.resumeAnswer!,
+            })}`
+          : hintWithSuspects;
+        if (isResumedSeq) {
+          this.deps.state.audit(
+            "loop.subtask_resumed_with_answer",
+            {
+              sessionId, seq: st.seq, cycle,
+              question: (acceptedContinuation?.resumeQuestion ?? "").slice(0, 500),
+              answer: (acceptedContinuation?.resumeAnswer ?? "").slice(0, 500),
+            },
+            sessionId,
+          );
+        }
         // beta.103: attaching a hint emitted NO audit event, so "did the worker
         // actually get told?" was unanswerable after the fact. The b102 smoke
         // report concluded the b101 plan-path warning was observability-only
@@ -4041,6 +4082,140 @@ export class OrchestratorLoop {
           // "observe" but the payload admits it's a mutation. The inner
           // (verification-eligible) branch already had this guard; beta.18
           // brings this branch in line.
+          //
+          // ---- rc.2: narration is not research ----
+          // An observe sub-task's contract is correctly empty, so reaching this
+          // branch at all meant "completed". A worker that ended on "Now let me
+          // check the workbook headers quickly, the tenant extension mechanism,
+          // and package.json prisma scripts." therefore passed -- and because
+          // the observe REPORT is `finalMessage` verbatim, that sentence was
+          // handed to every dependent sub-task under the heading "These are the
+          // VERBATIM reports ... Use the exact paths, names, and conventions
+          // below". A stated intention became evidence, and the next worker
+          // planned against it.
+          //
+          // Same bounded retry as the mutate path, and the same budget, because
+          // it is the same failure: a turn that stopped mid-thought.
+          const observeMaxAttempts = Math.min(5, Math.max(1, this.deps.config.loop.worker_protocol_max_attempts ?? 3));
+          let observeRetries = 0;
+          while (
+            observeReportIsNarration(result.finalMessage) &&
+            this.deps.config.loop.worker_protocol_retry_enabled !== false &&
+            observeRetries < observeMaxAttempts - 1
+          ) {
+            observeRetries += 1;
+            this.deps.state.audit(
+              "loop.worker_noop_end_turn",
+              {
+                sessionId, seq: st.seq, subTaskId, cycle,
+                taskMode: "observe",
+                finalMessage: (result.finalMessage ?? "").slice(0, 1000),
+                hasFiles: (result.filesChanged ?? []).length > 0,
+                hasCommit: Boolean(result.commitSha),
+                failedKinds: [],
+                retryCount: observeRetries - 1,
+              },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, {
+              event: "worker_protocol_retry", phase: "worker", seq: st.seq, cycle,
+              reasonFirstLine: "observe report was progress narration",
+            });
+            this.deps.state.audit(
+              "loop.worker_protocol_retry",
+              {
+                sessionId, seq: st.seq, subTaskId, cycle,
+                outcome: "progress_only",
+                taskMode: "observe",
+                category: null,
+                retryCount: observeRetries,
+                maxAttempts: observeMaxAttempts,
+                hasFiles: (result.filesChanged ?? []).length > 0,
+                hasCommit: Boolean(result.commitSha),
+                failedKinds: [],
+              },
+              sessionId,
+            );
+            this.deps.logger.warn("[loop] observe sub-task ended on progress narration; retrying", {
+              sessionId, seq: st.seq, retry: observeRetries,
+            });
+            const observeHint = buildProtocolRetryHint({
+              outcome: { kind: "progress_only" },
+              contractSummary:
+                `a written report answering this probe's question -- ${st.intent || st.title}. ` +
+                `There is nothing to commit: the REPORT is the deliverable, and it is handed verbatim to the sub-tasks that depend on it. ` +
+                `State what you FOUND (paths, names, versions, conventions, and what is absent), not what you intend to look at.`,
+              attempt: observeRetries + 1,
+              maxAttempts: observeMaxAttempts,
+            });
+            try {
+              const retry = await withTimeout(
+                this.deps.runWorker({
+                  brief,
+                  subTask: dispatchSt,
+                  plan,
+                  worktreePath: workerWorktree,
+                  requester: row.requester,
+                  resumeSessionId: result.sdkSessionId,
+                  dispatchHint: reviseHint ? `${reviseHint}\n\n${observeHint}` : observeHint,
+                  modelOverride: selectWorkerModel(st, this.deps.config.models),
+                  onStreamSlow: this.makeStreamSlowCallback(sessionId, st.seq, cycle),
+                }),
+                this.deps.config.loop.worker_timeout_seconds,
+              );
+              this.addCost(sessionId, retry.costUsd);
+              await this.deps.budget.recordSpend(row.requester, retry.costUsd, sessionId);
+              totalCost += retry.costUsd;
+              if (retry.costUsd > 0) subTaskCosts.push(retry.costUsd);
+              result = retry;
+            } catch (err) {
+              this.deps.logger.warn("[loop] observe retry threw; keeping the previous turn", {
+                sessionId, seq: st.seq, err: String(err),
+              });
+              break;
+            }
+          }
+          if (observeReportIsNarration(result.finalMessage)) {
+            // Out of attempts. Fail the sub-task with a record of why -- there
+            // is no question here for a human, only a worker that would not
+            // stop narrating.
+            // b100's rule: the worker's own prose never gets interpolated into
+            // text an operator reads. The full message is on the audit event
+            // below, where it belongs -- as a record, not as an explanation.
+            const failSummary =
+              `observe sub-task produced no findings after ${observeRetries} retr${observeRetries === 1 ? "y" : "ies"}: ` +
+              `every turn ended describing what it intended to do rather than what it found`;
+            this.deps.state.audit(
+              "loop.worker_retry_exhausted",
+              {
+                sessionId, seq: st.seq, subTaskId, cycle,
+                outcome: "progress_only",
+                taskMode: "observe",
+                category: null,
+                retryCount: observeRetries,
+                maxAttempts: observeMaxAttempts,
+                hasFiles: (result.filesChanged ?? []).length > 0,
+                hasCommit: Boolean(result.commitSha),
+                failedKinds: [],
+                failedChecks: [{ kind: "observe_report", detail: "final message is progress narration, not findings" }],
+                contract: "a written report answering the probe's question",
+                finalMessage: (result.finalMessage ?? "").slice(0, 1000),
+                finalOutcome: "failed_verification",
+              },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, {
+              event: "worker_retry_exhausted", phase: "worker", seq: st.seq, cycle,
+              reasonFirstLine: "observe report was progress narration",
+            });
+            this.deps.state.db.prepare(
+              `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,
+            ).run(failSummary, Date.now(), subTaskId);
+            this.deps.logger.warn("[loop] observe sub-task never produced findings", { sessionId, seq: st.seq });
+            failed.err = `subtask_${st.seq}_failed_verification: ${failSummary}`;
+            failed.seq = st.seq;
+            return;
+          }
           this.emitObserveCompleted(sessionId, st, result, []);
         }
 
@@ -5355,10 +5530,26 @@ export class OrchestratorLoop {
    */
   private loadAcceptedContinuation(
     sessionId: string,
-  ): { plan: LeadPlan; completedSeqs: Set<number> } {
+  ): {
+    plan: LeadPlan;
+    completedSeqs: Set<number>;
+    resumeSeq?: number;
+    resumeQuestion?: string;
+    resumeAnswer?: string;
+  } {
     const row = this.deps.state.db
-      .prepare(`SELECT lead_plan_json FROM sessions WHERE id = ?`)
-      .get(sessionId) as { lead_plan_json: string | null } | undefined;
+      .prepare(
+        `SELECT lead_plan_json, clarification_seq, clarification_question, clarification_answer
+           FROM sessions WHERE id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          lead_plan_json: string | null;
+          clarification_seq: number | null;
+          clarification_question: string | null;
+          clarification_answer: string | null;
+        }
+      | undefined;
     if (!row?.lead_plan_json) {
       throw new Error(`accepted clarification cannot resume: session ${sessionId} has no stored lead plan`);
     }
@@ -5385,9 +5576,19 @@ export class OrchestratorLoop {
             AND current.status IN ('completed', 'completed_no_change')`,
       )
       .all(sessionId) as Array<{ seq: number }>;
+    // rc.2: the answer travels with the plan, so the sub-task that asked the
+    // question is the one that hears the reply. Without this the decision only
+    // reached the brief's acceptance criteria -- read by the LEAD, which a
+    // resumed run no longer calls -- and the paused worker was re-dispatched
+    // with the identical prompt that made it stop.
+    const seq = row.clarification_seq;
+    const answer = (row.clarification_answer ?? "").trim();
     return {
       plan,
       completedSeqs: new Set(completedRows.map((r) => r.seq)),
+      resumeSeq: typeof seq === "number" && seq >= 0 ? seq : undefined,
+      resumeQuestion: (row.clarification_question ?? "").trim() || undefined,
+      resumeAnswer: answer || undefined,
     };
   }
 
@@ -6888,6 +7089,124 @@ export class OrchestratorLoop {
     }
   }
 
+  /**
+   * rc.2: cancel a session from ANY state, immediately and idempotently.
+   *
+   * WHAT HAPPENED. An operator cancelled a session sitting in
+   * `awaiting_clarification`. `harness_cancel` did the only thing it has ever
+   * done -- set `reactions_json.abort = true` -- on the documented promise that
+   * "the loop reads it on its next checkpoint". There was no next checkpoint.
+   * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
+   * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
+   * idle waiting for `harness_answer`. Nothing was left to read the flag. The
+   * Slack reaction poller skips `awaiting_clarification`, the dead-loop sweep
+   * queries only `executing|planning|reviewing`, and recovery excludes it on
+   * purpose. So the cancel was recorded, acknowledged, and never happened.
+   *
+   * THE RULE. Cancellation is the operator's, not the loop's. Where a loop is
+   * running we still have to ask it to stop -- an in-flight model call cannot be
+   * torn out from under itself -- but where there is NO loop, there is nothing
+   * to cooperate with and the harness must simply end the session itself.
+   *
+   * Idempotent in both directions: cancelling a terminal session succeeds
+   * without writing anything, and two concurrent cancels cannot both terminate.
+   */
+  async cancelSession(
+    sessionId: string,
+    opts: { reason?: string; requester?: string } = {},
+  ): Promise<{
+    ok: boolean;
+    notFound?: boolean;
+    status?: string;
+    alreadyTerminal?: boolean;
+    terminatedNow?: boolean;
+    loopRunning?: boolean;
+  }> {
+    const row = this.deps.state.db
+      .prepare(`SELECT status, reactions_json, cycles_ran, cost_usd FROM sessions WHERE id = ?`)
+      .get(sessionId) as
+      | { status: string; reactions_json: string | null; cycles_ran: number; cost_usd: number }
+      | undefined;
+    if (!row) return { ok: false, notFound: true };
+
+    // Already finished. Report success: the caller asked for this session to be
+    // over, and it is. Returning a failure here made the natural "cancel it
+    // again to be sure" read as though the cancel had not worked.
+    if (TERMINAL_STATUSES.includes(row.status)) {
+      return { ok: true, alreadyTerminal: true, status: row.status, terminatedNow: false };
+    }
+    if (cancellingSessions.has(sessionId)) {
+      return { ok: true, status: row.status, terminatedNow: false };
+    }
+
+    const reason = (opts.reason ?? "").trim() || "user_cancel";
+    // The flag goes down first and unconditionally, so a live loop stops at its
+    // next checkpoint even if everything below fails.
+    let reactions: Record<string, unknown> = {};
+    try {
+      reactions = row.reactions_json ? (JSON.parse(row.reactions_json) as Record<string, unknown>) : {};
+    } catch {
+      reactions = {}; // a corrupt blob must not block a cancel
+    }
+    reactions.abort = true;
+    this.deps.state.db
+      .prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`)
+      .run(JSON.stringify(reactions), Date.now(), sessionId);
+
+    const loopRunning = isSessionLoopRunning(sessionId);
+    this.deps.state.audit(
+      "loop.cancel_requested",
+      { sessionId, reason, requester: opts.requester ?? null, status: row.status, loopRunning },
+      sessionId,
+    );
+
+    if (loopRunning) {
+      // Cooperative, and honestly so: the loop owns its worktree and its
+      // in-flight call, and reaping it from underneath would race its own
+      // finalisers. It reads the flag at its next checkpoint.
+      return { ok: true, status: row.status, terminatedNow: false, loopRunning: true };
+    }
+
+    cancellingSessions.add(sessionId);
+    try {
+      // A paused session is not waiting for an answer any more.
+      if (row.status === "awaiting_clarification") {
+        this.deps.state.db
+          .prepare(
+            `UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL,
+                    clarification_subtask = NULL, updated_at = ? WHERE id = ?`,
+          )
+          .run(Date.now(), sessionId);
+      }
+      // Salvaging, not raw: a cancelled session may be holding commits, and a
+      // cancel means "stop spending", not "throw away what I already paid for".
+      // `user_cancel` is deliberately absent from ABORT_REASONS_WORTH_SHIPPING,
+      // so this preserves the worktree rather than opening a PR nobody asked for.
+      const outcome = await this.finaliseAbortSalvaging(
+        sessionId,
+        reason,
+        row.cycles_ran ?? 0,
+        row.cost_usd ?? 0,
+      );
+      this.deps.state.audit(
+        "loop.cancel_terminated",
+        { sessionId, reason, requester: opts.requester ?? null, fromStatus: row.status, finalStatus: outcome.status },
+        sessionId,
+      );
+      this.deps.interactionLog?.log(sessionId, {
+        event: "cancel_terminated",
+        phase: mapPhase(row.status as LoopStatus),
+        reason: `${reason} (from ${row.status})`,
+      });
+      this.deps.logger.warn("[loop] cancelled a session with no running loop; terminated it directly", {
+        sessionId, fromStatus: row.status, finalStatus: outcome.status,
+      });
+      return { ok: true, status: outcome.status, terminatedNow: true, loopRunning: false };
+    } finally {
+      cancellingSessions.delete(sessionId);
+    }
+  }
+
   private finaliseAbort(sessionId: string, reason: string, cycles: number, totalCostUsd: number): LoopOutcome {
     this.setStatus(sessionId, "aborted");
     this.deps.state.audit("loop.aborted", { sessionId, reason }, sessionId);
@@ -7671,9 +7990,14 @@ export class OrchestratorLoop {
     try {
       rows = this.deps.state.db
         .prepare(
+          // rc.2: `awaiting_clarification` joins the list. A cancel on a paused
+          // session is terminated inline by `cancelSession`, but a restart
+          // between setting the flag and consuming it would otherwise leave it
+          // stuck exactly as before -- no loop to read the flag, and no sweep
+          // looking at the status.
           `SELECT id, status, reactions_json, cycles_ran, cost_usd
              FROM sessions
-            WHERE status IN ('executing', 'planning', 'reviewing')`,
+            WHERE status IN ('executing', 'planning', 'reviewing', 'awaiting_clarification')`,
         )
         .all() as typeof rows;
     } catch (err) {
@@ -7691,6 +8015,16 @@ export class OrchestratorLoop {
       // A live runner will consume the abort at its next checkpoint (beta.55
       // path at loop.ts ~866); do NOT double-reap it here.
       if (liveRunners.includes(row.id)) continue;
+
+      // rc.2: a paused session has no dead loop -- it has no loop at all, by
+      // design. Cancelling one is an ordinary cancel that lost its process, so
+      // it ends `aborted` like every other cancel, not `failed`.
+      if (row.status === "awaiting_clarification") {
+        this.deps.logger.warn("[loop] stall-sweep completing a cancel left pending on a paused session", { sessionId: row.id });
+        await this.cancelSession(row.id, { reason: "user_cancel_swept" });
+        terminated.push({ sessionId: row.id, phase: row.status, reason: "user_cancel_swept" });
+        continue;
+      }
 
       // Dead loop with a pending cancel -> consume it: terminal failed,
       // PRESERVING the worktree (beta.62 pattern) so the branch stays

@@ -272,7 +272,7 @@ async function runScenario(opts = {}) {
     runtime,
   );
 
-  return { w, state, loop, first, allocations, preCommits, tools,
+  return { w, state, loop, first, allocations, preCommits, tools, leadCalls: () => leadCalls,
     answer: async (text) => {
       const res = await tools.get("harness_answer").execute({ sessionId: "S1", answer: text, invokedBy: "U1" });
       if (resumePromise) await resumePromise;
@@ -315,23 +315,32 @@ test("beta102: resuming through harness_answer PRESERVES the pre-pause commits",
   const branchBefore = git(["rev-parse", "refs/heads/harness/feat-x"], s.w.bare);
   assert.equal(s.preCommits.length, 2, "two real commits landed before the pause");
   assert.equal(branchBefore, s.preCommits[1], "branch is at the second commit");
+  // rc.2: snapshot before answering. The resumed run re-dispatches the paused
+  // sub-task -- that is the fix working -- and the scripted worker rewrites the
+  // same file, so the accumulator grows a null for the empty commit.
+  const preCommits = [...s.preCommits];
 
   await s.answer("The plan path was wrong; the worker's placement is correct. Accept it and proceed.");
 
-  // A re-plan DOES allocate a new worktree -- that is expected and unchanged.
-  assert.equal(s.allocations.length, 2, "the resume re-planned and re-allocated");
-  assert.notEqual(s.allocations[0].path, s.allocations[1].path, "a genuinely new worktree");
-  assert.equal(s.allocations[1].resume, true, "allocation was told this is a clarification resume");
+  // rc.2: this used to assert `allocations.length === 2` -- "the resume
+  // re-planned and re-allocated" -- because every answer went through a fresh
+  // lead call. That re-plan WAS the b100 hazard this test exists to police: it
+  // is the only reason a resume ever touched the branch at all. An answer given
+  // against a stored plan now continues that plan, so there is no second
+  // allocation to get wrong, and the commits are safe by construction rather
+  // than by careful handling.
+  assert.equal(s.allocations.length, 1, "an answered clarification resumes in place; it does not re-allocate");
+  assert.equal(s.leadCalls(), 1, "and it does not pay for a second plan");
 
   // THE ASSERTION. In b100 every one of these commits was orphaned here.
-  const wt2 = s.allocations[1].path;
-  for (const sha of s.preCommits) {
+  const wt2 = s.allocations[0].path;
+  for (const sha of preCommits) {
     git(["merge-base", "--is-ancestor", sha, "HEAD"], wt2); // throws if unreachable
   }
   assert.ok(existsSync(join(wt2, "src/lib/schema.ts")), "seq-1's file survived the resume");
   assert.ok(existsSync(join(wt2, REAL)), "seq-2's file survived the resume");
   assert.equal(
-    git(["rev-parse", "refs/heads/harness/feat-x"], s.w.bare), s.preCommits[1],
+    git(["rev-parse", "refs/heads/harness/feat-x"], s.w.bare), preCommits[1],
     "the branch ref never moved backwards",
   );
 });

@@ -494,6 +494,17 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   // code path. Construction VALIDATES and throws on a bad configuration --
   // caught here rather than propagated, because taking `register()` down would
   // leave the operator without the `harness_health` that explains why.
+  /**
+   * The v1 `models.*` value for a role: what it runs on when no v2 backend
+   * entry names a model. Declared here rather than beside its other use so the
+   * startup route log can fill the same blanks the runtime route table does.
+   */
+  const legacyModelForRole = (role: RoleName): string => {
+    if (role === "worker") return config.models.worker;
+    if (role === "adversary") return config.models.adversary;
+    if (role === "classifier") return config.models.classifier;
+    return config.models.lead;
+  };
   let backendRouter: BackendRouter | undefined;
   let backendRouterError: string | undefined;
   try {
@@ -523,8 +534,13 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       audit: (event, payload) => { try { state.audit(event, payload, ""); } catch { /* audit must never break boot */ } },
     });
     if (backendRouter) {
-      api.logger.info("[harness] per-role backends configured", { roles: backendRouter.describe() });
-      state.audit("backend.routes", { roles: backendRouter.describe() }, "");
+      // rc.2: with the legacy fallback, so a role still on Claude logs the
+      // model it will actually use instead of `model: undefined`. The startup
+      // route table is the first thing an operator reads to answer "what is
+      // running my work", and half of it was blank.
+      const routes = backendRouter.describe(legacyModelForRole);
+      api.logger.info("[harness] per-role backends configured", { roles: routes });
+      state.audit("backend.routes", { roles: routes }, "");
     }
   } catch (err) {
     // A rejected backend configuration must not be silently downgraded to the
@@ -566,12 +582,6 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     if (backendRouterError) throw new Error(`backend configuration rejected at startup: ${backendRouterError}`);
     if (!backendRouter) return;
     await backendProbe();
-  };
-  const legacyModelForRole = (role: RoleName): string => {
-    if (role === "worker") return config.models.worker;
-    if (role === "adversary") return config.models.adversary;
-    if (role === "classifier") return config.models.classifier;
-    return config.models.lead;
   };
   const effectiveBackendRoutes: EffectiveBackendRoute[] =
     backendRouter?.describe(legacyModelForRole) ??
@@ -2439,27 +2449,50 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
   // wasn't priced, so budget projections silently ran ~5x low. Best-effort,
   // never throws, never blocks bootstrap.
   try {
-    const configuredModels = [config.models.lead, config.models.worker, config.models.adversary, config.models.classifier];
-    const apiKey = await runtime.anthropicApiKey();
-    const liveIds = apiKey ? await fetchLiveModelIds(apiKey) : null;
-    const health = assessModelPricingHealth(configuredModels, liveIds, config.models.price_overrides);
-    const unpriced = health.filter((h) => h.unpriced).map((h) => h.model);
-    const notLive = health.filter((h) => h.notLive === true).map((h) => h.model);
-    if (unpriced.length > 0) {
-      api.logger.warn(
-        "[harness] model pricing health: configured model(s) have NO price-table entry; budget projections fall back to the most-expensive tier. Add harness.models.price_overrides for accurate budgeting.",
-        { unpriced },
-      );
-      state.audit("harness.model_pricing_unpriced", { unpriced, notLive }, "");
-    }
-    if (notLive.length > 0) {
-      api.logger.warn(
-        "[harness] model pricing health: configured model(s) not found in the live Anthropic /v1/models list; the id may be renamed or deprecated.",
-        { notLive },
-      );
-    }
-    if (liveIds === null) {
-      api.logger.info("[harness] model pricing health: /v1/models unreachable (no key or network); using static price table.");
+    // rc.2: only the roles that actually run on Anthropic. This used to read
+    // `config.models.*` for all four roles unconditionally, so an install with
+    // every role moved to OpenCode/OpenRouter still got startup warnings and a
+    // `harness.model_pricing_unpriced` audit naming Claude ids that nothing was
+    // going to call. Operators reasonably read that as "the harness is still on
+    // Claude". The check is about Anthropic pricing; ask it only about roles
+    // priced against Anthropic.
+    const routes = runtime.effectiveBackendRoutes ?? [];
+    const anthropicRoutes = routes.filter((r) => r.backend === "claude-code");
+    const configuredModels = [...new Set(anthropicRoutes.map((r) => r.model).filter((m): m is string => Boolean(m)))];
+    if (configuredModels.length === 0) {
+      // Deliberately not an early `return`: this runs inline in bootstrap, and
+      // returning here would skip every step below it.
+      api.logger.info("[harness] model pricing health: no role runs on Anthropic; skipping the Anthropic price check.", {
+        roles: routes.map((r) => `${r.role}=${r.backend}:${r.model ?? "(default)"}`),
+      });
+    } else {
+      const apiKey = await runtime.anthropicApiKey();
+      const liveIds = apiKey ? await fetchLiveModelIds(apiKey) : null;
+      const health = assessModelPricingHealth(configuredModels, liveIds, config.models.price_overrides);
+      const unpriced = health.filter((h) => h.unpriced).map((h) => h.model);
+      const notLive = health.filter((h) => h.notLive === true).map((h) => h.model);
+      if (unpriced.length > 0) {
+        api.logger.warn(
+          "[harness] model pricing health: configured model(s) have NO price-table entry; budget projections fall back to the most-expensive tier. Add harness.models.price_overrides for accurate budgeting.",
+          { unpriced },
+        );
+        // rc.2: name the roles, so "which model is this about" does not require
+        // cross-referencing the config by hand.
+        state.audit("harness.model_pricing_unpriced", {
+          unpriced,
+          notLive,
+          anthropicRoles: anthropicRoutes.map((r) => `${r.role}=${r.model ?? "(default)"}`),
+        }, "");
+      }
+      if (notLive.length > 0) {
+        api.logger.warn(
+          "[harness] model pricing health: configured model(s) not found in the live Anthropic /v1/models list; the id may be renamed or deprecated.",
+          { notLive },
+        );
+      }
+      if (liveIds === null) {
+        api.logger.info("[harness] model pricing health: /v1/models unreachable (no key or network); using static price table.");
+      }
     }
   } catch (err) {
     api.logger.warn("[harness] model pricing health check failed (non-fatal)", { err: String(err) });

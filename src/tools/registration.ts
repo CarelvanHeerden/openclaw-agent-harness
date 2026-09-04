@@ -622,7 +622,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       api.registerTool({
         name: "harness_cancel",
         description:
-          "Cancel an in-flight harness session by setting an abort flag the loop reads on its next checkpoint.",
+          "Cancel a harness session from any state, including one paused awaiting clarification. A session with no running loop is terminated immediately; one with a running loop stops at its next checkpoint. Safe to call more than once.",
         parameters: {
           type: "object",
           properties: {
@@ -633,7 +633,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           required: ["sessionId", "invokedBy"],
           additionalProperties: false,
         },
-        execute: (_callId: unknown, input: unknown) => {
+        execute: async (_callId: unknown, input: unknown) => {
           const { sessionId, reason, invokedBy } = input as { sessionId: string; reason?: string; invokedBy?: string };
           // beta.57 (P2): invokedBy is REQUIRED. It used to be optional and
           // only checked when present, so omitting it skipped authorisation
@@ -641,16 +641,29 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
             return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
           }
-          const row = liveDb().prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId) as { status: string; reactions_json?: string } | undefined;
-          if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
-          if (["done", "failed", "aborted"].includes(row.status)) {
-            return { content: [{ type: "text", text: `Session ${sessionId} is already terminal (${row.status})` }], details: { ok: false, alreadyTerminal: true, status: row.status } };
-          }
-          const parsed = row.reactions_json ? JSON.parse(row.reactions_json) : {};
-          parsed.abort = true;
-          liveDb().prepare(`UPDATE sessions SET reactions_json = ?, updated_at = ? WHERE id = ?`).run(JSON.stringify(parsed), Date.now(), sessionId);
           liveState().audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked", invokedBy: invokedBy ?? null }, sessionId);
-          return { content: [{ type: "text", text: `Abort flag set on ${sessionId}. The loop will terminate at its next checkpoint.` }], details: { ok: true, sessionId } };
+          // rc.2: the whole decision -- flag, terminate now, or no-op -- belongs
+          // to the loop, which is the only thing that knows whether a loop is
+          // actually running. This handler used to set the abort flag itself and
+          // report success; for a session paused in `awaiting_clarification`
+          // nothing was left to read that flag, so the cancel was acknowledged
+          // and then silently ignored forever.
+          const out = await liveRuntime().loop.cancelSession(sessionId, {
+            reason: reason ?? "tool-invoked",
+            requester: invokedBy,
+          });
+          if (out.notFound) {
+            return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+          }
+          // Cancelling an already-cancelled session is a success, not an error:
+          // the caller asked for it to be over and it is over. Returning ok:false
+          // made "cancel it again to be sure" look like a failed cancel.
+          const text = out.alreadyTerminal
+            ? `Session ${sessionId} is already terminal (${out.status}). Nothing to do.`
+            : out.terminatedNow
+              ? `Session ${sessionId} cancelled and terminated (${out.status}). Any committed work is preserved on its branch.`
+              : `Cancel flag set on ${sessionId}; a run is in flight and will stop at its next checkpoint.`;
+          return { content: [{ type: "text", text }], details: { ...out, ok: true, sessionId } };
         },
       }),
     ),
@@ -1821,6 +1834,49 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
           brief.acceptanceCriteria.push(
             `OPERATOR CLARIFICATION (for the previously-blocked sub-task ${seq}): In response to "${q.slice(0, 300)}", the operator decided: ${trimmed}. Follow this decision exactly; do not re-raise the same question.`,
+          );
+        }
+        // ---- rc.2: answering a question resumes a run, it does not restart one ----
+        //
+        // Both branches above only amended the BRIEF, and then re-drove through
+        // `status='planning'` -> a full lead call. Three things followed from
+        // that, all of them wrong and all of them observed:
+        //
+        //   1. The plan was rebuilt from scratch, so "resume" re-derived and
+        //      renumbered sub-tasks that had nothing to do with the question.
+        //   2. The scheduler's `done` set starts empty on a fresh plan and only
+        //      `accept` seeds it, so sub-tasks that had already run -- and whose
+        //      commits were already on the branch -- were dispatched again.
+        //   3. The operator's answer went into `acceptanceCriteria`, which the
+        //      LEAD reads. The worker that actually asked the question never saw
+        //      it, so it re-ran into the same wall.
+        //
+        // A stored plan plus a paused sequence is everything needed to carry on,
+        // so carry on: same plan, same numbering, completed work left alone, and
+        // the answer delivered to the sub-task that asked (see
+        // `loadAcceptedContinuation`). Only a session with no plan yet -- a
+        // pre-spend brief confirmation -- still needs the planner.
+        const canResumeInPlace = Boolean(row.lead_plan_json) && seq >= 0;
+        if (canResumeInPlace) {
+          if (/^skip\b/i.test(trimmed)) {
+            // Retire the paused sub-task in the ledger so the resumed run counts
+            // it as settled and moves past it. The content-keyed prohibition
+            // above still stands, and still governs any LATER genuine re-plan.
+            liveDb().prepare(
+              `UPDATE sub_tasks
+                  SET status = 'completed_no_change',
+                      summary = ?,
+                      completed_at = COALESCE(completed_at, ?),
+                      updated_at = ?
+                WHERE session_id = ? AND seq = ?
+                  AND cycle = (SELECT MAX(cycle) FROM sub_tasks WHERE session_id = ? AND seq = ?)`,
+            ).run(`skipped by operator: ${trimmed.slice(0, 300)}`, Date.now(), Date.now(), sessionId, seq, sessionId, seq);
+          }
+          brief.resumeExistingPlan = true;
+          liveState().audit(
+            "tool.answer_resume_in_place",
+            { sessionId, seq, skip: /^skip\b/i.test(trimmed) },
+            sessionId,
           );
         }
         // beta.101: mark this as a clarification re-drive BEFORE persisting, so
