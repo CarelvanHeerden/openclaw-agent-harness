@@ -34,6 +34,31 @@ import type { LeadPlan, LeadPlanSubTask } from "./lead.js";
 import type { ReviewReport, ReviewFinding } from "./adversary.js";
 import type { WorkerResult } from "./worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
+/**
+ * rc.2: may a session adopt the worktree its stored plan names?
+ *
+ * Returns a human-readable reason it may NOT, or `null` when every condition
+ * holds. Conditions, per the rc.2 rule that a worktree is reused only for an
+ * explicit continuation whose state has been verified:
+ *
+ *   - the plan names a worktree, and that directory still exists;
+ *   - it is still a git worktree (a directory left behind by a partial removal
+ *     is not one, and checking out into it fails obscurely later);
+ *   - the plan's repo and branch match what the SESSION recorded.
+ *
+ * The last is the ownership test. Worktree directories are named
+ * `pending-<timestamp>-<random>` and carry no session identity, so the path
+ * itself can never prove whose it is; the branch can. A terminal session's
+ * leftovers therefore cannot be inherited by a different run, because a new run
+ * records a different branch.
+ *
+ * Exported so the guard can be tested without standing up a loop.
+ */
+export declare function verifyContinuationWorktree(plan: Pick<LeadPlan, "repo" | "branch" | "worktreePath">, session: {
+    sessionId: string;
+    repo: string;
+    branch: string;
+}): string | null;
 import type { RoleName } from "../adapters/backend.js";
 /**
  * beta.64 (P0-3): parse the file paths out of a `git diff --stat base..HEAD`

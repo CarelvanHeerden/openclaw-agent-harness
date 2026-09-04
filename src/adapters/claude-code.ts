@@ -31,6 +31,7 @@ import type {
   CrystallisedBrief,
   OkfConceptRef,
 } from "../crystallise/prompt-refiner.js";
+import { renderGroundingBlock, type ClarificationGrounding } from "../crystallise/clarification-guard.js";
 import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/lead.js";
 import type { ReviewReport } from "../orchestrator/adversary.js";
 import { renderConventionsForPrompt } from "../orchestrator/repo-conventions.js";
@@ -1076,7 +1077,14 @@ export async function runClassifierSdk(params: {
   userText: string;
   timeoutSeconds: number;
   apiKey?: string;
+  /**
+   * rc.2: the verified facts the classifier may reason from. Without it the
+   * classifier had no allow-list, so a bare repository name looked like missing
+   * information and tripped the "MISSING which repo" clarify trigger.
+   */
+  grounding?: ClarificationGrounding;
 }): Promise<ClassifierResult & { costUsd: number; tokensIn: number; tokensOut: number }> {
+  const groundingBlock = params.grounding ? renderGroundingBlock(params.grounding) : "";
   const systemPrompt = [
     // beta.40: anti-persona-drift preamble. On the beta.39 ProjectThanos smoke
     // a rich, narrative brief (mentioning "prior session", "commit 0beaff1",
@@ -1099,11 +1107,21 @@ export async function runClassifierSdk(params: {
     // NOTHING ever routed into clarify, so a bimodal brief (the DR/BCP smoke:
     // build-a-receiver vs run-a-migration vs write-docs) got silently guessed.
     // A wrong guess wastes a whole run; asking up front is cheap.
-    "- clarify: choose this whenever a wrong reading would change WHAT gets built or waste a run. Two triggers: (1) the ask is dev-shaped but MISSING the one thing you'd need to act (which repo/branch/file); (2) the ask is BIMODAL -- it has >= 2 valid readings that would produce materially DIFFERENT changes (e.g. build-a-feature vs run-a-one-off-task vs document-a-procedure). Return ONE crisp question in suggestedClarification naming the fork rather than guessing. Do NOT clarify a genuinely complete, single-reading task -- that is annoying; but when in doubt on an action-changing ambiguity, clarify. clarify is a normal, expected outcome, not a last resort.",
+    // rc.2: trigger (1) used to read "which repo/branch/file". Branch was never
+    // a legitimate trigger -- the harness picks the branch itself -- and repo is
+    // only a trigger when the name genuinely fails to resolve against the
+    // allow-list now supplied in the grounding block. Left as it was, the
+    // StitchGuard request clarified on a repository that was named, allowed and
+    // unique.
+    "- clarify: choose this whenever a wrong reading would change WHAT gets built or waste a run. Two triggers: (1) the ask is dev-shaped but MISSING the one thing you'd need to act -- which FILE or subsystem, or which repository when the name matches no allowed repository or matches several; (2) the ask is BIMODAL -- it has >= 2 valid readings that would produce materially DIFFERENT changes (e.g. build-a-feature vs run-a-one-off-task vs document-a-procedure). Return ONE crisp question in suggestedClarification naming the fork rather than guessing. Do NOT clarify a genuinely complete, single-reading task -- that is annoying; but when in doubt on an action-changing ambiguity, clarify. clarify is a normal, expected outcome, not a last resort.",
+    "- Branch, base branch, worktree and checkout are NEVER clarify triggers. The harness decides all of them (see the checkout policy below).",
     "- not_dev: chat, thanks, jokes, non-technical questions. No action needed.",
     "- unsafe: asks that would exfiltrate secrets, delete data, disable safeguards, or violate policy.",
+    groundingBlock,
     "Respond with the JSON object and NOTHING else -- no code fence, no prose, no leading text. Begin your reply with '{'.",
-  ].join("\n");
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
 
   const call = (userMessage: string) =>
     (params.execute ?? structuredCall)<ClassifierResult>({
@@ -1165,8 +1183,15 @@ export async function runCrystalliserSdk(params: {
    * exist, populate clarificationNeeded instead of guessing one.
    */
   bimodalClarify?: boolean;
+  /**
+   * rc.2: the verified facts the crystalliser may reason from, and the explicit
+   * statement that it knows nothing about the filesystem. See
+   * `renderGroundingBlock`.
+   */
+  grounding?: ClarificationGrounding;
 }): Promise<CrystallisedBrief & { costUsd: number; tokensIn: number; tokensOut: number }> {
   const conceptBlock = formatConceptBlockForCrystalliser(params.concepts);
+  const groundingBlock = params.grounding ? renderGroundingBlock(params.grounding) : "";
   const repoOnly = params.repoOnlyInvariant !== false;
   const bimodal = params.bimodalClarify !== false;
   const systemPrompt = [
@@ -1195,12 +1220,24 @@ export async function runCrystalliserSdk(params: {
     ...(bimodal
       ? [
           "- BIMODALITY SELF-REPORT (CRITICAL): before finalising, ask yourself whether this request has MORE THAN ONE valid interpretation that would produce a MATERIALLY DIFFERENT diff (different files, different feature, feature-build vs one-off-migration vs documentation). If so, DO NOT pick one and proceed. Populate `interpretations` with each distinct reading ({reading, whatDiffers}) AND populate `clarificationNeeded` with a single crisp multiple-choice question ({question, options}) naming the fork. The run will PAUSE and ask the human. Only when the request has exactly ONE reasonable reading do you omit these fields and proceed. When in doubt, surface the fork -- a wrong guess wastes a whole run.",
+          // rc.2: bound what counts as a fork. The observed failure reported a
+          // fork between "base on latest main" and "PR against main" -- one
+          // instruction described from both ends -- and furnished it with a
+          // filesystem path to make the question concrete.
+          "- A FORK IS ABOUT WHAT GETS BUILT, never about where or how the harness checks code out. Differences in repository, branch, base branch, worktree, directory or checkout order are NOT interpretations and must never appear in `interpretations` or `clarificationNeeded`. If the only difference you can name between two readings is mechanical, there is ONE reading: emit the brief.",
         ]
       : []),
     // beta.21: OKF concept awareness.
     "- relevantConcepts: pass-through of any RELEVANT KNOWLEDGE concepts the caller supplied (see block below). Do NOT invent new concept ids. When a supplied concept has a `path`, prefer adding that path to `filesLikelyTouched` unless the request explicitly excludes it. When a supplied concept has `tags` unrelated to the request's domain, consider adding a matching directory or subsystem to `outOfScope` so the lead planner doesn't wander.",
     "- If NO concepts are supplied, omit the `relevantConcepts` field entirely.",
+    // rc.2: repoHint is a NAME, not a location. The crystalliser used to be the
+    // only place a repository string was produced, with no allow-list to check
+    // it against; it now gets the list and the harness resolves a short name
+    // against it deterministically afterwards.
+    "- repoHint: the repository NAME the user referred to, copied from their words (`owner/repo`, or the bare name if that is all they gave). Choose from the allowed repositories below when one clearly matches. Never a path, a URL or a directory. Omit it if the user named no repository.",
+    "- branchHint: omit unless the user named a branch that ALREADY EXISTS and must be continued. \"latest main\" and \"origin/main\" are the default base, not a branch hint.",
     conceptBlock,
+    groundingBlock,
     "Output the JSON and nothing else.",
   ]
     .filter((line) => line.length > 0)

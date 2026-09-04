@@ -9,6 +9,7 @@
  * The lead never writes code itself. It only plans and delegates. It also
  * writes a "review checklist" that the adversary consumes on cycle N.
  */
+import { resolveRepoAlias } from "../crystallise/repo-alias.js";
 import { boundScoutReportDetailed, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
 /**
  * beta.108: make a fresh branch name unique to its session, and STABLE for it.
@@ -42,9 +43,19 @@ import { boundScoutReportDetailed, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.j
  * held the single repo the loop went on to clone twenty seconds later.
  */
 export function resolveScoutRepo(repoHint, allowed) {
-    if (repoHint && repoHint.includes("/"))
-        return repoHint;
     const entries = (allowed ?? []).map((r) => (r ?? "").trim()).filter(Boolean);
+    // rc.2: a bare name that matches exactly one allowed repository is a name the
+    // harness can look up, not a missing hint. Crystallisation normally resolves
+    // this already; doing it here too means the paths that build a brief without
+    // going through the crystalliser (revise, recovery) get the same answer
+    // rather than silently skipping the scout.
+    const resolution = resolveRepoAlias(repoHint, entries);
+    if (resolution.kind === "resolved")
+        return resolution.repo;
+    // Several candidates is a real choice, and scouting one could prime the plan
+    // for the wrong codebase -- the same reason a glob does not resolve.
+    if (resolution.kind === "ambiguous")
+        return undefined;
     // The WHOLE list must be that one repo. Filtering globs out first and taking
     // the last concrete entry standing would read `["owner/repo", "other/*"]` as
     // unambiguous, when the run may legitimately target anything under `other/`.
