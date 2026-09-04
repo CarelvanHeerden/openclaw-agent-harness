@@ -31,6 +31,44 @@ import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 /**
+ * rc.2: may a session adopt the worktree its stored plan names?
+ *
+ * Returns a human-readable reason it may NOT, or `null` when every condition
+ * holds. Conditions, per the rc.2 rule that a worktree is reused only for an
+ * explicit continuation whose state has been verified:
+ *
+ *   - the plan names a worktree, and that directory still exists;
+ *   - it is still a git worktree (a directory left behind by a partial removal
+ *     is not one, and checking out into it fails obscurely later);
+ *   - the plan's repo and branch match what the SESSION recorded.
+ *
+ * The last is the ownership test. Worktree directories are named
+ * `pending-<timestamp>-<random>` and carry no session identity, so the path
+ * itself can never prove whose it is; the branch can. A terminal session's
+ * leftovers therefore cannot be inherited by a different run, because a new run
+ * records a different branch.
+ *
+ * Exported so the guard can be tested without standing up a loop.
+ */
+export function verifyContinuationWorktree(plan, session) {
+    const wt = (plan.worktreePath ?? "").trim();
+    if (!wt)
+        return "the stored plan names no worktree";
+    if (!existsSync(wt))
+        return `worktree ${wt} no longer exists`;
+    if (!existsSync(join(wt, ".git")))
+        return `${wt} is not a git worktree any more`;
+    const planRepo = (plan.repo ?? "").trim();
+    const planBranch = (plan.branch ?? "").trim();
+    if (session.repo && planRepo && planRepo !== session.repo) {
+        return `stored plan targets ${planRepo} but session ${session.sessionId} is on ${session.repo}`;
+    }
+    if (session.branch && planBranch && planBranch !== session.branch) {
+        return `stored plan targets branch ${planBranch} but session ${session.sessionId} is on ${session.branch}`;
+    }
+    return null;
+}
+/**
  * beta.64 (P0-3): parse the file paths out of a `git diff --stat base..HEAD`
  * output. Each stat line looks like ` path/to/file.ts | 12 ++--`. The trailing
  * ` N files changed, ...` summary line is skipped. Pure/deterministic.
@@ -4113,7 +4151,7 @@ export class OrchestratorLoop {
      */
     loadAcceptedContinuation(sessionId) {
         const row = this.deps.state.db
-            .prepare(`SELECT lead_plan_json FROM sessions WHERE id = ?`)
+            .prepare(`SELECT lead_plan_json, repo, branch FROM sessions WHERE id = ?`)
             .get(sessionId);
         if (!row?.lead_plan_json) {
             throw new Error(`accepted clarification cannot resume: session ${sessionId} has no stored lead plan`);
@@ -4127,6 +4165,24 @@ export class OrchestratorLoop {
         }
         if (!plan || !Array.isArray(plan.subTasks) || plan.subTasks.length === 0 || !plan.worktreePath) {
             throw new Error(`accepted clarification cannot resume: stored lead plan is incomplete`);
+        }
+        // rc.2: a stored plan is a RECOLLECTION of where a worktree was, not proof
+        // that it is still there or that it was ever this session's. This is the
+        // one path that skips allocation and adopts a path verbatim, so it is the
+        // one path that has to check.
+        //
+        // Failing here is not a dead end: the caller audits `loop.plan_resume_failed`
+        // and preserves the session, which is the correct outcome for "the work you
+        // accepted is no longer on disk". Silently continuing would point the run at
+        // a directory that is missing, or worse, at one holding somebody else's
+        // branch.
+        const mismatch = verifyContinuationWorktree(plan, {
+            sessionId,
+            repo: (row.repo ?? "").trim(),
+            branch: (row.branch ?? "").trim(),
+        });
+        if (mismatch) {
+            throw new Error(`accepted clarification cannot resume: ${mismatch}`);
         }
         const completedRows = this.deps.state.db
             .prepare(`SELECT current.seq

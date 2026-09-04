@@ -58,7 +58,7 @@ import { SlackAdapter } from "./adapters/slack.js";
 import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, registerDeniedSdkEnvVar, } from "./adapters/claude-code.js";
 import { verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair } from "./orchestrator/deploy-repair.js";
-import { crystallisePrompt } from "./crystallise/prompt-refiner.js";
+import { crystallisePrompt, groundingFrom } from "./crystallise/prompt-refiner.js";
 import { runLeadPlanner } from "./orchestrator/lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/worker.js";
 import { runAdversary as runAdversaryCore } from "./orchestrator/adversary.js";
@@ -100,12 +100,20 @@ export function bootstrapHarnessSync(api) {
         const result = await crystallisePrompt(userText, {
             config,
             logger: api.logger,
+            // rc.2: durable trail for clarification decisions, including withheld
+            // ones. `harness_run` clarifies before a session exists, so there is no
+            // session id to hang these off -- they are global audit rows.
+            audit: (event, payload) => state.audit(event, payload),
             callClassifier: async () => runClassifierSdk({
                 execute: executorFor("classifier"),
                 model: config.models.classifier,
                 userText,
                 timeoutSeconds: 60,
                 apiKey: await apiKeyForRole("classifier"),
+                // rc.2: the allow-list and the checkout policy, so the classifier
+                // stops treating a resolvable repository name and a harness-owned
+                // branch decision as missing information.
+                grounding: groundingFrom(config),
             }),
             // beta.21: forward pre-attached concepts (if any) into the SDK-side
             // crystalliser prompt. Undefined/empty is identical to pre-beta.21
@@ -120,6 +128,7 @@ export function bootstrapHarnessSync(api) {
                 // beta.80: repo-only invariant + bimodality self-report prompt gates.
                 repoOnlyInvariant: config.brief.repo_only_invariant,
                 bimodalClarify: config.brief.bimodal_clarify,
+                grounding: groundingFrom(config),
             }),
         }, concepts);
         // v2.0.0-beta.1: report what the pass actually spent.
@@ -140,7 +149,7 @@ export function bootstrapHarnessSync(api) {
         return result.kind === "brief"
             ? { kind: "brief", brief: result.brief, costUsd }
             : result.kind === "clarify"
-                ? { kind: "clarify", question: result.question, costUsd }
+                ? { kind: "clarify", question: result.question, reason: result.reason, costUsd }
                 : { kind: "reject", intent: result.intent, reason: result.reason ?? "", costUsd };
     };
     const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");

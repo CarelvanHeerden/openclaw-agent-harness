@@ -19,6 +19,7 @@
  * confirming emoji before execution begins.
  */
 import type { HarnessConfig } from "../config.js";
+import { type ClarificationGrounding, type ClarificationReason, type VerifiedContinuation } from "./clarification-guard.js";
 export type ClassifierIntent = "dev_task" | "clarify" | "not_dev" | "unsafe";
 export interface ClassifierResult {
     intent: ClassifierIntent;
@@ -201,7 +202,28 @@ export interface CrystalliserDeps {
      * `undefined` and behaviour is identical to pre-beta.21.
      */
     callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief & Partial<RoleCost>>;
+    /**
+     * rc.2: durable record of every clarification decision, including the ones
+     * withheld. A suppressed question leaves no other trace -- the run simply
+     * proceeds -- and "why did it not ask me?" needs an answer as much as "why
+     * did it ask me that?" does.
+     */
+    audit?: (event: string, payload: Record<string, unknown>) => void;
+    /**
+     * rc.2: continuation state the caller has ALREADY verified against the
+     * filesystem. Omitted for a new run, which is the overwhelming majority and
+     * the case that produced the invented-worktree question.
+     */
+    continuation?: VerifiedContinuation;
 }
+/**
+ * rc.2: assemble the facts a clarification is allowed to rest on.
+ *
+ * Everything here comes from operator config or from state the caller checked.
+ * Nothing is inferred from model output, per the brief's rule that a
+ * model-generated claim is not evidence of repository or worktree state.
+ */
+export declare function groundingFrom(config: HarnessConfig | undefined, continuation?: VerifiedContinuation): ClarificationGrounding;
 /**
  * The pure orchestration -- takes injected callables so unit tests never
  * hit the network.
@@ -216,6 +238,7 @@ concepts?: OkfConceptRef[]): Promise<{
 } | {
     kind: "clarify";
     question: string;
+    reason: ClarificationReason;
     spend: SpendTotals;
 } | {
     kind: "reject";

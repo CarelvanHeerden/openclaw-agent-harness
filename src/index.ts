@@ -88,7 +88,7 @@ import {
 } from "./adapters/claude-code.js";
 import { verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair, type DeployRepairDeps, type DeployVerifyLite } from "./orchestrator/deploy-repair.js";
-import { crystallisePrompt, type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
+import { crystallisePrompt, groundingFrom, type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
 import { runLeadPlanner } from "./orchestrator/lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/worker.js";
 import { runAdversary as runAdversaryCore, type ReviewFinding } from "./orchestrator/adversary.js";
@@ -234,7 +234,16 @@ export interface HarnessRuntime {
     concepts?: import("./crystallise/prompt-refiner.js").OkfConceptRef[],
   ) => Promise<
     | { kind: "brief"; brief: CrystallisedBrief; costUsd: number }
-    | { kind: "clarify"; question: string; costUsd: number }
+    /**
+     * rc.2: `reason` is the machine-readable WHY, so a pause is auditable
+     * without parsing the question text.
+     */
+    | {
+        kind: "clarify";
+        question: string;
+        reason: import("./crystallise/clarification-guard.js").ClarificationReason;
+        costUsd: number;
+      }
     | { kind: "reject"; intent: "not_dev" | "unsafe"; reason: string; costUsd: number }
   >;
   /**
@@ -380,12 +389,20 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       {
         config,
         logger: api.logger,
+        // rc.2: durable trail for clarification decisions, including withheld
+        // ones. `harness_run` clarifies before a session exists, so there is no
+        // session id to hang these off -- they are global audit rows.
+        audit: (event, payload) => state.audit(event, payload),
         callClassifier: async () => runClassifierSdk({
           execute: executorFor("classifier"),
           model: config.models.classifier,
           userText,
           timeoutSeconds: 60,
           apiKey: await apiKeyForRole("classifier"),
+          // rc.2: the allow-list and the checkout policy, so the classifier
+          // stops treating a resolvable repository name and a harness-owned
+          // branch decision as missing information.
+          grounding: groundingFrom(config),
         }),
         // beta.21: forward pre-attached concepts (if any) into the SDK-side
         // crystalliser prompt. Undefined/empty is identical to pre-beta.21
@@ -400,6 +417,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           // beta.80: repo-only invariant + bimodality self-report prompt gates.
           repoOnlyInvariant: config.brief.repo_only_invariant,
           bimodalClarify: config.brief.bimodal_clarify,
+          grounding: groundingFrom(config),
         }),
       },
       concepts,
@@ -422,7 +440,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     return result.kind === "brief"
       ? { kind: "brief" as const, brief: result.brief, costUsd }
       : result.kind === "clarify"
-        ? { kind: "clarify" as const, question: result.question, costUsd }
+        ? { kind: "clarify" as const, question: result.question, reason: result.reason, costUsd }
         : { kind: "reject" as const, intent: result.intent as "not_dev" | "unsafe", reason: result.reason ?? "", costUsd };
   };
 

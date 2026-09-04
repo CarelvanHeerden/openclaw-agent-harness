@@ -824,7 +824,20 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `Request rejected (${cResult.intent}): ${cResult.reason}` }], details: { ok: false, rejected: true, intent: cResult.intent, reason: cResult.reason } };
             }
             if (cResult.kind === "clarify") {
-                return { content: [{ type: "text", text: `Needs clarification: ${cResult.question}` }], details: { ok: false, needsClarification: true, question: cResult.question } };
+                // rc.2: this branch starts no session, so nothing else records that
+                // the harness stopped and why. The reason code is the machine-
+                // readable half -- `repository_ambiguous` and a question naming two
+                // candidate repositories is auditable in a way that a sentence of
+                // model prose is not.
+                liveState().audit("tool.run.clarification_requested", {
+                    requester,
+                    reason: cResult.reason,
+                    question: cResult.question,
+                });
+                return {
+                    content: [{ type: "text", text: `Needs clarification: ${cResult.question}` }],
+                    details: { ok: false, needsClarification: true, question: cResult.question, reason: cResult.reason },
+                };
             }
             // beta.25 preflight: if the brief pins a concrete repo, verify we
             // have everything (routing + name + email + token) for THIS
