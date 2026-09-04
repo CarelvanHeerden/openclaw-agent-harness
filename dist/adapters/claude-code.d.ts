@@ -26,6 +26,7 @@
  * stream, and the Anthropic Models API lookup.
  */
 import type { ClassifierResult, CrystallisedBrief, OkfConceptRef } from "../crystallise/prompt-refiner.js";
+import { type ClarificationGrounding } from "../crystallise/clarification-guard.js";
 import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/lead.js";
 import type { ReviewReport } from "../orchestrator/adversary.js";
 import { type JsonValidationOptions, type LeadAttemptInfo } from "./shared/json.js";
@@ -389,6 +390,12 @@ export declare function runClassifierSdk(params: {
     userText: string;
     timeoutSeconds: number;
     apiKey?: string;
+    /**
+     * rc.2: the verified facts the classifier may reason from. Without it the
+     * classifier had no allow-list, so a bare repository name looked like missing
+     * information and tripped the "MISSING which repo" clarify trigger.
+     */
+    grounding?: ClarificationGrounding;
 }): Promise<ClassifierResult & {
     costUsd: number;
     tokensIn: number;
@@ -423,6 +430,12 @@ export declare function runCrystalliserSdk(params: {
      * exist, populate clarificationNeeded instead of guessing one.
      */
     bimodalClarify?: boolean;
+    /**
+     * rc.2: the verified facts the crystalliser may reason from, and the explicit
+     * statement that it knows nothing about the filesystem. See
+     * `renderGroundingBlock`.
+     */
+    grounding?: ClarificationGrounding;
 }): Promise<CrystallisedBrief & {
     costUsd: number;
     tokensIn: number;
