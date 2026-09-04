@@ -486,8 +486,15 @@ test("beta136: zero-change retry keeps evidence and confronts the false completi
   assert.match(loop, /subTask: dispatchSt/);
   assert.match(loop, /resumeSessionId: result\.sdkSessionId/);
   assert.match(loop, /worktreePath: workerWorktree/);
-  assert.match(loop, /ZERO filesystem changes and ZERO commits/);
-  assert.match(loop, /Git is authoritative/);
+  // rc.2 moved the corrective prompt into src/orchestrator/worker-outcome.ts,
+  // where it is built from the outcome rather than from a two-way branch on
+  // "did it leave files behind". The confrontation b136 pinned still has to be
+  // in it -- it is now the fallback wording, used when the turn produced
+  // nothing and explained nothing.
+  const hint = S("src/orchestrator/worker-outcome.ts");
+  assert.match(loop, /buildProtocolRetryHint\(\{/);
+  assert.match(hint, /ZERO filesystem changes and ZERO commits/);
+  assert.match(hint, /Git is authoritative/);
 });
 
 test("beta136: focused OpenCode workers cannot launch nested agents", () => {

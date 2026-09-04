@@ -81,6 +81,8 @@ const DEFAULTS = {
         subtask_deadline_seconds: 2100,
         budget_reserve_ratio: 0.15,
         env_wait_retry_enabled: true,
+        worker_protocol_retry_enabled: true,
+        worker_protocol_max_attempts: 3,
         clarification_escalation_enabled: true,
         graceful_pr_on_review_crash: true,
         session_stall_seconds: 1800,
@@ -435,6 +437,12 @@ export function parseHarnessConfig(input) {
     // beta.64 (P0-1) / beta.65 (P0): clamp the PHASE-2 first-token watchdog window
     // (stream-open -> first-token). Phase 2 is always <10ms on success, so 30s is
     // generous; kept clamp [10, 1800] for operator flexibility.
+    if (typeof merged.loop.worker_protocol_max_attempts === "number") {
+        if (merged.loop.worker_protocol_max_attempts < 1)
+            merged.loop.worker_protocol_max_attempts = 1;
+        if (merged.loop.worker_protocol_max_attempts > 5)
+            merged.loop.worker_protocol_max_attempts = 5;
+    }
     if (typeof merged.loop.worker_timeout_max_attempts === "number") {
         if (merged.loop.worker_timeout_max_attempts < 1)
             merged.loop.worker_timeout_max_attempts = 1;

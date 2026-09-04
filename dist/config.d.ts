@@ -639,6 +639,29 @@ export interface LoopConfig {
      */
     env_wait_retry_enabled?: boolean;
     /**
+     * rc.2: retry a sub-task whose worker ended with no commit for a reason the
+     * harness can correct by itself -- a safety-guard denial that named a
+     * permitted alternative, or a turn that ended describing what it was about
+     * to do.
+     *
+     * Exists because b53's single env-wait retry sent a GENERIC hint ("you
+     * produced zero changes, do the work") to a worker whose actual problem was
+     * a denied command. It hit the same denial, narrated again, and the run then
+     * asked the operator "How should it proceed?" -- a question whose answer was
+     * already in the denial text. Default true.
+     */
+    worker_protocol_retry_enabled?: boolean;
+    /**
+     * rc.2: TOTAL attempts for a sub-task under the protocol retry, INCLUDING
+     * the first -- the same counting `worker_timeout_max_attempts` uses, because
+     * two adjacent knobs that count differently is a trap. Default 3, clamped to
+     * [1, 5]. 1 disables retrying without disabling the classification.
+     *
+     * Bounded on purpose. A worker that narrates its intentions three times is
+     * not going to stop on the fourth, and each attempt is a full billed turn.
+     */
+    worker_protocol_max_attempts?: number;
+    /**
      * beta.55 (B2): when a worker refuses/confabulates a sub-task even after the
      * beta.54 async-coord retry, instead of hard-failing the whole run, pause the
      * session in `awaiting_clarification` (persisting the worker's own question/
