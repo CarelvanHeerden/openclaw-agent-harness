@@ -305,11 +305,15 @@ export class BackendRouter {
         };
     }
     /** A one-line summary per role, for the startup log and the audit trail. */
-    describe() {
+    describe(fallbackModelForRole) {
         return Object.keys(this.roles).map((role) => ({
             role,
             backend: this.roles[role].backend,
-            model: this.roles[role].model,
+            provider: this.roles[role].provider ??
+                (this.roles[role].backend === "claude-code"
+                    ? "anthropic"
+                    : (this.roles[role].model?.split("/")[0] ?? "unknown")),
+            model: this.roles[role].model ?? fallbackModelForRole?.(role),
             effort: this.roles[role].effort,
             tier: this.roles[role].tier,
         }));

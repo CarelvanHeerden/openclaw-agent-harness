@@ -123,6 +123,26 @@ test("only the roles the operator moved get an executor", () => {
   assert.equal(router.executorFor("worker"), undefined);
 });
 
+test("rc1: effective route metadata names the actual backend, provider, model, and effort", () => {
+  const router = buildBackendRouter({
+    ...baseInput(),
+    backends: {
+      default: { backend: "claude-code", tier: "frontier" },
+      worker: { backend: "opencode", model: "openai/gpt-5.6", effort: "high", tier: "frontier" },
+    },
+  });
+  const routes = router.describe((role) => role === "lead" ? "claude-fable-5" : "legacy-model");
+  const worker = routes.find((route) => route.role === "worker");
+  const lead = routes.find((route) => route.role === "lead");
+  assert.deepEqual(
+    { backend: worker.backend, provider: worker.provider, model: worker.model, effort: worker.effort },
+    { backend: "opencode", provider: "openai", model: "openai/gpt-5.6", effort: "high" },
+  );
+  assert.equal(lead.provider, "anthropic");
+  assert.equal(lead.model, "claude-fable-5", "unmoved roles retain their effective legacy model");
+  assert.equal(lead.backend, "claude-code");
+});
+
 test("the judgement roles refuse a model the operator called basic", () => {
   // The floor exists because a weak model in these seats returns a well-formed
   // wrong answer rather than an obvious failure.

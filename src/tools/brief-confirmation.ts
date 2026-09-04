@@ -163,20 +163,20 @@ export function renderBriefConfirmation(input: RenderConfirmationInput): string 
   lines.push("");
   lines.push(`Acceptance criteria (${(b.acceptanceCriteria ?? []).length}):`);
   lines.push(...bullets(b.acceptanceCriteria, MAX_CRITERIA_SHOWN));
-  if ((b.filesLikelyTouched ?? []).length > 0) {
-    lines.push("");
-    lines.push("Files it expects to touch:");
-    lines.push(...bullets(b.filesLikelyTouched, MAX_LIST_SHOWN, 160));
-  }
-  if ((b.outOfScope ?? []).length > 0) {
-    lines.push("");
-    lines.push("Explicitly out of scope:");
-    lines.push(...bullets(b.outOfScope, MAX_LIST_SHOWN, 200));
-  }
   lines.push("");
-  const repo = b.repoHint ? ` in ${b.repoHint}` : "";
+  lines.push("Files it expects to touch:");
+  lines.push(...(bullets(b.filesLikelyTouched, MAX_LIST_SHOWN, 160).length
+    ? bullets(b.filesLikelyTouched, MAX_LIST_SHOWN, 160)
+    : ["  - (none specified)"]));
+  lines.push("");
+  lines.push("Explicitly out of scope:");
+  lines.push(...(bullets(b.outOfScope, MAX_LIST_SHOWN, 200).length
+    ? bullets(b.outOfScope, MAX_LIST_SHOWN, 200)
+    : ["  - (none specified)"]));
+  lines.push("");
   lines.push(
-    `Risk ${b.riskLevel ?? "unknown"}${repo}. Estimated ~$${input.estimatedUsd.toFixed(2)}, cap $${input.effectiveBudget.toFixed(2)}.`,
+    `Repository ${b.repoHint ?? "(not specified)"}. Risk ${b.riskLevel ?? "unknown"}. ` +
+      `Estimated ~$${input.estimatedUsd.toFixed(2)}, cap $${input.effectiveBudget.toFixed(2)}.`,
   );
   lines.push(
     input.sourcePath

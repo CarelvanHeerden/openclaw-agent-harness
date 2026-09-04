@@ -24,6 +24,7 @@ import { PatRouter } from "./auth/pat-router.js";
 import { RouteOverlay } from "./auth/route-overlay.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { type CredentialRecord } from "./adapters/credential-vault.js";
+import { type EffectiveBackendRoute } from "./adapters/backend-router.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import { type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
@@ -121,6 +122,9 @@ export interface CredentialStore {
 }
 export interface HarnessRuntime {
     config: HarnessConfig;
+    /** One canonical description of the route each model role actually uses. */
+    effectiveBackendRoutes: EffectiveBackendRoute[];
+    ensureBackendReady: () => Promise<void>;
     state: Awaited<ReturnType<typeof openStateStore>>;
     budget: BudgetEnforcer;
     pat: PatRouter;

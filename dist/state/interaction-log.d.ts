@@ -117,6 +117,9 @@ export declare class InteractionLog {
     logSdkRequest(sessionId: string, params: {
         role: SdkRole;
         model: string;
+        backend?: string;
+        provider?: string;
+        effort?: string;
         prompt: string;
         phase?: InteractionPhase;
         seq?: number;
@@ -128,6 +131,9 @@ export declare class InteractionLog {
     logSdkResponse(sessionId: string, params: {
         role: SdkRole;
         model: string;
+        backend?: string;
+        provider?: string;
+        effort?: string;
         phase?: InteractionPhase;
         seq?: number;
         cycle?: number;
@@ -148,6 +154,9 @@ export declare class InteractionLog {
     logSdkStreamOpened(sessionId: string, params: {
         role: SdkRole;
         model: string;
+        backend?: string;
+        provider?: string;
+        effort?: string;
         phase?: InteractionPhase;
         seq?: number;
         cycle?: number;
@@ -162,6 +171,9 @@ export declare class InteractionLog {
     logSdkFirstToken(sessionId: string, params: {
         role: SdkRole;
         model: string;
+        backend?: string;
+        provider?: string;
+        effort?: string;
         phase?: InteractionPhase;
         seq?: number;
         cycle?: number;

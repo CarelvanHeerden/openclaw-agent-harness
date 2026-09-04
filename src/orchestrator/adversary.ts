@@ -78,7 +78,7 @@ export interface ReviewFinding {
    * keywords, and this one is deliberately high AND deliberately non-blocking:
    * it must stop a merge, and no code change can repair a missing binary.
    */
-  source?: "ci" | "harness_env";
+  source?: "ci" | "harness_env" | "deterministic_scope";
   dimension: "spec" | "fit" | "quality" | "security" | "runtime";
   /**
    * rc.3: `"unknown"` is a real value here, not a defect. The adversary's JSON

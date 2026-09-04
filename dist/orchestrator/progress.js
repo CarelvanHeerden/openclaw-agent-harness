@@ -144,7 +144,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     // honest number -- and taking the max means a stale or short plan can never
     // make the denominator smaller than the work already visible.
     let plannedTotal = 0;
-    if (latestCycle <= 1 && row.lead_plan_json) {
+    if (row.lead_plan_json) {
         try {
             const parsedPlan = JSON.parse(row.lead_plan_json);
             if (Array.isArray(parsedPlan?.subTasks))
@@ -154,8 +154,28 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
             /* a plan we cannot read just leaves the row count in charge */
         }
     }
+    if (latestCycle > 1) {
+        try {
+            const scoped = db
+                .prepare(`SELECT payload FROM audit_log
+             WHERE session_id = ? AND event = 'loop.revise_scoped'
+             ORDER BY created_at DESC, id DESC LIMIT 20`)
+                .all(sessionId);
+            for (const event of scoped) {
+                const payload = JSON.parse(event.payload || "{}");
+                if (payload.cycle !== latestCycle)
+                    continue;
+                if (typeof payload.run === "number" && payload.run >= 0)
+                    plannedTotal = payload.run;
+                break;
+            }
+        }
+        catch {
+            /* keep the plan total when scoped scheduling metadata is unavailable */
+        }
+    }
     const plannedOrStarted = Math.max(all.length, plannedTotal);
-    const DONE_STATES = new Set(["done", "completed_no_change"]);
+    const DONE_STATES = new Set(["done", "completed", "completed_no_change"]);
     const FAIL_STATES = new Set(["failed", "failed_verification"]);
     const done = all.filter((s) => DONE_STATES.has(s.status)).length;
     const running = all.filter((s) => s.status === "running").length;
@@ -394,7 +414,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         clarificationQuestion,
         clarificationSeq,
         reviseSpecFellBack,
-        worklog: renderWorklog(stRows, all.length),
+        worklog: renderWorklog(stRows, plannedOrStarted),
     };
 }
 function fmtUsd(n) {
@@ -464,7 +484,7 @@ export function buildHeadline(input) {
 export function renderWorklog(subTasks, total) {
     const lines = [];
     for (const st of subTasks) {
-        const glyph = st.status === "done"
+        const glyph = st.status === "done" || st.status === "completed"
             ? st.commitSha
                 ? "✓"
                 : "·"
@@ -479,7 +499,7 @@ export function renderWorklog(subTasks, total) {
         const files = countFiles(st.filesTouched);
         if (files > 0)
             bits.push(`${files} file${files === 1 ? "" : "s"}`);
-        else if (st.status === "done" && !st.commitSha)
+        else if ((st.status === "done" || st.status === "completed") && !st.commitSha)
             bits.push("no change");
         // `!= null` rather than truthiness: a timestamp of 0 is a real value.
         if (st.startedAt != null && st.completedAt != null && st.completedAt > st.startedAt) {

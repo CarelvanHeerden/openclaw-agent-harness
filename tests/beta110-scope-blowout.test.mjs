@@ -338,12 +338,13 @@ test("beta110: 12,423 out-of-scope files ABORT the cycle, they do not become a f
   assert.ok(!audits.some((a) => a.event === "loop.final_scope_check_out_of_scope"), "no finding path on a blowout");
 });
 
-test("beta110: ordinary scope creep is STILL just a medium finding", async () => {
+test("rc1: ordinary scope creep emits one routable medium finding per file", async () => {
   const { loop, audits } = scopeLoop({ committed: ["prisma/schema.prisma", "src/stray.ts", "src/other.ts"] });
   const findings = await loop.runFinalScopeCheck("s1", PLAN, 1);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].severity, "medium");
-  assert.match(findings[0].title, /Out-of-scope file write/);
+  assert.equal(findings.length, 2);
+  assert.ok(findings.every((finding) => finding.severity === "medium"));
+  assert.ok(findings.every((finding) => finding.source === "deterministic_scope"));
+  assert.deepEqual(findings.map((finding) => finding.file).sort(), ["src/other.ts", "src/stray.ts"]);
   assert.ok(audits.some((a) => a.event === "loop.final_scope_check_out_of_scope"));
   assert.ok(!audits.some((a) => a.event === "loop.scope_blowout"), "two strays is not a blowout");
 });
@@ -352,7 +353,7 @@ test("beta110: the threshold is the boundary, and 0 disables the tripwire", asyn
   const strays = (n) => Array.from({ length: n }, (_, i) => `.npm-cache-tmp/b${i}`);
 
   const under = scopeLoop({ committed: ["prisma/schema.prisma", ...strays(499)] });
-  assert.equal((await under.loop.runFinalScopeCheck("s", PLAN, 1)).length, 1, "499 stays a finding");
+  assert.equal((await under.loop.runFinalScopeCheck("s", PLAN, 1)).length, 499, "499 stays routable findings");
 
   const at = scopeLoop({ committed: ["prisma/schema.prisma", ...strays(500)] });
   await assert.rejects(() => at.loop.runFinalScopeCheck("s", PLAN, 1), ScopeBlowoutError, "500 aborts");
@@ -361,7 +362,7 @@ test("beta110: the threshold is the boundary, and 0 disables the tripwire", asyn
     committed: ["prisma/schema.prisma", ...strays(5000)],
     loop: { scope_blowout_file_threshold: 0 },
   });
-  assert.equal((await off.loop.runFinalScopeCheck("s", PLAN, 1)).length, 1, "0 restores pre-b110 behaviour");
+  assert.equal((await off.loop.runFinalScopeCheck("s", PLAN, 1)).length, 5000, "0 disables only the tripwire");
 });
 
 test("beta110: a custom threshold is honoured", async () => {

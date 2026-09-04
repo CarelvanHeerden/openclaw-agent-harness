@@ -11,7 +11,7 @@
  */
 
 import type { HarnessConfig } from "../config.js";
-import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
+import type { CrystallisedBrief, RepoConvention } from "../crystallise/prompt-refiner.js";
 import { boundScoutReportDetailed, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
 import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 
@@ -226,6 +226,14 @@ export interface LeadPlan {
   branch: string;                    // harness/<slug>-<shortid>
   worktreePath: string;              // absolute local path
   subTasks: LeadPlanSubTask[];
+  /**
+   * Files adopted into scope after an adversarial review explicitly routed
+   * them to a worker. Persisted with the plan so final-scope checks and resumed
+   * sessions agree that reviewer-required co-fixes are authorized.
+   */
+  approvedRevisionScopeFiles?: string[];
+  /** Sources of mandatory repository conventions considered during planning. */
+  acknowledgedConventions?: string[];
   reviewChecklist: string[];         // items adversary must verify
   riskLevel: "low" | "medium" | "high";
   approxCostUsd: number;             // sum of estimatedTokens converted via price table
@@ -403,7 +411,11 @@ export interface LeadDeps {
   scoutRepo?: (input: {
     brief: CrystallisedBrief;
     repoFullName: string;
-  }) => Promise<{ report: string; costUsd?: number; tokensIn?: number; tokensOut?: number; timedOut?: boolean } | undefined>;
+    /** False when only pre-plan convention ingestion is needed. */
+    runModel?: boolean;
+  }) => Promise<{ report: string; conventions?: RepoConvention[]; costUsd?: number; tokensIn?: number; tokensOut?: number; timedOut?: boolean } | undefined>;
+  /** Production fail-closed guard: convention ingestion must complete before the Lead sees an implementation brief. */
+  requireConventionsBeforePlanning?: boolean;
   /** beta.105: see GitContext.onBranchDecision. Threaded through to allocation. */
   onBranchDecision?: (d: BranchAllocationDecision) => void;
   estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;
@@ -646,7 +658,12 @@ export async function runLeadPlanner(
   // best-effort: any failure leaves `brief.repoScoutReport` unset, and the
   // planning prompt is then byte-identical to b103's.
   let scoutOutcome: LeadScoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
-  if (deps.config.loop?.lead_repo_scout_enabled !== false && deps.scoutRepo) {
+  const scoutEnabled = deps.config.loop?.lead_repo_scout_enabled !== false;
+  const conventionsNeeded =
+    deps.config.brief?.ingest_repo_conventions !== false &&
+    !(brief.repoConventions?.length);
+  const conventionsRequired = conventionsNeeded && deps.requireConventionsBeforePlanning === true;
+  if ((scoutEnabled || conventionsNeeded) && deps.scoutRepo) {
     // Only scout a repo the run is actually allowed to touch. An unresolvable
     // or disallowed hint means the lead picks the repo itself, so there is no
     // worktree we could legitimately allocate at this point.
@@ -671,14 +688,25 @@ export async function runLeadPlanner(
         reportChars: 0,
         skippedReason: allowed.length > 0 ? "no_repo_hint_and_no_sole_allowed_repo" : "no_repo_hint",
       };
+      if (conventionsRequired) {
+        throw new Error("repository conventions must be loaded before planning; specify one allowed repository");
+      }
     } else if (allowed.length > 0 && !isRepoAllowed(repoForScout, allowed)) {
       scoutOutcome = { ran: false, reportChars: 0, skippedReason: "repo_not_allowed" };
+      if (conventionsRequired) {
+        throw new Error(`repository conventions cannot be loaded from disallowed repository ${repoForScout}`);
+      }
     } else {
       const startedAt = Date.now();
       try {
-        const result = await deps.scoutRepo({ brief, repoFullName: repoForScout });
+        const result = await deps.scoutRepo({ brief, repoFullName: repoForScout, runModel: scoutEnabled });
+        if (Array.isArray(result?.conventions)) {
+          brief.repoConventions = result.conventions;
+        } else if (conventionsRequired) {
+          throw new Error(`repository convention ingestion returned no result for ${repoForScout}`);
+        }
         const bounds = boundScoutReportDetailed(
-          result?.report ?? "",
+          scoutEnabled ? (result?.report ?? "") : "",
           deps.config.loop?.lead_scout_max_chars ?? SCOUT_REPORT_MAX_CHARS,
         );
         const report = bounds.text;
@@ -706,7 +734,7 @@ export async function runLeadPlanner(
               ceiling: deps.config.loop?.lead_scout_max_chars ?? SCOUT_REPORT_MAX_CHARS,
             });
           }
-        } else {
+        } else if (scoutEnabled) {
           // v2.0.0-beta.1: an empty report is still a BILLED call, and this is
           // where a scout TIMEOUT lands — `scoutRepo` returns `timedOut: true`
           // with an empty report rather than throwing, so the most expensive
@@ -724,8 +752,11 @@ export async function runLeadPlanner(
             timedOut: result?.timedOut === true,
             costUsd: result?.costUsd ?? 0,
           });
+        } else {
+          scoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
         }
       } catch (err) {
+        if (conventionsRequired) throw err;
         // Cost is genuinely unknown here: the callable threw rather than
         // returning, so there is no usage to read. Left absent rather than
         // zeroed, which is the distinction this milestone exists to preserve.
@@ -738,8 +769,11 @@ export async function runLeadPlanner(
         });
       }
     }
-  } else if (!deps.scoutRepo) {
+  } else if ((scoutEnabled || conventionsNeeded) && !deps.scoutRepo) {
     scoutOutcome = { ran: false, reportChars: 0, skippedReason: "unwired" };
+    if (conventionsRequired) {
+      throw new Error("repository conventions must be loaded before planning, but no repository reader is configured");
+    }
   }
 
   // beta.99 (P0-1): the LAST plan that parsed AND validated. b98 (session
@@ -780,17 +814,20 @@ export async function runLeadPlanner(
       // beta.33: defensively strip push/PR sub-tasks BEFORE validation.
       sanitizeRemoteSubTasks(raw, deps.logger);
       validatePlan(raw, deps.config);
+      validateMandatoryConventionAcknowledgement(raw, brief.repoConventions);
     } catch (err) {
       if (
         attempt < maxAttempts &&
         err instanceof LeadPlanValidationError &&
-        err.message.includes("no mutate or mixed sub-task")
+        (err.message.includes("no mutate or mixed sub-task") ||
+          err.message.includes("mandatory repository conventions"))
       ) {
-        correctiveNote =
-          "INVALID IMPLEMENTATION PLAN: your previous plan contained only read-only observe tasks. " +
-          "This brief requires code changes. Return a complete replacement plan with at least one " +
-          "taskMode:'mutate' or taskMode:'mixed' sub-task that writes and commits the implementation; " +
-          "observe tasks may only prepare or verify that mutation.";
+        correctiveNote = err.message.includes("mandatory repository conventions")
+          ? `INVALID CONVENTION COVERAGE: ${err.message}. Return a complete replacement plan that lists every mandatory convention source in acknowledgedConventions and incorporates each applicable requirement into filesLikelyTouched, successCriteria, and reviewChecklist.`
+          : "INVALID IMPLEMENTATION PLAN: your previous plan contained only read-only observe tasks. " +
+            "This brief requires code changes. Return a complete replacement plan with at least one " +
+            "taskMode:'mutate' or taskMode:'mixed' sub-task that writes and commits the implementation; " +
+            "observe tasks may only prepare or verify that mutation.";
         deps.logger.warn?.("[lead] all-observe implementation plan rejected; re-asking once", {
           attempt,
           subTaskCount: raw?.subTasks?.length ?? 0,
@@ -935,6 +972,27 @@ export function isRepoAllowed(repoFullName: string, allowed: string[]): boolean 
     if (glob.endsWith("/*") && glob.slice(0, -2) === owner) return true;
     return false;
   });
+}
+
+export function mandatoryConventionSources(conventions: RepoConvention[] | undefined): string[] {
+  return (conventions ?? [])
+    .filter((convention) => /\balwaysApply\s*:\s*true\b/i.test(convention.text))
+    .map((convention) => convention.source);
+}
+
+function validateMandatoryConventionAcknowledgement(
+  plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">,
+  conventions: RepoConvention[] | undefined,
+): void {
+  const mandatory = mandatoryConventionSources(conventions);
+  if (mandatory.length === 0) return;
+  const acknowledged = new Set(plan.acknowledgedConventions ?? []);
+  const missing = mandatory.filter((source) => !acknowledged.has(source));
+  if (missing.length > 0) {
+    throw new LeadPlanValidationError(
+      `lead plan did not acknowledge mandatory repository conventions: ${missing.join(", ")}`,
+    );
+  }
 }
 
 function validatePlan(

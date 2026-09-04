@@ -1093,8 +1093,8 @@
             "high_risk",
             "always"
           ],
-          "default": "high_risk",
-          "description": "beta.120 (brief fidelity): pause for a human to confirm the CRYSTALLISED brief before any planning or worker spend. 'off' = never (pre-beta.120). 'high_risk' = pause when the brief's riskLevel is at or above confirm_min_risk (default). 'always' = every run. Motivation: two b119 smokes spent ~$18 and ~2h each building a feature whose brief had been paraphrased upstream; the error was obvious on sight but nothing ever showed it to anyone. Crystallising costs cents, so the gate is nearly free. The session is created in awaiting_clarification and resumed with harness_answer: an unqualified approval runs it as-is, anything else is folded in as a correction first."
+          "default": "always",
+          "description": "Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; harness_answer can approve or change the brief, budget, or time limit."
         },
         "confirm_min_risk": {
           "type": "string",
@@ -1140,7 +1140,7 @@
         "typecheck_gate": {
           "type": "boolean",
           "default": true,
-          "description": "beta.111: run the repo's own typecheck script before review and raise a `high` finding for errors in files this branch changed. The adversary reviews the diff, not the compiler: ProjectThanos PR #932 survived three revise runs with `TS2551: Property 'ownerUserId' does not exist`, introduced by the b108 revise, and that repo's CI does not run a typecheck so CI stayed green. Errors in untouched files are ignored, so a repo with pre-existing breakage (#932 also carries 71 unrelated failing tests) is still usable. One script per cycle, unlike run_repo_check_scripts which runs the whole suite and stays off by default."
+          "description": "Run the repo's own typecheck script before review, falling back only to the pinned node_modules/.bin/tsc binary. Never invokes package-installing npx. Missing compilers and non-zero output without parseable TypeScript diagnostics produce a structured harness_env finding, so unavailable typechecking cannot read as green. Errors in untouched files are ignored."
         },
         "check_script_heap_retry_mb": {
           "type": "integer",

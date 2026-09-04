@@ -84,7 +84,7 @@ gateway accepts, see [Every setting](#every-setting) at the end.
             // upload directory.
             "request_file_roots":      ["/home/node/.openclaw/media/inbound"],
             "request_file_max_bytes":  262144,        // 256 KB
-            "confirm_before_spend":    "high_risk",   // "off" | "high_risk" | "always"
+            "confirm_before_spend":    "always",      // "off" | "high_risk" | "always"
             "confirm_min_risk":        "high",        // under "high_risk" mode
             "bimodal_clarify":         true,          // ask when a brief reads two ways
             "ingest_repo_conventions": true
@@ -344,9 +344,17 @@ truncated.
 
 ### Vercel bridge
 
-When enabled, after each execute cycle the adversarial reviewer receives:
+When enabled, verification is deliberately two-stage:
 
-- the latest preview deployment URL for the current branch,
+- the adversary first reviews the local candidate statically,
+- only a static pass pushes the preview branch,
+- the harness waits for the deployment matching that exact commit SHA,
+- a second adversarial review receives the preview URL and runtime evidence,
+- the PR opens only after that runtime-enriched review.
+
+An unpushed branch is never polled. The runtime review receives:
+
+- the exact-SHA preview deployment URL,
 - the last 200 log lines from that deployment,
 - any deployment errors or build failures.
 
@@ -564,7 +572,7 @@ beta.63 (convention-awareness Fix 1): brief construction / repo-convention inges
 - **`brief.bimodal_min_interpretations`** — `integer`, default `2`. beta.80 (F2): how many distinct crystalliser interpretations force a clarify pause. Default 2.
 - **`brief.request_file_roots`** — `string[]`, default `[]` (empty). beta.120 (brief fidelity): directories harness_run's `requestPath` may read a specification from. EMPTY BY DEFAULT, which disables file reads -- the harness holds GitHub tokens and a brief's contents reach model prompts and PR bodies, so an operator must name the safe directories explicitly. Point this at wherever the calling runtime stores user-uploaded files. `~` is expanded and symlinks are resolved before the check. Motivation: on the b119 smoke the calling agent retyped a 10,710-byte spec as a 40-line summary and the feature changed (`performedAt` became `scheduledAt`); reading the bytes removes that hop.
 - **`brief.request_file_max_bytes`** — `integer`, default `262144`. beta.120: hard cap on a file read via harness_run's `requestPath`. Default 262144 (256 KB).
-- **`brief.confirm_before_spend`** — `"off" | "high_risk" | "always"`, default `"high_risk"`. beta.120 (brief fidelity): pause for a human to confirm the CRYSTALLISED brief before any planning or worker spend. 'off' = never (pre-beta.120). 'high_risk' = pause when the brief's riskLevel is at or above confirm_min_risk (default). 'always' = every run. Motivation: two b119 smokes spent ~$18 and ~2h each building a feature whose brief had been paraphrased upstream; the error was obvious on sight but nothing ever showed it to anyone. Crystallising costs cents, so the gate is nearly free. The session is created in awaiting_clarification and resumed with harness_answer: an unqualified approval runs it as-is, anything else is folded in as a correction first.
+- **`brief.confirm_before_spend`** — `"off" | "high_risk" | "always"`, default `"always"`. Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; harness_answer can approve or change the brief, budget, or time limit.
 - **`brief.confirm_min_risk`** — `"medium" | "high"`, default `"high"`. beta.120: lowest riskLevel that triggers a confirmation under confirm_before_spend:'high_risk'. Default 'high'; set 'medium' for a wider net. There is deliberately NO budget threshold: estimated_usd is derived from the session budget rather than the task, so gating on it would silently turn 'high_risk' into 'always'.
 
 #### `verify`
@@ -574,7 +582,7 @@ beta.63 (convention-awareness Fix 2): final-verify repo-check-script runner.
 - **`verify.run_repo_check_scripts`** — `boolean`, default `false`. beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the verification spine -- verification is CI-only now (Carel: 'I do not want it to run locally, ever'). Default false. When true (opt-in), the final-verify sub-task runs repo-declared check scripts inline in the worktree (beta.63 behaviour) as REVISE-worthy findings. The runner plumbing is otherwise kept only for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task, NOT as a verify gate.
 - **`verify.check_script_allowlist`** — `string[]`, default `["okf:check","lint","typecheck","test"]`. beta.63 (Fix 2): allowlist of package.json script names the harness may run in final-verify. A discovered script NOT on this list is NEVER run.
 - **`verify.check_script_timeout_seconds`** — `integer`, default `600`. beta.63 (Fix 2): per-check-script wall-clock timeout (seconds). A timed-out script is treated as unrunnable (non-fatal log + note), not a hard fail.
-- **`verify.typecheck_gate`** — `boolean`, default `true`. beta.111: run the repo's own typecheck script before review and raise a `high` finding for errors in files this branch changed. The adversary reviews the diff, not the compiler: ProjectThanos PR #932 survived three revise runs with `TS2551: Property 'ownerUserId' does not exist`, introduced by the b108 revise, and that repo's CI does not run a typecheck so CI stayed green. Errors in untouched files are ignored, so a repo with pre-existing breakage (#932 also carries 71 unrelated failing tests) is still usable. One script per cycle, unlike run_repo_check_scripts which runs the whole suite and stays off by default.
+- **`verify.typecheck_gate`** — `boolean`, default `true`. Run the repo's own typecheck script before review, falling back only to the pinned node_modules/.bin/tsc binary. Never invokes package-installing npx. Missing compilers and non-zero output without parseable TypeScript diagnostics produce a structured harness_env finding, so unavailable typechecking cannot read as green. Errors in untouched files are ignored.
 - **`verify.check_script_heap_retry_mb`** — `integer`, default `8192`. beta.70 (F4): V8 heap ceiling (MB) applied via NODE_OPTIONS on the retry after a check script dies of a heap OOM (exit 134 / 'Ineffective mark-compacts near heap limit'). On Thanos-scale repos tsc --noEmit OOMs at the 4 GB default; 8 GB clears it. A persisted OOM after the retry becomes a BLOCKING finding. Default 8192.
 
 #### `log`

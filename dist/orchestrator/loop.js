@@ -74,6 +74,9 @@ export function collectExpectedFiles(plan) {
  */
 export function collectDeclaredScopeFiles(plan) {
     const set = new Set();
+    for (const f of plan.approvedRevisionScopeFiles ?? [])
+        if (f)
+            set.add(f);
     for (const st of plan.subTasks ?? []) {
         for (const f of st.filesLikelyTouched ?? [])
             if (f)
@@ -501,6 +504,17 @@ export class OrchestratorLoop {
     deps;
     constructor(deps) {
         this.deps = deps;
+    }
+    routeLog(role, fallbackModel, selectedModel) {
+        const route = this.deps.effectiveRouteFor?.(role);
+        return {
+            model: route?.backend === "opencode"
+                ? (route.model ?? selectedModel ?? fallbackModel)
+                : (selectedModel ?? route?.model ?? fallbackModel),
+            backend: route?.backend,
+            provider: route?.provider,
+            effort: route?.effort,
+        };
     }
     /**
      * Pure state-transition rule (unit-tested).
@@ -1031,7 +1045,7 @@ export class OrchestratorLoop {
         const leadStart = Date.now();
         if (!acceptedContinuation) {
             this.deps.interactionLog?.logSdkRequest(sessionId, {
-                role: "lead", model: this.deps.config.models.lead, phase: "plan",
+                role: "lead", ...this.routeLog("lead", this.deps.config.models.lead), phase: "plan",
                 prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
             });
         }
@@ -1101,7 +1115,7 @@ export class OrchestratorLoop {
             }), this.deps.config.loop.lead_timeout_seconds + scoutBudget, "lead_timeout_seconds");
             if (!acceptedContinuation) {
                 this.deps.interactionLog?.logSdkResponse(sessionId, {
-                    role: "lead", model: this.deps.config.models.lead, phase: "plan",
+                    role: "lead", ...this.routeLog("lead", this.deps.config.models.lead), phase: "plan",
                     finishReason: "end_turn", durationMs: Date.now() - leadStart,
                     outputChars: JSON.stringify(plan).length, toolCalls: [],
                     // beta.127 (#157): the second half of the same omission. Every worker
@@ -1317,7 +1331,7 @@ export class OrchestratorLoop {
             // two config greps and the container logs. All of it was knowable here.
             const e = err;
             this.deps.interactionLog?.logSdkResponse(sessionId, {
-                role: "lead", model: this.deps.config.models.lead, phase: "plan",
+                role: "lead", ...this.routeLog("lead", this.deps.config.models.lead), phase: "plan",
                 finishReason: err instanceof WorkerTimeoutError
                     ? "timeout"
                     : e?.truncated === true ? "truncated" : "error",
@@ -1331,7 +1345,7 @@ export class OrchestratorLoop {
                     sessionId,
                     outputChars: e.rawText?.length ?? 0,
                     maxOutputTokens: this.deps.config.models.max_output_tokens ?? null,
-                    model: this.deps.config.models.lead,
+                    ...this.routeLog("lead", this.deps.config.models.lead),
                     note: "the plan opened a JSON container and never closed it, so it was cut off. Compare outputChars " +
                         "against the ceiling: if it is at the ceiling the plan is too large for one reply (the compaction " +
                         "retry handles that); if it is well under, something ended the stream early and the ceiling is a " +
@@ -1476,6 +1490,7 @@ export class OrchestratorLoop {
         // as everything since the run began.
         let shipPhaseStart = shipStart;
         shipAttempts: for (;;) {
+            let authoredWorkflowThisCycle = false;
             //
             // beta.124: the bound includes `cycleExtensionsGranted`, and that is the
             // whole reason b119's extension does anything at all. `advance()` decided
@@ -1657,6 +1672,27 @@ export class OrchestratorLoop {
                     }
                     if (reviseMapping.coFixRoutings.length > 0) {
                         this.deps.logger.info("[loop] beta.119: finding(s) whose fix spans sub-tasks routed to every owner the fix needs", { sessionId, cycle, routed: reviseMapping.coFixRoutings.length });
+                    }
+                    // Reviewer-required files are approved scope, not scope creep. Keep
+                    // this authorization separate from ownership and persist it so a
+                    // resume applies the same final-scope decision as this live run.
+                    const approvedRevisionScope = new Set(plan.approvedRevisionScopeFiles ?? []);
+                    for (const assignment of reviseMapping.assignments) {
+                        if (assignment.targeted.length === 0 && (assignment.assisting?.length ?? 0) === 0)
+                            continue;
+                        for (const file of assignment.targetedFiles) {
+                            if (file)
+                                approvedRevisionScope.add(file);
+                        }
+                    }
+                    const nextApprovedRevisionScope = [...approvedRevisionScope].sort();
+                    if (JSON.stringify(nextApprovedRevisionScope) !==
+                        JSON.stringify([...(plan.approvedRevisionScopeFiles ?? [])].sort())) {
+                        plan.approvedRevisionScopeFiles = nextApprovedRevisionScope;
+                        this.deps.state.db
+                            .prepare(`UPDATE sessions SET lead_plan_json = ?, updated_at = ? WHERE id = ?`)
+                            .run(JSON.stringify(plan), Date.now(), sessionId);
+                        this.deps.state.audit("loop.revision_scope_approved", { sessionId, cycle, files: nextApprovedRevisionScope }, sessionId);
                     }
                     // A stuck finding that co-fix routing could NOT widen is one nobody in
                     // this plan can resolve. Record it for the PR body instead of letting
@@ -1932,8 +1968,9 @@ export class OrchestratorLoop {
                     // so a stall's sdk_request-without-sdk_response points at the exact
                     // sub-task that hung.
                     const workerStart = Date.now();
+                    const selectedWorkerModel = selectWorkerModel(st, this.deps.config.models);
                     this.deps.interactionLog?.logSdkRequest(sessionId, {
-                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                         prompt: `subtask ${st.seq}: ${st.title}\nintent: ${st.intent ?? ""}\n${reviseHint ?? ""}`,
                     });
                     // beta.64 (P0-2): the worker call is now wrapped so a first_token_timeout
@@ -3209,10 +3246,12 @@ export class OrchestratorLoop {
                     }
                 }
                 let report;
+                let rawReview;
+                let adversaryBaseSha;
                 // beta.63 (Part B): adversary SDK call boundary logging.
                 const reviewStart = Date.now();
                 this.deps.interactionLog?.logSdkRequest(sessionId, {
-                    role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                    role: "adversary", ...this.routeLog("adversary", this.deps.config.models.adversary), phase: "review", cycle,
                     prompt: `adversary review cycle ${cycle} for ${brief.title}; checklist: ${(plan.reviewChecklist ?? []).join("; ")}`,
                 });
                 try {
@@ -3225,7 +3264,6 @@ export class OrchestratorLoop {
                     // (loop.adversary_diff_base) with the base + HEAD sha and the branch's
                     // commit count; warn when the count is suspiciously high vs the plan's
                     // sub-task count (the beta.66 smoke #4 signature).
-                    let adversaryBaseSha;
                     try {
                         const r = this.deps.state.db
                             .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
@@ -3261,8 +3299,20 @@ export class OrchestratorLoop {
                         this.deps.logger.warn("[loop] adversary_diff_base sanity log failed (non-fatal)", { sessionId, err: String(err) });
                     }
                     report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds");
+                    rawReview = {
+                        ...report,
+                        findings: [...(report.findings ?? [])],
+                    };
+                    this.deps.state.audit("loop.review_raw", {
+                        sessionId,
+                        cycle,
+                        verdict: rawReview.verdict,
+                        findings: rawReview.findings,
+                        summary: rawReview.summary,
+                        sdkSessionId: rawReview.sdkSessionId ?? null,
+                    }, sessionId);
                     this.deps.interactionLog?.logSdkResponse(sessionId, {
-                        role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                        role: "adversary", ...this.routeLog("adversary", this.deps.config.models.adversary), phase: "review", cycle,
                         finishReason: report.verdict, costUsd: report.costUsd, durationMs: Date.now() - reviewStart,
                         outputChars: report.summary ? report.summary.length : undefined, sdkSessionId: report.sdkSessionId,
                     });
@@ -3278,7 +3328,6 @@ export class OrchestratorLoop {
                     totalCost += report.costUsd;
                     this.addCost(sessionId, report.costUsd);
                     await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
-                    this.saveReview(sessionId, cycle, report);
                     // beta.83 (#2): the session-budget SOFT warn also fires here, after the
                     // adversary review's cost lands. Pre-beta.83 the ONLY soft-warn check
                     // was inside runOne (the sub-task loop), so a run that crossed its
@@ -3315,7 +3364,7 @@ export class OrchestratorLoop {
                     // missing -- without it a review crash is invisible until you read the
                     // sessions row's status column directly.
                     this.deps.interactionLog?.logSdkResponse(sessionId, {
-                        role: "adversary", model: this.deps.config.models.adversary, phase: "review", cycle,
+                        role: "adversary", ...this.routeLog("adversary", this.deps.config.models.adversary), phase: "review", cycle,
                         finishReason: isTimeout ? "timeout" : "error", durationMs: Date.now() - reviewStart,
                     });
                     this.deps.interactionLog?.log(sessionId, { event: "review_failed", phase: "review", cycle, isTimeout, error: String(err?.message ?? err) });
@@ -3366,6 +3415,135 @@ export class OrchestratorLoop {
                     if (report.verdict === "pass" && blockingConvention.length === 0 && conventionFindings.length > 0) {
                         this.deps.state.audit("loop.convention_findings_nonblocking", { sessionId, cycle, total: conventionFindings.length }, sessionId);
                     }
+                }
+                // Two-stage preview verification: only a statically passing candidate is
+                // published. The exact pushed SHA is then awaited and reviewed with real
+                // deployment evidence before a PR is opened.
+                if (report.verdict === "pass" &&
+                    this.deps.previewVerificationEnabled === true &&
+                    this.deps.pushBranchForPreview &&
+                    this.deps.fetchRuntime) {
+                    const previewStartedAt = Date.now();
+                    let previewHeadSha = "";
+                    try {
+                        if (this.deps.ciAuthorWorkflow && !authoredWorkflowThisCycle) {
+                            try {
+                                const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
+                                if (authored) {
+                                    authoredWorkflowThisCycle = true;
+                                    this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts, stage: "pre_preview" }, sessionId);
+                                }
+                            }
+                            catch (err) {
+                                this.deps.logger.warn("[loop] pre-preview CI workflow authoring failed (non-fatal)", { sessionId, err: String(err) });
+                            }
+                        }
+                        if (!this.deps.worktreeHeadSha) {
+                            throw new Error("exact-SHA preview verification requires the worktree HEAD probe");
+                        }
+                        previewHeadSha = await this.deps.worktreeHeadSha(plan.worktreePath);
+                        if (!previewHeadSha) {
+                            throw new Error("could not resolve candidate HEAD before preview push");
+                        }
+                        this.deps.state.audit("loop.preview_push_started", { sessionId, cycle, branch: plan.branch }, sessionId);
+                        const pushed = await this.deps.pushBranchForPreview({ plan, requester: row.requester, commitSha: previewHeadSha });
+                        if (!pushed.remoteSha || pushed.remoteSha !== previewHeadSha) {
+                            throw new Error(`preview branch tip mismatch: expected ${previewHeadSha}, received ${pushed.remoteSha || "(missing)"}`);
+                        }
+                        this.deps.state.audit("loop.preview_branch_pushed", { sessionId, cycle, branch: plan.branch, headSha: previewHeadSha }, sessionId);
+                    }
+                    catch (err) {
+                        const diagnosis = diagnosePushFailure(err);
+                        this.deps.state.audit("loop.preview_push_failed", { sessionId, cycle, branch: plan.branch, failureKind: diagnosis.kind, error: String(err), worktreePreserved: true }, sessionId);
+                        return this.finaliseFailedPreserveWorktree(sessionId, `preview_push_error (${diagnosis.kind}; worktree preserved): ${String(err)}`, cycle, totalCost);
+                    }
+                    let previewRuntime;
+                    try {
+                        previewRuntime = await this.deps.fetchRuntime({
+                            plan,
+                            sessionId,
+                            waitForPreview: true,
+                            commitSha: previewHeadSha || undefined,
+                        });
+                    }
+                    catch (err) {
+                        previewRuntime = {
+                            provider: "vercel",
+                            status: "unavailable",
+                            logsExcerpt: `Preview verification failed: ${String(err)}`,
+                        };
+                    }
+                    this.deps.state.audit("loop.preview_runtime", { sessionId, cycle, headSha: previewHeadSha || null, status: previewRuntime?.status ?? "unavailable", deploymentUrl: previewRuntime?.deploymentUrl ?? null }, sessionId);
+                    if (previewRuntime?.provider !== "vercel" ||
+                        (previewRuntime.status !== "ok" && previewRuntime.status !== "build_failed")) {
+                        return this.finaliseFailedPreserveWorktree(sessionId, `preview_runtime_unavailable (exact SHA ${previewHeadSha.slice(0, 12)} was not verified; worktree preserved)`, cycle, totalCost);
+                    }
+                    const runtimeReviewStart = Date.now();
+                    this.deps.interactionLog?.logSdkRequest(sessionId, {
+                        role: "adversary",
+                        ...this.routeLog("adversary", this.deps.config.models.adversary),
+                        phase: "review",
+                        cycle,
+                        prompt: `runtime-enriched adversary review cycle ${cycle} for ${brief.title}; preview status: ${previewRuntime?.status ?? "unavailable"}`,
+                    });
+                    try {
+                        const runtimeReport = await withTimeout(this.deps.runAdversary({
+                            brief,
+                            plan,
+                            runtime: previewRuntime,
+                            requester: row.requester,
+                            baseSha: adversaryBaseSha,
+                            priorFindings: report.findings,
+                        }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds");
+                        rawReview = { ...runtimeReport, findings: [...(runtimeReport.findings ?? [])] };
+                        this.deps.state.audit("loop.review_raw", { sessionId, cycle, stage: "runtime", verdict: rawReview.verdict, findings: rawReview.findings, summary: rawReview.summary, sdkSessionId: rawReview.sdkSessionId ?? null }, sessionId);
+                        totalCost += runtimeReport.costUsd;
+                        this.addCost(sessionId, runtimeReport.costUsd);
+                        await this.deps.budget.recordSpend(row.requester, runtimeReport.costUsd, sessionId);
+                        const blockingConvention = conventionFindings.filter((finding) => isBlockingFinding(finding, classifyFinding(finding, { repoHasTestScript: true })));
+                        report = {
+                            ...runtimeReport,
+                            findings: [...runtimeReport.findings, ...conventionFindings],
+                            verdict: runtimeReport.verdict === "pass" && blockingConvention.length > 0
+                                ? "revise"
+                                : runtimeReport.verdict,
+                        };
+                        this.deps.interactionLog?.logSdkResponse(sessionId, {
+                            role: "adversary",
+                            ...this.routeLog("adversary", this.deps.config.models.adversary),
+                            phase: "review",
+                            cycle,
+                            finishReason: report.verdict,
+                            costUsd: runtimeReport.costUsd,
+                            durationMs: Date.now() - runtimeReviewStart,
+                            outputChars: runtimeReport.summary?.length,
+                            sdkSessionId: runtimeReport.sdkSessionId,
+                        });
+                    }
+                    catch (err) {
+                        this.deps.state.audit("loop.preview_review_failed", { sessionId, cycle, error: String(err) }, sessionId);
+                        return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
+                    }
+                    this.emitPhaseTiming(sessionId, "preview", cycle, previewStartedAt, {
+                        headSha: previewHeadSha || null,
+                        runtimeStatus: previewRuntime?.status ?? "unavailable",
+                        verdict: report.verdict,
+                    });
+                }
+                // The reviews table is the resumable source of truth, so persist the
+                // effective report that actually drives control flow—not the raw model
+                // response from before deterministic findings changed its verdict.
+                try {
+                    this.saveReview(sessionId, cycle, report);
+                }
+                catch (err) {
+                    this.deps.state.audit("loop.review_failed", { sessionId, cycle, isTimeout: false, stage: "persist_effective_review", error: String(err) }, sessionId);
+                    this.deps.logger.error("[loop] effective review persistence failed", { sessionId, cycle, err: String(err) });
+                    this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
+                        verdict: report.verdict,
+                        error: String(err?.message ?? err).slice(0, 200),
+                    });
+                    return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
                 }
                 lastReview = report;
                 // beta.69 (F1): visibility for the convergence gate. When the adversary's
@@ -3527,8 +3705,7 @@ export class OrchestratorLoop {
             // CI, never run locally). ciAuthorWorkflow returns null when a workflow
             // already exists or nothing is runnable. Best-effort: a failure here must
             // not block the push (the PR + review already stand); it just means no CI.
-            let authoredWorkflowThisCycle = false;
-            if (this.deps.ciAuthorWorkflow) {
+            if (this.deps.ciAuthorWorkflow && !authoredWorkflowThisCycle) {
                 try {
                     const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
                     if (authored) {
@@ -3543,7 +3720,10 @@ export class OrchestratorLoop {
                 }
             }
             try {
-                prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
+                prUrl =
+                    this.deps.previewVerificationEnabled === true && this.deps.openPullRequest
+                        ? await this.deps.openPullRequest({ plan, brief, reviewReport: lastReview, requester: row.requester })
+                        : await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
                 // beta.129: record the PR the MOMENT it exists, not only if the run
                 // reaches a terminal `shipped`. b127 opens the PR here and can then
                 // re-enter the loop for a CI repair cycle, so a run that later aborted
@@ -4235,6 +4415,7 @@ export class OrchestratorLoop {
      */
     async runWorkerCallWithRetry(p) {
         const { sessionId, st, cycle, brief, plan, requester, dispatchHint, workerWorktree } = p;
+        const selectedWorkerModel = selectWorkerModel(st, this.deps.config.models);
         const retryEnabled = this.deps.config.loop.worker_timeout_retry_enabled !== false;
         // beta.113: two attempts was one retry. Three gives the escalated
         // first-token window (below) somewhere to escalate to.
@@ -4322,7 +4503,7 @@ export class OrchestratorLoop {
                         // beta.117: the leased slot, which is NOT plan.worktreePath when
                         // this sub-task is running in parallel.
                         worktreePath: workerWorktree,
-                        modelOverride: selectWorkerModel(st, this.deps.config.models),
+                        modelOverride: selectedWorkerModel,
                         onStreamSlow,
                         firstTokenTimeoutSecondsOverride: firstTokenFor(attempt),
                     }),
@@ -4337,7 +4518,7 @@ export class OrchestratorLoop {
                     // A non-timeout throw is NOT retried here -- surface it immediately as
                     // the pre-beta.64 worker_error terminal (the caller marks it failed).
                     this.deps.interactionLog?.logSdkResponse(sessionId, {
-                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                         finishReason: "error", durationMs: Date.now() - attemptStart,
                     });
                     return { outcome: "timeout", summary: `worker threw: ${String(err)}`, failErr: `worker_error: ${String(err)}` };
@@ -4348,18 +4529,18 @@ export class OrchestratorLoop {
                 // Usable turn. Emit P0-1 stream events + the sdk_response boundary.
                 if (result.streamOpened) {
                     this.deps.interactionLog?.logSdkStreamOpened(sessionId, {
-                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                         sdkSessionId: result.sdkSessionId,
                     });
                 }
                 if (typeof result.msToFirstToken === "number") {
                     this.deps.interactionLog?.logSdkFirstToken(sessionId, {
-                        role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                         msToFirstToken: result.msToFirstToken, sdkSessionId: result.sdkSessionId,
                     });
                 }
                 this.deps.interactionLog?.logSdkResponse(sessionId, {
-                    role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                    role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                     finishReason: result.reason ?? "end_turn", costUsd: result.costUsd,
                     outputChars: result.finalMessage ? result.finalMessage.length : undefined,
                     durationMs: Date.now() - attemptStart, sdkSessionId: result.sdkSessionId,
@@ -4375,12 +4556,12 @@ export class OrchestratorLoop {
                 // The stream DID open; record that so the trail distinguishes
                 // "POST hung before open" from "opened, no tokens".
                 this.deps.interactionLog?.logSdkStreamOpened(sessionId, {
-                    role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                    role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                     sdkSessionId: result.sdkSessionId,
                 });
             }
             this.deps.interactionLog?.logSdkResponse(sessionId, {
-                role: "worker", model: this.deps.config.models.worker, phase: "worker", seq: st.seq, cycle,
+                role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                 finishReason: firstTokenTimeout ? "first_token_timeout" : "timeout", durationMs: Date.now() - attemptStart,
                 sdkSessionId: result?.sdkSessionId,
             });
@@ -4928,13 +5109,16 @@ export class OrchestratorLoop {
             discovered = discoverCheckScripts(worktree);
             script = discovered.find((d) => /^(typecheck|type-check|types|tsc)$/i.test(d.name))?.name;
         }
-        catch {
-            return [];
+        catch (err) {
+            this.deps.state.audit("loop.typecheck_gate_discovery_failed", { sessionId, cycle, error: String(err) }, sessionId);
         }
-        if (!script) {
+        const hasTsProject = existsSync(join(worktree, "tsconfig.json")) ||
+            existsSync(join(worktree, "node_modules", ".bin", "tsc"));
+        if (!script && !hasTsProject) {
             this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, reason: "no typecheck script in package.json" }, sessionId);
             return [];
         }
+        const scriptLabel = script ?? "local tsc";
         let base;
         try {
             const r = this.deps.state.db
@@ -4952,36 +5136,39 @@ export class OrchestratorLoop {
             return [];
         }
         const startedAt = Date.now();
-        let results;
-        try {
-            results = runCheckScripts({
-                repoRoot: worktree,
-                discovered,
-                allowlist: [script],
-                timeoutSeconds: vcfg?.check_script_timeout_seconds ?? 600,
-                runScript: this.deps.runCheckScript,
-                heapRetryMb: vcfg?.check_script_heap_retry_mb ?? 8192,
-            });
+        let r;
+        if (script) {
+            try {
+                const results = runCheckScripts({
+                    repoRoot: worktree,
+                    discovered,
+                    allowlist: [script],
+                    timeoutSeconds: vcfg?.check_script_timeout_seconds ?? 600,
+                    runScript: this.deps.runCheckScript,
+                    heapRetryMb: vcfg?.check_script_heap_retry_mb ?? 8192,
+                });
+                r = results.find((x) => x.script === script);
+            }
+            catch (err) {
+                this.deps.logger.warn("[loop] beta.111 typecheck script runner threw; trying the local compiler", { sessionId, err: String(err) });
+                this.deps.state.audit("loop.typecheck_gate_runner_failed", { sessionId, cycle, error: String(err) }, sessionId);
+            }
         }
-        catch (err) {
-            this.deps.logger.warn("[loop] beta.111 typecheck gate failed to run (non-fatal)", { sessionId, err: String(err) });
-            this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, reason: `runner threw: ${String(err)}` }, sessionId);
-            return [];
-        }
-        let r = results.find((x) => x.script === script);
         let durationMs = Date.now() - startedAt;
+        let usedDirect = false;
         // beta.115: `npm run typecheck` exiting 127 does NOT mean the branch is
         // clean, and until now a skip returned no findings, which reads as clean.
         // PR #964 shipped one TS2551 that CI caught on the very same tree using
         // `npx tsc --noEmit` -- so the compiler was reachable and only the npm
         // indirection was broken. Try the compiler directly before giving up.
         if (!r || !r.ran) {
-            const firstReason = r?.skippedReason ?? "did not run";
+            const firstReason = r?.skippedReason ?? (script ? "did not run" : "no package script");
             const direct = this.deps.runTypecheckDirect?.(worktree, (vcfg?.check_script_timeout_seconds ?? 600) * 1000);
             if (direct) {
-                this.deps.state.audit("loop.typecheck_gate_fallback", { sessionId, cycle, script, scriptReason: firstReason, via: direct.via, exitCode: direct.status }, sessionId);
+                usedDirect = true;
+                this.deps.state.audit("loop.typecheck_gate_fallback", { sessionId, cycle, script: scriptLabel, scriptReason: firstReason, via: direct.via, exitCode: direct.status }, sessionId);
                 r = {
-                    script,
+                    script: scriptLabel,
                     ran: true,
                     exitCode: direct.status ?? null,
                     outputTail: `${direct.stdout}\n${direct.stderr}`.slice(-20_000),
@@ -4995,12 +5182,12 @@ export class OrchestratorLoop {
                 // recommendation without driving revise cycles a worker cannot fix --
                 // repairing the worktree is the bootstrap's job, not the diff's.
                 const diagnosis = this.deps.diagnoseCheckEnv?.(worktree);
-                this.deps.state.audit("loop.typecheck_gate_unavailable", { sessionId, cycle, script, reason: firstReason, diagnosis, durationMs: Date.now() - startedAt }, sessionId);
-                this.deps.logger.warn("[loop] beta.115 typecheck gate could not run by any route", { sessionId, cycle, script, diagnosis });
+                this.deps.state.audit("loop.typecheck_gate_unavailable", { sessionId, cycle, script: scriptLabel, reason: firstReason, diagnosis, durationMs: Date.now() - startedAt }, sessionId);
+                this.deps.logger.warn("[loop] beta.115 typecheck gate could not run by any route", { sessionId, cycle, script: scriptLabel, diagnosis });
                 return [
                     {
                         title: "Typecheck gate could not run: the branch is unverified, not verified",
-                        detail: `The repo declares a \`${script}\` script but it could not be executed in the review worktree ` +
+                        detail: `The TypeScript compiler (\`${scriptLabel}\`) could not be executed in the review worktree ` +
                             `(${firstReason}), and invoking the compiler directly did not work either. ` +
                             `No type errors were found because nothing looked for them -- do not read this as a clean branch. ` +
                             `Diagnosis: ${JSON.stringify(diagnosis ?? {})}. ` +
@@ -5017,18 +5204,44 @@ export class OrchestratorLoop {
             }
         }
         if (r.exitCode === 0) {
-            this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script, exitCode: 0, errorsTotal: 0, errorsInChangedFiles: 0, durationMs }, sessionId);
-            this.deps.interactionLog?.log(sessionId, { event: "typecheck_gate_ran", phase: "review", cycle, script, clean: true });
+            this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script: scriptLabel, exitCode: 0, errorsTotal: 0, errorsInChangedFiles: 0, durationMs }, sessionId);
+            this.deps.interactionLog?.log(sessionId, { event: "typecheck_gate_ran", phase: "review", cycle, script: scriptLabel, clean: true });
             return [];
         }
-        const all = parseTscErrors(r.outputTail);
-        // Non-zero exit with nothing parseable means the script failed for some
-        // other reason (missing binary, OOM). runFinalVerifyChecks owns that case
-        // when enabled; here it is a note, because a parse miss is not evidence of
-        // a type error and must not be dressed up as one.
+        let all = parseTscErrors(r.outputTail);
+        // A wrapper can fail before invoking TypeScript. Retry with the pinned local
+        // compiler once; if that also produces a non-zero unparseable result, the
+        // gate is unavailable—not clean.
         if (all.length === 0) {
-            this.deps.state.audit("loop.typecheck_gate_unparsed", { sessionId, cycle, script, exitCode: r.exitCode, oom: !!r.oom, outputTail: r.outputTail, durationMs }, sessionId);
-            return [];
+            if (!usedDirect) {
+                const direct = this.deps.runTypecheckDirect?.(worktree, (vcfg?.check_script_timeout_seconds ?? 600) * 1000);
+                if (direct) {
+                    usedDirect = true;
+                    r = {
+                        script: scriptLabel,
+                        ran: true,
+                        exitCode: direct.status ?? null,
+                        outputTail: `${direct.stdout}\n${direct.stderr}`.slice(-20_000),
+                    };
+                    durationMs = Date.now() - startedAt;
+                    all = parseTscErrors(r.outputTail);
+                    if (r.exitCode === 0) {
+                        this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script: scriptLabel, exitCode: 0, errorsTotal: 0, errorsInChangedFiles: 0, durationMs, via: direct.via }, sessionId);
+                        return [];
+                    }
+                }
+            }
+            if (all.length === 0) {
+                this.deps.state.audit("loop.typecheck_gate_unparsed", { sessionId, cycle, script: scriptLabel, exitCode: r.exitCode, oom: !!r.oom, outputTail: r.outputTail, durationMs }, sessionId);
+                return [{
+                        source: "harness_env",
+                        dimension: "runtime",
+                        severity: "high",
+                        title: "Typecheck failed without parseable compiler diagnostics",
+                        detail: `The typecheck exited ${r.exitCode ?? "without a status"}, but its output contained no parseable TypeScript diagnostics. ` +
+                            `The branch is unverified, not clean. Output tail:\n${r.outputTail.slice(-4000)}`,
+                    }];
+            }
         }
         let committed;
         try {
@@ -5038,18 +5251,18 @@ export class OrchestratorLoop {
             return [];
         }
         const mine = errorsInChangedFiles(all, committed ?? []);
-        this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script, exitCode: r.exitCode, errorsTotal: all.length, errorsInChangedFiles: mine.length, durationMs }, sessionId);
+        this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script: scriptLabel, exitCode: r.exitCode, errorsTotal: all.length, errorsInChangedFiles: mine.length, durationMs }, sessionId);
         if (mine.length === 0) {
             this.deps.logger.info("[loop] beta.111 typecheck gate: errors exist but none in files this branch changed; pre-existing", {
-                sessionId, script, errorsTotal: all.length,
+                sessionId, script: scriptLabel, errorsTotal: all.length,
             });
             return [];
         }
-        this.deps.state.audit("loop.typecheck_gate_failed", { sessionId, cycle, script, errors: mine.slice(0, 20), errorsTotal: all.length }, sessionId);
+        this.deps.state.audit("loop.typecheck_gate_failed", { sessionId, cycle, script: scriptLabel, errors: mine.slice(0, 20), errorsTotal: all.length }, sessionId);
         this.deps.interactionLog?.log(sessionId, {
-            event: "typecheck_gate_failed", phase: "review", cycle, script, errorsInChangedFiles: mine.length,
+            event: "typecheck_gate_failed", phase: "review", cycle, script: scriptLabel, errorsInChangedFiles: mine.length,
         });
-        return [buildTypecheckFinding(mine, script)];
+        return [buildTypecheckFinding(mine, scriptLabel)];
     }
     async runFinalScopeCheck(sessionId, plan, cycle) {
         if (this.deps.config.loop.deterministic_final_scope_check === false)
@@ -5121,20 +5334,23 @@ export class OrchestratorLoop {
         }
         this.deps.state.audit("loop.final_scope_check_out_of_scope", { sessionId, cycle, outOfScope, declared }, sessionId);
         this.deps.logger.warn("[loop] beta.94 final-scope check: committed file(s) outside the declared sub-task scope union", { sessionId, cycle, outOfScope });
-        return [
-            {
+        return outOfScope.map((file) => {
+            const relatedFiles = outOfScope.filter((candidate) => candidate !== file);
+            return {
+                source: "deterministic_scope",
                 dimension: "fit",
                 severity: "medium",
-                title: `Out-of-scope file write(s): ${outOfScope.length} committed file(s) fall outside the declared sub-task scope`,
+                title: `Out-of-scope file write: ${file}`,
                 detail: `The deterministic final-scope check compared the files committed in this branch (\`git diff ${base.slice(0, 12)}..HEAD\`) ` +
                     `against the UNION of every sub-task's declared file scope (verify paths + filesLikelyTouched). ` +
-                    `These committed file(s) were NOT declared by any sub-task and may be unintended scope creep:\n` +
-                    outOfScope.map((f) => `  - ${f}`).join("\n") +
+                    `This file was not declared or explicitly authorized by a revision and may be unintended scope creep:\n  - ${file}` +
                     `\n\nDeclared scope union:\n` +
                     (declared.length ? declared.map((f) => `  - ${f}`).join("\n") : "  (none declared)") +
                     `\n\nEither confirm these edits are intended (and the plan under-declared its scope) or revert the out-of-scope changes.`,
-            },
-        ];
+                file,
+                relatedFiles: relatedFiles.length > 0 ? relatedFiles : null,
+            };
+        });
     }
     /**
      * beta.78 (Feature 2): the configured per-user daily hard cap, or 0 when

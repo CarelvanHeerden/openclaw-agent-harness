@@ -426,7 +426,7 @@ const MUTATIONS = [
   {
     name: "the work log (b108): phase tells you it is alive, not that it is right",
     file: "dist/orchestrator/progress.js",
-    find: "worklog: renderWorklog(stRows, all.length),",
+    find: "worklog: renderWorklog(stRows, plannedOrStarted),",
     replace: "worklog: [],",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
@@ -773,10 +773,10 @@ const MUTATIONS = [
     tests: ["tests/beta115-typecheck-gate-unavailable.test.mjs"],
   },
   {
-    name: "npx stays --no-install (b115): a review gate must not mutate the worktree to make itself runnable",
+    name: "npx is never used for compiler discovery (rc1): a review gate must not install or resolve arbitrary packages",
     file: "dist/orchestrator/typecheck-fallback.js",
-    find: 'args: ["--no-install", "tsc", "--noEmit"]',
-    replace: 'args: ["tsc", "--noEmit"]',
+    find: '    if (existsSync(local))\n        attempts.push({ via: "node_modules_bin", cmd: local, args: ["--noEmit"] });',
+    replace: '    if (existsSync(local))\n        attempts.push({ via: "node_modules_bin", cmd: local, args: ["--noEmit"] });\n    attempts.push({ via: "npx", cmd: "npx", args: ["tsc", "--noEmit"] });',
     tests: ["tests/beta115-typecheck-gate-unavailable.test.mjs"],
   },
   // NOT a mutation: a dangling-symlink guard in diagnoseCheckEnv. The first
@@ -2527,8 +2527,8 @@ const MUTATIONS = [
     // guidance applies to.
     name: "the PR echo survives a revise (revise): the body is never rewritten on an update",
     file: "src/index.ts",
-    find: "          operatorGuidance: brief.operatorGuidance,",
-    replace: "          operatorGuidance: undefined,",
+    find: "        operatorGuidance: params.brief.operatorGuidance,",
+    replace: "        operatorGuidance: undefined,",
     tests: ["tests/revise-guidance.test.mjs"],
   },
   {

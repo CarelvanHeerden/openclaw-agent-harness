@@ -160,6 +160,42 @@ test("an all-observe implementation plan is rejected and re-planned with mutatio
   assert.equal(plan.actualCostUsd, 5, "the rejected planning attempt is still billed");
 });
 
+test("rc1: mandatory repository conventions reach planning and require acknowledgement", { skip: skipPlanner }, async () => {
+  let calls = 0;
+  let briefSeen;
+  const source = ".cursor/rules/help-section-updates.mdc";
+  const plan = await runLeadPlanner(BRIEF(), leadDeps({
+    config: {
+      repos: { allowed: ["o/*"], default_base_branch: "main" },
+      loop: { lead_repo_scout_enabled: false },
+      brief: { ingest_repo_conventions: true, convention_char_budget: 10000 },
+      models: { lead: "l" },
+      budgets: {},
+    },
+    scoutRepo: async ({ runModel }) => {
+      assert.equal(runModel, false, "convention loading must not require a billed scout turn");
+      return {
+        report: "",
+        conventions: [{ source, text: "---\nalwaysApply: true\n---\nUpdate src/lib/help/help-content.ts when portal behavior changes." }],
+      };
+    },
+    callLeadModel: async (brief, _allowed, correctiveNote) => {
+      calls += 1;
+      briefSeen = brief;
+      const reply = PLAN_REPLY(0.1);
+      if (calls === 2) {
+        reply.acknowledgedConventions = [source];
+        reply.reviewChecklist = ["Verify the mandatory help-section update convention"];
+      }
+      if (calls === 2) assert.match(correctiveNote, /INVALID CONVENTION COVERAGE/);
+      return reply;
+    },
+  }));
+  assert.equal(calls, 2, "an unacknowledged mandatory rule is re-planned once");
+  assert.equal(briefSeen.repoConventions[0].source, source);
+  assert.deepEqual(plan.acknowledgedConventions, [source]);
+});
+
 test("a plan the planner threw away was still paid for", { skip: skipPlanner }, async () => {
   // The b67 workerContext re-ask can double the planning bill. Reading the cost
   // off the winning attempt would bill for one call and charge for two.

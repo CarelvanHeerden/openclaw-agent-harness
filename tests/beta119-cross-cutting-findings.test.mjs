@@ -252,13 +252,16 @@ test("a finding contained in one file recruits nobody", skip, () => {
   assert.equal(r.assignments.find((a) => a.seq === 5).targeted.length, 1);
 });
 
-test("a co-fix path nobody owns recruits nobody (no phantom owner)", skip, () => {
+test("rc1: an explicit unowned co-fix path is authorized for the finding's primary owner", skip, () => {
   const finding = {
     dimension: "quality", severity: "medium", file: UPLOAD_ROUTE,
     title: "x", detail: "", relatedFiles: ["src/totally/unowned/thing.ts"],
   };
   const r = mapFindingsToSubTasks(subTasks(), [finding], match, { routeCoFixOwners: true });
-  assert.equal(r.coFixRoutings.length, 0);
+  assert.equal(r.coFixRoutings.length, 1);
+  assert.equal(r.coFixRoutings[0].primarySeq, 5);
+  assert.deepEqual(r.coFixRoutings[0].matchedFiles, ["src/totally/unowned/thing.ts"]);
+  assert.ok(r.assignments.find((a) => a.seq === 5).targetedFiles.includes("src/totally/unowned/thing.ts"));
 });
 
 test("meta findings are not co-fix routed", skip, () => {

@@ -142,6 +142,21 @@ test("beta104: no resolvable repoHint skips the scout rather than guessing a rep
   assert.equal(plan.scout.skippedReason, "no_repo_hint_and_no_sole_allowed_repo");
 });
 
+test("rc1: production planning fails closed when mandatory convention ingestion cannot select a repository", { skip }, async () => {
+  const { d, calls } = deps({
+    config: {
+      ...CONFIG,
+      repos: { ...CONFIG.repos, allowed: ["Stitch-Vercel/one", "Stitch-Vercel/two"] },
+    },
+    requireConventionsBeforePlanning: true,
+  });
+  await assert.rejects(
+    () => runLeadPlanner({ ...BRIEF(), repoHint: undefined }, d),
+    /conventions must be loaded before planning/i,
+  );
+  assert.equal(calls.lead, 0, "the Lead must not plan before repository conventions are available");
+});
+
 test("beta104: a repoHint outside the allow-list is never checked out", { skip }, async () => {
   const { d, calls } = deps();
   const plan = await runLeadPlanner({ ...BRIEF(), repoHint: "attacker/evil" }, d);
@@ -157,10 +172,10 @@ test("beta104: the allow-list gate honours owner/* globs, as validatePlan does",
   assert.equal(isRepoAllowed("notarepo", ["Stitch-Vercel/*"]), false);
 });
 
-test("beta104: lead_repo_scout_enabled:false restores the exact pre-b104 behaviour", { skip }, async () => {
+test("rc1: lead_repo_scout_enabled:false skips the model report but still loads conventions", { skip }, async () => {
   const { d, calls } = deps({ config: { ...CONFIG, loop: { lead_repo_scout_enabled: false } } });
   const plan = await runLeadPlanner(BRIEF(), d);
-  assert.equal(calls.scout, 0);
+  assert.equal(calls.scout, 1, "the repository pass still runs so mandatory conventions reach planning");
   assert.equal(calls.briefSeenByLead.repoScoutReport, undefined);
   assert.equal(plan.scout.skippedReason, "disabled");
 });

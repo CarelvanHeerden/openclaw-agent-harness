@@ -259,8 +259,10 @@ test("wiring: loop.ts imports and uses the surviving modules", () => {
   assert.match(loop, /loop\.subtask_revise_scoped_skip/);
   assert.match(loop, /loop\.revise_scoped/);
   // Fix 3: model override threaded to both runWorker call sites
-  const overrides = loop.match(/modelOverride: selectWorkerModel\(st, this\.deps\.config\.models\)/g) ?? [];
-  assert.ok(overrides.length >= 2, `expected >=2 modelOverride call sites, got ${overrides.length}`);
+  const directOverrides = loop.match(/modelOverride: selectWorkerModel\(st, this\.deps\.config\.models\)/g) ?? [];
+  const selectedOverrides = loop.match(/modelOverride: selectedWorkerModel/g) ?? [];
+  assert.match(loop, /const selectedWorkerModel = selectWorkerModel\(st, this\.deps\.config\.models\)/);
+  assert.ok(directOverrides.length + selectedOverrides.length >= 2, "both worker call sites must receive the selected model");
 });
 
 test("wiring: worker + index thread modelOverride to the SDK model", () => {

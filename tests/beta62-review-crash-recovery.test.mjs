@@ -271,13 +271,15 @@ test("beta62: loop wires review_failed telemetry + folds post-review persist int
   const src = S("src/orchestrator/loop.ts");
   // Fix 1: the review catch emits loop.review_failed unconditionally
   assert.match(src, /"loop\.review_failed"/);
-  // the post-review persist awaits are now INSIDE the review try (before the catch)
+  // Spend persistence remains inside the review try. The review itself is
+  // deliberately saved only after deterministic findings produce the final
+  // effective verdict.
   const tryBlock = src.slice(src.indexOf("let report: ReviewReport;"), src.indexOf('this.deps.state.audit("loop.review"'));
-  // beta.69 (F5): a post-cancel discard block sits between saveReview and the
-  // catch, still INSIDE the review try. Assert both persist awaits precede the
-  // catch (order preserved) rather than requiring them to be immediately
-  // adjacent to `} catch`.
-  assert.match(tryBlock, /await this\.deps\.budget\.recordSpend\(row\.requester, report\.costUsd, sessionId\);\s*\n\s*this\.saveReview\(sessionId, cycle, report\);/);
+  assert.match(tryBlock, /await this\.deps\.budget\.recordSpend\(row\.requester, report\.costUsd, sessionId\);/);
+  assert.ok(
+    tryBlock.indexOf("conventionFindings.length > 0") < tryBlock.indexOf("this.saveReview(sessionId, cycle, report)"),
+    "the effective post-gate review must be the persisted review",
+  );
   assert.match(tryBlock, /\} catch/);
   // Fix 1: crash routes to finaliseReviewCrash
   assert.match(src, /return await this\.finaliseReviewCrash\(/);

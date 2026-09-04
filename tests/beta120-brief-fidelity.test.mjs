@@ -35,6 +35,9 @@ try {
 const skip = briefSource === null;
 const here = dirname(fileURLToPath(import.meta.url));
 const regSrc = readFileSync(resolve(here, "..", "src", "tools", "registration.ts"), "utf8");
+const configSrc = readFileSync(resolve(here, "..", "src", "config.ts"), "utf8");
+const configSchema = JSON.parse(readFileSync(resolve(here, "..", "src", "config.schema.json"), "utf8"));
+const pluginManifest = JSON.parse(readFileSync(resolve(here, "..", "openclaw.plugin.json"), "utf8"));
 
 function tempRoot() {
   return mkdtempSync(join(tmpdir(), "b120-brief-"));
@@ -197,6 +200,13 @@ test("beta120: an unmodified copy shows no material drift", { skip }, () => {
 // ---------------------------------------------------------------------------
 // Fix C: confirm the brief before spending
 // ---------------------------------------------------------------------------
+
+test("v2: runtime and schema defaults gate every new brief", () => {
+  assert.match(configSrc, /confirm_before_spend:\s*"always"/);
+  assert.equal(configSchema.properties.brief.properties.confirm_before_spend.default, "always");
+  assert.equal(pluginManifest.configSchema.properties.brief.properties.confirm_before_spend.default, "always");
+  assert.match(regSrc, /confirm_before_spend \?\? "always"/, "legacy and partial configs need the safe fallback");
+});
 
 test("beta120: the confirmation gate keys on risk, never on the budget", { skip }, () => {
   const { decideBriefConfirmation } = briefConfirmation;
@@ -411,13 +421,48 @@ test("beta120: correcting the brief folds the correction in BEFORE any work", { 
   assert.notEqual(runtime.loopCalls[0].brief.resumeFromClarification, true);
 });
 
-test("beta120: a low-risk run is not gated", { skip }, async () => {
+test("v2: a low-risk harness_run pauses by default before the loop starts", { skip }, async () => {
   const runtime = makeRuntime({ riskLevel: "low" });
   const { api, tools } = collectTools();
   registerHarnessTools(api, runtime);
   const r = await tools.get("harness_run").execute({ requester: "U1", request: "fix a typo in the readme" });
-  assert.notEqual(r.details.awaitingConfirmation, true);
-  assert.equal(runtime.loopCalls.length, 1);
+  assert.equal(r.details.awaitingConfirmation, true);
+  assert.equal(r.details.estimatedUsd, 18);
+  assert.equal(r.details.effectiveBudget, 18);
+  assert.equal(runtime.loopCalls.length, 0, "planning must not start before explicit confirmation");
+  assert.match(r.details.question, /Estimated ~\$18\.00, cap \$18\.00/);
+  assert.match(r.details.question, /default wall clock is 2h/);
+});
+
+test("v2: a low-risk harness_start_session pauses by default before the loop starts", { skip }, async () => {
+  const runtime = makeRuntime({ riskLevel: "low" });
+  const { api, tools } = collectTools();
+  registerHarnessTools(api, runtime);
+  const r = await tools.get("harness_start_session").execute({
+    requester: "U1",
+    budgetUsd: 12,
+    brief: {
+      title: "Fix README typo",
+      motivation: "The current documentation contains a misleading typo.",
+      acceptanceCriteria: ["Correct the typo without changing behavior"],
+      filesLikelyTouched: ["README.md"],
+      outOfScope: ["Runtime code"],
+      repoHint: "o/r",
+      riskLevel: "low",
+    },
+  });
+
+  assert.equal(r.details.awaitingConfirmation, true);
+  assert.equal(r.details.estimatedUsd, 12);
+  assert.equal(r.details.effectiveBudget, 12);
+  assert.equal(runtime.loopCalls.length, 0, "planning must not start before explicit confirmation");
+  assert.match(r.details.question, /Fix README typo/);
+  assert.match(r.details.question, /The current documentation contains a misleading typo/);
+  assert.match(r.details.question, /README\.md/);
+  assert.match(r.details.question, /Runtime code/);
+  assert.match(r.details.question, /Repository o\/r\. Risk low/);
+  assert.match(r.details.question, /Estimated ~\$12\.00, cap \$12\.00/);
+  assert.match(r.details.question, /default wall clock is 2h/);
 });
 
 test("beta120: confirm_before_spend off restores the pre-beta.120 path", { skip }, async () => {
@@ -427,6 +472,22 @@ test("beta120: confirm_before_spend off restores the pre-beta.120 path", { skip 
   const r = await tools.get("harness_run").execute({ requester: "U1", request: "build the continuity artefact library" });
   assert.notEqual(r.details.awaitingConfirmation, true);
   assert.equal(runtime.loopCalls.length, 1);
+});
+
+test("v2: explicit high_risk preserves risk-threshold gating", { skip }, async () => {
+  const low = makeRuntime({ riskLevel: "low", brief: { confirm_before_spend: "high_risk", confirm_min_risk: "high" } });
+  const lowTools = collectTools();
+  registerHarnessTools(lowTools.api, low);
+  const lowResult = await lowTools.tools.get("harness_run").execute({ requester: "U1", request: "fix a typo" });
+  assert.notEqual(lowResult.details.awaitingConfirmation, true);
+  assert.equal(low.loopCalls.length, 1);
+
+  const high = makeRuntime({ riskLevel: "high", brief: { confirm_before_spend: "high_risk", confirm_min_risk: "high" } });
+  const highTools = collectTools();
+  registerHarnessTools(highTools.api, high);
+  const highResult = await highTools.tools.get("harness_run").execute({ requester: "U1", request: "change production authentication" });
+  assert.equal(highResult.details.awaitingConfirmation, true);
+  assert.equal(high.loopCalls.length, 0);
 });
 
 test("beta120: harness_run reads the spec from disk and discards the paraphrase", { skip }, async () => {

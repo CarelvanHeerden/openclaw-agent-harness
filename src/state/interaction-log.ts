@@ -243,6 +243,9 @@ export class InteractionLog {
   logSdkRequest(sessionId: string, params: {
     role: SdkRole;
     model: string;
+    backend?: string;
+    provider?: string;
+    effort?: string;
     prompt: string;
     phase?: InteractionPhase;
     seq?: number;
@@ -259,6 +262,9 @@ export class InteractionLog {
       cycle: params.cycle,
       role: params.role,
       model: params.model,
+      backend: params.backend,
+      provider: params.provider,
+      effort: params.effort,
       promptChars: p.promptChars,
       promptTail: p.promptTail,
       ...(p.promptFull !== undefined ? { promptFull: p.promptFull } : {}),
@@ -271,6 +277,9 @@ export class InteractionLog {
   logSdkResponse(sessionId: string, params: {
     role: SdkRole;
     model: string;
+    backend?: string;
+    provider?: string;
+    effort?: string;
     phase?: InteractionPhase;
     seq?: number;
     cycle?: number;
@@ -290,6 +299,9 @@ export class InteractionLog {
       cycle: params.cycle,
       role: params.role,
       model: params.model,
+      backend: params.backend,
+      provider: params.provider,
+      effort: params.effort,
       finishReason: params.finishReason,
       outputChars: params.outputChars,
       costUsd: params.costUsd,
@@ -309,6 +321,9 @@ export class InteractionLog {
   logSdkStreamOpened(sessionId: string, params: {
     role: SdkRole;
     model: string;
+    backend?: string;
+    provider?: string;
+    effort?: string;
     phase?: InteractionPhase;
     seq?: number;
     cycle?: number;
@@ -322,6 +337,9 @@ export class InteractionLog {
       cycle: params.cycle,
       role: params.role,
       model: params.model,
+      backend: params.backend,
+      provider: params.provider,
+      effort: params.effort,
       sdkSessionId: params.sdkSessionId,
     });
   }
@@ -335,6 +353,9 @@ export class InteractionLog {
   logSdkFirstToken(sessionId: string, params: {
     role: SdkRole;
     model: string;
+    backend?: string;
+    provider?: string;
+    effort?: string;
     phase?: InteractionPhase;
     seq?: number;
     cycle?: number;
@@ -349,6 +370,9 @@ export class InteractionLog {
       cycle: params.cycle,
       role: params.role,
       model: params.model,
+      backend: params.backend,
+      provider: params.provider,
+      effort: params.effort,
       msToFirstToken: params.msToFirstToken,
       sdkSessionId: params.sdkSessionId,
     });
