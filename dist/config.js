@@ -239,7 +239,7 @@ const DEFAULTS = {
         bimodal_min_interpretations: 2,
         request_file_roots: [],
         request_file_max_bytes: 262144,
-        confirm_before_spend: "high_risk",
+        confirm_before_spend: "always",
         confirm_min_risk: "high",
     },
     verify: {

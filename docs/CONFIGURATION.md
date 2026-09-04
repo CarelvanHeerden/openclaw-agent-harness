@@ -84,7 +84,7 @@ gateway accepts, see [Every setting](#every-setting) at the end.
             // upload directory.
             "request_file_roots":      ["/home/node/.openclaw/media/inbound"],
             "request_file_max_bytes":  262144,        // 256 KB
-            "confirm_before_spend":    "high_risk",   // "off" | "high_risk" | "always"
+            "confirm_before_spend":    "always",      // "off" | "high_risk" | "always"
             "confirm_min_risk":        "high",        // under "high_risk" mode
             "bimodal_clarify":         true,          // ask when a brief reads two ways
             "ingest_repo_conventions": true
@@ -564,7 +564,7 @@ beta.63 (convention-awareness Fix 1): brief construction / repo-convention inges
 - **`brief.bimodal_min_interpretations`** — `integer`, default `2`. beta.80 (F2): how many distinct crystalliser interpretations force a clarify pause. Default 2.
 - **`brief.request_file_roots`** — `string[]`, default `[]` (empty). beta.120 (brief fidelity): directories harness_run's `requestPath` may read a specification from. EMPTY BY DEFAULT, which disables file reads -- the harness holds GitHub tokens and a brief's contents reach model prompts and PR bodies, so an operator must name the safe directories explicitly. Point this at wherever the calling runtime stores user-uploaded files. `~` is expanded and symlinks are resolved before the check. Motivation: on the b119 smoke the calling agent retyped a 10,710-byte spec as a 40-line summary and the feature changed (`performedAt` became `scheduledAt`); reading the bytes removes that hop.
 - **`brief.request_file_max_bytes`** — `integer`, default `262144`. beta.120: hard cap on a file read via harness_run's `requestPath`. Default 262144 (256 KB).
-- **`brief.confirm_before_spend`** — `"off" | "high_risk" | "always"`, default `"high_risk"`. beta.120 (brief fidelity): pause for a human to confirm the CRYSTALLISED brief before any planning or worker spend. 'off' = never (pre-beta.120). 'high_risk' = pause when the brief's riskLevel is at or above confirm_min_risk (default). 'always' = every run. Motivation: two b119 smokes spent ~$18 and ~2h each building a feature whose brief had been paraphrased upstream; the error was obvious on sight but nothing ever showed it to anyone. Crystallising costs cents, so the gate is nearly free. The session is created in awaiting_clarification and resumed with harness_answer: an unqualified approval runs it as-is, anything else is folded in as a correction first.
+- **`brief.confirm_before_spend`** — `"off" | "high_risk" | "always"`, default `"always"`. Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; harness_answer can approve or change the brief, budget, or time limit.
 - **`brief.confirm_min_risk`** — `"medium" | "high"`, default `"high"`. beta.120: lowest riskLevel that triggers a confirmation under confirm_before_spend:'high_risk'. Default 'high'; set 'medium' for a wider net. There is deliberately NO budget threshold: estimated_usd is derived from the session budget rather than the task, so gating on it would silently turn 'high_risk' into 'always'.
 
 #### `verify`

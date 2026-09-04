@@ -229,8 +229,8 @@ export interface BriefConfig {
      *
      * "off"       - never pause (pre-beta.120 behaviour).
      * "high_risk" - pause when the brief's riskLevel is at or above
-     *               confirm_min_risk. Default.
-     * "always"    - pause on every run.
+     *               confirm_min_risk.
+     * "always"    - pause on every run. Default.
      *
      * Motivation: two b119 smokes spent ~$18 and ~2h each building a feature
      * whose brief had been paraphrased upstream (`performedAt` became

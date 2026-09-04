@@ -78,6 +78,9 @@ function makeRuntime() {
       models: { lead: "l", worker: "w", adversary: "a", classifier: "c", auth: { credential_service: "anthropic-x" } },
       pat_routing: { overrides: {}, commit_identity: {}, default_service_pattern: "github-{owner}", auth: { api_key_env: "GH_TOKEN" } },
       budgets: { session_default_usd: 50 },
+      // These tests exercise the immediate-start mechanics. Default gating is
+      // covered end-to-end in beta120-brief-fidelity.test.mjs.
+      brief: { confirm_before_spend: "off" },
     },
   };
 }

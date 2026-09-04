@@ -242,7 +242,10 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     // where the user wrote `performedAt`.
     const briefCfg = liveConfig().brief;
     const decision = decideBriefConfirmation({
-      mode: (briefCfg?.confirm_before_spend ?? "high_risk") as ConfirmMode,
+      // Safety fallback must match the runtime/schema default. A partial or
+      // legacy config must not silently bypass operator review for low-risk
+      // work merely because the `brief` block or this field is absent.
+      mode: (briefCfg?.confirm_before_spend ?? "always") as ConfirmMode,
       riskLevel: (params.brief as { riskLevel?: string }).riskLevel,
       minRisk: (briefCfg?.confirm_min_risk ?? "high") as RiskLevel,
       waived: params.confirmWaived,
