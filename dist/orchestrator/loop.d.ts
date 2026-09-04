@@ -358,11 +358,14 @@ export interface OrchestratorDeps {
         commitSha?: string;
     }) => Promise<RuntimeSnapshot | undefined>;
     previewVerificationEnabled?: boolean;
-    /** Pushes the candidate branch without opening a PR, enabling preview deploys. */
+    /** Pushes the candidate branch without opening a PR and returns its verified remote tip. */
     pushBranchForPreview?: (params: {
         plan: LeadPlan;
         requester?: string;
-    }) => Promise<void>;
+        commitSha: string;
+    }) => Promise<{
+        remoteSha: string;
+    }>;
     /** Opens/updates the PR after the preview-enriched review has passed. */
     openPullRequest?: (params: {
         plan: LeadPlan;

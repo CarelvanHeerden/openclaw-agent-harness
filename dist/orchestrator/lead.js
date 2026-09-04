@@ -252,6 +252,7 @@ export async function runLeadPlanner(brief, deps) {
     const scoutEnabled = deps.config.loop?.lead_repo_scout_enabled !== false;
     const conventionsNeeded = deps.config.brief?.ingest_repo_conventions !== false &&
         !(brief.repoConventions?.length);
+    const conventionsRequired = conventionsNeeded && deps.requireConventionsBeforePlanning === true;
     if ((scoutEnabled || conventionsNeeded) && deps.scoutRepo) {
         // Only scout a repo the run is actually allowed to touch. An unresolvable
         // or disallowed hint means the lead picks the repo itself, so there is no
@@ -277,16 +278,25 @@ export async function runLeadPlanner(brief, deps) {
                 reportChars: 0,
                 skippedReason: allowed.length > 0 ? "no_repo_hint_and_no_sole_allowed_repo" : "no_repo_hint",
             };
+            if (conventionsRequired) {
+                throw new Error("repository conventions must be loaded before planning; specify one allowed repository");
+            }
         }
         else if (allowed.length > 0 && !isRepoAllowed(repoForScout, allowed)) {
             scoutOutcome = { ran: false, reportChars: 0, skippedReason: "repo_not_allowed" };
+            if (conventionsRequired) {
+                throw new Error(`repository conventions cannot be loaded from disallowed repository ${repoForScout}`);
+            }
         }
         else {
             const startedAt = Date.now();
             try {
                 const result = await deps.scoutRepo({ brief, repoFullName: repoForScout, runModel: scoutEnabled });
-                if (result?.conventions?.length) {
+                if (Array.isArray(result?.conventions)) {
                     brief.repoConventions = result.conventions;
+                }
+                else if (conventionsRequired) {
+                    throw new Error(`repository convention ingestion returned no result for ${repoForScout}`);
                 }
                 const bounds = boundScoutReportDetailed(scoutEnabled ? (result?.report ?? "") : "", deps.config.loop?.lead_scout_max_chars ?? SCOUT_REPORT_MAX_CHARS);
                 const report = bounds.text;
@@ -339,6 +349,8 @@ export async function runLeadPlanner(brief, deps) {
                 }
             }
             catch (err) {
+                if (conventionsRequired)
+                    throw err;
                 // Cost is genuinely unknown here: the callable threw rather than
                 // returning, so there is no usage to read. Left absent rather than
                 // zeroed, which is the distinction this milestone exists to preserve.
@@ -354,6 +366,9 @@ export async function runLeadPlanner(brief, deps) {
     }
     else if ((scoutEnabled || conventionsNeeded) && !deps.scoutRepo) {
         scoutOutcome = { ran: false, reportChars: 0, skippedReason: "unwired" };
+        if (conventionsRequired) {
+            throw new Error("repository conventions must be loaded before planning, but no repository reader is configured");
+        }
     }
     // beta.99 (P0-1): the LAST plan that parsed AND validated. b98 (session
     // f2613eec) proved why this must exist: lead call #1 returned a perfectly

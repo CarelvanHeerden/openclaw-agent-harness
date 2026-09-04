@@ -35,7 +35,7 @@ test("the injected HEAD probe must throw, because the salvage guard reads silenc
   );
 });
 
-test("every OTHER caller of worktreeHeadSha guards itself, so the throw is safe to let out", () => {
+test("every best-effort caller guards worktreeHeadSha; exact-SHA preview and salvage fail closed", () => {
   const src = S("src/orchestrator/loop.ts");
   const unguarded = src
     .split("\n")
@@ -44,6 +44,9 @@ test("every OTHER caller of worktreeHeadSha guards itself, so the throw is safe 
     // The salvage guard is the one caller that WANTS the throw; it has its own
     // try/catch and turns a failure into "protect the work".
     .filter(({ l }) => !/head = await this\.deps\.worktreeHeadSha/.test(l))
+    // Preview verification also requires an exact SHA. Its surrounding
+    // try/catch preserves the worktree instead of falling back to a branch.
+    .filter(({ l }) => !/previewHeadSha = await this\.deps\.worktreeHeadSha/.test(l))
     // The interface declaration is not a call.
     .filter(({ l }) => !/worktreeHeadSha\?:/.test(l));
   assert.deepEqual(

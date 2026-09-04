@@ -24,7 +24,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, symlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -101,6 +101,14 @@ test("rc1: the fallback never invokes package-installing discovery", () => {
   };
   runTypecheckDirect(dir, 30_000, { spawn });
   assert.deepEqual(calls, [], "without a pinned local compiler, do not invoke npx or any package manager");
+});
+
+test("rc1: the observe-task scripted verifier also uses the pinned fallback", () => {
+  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  const start = index.indexOf("runScriptedTsc:");
+  const body = index.slice(start, start + 700);
+  assert.match(body, /runTypecheckDirect\(worktreePath, timeoutMs\)/);
+  assert.doesNotMatch(body, /\bnpx\b|spawnSync\(/);
 });
 
 test("rc1: a 127 from the pinned compiler is unavailable, not an npx fallback", () => {

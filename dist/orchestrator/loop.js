@@ -505,10 +505,12 @@ export class OrchestratorLoop {
     constructor(deps) {
         this.deps = deps;
     }
-    routeLog(role, fallbackModel) {
+    routeLog(role, fallbackModel, selectedModel) {
         const route = this.deps.effectiveRouteFor?.(role);
         return {
-            model: route?.model ?? fallbackModel,
+            model: route?.backend === "opencode"
+                ? (route.model ?? selectedModel ?? fallbackModel)
+                : (selectedModel ?? route?.model ?? fallbackModel),
             backend: route?.backend,
             provider: route?.provider,
             effort: route?.effort,
@@ -1966,8 +1968,9 @@ export class OrchestratorLoop {
                     // so a stall's sdk_request-without-sdk_response points at the exact
                     // sub-task that hung.
                     const workerStart = Date.now();
+                    const selectedWorkerModel = selectWorkerModel(st, this.deps.config.models);
                     this.deps.interactionLog?.logSdkRequest(sessionId, {
-                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker), phase: "worker", seq: st.seq, cycle,
+                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                         prompt: `subtask ${st.seq}: ${st.title}\nintent: ${st.intent ?? ""}\n${reviseHint ?? ""}`,
                     });
                     // beta.64 (P0-2): the worker call is now wrapped so a first_token_timeout
@@ -3435,12 +3438,19 @@ export class OrchestratorLoop {
                                 this.deps.logger.warn("[loop] pre-preview CI workflow authoring failed (non-fatal)", { sessionId, err: String(err) });
                             }
                         }
+                        if (!this.deps.worktreeHeadSha) {
+                            throw new Error("exact-SHA preview verification requires the worktree HEAD probe");
+                        }
+                        previewHeadSha = await this.deps.worktreeHeadSha(plan.worktreePath);
+                        if (!previewHeadSha) {
+                            throw new Error("could not resolve candidate HEAD before preview push");
+                        }
                         this.deps.state.audit("loop.preview_push_started", { sessionId, cycle, branch: plan.branch }, sessionId);
-                        await this.deps.pushBranchForPreview({ plan, requester: row.requester });
-                        previewHeadSha = this.deps.worktreeHeadSha
-                            ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
-                            : "";
-                        this.deps.state.audit("loop.preview_branch_pushed", { sessionId, cycle, branch: plan.branch, headSha: previewHeadSha || null }, sessionId);
+                        const pushed = await this.deps.pushBranchForPreview({ plan, requester: row.requester, commitSha: previewHeadSha });
+                        if (!pushed.remoteSha || pushed.remoteSha !== previewHeadSha) {
+                            throw new Error(`preview branch tip mismatch: expected ${previewHeadSha}, received ${pushed.remoteSha || "(missing)"}`);
+                        }
+                        this.deps.state.audit("loop.preview_branch_pushed", { sessionId, cycle, branch: plan.branch, headSha: previewHeadSha }, sessionId);
                     }
                     catch (err) {
                         const diagnosis = diagnosePushFailure(err);
@@ -3464,6 +3474,10 @@ export class OrchestratorLoop {
                         };
                     }
                     this.deps.state.audit("loop.preview_runtime", { sessionId, cycle, headSha: previewHeadSha || null, status: previewRuntime?.status ?? "unavailable", deploymentUrl: previewRuntime?.deploymentUrl ?? null }, sessionId);
+                    if (previewRuntime?.provider !== "vercel" ||
+                        (previewRuntime.status !== "ok" && previewRuntime.status !== "build_failed")) {
+                        return this.finaliseFailedPreserveWorktree(sessionId, `preview_runtime_unavailable (exact SHA ${previewHeadSha.slice(0, 12)} was not verified; worktree preserved)`, cycle, totalCost);
+                    }
                     const runtimeReviewStart = Date.now();
                     this.deps.interactionLog?.logSdkRequest(sessionId, {
                         role: "adversary",
@@ -4401,6 +4415,7 @@ export class OrchestratorLoop {
      */
     async runWorkerCallWithRetry(p) {
         const { sessionId, st, cycle, brief, plan, requester, dispatchHint, workerWorktree } = p;
+        const selectedWorkerModel = selectWorkerModel(st, this.deps.config.models);
         const retryEnabled = this.deps.config.loop.worker_timeout_retry_enabled !== false;
         // beta.113: two attempts was one retry. Three gives the escalated
         // first-token window (below) somewhere to escalate to.
@@ -4488,7 +4503,7 @@ export class OrchestratorLoop {
                         // beta.117: the leased slot, which is NOT plan.worktreePath when
                         // this sub-task is running in parallel.
                         worktreePath: workerWorktree,
-                        modelOverride: selectWorkerModel(st, this.deps.config.models),
+                        modelOverride: selectedWorkerModel,
                         onStreamSlow,
                         firstTokenTimeoutSecondsOverride: firstTokenFor(attempt),
                     }),
@@ -4503,7 +4518,7 @@ export class OrchestratorLoop {
                     // A non-timeout throw is NOT retried here -- surface it immediately as
                     // the pre-beta.64 worker_error terminal (the caller marks it failed).
                     this.deps.interactionLog?.logSdkResponse(sessionId, {
-                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker), phase: "worker", seq: st.seq, cycle,
+                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                         finishReason: "error", durationMs: Date.now() - attemptStart,
                     });
                     return { outcome: "timeout", summary: `worker threw: ${String(err)}`, failErr: `worker_error: ${String(err)}` };
@@ -4514,18 +4529,18 @@ export class OrchestratorLoop {
                 // Usable turn. Emit P0-1 stream events + the sdk_response boundary.
                 if (result.streamOpened) {
                     this.deps.interactionLog?.logSdkStreamOpened(sessionId, {
-                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker), phase: "worker", seq: st.seq, cycle,
+                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                         sdkSessionId: result.sdkSessionId,
                     });
                 }
                 if (typeof result.msToFirstToken === "number") {
                     this.deps.interactionLog?.logSdkFirstToken(sessionId, {
-                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker), phase: "worker", seq: st.seq, cycle,
+                        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                         msToFirstToken: result.msToFirstToken, sdkSessionId: result.sdkSessionId,
                     });
                 }
                 this.deps.interactionLog?.logSdkResponse(sessionId, {
-                    role: "worker", ...this.routeLog("worker", this.deps.config.models.worker), phase: "worker", seq: st.seq, cycle,
+                    role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                     finishReason: result.reason ?? "end_turn", costUsd: result.costUsd,
                     outputChars: result.finalMessage ? result.finalMessage.length : undefined,
                     durationMs: Date.now() - attemptStart, sdkSessionId: result.sdkSessionId,
@@ -4541,12 +4556,12 @@ export class OrchestratorLoop {
                 // The stream DID open; record that so the trail distinguishes
                 // "POST hung before open" from "opened, no tokens".
                 this.deps.interactionLog?.logSdkStreamOpened(sessionId, {
-                    role: "worker", ...this.routeLog("worker", this.deps.config.models.worker), phase: "worker", seq: st.seq, cycle,
+                    role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                     sdkSessionId: result.sdkSessionId,
                 });
             }
             this.deps.interactionLog?.logSdkResponse(sessionId, {
-                role: "worker", ...this.routeLog("worker", this.deps.config.models.worker), phase: "worker", seq: st.seq, cycle,
+                role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
                 finishReason: firstTokenTimeout ? "first_token_timeout" : "timeout", durationMs: Date.now() - attemptStart,
                 sdkSessionId: result?.sdkSessionId,
             });

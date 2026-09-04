@@ -241,9 +241,11 @@ test("rc1: Vercel verification pushes only after static pass and reviews the exa
     },
     deps: {
       previewVerificationEnabled: true,
-      pushBranchForPreview: async ({ plan }) => {
+      pushBranchForPreview: async ({ plan, commitSha }) => {
         order.push("preview-push");
         previewSha = git(["rev-parse", "HEAD"], plan.worktreePath);
+        assert.equal(commitSha, previewSha);
+        return { remoteSha: previewSha };
       },
       fetchRuntime: async ({ waitForPreview, commitSha }) => {
         if (!waitForPreview) return undefined;
@@ -262,6 +264,37 @@ test("rc1: Vercel verification pushes only after static pass and reviews the exa
   assert.deepEqual(order, ["static-review", "preview-push", "preview-wait", "runtime-review", "pr-open"]);
   assert.equal(openCalls, 1);
   assert.equal(s.calls.push, 0, "the combined push/open path must not repush after preview verification");
+});
+
+test("rc1: missing exact-SHA runtime evidence preserves the worktree and never opens a PR", { skip }, async () => {
+  let reviews = 0;
+  let openCalls = 0;
+  const s = await runScenario({
+    runAdversary: async () => {
+      reviews += 1;
+      return {
+        verdict: "pass", findings: [], summary: "pass",
+        costUsd: 0.01, tokensIn: 1, tokensOut: 1,
+      };
+    },
+    deps: {
+      previewVerificationEnabled: true,
+      pushBranchForPreview: async ({ commitSha }) => ({ remoteSha: commitSha }),
+      fetchRuntime: async () => ({
+        provider: "vercel",
+        status: "no_deploy_yet",
+        logsExcerpt: "No deployment matched the candidate SHA.",
+      }),
+      openPullRequest: async () => {
+        openCalls += 1;
+        return "https://github.com/o/r/pull/should-not-open";
+      },
+    },
+  });
+  assert.equal(reviews, 1, "unavailable runtime evidence must not be presented as a reviewable deployment");
+  assert.equal(openCalls, 0);
+  assert.equal(s.out.status, "failed");
+  assert.match(s.out.reason, /preview_runtime_unavailable/);
 });
 
 test("rc1: non-zero unparseable typecheck output becomes a harness_env finding", { skip }, async () => {

@@ -16,7 +16,6 @@ import { readFile, writeFile, rm } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
 import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedListenerFlag, declaresRemovedParallelKeys } from "./config.js";
 import { openStateStoreSync } from "./state/store.js";
 import { decideDrainAction } from "./state/teardown-drain.js";
@@ -57,7 +56,7 @@ import { canPushWorkflows } from "./orchestrator/workflow-scope.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, registerDeniedSdkEnvVar, } from "./adapters/claude-code.js";
-import { fetchBranchLogs, verifyDeploymentForSha } from "./vercel/logs.js";
+import { verifyDeploymentForSha } from "./vercel/logs.js";
 import { runDeployRepair } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt } from "./crystallise/prompt-refiner.js";
 import { runLeadPlanner } from "./orchestrator/lead.js";
@@ -299,7 +298,7 @@ export function bootstrapHarnessSync(api) {
             return config.models.classifier;
         return config.models.lead;
     };
-    const effectiveBackendRoutes = backendRouter?.describe() ??
+    const effectiveBackendRoutes = backendRouter?.describe(legacyModelForRole) ??
         ROLE_NAMES.map((role) => ({
             role,
             backend: "claude-code",
@@ -543,6 +542,7 @@ export function bootstrapHarnessSync(api) {
                 // session has a branch, that is the branch.
                 pinnedSessionBranch: ctx?.pinnedSessionBranch,
                 logger: api.logger,
+                requireConventionsBeforePlanning: config.brief?.ingest_repo_conventions !== false,
                 // beta.67 (P0a): callLeadModel genuinely (re-)invokes the lead SDK so
                 // the ONE bounded re-ask actually re-plans with the corrective note.
                 callLeadModel: async (b, _repos, correctiveNote) => runLeadSdk({
@@ -984,7 +984,7 @@ export function bootstrapHarnessSync(api) {
          ORDER BY uploaded_at DESC
             LIMIT 1`)
                 .get(sessionId);
-            if (upload) {
+            if (upload && !waitForPreview) {
                 return {
                     provider: "manual",
                     status: upload.status,
@@ -1003,6 +1003,13 @@ export function bootstrapHarnessSync(api) {
             // pushed can never find a deployment and wastes the full wait window.
             if (!waitForPreview)
                 return undefined;
+            if (!commitSha) {
+                return {
+                    provider: "vercel",
+                    status: "unavailable",
+                    logsExcerpt: "Exact candidate SHA was not supplied; refusing branch-based preview lookup.",
+                };
+            }
             // beta.34: vault-first + env fallback (was vault-only, which lost the
             // token on the vault-less Staging container).
             const token = await resolveVercelToken();
@@ -1016,7 +1023,7 @@ export function bootstrapHarnessSync(api) {
                     errorCount: undefined,
                 };
             }
-            if (commitSha) {
+            {
                 const result = await verifyDeploymentForSha({
                     vercelToken: token,
                     teamId: config.vercel.team_id,
@@ -1041,16 +1048,8 @@ export function bootstrapHarnessSync(api) {
                     errorCount: result.status === "error" ? 1 : 0,
                 };
             }
-            return fetchBranchLogs({
-                vercelToken: token,
-                teamId: config.vercel.team_id,
-                projectId: config.vercel.project_id,
-                branch: plan.branch,
-                waitSeconds: config.vercel.preview_wait_seconds,
-                logger: api.logger,
-            });
         },
-        pushBranchForPreview: async ({ plan, requester }) => {
+        pushBranchForPreview: async ({ plan, requester, commitSha }) => {
             const resolution = pat.resolve({
                 slackUserId: requester ?? config.slack.authorised_users[0],
                 gitHubUser: plan.repo.split("/")[0],
@@ -1058,6 +1057,11 @@ export function bootstrapHarnessSync(api) {
             });
             const gitToken = await resolveGitToken(resolution);
             await git.pushBranch(plan.worktreePath, "origin", plan.branch, gitToken);
+            const remoteSha = await git.remoteBranchSha(plan.worktreePath, "origin", plan.branch, gitToken);
+            if (remoteSha !== commitSha) {
+                throw new Error(`preview push did not publish expected SHA ${commitSha}; remote is ${remoteSha ?? "(missing)"}`);
+            }
+            return { remoteSha };
         },
         openPullRequest: async ({ plan, brief, reviewReport, requester }) => {
             const resolution = pat.resolve({
@@ -1168,9 +1172,12 @@ export function bootstrapHarnessSync(api) {
         runTypecheckDirect: (worktreePath, timeoutMs) => runTypecheckDirect(worktreePath, timeoutMs),
         diagnoseCheckEnv: (worktreePath) => diagnoseCheckEnv(worktreePath),
         runScriptedTsc: async (worktreePath, timeoutMs) => {
-            const res = spawnSync("npx", ["tsc", "--noEmit"], { cwd: worktreePath, timeout: timeoutMs, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
-            const output = `${res.stdout ?? ""}${res.stderr ?? ""}`;
-            return { ok: !res.error && (res.status ?? 1) === 0, output: output.slice(-4000) };
+            const result = runTypecheckDirect(worktreePath, timeoutMs);
+            if (!result) {
+                return { ok: false, output: "TypeScript compiler unavailable: node_modules/.bin/tsc is missing or unusable." };
+            }
+            const output = `${result.stdout}${result.stderr}`;
+            return { ok: result.status === 0 && !result.timedOut, output: output.slice(-4000) };
         },
         // beta.81 (Track B / B2): post-push CI verification. Poll the combined
         // GitHub status/check-runs for the pushed head SHA (getCombinedStatus is

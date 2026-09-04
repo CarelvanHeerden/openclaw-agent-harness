@@ -414,6 +414,8 @@ export interface LeadDeps {
         tokensOut?: number;
         timedOut?: boolean;
     } | undefined>;
+    /** Production fail-closed guard: convention ingestion must complete before the Lead sees an implementation brief. */
+    requireConventionsBeforePlanning?: boolean;
     /** beta.105: see GitContext.onBranchDecision. Threaded through to allocation. */
     onBranchDecision?: (d: BranchAllocationDecision) => void;
     estimateCost: (plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">) => number;

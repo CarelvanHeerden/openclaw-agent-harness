@@ -145,7 +145,7 @@ export declare class BackendRouter {
      */
     executorFor(role: RoleName): StructuredExecutor | undefined;
     /** A one-line summary per role, for the startup log and the audit trail. */
-    describe(): EffectiveBackendRoute[];
+    describe(fallbackModelForRole?: (role: RoleName) => string | undefined): EffectiveBackendRoute[];
 }
 /**
  * Build a router, or `undefined` when nothing is configured.

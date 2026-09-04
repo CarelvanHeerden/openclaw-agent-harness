@@ -142,6 +142,21 @@ test("beta104: no resolvable repoHint skips the scout rather than guessing a rep
   assert.equal(plan.scout.skippedReason, "no_repo_hint_and_no_sole_allowed_repo");
 });
 
+test("rc1: production planning fails closed when mandatory convention ingestion cannot select a repository", { skip }, async () => {
+  const { d, calls } = deps({
+    config: {
+      ...CONFIG,
+      repos: { ...CONFIG.repos, allowed: ["Stitch-Vercel/one", "Stitch-Vercel/two"] },
+    },
+    requireConventionsBeforePlanning: true,
+  });
+  await assert.rejects(
+    () => runLeadPlanner({ ...BRIEF(), repoHint: undefined }, d),
+    /conventions must be loaded before planning/i,
+  );
+  assert.equal(calls.lead, 0, "the Lead must not plan before repository conventions are available");
+});
+
 test("beta104: a repoHint outside the allow-list is never checked out", { skip }, async () => {
   const { d, calls } = deps();
   const plan = await runLeadPlanner({ ...BRIEF(), repoHint: "attacker/evil" }, d);

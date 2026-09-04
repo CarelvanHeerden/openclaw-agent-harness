@@ -131,13 +131,15 @@ test("rc1: effective route metadata names the actual backend, provider, model, a
       worker: { backend: "opencode", model: "openai/gpt-5.6", effort: "high", tier: "frontier" },
     },
   });
-  const worker = router.describe().find((route) => route.role === "worker");
-  const lead = router.describe().find((route) => route.role === "lead");
+  const routes = router.describe((role) => role === "lead" ? "claude-fable-5" : "legacy-model");
+  const worker = routes.find((route) => route.role === "worker");
+  const lead = routes.find((route) => route.role === "lead");
   assert.deepEqual(
     { backend: worker.backend, provider: worker.provider, model: worker.model, effort: worker.effort },
     { backend: "opencode", provider: "openai", model: "openai/gpt-5.6", effort: "high" },
   );
   assert.equal(lead.provider, "anthropic");
+  assert.equal(lead.model, "claude-fable-5", "unmoved roles retain their effective legacy model");
   assert.equal(lead.backend, "claude-code");
 });
 
