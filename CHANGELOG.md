@@ -11,6 +11,57 @@
   mandatory conventions before planning, correct revise progress totals, and
   report effective backend/provider/model routes consistently.
 
+### A denied command was being escalated to the operator as a question
+
+Session `40f71a12`, sub-task "Add tenant-scoped SAST persistence". The
+OpenCode/Kimi worker tried to read an XLSX with an inline Python command. The
+bash guard denied it and said what to do instead — write a script file. The
+worker then ended its turn with "Now let me check the workbook headers quickly,
+the tenant extension mechanism, and package.json prisma scripts." and stopped.
+Nothing written, nothing committed.
+
+Verification failed, correctly. The harness then asked the operator how the
+sub-task should proceed, quoting that sentence as the worker's explanation.
+There is no answer to that question. The recovery was already written in the
+denial the worker had just been handed, and a human was being asked to
+adjudicate a command-syntax mistake.
+
+The classifier responsible was `NO_CHANGE_ONLY && !commitSha && text.length > 0`
+— "the worker said something and did not commit", which is equally true of a
+refusal, an unfinished thought, and a fumbled command. Meanwhile `WorkerResult`
+already carried `deniedToolCalls`, the structured record of which command was
+denied and why, and nothing read it.
+
+A zero-commit turn is now classified before anything is done with it, in
+`src/orchestrator/worker-outcome.ts`. Two outcomes the harness can correct
+itself — a guard denial whose reason names a permitted alternative, and a turn
+that ended announcing its next step — are retried instead of escalated, with a
+prompt that quotes the denial verbatim, names the permitted route, restates the
+observable contract, and forbids ending on narration again. Bounded by
+`loop.worker_protocol_max_attempts` (3 total attempts, as
+`worker_timeout_max_attempts` counts); on exhaustion the sub-task fails with an
+engineering record — denied command, guard reason, attempt count, unmet
+contract — rather than a fabricated question.
+
+Everything else keeps the behaviour it had. An explicit refusal still pauses,
+and is still called a refusal. A missing credential, a request for a decision,
+conflicting acceptance criteria and the rest of the human-decidable set still
+pause, now under `loop.worker_genuine_blocker`. An unexplained no-op still
+pauses the way beta.55 intended. What changed is that questions with no answer
+no longer reach a person.
+
+Where a question is still asked, it quotes what the worker actually reported
+rather than the first line of the message. "First, let me check the headers. I
+need you to decide whether existing rows are backfilled." used to surface as the
+first sentence; it now surfaces as the second.
+
+The guard is untouched. Inline Python and heredocs are still denied; recovery
+goes through the file-writing and execution paths that were always permitted.
+
+New audit events: `loop.worker_recoverable_tool_denial`,
+`loop.worker_noop_end_turn`, `loop.worker_protocol_retry`,
+`loop.worker_retry_exhausted`, `loop.worker_genuine_blocker`.
+
 ### The OpenCode backend was unreachable on the way people install this
 
 rc.1 launched the agent as the bare string `opencode` and left putting it there
