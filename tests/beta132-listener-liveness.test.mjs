@@ -338,16 +338,24 @@ test("beta132: b81's 'commits are preserved' promise is now actually kept", { sk
   );
 });
 
-test("beta132: the comment claiming a resume skips planning is corrected", { skip }, () => {
-  // It asserted the lead cost "stays 0 on a resumed run that skips planning,
-  // so a resume cannot bill the same plan twice". No resume path skips
-  // planning and every one bills a second lead call in full. Believing that
-  // comment is part of how this survived eleven releases, so the claim is
-  // kept and contradicted in place rather than quietly deleted.
+test("beta132: the comment about resumes and planning cost states which era it describes", { skip }, () => {
+  // The original comment asserted the lead cost "stays 0 on a resumed run that
+  // skips planning, so a resume cannot bill the same plan twice". That was
+  // false for eleven releases -- every resume re-planned and billed a second
+  // lead call -- and believing it is part of how that survived. b132 kept the
+  // claim and contradicted it in place.
+  //
+  // rc.2 made it true again: an answer given against a stored plan resumes it
+  // and never calls the lead. So the comment must now say BOTH things, and be
+  // explicit about which is the historical claim and which is current
+  // behaviour. A comment that silently reverts to the bare original is the
+  // regression this test is here to catch.
   const src = S("src/orchestrator/loop.ts");
   const i = src.indexOf("let leadPlanningCostUsd = 0");
   assert.ok(i > 0);
-  const block = src.slice(Math.max(0, i - 900), i);
-  assert.match(block, /No resume path\s*\n?\s*\/\/\s*skips planning/);
-  assert.match(block, /beta\.132/);
+  const block = src.slice(Math.max(0, i - 1400), i);
+  assert.match(block, /beta\.132/, "the correction is still attributed");
+  assert.match(block, /every resume re-planned from scratch/, "the historical failure is still described");
+  assert.match(block, /rc\.2/, "and so is the change that fixed it");
+  assert.match(block, /resumeExistingPlan/, "naming the mechanism, so the claim is checkable");
 });

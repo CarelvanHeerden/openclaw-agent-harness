@@ -31,6 +31,8 @@
  * mistake, a guard denial, or an unfinished sentence is not that.
  */
 
+import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
+
 /** One denial, as the ACP adapter records it. */
 export interface DeniedToolCall {
   kind?: string | null;
@@ -89,7 +91,8 @@ const RECOVERIES: Array<{ category: string; match: RegExp; remedy: string }> = [
     category: "inline_code",
     match: /inline code via|write a script file instead/i,
     remedy:
-      "Write the code to a temporary script file with the file-writing tool, run that file with a normal interpreter invocation, then delete it.",
+      `Write the code to a file under \`${HARNESS_SCRATCH_DIR}/\` with the file-writing tool and run that file with a normal interpreter invocation. ` +
+      "Leave it there when you are done -- that directory is excluded from git and the harness deletes it for you. Do not try to `rm` it; deletion is denied, and you do not need it.",
   },
   {
     category: "git_push",
@@ -223,7 +226,8 @@ export function recoverableDenialFrom(denied: DeniedToolCall[] | undefined): Rec
         reason,
         title: title || undefined,
         remedy:
-          "Do not feed a heredoc into an interpreter. Create the script with the file-writing tool, run it, then delete it.",
+          `Do not feed a heredoc into an interpreter. Write the script to \`${HARNESS_SCRATCH_DIR}/\` with the file-writing tool and run it from there. ` +
+          "Leave it behind -- that directory is excluded from git and the harness cleans it up.",
       };
     }
 
@@ -292,6 +296,56 @@ export function classifyWorkerOutcome(input: {
   if (text.length > 0 && !substantive) return { kind: "progress_only" };
 
   return { kind: "incomplete", explanation };
+}
+
+/**
+ * The operator's answer, addressed to the sub-task that asked the question.
+ *
+ * A resumed run does not call the lead, so anything written only into the
+ * brief's acceptance criteria is never read: the worker is re-dispatched with
+ * the same prompt that stopped it, hits the same wall, and asks again. The
+ * answer has to arrive as a dispatch hint on that one sub-task.
+ */
+export function buildClarificationResumeHint(params: { question?: string; answer: string }): string {
+  const lines = [
+    "RESUMING THIS SUB-TASK AFTER AN OPERATOR DECISION.",
+    "",
+    "You stopped here and a human was asked to decide. They have answered, and their",
+    "answer is binding: implement it as written, do not re-litigate it, and do not ask",
+    "the same question again.",
+    "",
+  ];
+  if (params.question) lines.push(`Question put to the operator: ${params.question.trim()}`);
+  lines.push(`Operator's decision: ${params.answer.trim()}`);
+  lines.push("");
+  lines.push(
+    "Everything else about this sub-task is unchanged, and the work already committed on",
+    "this branch stands -- you are continuing it, not starting again. Pick up from where",
+    "you stopped and finish, applying the decision above.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Did a research/observe turn report anything?
+ *
+ * An observe sub-task has no commit, so `verify: []` is the correct contract
+ * and "the worker ended its turn" was the entire completion test. That makes it
+ * the one place where narration is not merely unhelpful but actively harmful:
+ * the report is `finalMessage` verbatim, and `observe-handoff.ts` hands it to
+ * later sub-tasks under the heading "These are the VERBATIM reports". So "Now
+ * let me check the workbook headers" is promoted to a finding, and the next
+ * worker plans against it.
+ *
+ * Deliberately narrow. Emptiness is NOT insufficiency here: an observe turn
+ * that says nothing hands nothing downstream (`recordObserveReport` drops it),
+ * whereas narration passes the non-empty test and travels. Only the case that
+ * travels is blocked.
+ */
+export function observeReportIsNarration(finalMessage: string | undefined): boolean {
+  const text = (finalMessage ?? "").trim();
+  if (!text) return false;
+  return stripProgressNarration(text).length === 0;
 }
 
 /**

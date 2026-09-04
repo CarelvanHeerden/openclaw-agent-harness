@@ -111,6 +111,35 @@ export declare function classifyWorkerOutcome(input: {
     deniedToolCalls?: DeniedToolCall[];
 }): WorkerOutcome;
 /**
+ * The operator's answer, addressed to the sub-task that asked the question.
+ *
+ * A resumed run does not call the lead, so anything written only into the
+ * brief's acceptance criteria is never read: the worker is re-dispatched with
+ * the same prompt that stopped it, hits the same wall, and asks again. The
+ * answer has to arrive as a dispatch hint on that one sub-task.
+ */
+export declare function buildClarificationResumeHint(params: {
+    question?: string;
+    answer: string;
+}): string;
+/**
+ * Did a research/observe turn report anything?
+ *
+ * An observe sub-task has no commit, so `verify: []` is the correct contract
+ * and "the worker ended its turn" was the entire completion test. That makes it
+ * the one place where narration is not merely unhelpful but actively harmful:
+ * the report is `finalMessage` verbatim, and `observe-handoff.ts` hands it to
+ * later sub-tasks under the heading "These are the VERBATIM reports". So "Now
+ * let me check the workbook headers" is promoted to a finding, and the next
+ * worker plans against it.
+ *
+ * Deliberately narrow. Emptiness is NOT insufficiency here: an observe turn
+ * that says nothing hands nothing downstream (`recordObserveReport` drops it),
+ * whereas narration passes the non-empty test and travels. Only the case that
+ * travels is blocked.
+ */
+export declare function observeReportIsNarration(finalMessage: string | undefined): boolean;
+/**
  * The verification contract in plain sentences.
  *
  * The retry prompt has to restate what will actually be checked. Dumping the

@@ -437,7 +437,10 @@ test("beta135: accepted continuation skips completed tasks without calling the l
 test("beta137: accepted continuation remembers each sub-task's latest completion", () => {
   const loop = S("src/orchestrator/loop.ts");
   const start = loop.indexOf("private loadAcceptedContinuation");
-  const body = loop.slice(start, start + 2500);
+  // Window widened in rc.2: the helper now also reads the paused sequence and
+  // the operator's answer, which pushed the query past 2500 chars. The claim
+  // about that query is unchanged.
+  const body = loop.slice(start, loop.indexOf("private recordObserveReport", start));
   assert.match(body, /latest\.seq = current\.seq/);
   assert.match(body, /MAX\(latest\.cycle\)/);
   assert.doesNotMatch(
