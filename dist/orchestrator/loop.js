@@ -26,6 +26,7 @@
  * behaved differently, not a unit test that asserts the decision differed.
  */
 import { elideFinalScopeSubTask } from "./lead.js";
+import { classifyWorkerOutcome, buildProtocolRetryHint, describeContractForRetry, } from "./worker-outcome.js";
 import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync } from "node:fs";
@@ -1806,8 +1807,11 @@ export class OrchestratorLoop {
                         done.add(st.seq);
                         return;
                     }
-                    // beta.53 (P1b): at most ONE env-wait retry per sub-task.
-                    let envWaitRetried = false;
+                    // beta.53 (P1b): the env-wait retry, which rc.2 generalised into a
+                    // bounded protocol retry. Counts RETRIES, not attempts, so the
+                    // comparison against `worker_protocol_max_attempts` (a TOTAL, first
+                    // attempt included) subtracts one.
+                    let protocolRetries = 0;
                     // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
                     // review's findings or it will simply replay cycle 1's work.
                     // beta.92: the deterministic mapping now produces a PER-SUB-TASK scoped
@@ -2428,108 +2432,235 @@ export class OrchestratorLoop {
                             // event, do the work now, skip env verification if the tool is
                             // missing". If the retry ALSO hallucinates (or otherwise fails
                             // verification) we fall through to the normal terminal handling.
-                            const failedNow = verification.results.filter((x) => !x.passed);
-                            // beta.57 (P1): the retry trigger is now the OBSERVABLE STATE
-                            // INVARIANT, not the worker's phrasing. beta.52->53->54 each widened
-                            // a prose regex after a new wording escaped it; the state we
-                            // actually care about is directly checkable: a mutate-shaped
-                            // sub-task ended its turn with NO commit and ONLY local no-change
-                            // kinds failing. On cycle 1 that is never a legal outcome, so the
-                            // one-shot corrective retry fires unconditionally. On revise cycles
-                            // (cycle > 1) a no-commit turn IS often legal (the beta.35 no-op
-                            // downgrade below), so there the regex remains as the tiebreaker
-                            // between "legal nothing-to-do" and "confabulated wait".
-                            const phrasingMatched = matchesAsyncCoordConfabulation(result.finalMessage ?? "");
-                            const envWaitOnly = !envWaitRetried &&
-                                this.deps.config.loop.env_wait_retry_enabled !== false &&
-                                !result.commitSha &&
-                                failedNow.length > 0 &&
-                                failedNow.every((x) => ENV_WAIT_RETRYABLE_KINDS.has(x.kind)) &&
-                                (cycle === 1 || phrasingMatched);
-                            if (envWaitOnly) {
-                                envWaitRetried = true;
-                                const wrote = result.uncommittedFiles ?? [];
-                                const hint = wrote.length > 0
-                                    ? `OBSERVABLE STATE CHECK: your previous turn left these files uncommitted: ${wrote.join(", ")}. The harness inspected Git, so this is not an interpretation of your prose. Complete any remaining edits, then \`git add\` and \`git commit\` them before reporting completion.`
-                                    : `OBSERVABLE STATE CHECK: your previous turn produced ZERO filesystem changes and ZERO commits, regardless of what its final message claimed. Git is authoritative. Continue this SAME sub-task now: use direct read/edit/bash tools, make the required changes, inspect \`git status --short\`, and commit them. Do not report completion until the commit command has succeeded and you can quote its hash.`;
-                                this.deps.interactionLog?.log(sessionId, { event: "env_wait_retry", phase: "worker", seq: st.seq, cycle, partialWork: wrote.length > 0 });
-                                this.deps.state.audit("loop.worker_env_wait_retry", {
-                                    sessionId, seq: st.seq, cycle,
-                                    partialWork: wrote.length > 0,
-                                    uncommittedFiles: wrote,
-                                    // beta.57: the regex is now telemetry, not the gate.
-                                    phrasingMatched,
-                                    priorFinalMessage: (result.finalMessage ?? "").slice(0, 500),
-                                }, sessionId);
-                                this.deps.logger.warn("[loop] zero-change completion failed Git verification; retrying in the same worker session", {
-                                    sessionId, seq: st.seq, partialWork: wrote.length > 0,
+                            // rc.2: the retry is now a bounded LOOP, and it knows why it is
+                            // retrying. b53 gave every zero-change turn the same generic hint
+                            // ("you produced zero changes, do the work"). Session 40f71a12 had
+                            // a worker whose command had been DENIED with the remedy spelled
+                            // out; the generic hint told it nothing it did not know, it hit the
+                            // same denial, and the run then asked the operator a question whose
+                            // answer was already in the denial text.
+                            const protocolRetryEnabled = this.deps.config.loop.worker_protocol_retry_enabled !== false;
+                            const maxProtocolAttempts = Math.min(5, Math.max(1, this.deps.config.loop.worker_protocol_max_attempts ?? 3));
+                            for (;;) {
+                                const failedNow = verification.results.filter((x) => !x.passed);
+                                // beta.57 (P1): the retry trigger is now the OBSERVABLE STATE
+                                // INVARIANT, not the worker's phrasing. beta.52->53->54 each widened
+                                // a prose regex after a new wording escaped it; the state we
+                                // actually care about is directly checkable: a mutate-shaped
+                                // sub-task ended its turn with NO commit and ONLY local no-change
+                                // kinds failing. On cycle 1 that is never a legal outcome, so the
+                                // one-shot corrective retry fires unconditionally. On revise cycles
+                                // (cycle > 1) a no-commit turn IS often legal (the beta.35 no-op
+                                // downgrade below), so there the regex remains as the tiebreaker
+                                // between "legal nothing-to-do" and "confabulated wait".
+                                const phrasingMatched = matchesAsyncCoordConfabulation(result.finalMessage ?? "");
+                                // rc.2: what the turn actually was. Consults `deniedToolCalls`,
+                                // which the ACP adapter has always populated and nothing ever read.
+                                const outcome = classifyWorkerOutcome({
+                                    finalMessage: result.finalMessage,
+                                    commitSha: result.commitSha,
+                                    deniedToolCalls: result.deniedToolCalls,
                                 });
-                                try {
-                                    // beta.90 (Feature 2): stream-slow liveness on the retry too.
-                                    const onRetryStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
-                                    const retry = await withTimeout(this.deps.runWorker({
-                                        brief,
-                                        // Keep the dispatch overlay: the previous retry silently
-                                        // dropped priorObserveReports and forced the model to
-                                        // rediscover facts the first attempt had been given.
-                                        subTask: dispatchSt,
-                                        plan,
-                                        worktreePath: workerWorktree,
-                                        requester: row.requester,
-                                        // Resume so the model sees its own tool history and false
-                                        // completion claim. A fresh session can simply repeat it.
-                                        resumeSessionId: result.sdkSessionId,
-                                        // Compose the revise context (if any) with the corrective hint.
-                                        dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
-                                        // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
-                                        modelOverride: selectWorkerModel(st, this.deps.config.models),
-                                        onStreamSlow: onRetryStreamSlow,
-                                    }), this.deps.config.loop.worker_timeout_seconds);
-                                    this.addCost(sessionId, retry.costUsd);
-                                    await this.deps.budget.recordSpend(row.requester, retry.costUsd, sessionId);
-                                    totalCost += retry.costUsd;
-                                    if (retry.costUsd > 0)
-                                        subTaskCosts.push(retry.costUsd);
-                                    let retryVerification;
+                                const zeroChangeShape = !result.commitSha &&
+                                    failedNow.length > 0 &&
+                                    failedNow.every((x) => ENV_WAIT_RETRYABLE_KINDS.has(x.kind));
+                                // The two outcomes the harness can fix by itself. Everything else
+                                // keeps the behaviour it had: b53 still retries an unexplained
+                                // zero-change turn once on cycle 1, and b55 still escalates it.
+                                // Widening this to every no-op would quietly convert "the worker
+                                // said something we could not verify" from a resumable pause into
+                                // a hard failure, which is not the defect being fixed.
+                                const harnessCorrectable = outcome.kind === "recoverable_tool_denial" || outcome.kind === "progress_only";
+                                // A refusal or a human-decidable blocker is never retried: trying
+                                // again cannot supply a credential or overrule a considered
+                                // decision, and burning two more billed turns to prove it is waste.
+                                const humanDecidableNow = outcome.kind === "refusal" || outcome.kind === "genuine_blocker";
+                                // b53 allowed exactly one retry. Keep that for the cases it was
+                                // written for; spend the larger budget only where rc.2 has
+                                // something new to say on each attempt.
+                                const retryBudget = harnessCorrectable ? maxProtocolAttempts - 1 : 1;
+                                // Emitted per worker TURN, not once per sub-task: each pass of this
+                                // loop is a separate billed turn, and a denial on attempt three is
+                                // a different fact from a denial on attempt one.
+                                if (outcome.kind === "recoverable_tool_denial" && zeroChangeShape) {
+                                    this.deps.state.audit("loop.worker_recoverable_tool_denial", {
+                                        sessionId, seq: st.seq, subTaskId, cycle,
+                                        category: outcome.recoverable.category,
+                                        deniedCommand: (outcome.recoverable.title ?? "").slice(0, 300),
+                                        reason: outcome.recoverable.reason.slice(0, 500),
+                                        hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
+                                        hasCommit: Boolean(result.commitSha),
+                                        failedKinds: failedNow.map((x) => x.kind),
+                                        retryCount: protocolRetries,
+                                    }, sessionId);
+                                }
+                                if (outcome.kind === "progress_only" && zeroChangeShape) {
+                                    this.deps.state.audit("loop.worker_noop_end_turn", {
+                                        sessionId, seq: st.seq, subTaskId, cycle,
+                                        finalMessage: (result.finalMessage ?? "").slice(0, 1000),
+                                        hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
+                                        hasCommit: Boolean(result.commitSha),
+                                        failedKinds: failedNow.map((x) => x.kind),
+                                        retryCount: protocolRetries,
+                                    }, sessionId);
+                                }
+                                const envWaitOnly = protocolRetryEnabled &&
+                                    protocolRetries < retryBudget &&
+                                    this.deps.config.loop.env_wait_retry_enabled !== false &&
+                                    zeroChangeShape &&
+                                    !humanDecidableNow &&
+                                    // b57's rule, unchanged: on a revise cycle a no-commit turn is
+                                    // often legal, so there the async-wait phrasing is still the
+                                    // tiebreaker -- UNLESS the turn is one rc.2 can correct, which
+                                    // rests on a denial record or an unfinished sentence rather than
+                                    // on an interpretation of prose.
+                                    (cycle === 1 || phrasingMatched || harnessCorrectable);
+                                if (envWaitOnly) {
+                                    protocolRetries += 1;
+                                    const wrote = result.uncommittedFiles ?? [];
+                                    const hint = buildProtocolRetryHint({
+                                        outcome,
+                                        contractSummary: describeContractForRetry(contract),
+                                        uncommittedFiles: wrote,
+                                        attempt: protocolRetries + 1,
+                                        maxAttempts: maxProtocolAttempts,
+                                    });
+                                    this.deps.interactionLog?.log(sessionId, { event: "env_wait_retry", phase: "worker", seq: st.seq, cycle, partialWork: wrote.length > 0 });
+                                    this.deps.interactionLog?.log(sessionId, {
+                                        event: "worker_protocol_retry", phase: "worker", seq: st.seq, cycle,
+                                        reasonFirstLine: `${outcome.kind}${outcome.recoverable ? `: ${outcome.recoverable.category}` : ""}`,
+                                    });
+                                    this.deps.state.audit("loop.worker_env_wait_retry", {
+                                        sessionId, seq: st.seq, cycle,
+                                        partialWork: wrote.length > 0,
+                                        uncommittedFiles: wrote,
+                                        // beta.57: the regex is now telemetry, not the gate.
+                                        phrasingMatched,
+                                        priorFinalMessage: (result.finalMessage ?? "").slice(0, 500),
+                                    }, sessionId);
+                                    this.deps.state.audit("loop.worker_protocol_retry", {
+                                        sessionId, seq: st.seq, subTaskId, cycle,
+                                        outcome: outcome.kind,
+                                        category: outcome.recoverable?.category ?? null,
+                                        deniedCommand: (outcome.recoverable?.title ?? "").slice(0, 300),
+                                        reason: (outcome.recoverable?.reason ?? "").slice(0, 500),
+                                        retryCount: protocolRetries,
+                                        maxAttempts: maxProtocolAttempts,
+                                        hasFiles: (result.filesChanged ?? []).length > 0 || wrote.length > 0,
+                                        hasCommit: Boolean(result.commitSha),
+                                        failedKinds: failedNow.map((x) => x.kind),
+                                    }, sessionId);
+                                    this.deps.logger.warn("[loop] zero-change completion failed Git verification; retrying in the same worker session", {
+                                        sessionId, seq: st.seq, partialWork: wrote.length > 0, outcome: outcome.kind, retry: protocolRetries,
+                                    });
                                     try {
-                                        const retryProbes = this.deps.buildVerifyProbes({
-                                            plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
+                                        // beta.90 (Feature 2): stream-slow liveness on the retry too.
+                                        const onRetryStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
+                                        const retry = await withTimeout(this.deps.runWorker({
+                                            brief,
+                                            // Keep the dispatch overlay: the previous retry silently
+                                            // dropped priorObserveReports and forced the model to
+                                            // rediscover facts the first attempt had been given.
+                                            subTask: dispatchSt,
+                                            plan,
+                                            worktreePath: workerWorktree,
+                                            requester: row.requester,
+                                            // Resume so the model sees its own tool history and false
+                                            // completion claim. A fresh session can simply repeat it.
+                                            resumeSessionId: result.sdkSessionId,
+                                            // Compose the revise context (if any) with the corrective hint.
+                                            dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
+                                            // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
+                                            modelOverride: selectWorkerModel(st, this.deps.config.models),
+                                            onStreamSlow: onRetryStreamSlow,
+                                        }), this.deps.config.loop.worker_timeout_seconds);
+                                        this.addCost(sessionId, retry.costUsd);
+                                        await this.deps.budget.recordSpend(row.requester, retry.costUsd, sessionId);
+                                        totalCost += retry.costUsd;
+                                        if (retry.costUsd > 0)
+                                            subTaskCosts.push(retry.costUsd);
+                                        let retryVerification;
+                                        try {
+                                            const retryProbes = this.deps.buildVerifyProbes({
+                                                plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
+                                            });
+                                            retryVerification = await verifySubTaskOutput(contract, {
+                                                defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                                                // beta.95: the retry path dropped branchBaseSha -- a
+                                                // reviseRelaxed/targeted file on a revise-cycle retry lost
+                                                // its plan-base window. Thread both through here too.
+                                                baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                                                cycle,
+                                                reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                                                acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                                            }, retryProbes);
+                                        }
+                                        catch (err) {
+                                            retryVerification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+                                        }
+                                        this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: retryVerification.ok, contract, summary: retryVerification.summary, results: retryVerification.results, retry: true }, sessionId);
+                                        if (retryVerification.ok) {
+                                            this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, cost_usd = cost_usd + ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run(retry.status, retry.costUsd, JSON.stringify(retry.filesChanged), retry.commitSha ?? null, retry.sdkSessionId ?? null, `env-wait retry succeeded: ${retryVerification.summary}`, Date.now(), Date.now(), subTaskId);
+                                            this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId);
+                                            this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
+                                            done.add(st.seq);
+                                            return;
+                                        }
+                                        // The retry also failed. Adopt its result so the next pass of
+                                        // this loop -- and the terminal report, if this was the last
+                                        // one -- describes the most recent attempt rather than the
+                                        // first.
+                                        this.deps.logger.warn("[loop] protocol retry FAILED verification", {
+                                            sessionId, seq: st.seq, summary: retryVerification.summary, retry: protocolRetries,
                                         });
-                                        retryVerification = await verifySubTaskOutput(contract, {
-                                            defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
-                                            // beta.95: the retry path dropped branchBaseSha -- a
-                                            // reviseRelaxed/targeted file on a revise-cycle retry lost
-                                            // its plan-base window. Thread both through here too.
-                                            baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
-                                            cycle,
-                                            reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
-                                            acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                                        }, retryProbes);
+                                        result = retry;
+                                        verification = retryVerification;
+                                        continue;
                                     }
                                     catch (err) {
-                                        retryVerification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+                                        this.deps.logger.warn("[loop] protocol retry threw; terminating", { sessionId, seq: st.seq, err: String(err) });
+                                        // keep the last result/verification; fall through to terminal.
                                     }
-                                    this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: retryVerification.ok, contract, summary: retryVerification.summary, results: retryVerification.results, retry: true }, sessionId);
-                                    if (retryVerification.ok) {
-                                        this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, cost_usd = cost_usd + ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run(retry.status, retry.costUsd, JSON.stringify(retry.filesChanged), retry.commitSha ?? null, retry.sdkSessionId ?? null, `env-wait retry succeeded: ${retryVerification.summary}`, Date.now(), Date.now(), subTaskId);
-                                        this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId);
-                                        this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
-                                        done.add(st.seq);
-                                        return;
-                                    }
-                                    // Retry also failed verification -> fall through using the
-                                    // retry's result/verification so the terminal report reflects
-                                    // the second attempt.
-                                    this.deps.logger.warn("[loop] env-wait retry FAILED verification; terminating", {
-                                        sessionId, seq: st.seq, summary: retryVerification.summary,
+                                }
+                                // rc.2: nothing more to try. If retries were spent and the shape is
+                                // still a correctable one, this is exhaustion -- an internal
+                                // failure with everything needed to debug it, NOT a question. b53
+                                // had no such state: a second failure fell straight into the
+                                // refusal path, which asked the operator to adjudicate a command
+                                // syntax error.
+                                const lastOutcome = classifyWorkerOutcome({
+                                    finalMessage: result.finalMessage,
+                                    commitSha: result.commitSha,
+                                    deniedToolCalls: result.deniedToolCalls,
+                                });
+                                if (protocolRetries > 0 &&
+                                    zeroChangeShape &&
+                                    (lastOutcome.kind === "recoverable_tool_denial" || lastOutcome.kind === "progress_only")) {
+                                    this.deps.interactionLog?.log(sessionId, {
+                                        event: "worker_retry_exhausted", phase: "worker", seq: st.seq, cycle,
+                                        reasonFirstLine: `${lastOutcome.kind} after ${protocolRetries} retries`,
                                     });
-                                    result = retry;
-                                    verification = retryVerification;
+                                    this.deps.state.audit("loop.worker_retry_exhausted", {
+                                        sessionId, seq: st.seq, subTaskId, cycle,
+                                        outcome: lastOutcome.kind,
+                                        category: lastOutcome.recoverable?.category ?? null,
+                                        deniedCommand: (lastOutcome.recoverable?.title ?? "").slice(0, 300),
+                                        reason: (lastOutcome.recoverable?.reason ?? "").slice(0, 500),
+                                        retryCount: protocolRetries,
+                                        maxAttempts: maxProtocolAttempts,
+                                        hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
+                                        hasCommit: Boolean(result.commitSha),
+                                        failedKinds: failedNow.map((x) => x.kind),
+                                        failedChecks: failedNow.map((x) => ({ kind: x.kind, detail: (x.detail ?? "").slice(0, 300) })),
+                                        contract: describeContractForRetry(contract),
+                                        finalMessage: (result.finalMessage ?? "").slice(0, 1000),
+                                        finalOutcome: "failed_verification",
+                                    }, sessionId);
+                                    this.deps.logger.warn("[loop] worker protocol retries exhausted; failing the sub-task without a human question", {
+                                        sessionId, seq: st.seq, retryCount: protocolRetries, outcome: lastOutcome.kind,
+                                    });
                                 }
-                                catch (err) {
-                                    this.deps.logger.warn("[loop] env-wait retry threw; terminating", { sessionId, seq: st.seq, err: String(err) });
-                                    // keep original result/verification; fall through to terminal.
-                                }
+                                break;
                             }
                             // ---- beta.35 fix #1 + #2: legal no-op on a REVISE cycle ----
                             // On a revise cycle (cycle > 1) the plan's mutate sub-task is
@@ -2657,9 +2788,43 @@ export class OrchestratorLoop {
                             // the refusal: a worker refusing on a false premise is a signal
                             // that an UPSTREAM artefact (adversary finding / brief) was wrong,
                             // which a human or a future replan loop should resolve.
+                            //
+                            // rc.2: the predicate below used to be `refusalText.length > 0` --
+                            // "the worker said something". Session 40f71a12 is what that costs:
+                            // "Now let me check the workbook headers quickly..." became a
+                            // refusal, and the operator was asked to adjudicate an unfinished
+                            // sentence. A refusal is now a CLAIM the worker made (it declined,
+                            // or it named something only a human can supply), not the mere
+                            // presence of prose.
                             const NO_CHANGE_ONLY = failedResults.length > 0 && failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
                             const refusalText = (result.finalMessage ?? "").trim();
-                            const looksLikeRefusal = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0;
+                            const terminalOutcome = classifyWorkerOutcome({
+                                finalMessage: result.finalMessage,
+                                commitSha: result.commitSha,
+                                deniedToolCalls: result.deniedToolCalls,
+                            });
+                            // Subtractive on purpose: the old predicate, minus exactly the two
+                            // outcomes the harness corrects itself. An unexplained no-op still
+                            // pauses for a human the way b55 intended -- the only turns removed
+                            // from that path are the ones where a human has nothing to add.
+                            const harnessCorrectedIt = terminalOutcome.kind === "recoverable_tool_denial" || terminalOutcome.kind === "progress_only";
+                            const looksLikeRefusal = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 && !harnessCorrectedIt;
+                            if (NO_CHANGE_ONLY && !result.commitSha && terminalOutcome.kind === "genuine_blocker") {
+                                this.deps.interactionLog?.log(sessionId, {
+                                    event: "worker_genuine_blocker", phase: "worker", seq: st.seq, cycle,
+                                    reasonFirstLine: (terminalOutcome.explanation ?? "").slice(0, 300),
+                                });
+                                this.deps.state.audit("loop.worker_genuine_blocker", {
+                                    sessionId, seq: st.seq, subTaskId, cycle,
+                                    blockerKind: terminalOutcome.blockerKind ?? "unspecified",
+                                    explanation: (terminalOutcome.explanation ?? "").slice(0, 1000),
+                                    retryCount: protocolRetries,
+                                    hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
+                                    hasCommit: Boolean(result.commitSha),
+                                    failedKinds: failedResults.map((x) => x.kind),
+                                    finalOutcome: "awaiting_clarification",
+                                }, sessionId);
+                            }
                             // ---- beta.52: distinguish a PROTOCOL-ASSUMPTION failure from a
                             // reasoned refusal. Session fc64d8ea (beta.51 revise of #858) sub-
                             // task 3: the worker ended its turn with 24 words -- "The install
@@ -2672,7 +2837,12 @@ export class OrchestratorLoop {
                             // behaviour; this tag makes the pattern greppable in metrics so we
                             // can tell "worker was wrong about the harness" apart from "worker
                             // correctly refused a bad task". Does NOT change pass/fail.
-                            const looksLikeProtocolAssumption = looksLikeRefusal && matchesAsyncCoordConfabulation(refusalText);
+                            // rc.2: decoupled from `looksLikeRefusal`, which no longer fires on
+                            // an env-wait hallucination (correctly -- awaiting an imaginary
+                            // event is not a refusal). The tag itself is unchanged: same shape,
+                            // same regex, still diagnostic only.
+                            const looksLikeProtocolAssumption = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 &&
+                                matchesAsyncCoordConfabulation(refusalText);
                             if (looksLikeProtocolAssumption) {
                                 const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
                                 this.deps.state.audit("loop.worker_env_wait_hallucination", {
@@ -2688,7 +2858,12 @@ export class OrchestratorLoop {
                                 });
                             }
                             if (looksLikeRefusal) {
-                                const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+                                // rc.2: the narration-stripped explanation, not the first line.
+                                // The first line of "Now let me check X. The credentials are
+                                // missing." is the half-thought, and quoting it at an operator
+                                // hides the only sentence that mattered.
+                                const firstLine = terminalOutcome.explanation
+                                    ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
                                 // beta.58 (Bug B): split the audit event by semantics. A refusal
                                 // whose explanation references a contradicted/invalid premise is
                                 // a GOOD-FAITH skip, not a bad-faith refusal -- emit a distinct
@@ -2716,11 +2891,25 @@ export class OrchestratorLoop {
                             // summary so harness_progress.headline and the terminal update
                             // show "worker refused: <reason>" rather than a bare
                             // verification-failed string.
-                            const failSummary = looksLikeProtocolAssumption
-                                ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
-                                : looksLikeRefusal
-                                    ? `worker refused (no changes made): ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
-                                    : `verification failed: ${verification.summary}`;
+                            // rc.2: when the harness corrected as far as it could and still got
+                            // nothing, the summary is an ENGINEERING record -- the denied
+                            // command, the guard's reason, how many attempts it had, what it
+                            // failed. Everything a maintainer needs, and nothing shaped like a
+                            // question, because there is nobody to ask.
+                            const exhaustedSummary = protocolRetries > 0 && harnessCorrectedIt && NO_CHANGE_ONLY && !result.commitSha
+                                ? `worker protocol retries exhausted after ${protocolRetries} retr${protocolRetries === 1 ? "y" : "ies"} (${terminalOutcome.kind})` +
+                                    (terminalOutcome.recoverable
+                                        ? `; denied command ${terminalOutcome.recoverable.title ? `\`${terminalOutcome.recoverable.title.slice(0, 120)}\` ` : ""}(${terminalOutcome.recoverable.category}): ${terminalOutcome.recoverable.reason.slice(0, 200)}`
+                                        : "") +
+                                    `; unmet contract: ${describeContractForRetry(contract)}`
+                                : null;
+                            const failSummary = exhaustedSummary
+                                ? exhaustedSummary
+                                : looksLikeProtocolAssumption
+                                    ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+                                    : looksLikeRefusal
+                                        ? `worker refused (no changes made): ${(terminalOutcome.explanation ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+                                        : `verification failed: ${verification.summary}`;
                             this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`).run(failSummary, Date.now(), subTaskId);
                             this.deps.logger.warn("[loop] harness-side verification FAILED (worker confabulated success)", {
                                 sessionId, seq: st.seq, costUsd: result.costUsd, summary: verification.summary,
@@ -2739,7 +2928,12 @@ export class OrchestratorLoop {
                             // release it) so harness_answer can re-drive from this seq in place.
                             if (looksLikeRefusal &&
                                 this.deps.config.loop.clarification_escalation_enabled !== false) {
-                                const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+                                // rc.2: the narration-stripped explanation. The old first-line
+                                // rule showed the operator whatever sentence happened to come
+                                // first, which in "First, let me check the headers. I need you to
+                                // decide X." is the half-thought and not the decision.
+                                const firstLine = terminalOutcome.explanation
+                                    ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
                                 clarify.question =
                                     `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ${firstLine.slice(0, 500)}. ` +
                                         `How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, or "abort".)`;

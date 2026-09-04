@@ -97,7 +97,15 @@ test("beta52/53: loop.ts emits the env-wait hallucination tag distinct from work
   // beta.53 renamed detection to the exported predicate + renamed the event
   // from loop.worker_incorrect_protocol_assumption -> loop.worker_env_wait_hallucination.
   // beta.54 broadened the predicate to matchesAsyncCoordConfabulation.
-  assert.match(src, /looksLikeProtocolAssumption\s*=\s*\n?\s*looksLikeRefusal && matchesAsyncCoordConfabulation\(refusalText\)/);
+  // rc.2 decoupled the tag from `looksLikeRefusal`, which no longer fires on an
+  // env-wait hallucination -- awaiting an imaginary event is a protocol mistake,
+  // not a refusal, and it is now retried rather than escalated. The tag itself
+  // must keep firing on exactly the same shape it always did, so the predicate
+  // is spelled out here in full.
+  assert.match(
+    src,
+    /looksLikeProtocolAssumption\s*=\s*\n?\s*NO_CHANGE_ONLY && !result\.commitSha && refusalText\.length > 0 &&\s*\n?\s*matchesAsyncCoordConfabulation\(refusalText\)/,
+  );
   assert.match(src, /"loop\.worker_env_wait_hallucination"/);
   // headline/summary distinguishes the env-wait case
   assert.match(src, /worker awaited a non-existent mid-turn event and did no work/);

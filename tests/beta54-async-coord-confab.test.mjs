@@ -136,13 +136,21 @@ test("beta.54: loop.ts wires matchesAsyncCoordConfabulation into retry gate AND 
   );
   assert.match(
     src,
-    /failedNow\.every[\s\S]{0,200}\(cycle === 1 \|\| phrasingMatched\)/,
+    // rc.2 added a third way onto the retry path: an outcome the harness can
+    // correct itself (a guard denial that named an alternative, or a turn that
+    // ended mid-sentence). Those rest on a denial record rather than on
+    // phrasing, so on a revise cycle they do not need the tiebreaker -- but the
+    // tiebreaker itself must survive for everything else.
+    /envWaitOnly\s*=\s*[\s\S]{0,800}zeroChangeShape[\s\S]{0,600}\(cycle === 1 \|\| phrasingMatched \|\| harnessCorrectable\)/,
     "retry gate must be state-first with the phrasing predicate as revise-cycle tiebreaker",
   );
-  // tag path uses the broadened predicate:
+  // tag path uses the broadened predicate. rc.2 spells the shape out instead of
+  // reusing `looksLikeRefusal`, which no longer covers an env-wait
+  // hallucination -- that is now retried rather than escalated, but it must
+  // still be TAGGED identically.
   assert.match(
     src,
-    /looksLikeRefusal && matchesAsyncCoordConfabulation\(refusalText\)/,
+    /NO_CHANGE_ONLY && !result\.commitSha && refusalText\.length > 0 &&\s*\n?\s*matchesAsyncCoordConfabulation\(refusalText\)/,
     "tag path must call matchesAsyncCoordConfabulation on refusalText",
   );
   // the old env-only predicate is no longer the gate at those two sites:
