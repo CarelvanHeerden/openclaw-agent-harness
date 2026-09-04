@@ -92,7 +92,7 @@ test("beta115: with no compiler anywhere, the fallback admits defeat", () => {
   assert.equal(r, null, "no route must return null so the caller can report unavailable");
 });
 
-test("beta115: the fallback never installs anything", () => {
+test("rc1: the fallback never invokes package-installing discovery", () => {
   const dir = mk();
   const calls = [];
   const spawn = (cmd, args) => {
@@ -100,30 +100,23 @@ test("beta115: the fallback never installs anything", () => {
     return { status: 127, stdout: "", stderr: "command not found" };
   };
   runTypecheckDirect(dir, 30_000, { spawn });
-  assert.ok(calls.length > 0, "it must have tried something");
-  for (const c of calls) {
-    assert.ok(!/\bnpm (ci|i|install)\b|\byarn add\b|\bpnpm (add|install)\b/.test(c), `a review gate must not mutate the worktree: ${c}`);
-    if (c.startsWith("npx")) assert.match(c, /--no-install/, "npx must be pinned to --no-install");
-  }
+  assert.deepEqual(calls, [], "without a pinned local compiler, do not invoke npx or any package manager");
 });
 
-test("beta115: a 127 from the first route falls through to the second", () => {
+test("rc1: a 127 from the pinned compiler is unavailable, not an npx fallback", () => {
   const dir = mk();
   const seen = [];
   const spawn = (cmd, args) => {
     seen.push(cmd);
-    if (cmd.endsWith("/tsc")) return { status: 127, stdout: "", stderr: "sh: tsc: command not found" };
-    return { status: 1, stdout: "file.ts(1,1): error TS1005: ';' expected.", stderr: "" };
+    return { status: 127, stdout: "", stderr: "sh: tsc: command not found" };
   };
   fakeTsc(dir);
   const r = runTypecheckDirect(dir, 30_000, { spawn });
-  assert.ok(r, "the second route worked, so the gate has a result");
-  assert.equal(r.via, "npx");
-  assert.match(r.stdout, /TS1005/);
-  assert.equal(seen.length, 2, "it must actually have tried both routes");
+  assert.equal(r, null);
+  assert.equal(seen.length, 1, "only the repository-pinned compiler may be attempted");
 });
 
-test("beta115: a SILENT 127 is still a failure to run, not an empty clean result", () => {
+test("rc1: a silent 127 is unavailable and never falls through to package resolution", () => {
   const dir = mk();
   // The dangerous shape, and the one that produced this whole release: a route
   // that exits 127 having printed NOTHING. Sniffing the output for "command not
@@ -133,15 +126,12 @@ test("beta115: a SILENT 127 is still a failure to run, not an empty clean result
   let calls = 0;
   const spawn = () => {
     calls += 1;
-    return calls === 1
-      ? { status: 127, stdout: "", stderr: "" }
-      : { status: 2, stdout: "route.ts(118,12): error TS2551: Property 'updatedById' does not exist.", stderr: "" };
+    return { status: 127, stdout: "", stderr: "" };
   };
   fakeTsc(dir);
   const r = runTypecheckDirect(dir, 30_000, { spawn });
-  assert.ok(r, "the second route ran");
-  assert.equal(r.via, "npx", "the silent 127 must be rejected and the next route tried");
-  assert.match(r.stdout, /TS2551/);
+  assert.equal(r, null);
+  assert.equal(calls, 1);
 });
 
 test("beta115: when every route exits 127 in silence, the answer is null", () => {

@@ -27,6 +27,14 @@ import type { StructuredExecutor } from "./claude-code.js";
 import { type ProviderConfig, type ResolvedRoleBackend, type RoleBackendConfig } from "./role-config.js";
 import { type AcpAgentSpec } from "./acp.js";
 import { type CatalogueStore, type ModelPrice } from "./shared/model-catalogue.js";
+export interface EffectiveBackendRoute {
+    role: RoleName;
+    backend: "claude-code" | "opencode";
+    provider: string;
+    model?: string;
+    effort?: string;
+    tier: string;
+}
 export declare class BackendConfigError extends Error {
     readonly problems: string[];
     constructor(problems: string[]);
@@ -137,13 +145,7 @@ export declare class BackendRouter {
      */
     executorFor(role: RoleName): StructuredExecutor | undefined;
     /** A one-line summary per role, for the startup log and the audit trail. */
-    describe(): Array<{
-        role: RoleName;
-        backend: string;
-        model?: string;
-        effort?: string;
-        tier: string;
-    }>;
+    describe(): EffectiveBackendRoute[];
 }
 /**
  * Build a router, or `undefined` when nothing is configured.

@@ -524,7 +524,7 @@ test("beta108: long durations read in minutes", () => {
 test("beta108: the snapshot exposes the work log", () => {
   const src = S("src/orchestrator/progress.ts");
   assert.match(src, /worklog: string\[\];/);
-  assert.match(src, /worklog: renderWorklog\(stRows, all\.length\)/);
+  assert.match(src, /worklog: renderWorklog\(stRows, plannedOrStarted\)/);
   assert.match(src, /files_touched AS filesTouched, commit_sha AS commitSha/);
 });
 
@@ -656,7 +656,7 @@ test("beta108: the built loop emits phase timings under the agreed event name", 
 test("beta108: the built snapshot really renders the work log", () => {
   assert.match(
     D("orchestrator/progress.js"),
-    /worklog: renderWorklog\(stRows, all\.length\)/,
+    /worklog: renderWorklog\(stRows, plannedOrStarted\)/,
     "an empty array would leave the poller with a phase and nothing else",
   );
 });

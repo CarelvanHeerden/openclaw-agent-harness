@@ -344,9 +344,17 @@ truncated.
 
 ### Vercel bridge
 
-When enabled, after each execute cycle the adversarial reviewer receives:
+When enabled, verification is deliberately two-stage:
 
-- the latest preview deployment URL for the current branch,
+- the adversary first reviews the local candidate statically,
+- only a static pass pushes the preview branch,
+- the harness waits for the deployment matching that exact commit SHA,
+- a second adversarial review receives the preview URL and runtime evidence,
+- the PR opens only after that runtime-enriched review.
+
+An unpushed branch is never polled. The runtime review receives:
+
+- the exact-SHA preview deployment URL,
 - the last 200 log lines from that deployment,
 - any deployment errors or build failures.
 
@@ -574,7 +582,7 @@ beta.63 (convention-awareness Fix 2): final-verify repo-check-script runner.
 - **`verify.run_repo_check_scripts`** — `boolean`, default `false`. beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the verification spine -- verification is CI-only now (Carel: 'I do not want it to run locally, ever'). Default false. When true (opt-in), the final-verify sub-task runs repo-declared check scripts inline in the worktree (beta.63 behaviour) as REVISE-worthy findings. The runner plumbing is otherwise kept only for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task, NOT as a verify gate.
 - **`verify.check_script_allowlist`** — `string[]`, default `["okf:check","lint","typecheck","test"]`. beta.63 (Fix 2): allowlist of package.json script names the harness may run in final-verify. A discovered script NOT on this list is NEVER run.
 - **`verify.check_script_timeout_seconds`** — `integer`, default `600`. beta.63 (Fix 2): per-check-script wall-clock timeout (seconds). A timed-out script is treated as unrunnable (non-fatal log + note), not a hard fail.
-- **`verify.typecheck_gate`** — `boolean`, default `true`. beta.111: run the repo's own typecheck script before review and raise a `high` finding for errors in files this branch changed. The adversary reviews the diff, not the compiler: ProjectThanos PR #932 survived three revise runs with `TS2551: Property 'ownerUserId' does not exist`, introduced by the b108 revise, and that repo's CI does not run a typecheck so CI stayed green. Errors in untouched files are ignored, so a repo with pre-existing breakage (#932 also carries 71 unrelated failing tests) is still usable. One script per cycle, unlike run_repo_check_scripts which runs the whole suite and stays off by default.
+- **`verify.typecheck_gate`** — `boolean`, default `true`. Run the repo's own typecheck script before review, falling back only to the pinned node_modules/.bin/tsc binary. Never invokes package-installing npx. Missing compilers and non-zero output without parseable TypeScript diagnostics produce a structured harness_env finding, so unavailable typechecking cannot read as green. Errors in untouched files are ignored.
 - **`verify.check_script_heap_retry_mb`** — `integer`, default `8192`. beta.70 (F4): V8 heap ceiling (MB) applied via NODE_OPTIONS on the retry after a check script dies of a heap OOM (exit 134 / 'Ineffective mark-compacts near heap limit'). On Thanos-scale repos tsc --noEmit OOMs at the 4 GB default; 8 GB clears it. A persisted OOM after the retry becomes a BLOCKING finding. Default 8192.
 
 #### `log`

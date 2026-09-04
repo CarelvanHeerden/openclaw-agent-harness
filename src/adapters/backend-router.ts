@@ -47,6 +47,15 @@ import {
   type ModelPrice,
 } from "./shared/model-catalogue.js";
 
+export interface EffectiveBackendRoute {
+  role: RoleName;
+  backend: "claude-code" | "opencode";
+  provider: string;
+  model?: string;
+  effort?: string;
+  tier: string;
+}
+
 export class BackendConfigError extends Error {
   constructor(readonly problems: string[]) {
     super(`backend configuration is not usable:\n  - ${problems.join("\n  - ")}`);
@@ -372,10 +381,15 @@ export class BackendRouter {
   }
 
   /** A one-line summary per role, for the startup log and the audit trail. */
-  describe(): Array<{ role: RoleName; backend: string; model?: string; effort?: string; tier: string }> {
+  describe(): EffectiveBackendRoute[] {
     return (Object.keys(this.roles) as RoleName[]).map((role) => ({
       role,
       backend: this.roles[role].backend,
+      provider:
+        this.roles[role].provider ??
+        (this.roles[role].backend === "claude-code"
+          ? "anthropic"
+          : (this.roles[role].model?.split("/")[0] ?? "unknown")),
       model: this.roles[role].model,
       effort: this.roles[role].effort,
       tier: this.roles[role].tier,

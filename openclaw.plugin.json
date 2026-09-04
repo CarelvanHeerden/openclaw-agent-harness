@@ -1071,7 +1071,7 @@
           "typecheck_gate": {
             "type": "boolean",
             "default": true,
-            "description": "beta.111: run the repo's own typecheck script before review and raise a `high` finding for errors in files this branch changed. The adversary reviews the diff, not the compiler: ProjectThanos PR #932 survived three revise runs with `TS2551: Property 'ownerUserId' does not exist`, introduced by the b108 revise, and that repo's CI does not run a typecheck so CI stayed green. Errors in untouched files are ignored, so a repo with pre-existing breakage (#932 also carries 71 unrelated failing tests) is still usable. One script per cycle, unlike run_repo_check_scripts which runs the whole suite and stays off by default."
+            "description": "Run the repo's own typecheck script before review, falling back only to the pinned node_modules/.bin/tsc binary. Never invokes package-installing npx. Missing compilers and non-zero output without parseable TypeScript diagnostics produce a structured harness_env finding, so unavailable typechecking cannot read as green. Errors in untouched files are ignored."
           },
           "check_script_heap_retry_mb": {
             "type": "integer",

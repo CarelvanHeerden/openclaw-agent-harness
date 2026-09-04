@@ -286,10 +286,13 @@ test("beta81/B3: loop authors a workflow before push + polls CI after (wired in 
   const src = S("src/orchestrator/loop.ts");
   assert.match(src, /this\.deps\.ciAuthorWorkflow/);
   assert.match(src, /loop\.ci_workflow_authored/);
-  // authored BEFORE pushBranchAndOpenPr so it lands in the PR.
+  // Authored before both preview push and the non-Vercel combined push/open
+  // path, so it always lands in the reviewed branch.
   const authorIdx = src.indexOf("this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath })");
-  const pushIdx = src.indexOf("prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview");
-  assert.ok(authorIdx > 0 && pushIdx > 0 && authorIdx < pushIdx, "workflow authored before push");
+  const previewPushIdx = src.indexOf('this.deps.state.audit("loop.preview_push_started"');
+  const fallbackPushIdx = src.indexOf(": await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview");
+  assert.ok(authorIdx > 0 && previewPushIdx > 0 && authorIdx < previewPushIdx, "workflow authored before preview push");
+  assert.ok(authorIdx < fallbackPushIdx, "workflow authored before fallback push/open");
   // CI failure/timeout OVERRIDES the merge rec to needs_human_review.
   assert.match(src, /ciOverride/);
   assert.match(src, /const finalRecommendation = ciOverride\?\.recommendation \?\? rec\.recommendation/);

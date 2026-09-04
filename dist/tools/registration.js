@@ -304,7 +304,7 @@ export function registerHarnessTools(api, runtime) {
                         text: JSON.stringify({
                             activeSessions: sessions,
                             monthlySpend: spend,
-                            models: liveConfig().models,
+                            effectiveBackendRoutes: liveRuntime().effectiveBackendRoutes ?? [],
                             channel: liveConfig().slack.channel,
                             reposAllowed: liveConfig().repos.allowed,
                         }, null, 2),
@@ -903,7 +903,7 @@ export function registerHarnessTools(api, runtime) {
     })));
     disposers.push(toDispose(api.registerTool({
         name: "harness_health",
-        description: "Return a health snapshot: DB reachable, schema OK, config well-formed, model auth resolvable, credentials configured. For smoke tests + monitoring. Pass { deep: true } to also do a tiny live SDK ping that verifies the Anthropic key actually authenticates (costs a few tokens).",
+        description: "Return a health snapshot: DB reachable, schema OK, config well-formed, effective model routes/auth resolvable, credentials configured. Pass { deep: true } to probe the configured backends.",
         parameters: {
             type: "object",
             properties: {
@@ -945,33 +945,53 @@ export function registerHarnessTools(api, runtime) {
             });
             checks.push({ name: "config_authorised_users", ok: liveConfig().slack.authorised_users.length > 0 });
             checks.push({ name: "config_repos_allowed", ok: liveConfig().repos.allowed.length > 0 });
-            // Model auth: can we resolve an Anthropic API key for the embedded
-            // Claude Agent SDK? A missing key means the FIRST session plan dies
-            // immediately with "Not logged in" -- so this is FATAL to overall
-            // health, closing the gap between "healthy" and "able to plan".
+            const effectiveRoutes = liveRuntime().effectiveBackendRoutes ?? [];
+            const needsAnthropic = effectiveRoutes.length === 0 ||
+                effectiveRoutes.some((route) => route.backend === "claude-code");
+            checks.push({
+                name: "effective_backend_routes",
+                ok: true,
+                detail: effectiveRoutes.length > 0 ? JSON.stringify(effectiveRoutes) : "legacy route metadata unavailable",
+            });
+            // Resolve Anthropic only when an effective role actually uses it.
             const auth = liveConfig().models.auth ?? {};
             let apiKey;
-            try {
-                const resolver = liveRuntime().anthropicApiKey;
-                apiKey = typeof resolver === "function" ? await resolver() : undefined;
+            if (needsAnthropic) {
+                try {
+                    const resolver = liveRuntime().anthropicApiKey;
+                    apiKey = typeof resolver === "function" ? await resolver() : undefined;
+                }
+                catch (err) {
+                    checks.push({ name: "model_auth_resolvable", ok: false, detail: String(err) });
+                }
+                if (apiKey !== undefined || !checks.some((c) => c.name === "model_auth_resolvable")) {
+                    const src = auth.credential_service
+                        ? `vault:${auth.credential_service}`
+                        : `env:${auth.api_key_env || "ANTHROPIC_API_KEY"}`;
+                    checks.push({
+                        name: "model_auth_resolvable",
+                        ok: !!apiKey,
+                        detail: apiKey ? `resolved via ${src}` : `no key from ${src} (SDK will fall back to /login and fail headless)`,
+                    });
+                }
             }
-            catch (err) {
-                checks.push({ name: "model_auth_resolvable", ok: false, detail: String(err) });
-            }
-            if (apiKey !== undefined || !checks.some((c) => c.name === "model_auth_resolvable")) {
-                const src = auth.credential_service
-                    ? `vault:${auth.credential_service}`
-                    : `env:${auth.api_key_env || "ANTHROPIC_API_KEY"}`;
-                checks.push({
-                    name: "model_auth_resolvable",
-                    ok: !!apiKey,
-                    detail: apiKey ? `resolved via ${src}` : `no key from ${src} (SDK will fall back to /login and fail headless)`,
-                });
+            else {
+                checks.push({ name: "model_auth_resolvable", ok: true, detail: "Anthropic not required by effective routes" });
             }
             // Optional deep check: a tiny live SDK call proves the key actually
             // authenticates (catches expired/invalid keys, not just missing).
             if (deep) {
-                if (!apiKey) {
+                try {
+                    await liveRuntime().ensureBackendReady?.();
+                    checks.push({ name: "configured_backend_probe", ok: true });
+                }
+                catch (err) {
+                    checks.push({ name: "configured_backend_probe", ok: false, detail: String(err) });
+                }
+                if (!needsAnthropic) {
+                    checks.push({ name: "model_auth_live_ping", ok: true, detail: "covered by configured backend probe" });
+                }
+                else if (!apiKey) {
                     checks.push({ name: "model_auth_live_ping", ok: false, detail: "skipped: no key to test" });
                 }
                 else {
@@ -1122,7 +1142,7 @@ export function registerHarnessTools(api, runtime) {
                 active: sessionRows.filter((s) => !["done", "failed", "aborted", "interrupted"].includes(s.status)).length,
             };
             return {
-                content: [{ type: "text", text: JSON.stringify({ month: targetMonth, totals, monthly: monthlyRows, daily: dailyRows, sessions: sessionRows }, null, 2) }],
+                content: [{ type: "text", text: JSON.stringify({ month: targetMonth, totals, effectiveBackendRoutes: liveRuntime().effectiveBackendRoutes ?? [], monthly: monthlyRows, daily: dailyRows, sessions: sessionRows }, null, 2) }],
                 details: { ok: true, month: targetMonth, totals },
             };
         },

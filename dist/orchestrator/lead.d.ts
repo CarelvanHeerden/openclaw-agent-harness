@@ -10,7 +10,7 @@
  * writes a "review checklist" that the adversary consumes on cycle N.
  */
 import type { HarnessConfig } from "../config.js";
-import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
+import type { CrystallisedBrief, RepoConvention } from "../crystallise/prompt-refiner.js";
 import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 /**
  * Observable side-effect a sub-task is expected to produce. The harness
@@ -245,6 +245,14 @@ export interface LeadPlan {
     branch: string;
     worktreePath: string;
     subTasks: LeadPlanSubTask[];
+    /**
+     * Files adopted into scope after an adversarial review explicitly routed
+     * them to a worker. Persisted with the plan so final-scope checks and resumed
+     * sessions agree that reviewer-required co-fixes are authorized.
+     */
+    approvedRevisionScopeFiles?: string[];
+    /** Sources of mandatory repository conventions considered during planning. */
+    acknowledgedConventions?: string[];
     reviewChecklist: string[];
     riskLevel: "low" | "medium" | "high";
     approxCostUsd: number;
@@ -396,8 +404,11 @@ export interface LeadDeps {
     scoutRepo?: (input: {
         brief: CrystallisedBrief;
         repoFullName: string;
+        /** False when only pre-plan convention ingestion is needed. */
+        runModel?: boolean;
     }) => Promise<{
         report: string;
+        conventions?: RepoConvention[];
         costUsd?: number;
         tokensIn?: number;
         tokensOut?: number;
@@ -506,4 +517,5 @@ export declare function runLeadPlanner(brief: CrystallisedBrief, deps: LeadDeps)
  * allowed by an `owner/*` glob -- i.e. most of them.
  */
 export declare function isRepoAllowed(repoFullName: string, allowed: string[]): boolean;
+export declare function mandatoryConventionSources(conventions: RepoConvention[] | undefined): string[];
 //# sourceMappingURL=lead.d.ts.map

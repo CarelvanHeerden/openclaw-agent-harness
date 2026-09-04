@@ -84,11 +84,10 @@ export function diagnoseCheckEnv(worktree, deps = {}) {
 /**
  * Run the TypeScript compiler without going through the repo's npm script.
  *
- * Ordered by directness: the repo's own pinned binary first, then `npx
- * --no-install` (which will still find that same binary, but via a different
- * resolution path that survives some of the ways the first one breaks). We
- * never install anything -- a review gate that mutates the worktree to make
- * itself runnable would be a worse bug than the one it is fixing.
+ * Uses only the repo's own pinned binary. `npx` is deliberately forbidden:
+ * across npm versions its no-install behavior is inconsistent, and resolving
+ * the placeholder `tsc` package can produce a non-zero, unparseable result that
+ * the old gate mistook for success.
  *
  * Returns null when no route exists, which the caller must treat as "the gate
  * did not run", never as "the branch compiles".
@@ -101,7 +100,6 @@ export function runTypecheckDirect(worktree, timeoutMs, deps = {}) {
     const attempts = [];
     if (existsSync(local))
         attempts.push({ via: "node_modules_bin", cmd: local, args: ["--noEmit"] });
-    attempts.push({ via: "npx", cmd: "npx", args: ["--no-install", "tsc", "--noEmit"] });
     for (const a of attempts) {
         let res;
         try {

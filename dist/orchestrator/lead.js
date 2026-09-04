@@ -249,7 +249,10 @@ export async function runLeadPlanner(brief, deps) {
     // best-effort: any failure leaves `brief.repoScoutReport` unset, and the
     // planning prompt is then byte-identical to b103's.
     let scoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
-    if (deps.config.loop?.lead_repo_scout_enabled !== false && deps.scoutRepo) {
+    const scoutEnabled = deps.config.loop?.lead_repo_scout_enabled !== false;
+    const conventionsNeeded = deps.config.brief?.ingest_repo_conventions !== false &&
+        !(brief.repoConventions?.length);
+    if ((scoutEnabled || conventionsNeeded) && deps.scoutRepo) {
         // Only scout a repo the run is actually allowed to touch. An unresolvable
         // or disallowed hint means the lead picks the repo itself, so there is no
         // worktree we could legitimately allocate at this point.
@@ -281,8 +284,11 @@ export async function runLeadPlanner(brief, deps) {
         else {
             const startedAt = Date.now();
             try {
-                const result = await deps.scoutRepo({ brief, repoFullName: repoForScout });
-                const bounds = boundScoutReportDetailed(result?.report ?? "", deps.config.loop?.lead_scout_max_chars ?? SCOUT_REPORT_MAX_CHARS);
+                const result = await deps.scoutRepo({ brief, repoFullName: repoForScout, runModel: scoutEnabled });
+                if (result?.conventions?.length) {
+                    brief.repoConventions = result.conventions;
+                }
+                const bounds = boundScoutReportDetailed(scoutEnabled ? (result?.report ?? "") : "", deps.config.loop?.lead_scout_max_chars ?? SCOUT_REPORT_MAX_CHARS);
                 const report = bounds.text;
                 if (report) {
                     brief.repoScoutReport = report;
@@ -309,7 +315,7 @@ export async function runLeadPlanner(brief, deps) {
                         });
                     }
                 }
-                else {
+                else if (scoutEnabled) {
                     // v2.0.0-beta.1: an empty report is still a BILLED call, and this is
                     // where a scout TIMEOUT lands — `scoutRepo` returns `timedOut: true`
                     // with an empty report rather than throwing, so the most expensive
@@ -328,6 +334,9 @@ export async function runLeadPlanner(brief, deps) {
                         costUsd: result?.costUsd ?? 0,
                     });
                 }
+                else {
+                    scoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
+                }
             }
             catch (err) {
                 // Cost is genuinely unknown here: the callable threw rather than
@@ -343,7 +352,7 @@ export async function runLeadPlanner(brief, deps) {
             }
         }
     }
-    else if (!deps.scoutRepo) {
+    else if ((scoutEnabled || conventionsNeeded) && !deps.scoutRepo) {
         scoutOutcome = { ran: false, reportChars: 0, skippedReason: "unwired" };
     }
     // beta.99 (P0-1): the LAST plan that parsed AND validated. b98 (session
@@ -386,13 +395,16 @@ export async function runLeadPlanner(brief, deps) {
             // beta.33: defensively strip push/PR sub-tasks BEFORE validation.
             sanitizeRemoteSubTasks(raw, deps.logger);
             validatePlan(raw, deps.config);
+            validateMandatoryConventionAcknowledgement(raw, brief.repoConventions);
         }
         catch (err) {
             if (attempt < maxAttempts &&
                 err instanceof LeadPlanValidationError &&
-                err.message.includes("no mutate or mixed sub-task")) {
-                correctiveNote =
-                    "INVALID IMPLEMENTATION PLAN: your previous plan contained only read-only observe tasks. " +
+                (err.message.includes("no mutate or mixed sub-task") ||
+                    err.message.includes("mandatory repository conventions"))) {
+                correctiveNote = err.message.includes("mandatory repository conventions")
+                    ? `INVALID CONVENTION COVERAGE: ${err.message}. Return a complete replacement plan that lists every mandatory convention source in acknowledgedConventions and incorporates each applicable requirement into filesLikelyTouched, successCriteria, and reviewChecklist.`
+                    : "INVALID IMPLEMENTATION PLAN: your previous plan contained only read-only observe tasks. " +
                         "This brief requires code changes. Return a complete replacement plan with at least one " +
                         "taskMode:'mutate' or taskMode:'mixed' sub-task that writes and commits the implementation; " +
                         "observe tasks may only prepare or verify that mutation.";
@@ -536,6 +548,21 @@ export function isRepoAllowed(repoFullName, allowed) {
             return true;
         return false;
     });
+}
+export function mandatoryConventionSources(conventions) {
+    return (conventions ?? [])
+        .filter((convention) => /\balwaysApply\s*:\s*true\b/i.test(convention.text))
+        .map((convention) => convention.source);
+}
+function validateMandatoryConventionAcknowledgement(plan, conventions) {
+    const mandatory = mandatoryConventionSources(conventions);
+    if (mandatory.length === 0)
+        return;
+    const acknowledged = new Set(plan.acknowledgedConventions ?? []);
+    const missing = mandatory.filter((source) => !acknowledged.has(source));
+    if (missing.length > 0) {
+        throw new LeadPlanValidationError(`lead plan did not acknowledge mandatory repository conventions: ${missing.join(", ")}`);
+    }
 }
 function validatePlan(plan, config) {
     if (!plan.repo || !plan.repo.includes("/")) {

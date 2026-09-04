@@ -157,10 +157,10 @@ test("beta104: the allow-list gate honours owner/* globs, as validatePlan does",
   assert.equal(isRepoAllowed("notarepo", ["Stitch-Vercel/*"]), false);
 });
 
-test("beta104: lead_repo_scout_enabled:false restores the exact pre-b104 behaviour", { skip }, async () => {
+test("rc1: lead_repo_scout_enabled:false skips the model report but still loads conventions", { skip }, async () => {
   const { d, calls } = deps({ config: { ...CONFIG, loop: { lead_repo_scout_enabled: false } } });
   const plan = await runLeadPlanner(BRIEF(), d);
-  assert.equal(calls.scout, 0);
+  assert.equal(calls.scout, 1, "the repository pass still runs so mandatory conventions reach planning");
   assert.equal(calls.briefSeenByLead.repoScoutReport, undefined);
   assert.equal(plan.scout.skippedReason, "disabled");
 });

@@ -922,6 +922,7 @@ export async function runLeadSdk(params) {
         "    branch: string (must start with 'harness/'; NOTE: the harness namespaces all branches under 'harness/' and may rewrite/slugify your hint, so the final branch name is authoritative from the plan, not this field),",
         "    subTasks: SubTask[],",
         "    reviewChecklist: string[],",
+        "    acknowledgedConventions?: string[] (exact source names of every repo convention whose frontmatter sets alwaysApply:true),",
         "    riskLevel: 'low'|'medium'|'high' }",
         "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope: 'local', taskMode: 'observe'|'mutate'|'mixed', verify: VerifyCheck[], workerContext?: WorkerContext }",
         // beta.66 (warm-worker-context): the schema for the handover Fable gives the worker.
@@ -957,6 +958,7 @@ export async function runLeadSdk(params) {
         "- Bias toward FEWER sub-tasks. A sub-task earns its place only if it is independently reviewable AND not already covered by your own investigation or the harness's post-execution review. When in doubt between 1 and 3 for a small change, choose 1.",
         "- Each sub-task must be independently reviewable.",
         "- reviewChecklist has one item per acceptance criterion + one for tests + one for docs.",
+        "- Repository conventions are binding planning input. For every convention with `alwaysApply: true`, copy its exact source name into acknowledgedConventions, apply any relevant companion-file requirement to filesLikelyTouched/successCriteria, and add it to reviewChecklist.",
         // beta.33: CRITICAL ARCHITECTURE RULE. Push + PR are NOT sub-tasks.
         // The harness has a dedicated endgame (pushBranchAndOpenPr in loop.ts)
         // that pushes the branch and opens the PR AUTOMATICALLY and

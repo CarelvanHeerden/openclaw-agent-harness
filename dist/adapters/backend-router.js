@@ -309,6 +309,10 @@ export class BackendRouter {
         return Object.keys(this.roles).map((role) => ({
             role,
             backend: this.roles[role].backend,
+            provider: this.roles[role].provider ??
+                (this.roles[role].backend === "claude-code"
+                    ? "anthropic"
+                    : (this.roles[role].model?.split("/")[0] ?? "unknown")),
             model: this.roles[role].model,
             effort: this.roles[role].effort,
             tier: this.roles[role].tier,

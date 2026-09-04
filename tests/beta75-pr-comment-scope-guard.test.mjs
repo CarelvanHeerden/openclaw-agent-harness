@@ -80,10 +80,10 @@ test("beta75 #1: postPrComment swallows a thrown fetch (returns ok:false, no thr
 test("beta75 #1: pushBranchAndOpenPr posts a review comment after the PR is resolved", () => {
   const src = readFileSync(join(root, "src/index.ts"), "utf8");
   assert.match(src, /import \{[^}]*postPrComment[^}]*\} from "\.\/adapters\/github\.js"/, "postPrComment imported");
-  assert.match(src, /renderReviewComment\(reviewReport/, "builds the comment from the review");
-  assert.match(src, /postPrComment\(\{ repoFullName: plan\.repo, prNumber: pr\.number/, "posts to the resolved PR number");
+  assert.match(src, /renderReviewComment\(params\.reviewReport/, "builds the comment from the review");
+  assert.match(src, /postPrComment\(\{\s*repoFullName: params\.repoFullName,\s*prNumber: params\.pr\.number/, "posts to the resolved PR number");
   // best-effort: the post is inside a try that only warns on failure
-  const idx = src.indexOf("renderReviewComment(reviewReport");
+  const idx = src.indexOf("renderReviewComment(params.reviewReport");
   const around = src.slice(idx - 200, idx + 400);
   assert.match(around, /try \{/, "wrapped in try (best-effort)");
 });

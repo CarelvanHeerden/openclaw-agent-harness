@@ -360,8 +360,9 @@ test("a revise cycle still counts rows, and the plan can never shrink the count"
   const src = S("src/orchestrator/progress.ts");
   const i = src.indexOf("let plannedTotal = 0;");
   assert.ok(i > 0);
-  const window = src.slice(i, i + 700);
-  assert.match(window, /latestCycle <= 1/, "only cycle 1 runs the whole plan");
+  const window = src.slice(i, i + 1400);
+  assert.match(window, /latestCycle > 1/, "revise cycles use their scheduled subset");
+  assert.match(window, /loop\.revise_scoped/, "the stable revise schedule supplies the denominator");
   assert.match(window, /Math\.max\(all\.length, plannedTotal\)/, "a short or stale plan cannot hide started work");
   assert.match(window, /catch/, "an unparseable plan leaves the row count in charge");
 });

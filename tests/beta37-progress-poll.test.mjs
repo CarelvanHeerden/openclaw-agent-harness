@@ -119,6 +119,22 @@ test("beta37: completed_no_change counts as done (beta.35 revise path)", { skip:
   assert.equal(snap.subTasks.done, 2, "completed_no_change must count as done");
 });
 
+test("rc1: completed rows count as done and revise totals use the stable scheduled subset", { skip: !buildProgressSnapshot }, () => {
+  const db = makeDb();
+  insertSession(db, "s-progress", { status: "executing", cycles_ran: 2 });
+  db.prepare(`UPDATE sessions SET lead_plan_json = ? WHERE id = ?`).run(
+    JSON.stringify({ subTasks: Array.from({ length: 5 }, (_, i) => ({ seq: i + 1 })) }),
+    "s-progress",
+  );
+  insertSubTask(db, "s-progress", 2, "completed", "Help content", { cycle: 2, completedAt: Date.now() });
+  insertSubTask(db, "s-progress", 4, "completed", "Interaction tests", { cycle: 2, completedAt: Date.now() });
+  insertAudit(db, "s-progress", "loop.revise_scoped", { cycle: 2, run: 2, skipped: 3 });
+  const snap = buildProgressSnapshot(db, "s-progress");
+  assert.equal(snap.subTasks.total, 2);
+  assert.equal(snap.subTasks.done, 2);
+  assert.ok(snap.worklog.every((line) => /\/2\b/.test(line)));
+});
+
 test("beta37: terminal done includes PR number in headline + terminal:true", { skip: !buildProgressSnapshot }, () => {
   const db = makeDb();
   insertSession(db, "s3", { status: "done", cost_usd: 0.7, budget_usd: 3, pr_number: 42, final_pr_url: "https://github.com/o/r/pull/42" });

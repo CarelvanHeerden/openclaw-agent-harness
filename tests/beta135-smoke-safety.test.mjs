@@ -133,6 +133,163 @@ test("beta135: a no-change revise with blocking findings never opens a PR", { sk
   assert.ok(s.sawEvent("loop.cycle_no_change_blocked"));
 });
 
+test("rc1: reviewer-authorized companion file is durable scope and ships after cycle-two pass", { skip }, async () => {
+  const page = "src/app/(portal)/it/offboarding/[id]/page.tsx";
+  const help = "src/lib/help/help-content.ts";
+  let workerTurn = 0;
+  let reviewTurn = 0;
+  const s = await runScenario({
+    seedFiles: { "README.md": "# seed\n" },
+    subTasks: [mutateSubTask({ title: "Add checklist sorting", path: page })],
+    worker: async ({ worktreePath }, { world }) => {
+      workerTurn += 1;
+      const rel = workerTurn === 1 ? page : help;
+      mkdirSync(dirname(join(worktreePath, rel)), { recursive: true });
+      writeFileSync(join(worktreePath, rel), `export const turn = ${workerTurn};\n`);
+      const sha = await world.adapter.commit(worktreePath, `fix: cycle ${workerTurn}`, IDENT);
+      return {
+        status: "completed",
+        filesChanged: [rel],
+        commitSha: sha,
+        commitShas: [sha],
+        costUsd: 0.01,
+        tokensIn: 1,
+        tokensOut: 1,
+        reason: "end_turn",
+        finalMessage: `${rel} committed`,
+      };
+    },
+    runAdversary: async () => {
+      reviewTurn += 1;
+      return reviewTurn === 1
+        ? {
+            verdict: "revise",
+            findings: [{
+              severity: "medium",
+              dimension: "fit",
+              title: "Update mandatory help content",
+              detail: "The repository convention requires the companion help index.",
+              file: page,
+              relatedFiles: [help],
+            }],
+            summary: "one convention co-fix remains",
+            costUsd: 0.01,
+            tokensIn: 1,
+            tokensOut: 1,
+          }
+        : {
+            verdict: "pass",
+            findings: [],
+            summary: "the reviewer-required companion update is present",
+            costUsd: 0.01,
+            tokensIn: 1,
+            tokensOut: 1,
+          };
+    },
+  });
+
+  assert.equal(s.out.status, "shipped", `${s.out.status}: ${s.out.reason ?? ""}`);
+  assert.equal(s.calls.worker, 2);
+  assert.equal(reviewTurn, 2, "a false scope finding must not start a third cycle");
+  assert.equal(s.calls.push, 1);
+  assert.equal(s.sawEvent("loop.final_scope_check_out_of_scope"), false);
+  const storedPlan = JSON.parse(s.session().lead_plan_json);
+  assert.ok(storedPlan.approvedRevisionScopeFiles.includes(help));
+  const finalReview = s.db.prepare(`SELECT verdict, findings FROM reviews WHERE session_id = ? AND cycle = 2`).get("S1");
+  assert.equal(finalReview.verdict, "pass");
+  assert.deepEqual(JSON.parse(finalReview.findings), []);
+});
+
+test("rc1: a genuinely unrelated committed file remains a routable deterministic scope finding", { skip }, async () => {
+  const page = "src/page.ts";
+  const unrelated = "src/unrelated.ts";
+  const s = await runScenario({
+    configOver: { loop: { max_cycles: 1, max_cycle_extensions: 0 } },
+    subTasks: [mutateSubTask({ title: "Edit page", path: page })],
+    worker: async ({ worktreePath }, { world }) => {
+      for (const rel of [page, unrelated]) {
+        mkdirSync(dirname(join(worktreePath, rel)), { recursive: true });
+        writeFileSync(join(worktreePath, rel), `export const value = ${JSON.stringify(rel)};\n`);
+      }
+      const sha = await world.adapter.commit(worktreePath, "feat: page plus unrelated file", IDENT);
+      return {
+        status: "completed", filesChanged: [page, unrelated], commitSha: sha, commitShas: [sha],
+        costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn", finalMessage: "committed",
+      };
+    },
+  });
+  const review = s.db.prepare(`SELECT verdict, findings FROM reviews WHERE session_id = ? AND cycle = 1`).get("S1");
+  const findings = JSON.parse(review.findings);
+  const scope = findings.find((finding) => finding.source === "deterministic_scope");
+  assert.equal(review.verdict, "revise");
+  assert.equal(scope.file, unrelated);
+  assert.equal(scope.dimension, "fit");
+  assert.equal(s.events("loop.review_raw")[0].payload.verdict, "pass");
+});
+
+test("rc1: Vercel verification pushes only after static pass and reviews the exact preview SHA before PR open", { skip }, async () => {
+  const order = [];
+  let previewSha;
+  let openCalls = 0;
+  const s = await runScenario({
+    runAdversary: async ({ runtime }) => {
+      order.push(runtime?.provider === "vercel" ? "runtime-review" : "static-review");
+      return {
+        verdict: "pass", findings: [], summary: "pass",
+        costUsd: 0.01, tokensIn: 1, tokensOut: 1,
+      };
+    },
+    deps: {
+      previewVerificationEnabled: true,
+      pushBranchForPreview: async ({ plan }) => {
+        order.push("preview-push");
+        previewSha = git(["rev-parse", "HEAD"], plan.worktreePath);
+      },
+      fetchRuntime: async ({ waitForPreview, commitSha }) => {
+        if (!waitForPreview) return undefined;
+        order.push("preview-wait");
+        assert.equal(commitSha, previewSha);
+        return { provider: "vercel", status: "ok", deploymentUrl: "https://preview.example" };
+      },
+      openPullRequest: async () => {
+        order.push("pr-open");
+        openCalls += 1;
+        return "https://github.com/o/r/pull/1";
+      },
+    },
+  });
+  assert.equal(s.out.status, "shipped");
+  assert.deepEqual(order, ["static-review", "preview-push", "preview-wait", "runtime-review", "pr-open"]);
+  assert.equal(openCalls, 1);
+  assert.equal(s.calls.push, 0, "the combined push/open path must not repush after preview verification");
+});
+
+test("rc1: non-zero unparseable typecheck output becomes a harness_env finding", { skip }, async () => {
+  const s = await runScenario({
+    seedFiles: {
+      "package.json": JSON.stringify({ scripts: { typecheck: "tsc --noEmit" } }),
+      "tsconfig.json": JSON.stringify({ compilerOptions: {} }),
+    },
+    deps: {
+      runCheckScript: () => ({
+        status: 1,
+        stdout: "This is not the tsc command you are looking for",
+        stderr: "",
+      }),
+      runTypecheckDirect: () => ({
+        via: "node_modules_bin",
+        status: 1,
+        stdout: "compiler wrapper failed before diagnostics",
+        stderr: "",
+      }),
+    },
+  });
+  const row = s.db.prepare(`SELECT findings FROM reviews WHERE session_id = ? AND cycle = 1`).get("S1");
+  const finding = JSON.parse(row.findings).find((item) => item.source === "harness_env");
+  assert.equal(finding.title, "Typecheck failed without parseable compiler diagnostics");
+  assert.ok(s.sawEvent("loop.typecheck_gate_unparsed"));
+});
+
 test("beta135: accepting committed work continues the stored plan", () => {
   const registration = S("src/tools/registration.ts");
   const loop = S("src/orchestrator/loop.ts");

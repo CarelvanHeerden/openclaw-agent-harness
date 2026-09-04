@@ -399,6 +399,25 @@ opts = {}) {
                 if (!recruited.includes(st.seq))
                     recruited.push(st.seq);
             }
+            // A reviewer can require a companion file no original sub-task owned
+            // (for example a mandatory help index). Route that explicit relatedFile
+            // to the finding's primary owner instead of leaving it as prose that no
+            // worker is permitted to edit.
+            const unmatchedExtras = extras.filter((path) => !matchedFiles.includes(path));
+            if (unmatchedExtras.length > 0 && priorOwners.length > 0) {
+                const fallbackPrimary = Math.min(...priorOwners);
+                const assignment = bySeq.get(fallbackPrimary);
+                if (assignment) {
+                    for (const path of unmatchedExtras) {
+                        if (!assignment.targetedFiles.includes(path))
+                            assignment.targetedFiles.push(path);
+                        if (!matchedFiles.includes(path))
+                            matchedFiles.push(path);
+                    }
+                    if (!seqs.includes(fallbackPrimary))
+                        seqs.push(fallbackPrimary);
+                }
+            }
             if (seqs.length === 0)
                 continue;
             // beta.120 (fix 3): exactly one sub-task is answerable. Prefer whoever

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Preserve reviewer-authorized revision files as durable approved scope and
+  persist the effective post-gate review used by the orchestration loop.
+- Emit per-file routable deterministic-scope findings for genuine scope creep.
+- Verify Vercel previews in two stages against the exact pushed commit before
+  opening a PR.
+- Treat unavailable or unparseable typechecking as `harness_env`, ingest
+  mandatory conventions before planning, correct revise progress totals, and
+  report effective backend/provider/model routes consistently.
+
 ## 2.0.0-rc.1
 
 First v2 release candidate. OpenCode is a first-class backend across agentic

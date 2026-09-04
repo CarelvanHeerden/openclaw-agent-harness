@@ -237,7 +237,7 @@ test("the echo goes on the review comment, because a revise never rewrites the b
   // acceptanceCriteria -- is never rewritten for the case guidance exists for.
   assert.match(indexSrc, /opts: \{ updatedExisting: boolean; operatorGuidance\?: string \}/);
   assert.match(indexSrc, /const guidanceLines = opts\.operatorGuidance \? guidanceCommentSection\(opts\.operatorGuidance\) : \[\];/);
-  assert.match(indexSrc, /operatorGuidance: brief\.operatorGuidance,/, "and the brief's copy must actually be passed in");
+  assert.match(indexSrc, /operatorGuidance: params\.brief\.operatorGuidance,/, "and the brief's copy must actually be passed in");
 });
 
 test("a review with no guidance renders exactly as before", () => {

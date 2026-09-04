@@ -53,11 +53,11 @@ import {
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { CredentialVault, VAULT_KEY_ENV, type CredentialRecord } from "./adapters/credential-vault.js";
-import { buildBackendRouter, type BackendRouter } from "./adapters/backend-router.js";
+import { buildBackendRouter, type BackendRouter, type EffectiveBackendRoute } from "./adapters/backend-router.js";
 import { runWorkerAcp } from "./adapters/acp.js";
 import { buildAcpGuard } from "./safety/bash-guard.js";
 import { focusedWorkerAcpGuard } from "./safety/focused-worker-acp-guard.js";
-import type { RoleName } from "./adapters/backend.js";
+import { ROLE_NAMES, type RoleName } from "./adapters/backend.js";
 import { catalogueStore } from "./state/price-cache.js";
 import { memoiseSuccess } from "./adapters/shared/once.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
@@ -93,7 +93,7 @@ import { crystallisePrompt, type CrystallisedBrief } from "./crystallise/prompt-
 import { runLeadPlanner } from "./orchestrator/lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/worker.js";
 import { runAdversary as runAdversaryCore, type ReviewFinding } from "./orchestrator/adversary.js";
-import { discoverCheckScripts } from "./orchestrator/repo-conventions.js";
+import { discoverCheckScripts, ingestRepoConventions } from "./orchestrator/repo-conventions.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
@@ -194,6 +194,9 @@ function sealedVault(reason: string): CredentialStore {
 
 export interface HarnessRuntime {
   config: HarnessConfig;
+  /** One canonical description of the route each model role actually uses. */
+  effectiveBackendRoutes: EffectiveBackendRoute[];
+  ensureBackendReady: () => Promise<void>;
   state: Awaited<ReturnType<typeof openStateStore>>;
   budget: BudgetEnforcer;
   pat: PatRouter;
@@ -383,7 +386,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           model: config.models.classifier,
           userText,
           timeoutSeconds: 60,
-          apiKey: await anthropicApiKey(),
+          apiKey: await apiKeyForRole("classifier"),
         }),
         // beta.21: forward pre-attached concepts (if any) into the SDK-side
         // crystalliser prompt. Undefined/empty is identical to pre-beta.21
@@ -393,7 +396,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           model: config.models.lead,
           userText,
           timeoutSeconds: 120,
-          apiKey: await anthropicApiKey(),
+          apiKey: await apiKeyForRole("crystalliser"),
           concepts: ctxConcepts,
           // beta.80: repo-only invariant + bimodality self-report prompt gates.
           repoOnlyInvariant: config.brief.repo_only_invariant,
@@ -564,6 +567,61 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     if (backendRouterError) throw new Error(`backend configuration rejected at startup: ${backendRouterError}`);
     if (!backendRouter) return;
     await backendProbe();
+  };
+  const legacyModelForRole = (role: RoleName): string => {
+    if (role === "worker") return config.models.worker;
+    if (role === "adversary") return config.models.adversary;
+    if (role === "classifier") return config.models.classifier;
+    return config.models.lead;
+  };
+  const effectiveBackendRoutes: EffectiveBackendRoute[] =
+    backendRouter?.describe() ??
+    ROLE_NAMES.map((role) => ({
+      role,
+      backend: "claude-code" as const,
+      provider: "anthropic",
+      model: legacyModelForRole(role),
+      tier: "frontier",
+    }));
+  const apiKeyForRole = async (role: RoleName): Promise<string | undefined> =>
+    effectiveBackendRoutes.find((route) => route.role === role)?.backend === "opencode"
+      ? undefined
+      : anthropicApiKey();
+  const postHarnessReviewComment = async (params: {
+    repoFullName: string;
+    pr: { number: number; updatedExisting?: boolean };
+    brief: CrystallisedBrief;
+    reviewReport: import("./orchestrator/adversary.js").ReviewReport;
+    ghToken: string;
+    apiBase: string;
+  }): Promise<void> => {
+    try {
+      const commentBody = renderReviewComment(params.reviewReport, {
+        updatedExisting: !!params.pr.updatedExisting,
+        operatorGuidance: params.brief.operatorGuidance,
+      });
+      const comment = await postPrComment({
+        repoFullName: params.repoFullName,
+        prNumber: params.pr.number,
+        body: commentBody,
+        ghToken: params.ghToken,
+        apiBase: params.apiBase,
+      });
+      if (!comment.ok) {
+        api.logger.warn("[harness] PR review comment post failed (non-fatal)", {
+          repo: params.repoFullName,
+          prNumber: params.pr.number,
+          status: comment.status,
+          error: comment.error,
+        });
+      }
+    } catch (err) {
+      api.logger.warn("[harness] PR review comment post threw (non-fatal)", {
+        repo: params.repoFullName,
+        prNumber: params.pr.number,
+        err: String(err),
+      });
+    }
   };
 
   /**
@@ -776,6 +834,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     pat,
     logger: api.logger,
     interactionLog,
+    effectiveRouteFor: (role) => effectiveBackendRoutes.find((route) => route.role === role)!,
 
     runLead: async (brief, ctx) => {
       const requester = ctx?.requester ?? config.slack.authorised_users[0]!;
@@ -802,7 +861,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             // for exactly this call -- was ignored, so operators tuning the
             // lead timeout changed nothing.
             timeoutSeconds: config.loop.lead_timeout_seconds ?? config.loop.worker_timeout_seconds,
-            apiKey: await anthropicApiKey(),
+            apiKey: await apiKeyForRole("lead"),
             logger: api.logger,
             correctiveNote,
             // beta.81 (Track C): retry-once-on-prose-drift guard for the lead.
@@ -828,7 +887,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             subTasks: plan.subTasks,
             missingSeqs,
             timeoutSeconds: config.loop.lead_timeout_seconds ?? config.loop.worker_timeout_seconds,
-            apiKey: await anthropicApiKey(),
+            apiKey: await apiKeyForRole("worker_context"),
             maxOutputTokens: config.models.max_output_tokens,
             logger: api.logger,
           }),
@@ -844,7 +903,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // Every failure path returns undefined rather than throwing:
         // runLeadPlanner treats an absent report as "plan blind", which is
         // exactly the pre-b104 behaviour.
-        scoutRepo: async ({ brief: scoutBrief, repoFullName }) => {
+        scoutRepo: async ({ brief: scoutBrief, repoFullName, runModel = true }) => {
           const [owner] = repoFullName.split("/");
           const resolution = pat.resolve({
             slackUserId: requester,
@@ -866,10 +925,16 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               commitIdentity: resolution.commitIdentity,
               bootstrapDeps: false,
             });
-            if (backendRouterError) await ensureBackendReady();
-            if (backendRouter?.backendFor("scout").backend === "opencode") {
-              await ensureBackendReady();
-              const s = await runWorkerAcp({
+            const conventions =
+              config.brief?.ingest_repo_conventions !== false
+                ? ingestRepoConventions(scoutWorktree, config.brief?.convention_char_budget ?? 10000)
+                : [];
+            if (!runModel) return { report: "", conventions };
+            try {
+              if (backendRouterError) await ensureBackendReady();
+              if (backendRouter?.backendFor("scout").backend === "opencode") {
+                await ensureBackendReady();
+                const s = await runWorkerAcp({
                 agent: backendRouter.agentSpecFor("scout"),
                 worktreePath: scoutWorktree,
                 systemPrompt: buildScoutSystemPrompt(),
@@ -889,28 +954,33 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                 secretToken: ghToken,
                 logger: api.logger,
               });
-              return {
-                report: s.finalMessage,
-                costUsd: backendRouter.priceTurn("scout", s).costUsd ?? 0,
-                tokensIn: s.tokensIn,
-                tokensOut: s.tokensOut,
-                timedOut: s.stopReason === "timeout",
-              };
+                return {
+                  report: s.finalMessage,
+                  conventions,
+                  costUsd: backendRouter.priceTurn("scout", s).costUsd ?? 0,
+                  tokensIn: s.tokensIn,
+                  tokensOut: s.tokensOut,
+                  timedOut: s.stopReason === "timeout",
+                };
+              }
+              const r = await runLeadScoutSdk({
+                model: config.models.lead,
+                worktreePath: scoutWorktree,
+                systemPrompt: buildScoutSystemPrompt(),
+                userMessage: buildScoutUserMessage(scoutBrief),
+                timeoutSeconds: config.loop.lead_scout_timeout_seconds ?? 420,
+                maxTurns: config.loop.lead_scout_max_turns ?? SCOUT_MAX_TURNS,
+                apiKey: await apiKeyForRole("scout"),
+                maxOutputTokens: config.models.max_output_tokens,
+                allowedTools: SCOUT_ALLOWED_TOOLS,
+                deniedTools: SCOUT_DENIED_TOOLS,
+                logger: api.logger,
+              });
+              return { report: r.report, conventions, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut, timedOut: r.timedOut };
+            } catch (err) {
+              api.logger.warn("[lead] model scout failed after conventions were loaded; planning retains convention context", { repo: repoFullName, err: String(err) });
+              return { report: "", conventions };
             }
-            const r = await runLeadScoutSdk({
-              model: config.models.lead,
-              worktreePath: scoutWorktree,
-              systemPrompt: buildScoutSystemPrompt(),
-              userMessage: buildScoutUserMessage(scoutBrief),
-              timeoutSeconds: config.loop.lead_scout_timeout_seconds ?? 420,
-              maxTurns: config.loop.lead_scout_max_turns ?? SCOUT_MAX_TURNS,
-              apiKey: await anthropicApiKey(),
-              maxOutputTokens: config.models.max_output_tokens,
-              allowedTools: SCOUT_ALLOWED_TOOLS,
-              deniedTools: SCOUT_DENIED_TOOLS,
-              logger: api.logger,
-            });
-            return { report: r.report, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut, timedOut: r.timedOut };
           } finally {
             if (scoutWorktree) {
               await git
@@ -991,7 +1061,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         subTasks: plan.subTasks,
         review,
         timeoutSeconds: config.loop.revise_spec_timeout_seconds ?? config.loop.worker_timeout_seconds,
-        apiKey: await anthropicApiKey(),
+        apiKey: await apiKeyForRole("revise_spec"),
         // beta.99 (P0-4): same output ceiling as the plan call -- this turn
         // re-emits the full sub-task list and truncates the same way.
         maxOutputTokens: config.models.max_output_tokens,
@@ -1041,7 +1111,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             // fails loudly instead of quietly running on the default backend.
             if (backendRouterError) await ensureBackendReady();
             if (backendRouter?.backendFor("worker").backend !== "opencode") {
-              return runWorkerSdk({ ...params, apiKey: await anthropicApiKey(), maxOutputTokens: config.models.max_output_tokens });
+              return runWorkerSdk({ ...params, apiKey: await apiKeyForRole("worker"), maxOutputTokens: config.models.max_output_tokens });
             }
             // The guard is proven live before the first turn, not assumed from
             // the config we wrote: an agent that has stopped routing tool calls
@@ -1185,7 +1255,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             const r = await runAdversarySdk({
               ...params,
               execute: executorFor("adversary"),
-              apiKey: await anthropicApiKey(),
+              apiKey: await apiKeyForRole("adversary"),
             });
             return {
               parsed: {
@@ -1222,7 +1292,8 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       }
     },
 
-    fetchRuntime: async ({ plan, sessionId }) => {
+    previewVerificationEnabled: config.vercel?.enabled === true,
+    fetchRuntime: async ({ plan, sessionId, waitForPreview = false, commitSha }) => {
       // Prefer a manual upload if one exists (most recent wins). This lets
       // non-Vercel deploys hand-supply logs via the harness_upload_logs tool.
       const upload = state.db
@@ -1250,6 +1321,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       }
       // Otherwise fall back to Vercel bridge, only if explicitly enabled.
       if (!config.vercel?.enabled) return undefined;
+      // Stage one is a static review. Polling before the branch has been
+      // pushed can never find a deployment and wastes the full wait window.
+      if (!waitForPreview) return undefined;
       // beta.34: vault-first + env fallback (was vault-only, which lost the
       // token on the vault-less Staging container).
       const token = await resolveVercelToken();
@@ -1263,6 +1337,32 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           errorCount: undefined,
         };
       }
+      if (commitSha) {
+        const result = await verifyDeploymentForSha({
+          vercelToken: token,
+          teamId: config.vercel.team_id,
+          projectId: config.vercel.project_id,
+          sha: commitSha,
+          waitSeconds: config.vercel.preview_wait_seconds,
+          logger: api.logger,
+        });
+        return {
+          provider: "vercel" as const,
+          status:
+            result.status === "ready"
+              ? "ok" as const
+              : result.status === "error"
+                ? "build_failed" as const
+                : result.status === "pending"
+                  ? "no_deploy_yet" as const
+                  : "unavailable" as const,
+          deploymentUrl: result.deploymentUrl
+            ? (result.deploymentUrl.startsWith("http") ? result.deploymentUrl : `https://${result.deploymentUrl}`)
+            : undefined,
+          logsExcerpt: result.logsExcerpt ?? result.detail,
+          errorCount: result.status === "error" ? 1 : 0,
+        };
+      }
       return fetchBranchLogs({
         vercelToken: token,
         teamId: config.vercel.team_id,
@@ -1271,6 +1371,46 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         waitSeconds: config.vercel.preview_wait_seconds,
         logger: api.logger,
       });
+    },
+
+    pushBranchForPreview: async ({ plan, requester }) => {
+      const resolution = pat.resolve({
+        slackUserId: requester ?? config.slack.authorised_users[0]!,
+        gitHubUser: plan.repo.split("/")[0]!,
+        repoFullName: plan.repo,
+      });
+      const gitToken = await resolveGitToken(resolution);
+      await git.pushBranch(plan.worktreePath, "origin", plan.branch, gitToken);
+    },
+
+    openPullRequest: async ({ plan, brief, reviewReport, requester }) => {
+      const resolution = pat.resolve({
+        slackUserId: requester ?? config.slack.authorised_users[0]!,
+        gitHubUser: plan.repo.split("/")[0]!,
+        repoFullName: plan.repo,
+      });
+      const ghToken = await resolveGitToken(resolution);
+      if (resolution.provider !== "github") {
+        throw new Error(
+          `provider '${resolution.provider}' branch was pushed but automated MR/PR creation is not implemented (see issue #25); open the merge request manually for branch '${plan.branch}'`,
+        );
+      }
+      const pr = await createPullRequest({
+        repoFullName: plan.repo,
+        head: plan.branch,
+        base: config.repos.default_base_branch,
+        title: `harness: ${brief.title}`,
+        body: renderPrBody(brief, reviewReport),
+        ghToken,
+        apiBase: resolution.apiBase,
+        draft: (config.repos.draft_pr_on_nonpass ?? false) && reviewReport.verdict !== "pass",
+        labels: prLabelsFor(reviewReport),
+        logger: api.logger,
+      });
+      await postHarnessReviewComment({
+        repoFullName: plan.repo, pr, brief, reviewReport, ghToken, apiBase: resolution.apiBase,
+      });
+      return pr.htmlUrl;
     },
 
     pushBranchAndOpenPr: async ({ plan, brief, reviewReport, requester }) => {
@@ -1318,18 +1458,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       // were invisible on the PR (Carel on #876). A fresh comment per review
       // surfaces the current verdict/findings on the PR timeline. Best-effort:
       // NEVER fail the run on a comment error -- the code + PR already landed.
-      try {
-        const commentBody = renderReviewComment(reviewReport, {
-          updatedExisting: !!pr.updatedExisting,
-          operatorGuidance: brief.operatorGuidance,
-        });
-        const c = await postPrComment({ repoFullName: plan.repo, prNumber: pr.number, body: commentBody, ghToken, apiBase: resolution.apiBase });
-        if (!c.ok) {
-          api.logger.warn("[harness] PR review comment post failed (non-fatal)", { repo: plan.repo, prNumber: pr.number, status: c.status, error: c.error });
-        }
-      } catch (err) {
-        api.logger.warn("[harness] PR review comment post threw (non-fatal)", { repo: plan.repo, prNumber: pr.number, err: String(err) });
-      }
+      await postHarnessReviewComment({
+        repoFullName: plan.repo, pr, brief, reviewReport, ghToken, apiBase: resolution.apiBase,
+      });
       return pr.htmlUrl;
     },
 
@@ -1595,6 +1726,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
 
   const runtime: HarnessRuntime = {
     config, state, budget, pat, loop, interactionLog, listener, dispatcher, slack, git, creds,
+    effectiveBackendRoutes, ensureBackendReady,
     vault, vaultError: vaultOpenError,
     // beta.77: built during async bootstrap when slack.credential_service
     // resolves a token; null until then (and forever without one).

@@ -34,6 +34,7 @@ import type { LeadPlan, LeadPlanSubTask } from "./lead.js";
 import type { ReviewReport, ReviewFinding } from "./adversary.js";
 import type { WorkerResult } from "./worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
+import type { RoleName } from "../adapters/backend.js";
 /**
  * beta.64 (P0-3): parse the file paths out of a `git diff --stat base..HEAD`
  * output. Each stat line looks like ` path/to/file.ts | 12 ++--`. The trailing
@@ -205,6 +206,12 @@ export interface OrchestratorDeps {
      * own sdk_request/sdk_response events via the same instance). Never throws.
      */
     interactionLog?: InteractionLog;
+    effectiveRouteFor?: (role: RoleName) => {
+        backend: string;
+        provider: string;
+        model?: string;
+        effort?: string;
+    };
     /**
      * Injected work-doers. Real impls in src/adapters + src/vercel.
      *
@@ -347,7 +354,22 @@ export interface OrchestratorDeps {
     fetchRuntime?: (params: {
         plan: LeadPlan;
         sessionId: string;
+        waitForPreview?: boolean;
+        commitSha?: string;
     }) => Promise<RuntimeSnapshot | undefined>;
+    previewVerificationEnabled?: boolean;
+    /** Pushes the candidate branch without opening a PR, enabling preview deploys. */
+    pushBranchForPreview?: (params: {
+        plan: LeadPlan;
+        requester?: string;
+    }) => Promise<void>;
+    /** Opens/updates the PR after the preview-enriched review has passed. */
+    openPullRequest?: (params: {
+        plan: LeadPlan;
+        brief: CrystallisedBrief;
+        reviewReport: ReviewReport;
+        requester?: string;
+    }) => Promise<string>;
     pushBranchAndOpenPr: (params: {
         plan: LeadPlan;
         brief: CrystallisedBrief;
@@ -633,6 +655,7 @@ export declare function isConvergingBlockingTrend(blocking: number[] | undefined
 export declare class OrchestratorLoop {
     private readonly deps;
     constructor(deps: OrchestratorDeps);
+    private routeLog;
     /**
      * Pure state-transition rule (unit-tested).
      */
