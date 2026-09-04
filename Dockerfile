@@ -17,10 +17,16 @@ WORKDIR /app
 # rc.3: the python3/make/g++ toolchain and `npm_config_build_from_source` that
 # used to live here were for `better-sqlite3`, which this project does not
 # depend on -- persistence is `node:sqlite`, built into Node (see the header of
-# src/state/store.ts). The whole dependency tree contains no native modules, so
-# the compiler was dead weight in the build image. An external review read the
+# src/state/store.ts). Nothing in the tree COMPILES at install time, so the
+# compiler was dead weight in the build image. An external review read the
 # leftover as a contradiction of store.ts's "ZERO native dependencies"; store.ts
 # was right and the Dockerfile was stale.
+#
+# `opencode-ai` does ship a native executable, but a PREBUILT one selected by
+# per-platform optional dependencies -- it is downloaded, never compiled, so it
+# does not bring the toolchain back. It does mean `npm ci` now resolves a
+# platform-specific package, so build and runtime must stay the same platform;
+# they are the same base image here, so they do.
 
 # Copy manifests first so the layer cache is stable across source edits
 COPY package.json package-lock.json ./
@@ -70,8 +76,12 @@ RUN apt-get update \
 # that runs at startup and refuses to proceed unless the tool-call round-trip
 # is observed. Keep this in lockstep with PINNED_OPENCODE_VERSION -- a test
 # asserts they agree.
-RUN npm install --global --no-fund --no-audit opencode-ai@1.18.23 \
-    && opencode --version
+#
+# NO LONGER INSTALLED GLOBALLY HERE. `opencode-ai` is a production dependency,
+# so the `npm ci` in the build stage installs it and the node_modules copy
+# below carries it into the runtime image. A global install would be a second
+# copy of a ~150 MB binary, and worse, a second version that could drift from
+# the one package.json names.
 
 USER openclaw
 WORKDIR /home/openclaw/app

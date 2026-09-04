@@ -11,6 +11,59 @@
   mandatory conventions before planning, correct revise progress totals, and
   report effective backend/provider/model routes consistently.
 
+### The OpenCode backend was unreachable on the way people install this
+
+rc.1 launched the agent as the bare string `opencode` and left putting it there
+to the standalone `Dockerfile`, which runs
+`npm install --global opencode-ai@1.18.23`. OpenClaw installs a plugin with
+`npm install --omit=dev` and never builds that Dockerfile, and `opencode-ai`
+was not in `dependencies` for npm to fetch. So the pin governed the one
+environment that did not need it, and nothing installed the agent in the one
+that did.
+
+The backend was therefore inert on a plugin install: config validated, roles
+resolved, and the first session died spawning a binary that had never been
+installed. Nothing failed at install time, when it would have been cheap to
+notice.
+
+`opencode-ai@1.18.23` is now a production dependency, so `--omit=dev` installs
+it, and `resolveOpenCodeBinary()` launches the copy npm placed in
+`node_modules` rather than searching PATH.
+
+Resolving through the package instead of PATH also makes the pin mean
+something. A PATH lookup finds whatever `opencode` a machine has — a different
+major, a shim, a stale global — and `opencode-version.ts` can only warn after
+the fact. That matters more than a version string usually does, because the
+permission-key list the guard depends on is version-coupled: OpenCode merges
+permission rules last-match-wins, so a key added by a newer release and allowed
+by a repository's own `opencode.json` sorts after our injected wildcard and
+wins.
+
+**The PATH fallback stays, and is now reported.** The Docker image and existing
+developer machines already work that way, and removing it would break them to
+fix a different problem. But falling back means the pin is not in force, so it
+emits a warning and a `backend.opencode_binary` audit event naming the source
+and the reason. The case where the package is installed but its per-platform
+binary is not — `--omit=optional`, or an unsupported platform — is detected
+before spawning, so it reports a diagnosis instead of `ENOENT` at the first
+session.
+
+The Dockerfile's global install is removed. Alongside the dependency it was a
+second ~150 MB copy, and a second version that could drift from the one
+`package.json` names.
+
+The single-source-of-truth test moved with the pin. It asserted that the
+*Dockerfile* installs the pinned version, which was exactly the wrong file to
+guard; it now asserts `package.json` declares `opencode-ai` as a production
+dependency at exactly `PINNED_OPENCODE_VERSION`, and that the version is exact
+rather than a range.
+
+Note for operators on the default backend: this adds roughly 150 MB to every
+install, including claude-code-only ones, because npm installs the per-platform
+binary regardless of which backend the config uses. Nothing compiles — the
+binary is prebuilt and downloaded — so the build toolchain stays out of the
+image.
+
 ## 2.0.0-rc.1
 
 First v2 release candidate. OpenCode is a first-class backend across agentic

@@ -70,6 +70,41 @@ export interface BackendRouterInput {
      */
     priceOverrides?: Record<string, ModelPrice>;
 }
+/**
+ * Where the OpenCode executable came from. `dependency` is the only one that
+ * carries a version guarantee; `path` is whatever the machine happens to have.
+ */
+export type OpenCodeBinarySource = "dependency" | "path";
+export interface ResolvedOpenCodeBinary {
+    command: string;
+    source: OpenCodeBinarySource;
+    /** Why the dependency was not used. Present only when `source` is `path`. */
+    reason?: string;
+}
+/**
+ * Locate the OpenCode executable, preferring the copy npm installed for us.
+ *
+ * v2.0.0-rc.1 shipped this as the bare string `opencode` and relied on the
+ * standalone Dockerfile's `npm install --global opencode-ai@1.18.23` to put it
+ * on PATH. That is fine for the image and wrong everywhere else: OpenClaw
+ * installs a plugin with `npm install --omit=dev` and never builds our
+ * Dockerfile, so on a plugin install the pinned agent was simply absent and
+ * `opencode-ai` was not in `dependencies` for npm to fetch. The backend was
+ * unreachable on the installation path most operators actually use.
+ *
+ * Resolving through `require.resolve` rather than PATH also makes the version
+ * pin mean something. A PATH lookup finds whatever `opencode` the machine has
+ * — a different major, a shim, a stale global — and
+ * `src/adapters/opencode-version.ts` can only warn about it after the fact.
+ * The dependency is resolved from our own `node_modules`, so it is the version
+ * `package.json` names.
+ *
+ * The PATH fallback stays because the Docker image and existing developer
+ * machines already work that way, and removing it would break them to fix a
+ * different problem. It is reported, not silent: `source` tells the caller
+ * which one it got, so an operator can see that the pin is not in force.
+ */
+export declare function resolveOpenCodeBinary(requireFn?: (id: string) => string, exists?: (p: string) => boolean): ResolvedOpenCodeBinary;
 /** How OpenCode is launched when the operator has not said otherwise. */
 export declare function defaultOpenCodeCommand(): {
     command: string;
@@ -84,6 +119,8 @@ export declare class BackendRouter {
     private catalogue;
     /** Models already reported as unpriced, so the warning fires once, not per turn. */
     private readonly failSafeWarned;
+    /** Resolved on first use, because resolution touches the filesystem. */
+    private openCodeBinary;
     constructor(input: BackendRouterInput);
     /** Roles the operator has moved off the default backend. */
     get openCodeRoles(): RoleName[];
@@ -124,6 +161,14 @@ export declare class BackendRouter {
      * built-in table below that.
      */
     refreshPricing(store: CatalogueStore): Promise<void>;
+    /**
+     * The launcher, resolved once and reported once.
+     *
+     * Falling back to PATH is legitimate but means the version pin is not in
+     * force, and that is exactly the kind of thing that should not be inferred
+     * from silence afterwards.
+     */
+    private openCodeCommandSpec;
     /** The agent spec for a role, carrying the generated OpenCode configuration. */
     agentSpecFor(role: RoleName): AcpAgentSpec;
     /**
