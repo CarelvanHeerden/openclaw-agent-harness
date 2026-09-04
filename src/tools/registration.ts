@@ -1707,12 +1707,21 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             intent?: string;
             expectedPaths?: string[];
             actualPaths?: string[];
+            expectedOriginalPaths?: string[];
           } = {};
           try { if (row.clarification_subtask) paused = JSON.parse(row.clarification_subtask); } catch { /* ignore */ }
           const what = ((paused.title ?? "") || (paused.intent ?? "")).trim();
           const expectedPaths = new Set(
             (paused.expectedPaths ?? []).filter((p): p is string => typeof p === "string" && !!p.trim()),
           );
+          // rc1 follow-up (live smoke 6096e931): the escalation reports the
+          // POST-rederive paths, but the stored plan carries the PRE-rederive
+          // originals. Removing only the reported form is a no-op on the
+          // stored plan, so the same mismatch re-paused every revise cycle.
+          // Remove the originals as well when the loop carried them across.
+          for (const p of paused.expectedOriginalPaths ?? []) {
+            if (typeof p === "string" && p.trim()) expectedPaths.add(p);
+          }
           const actualPaths = (paused.actualPaths ?? []).filter(
             (p): p is string => typeof p === "string" && !!p.trim(),
           );

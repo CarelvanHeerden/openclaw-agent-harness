@@ -192,6 +192,18 @@ export function rederiveContractPath(contract: string, realFiles: string[]): { p
   });
 
   for (const rm of sorted) {
+    // rc1 follow-up (live smoke 6096e931): a remap anchored on a ONE-segment
+    // tail is too weak to apply. `components`, `lib`, `grc` are generic
+    // directory names; a single shared segment does not prove prefix drift.
+    // Both observed false-positive classes rest on 1-segment tails:
+    // de0cba9f (`src/components -> src/lib` via `grc`) and 6096e931
+    // (`src -> src/__tests__` via `components`, which rewrote the SOURCE
+    // contract `src/components/policy-editor.tsx` into a phantom TEST path
+    // that then failed verification every cycle). Every documented legitimate
+    // remap has a >= 2-segment tail (`api/grc`, `components/grc`). Guard (a)
+    // only protects paths the worker touched verbatim; a genuinely-absent
+    // over-declared path gets no protection, so weak evidence must not apply.
+    if (rm.tail.split("/").filter(Boolean).length < 2) continue;
     // staleDir must equal `${from}/${tail}` (or `${tail}` when from is empty).
     const expectStale = rm.from ? `${rm.from}/${rm.tail}` : rm.tail;
     if (normalisePath(expectStale) !== staleDir) continue;

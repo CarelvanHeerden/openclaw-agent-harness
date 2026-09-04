@@ -53,6 +53,14 @@ const git = (args, cwd) =>
 const FICTIONAL = "src/components/layout/grc-nav.tsx";
 const REAL = "src/components/ui/sidebar.tsx";
 
+// rc1 follow-up (live smoke 6096e931): a mismatch where the contract path was
+// first RE-DERIVED (prefix remap) before verification. The escalation reports
+// the rederived path; the stored plan holds the original. The accept must
+// remove BOTH or the same mismatch re-pauses every revise cycle.
+const REDERIVE_ORIGINAL = "lib/api/grc/handler.ts";
+const REDERIVE_SIBLING = "src/lib/api/grc/other.ts"; // worker's real commit: remap evidence
+const REDERIVE_DERIVED = "src/lib/api/grc/handler.ts"; // what the contract becomes pre-verify
+
 const tmpRoots = [];
 test.after(() => {
   for (const d of tmpRoots) rmSync(d, { recursive: true, force: true });
@@ -203,6 +211,7 @@ async function runScenario(opts = {}) {
       // backstop and not just decoration.
       worktree = await allocate(w, opts.breakResume ? {} : brief);
       allocations.push({ path: worktree, resume: !!brief.resumeFromClarification });
+      const seq2Contract = opts.rederiveCase ? REDERIVE_ORIGINAL : FICTIONAL;
       const subTasks =
         leadCalls === 1
           ? [
@@ -211,9 +220,9 @@ async function runScenario(opts = {}) {
                 successCriteria: ["file written"], estimatedTokens: 100, taskMode: "mutate",
                 verify: [{ kind: "file_written", path: "src/lib/schema.ts" }, { kind: "commit_made" }] },
               // The b100 shape: contract names the FICTIONAL path -> mismatch.
-              { seq: 2, title: "sidebar nav entry", intent: "add nav entry", filesLikelyTouched: [FICTIONAL],
+              { seq: 2, title: "sidebar nav entry", intent: "add nav entry", filesLikelyTouched: [seq2Contract],
                 successCriteria: ["nav entry added"], estimatedTokens: 100, taskMode: "mutate",
-                verify: [{ kind: "file_written", path: FICTIONAL }, { kind: "commit_made" }] },
+                verify: [{ kind: "file_written", path: seq2Contract }, { kind: "commit_made" }] },
             ]
           : [
               // b100's real re-plan produced a single read-only audit sub-task.
@@ -227,7 +236,7 @@ async function runScenario(opts = {}) {
         return { status: "completed", filesChanged: [], costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn", finalMessage: "audited" };
       }
       // A real commit through the real adapter.
-      const file = subTask.seq === 1 ? "src/lib/schema.ts" : REAL;
+      const file = subTask.seq === 1 ? "src/lib/schema.ts" : (opts.rederiveCase ? REDERIVE_SIBLING : REAL);
       mkdirSync(dirname(join(worktree, file)), { recursive: true });
       writeFileSync(join(worktree, file), `// ${subTask.title}\nexport const x = ${subTask.seq};\n`);
       const sha = await w.adapter.commit(worktree, `harness(${subTask.seq}): ${subTask.title}`, IDENT);
@@ -415,6 +424,51 @@ test("beta137: accepted contract paths replace stale paths in the stored plan", 
     s.state.audits.some((a) => a.event === "tool.answer_contract_paths_persisted"),
     "the durable correction is auditable",
   );
+});
+
+test("rc1: an accept removes the PRE-rederive original path from the stored plan too", async () => {
+  // Live smoke 6096e931 seq 5 paused THREE times on one phantom path: the
+  // rederive rewrote the contract before verification, the escalation
+  // reported the rederived form, and the accept removed only that form from
+  // the stored plan -- a no-op, since the plan holds the original. Every
+  // revise cycle re-derived and re-failed it.
+  const s = await runScenario({ rederiveCase: true });
+  assert.equal(s.first.status, "awaiting_clarification", `got ${s.first.status}`);
+
+  // The rederive must have fired (original -> derived) before the pause...
+  assert.ok(
+    s.state.audits.some(
+      (a) => a.event === "loop.contract_path_rederived"
+        && a.payload.from === REDERIVE_ORIGINAL
+        && a.payload.to === REDERIVE_DERIVED,
+    ),
+    "the contract path was re-derived before verification",
+  );
+  // ...and the escalation payload must carry BOTH forms.
+  const row0 = s.state.db.prepare(`SELECT clarification_subtask FROM sessions WHERE id='S1'`).get();
+  const pausedPayload = JSON.parse(row0.clarification_subtask);
+  assert.ok(pausedPayload.expectedPaths.includes(REDERIVE_DERIVED), "escalation reports the rederived path");
+  assert.ok(
+    (pausedPayload.expectedOriginalPaths ?? []).includes(REDERIVE_ORIGINAL),
+    "escalation also carries the pre-rederive original",
+  );
+
+  await s.answer("Accept the placement and proceed.");
+
+  const row = s.state.db.prepare(`SELECT lead_plan_json FROM sessions WHERE id='S1'`).get();
+  const plan = JSON.parse(row.lead_plan_json);
+  const task = plan.subTasks.find((candidate) => candidate.seq === 2);
+  assert.equal(
+    task.verify.some((probe) => probe.path === REDERIVE_ORIGINAL || probe.path === REDERIVE_DERIVED),
+    false,
+    "neither the original nor the rederived contract can fail again on a later cycle",
+  );
+  assert.equal(
+    task.filesLikelyTouched.includes(REDERIVE_ORIGINAL) || task.filesLikelyTouched.includes(REDERIVE_DERIVED),
+    false,
+    "both stale scope paths are removed",
+  );
+  assert.ok(task.filesLikelyTouched.includes(REDERIVE_SIBLING), "the accepted real path becomes declared scope");
 });
 
 test("beta102: the append-only audit log still holds every commit after continuation", async () => {

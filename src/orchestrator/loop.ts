@@ -2480,6 +2480,7 @@ export class OrchestratorLoop {
           intent: string;
           expectedPaths?: string[];
           actualPaths?: string[];
+          expectedOriginalPaths?: string[];
         } | null,
       };
 
@@ -3731,6 +3732,23 @@ export class OrchestratorLoop {
             ) {
               const expected = [...new Set(failedResults.map((x) => x.path!).filter(Boolean))];
               const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && f.trim());
+              // rc1 follow-up (live smoke 6096e931): `expected` holds the
+              // POST-rederive paths, but the stored plan carries the
+              // PRE-rederive originals. An operator "accept" removes the
+              // expected paths from the stored plan; when a rederive/test
+              // reconcile rewrote the path first, that removal is a no-op and
+              // the SAME mismatch re-pauses every cycle (seq 5 paused three
+              // times on one phantom path). Map each failed path back through
+              // this sub-task's path corrections so the accept can remove the
+              // stored original as well.
+              const expectedSetForOriginals = new Set(expected);
+              const expectedOriginals = [
+                ...new Set(
+                  pathCorrections
+                    .filter((correction) => expectedSetForOriginals.has(correction.to))
+                    .map((correction) => correction.from),
+                ),
+              ];
               // beta.101: select the worker's reason by RELEVANCE, not
               // position. b100 quoted the first line and showed the operator
               // "That's fine, it's a harmless temp file outside the repo" --
@@ -3794,6 +3812,7 @@ export class OrchestratorLoop {
                 intent: st.intent,
                 expectedPaths: expected,
                 actualPaths: actual,
+                expectedOriginalPaths: expectedOriginals,
               };
             }
             return;

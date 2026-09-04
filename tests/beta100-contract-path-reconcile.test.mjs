@@ -258,9 +258,10 @@ test("beta100: the pause reuses the b55 resumable machinery (worktree preserved)
   // escalation, so the window is wider than it was.
   // b105 inserted the basename rescue and b111 the auto-resolution between the
   // mismatch test and the escalation, so the window keeps widening.
+  // rc1 follow-up inserted the pre-rederive original-path mapping, so widen again.
   const block = loopSrc.slice(loopSrc.indexOf("const PATH_MISMATCH_KINDS"));
-  assert.match(block.slice(0, 12000), /clarify\.question = buildContractClarification/);
-  assert.match(block.slice(0, 12000), /clarify\.seq = st\.seq/);
+  assert.match(block.slice(0, 14000), /clarify\.question = buildContractClarification/);
+  assert.match(block.slice(0, 14000), /clarify\.seq = st\.seq/);
 });
 
 // --- 7. config + version ------------------------------------------------------
