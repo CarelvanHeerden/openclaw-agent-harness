@@ -32,10 +32,27 @@ function makeRuntime() {
     close() { if (!dbOpen) return; dbOpen = false; db.close(); },
   };
   const loopCalls = [];
+  const cancelCalls = [];
   const loop = {
     run: async (sessionId, brief) => {
       loopCalls.push({ sessionId, brief });
       return { status: "shipped", sessionId, prUrl: "https://x/pr/1", cycles: 1, totalCostUsd: 0.1 };
+    },
+    // rc.2: cancellation moved into the loop, which is the only thing that can
+    // tell whether a run is live. This stub mirrors its real contract closely
+    // enough for the tool's own behaviour to be checked; the end-to-end
+    // behaviour lives in tests/rc2-cancel-and-resume.test.mjs against a real one.
+    cancelSession: async (sessionId, opts) => {
+      cancelCalls.push({ sessionId, ...opts });
+      const row = db.prepare(`SELECT status, reactions_json FROM sessions WHERE id = ?`).get(sessionId);
+      if (!row) return { ok: false, notFound: true };
+      if (["done", "failed", "aborted"].includes(row.status)) {
+        return { ok: true, alreadyTerminal: true, status: row.status, terminatedNow: false };
+      }
+      const parsed = row.reactions_json ? JSON.parse(row.reactions_json) : {};
+      parsed.abort = true;
+      db.prepare(`UPDATE sessions SET reactions_json = ? WHERE id = ?`).run(JSON.stringify(parsed), sessionId);
+      return { ok: true, status: row.status, terminatedNow: false, loopRunning: true };
     },
   };
   // Configurable crystallise stub for harness_run tests. Default: returns a
@@ -61,6 +78,7 @@ function makeRuntime() {
     loop,
     audits,
     loopCalls,
+    cancelCalls,
     crystalliseCalls,
     crystallise,
     // Default: a key resolves (so model_auth_resolvable passes). Tests that
@@ -301,17 +319,25 @@ test("harness_cancel: sets abort flag on non-terminal session",
     assert.equal(res.details.ok, true);
     const row = runtime.state.db.prepare(`SELECT reactions_json FROM sessions WHERE id = 'S1'`).get();
     assert.match(row.reactions_json, /"abort":true/);
+    // rc.2: the tool delegates, and passes on who asked and why, so the loop's
+    // audit trail can name them.
+    assert.deepEqual(runtime.cancelCalls, [{ sessionId: "S1", reason: "test", requester: "U1" }]);
+    assert.ok(runtime.audits.some((a) => a.event === "tool.cancel"));
   });
 
-test("harness_cancel: refuses terminal session",
+test("harness_cancel: cancelling an already-terminal session succeeds as a no-op (rc.2)",
   { skip: registerHarnessTools === null }, async () => {
     const runtime = makeRuntime();
     runtime.state.db.prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, created_at, updated_at, budget_usd, cost_usd, cycles_ran) VALUES ('S1','T','C','U','u','o/r','b','/wt','done',?,?,50,0,0)`).run(Date.now(), Date.now());
     const { api, tools } = collectTools();
     registerHarnessTools(api, runtime);
     const res = await tools.get("harness_cancel").execute({ sessionId: "S1", invokedBy: "U1" });
-    assert.equal(res.details.ok, false);
+    // This used to return ok:false. Cancelling something already cancelled is
+    // the caller getting what they asked for, not a failure -- reporting it as
+    // one made "cancel again to be sure" look like the cancel had not worked.
+    assert.equal(res.details.ok, true);
     assert.equal(res.details.alreadyTerminal, true);
+    assert.equal(res.details.status, "done");
   });
 
 // beta.57 (P2): invokedBy is REQUIRED on privileged tools -- omitting it used
