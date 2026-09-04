@@ -163,9 +163,15 @@ export interface HarnessRuntime {
         kind: "brief";
         brief: CrystallisedBrief;
         costUsd: number;
-    } | {
+    }
+    /**
+     * rc.2: `reason` is the machine-readable WHY, so a pause is auditable
+     * without parsing the question text.
+     */
+     | {
         kind: "clarify";
         question: string;
+        reason: import("./crystallise/clarification-guard.js").ClarificationReason;
         costUsd: number;
     } | {
         kind: "reject";

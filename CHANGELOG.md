@@ -11,6 +11,68 @@
   mandatory conventions before planning, correct revise progress totals, and
   report effective backend/provider/model routes consistently.
 
+### Clarifications could invent the repository state they asked about
+
+A user named the repository "StitchGuard", said "checkout latest main", and
+asked for a PR against main. The harness replied:
+
+> Should I implement this in `/home/node/.openclaw/workspace/Stitch-Vercel/
+> StitchGuard` and update the existing worktree to `origin/main`, preserving any
+> uncommitted changes?
+
+Every concrete noun in that sentence was invented. The path did not exist, no
+session was running, and there was no worktree and nothing uncommitted to
+preserve. The premise was wrong too: basing a branch on the latest `origin/main`
+and opening a PR against `main` are the same ordinary workflow, not a fork
+anyone has to choose between.
+
+The cause was structural rather than a bad model day. The classifier and the
+crystalliser are handed the raw request and nothing else -- no allow-list, no
+session row, no worktree, and empty tool lists, so no filesystem either. Asked
+for "ONE crisp question naming the fork", any specific detail they supply is
+necessarily invented, because they have no source for one. Two knock-on effects
+fell out of the same gap: nothing resolved a bare repository name, so a named,
+allowed and unique repository looked like missing information; and the
+classifier's clarify trigger listed "which repo/branch/file", inviting a
+question about a branch the harness picks itself.
+
+Three changes, in the order they take effect:
+
+- **Both roles are now grounded.** They receive `repos.allowed`, the default
+  base branch, the checkout policy, and an explicit statement that no session,
+  worktree or uncommitted work exists. "checkout latest main" is named as a
+  description of the default rather than an instruction to weigh up.
+- **Repository identity is resolved deterministically**, not guessed. A bare
+  name matching exactly one allowed entry resolves to it; several matches ask
+  which repository and nothing else. Matching runs exact, then case-insensitive,
+  then separator-folded, stopping at the first tier that hits, so a decided
+  answer is never made ambiguous by a looser rule.
+- **A guard stands between the models and the user.** A clarification naming an
+  absolute path, claiming a worktree or uncommitted work, or presenting
+  base-on-main against PR-into-main as a choice is withheld and the run
+  proceeds. Withholding is safe: the request continues to the path that fetches
+  the remote and allocates a fresh worktree, which is what the question was
+  fumbling toward. A *verified* continuation may still discuss its own worktree,
+  so the resume and revise flows are untouched.
+
+Prompt hardening alone would not have been enough. It reduces how often the
+models produce these questions but cannot make the claims checkable, so the
+deterministic guard is what closes it.
+
+Separately, resuming an accepted contract clarification is the one path that
+adopts a stored worktree path verbatim instead of allocating. It now verifies
+that the directory still exists, is still a git worktree, and that the plan's
+repo and branch match the session's before reusing it. A stored plan is a
+recollection of where a worktree was, not proof it is still there.
+
+Clarification decisions are now auditable in both directions:
+`crystallise.clarification_asked` carries a machine-readable reason
+(`repository_ambiguous`, `base_branch_unknown`,
+`verified_continuation_conflict`, `substantive_ambiguity`), and
+`crystallise.clarification_withheld` records what was suppressed and why.
+`tool.run.clarification_requested` covers the pre-session pause in `harness_run`,
+which previously started no session and so left no trace at all.
+
 ### The OpenCode backend was unreachable on the way people install this
 
 rc.1 launched the agent as the bare string `opencode` and left putting it there
