@@ -152,11 +152,25 @@ returns:
 
 When that happens:
 
-1. **Show `question` to the user verbatim.** It is the crystallised brief — the
-   acceptance criteria the harness is about to build against. This is the last
-   cheap moment to catch a misunderstanding, and it is a *different* check from
-   your own echo: yours catches "I misread the user", this one catches "the
-   crystalliser misread the text".
+1. **Show `question` to the user verbatim, and in full.** It is the crystallised
+   brief — the acceptance criteria the harness is about to build against. This
+   is the last cheap moment to catch a misunderstanding, and it is a *different*
+   check from your own echo: yours catches "I misread the user", this one
+   catches "the crystalliser misread the text".
+
+   **In full means every section.** On the rc.2 smoke (`112673df`) this was
+   relayed as a four-line summary that kept the repository, the risk level and
+   the cost, and dropped the title, the acceptance criteria, the files and the
+   out-of-scope list. The operator was asked to approve $40 against a repository
+   name. Compressing this message defeats the only gate standing between a
+   misread brief and a two-hour run.
+
+1b. **Add your own "What I understood" paragraph alongside it.** Two or three
+   sentences, in your words, saying what you took the user to be asking for.
+   Alongside — *never* instead of. Summarising the harness's brief is not the
+   same thing and does not satisfy this: the whole value is that the two were
+   written independently, so a disagreement between them is visible. If they
+   agree, the user has lost nothing but a few seconds.
 2. **Do not confirm on the user's behalf.** Not even when it looks obviously
    right. The entire value of the gate is that a human's eyes cross it.
 3. **Do not** start polling `harness_progress` yet, and do not fire another
@@ -211,6 +225,7 @@ database migration was dropped from every subsequent plan.
 | Guess the path by taking the newest file in `media/inbound` | Ask for a re-attach |
 | Answer the confirmation pause yourself | Relay it and wait |
 | Skip the echo because the request seemed clear | Echo anyway; it is one paragraph |
+| Relay the confirmation as a tidy summary of itself | Relay every section of it, then add your own echo |
 
 ## Checklist before every harness_run
 
@@ -222,3 +237,6 @@ database migration was dropped from every subsequent plan.
 - [ ] Is the out-of-scope section still in there?
 - [ ] Have I echoed the premise back in 2–4 sentences?
 - [ ] If it paused for confirmation, did I relay it verbatim and wait?
+- [ ] Did I relay **every section** of it — title, criteria, files, out-of-scope
+      — rather than just the repository and the cost?
+- [ ] Did I add my own "What I understood" paragraph next to it?

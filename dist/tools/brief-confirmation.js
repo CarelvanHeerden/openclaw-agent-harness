@@ -45,6 +45,12 @@ export function decideBriefConfirmation(input) {
 const MAX_CRITERIA_SHOWN = 14;
 const MAX_LIST_SHOWN = 12;
 const MAX_CRITERION_CHARS = 400;
+/**
+ * rc.3: the heading the calling agent is told to write its own restatement
+ * under. Named so the demand, the operator's fallback line and the tests all
+ * refer to one string rather than three copies that can drift apart.
+ */
+export const UNDERSTANDING_HEADING = "What I understood";
 function bullets(items, max, perItem = MAX_CRITERION_CHARS) {
     const list = (items ?? []).filter((s) => typeof s === "string" && s.trim().length > 0);
     const shown = list.slice(0, max).map((s) => {
@@ -104,6 +110,25 @@ export function renderBriefConfirmation(input) {
     lines.push(input.sourcePath
         ? `Source: read verbatim from ${input.sourcePath}.`
         : `Source: the request text as the calling agent supplied it — if you gave it a spec file, check nothing was paraphrased away.`);
+    // rc.3: the relay drops this brief. Session 112673df kept the line above
+    // byte-for-byte and the reply instructions below, and cut everything between
+    // -- title, criteria, files, out-of-scope -- so a $40 run went up for
+    // approval against a repository name and a risk level. Three previous fixes
+    // for this class were instructions to relay faithfully, sitting in
+    // `details.feedback.instruction` where a caller can drop them without
+    // dropping anything it displays. This one asks for something a model will
+    // actually do -- write what it understood -- and sits in the body, wedged
+    // between the two regions that demonstrably survive compression.
+    lines.push("");
+    lines.push(`OpenClaw, before you relay this: add your own statement of what you understood the operator to be ` +
+        `asking for, in your words, headed "${UNDERSTANDING_HEADING}". ADD it — it replaces no part of the ` +
+        `brief above, and summarising that brief is not the same thing. The comparison is the point: the ` +
+        `brief is what gets built, yours is what you thought was asked, and a disagreement between them is ` +
+        `the cheapest bug anyone will catch today.`);
+    lines.push("");
+    lines.push(`If you are the operator and no "${UNDERSTANDING_HEADING}" paragraph arrived with this, or this brief ` +
+        `reached you without its acceptance criteria, files and out-of-scope list, then what you are reading ` +
+        `was abridged in transit. Ask for the harness's confirmation text again rather than confirming.`);
     lines.push("");
     lines.push(`Reply "confirm" to start, or tell me what to change (your reply is folded into the brief and the corrected version runs).`);
     // beta.122: the cap is the one number an operator most often wants to change

@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### The pre-spend brief was reaching the operator as a cost line and nothing else
+
+Session `112673df` on the rc.2 smoke. The b120 gate fired, the harness rendered
+the whole brief — title, motivation, acceptance criteria, files, out-of-scope,
+cost, source, reply instructions, session id — and the operator was shown four
+lines. Exactly one survived byte-for-byte: `Repository … Risk … Estimated …`.
+A $40 run went up for approval against a repository name and a risk level.
+
+The brief was not empty. Its three section headings print unconditionally, with
+`- (none specified)` beneath them, so an empty brief is still long. All three
+headings were absent, which is what makes this provable rather than suspected.
+
+The harness already demanded verbatim relay in the two strongest places it had:
+`details.feedback.instruction` on the tool response, and Rule 3 of the intake
+skill. It returned the text twice in the same response. Both were ignored. This
+is the third failure of the same class, and the two previous fixes were also
+instructions — one of which survived only because a session id is a single
+short token.
+
+So this one does not ask for faithful reproduction. Reproducing forty lines
+exactly is work a model skips; stating what it understood is work it does
+willingly. The confirmation now asks the calling agent to add its own short
+restatement of the request, headed "What I understood", and says plainly that
+this is *additive* — it replaces no part of the brief, and summarising the
+brief does not satisfy it. Two independently written accounts can be compared;
+a summary of one of them cannot.
+
+The demand sits in the message body, between the cost line and the reply
+instructions. Those are the two regions that survived compression last time,
+and text wedged between survivors travels with them — unlike
+`details.feedback.instruction`, which a caller drops without dropping anything
+it is displaying.
+
+A second paragraph is addressed to the operator rather than the agent: if no
+"What I understood" paragraph arrived, or the brief came without its acceptance
+criteria, files and out-of-scope list, then it was abridged in transit and the
+answer is to ask for it again rather than confirm. That makes the omission
+visible to the one person the omission harms.
+
+This is item 1 of three. It is a cross-check on the crystalliser, not a
+substitute for the operator seeing the real brief: if the calling agent misread
+the *user*, its echo and the brief will agree and both will be wrong, which is
+exactly what b119 was. The delivery half — having the harness post the
+confirmation itself, and attesting what was displayed — is designed in
+`notes/SPEC-rc3-confirmation-relay-fidelity.md` and not yet built.
+
 ## 2.0.0-rc.2
 
 - Preserve reviewer-authorized revision files as durable approved scope and

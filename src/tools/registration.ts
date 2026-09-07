@@ -851,7 +851,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                 effectiveBudget: res.effectiveBudget,
                 feedback: {
                   instruction:
-                    "STOP and show `question` to the user verbatim before anything is spent. Do NOT confirm on their behalf. Relay their reply to harness_answer with this sessionId.",
+                    "STOP and show `question` to the user verbatim and IN FULL -- every section, not just the cost line -- before anything is spent. Alongside it (never instead of it) add your own short statement of what you understood the user to be asking for, headed \"What I understood\". Do NOT confirm on their behalf. Relay their reply to harness_answer with this sessionId.",
                   answerWith: "harness_answer",
                   args: { sessionId: res.sessionId, answer: "<the user's reply, verbatim>" },
                 },
@@ -1091,7 +1091,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                 effectiveBudget: res.effectiveBudget,
                 feedback: {
                   instruction:
-                    "STOP and show `question` to the user verbatim -- it is the brief the harness is about to build, and this is the last cheap moment to catch a misunderstanding. Do NOT confirm on the user's behalf, do NOT poll harness_progress yet, and do NOT start another run. When they reply, call harness_answer with this sessionId and their reply as `answer`: an approval starts the run, anything else is folded in as a correction first.",
+                    "STOP and show `question` to the user verbatim, IN FULL -- every section of it, including the title, the acceptance criteria, the files and the out-of-scope list. It is the brief the harness is about to build, and this is the last cheap moment to catch a misunderstanding. Relaying only the cost line is the failure this gate exists to prevent. Alongside it (never instead of it) add your own short statement of what you understood the user to be asking for, headed \"What I understood\", so the user can compare the two. Do NOT confirm on the user's behalf, do NOT poll harness_progress yet, and do NOT start another run. When they reply, call harness_answer with this sessionId and their reply as `answer`: an approval starts the run, anything else is folded in as a correction first.",
                   answerWith: "harness_answer",
                   args: { sessionId: res.sessionId, answer: "<the user's reply, verbatim>" },
                 },

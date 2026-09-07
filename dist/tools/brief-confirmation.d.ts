@@ -61,6 +61,12 @@ export interface ConfirmDecision {
  * an explicit operator override only.
  */
 export declare function decideBriefConfirmation(input: ConfirmDecisionInput): ConfirmDecision;
+/**
+ * rc.3: the heading the calling agent is told to write its own restatement
+ * under. Named so the demand, the operator's fallback line and the tests all
+ * refer to one string rather than three copies that can drift apart.
+ */
+export declare const UNDERSTANDING_HEADING = "What I understood";
 export interface RenderConfirmationInput {
     brief: CrystallisedBrief;
     estimatedUsd: number;
