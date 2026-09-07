@@ -550,7 +550,11 @@ test("the question states the money left, the clock left, and the fallback", ski
 
 test("answering a live time-extension pause records the reply without starting a second run", () => {
   const src = S("src/tools/registration.ts");
-  const i = src.indexOf("isTimeExtensionPause(row.clarification_subtask)");
+  // rc.3 exempted wall-clock pauses from the atomic answer claim, so the FIRST
+  // mention of this predicate is now that exemption. The branch this test is
+  // about -- the one that decides whether a loop is still waiting -- is the
+  // last one.
+  const i = src.lastIndexOf("isTimeExtensionPause(row.clarification_subtask)");
   assert.ok(i > 0, "harness_answer must recognise the pause");
   const body = src.slice(i, i + 1200);
   assert.match(body, /readTimeExtensionWaitUntil/, "and must check whether a loop is still waiting");

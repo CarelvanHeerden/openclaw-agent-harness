@@ -1264,12 +1264,21 @@ export function registerHarnessTools(api, runtime) {
                 sessionId: { type: "string", minLength: 1 },
                 answer: { type: "string", minLength: 1, description: "The human's decision for the paused sub-task." },
                 invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. REQUIRED; must be in slack.authorised_users." },
+                clarificationSeq: {
+                    type: "number",
+                    description: "Optional but strongly recommended: the clarificationSeq you read from harness_progress. When supplied it must still be the open question, so an answer composed against one pause cannot land on a different one that opened while you were asking the human. REQUIRED PRACTICE for any answer a calling agent decided by itself.",
+                },
+                answeredBy: {
+                    type: "string",
+                    enum: ["human", "automation"],
+                    description: "Optional. 'automation' when a calling agent decided this without putting it to a human. Recorded in the audit trail so an automatic answer is distinguishable afterwards; it does not change what the harness does with the answer.",
+                },
             },
             required: ["sessionId", "answer", "invokedBy"],
             additionalProperties: false,
         },
         execute: async (_callId, input) => {
-            const { sessionId, answer, invokedBy } = input;
+            const { sessionId, answer, invokedBy, clarificationSeq, answeredBy } = input;
             // beta.57 (P2): invokedBy is REQUIRED -- this tool injects human text
             // into the brief and re-drives spend, so it must be authorised.
             if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
@@ -1290,8 +1299,58 @@ export function registerHarnessTools(api, runtime) {
             }
             const trimmed = answer.trim();
             const seq = row.clarification_seq ?? -1;
-            liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
-            liveState().audit("loop.clarification_answered", { sessionId, seq, answerLen: trimmed.length, invokedBy: invokedBy ?? null }, sessionId);
+            const automated = answeredBy === "automation";
+            // rc.3: a STALE-ANSWER guard. Until now this tool took no notion of
+            // WHICH question it was answering: it wrote whatever text arrived onto
+            // whatever pause happened to be open. An answer composed against seq 4,
+            // delayed while a human read it, could land on the seq 7 pause that
+            // opened in the meantime -- and `accept` on the wrong pause retires a
+            // sub-task nobody agreed to retire.
+            //
+            // Optional, so every existing caller keeps working. Supplying it is the
+            // caller saying "this answer belongs to that question", which is the
+            // only claim the harness can actually check.
+            if (typeof clarificationSeq === "number" && Number.isFinite(clarificationSeq) && clarificationSeq !== seq) {
+                liveState().audit("tool.answer_stale_seq", { sessionId, suppliedSeq: clarificationSeq, openSeq: seq, invokedBy: invokedBy ?? null, automated }, sessionId);
+                return {
+                    content: [{
+                            type: "text",
+                            text: `Not answering: you addressed clarification ${clarificationSeq}, but ${sessionId} is now paused on ` +
+                                `clarification ${seq}. Re-read the current question with harness_progress before answering.`,
+                        }],
+                    details: { ok: false, staleSeq: true, suppliedSeq: clarificationSeq, openSeq: seq },
+                };
+            }
+            // rc.3: claim the pause atomically. A new question always resets
+            // `clarification_answer` to NULL, so a NULL answer IS the "unclaimed"
+            // marker, and the first writer to flip it wins. Previously a retry or a
+            // duplicated tool call could answer the same question twice, and on the
+            // `accept` path each pass mutates the stored plan again.
+            //
+            // A wall-clock pause is deliberately exempt. Its loop never left -- it
+            // is sitting on this column polling -- and an operator who says "yes"
+            // and then "no, make it 2 hours" is doing something reasonable that has
+            // always worked. There is no plan mutation there to duplicate.
+            if (isTimeExtensionPause(row.clarification_subtask)) {
+                liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
+            }
+            else {
+                const claimed = liveDb()
+                    .prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ?
+                 WHERE id = ? AND status = 'awaiting_clarification' AND clarification_answer IS NULL`)
+                    .run(trimmed, Date.now(), sessionId);
+                if (claimed.changes === 0) {
+                    liveState().audit("tool.answer_already_claimed", { sessionId, seq, invokedBy: invokedBy ?? null, automated }, sessionId);
+                    return {
+                        content: [{
+                                type: "text",
+                                text: `Clarification ${seq} on ${sessionId} has already been answered. Nothing further to do.`,
+                            }],
+                        details: { ok: false, alreadyAnswered: true, seq },
+                    };
+                }
+            }
+            liveState().audit("loop.clarification_answered", { sessionId, seq, answerLen: trimmed.length, invokedBy: invokedBy ?? null, answeredBy: answeredBy ?? "human", automated }, sessionId);
             // beta.129: a wall-clock question is answered by a loop that never left.
             // It is sitting at the review boundary polling this very column, so the
             // write above IS the answer. Re-driving loop.run here would start a
