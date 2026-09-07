@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.2
 
 - Preserve reviewer-authorized revision files as durable approved scope and
   persist the effective post-gate review used by the orchestration loop.
