@@ -232,7 +232,7 @@ All 19 tools are called by the *agent*, not typed by the user. A person says
 **While a run is live**
 
 - `harness_progress` -- **poll this**: current phase, per-sub-task status, running cost vs budget, recent events, PR/deploy state, `msSinceLastEvent`, a ready-to-post `headline`, and (beta.108) a `worklog` of what each sub-task actually did. Poll every 30-60s and edit one message in place rather than posting per poll. The terminal headline carries the merge recommendation -- relay it, because a `do_not_merge` PR that reads as plain "Done" gets merged by mistake.
-- `harness_answer` -- answer a run paused in `awaiting_clarification`; `abort` and `skip` are accepted
+- `harness_answer` -- answer a run paused in `awaiting_clarification`; `abort` and `skip` are accepted. Pass the `clarificationSeq` you read from `harness_progress` and the harness refuses an answer aimed at a question that has since moved on, rather than applying it to the wrong one. The bundled `harness-clarification-steward` skill covers how to relay a pause with a recommendation attached, and the narrow conditions under which a calling agent may answer one itself
 - `harness_cancel` -- set the abort flag; the loop stops at the next checkpoint
 - `harness_resume` -- re-kick an interrupted session with its brief (`force: true` for a dead executor)
 
