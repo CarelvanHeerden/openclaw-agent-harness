@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const S = (p) => readFileSync(join(here, "..", p), "utf8");
 
-const { pathMatches, pathMatchRule, anyPathMatches, stripRouteGroups, normalisePath } =
+const { pathMatches, pathMatchRule, anyPathMatches, stripRouteGroups, normalisePath, resolveContractPath } =
   await import("../dist/orchestrator/path-match.js");
 
 // ---------------------------------------------------------------------------
@@ -48,6 +48,29 @@ test("beta136: a trailing recursive glob matches generated files beneath its dir
   assert.equal(pathMatches(migration, "prisma/migrations/**"), true);
   assert.equal(pathMatches("prisma/schema.prisma", "prisma/migrations/**"), false);
   assert.equal(pathMatches("prisma/migrations.ts", "prisma/migrations/**"), false);
+});
+
+test("rc1: a bare trailing-slash directory declares the same scope as the glob form", () => {
+  // Live smoke 6096e931 seq 1: the lead wrote contract paths
+  // `prisma/migrations/` and `src/__tests__/`; the worker committed real files
+  // beneath both and every structural rule missed, escalating a false
+  // contract-path-mismatch clarification on a correct commit.
+  const migration = "prisma/migrations/20260904100000_add_governed_sheet_format/migration.sql";
+  assert.equal(pathMatchRule(migration, "prisma/migrations/"), "directory-glob");
+  assert.equal(pathMatches(migration, "prisma/migrations/"), true);
+  assert.equal(
+    pathMatchRule("src/__tests__/grc/governed-sheet.test.ts", "src/__tests__/"),
+    "directory-glob",
+  );
+  // strict-contract verification must accept it too (the smoke's failure mode)
+  assert.deepEqual(
+    resolveContractPath([migration], "prisma/migrations/", { strictContract: true }),
+    { file: migration, rule: "directory-glob" },
+  );
+  // ...but a bare directory must not swallow siblings or lookalikes
+  assert.equal(pathMatches("prisma/schema.prisma", "prisma/migrations/"), false);
+  assert.equal(pathMatches("prisma/migrations.ts", "prisma/migrations/"), false);
+  assert.equal(pathMatches("src/__tests__", "src/__tests__/"), false); // the dir itself is not a file beneath it
 });
 
 // ---------------------------------------------------------------------------

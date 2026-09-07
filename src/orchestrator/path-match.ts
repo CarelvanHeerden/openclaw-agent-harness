@@ -127,8 +127,16 @@ export function pathMatchRule(committed: string, contract: string): string | nul
   // must be strictly below that directory. This deliberately does not
   // implement arbitrary wildcard matching, which would weaken contract
   // verification for ordinary files.
-  if (t.endsWith("/**")) {
-    const dir = t.slice(0, -3);
+  //
+  // A BARE trailing slash (`prisma/migrations/`) declares the same directory
+  // scope without glob syntax -- the lead's way of saying "a generated file
+  // somewhere under here". normalisePath strips the slash, so capture the
+  // signal from the RAW contract first. Without this, a correct commit of
+  // `prisma/migrations/<stamp>_x/migration.sql` failed every structural rule
+  // and escalated a false contract-path mismatch clarification.
+  const bareDirScope = contract.replace(/\\/g, "/").endsWith("/");
+  if (t.endsWith("/**") || bareDirScope) {
+    const dir = t.endsWith("/**") ? t.slice(0, -3) : t;
     const cg = stripRouteGroups(c);
     const dg = stripRouteGroups(dir);
     if (cg.startsWith(`${dg}/`) || cg.includes(`/${dg}/`)) {

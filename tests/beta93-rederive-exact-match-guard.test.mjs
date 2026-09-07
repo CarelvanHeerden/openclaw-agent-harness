@@ -92,6 +92,44 @@ test("beta.93: the beta.76 test-file descriptive-rename cure is preserved", () =
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// rc1 follow-up: a ONE-segment tail is too weak to apply.
+// Live smoke 6096e931 seq 5: the contract named the SOURCE file
+// `src/components/policy-editor.tsx`; the worker (correctly) never touched it
+// but committed tests under `src/__tests__/components/`. The shared tail
+// `components` (one segment) taught the remapper `src -> src/__tests__`, which
+// rewrote the source contract into a phantom TEST path that failed
+// verification and re-paused the run on every revise cycle. Guard (a) cannot
+// fire here -- the path is legitimately absent from the touched set -- so weak
+// evidence must not apply at all. Every documented legitimate remap has a
+// >= 2-segment tail (`api/grc`, `components/grc`).
+// ─────────────────────────────────────────────────────────────────────────
+test("rc1: a 1-segment tail remap is learned but never applied (6096e931)", () => {
+  const real = [
+    "src/__tests__/components/grc-policy-sheet-detail.test.tsx",
+    "src/app/(portal)/grc/policies/[id]/page.tsx",
+  ];
+  // The weak remap is still LEARNABLE (learnRemapsForDir stays permissive)...
+  const remaps = learnRemapsForDir("src/components", real);
+  assert.ok(
+    remaps.some((r) => r.from === "src" && r.to === "src/__tests__" && r.tail === "components"),
+    `expected the weak remap to be learnable: ${JSON.stringify(remaps)}`,
+  );
+  // ...but rederiveContractPath must not APPLY it to a source contract.
+  const rd = rederiveContractPath("src/components/policy-editor.tsx", real);
+  assert.equal(rd.remapped, false, "a 1-segment tail must not move a contract path");
+  assert.equal(rd.path, "src/components/policy-editor.tsx");
+});
+
+test("rc1: a >= 2-segment tail still applies when the path is genuinely absent", () => {
+  // Same shape as the smoke, but the shared tail is two segments: real
+  // prefix-drift evidence remains correctable.
+  const real = ["src/__tests__/components/grc/widget.test.tsx"];
+  const rd = rederiveContractPath("__tests__/components/grc/other.test.tsx", real);
+  assert.equal(rd.remapped, true);
+  assert.equal(rd.path, "src/__tests__/components/grc/other.test.tsx");
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // Wiring source-assertions.
 // ─────────────────────────────────────────────────────────────────────────
 test("wiring: rederiveContractPath has the exact-match short-circuit", () => {
