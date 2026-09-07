@@ -1,5 +1,71 @@
 # Changelog
 
+## Unreleased
+
+### A contract naming a bare directory matched nothing
+
+The lead gives each sub-task a verification contract naming the paths it should
+touch. `<dir>/**` has meant directory scope since b50, and a bare trailing
+slash since rc.1. The plain directory name — `src/__tests__`,
+`src/app/api/security/sast-sheet` — fell through every rule and returned null.
+A worker who correctly wrote `src/__tests__/foo.test.ts` failed verification,
+and the run paused to ask a human whether that was acceptable. There is only
+one answer to that question, and asking it costs a round trip and an operator's
+attention.
+
+A contract whose last segment carries no file extension now matches files
+committed beneath it. Three things keep it from becoming a licence to commit
+anywhere.
+
+It runs **last**. The existing directory branch returns null the moment its
+test fails, so extensionless contracts could not go there: a contract named
+`Dockerfile` would have stopped matching a committed `Dockerfile`. Down here
+every filename rule has already had its turn.
+
+It needs **two segments**. A lone segment cannot be read — `tests` is a
+directory and `Dockerfile` is a file, and nothing in the string says which.
+Requiring directory context also stops a contract of `src` matching the whole
+repository, which would be vacuous rather than lenient.
+
+It requires **containment, not prefix**. `src/__tests__` does not match
+`src/__tests__x/foo.ts`, and a file sitting next to a directory is not inside
+it: `src/app/api/security/sast-sheet.ts` still fails a contract for the
+directory of that name. A contract that names an actual file stays exactly as
+strict as before.
+
+The rule is structural, so `strictContract` callers keep it. What that flag
+exists to block is the two `*-unique` fallbacks, which match on filename or
+file type alone across unrelated directories. Proving the contract path is a
+real parent of the committed file is a different and much stronger claim.
+
+### An answer did not know which question it was answering
+
+`harness_answer` took no sequence and compared none. Whatever text arrived was
+written onto whatever pause happened to be open, so an answer composed against
+sub-task 4 and delayed while a human read it would land on the sub-task 7 pause
+that opened meanwhile. On the `accept` path that retires a sub-task nobody
+agreed to retire.
+
+It now accepts an optional `clarificationSeq`. When supplied it must still be
+the open question, and a mismatch is refused with the sequence that is actually
+open rather than half-applied. Optional, so every existing caller keeps
+working: supplying it is the caller stating which question it means, which is
+the only claim the harness can check.
+
+Answers are also **claimed atomically**. A new question always resets
+`clarification_answer` to null, so a null answer is the unclaimed marker and the
+first writer wins; a retried or duplicated call is refused as already answered
+instead of mutating the stored plan twice. Wall-clock pauses are exempt, because
+their loop never left — it is sitting on that column polling — and an operator
+who says "yes" and then "no, make it two hours" is doing something reasonable
+that has always worked.
+
+Finally, an optional `answeredBy` records whether a decision came from a human
+or from a calling agent acting on its own. It is recorded, not enforced: the
+harness behaves identically either way. Only the length of an answer is
+audited, never its text, because an answer can quote a brief and the audit
+table has no redaction of its own.
+
 ## 2.0.0-rc.2
 
 - Preserve reviewer-authorized revision files as durable approved scope and

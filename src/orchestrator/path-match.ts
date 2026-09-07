@@ -103,6 +103,24 @@ export function normalisePath(p: string): string {
     .replace(/\/+/g, "/");
 }
 
+/**
+ * rc.3: does this path segment name a FILE rather than a directory?
+ *
+ * A dotted suffix of 1-8 alphanumerics is an extension -- `.ts`, `.tsx`,
+ * `.sql`, `.prisma`, `.yaml`. Dotfiles (`.env`, `.gitignore`) match too, which
+ * is correct: they are files. Segments with no dot at all (`__tests__`,
+ * `sast-sheet`, `migrations`) are directories as far as a contract path is
+ * concerned.
+ *
+ * This cannot distinguish a directory from an extensionless FILE (`Dockerfile`,
+ * `LICENSE`, `Makefile`) and does not try. The caller handles that by refusing
+ * to apply the directory reading to a single-segment contract, where the two
+ * are genuinely ambiguous.
+ */
+function looksLikeFileName(segment: string): boolean {
+  return /\.[A-Za-z0-9]{1,8}$/.test(segment);
+}
+
 /** basename of a normalised path. */
 function baseName(p: string): string {
   const n = normalisePath(p);
@@ -187,6 +205,29 @@ export function pathMatchRule(committed: string, contract: string): string | nul
     }
   }
 
+  // 5 (rc.3). IMPLIED directory scope. The contract's last segment carries no
+  // file extension, so it names a DIRECTORY the lead expected work beneath:
+  // `src/__tests__`, `src/app/api/security/sast-sheet`. The explicit spellings
+  // (`<dir>/**` since b50, a bare trailing slash since rc.1) have been handled
+  // for a while, but a lead writing the plain directory name got no rule at
+  // all, and a correct commit underneath escalated a contract-path mismatch to
+  // a human who could only answer "yes, that's fine".
+  //
+  // LAST, deliberately. The explicit branch at the top of this function returns
+  // null the instant its directory test fails, so extensionless contracts
+  // cannot go there: a contract named `Dockerfile` would stop matching a
+  // committed `Dockerfile`. Down here every filename rule has already had its
+  // turn, and this only widens a contract that nothing else matched.
+  //
+  // TWO SEGMENTS MINIMUM. A lone segment cannot be read: `tests` is a directory
+  // and `Dockerfile` is a file, and nothing in the string says which. Requiring
+  // directory context also keeps a contract of `src` from matching the entire
+  // repository, which would make verification vacuous rather than lenient.
+  const tSegs = tg.split("/").filter(Boolean);
+  if (tSegs.length >= 2 && !looksLikeFileName(tSegs[tSegs.length - 1]!)) {
+    if (cg.startsWith(`${tg}/`) || cg.includes(`/${tg}/`)) return "directory-implied";
+  }
+
   return null;
 }
 
@@ -220,9 +261,14 @@ const RULE_RANK: Record<string, number> = {
   "timestamp-prefix": 3,
   suffix: 4,
   "basename-dir": 5,
-  basename: 6,
-  "basename-unique": 7,
-  "test-file-unique": 8,
+  // rc.3: an inferred directory scope proves the whole contract path is a real
+  // parent of the committed file, but says nothing about the filename. That
+  // makes it weaker than `basename-dir` (which matches both) and stronger than
+  // a bare `basename` (which has no directory context at all).
+  "directory-implied": 6,
+  basename: 7,
+  "basename-unique": 8,
+  "test-file-unique": 9,
 };
 
 /**
@@ -273,7 +319,14 @@ export function isStructuralRule(rule: string | null): boolean {
     rule === "directory-glob" ||
     rule === "timestamp-prefix" ||
     rule === "suffix" ||
-    rule === "basename-dir"
+    rule === "basename-dir" ||
+    // rc.3: an inferred directory scope belongs here on this function's own
+    // definition -- it is un-fuzzy and requires real directory context. It
+    // proves the contract path is a genuine parent of the committed file, which
+    // is a stronger claim than `basename-dir` makes about topology. The rules
+    // `strictContract` exists to block are the two `*-unique` fallbacks, which
+    // match on filename or file TYPE alone across unrelated directories.
+    rule === "directory-implied"
   );
 }
 
