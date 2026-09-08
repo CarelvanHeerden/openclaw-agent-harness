@@ -258,7 +258,9 @@ test("beta67-B: adversary diff is generated from the session's plan_base_sha, no
   // the loop threads the persisted plan_base_sha as baseSha
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /SELECT plan_base_sha FROM sessions WHERE id = \?/);
-  assert.match(loop, /runAdversary\(\{ brief, plan, runtime, requester: row\.requester, baseSha: adversaryBaseSha, priorFindings: lastReview\?\.findings \}\)/);
+  // rc.3 appends `revision` for a revise session; the base sha it diffs
+  // against is unchanged, which is the thing this test is here to hold.
+  assert.match(loop, /runAdversary\(\{ brief, plan, runtime, requester: row\.requester, baseSha: adversaryBaseSha, priorFindings: lastReview\?\.findings[,\s}]/);
 });
 
 test("beta67-B: fork-point captured at plan_ready via worktreeMergeBase (loop.ts source)", () => {

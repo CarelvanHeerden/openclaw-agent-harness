@@ -212,7 +212,9 @@ test("beta69: index.ts wires priorFindings + repoHasTestScript into runAdversary
   const src = S("src/index.ts");
   // beta.74: runAdversary destructuring also includes `requester` (used to
   // resolve the GitHub token for the diff's promisor fetch).
-  assert.match(src, /runAdversary: async \(\{ brief, plan, runtime, requester, baseSha, priorFindings \}\)/);
+  // rc.3 adds `revision` to the same destructuring (the revise-only brief
+  // sections); everything b69 pinned still has to be in the list.
+  assert.match(src, /runAdversary: async \(\{ brief, plan, runtime, requester, baseSha, priorFindings[,\s}]/);
   assert.match(src, /priorFindings,/);
   assert.match(src, /repoHasTestScript:/);
   assert.match(src, /discoverCheckScripts\(plan\.worktreePath\)\.some\(\(s\) => s\.name === "test"\)/);
