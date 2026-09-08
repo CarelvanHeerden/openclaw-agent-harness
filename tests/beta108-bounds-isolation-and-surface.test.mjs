@@ -644,7 +644,14 @@ test("beta108: the built loop threads the adoption cap from config", () => {
 
 test("beta108: the built loop carries the no-change early exit", () => {
   const loop = D("orchestrator/loop.js");
-  assert.match(loop, /tipNow && tipNow === cycleBaseSha/);
+  // Pin the whole guard, not a fragment of it. rc.3 added a second line that
+  // computes `dirtyNow` from the same comparison, so `tipNow === cycleBaseSha`
+  // on its own now matches code that is not the exit -- and this assertion
+  // passed with the exit itself removed.
+  assert.match(
+    loop,
+    /if \(tipNow && tipNow === cycleBaseSha && dirtyNow\.length === 0 && !cycleResolvedContractWithoutCommit\)/,
+  );
   assert.match(loop, /loop\.cycle_no_change_early_exit/);
 });
 

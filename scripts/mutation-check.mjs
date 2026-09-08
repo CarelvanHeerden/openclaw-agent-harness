@@ -143,8 +143,8 @@ const MUTATIONS = [
   {
     name: "full commit-tip recording (b103): a two-commit turn records both",
     file: "dist/orchestrator/worker.js",
-    find: "if (headBefore && headBefore !== baseSha)",
-    replace: "if (false && headBefore !== baseSha)",
+    find: "if (workerCommitSha)\n        commitShas.push(workerCommitSha);",
+    replace: "/* mutated */;",
     tests: ["tests/beta103-plan-path-writeback.test.mjs"],
   },
   {
@@ -398,7 +398,7 @@ const MUTATIONS = [
   {
     name: "no-change early exit (b108): re-reviewing an unchanged diff is pure cost",
     file: "dist/orchestrator/loop.js",
-    find: "if (tipNow && tipNow === cycleBaseSha && !cycleResolvedContractWithoutCommit) {",
+    find: "if (tipNow && tipNow === cycleBaseSha && dirtyNow.length === 0 && !cycleResolvedContractWithoutCommit) {",
     replace: "if (false) {",
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
@@ -1020,8 +1020,8 @@ const MUTATIONS = [
     // Source-side: the guard is a pin against src/orchestrator/loop.ts, so a
     // dist mutation would be invisible to it by construction.
     file: "src/orchestrator/loop.ts",
-    find: "      return this.finaliseFailedPreserveWorktree(\n        sessionId,\n        `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({",
-    replace: "      return this.finaliseFailed(\n        sessionId,\n        `pr_error (${diagnosis.kind}): ${describePreservedPushFailure({",
+    find: "      return await this.finaliseFailedPreserveWorktree(\n        sessionId,\n        `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({",
+    replace: "      return await this.finaliseFailed(\n        sessionId,\n        `pr_error (${diagnosis.kind}): ${describePreservedPushFailure({",
     tests: ["tests/beta119-cycles-push-scope.test.mjs"],
   },
   {
@@ -1617,8 +1617,8 @@ const MUTATIONS = [
   {
     name: "the salvage probe compares against a REAL base (b129): an empty base can only answer 'delete it'",
     file: "dist/orchestrator/loop.js",
-    find: "return head !== baseSha;",
-    replace: "return false;",
+    find: "if (head !== baseSha)\n                return true;",
+    replace: "if (false)\n                return true;",
     tests: ["tests/beta129-wall-clock-and-salvage.test.mjs", "tests/beta16-worktree-release.test.mjs"],
   },
   {
