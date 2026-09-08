@@ -108,13 +108,16 @@ test("rc3: the evidence required before recommending accept is enumerated", () =
 
 test("rc3: automatic answering is off unless explicitly delegated", () => {
   assert.match(src, /\*\*Off by default\.\*\*/, "the default is stated plainly, not implied");
-  assert.match(src, /explicitly delegated/i);
-  assert.match(
-    src,
-    /Silence is not delegation/i,
-    "the absence of an objection is the obvious way to talk oneself into acting",
-  );
   assert.match(src, /Fail closed/i);
+  // Delegation is a config value the agent must READ, not a conversational
+  // judgment made by the layer the policy is meant to constrain.
+  assert.match(src, /loop\.clarification_auto_accept_delegated/, "the flag is named");
+  assert.match(src, /the \*only\* form delegation takes/i);
+  assert.match(src, /just handle it/i, "the obvious way to talk oneself into a grant is called out");
+  assert.match(src, /If you are unsure whether it is set, it is not set/i);
+  // The harness refuses an undelegated automatic answer, and the one dangerous
+  // response to that refusal is to stop declaring yourself.
+  assert.match(src, /Do not respond to that refusal by dropping the marker/i);
 });
 
 test("rc3: skip and abort can be recommended but never acted on", () => {
@@ -165,13 +168,13 @@ test("rc3: acting automatically requires a re-read, the sequence, and the canoni
 test("rc3: the skill says what it must record, and that secrets are never among it", () => {
   assert.match(src, /never\s+its text/, "the harness logs the answer's length, not the answer");
   assert.match(src, /Never include secrets, tokens or credential values/i);
-  assert.match(src, /Which delegation you were acting under/, "an automatic answer names its authority");
+  assert.match(src, /acting under `loop\.clarification_auto_accept_delegated`/, "an automatic answer names its authority");
 });
 
 test("rc3: the checklist is present, because that is what gets read under pressure", () => {
   const tail = src.slice(src.indexOf("## Checklist"));
   assert.ok(tail.length > 200, "the checklist section exists and is not a stub");
-  assert.match(tail, /explicitly delegate/i);
+  assert.match(tail, /clarification_auto_accept_delegated/);
   assert.match(tail, /contract-path mismatch and nothing else/i);
   assert.match(tail, /Any unchecked box means relay it/i, "the checklist states its own failure mode");
 });
