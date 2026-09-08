@@ -15,6 +15,43 @@
  */
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./lead.js";
+/**
+ * rc.3: the five states a worker turn can leave git in, decided from HEAD on
+ * either side of the turn plus `git status --porcelain` -- never from the
+ * committed-range diff, which cannot see a dirty tree at all.
+ *
+ *   worker_commit          HEAD advanced, tree clean. The worker committed its
+ *                          own work. The harness must NOT commit again.
+ *   worker_commit_remainder
+ *                          HEAD advanced AND the tree is still dirty. Keep the
+ *                          worker's commit and commit only what is left.
+ *   harness_commit         HEAD unchanged, tree dirty. The harness commits it.
+ *   uncommitted_changes    HEAD unchanged, tree dirty, and the harness commit
+ *                          did not take. Recoverable: the files are on disk and
+ *                          the worktree must be preserved.
+ *   no_change              HEAD unchanged and the tree is clean. The only state
+ *                          in which "this turn did nothing" is a true claim.
+ *   git_error              A git call threw. stdout/stderr are kept verbatim in
+ *                          `error` so the failure is diagnosable.
+ */
+export type WorkerCommitState = "worker_commit" | "worker_commit_remainder" | "harness_commit" | "uncommitted_changes" | "no_change" | "git_error";
+export interface WorkerCommitReconciliation {
+    state: WorkerCommitState;
+    /** HEAD before the model ran. */
+    headBefore: string;
+    /** HEAD after everything this turn did, including any harness commit. */
+    headAfter: string;
+    /** The worker's own tip, when it committed before the harness did. */
+    workerCommitSha?: string;
+    /** The `harness(N): ...` commit, when the harness made one. */
+    harnessCommitSha?: string;
+    /** Repository-relative paths dirty AFTER the harness had its chance to commit. */
+    dirtyFiles: string[];
+    /** Repository-relative paths dirty BEFORE the harness committed. */
+    dirtyBefore: string[];
+    /** Verbatim git stdout/stderr for `git_error`. */
+    error?: string;
+}
 export interface WorkerResult {
     status: "completed" | "failed" | "timeout" | "first_token_timeout";
     filesChanged: string[];
@@ -60,6 +97,26 @@ export interface WorkerResult {
      * The retry-with-context logic (P1b) branches on whether this is non-empty.
      */
     uncommittedFiles?: string[];
+    /**
+     * rc.3: what git actually looked like on either side of the turn, and which
+     * of the five states that put the sub-task in.
+     *
+     * Everything downstream of a worker turn -- the ledger, the verifier, the
+     * no-change exits, the salvage probe -- used to reason about "did work
+     * happen" from `filesChanged`, which is a COMMITTED-range diff
+     * (`git diff base HEAD`). A worker that wrote files and never committed
+     * moves neither side of that diff, so the turn read as no-op and the
+     * harness's own commit (gated on `filesChanged.length > 0`) never ran. The
+     * writes then died with the worktree. StitchGuard PR #1168 cycle 4 is that
+     * shape: the guard correctly refused a `git commit -m` whose message carried
+     * Markdown backticks, and the harness reported `subtask_revise_no_change`
+     * over a dirty tree.
+     *
+     * The classification is made from HEAD-before, HEAD-after and
+     * `git status --porcelain`, never from the range diff. Undefined only when
+     * `gitHeadSha`/`gitStatusPorcelain` were not injected (older test deps).
+     */
+    commitReconciliation?: WorkerCommitReconciliation;
     /**
      * v2 smoke: tool calls the guard refused this turn, with the command or path
      * that was refused.

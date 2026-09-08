@@ -20,6 +20,51 @@ import { renderConventionsForPrompt } from "./repo-conventions.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 
+/**
+ * rc.3: the five states a worker turn can leave git in, decided from HEAD on
+ * either side of the turn plus `git status --porcelain` -- never from the
+ * committed-range diff, which cannot see a dirty tree at all.
+ *
+ *   worker_commit          HEAD advanced, tree clean. The worker committed its
+ *                          own work. The harness must NOT commit again.
+ *   worker_commit_remainder
+ *                          HEAD advanced AND the tree is still dirty. Keep the
+ *                          worker's commit and commit only what is left.
+ *   harness_commit         HEAD unchanged, tree dirty. The harness commits it.
+ *   uncommitted_changes    HEAD unchanged, tree dirty, and the harness commit
+ *                          did not take. Recoverable: the files are on disk and
+ *                          the worktree must be preserved.
+ *   no_change              HEAD unchanged and the tree is clean. The only state
+ *                          in which "this turn did nothing" is a true claim.
+ *   git_error              A git call threw. stdout/stderr are kept verbatim in
+ *                          `error` so the failure is diagnosable.
+ */
+export type WorkerCommitState =
+  | "worker_commit"
+  | "worker_commit_remainder"
+  | "harness_commit"
+  | "uncommitted_changes"
+  | "no_change"
+  | "git_error";
+
+export interface WorkerCommitReconciliation {
+  state: WorkerCommitState;
+  /** HEAD before the model ran. */
+  headBefore: string;
+  /** HEAD after everything this turn did, including any harness commit. */
+  headAfter: string;
+  /** The worker's own tip, when it committed before the harness did. */
+  workerCommitSha?: string;
+  /** The `harness(N): ...` commit, when the harness made one. */
+  harnessCommitSha?: string;
+  /** Repository-relative paths dirty AFTER the harness had its chance to commit. */
+  dirtyFiles: string[];
+  /** Repository-relative paths dirty BEFORE the harness committed. */
+  dirtyBefore: string[];
+  /** Verbatim git stdout/stderr for `git_error`. */
+  error?: string;
+}
+
 export interface WorkerResult {
   status: "completed" | "failed" | "timeout" | "first_token_timeout";
   filesChanged: string[];
@@ -65,6 +110,26 @@ export interface WorkerResult {
    * The retry-with-context logic (P1b) branches on whether this is non-empty.
    */
   uncommittedFiles?: string[];
+  /**
+   * rc.3: what git actually looked like on either side of the turn, and which
+   * of the five states that put the sub-task in.
+   *
+   * Everything downstream of a worker turn -- the ledger, the verifier, the
+   * no-change exits, the salvage probe -- used to reason about "did work
+   * happen" from `filesChanged`, which is a COMMITTED-range diff
+   * (`git diff base HEAD`). A worker that wrote files and never committed
+   * moves neither side of that diff, so the turn read as no-op and the
+   * harness's own commit (gated on `filesChanged.length > 0`) never ran. The
+   * writes then died with the worktree. StitchGuard PR #1168 cycle 4 is that
+   * shape: the guard correctly refused a `git commit -m` whose message carried
+   * Markdown backticks, and the harness reported `subtask_revise_no_change`
+   * over a dirty tree.
+   *
+   * The classification is made from HEAD-before, HEAD-after and
+   * `git status --porcelain`, never from the range diff. Undefined only when
+   * `gitHeadSha`/`gitStatusPorcelain` were not injected (older test deps).
+   */
+  commitReconciliation?: WorkerCommitReconciliation;
   /**
    * v2 smoke: tool calls the guard refused this turn, with the command or path
    * that was refused.
@@ -531,63 +596,14 @@ export async function runWorker(
     };
   }
 
-  let changed = await deps.gitListChangedFiles(worktreePath, baseSha);
-  let commitSha: string | undefined;
-  // beta.103: the worker's OWN tip, read before the harness commits the
-  // remainder. When both happen in one turn this is the commit that used to
-  // vanish from the ledger entirely (see WorkerResult.commitShas).
-  const commitShas: string[] = [];
-  if (changed.length > 0) {
-    if (deps.gitHeadSha && baseSha) {
-      try {
-        const headBefore = await deps.gitHeadSha(worktreePath);
-        if (headBefore && headBefore !== baseSha) commitShas.push(headBefore);
-      } catch {
-        // best-effort; a failed probe just means no extra ledger anchor.
-      }
-    }
-    // Uncommitted working-tree changes exist -> the harness commits them.
-    const sha = await deps.gitCommit(
-      worktreePath,
-      `harness(${subTask.seq}): ${subTask.title}`,
-      commitIdentity,
-    );
-    commitSha = sha ?? undefined;
-  }
-  // beta.47: the worker may have committed its OWN changes during the turn
-  // (via its git tool), leaving a clean working tree. In that case the block
-  // above is skipped and commitSha stays undefined even though HEAD moved.
-  // Always reconcile against HEAD: if HEAD advanced past baseSha and we don't
-  // yet have a sha, record HEAD as the commit sha and backfill filesChanged
-  // from base..HEAD. This makes commit_sha bookkeeping correct regardless of
-  // WHO made the commit (session 94a516a0 root cause).
-  if (!commitSha && deps.gitHeadSha && baseSha) {
-    try {
-      const head = await deps.gitHeadSha(worktreePath);
-      if (head && head !== baseSha) {
-        commitSha = head;
-        if (changed.length === 0 && deps.gitListCommittedFiles) {
-          const committed = await deps.gitListCommittedFiles(worktreePath, baseSha);
-          if (committed.length > 0) changed = committed;
-        }
-      }
-    } catch {
-      // HEAD lookup best-effort; leave commitSha as-is on failure.
-    }
-  }
-
-  // beta.53 (P2): capture uncommitted working-tree changes BEFORE building the
-  // result, so a wrote-but-didn't-commit turn is visible (not mislabelled as
-  // zero side-effects). Only meaningful when nothing was committed this turn.
-  let uncommittedFiles: string[] | undefined;
-  if (deps.gitStatusPorcelain) {
-    try {
-      const dirty = await deps.gitStatusPorcelain(worktreePath);
-      if (dirty.length > 0) uncommittedFiles = dirty;
-    } catch {
-      // best-effort; leave undefined on failure.
-    }
-  }
+  const reconciled = await reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha);
+  const changed = reconciled.filesChanged;
+  const commitSha = reconciled.commitSha;
+  const commitShas = reconciled.commitShas;
+  const uncommittedFiles =
+    reconciled.reconciliation && reconciled.reconciliation.dirtyFiles.length > 0
+      ? reconciled.reconciliation.dirtyFiles
+      : undefined;
 
   // SDK stop reason gives a provisional status.
   //
@@ -604,7 +620,7 @@ export async function runWorker(
   //      loop.ts's `result.status !== "completed"` early-exit and BYPASSED
   //      the entire beta.53/54/55 retry / refusal / clarification machinery.
   // The loop is now the single verification site.
-  const status: WorkerResult["status"] =
+  const sdkStatus: WorkerResult["status"] =
     sdkResult.stopReason === "first_token_timeout"
       ? "first_token_timeout"
       : sdkResult.stopReason === "timeout"
@@ -613,6 +629,13 @@ export async function runWorker(
           ? "completed"
           : "failed";
 
+  // rc.3: a git call that actually errored is a failure of the turn, not a
+  // quiet zero-commit `completed`. Before, `gitCommit` rejecting propagated out
+  // of `runWorker` as an unhandled rejection and the sub-task died with no
+  // stderr recorded anywhere.
+  const gitFailed = reconciled.reconciliation?.state === "git_error";
+  const status: WorkerResult["status"] = gitFailed ? "failed" : sdkStatus;
+
   if (commitSha && !commitShas.includes(commitSha)) commitShas.push(commitSha);
 
   return {
@@ -620,11 +643,14 @@ export async function runWorker(
     filesChanged: changed,
     commitSha,
     commitShas,
+    commitReconciliation: reconciled.reconciliation,
     sdkSessionId: sdkResult.sdkSessionId,
     costUsd: sdkResult.costUsd,
     tokensIn: sdkResult.tokensIn,
     tokensOut: sdkResult.tokensOut,
-    reason: sdkResult.stopReason,
+    reason: gitFailed
+      ? `git_error: ${reconciled.reconciliation?.error ?? "unknown git failure"}`
+      : sdkResult.stopReason,
     logsExcerpt: sdkResult.logsExcerpt,
     finalMessage: sdkResult.finalMessage,
     deniedToolCalls: sdkResult.deniedToolCalls,
@@ -633,4 +659,161 @@ export async function runWorker(
     streamOpened: sdkResult.streamOpened,
     msToFirstToken: sdkResult.msToFirstToken,
   };
+}
+
+/**
+ * rc.3: decide what a worker turn actually did to git, and commit anything it
+ * left behind.
+ *
+ * The old code asked one question -- `git diff --name-only <base> HEAD` -- and
+ * branched the harness commit on the answer. That diff compares two COMMITS. A
+ * worker that edited files and never committed leaves `base === HEAD`, so the
+ * answer was empty and the harness skipped its own commit; the writes then went
+ * down with the worktree and every downstream consumer was told the turn was a
+ * no-op. Inverted, the same gate meant the harness only ever offered to commit
+ * when the worker had ALREADY committed something.
+ *
+ * This asks the three questions that can actually distinguish the cases: HEAD
+ * before, HEAD after, and `git status --porcelain`. See `WorkerCommitState`.
+ *
+ * Degradation: without `gitHeadSha` or `gitStatusPorcelain` (older injected
+ * deps) there is no way to tell a dirty tree from a clean one, so the legacy
+ * committed-range gate is used and `reconciliation` is left undefined --
+ * "we did not classify" rather than a fabricated classification.
+ */
+async function reconcileWorkerCommit(
+  worktreePath: string,
+  subTask: LeadPlanSubTask,
+  commitIdentity: { name: string; email: string },
+  deps: WorkerDeps,
+  baseSha: string,
+): Promise<{
+  filesChanged: string[];
+  commitSha?: string;
+  commitShas: string[];
+  reconciliation?: WorkerCommitReconciliation;
+}> {
+  const commitMessage = `harness(${subTask.seq}): ${subTask.title}`;
+  const commitShas: string[] = [];
+
+  const listCommitted = async (): Promise<string[]> => {
+    const diffed = await deps.gitListChangedFiles(worktreePath, baseSha);
+    if (diffed.length > 0 || !deps.gitListCommittedFiles) return diffed;
+    // beta.47/beta.95: several commits whose NET diff is empty still touched
+    // files, and `file_committed` verifies against the touched set.
+    return await deps.gitListCommittedFiles(worktreePath, baseSha);
+  };
+
+  if (!deps.gitHeadSha || !deps.gitStatusPorcelain || !baseSha) {
+    const changed = await deps.gitListChangedFiles(worktreePath, baseSha);
+    let commitSha: string | undefined;
+    if (changed.length > 0) {
+      commitSha = (await deps.gitCommit(worktreePath, commitMessage, commitIdentity)) ?? undefined;
+    }
+    if (!commitSha && deps.gitHeadSha && baseSha) {
+      const head = await deps.gitHeadSha(worktreePath).catch(() => "");
+      if (head && head !== baseSha) commitSha = head;
+    }
+    if (commitSha) commitShas.push(commitSha);
+    return { filesChanged: commitSha ? await listCommitted() : changed, commitSha, commitShas };
+  }
+
+  let headAfterWorker: string;
+  let dirtyBefore: string[];
+  try {
+    headAfterWorker = await deps.gitHeadSha(worktreePath);
+    dirtyBefore = await deps.gitStatusPorcelain(worktreePath);
+  } catch (err) {
+    return {
+      filesChanged: [],
+      commitShas,
+      reconciliation: {
+        state: "git_error",
+        headBefore: baseSha,
+        headAfter: baseSha,
+        dirtyFiles: [],
+        dirtyBefore: [],
+        error: gitErrorText(err),
+      },
+    };
+  }
+
+  const workerAdvancedHead = Boolean(headAfterWorker) && headAfterWorker !== baseSha;
+  // beta.103: record the worker's OWN tip before the harness commits on top of
+  // it, so a turn that produced two commits leaves two ledger anchors.
+  const workerCommitSha = workerAdvancedHead ? headAfterWorker : undefined;
+  if (workerCommitSha) commitShas.push(workerCommitSha);
+
+  let harnessCommitSha: string | undefined;
+  if (dirtyBefore.length > 0) {
+    try {
+      harnessCommitSha = (await deps.gitCommit(worktreePath, commitMessage, commitIdentity)) ?? undefined;
+    } catch (err) {
+      return {
+        filesChanged: workerAdvancedHead ? await listCommitted().catch(() => []) : [],
+        commitSha: workerCommitSha,
+        commitShas,
+        reconciliation: {
+          state: "git_error",
+          headBefore: baseSha,
+          headAfter: headAfterWorker,
+          workerCommitSha,
+          dirtyFiles: dirtyBefore,
+          dirtyBefore,
+          error: gitErrorText(err),
+        },
+      };
+    }
+    if (harnessCommitSha) commitShas.push(harnessCommitSha);
+  }
+
+  // What is STILL dirty once the harness has had its turn. A tree that is dirty
+  // here is the recoverable case: the files exist, nothing committed them, and
+  // no caller may call this a no-change turn.
+  let dirtyAfter: string[];
+  try {
+    dirtyAfter = harnessCommitSha ? await deps.gitStatusPorcelain(worktreePath) : dirtyBefore;
+  } catch {
+    dirtyAfter = dirtyBefore;
+  }
+
+  const commitSha = harnessCommitSha ?? workerCommitSha;
+  const state: WorkerCommitState = harnessCommitSha
+    ? workerAdvancedHead
+      ? "worker_commit_remainder"
+      : "harness_commit"
+    : dirtyAfter.length > 0
+      ? "uncommitted_changes"
+      : workerAdvancedHead
+        ? "worker_commit"
+        : "no_change";
+
+  return {
+    filesChanged: commitSha ? await listCommitted() : [],
+    commitSha,
+    commitShas,
+    reconciliation: {
+      state,
+      headBefore: baseSha,
+      headAfter: harnessCommitSha ?? headAfterWorker,
+      workerCommitSha,
+      harnessCommitSha,
+      dirtyFiles: dirtyAfter,
+      dirtyBefore,
+    },
+  };
+}
+
+/**
+ * Keep git's own words. A rejected `git commit` says why on stderr, and a
+ * `String(err)` that drops it leaves the operator guessing between a hook, a
+ * lock file and a signing failure.
+ */
+function gitErrorText(err: unknown): string {
+  const e = err as { message?: unknown; stdout?: unknown; stderr?: unknown } | undefined;
+  const parts = [e?.message, e?.stdout, e?.stderr]
+    .map((p) => (typeof p === "string" ? p.trim() : ""))
+    .filter(Boolean);
+  const joined = parts.length > 0 ? Array.from(new Set(parts)).join("\n") : String(err);
+  return joined.slice(0, 4000);
 }

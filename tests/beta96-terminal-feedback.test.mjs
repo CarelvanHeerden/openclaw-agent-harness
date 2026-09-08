@@ -106,7 +106,7 @@ test("beta.96: a non-terminal (executing) empty-ledger session does NOT get a fa
 
 test("beta.96: finaliseFailed audits the reason BEFORE setStatus", () => {
   // In the finaliseFailed body, the loop.failed audit must appear before setStatus("failed").
-  const body = /private finaliseFailed\([^)]*\)[^{]*\{([\s\S]*?)\n  \}/.exec(loopSrc)?.[1] ?? "";
+  const body = /private async finaliseFailed\([^)]*\)[^{]*\{([\s\S]*?)\n  \}/.exec(loopSrc)?.[1] ?? "";
   assert.ok(body.length > 0, "finaliseFailed body found");
   const auditIdx = body.indexOf('audit("loop.failed"');
   const setStatusIdx = body.indexOf('setStatus(sessionId, "failed")');
@@ -115,7 +115,7 @@ test("beta.96: finaliseFailed audits the reason BEFORE setStatus", () => {
 });
 
 test("beta.96: finaliseFailedPreserveWorktree also audits before setStatus", () => {
-  const body = /private finaliseFailedPreserveWorktree\([^)]*\)[^{]*\{([\s\S]*?)\n  \}/.exec(loopSrc)?.[1] ?? "";
+  const body = /private async finaliseFailedPreserveWorktree\(\s*[\s\S]*?\)[^{]*\{([\s\S]*?)\n  \}/.exec(loopSrc)?.[1] ?? "";
   assert.ok(body.length > 0, "finaliseFailedPreserveWorktree body found");
   const auditIdx = body.indexOf('audit("loop.failed"');
   const setStatusIdx = body.indexOf('setStatus(sessionId, "failed")');

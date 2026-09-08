@@ -351,6 +351,11 @@ export async function runScenario(opts = {}) {
     buildVerifyProbes: opts.buildVerifyProbes ?? ((args) => realProbes({ ...args, plan: { ...args.plan, repo: "o/r" } })),
     releaseWorktree: opts.releaseWorktree ?? (async () => ({ ok: true, path: worktree })),
     worktreeHeadSha: opts.worktreeHeadSha ?? (async (p) => git(["rev-parse", "HEAD"], p)),
+    // rc.3: the real porcelain read, so the no-change gates in a scenario are
+    // answering a real working tree. A scripted worker that writes without
+    // committing genuinely leaves files on disk here.
+    worktreeStatusPorcelain:
+      opts.worktreeStatusPorcelain ?? (async (p) => world.adapter.statusPorcelain(p)),
     worktreeMergeBase: async (p) => git(["merge-base", "HEAD", "origin/main"], p),
     unreachableCommits: async (p, from, shas) => world.adapter.unreachableCommits(p, from, shas),
     listRepoFiles: async (p) => world.adapter.listTrackedFiles(p),

@@ -362,7 +362,8 @@ test("beta67-C: beta.15 semantics preserved — explicit verify wins with plan-t
 test("beta67-C: contract selection consults effectiveTaskMode (loop.ts + verify-contract.ts source)", () => {
   const loop = S("src/orchestrator/loop.ts");
   // effectiveTaskMode computed from the revise-no-change condition
-  assert.match(loop, /cycle > 1 && st\.taskMode === "mutate" && !result\.commitSha \? "observe" : st\.taskMode/);
+  // rc.3 added the clean-tree condition: uncommitted edits are not "no change".
+  assert.match(loop, /cycle > 1 && st\.taskMode === "mutate" && !result\.commitSha && !workerDirty\s*\n?\s*\? "observe"\s*\n?\s*: st\.taskMode/);
   // beta.76 renamed `const contract` -> `const rawContract` (re-derivation now
   // maps rawContract -> contract). Assert against the current variable name.
   assert.match(loop, /const rawContract = inferVerifyContract\(st, effectiveTaskMode\)/);

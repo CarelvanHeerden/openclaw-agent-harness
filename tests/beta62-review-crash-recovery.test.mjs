@@ -298,7 +298,7 @@ test("beta62: finaliseReviewCrash gate = graceful && green self-verify && priorR
 
 test("beta62: finaliseFailedPreserveWorktree does NOT release the worktree (source)", () => {
   const src = S("src/orchestrator/loop.ts");
-  const body = src.slice(src.indexOf("private finaliseFailedPreserveWorktree"), src.indexOf("private async finaliseReviewCrash"));
+  const body = src.slice(src.indexOf("private async finaliseFailedPreserveWorktree"), src.indexOf("private async finaliseReviewCrash"));
   assert.doesNotMatch(body, /scheduleWorktreeReleaseForSession/);
   assert.match(body, /"loop\.failed_worktree_preserved"/);
   // rc.3: preserving it in memory is not preserving it. Without this the

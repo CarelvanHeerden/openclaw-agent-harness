@@ -207,7 +207,9 @@ async function runTwoCommitTurn() {
       // Dirty tree remains after the worker's own commit -> harness commits it.
       gitListChangedFiles: async () => ["src/app/api/grc/continuity-exercises/[id]/route.ts"],
       gitCommit: async () => { head = HARNESS; return HARNESS; },
-      gitStatusPorcelain: async () => [],
+      // rc.3: the working tree is what decides whether the harness commits, so
+      // the fixture has to state it. Dirty until the harness commit lands.
+      gitStatusPorcelain: async () => (head === WORKER_OWN ? ["src/app/api/grc/continuity-exercises/[id]/route.ts"] : []),
       gitListCommittedFiles: async () => [],
     },
   );
@@ -242,7 +244,7 @@ test("beta103: a single-commit turn records exactly one tip (no phantom entries)
       gitHeadSha: async () => head,
       gitListChangedFiles: async () => ["prisma/schema.prisma"],
       gitCommit: async () => { head = "7a715eaa"; return "7a715eaa"; },
-      gitStatusPorcelain: async () => [],
+      gitStatusPorcelain: async () => (head === BASE ? ["prisma/schema.prisma"] : []),
       gitListCommittedFiles: async () => [],
     },
   );

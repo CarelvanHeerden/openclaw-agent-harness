@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+### The harness only committed a worker's work when the worker had already committed it
+
+`runWorker` decided whether to make its own commit by asking
+`git diff --name-only <base> HEAD`. That compares two **commits**. A worker that
+edited files and never committed leaves `base === HEAD`, so the answer was
+empty and the harness skipped the commit it exists to make; the edits then died
+with the worktree. Read the other way round, the gate opened only when the
+worker had already committed something itself, which is the one case where
+there was nothing left to do.
+
+StitchGuard PR #1168 cycle 4 is what this looks like in production. The workers
+made valid edits, their `git commit -m` carried a Markdown-fenced message, and
+the bash guard read the backticks as command substitution and denied it —
+correctly. The harness then emitted `subtask_revise_no_change`,
+`cycle_no_change_early_exit` and `no_change_cycle_with_blocking_findings`,
+carried the previous cycle's findings forward and terminated, over a worktree
+that still had the modifications in it. The guard is unchanged: refusing that
+command was right, and the harness commits the work afterwards.
+
+A worker turn is now reconciled against HEAD-before, HEAD-after and
+`git status --porcelain`, and lands in exactly one of five states —
+`worker_commit` (the worker committed, tree clean, no second commit),
+`worker_commit_remainder` (keep the worker's commit, commit what is left),
+`harness_commit`, `uncommitted_changes` (the files are on disk and nothing took
+them: recoverable, never silent), and `no_change`, which is now the only state
+in which "this turn did nothing" is a true claim. A git call that genuinely
+errors fails the turn with git's own stdout and stderr attached, rather than
+propagating as an unhandled rejection with the message thrown away.
+
+The commit path itself never needed fixing: `GitAdapter.commit` has always
+spawned git with an argv array and no shell, so backticks, newlines, quotes and
+`$(...)` in a message have always been inert. Tests now pin that so it stays
+true.
+
+### A dirty worktree could be called "no change", and then deleted
+
+Every no-change decision in the loop compared two SHAs, and a SHA comparison
+cannot see the working tree. All three now require it to be clean as well: the
+contract demotion to `observe`, the `completed_no_change` downgrade, and the
+cycle early exit. Each refusal emits `loop.cycle_no_change_rejected_dirty`
+naming the files that would have been lost.
+
+The same blindness reached the recovery paths. `abortHasSalvageableCommits`
+asked only whether HEAD had moved, so a worktree holding an entire run's
+uncommitted output was judged to have nothing worth keeping and was force-
+removed. And `finaliseFailed` released the worktree unconditionally, although
+`finaliseFailedPreserveWorktree` had existed since b62 for exactly the case
+where there is something to lose. A failure now keeps its worktree whenever
+there are commits past the plan base or a dirty tree, and
+`loop.failed_worktree_preserved` records the path, the branch, HEAD, the dirty
+files and what to do next — "preserved" is not a recovery action if the
+operator still has to go and find the directory.
+
+`GitAdapter.statusPorcelain` no longer swallows a git failure into an empty
+list. Now that a clean tree is what licenses a no-change exit and a worktree
+release, "the tree is clean" and "we could not ask git" have to stay
+distinguishable — the same fail-open reading b129 had to remove from the HEAD
+probe after it deleted six commits.
+
+
 ### A clarification now reaches a human with a recommendation attached
 
 When the harness pauses it produces a precise question and stops spending. That

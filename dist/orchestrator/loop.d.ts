@@ -109,6 +109,17 @@ export declare function firstTokenWindowForAttempt(attempt: number, baseSeconds:
  * files beneath it; `src/app/api/foo/route.ts` still only covers itself.
  */
 export declare function declaredCovers(committedFile: string, declared: string): boolean;
+/**
+ * rc.3: did this worker turn leave work on disk that nothing committed?
+ *
+ * The three no-change decisions in this file all asked `!result.commitSha`,
+ * which is true both for "the worker had nothing to do" and for "the worker did
+ * the work and the commit never happened". Only the second is a data-loss risk,
+ * and only the working tree can tell them apart. Falls back to the beta.53
+ * `uncommittedFiles` list for results produced before the reconciliation
+ * existed.
+ */
+export declare function workerLeftUncommittedWork(result: WorkerResult): boolean;
 import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 import { type VerifyProbes } from "./verify.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
@@ -481,6 +492,18 @@ export interface OrchestratorDeps {
     diagnoseCheckEnv?: (worktree: string) => Record<string, unknown>;
     /** Read the current HEAD sha of a worktree (for commit_made verification). */
     worktreeHeadSha?: (worktreePath: string) => Promise<string>;
+    /**
+     * rc.3: `git status --porcelain` for a worktree, as the evidence that licenses
+     * a no-change exit.
+     *
+     * Every "nothing changed" decision in this file used to be made by comparing
+     * two SHAs, and a SHA comparison is blind to a tree full of uncommitted work.
+     * StitchGuard PR #1168 cycle 4 exited through `cycle_no_change_early_exit`
+     * with modified files sitting on disk. Rejects (rather than reporting a clean
+     * tree) when git cannot be asked, so "we could not look" never reads as
+     * "there is nothing there".
+     */
+    worktreeStatusPorcelain?: (worktreePath: string) => Promise<string[]>;
     /**
      * beta.67 (Bug B): compute the branch FORK-POINT sha -- the merge-base of the
      * default base branch and HEAD in the worktree. Captured once at plan_ready
@@ -1152,10 +1175,25 @@ export declare class OrchestratorLoop {
      */
     private finaliseAbortSalvaging;
     /**
+     * rc.3: the uncommitted files in a worktree, or [] when there are none.
+     *
+     * Returns [] only when git answered and said the tree is clean. A probe that
+     * is unwired returns [] too -- an older embedder that never injected it keeps
+     * its previous behaviour rather than having every no-change exit blocked --
+     * but a probe that THREW returns nothing-known, and the callers here treat
+     * that as "do not claim the tree is clean" by their own logic.
+     */
+    private worktreeDirtyFiles;
+    /**
      * beta.120: does this aborting session have commits worth protecting? Mirrors
      * the stall path's probe. Fails CLOSED -- any doubt reports "yes", because a
      * false positive costs a preserved directory and a false negative costs the
      * work.
+     *
+     * rc.3: "commits" was too narrow. A worktree whose HEAD never moved can still
+     * hold every edit the run made, and this probe answering "nothing to salvage"
+     * sent it to `finaliseAbort`, which force-removes the directory. Uncommitted
+     * files now count as work worth protecting.
      */
     private abortHasSalvageableCommits;
     /**
@@ -1232,6 +1270,16 @@ export declare class OrchestratorLoop {
      * cannot forget to release the worktree on new failure paths.
      */
     private finaliseFailed;
+    /**
+     * rc.3: is there anything in this failing session's worktree worth keeping?
+     *
+     * Returns the evidence when there is (so the audit can say what saved the
+     * directory) and null when the session genuinely produced nothing. Fails
+     * OPEN in the safe direction only where it can: an unreadable status probe
+     * counts as "something might be there", the same reading beta.129 settled on
+     * for the HEAD probe.
+     */
+    private failureHasRecoverableWork;
     /**
      * beta.62 (fix #3): terminal-fail a session WITHOUT releasing the worktree,
      * so the on-disk commit chain stays inspectable. Used for a review CRASH

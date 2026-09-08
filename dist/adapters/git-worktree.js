@@ -892,11 +892,17 @@ esac
      * (Staging beta.52 #858 seq-5: the aria-label edit was on disk, 1145 bytes,
      * but filesTouched was []). `git status --porcelain` surfaces the uncommitted
      * work so the audit + the retry logic can distinguish a partial-work turn
-     * ("wrote X, didn't commit") from a genuine zero-work turn. Best-effort:
-     * returns [] on any error.
+     * ("wrote X, didn't commit") from a genuine zero-work turn.
+     *
+     * rc.3: THROWS on a git failure rather than reporting a clean tree. This used
+     * to `.catch(() => "")`, which made "the tree is clean" and "we could not ask
+     * git" the same answer -- the fail-open reading beta.129 had to remove from
+     * the HEAD probe after it deleted six commits. Now that a clean tree is what
+     * licenses a no-change exit and a worktree release, the two must stay
+     * distinguishable. Callers decide what an unanswerable probe means for them.
      */
     async statusPorcelain(worktreePath) {
-        const out = await this.run(["-C", worktreePath, "status", "--porcelain"]).catch(() => "");
+        const out = await this.run(["-C", worktreePath, "status", "--porcelain"]);
         // porcelain v1: `XY <path>` (or `XY <old> -> <new>` for renames). Strip the
         // 2-char status + space and take the destination path for renames.
         return Array.from(new Set(out.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean).map((l) => {
@@ -1641,9 +1647,16 @@ esac
             proc.on("error", rejectP);
             proc.on("close", (code) => {
                 if (code === 0)
-                    resolveP(out);
-                else
-                    rejectP(new Error(`git ${args.map((a) => redactSecrets(a, token)).join(" ")} failed (${code}): ${redactSecrets(err.trim(), token)}`));
+                    return resolveP(out);
+                const e = new Error(`git ${args.map((a) => redactSecrets(a, token)).join(" ")} failed (${code}): ${redactSecrets(err.trim(), token)}`);
+                // rc.3: carry BOTH streams on the error, not just stderr folded into the
+                // message. A failing `git commit` puts the useful half on stdout ("nothing
+                // to commit", the pre-commit hook's own output) and the caller reporting
+                // the failure has to be able to show it.
+                e.stdout = redactSecrets(out.trim(), token);
+                e.stderr = redactSecrets(err.trim(), token);
+                e.exitCode = code ?? undefined;
+                rejectP(e);
             });
         });
     }

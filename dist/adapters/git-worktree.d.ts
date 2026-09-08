@@ -394,8 +394,14 @@ export declare class GitAdapter {
      * (Staging beta.52 #858 seq-5: the aria-label edit was on disk, 1145 bytes,
      * but filesTouched was []). `git status --porcelain` surfaces the uncommitted
      * work so the audit + the retry logic can distinguish a partial-work turn
-     * ("wrote X, didn't commit") from a genuine zero-work turn. Best-effort:
-     * returns [] on any error.
+     * ("wrote X, didn't commit") from a genuine zero-work turn.
+     *
+     * rc.3: THROWS on a git failure rather than reporting a clean tree. This used
+     * to `.catch(() => "")`, which made "the tree is clean" and "we could not ask
+     * git" the same answer -- the fail-open reading beta.129 had to remove from
+     * the HEAD probe after it deleted six commits. Now that a clean tree is what
+     * licenses a no-change exit and a worktree release, the two must stay
+     * distinguishable. Callers decide what an unanswerable probe means for them.
      */
     statusPorcelain(worktreePath: string): Promise<string[]>;
     /**
