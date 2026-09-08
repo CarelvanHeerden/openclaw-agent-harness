@@ -8,6 +8,13 @@ Most of what follows came out of one production run — StitchGuard PR #1168,
 session `51fd67cc` — which found six different ways to spend a budget on
 nothing.
 
+Every change below makes some finding count for less, and each of those is a
+way to lose a real defect by accident. The same run also found six genuine
+defects underneath the noise, and they are pinned as a test: each is still
+diff-addressable, still blocking, still not mistaken for an environment fault,
+still six distinct findings after deduplication, still open after
+reconciliation, and still routed to a task that is allowed to edit its file.
+
 ### An automatic answer now has to be reviewable afterwards
 
 The rc.3 gates on `harness_answer` — the sequence guard, the atomic claim, the
