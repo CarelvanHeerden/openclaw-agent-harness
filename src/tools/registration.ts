@@ -3201,18 +3201,15 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // existing feature had broken. On StitchGuard PR #1168 it kept telling
           // workers to delete the migration the feature was built on.
           const originalFeatureBrief = rootFeatureBrief(row.id, row.crystallised_prompt);
+          const operatorRevisionBrief = JSON.stringify({
+            reviseOfSessionId: row.id,
+            prNumber: row.pr_number ?? null,
+            guidance: _reviseMeta?.guidance ?? null,
+            directives: _reviseMeta?.directives ?? [],
+          });
           liveDb()
             .prepare(`UPDATE sessions SET original_feature_brief = ?, operator_revision_brief = ? WHERE id = ?`)
-            .run(
-              originalFeatureBrief ?? null,
-              JSON.stringify({
-                reviseOfSessionId: row.id,
-                prNumber: row.pr_number ?? null,
-                guidance: _reviseMeta?.guidance ?? null,
-                directives: _reviseMeta?.directives ?? [],
-              }),
-              started.sessionId,
-            );
+            .run(originalFeatureBrief ?? null, operatorRevisionBrief, started.sessionId);
           liveState().audit(
             "tool.revise.started",
             {

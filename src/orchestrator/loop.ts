@@ -2503,16 +2503,20 @@ export class OrchestratorLoop {
             sessionId,
           );
         }
+        // Built once and shared by both passes below. The rc.3 re-map used to
+        // carry its own copy of these, which meant the adoption cap was stated
+        // twice and only one of the statements was load-bearing.
+        const mappingOpts = {
+          adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
+          maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
+          routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
+          stuckKeys,
+        };
         reviseMapping = mapFindingsToSubTasks(
           mapSubTasks,
           lastReview.findings as MapFinding[],
           (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }),
-          {
-            adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
-            maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
-            routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
-            stuckKeys,
-          },
+          mappingOpts,
         );
         // rc.3: a finding whose file no sub-task declared gets its OWN sub-task
         // with those files granted, instead of being shown to everyone as
@@ -2529,12 +2533,7 @@ export class OrchestratorLoop {
             })),
             lastReview.findings as MapFinding[],
             (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }),
-            {
-              adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
-              maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
-              routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
-              stuckKeys,
-            },
+            mappingOpts,
           );
         }
         for (const a of reviseMapping.assignments) reviseAssignmentBySeq.set(a.seq, a);
