@@ -1930,6 +1930,53 @@ export class OrchestratorLoop {
           this.deps.logger.warn("[loop] plan_base_sha capture failed (non-fatal)", { sessionId, err: String(err) });
         }
       }
+      // rc.3: and for a REVISE, capture the second fixed point -- the PR head
+      // as it stood before this revision touched anything.
+      //
+      // Here is the only moment it can be read. The worktree has just been
+      // checked out on the pinned branch at its existing tip and no worker has
+      // run, so HEAD is exactly the feature as it was handed over. One commit
+      // later the value is gone, and every scope judgement after that would
+      // have to be made against the whole feature -- which is what put ~46
+      // untouched StitchGuard files on the out-of-scope list.
+      //
+      // Ordinary runs skip this entirely: with no revision to bound, the
+      // fork point is already the right and only base. `original_pr_base_sha`
+      // records the fork point under its revise-side name so a reader does not
+      // have to know that `plan_base_sha` means two things.
+      if (brief.reviseOfSessionId && this.deps.worktreeHeadSha) {
+        try {
+          const existing = this.deps.state.db
+            .prepare(`SELECT plan_base_sha, revision_start_sha FROM sessions WHERE id = ?`)
+            .get(sessionId) as { plan_base_sha: string | null; revision_start_sha: string | null } | undefined;
+          if (!existing?.revision_start_sha) {
+            const head = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
+            if (head) {
+              this.deps.state.db
+                .prepare(`UPDATE sessions SET revision_start_sha = ?, original_pr_base_sha = COALESCE(original_pr_base_sha, ?) WHERE id = ?`)
+                .run(head, existing?.plan_base_sha ?? null, sessionId);
+              this.deps.state.audit(
+                "loop.revise_baseline_captured",
+                {
+                  sessionId,
+                  reviseOfSessionId: brief.reviseOfSessionId,
+                  originalPrBaseSha: existing?.plan_base_sha ?? null,
+                  revisionStartSha: head,
+                  branch: plan.branch,
+                },
+                sessionId,
+              );
+            } else {
+              this.deps.logger.warn(
+                "[loop] could not read the revision-start HEAD; scope enforcement will fall back to the whole feature diff",
+                { sessionId },
+              );
+            }
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] revise baseline capture failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
       // beta.105: LEDGER REACHABILITY AT RESUME. The worktree has just been
       // (re-)allocated, which is the exact operation that loses commits.
       //
@@ -7084,16 +7131,33 @@ export class OrchestratorLoop {
     // against). Without it we cannot scope committed files to THIS branch's own
     // commits, so we conservatively skip (no finding) rather than diff against a
     // wrong base and hallucinate out-of-scope files.
+    //
+    // rc.3: on a REVISE the fork point is the wrong base for this question.
+    // The adversary still diffs the whole PR, because correctness is a property
+    // of the finished feature -- but "did this revision stay in its lane" can
+    // only be asked of what the revision itself committed. Judged from the fork
+    // point, a two-file StitchGuard revision was told that the Prisma models,
+    // the migration, the feature APIs, the UI pages, the tests and the
+    // generated OpenAPI documents it never touched were all scope violations.
+    //
+    // Files committed before `revision_start_sha` are grandfathered: they are
+    // the feature, and the operator asked for a change to it, not for its
+    // removal. Editing one AFTER that sha still lands inside this window and is
+    // still reported.
     let base: string | undefined;
+    let featureBase: string | undefined;
     try {
       const r = this.deps.state.db
-        .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
-        .get(sessionId) as { plan_base_sha: string | null } | undefined;
-      base = r?.plan_base_sha ?? undefined;
+        .prepare(`SELECT plan_base_sha, revision_start_sha FROM sessions WHERE id = ?`)
+        .get(sessionId) as { plan_base_sha: string | null; revision_start_sha: string | null } | undefined;
+      featureBase = r?.plan_base_sha ?? undefined;
+      base = r?.revision_start_sha ?? featureBase;
     } catch {
       base = undefined;
+      featureBase = undefined;
     }
     if (!base) return [];
+    const revisionScoped = Boolean(featureBase && base !== featureBase);
 
     let committed: string[];
     try {
@@ -7101,6 +7165,38 @@ export class OrchestratorLoop {
     } catch (err) {
       this.deps.logger.warn("[loop] beta.94 final-scope check: committed-files probe failed (non-fatal)", { sessionId, err: String(err) });
       return [];
+    }
+    if (revisionScoped) {
+      this.deps.state.audit(
+        "loop.review_diff_windows_selected",
+        {
+          sessionId,
+          cycle,
+          correctnessBase: featureBase,
+          scopeBase: base,
+          scopedCommittedCount: committed.length,
+        },
+        sessionId,
+      );
+      // Name what the narrower window spared, so a reader can tell a correct
+      // grandfathering from a scope check that silently stopped running.
+      const featureCommitted = await this.deps
+        .worktreeCommittedFiles(worktree, featureBase!)
+        .catch(() => [] as string[]);
+      const grandfathered = featureCommitted.filter((f) => !committed.includes(f));
+      if (grandfathered.length > 0) {
+        this.deps.state.audit(
+          "loop.revision_scope_grandfathered",
+          {
+            sessionId,
+            cycle,
+            revisionStartSha: base,
+            count: grandfathered.length,
+            files: grandfathered.slice(0, 100),
+          },
+          sessionId,
+        );
+      }
     }
     if (!Array.isArray(committed) || committed.length === 0) return [];
 

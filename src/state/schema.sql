@@ -76,7 +76,21 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- five-minute window alone, which is only true while the process lives.
   -- Session 2b4c1d33 answered 28 seconds in, to a listener that had already
   -- died, and was told the run would pick it up. Nothing did.
-  clarification_heartbeat_at INTEGER          -- ms; stamped on every poll tick
+  clarification_heartbeat_at INTEGER,         -- ms; stamped on every poll tick
+  -- rc.3: the four fixed points a REVISE session is judged against. A focused
+  -- revision has two different questions to answer and they need two different
+  -- windows: "is the PR correct" spans the whole feature, "did this revision
+  -- stay in its lane" spans only what the revision itself committed. Inferring
+  -- either from branch state later cannot work -- the branch has moved.
+  --
+  -- StitchGuard PR #1168 is what one window costs. A two-file revision was
+  -- compared against the complete feature diff, and ~46 pre-existing feature
+  -- files -- Prisma models, the migration, feature APIs, UI pages, tests,
+  -- OpenAPI artifacts -- were reported as revision scope violations.
+  original_pr_base_sha     TEXT,              -- fork point of the PR being revised
+  revision_start_sha       TEXT,              -- PR head BEFORE any revision work; scope-check base
+  original_feature_brief   TEXT,              -- JSON: the ROOT feature brief, still authoritative
+  operator_revision_brief  TEXT               -- JSON: { guidance, directives } for THIS revision
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

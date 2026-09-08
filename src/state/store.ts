@@ -120,6 +120,15 @@ export function openStateStoreSync(pathHint: string): StateStore {
     // beta.132: liveness for the one pause the loop does not return from. The
     // window alone said "still listening" about a process that had exited.
     { table: "sessions", column: "clarification_heartbeat_at",   type: "INTEGER" }, // ms; stamped on every poll tick
+    // rc.3: the revise baseline. A focused revision needs two review windows --
+    // the whole PR for correctness, and only what the revision committed for
+    // scope -- and neither can be recovered from branch state after the fact.
+    // With one window, StitchGuard PR #1168's two-file revision reported ~46
+    // pre-existing feature files as revision scope violations.
+    { table: "sessions", column: "original_pr_base_sha",         type: "TEXT" },    // fork point of the PR being revised
+    { table: "sessions", column: "revision_start_sha",           type: "TEXT" },    // PR head before any revision work
+    { table: "sessions", column: "original_feature_brief",       type: "TEXT" },    // JSON: the root feature brief
+    { table: "sessions", column: "operator_revision_brief",      type: "TEXT" },    // JSON: { guidance, directives }
   ];
   for (const m of additiveMigrations) {
     try {

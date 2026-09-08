@@ -216,7 +216,7 @@ test("the steer is recorded in the audit trail", () => {
 
 test("the audited guidance is the normalised text, not the raw input", () => {
   // So the audit trail matches what the models were actually given.
-  assert.match(regSrc, /_reviseMeta: \{ total: allFindings\.length, dropped: droppedIdx, demoted: demotedIdx, guidance \}/);
+  assert.match(regSrc, /_reviseMeta: \{ total: allFindings\.length, dropped: droppedIdx, demoted: demotedIdx, guidance[,}]/);
 });
 
 /* ------------------------------------------------------------------ *
