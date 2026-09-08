@@ -234,6 +234,7 @@ test("rc3: an automatic answer is recorded as automatic", { skip }, async () => 
   const id = pause(db, { seq: 4 });
   await tools.get("harness_answer").execute(null, {
     sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4, answeredBy: "automation",
+    evidence: "commit abc1234 touches src/b.ts only; tests and typecheck green",
   });
   const ev = audits.find((a) => a.event === "loop.clarification_answered");
   assert.equal(ev.payload.answeredBy, "automation");
@@ -365,6 +366,7 @@ test("rc3: the refusal applies to a human and an agent alike", { skip }, async (
     db.prepare(`UPDATE sessions SET status = 'awaiting_clarification', clarification_answer = NULL WHERE id = ?`).run(id);
     const out = await tools.get("harness_answer").execute(null, {
       sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4, answeredBy,
+      evidence: "commit abc1234; tests green",
     });
     assert.equal(out.details.acceptWithoutCommittedWork, true, `refused for ${answeredBy}`);
   }

@@ -305,6 +305,27 @@ stateDiagram-v2
   calling agent relays and answers via `harness_answer`. It does not run a multi-turn
   slot-filling loop in a Slack thread.
 
+#### Who may answer a clarification
+
+**A human, by default.** The calling agent's job is to relay the question verbatim and
+attach an evidence-based recommendation; the bundled `harness-clarification-steward`
+skill is the policy it follows.
+
+An agent may answer by itself only under `loop.clarification_auto_accept_delegated`,
+which is `false` unless a deployment sets it, and only for objectively verifiable
+contract-path mismatches. Brief and budget approval, scope changes, security
+boundaries, schemas and migrations, credentials, destructive actions, `skip` and
+`abort` are never automatic. An automatic answer declares itself with
+`answeredBy: "automation"` and must carry its `evidence`; the harness refuses it
+without both. `clarificationSeq` pins the answer to the question it was composed
+against, and the pause is claimed atomically so a retry cannot answer twice.
+
+Every answer is audited with the clarification verbatim, the requester and invoker,
+the decision, the evidence, the policy version (`CLARIFICATION_POLICY_VERSION`, which
+moves independently of the plugin version) and whether it was automatic. The answer
+text itself is never recorded — only its length, because an answer can quote a brief
+and `audit_log` has no redaction of its own.
+
 ### 3.4 Session state store
 
 - SQLite at `~/.openclaw/workspace/openclaw-agent-harness/state.db`.
