@@ -2928,8 +2928,51 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     // the brief is handed to startSessionFromBrief so it never reaches the
     // loop / crystallised_prompt.
     return Object.assign(brief, {
-      _reviseMeta: { total: allFindings.length, dropped: droppedIdx, demoted: demotedIdx, guidance },
+      // rc.3: `directives` is the finding text the operator is asking for, kept
+      // as its own list. The brief interleaves it with the preamble, the
+      // conditional note and the original criteria, and the revise adversary
+      // prompt has to be able to show "what this revision was asked to do"
+      // separately from "what the feature was asked to do".
+      _reviseMeta: { total: allFindings.length, dropped: droppedIdx, demoted: demotedIdx, guidance, directives: findingLines },
     });
+  }
+
+  /**
+   * rc.3: the brief for the FEATURE, not for the last revision of it.
+   *
+   * `buildReviseBrief` reads the selected session's `crystallised_prompt` and
+   * calls it "the original". For a first revise that is true. For a revise of a
+   * revise it is the previous revise brief, which already has finding text and
+   * an embedded "original acceptance criteria" section inside it -- so the
+   * further a PR gets from its first review, the less the word "original"
+   * means. Walk `reviseOfSessionId` back to the session that was not itself a
+   * revise, preferring a root brief an earlier revise already resolved.
+   *
+   * Bounded at eight hops; a chain longer than that is a cycle or a mistake,
+   * and either way the nearest brief is a better answer than an infinite loop.
+   */
+  function rootFeatureBrief(sessionId: string, fallbackJson: string | null): string | null {
+    let currentId = sessionId;
+    let currentJson = fallbackJson;
+    for (let hop = 0; hop < 8; hop += 1) {
+      const row = liveDb()
+        .prepare(`SELECT crystallised_prompt, original_feature_brief FROM sessions WHERE id = ?`)
+        .get(currentId) as { crystallised_prompt: string | null; original_feature_brief: string | null } | undefined;
+      if (!row) return currentJson;
+      // An earlier revise already did this walk; trust its answer.
+      if (row.original_feature_brief) return row.original_feature_brief;
+      currentJson = row.crystallised_prompt ?? currentJson;
+      let parent = "";
+      try {
+        const parsed = JSON.parse(row.crystallised_prompt ?? "{}") as { reviseOfSessionId?: unknown };
+        if (typeof parsed.reviseOfSessionId === "string") parent = parsed.reviseOfSessionId.trim();
+      } catch {
+        return currentJson;
+      }
+      if (!parent || parent === currentId) return currentJson;
+      currentId = parent;
+    }
+    return currentJson;
   }
 
   disposers.push(
@@ -3050,7 +3093,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // Strip the advisory _reviseMeta before the brief goes to the loop /
           // crystallised_prompt (it's audit-only).
           const { _reviseMeta, ...cleanBrief } = built as RunnableBrief & {
-            _reviseMeta?: { total: number; dropped: number[]; demoted: number[]; guidance?: string };
+            _reviseMeta?: { total: number; dropped: number[]; demoted: number[]; guidance?: string; directives?: string[] };
           };
           const started = startSessionFromBrief({
             requester,
@@ -3065,6 +3108,28 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (!started.ok) {
             return { content: [{ type: "text", text: `Could not start revise: ${started.reason}` }], details: { ...started, ok: false } };
           }
+          // rc.3: pin the two briefs to the row now, while both are known.
+          //
+          // The revise brief that goes into `crystallised_prompt` folds the
+          // original acceptance criteria in among the finding lines, so by
+          // review time nothing can say which half is which -- and the adversary
+          // was reading a single flattened brief in which a revision-only
+          // instruction ("no new schema redesign") looked like a rule the
+          // existing feature had broken. On StitchGuard PR #1168 it kept telling
+          // workers to delete the migration the feature was built on.
+          const originalFeatureBrief = rootFeatureBrief(row.id, row.crystallised_prompt);
+          liveDb()
+            .prepare(`UPDATE sessions SET original_feature_brief = ?, operator_revision_brief = ? WHERE id = ?`)
+            .run(
+              originalFeatureBrief ?? null,
+              JSON.stringify({
+                reviseOfSessionId: row.id,
+                prNumber: row.pr_number ?? null,
+                guidance: _reviseMeta?.guidance ?? null,
+                directives: _reviseMeta?.directives ?? [],
+              }),
+              started.sessionId,
+            );
           liveState().audit(
             "tool.revise.started",
             {

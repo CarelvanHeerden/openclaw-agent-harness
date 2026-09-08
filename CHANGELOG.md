@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### A focused revision judged its scope against the whole feature it was revising
+
+`runFinalScopeCheck` asks which files a run touched that its plan never claimed,
+and it asked git that question from `plan_base_sha` — the fork point of the
+*feature*. For a `harness_revise` session that base is the wrong end of the
+history: the diff it produces is the entire original PR, so every file the
+feature had already landed reads as a file the two-file revision plan failed to
+declare. On StitchGuard PR #1168 that was about 46 files — Prisma models and a
+migration, the feature APIs, the UI pages, the tests, the OpenAPI artifacts and
+the generated OKF documentation — all reported as scope violations by a revision
+that had not gone near them.
+
+A revise session now records where its own work starts. Four nullable columns on
+`sessions`, all additive so an existing database opens unchanged:
+`original_pr_base_sha`, `revision_start_sha`, `original_feature_brief` and
+`operator_revision_brief`. `revision_start_sha` is captured at plan-ready,
+beside `plan_base_sha`, at the first moment the worktree exists on the pinned
+branch and before any worker has run — so it is the PR head as the operator last
+saw it, read once and stored, not inferred later from a branch that has since
+moved.
+
+Scope enforcement now diffs `revision_start_sha..HEAD`. The adversary keeps
+`plan_base_sha..HEAD`: correctness and security are still judged against the
+complete PR, because a revision can break something it never touched.
+`loop.review_diff_windows_selected` records both windows for a run, and
+`loop.revision_scope_grandfathered` names the files a wider base would have
+flagged. A file the feature already owned is grandfathered; a *new* edit to one
+after `revision_start_sha` is in the revision's diff and is still reported.
+
+`harness_revise` also stops diluting the thing it is revising. It stored the
+brief it was handed, which for a revise-of-a-revise is the previous revision's
+brief; it now walks `reviseOfSessionId` to the root feature session and keeps
+that text as `original_feature_brief`, with the operator's directives beside it
+in `operator_revision_brief` rather than merged into one blob.
+
 ### The harness only committed a worker's work when the worker had already committed it
 
 `runWorker` decided whether to make its own commit by asking
