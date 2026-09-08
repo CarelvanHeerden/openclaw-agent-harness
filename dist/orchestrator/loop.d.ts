@@ -1289,6 +1289,27 @@ export declare class OrchestratorLoop {
      * with the context to fix it, and a fresh worker starting cold is worse.
      */
     private addCiRepairSubTask;
+    /**
+     * rc.3: give an unowned finding a sub-task that is allowed to fix it.
+     *
+     * b131 established the shape for an unroutable CI failure; this is the same
+     * argument for a reviewer finding. A finding whose file no sub-task declared
+     * became a mapping miss and was broadcast to every sub-task as context, which
+     * reads as safe and is not. On StitchGuard PR #1168 findings about the
+     * integration UI, credentials, authorization, OpenAPI, help content, the
+     * schema and the migration were routed into tasks like "Declare SAST workflow
+     * routes", whose workers correctly refused to edit files they did not own --
+     * so the finding survived, was re-raised, and was re-routed to the same
+     * people the next cycle.
+     *
+     * The grant is explicit and narrow: the finding's own file plus the co-fix
+     * files it names, nothing else, with a verification contract generated from
+     * exactly those paths. Findings that share a file land in one sub-task, so
+     * two workers are never editing the same file in the same cycle.
+     *
+     * Returns the seqs it created or refreshed, so the caller can re-map.
+     */
+    private addFindingRepairSubTasks;
     /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
     private planBaseSha;
     /**

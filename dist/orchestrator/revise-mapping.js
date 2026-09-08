@@ -37,6 +37,27 @@
  * injected (the loop passes resolveContractPath) so this module has no import
  * cycle with path-match and stays trivially unit-testable.
  */
+/**
+ * rc.3: states in which a finding must not reach a worker at all.
+ *
+ * `resolved`, `stale`, `accepted` and `dispositioned` are already answered, so
+ * routing them wastes a cycle re-fixing something. `environment_blocked` is the
+ * one that matters most: on StitchGuard PR #1168 the missing `tsc` was routed
+ * to workers who could not install a compiler, and it came back every cycle
+ * because the binary was still missing. It holds the merge; it does not get a
+ * worker.
+ */
+const UNROUTABLE_LIFECYCLE_STATES = new Set([
+    "resolved",
+    "stale",
+    "accepted",
+    "dispositioned",
+    "environment_blocked",
+]);
+/** rc.3: whether this finding should be handed to a code worker at all. */
+export function isRoutableLifecycle(f) {
+    return !f.lifecycleState || !UNROUTABLE_LIFECYCLE_STATES.has(f.lifecycleState);
+}
 import { isRoutable, normaliseDimension } from "./finding-dimension.js";
 import { normaliseSeverity } from "./finding-classify.js";
 import { coFixFiles, findingKey } from "./cross-cutting-findings.js";
@@ -265,7 +286,10 @@ export function mapFindingsToSubTasks(subTasks, findings, match,
 // beta.107: opt-in so every pre-b107 caller and test keeps byte-identical
 // behaviour; the loop turns it on from `revise_adopt_orphan_findings`.
 opts = {}) {
-    const list = findings ?? [];
+    // rc.3: a finding somebody already answered, and one no code edit can clear,
+    // are both filtered out here rather than at every consumer. They stay on the
+    // report and on the PR; they just do not become work.
+    const list = (findings ?? []).filter(isRoutableLifecycle);
     const assignments = subTasks.map((s) => ({
         seq: s.seq,
         targeted: [],
@@ -452,6 +476,78 @@ opts = {}) {
     for (const a of assignments)
         a.broadcast = broadcastAll;
     return { assignments, mappingMisses: misses, metaBroadcast: meta, anyTargeted, orphanAdoptions, orphanRefusals, coFixRoutings };
+}
+/**
+ * rc.3: turn the findings nobody owns into dedicated repair work.
+ *
+ * A finding whose file no sub-task declared became a "mapping miss": attached
+ * to every sub-task as broadcast context. That sounds like the safe default and
+ * is not. On StitchGuard PR #1168 findings about the integration UI, the
+ * credentials, authorization, OpenAPI, the help content, the schema and the
+ * migration were all handed to sub-tasks like "Declare SAST workflow routes",
+ * whose workers correctly refused to edit files they did not own. The finding
+ * survived, was re-raised, and was re-routed to the same people next cycle.
+ *
+ * b131 already solved this shape for an unroutable CI failure by giving it its
+ * own sub-task. This generalises that: group the unowned findings by the files
+ * their fixes touch -- two findings that share a file belong in one task, so a
+ * worker is not asked to edit a file another worker is editing in the same
+ * cycle -- and hand each group back so the caller can create a sub-task with
+ * exactly those files granted.
+ *
+ * Only findings that name a file and are diff-addressable. One that names
+ * nothing has no scope to grant and stays broadcast, which is what b131's CI
+ * sub-task is for.
+ */
+export function groupUnownedFindingsForRepair(misses) {
+    const groups = [];
+    for (const f of misses) {
+        if (!isRoutableLifecycle(f))
+            continue;
+        if (!isDiffAddressable(f) && !isRoutable(f))
+            continue;
+        const file = fileOf(f);
+        if (!file)
+            continue;
+        const files = [file, ...coFixFiles(f)].filter(Boolean);
+        // Any existing group sharing a path absorbs this one: co-fix files are
+        // precisely the paths two findings must not be repaired against in
+        // parallel.
+        const hit = groups.find((g) => g.files.some((p) => files.includes(p)));
+        if (hit) {
+            for (const p of files)
+                if (!hit.files.includes(p))
+                    hit.files.push(p);
+            hit.findings.push(f);
+            continue;
+        }
+        groups.push({ files: [...new Set(files)], findings: [f] });
+    }
+    return groups;
+}
+/** rc.3: the brief a repair sub-task is given. */
+export function renderRepairIntent(group) {
+    return [
+        "The adversarial reviewer raised the finding(s) below against files that no sub-task in this plan",
+        "declared. That is why this sub-task exists: without it each finding would be shown to every",
+        "worker as background context, and every worker would correctly decline to edit a file outside",
+        "its own scope.",
+        "",
+        "You own these files for this cycle:",
+        ...group.files.map((p) => `  - ${p}`),
+        "",
+        "Findings to resolve:",
+        ...group.findings.map(renderFindingLine),
+        "",
+        "Fix the cause in the files listed above. Do not widen beyond them, and do not restate a finding",
+        "as done without changing anything -- if a finding cannot be resolved inside these files, say so",
+        "on its own line as: BLOCKED: <finding title> — needs <repo-relative paths> — <what must change there>.",
+    ].join("\n");
+}
+/** rc.3: a stable title, so a second repair cycle refreshes rather than stacks. */
+export function repairSubTaskTitle(group) {
+    const primary = group.files[0] ?? "unowned findings";
+    return `Repair reviewer findings in ${primary}`;
 }
 /**
  * Build the per-sub-task revise dispatch hint from a deterministic assignment.

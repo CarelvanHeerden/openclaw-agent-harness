@@ -25,6 +25,7 @@
  * `revise`. Everything else is surfaced on the PR body, not used to block
  * convergence. `block` verdicts are never downgraded here.
  */
+import { detectVerificationBlocker } from "./verification-blocker.js";
 const UNPROVEN_RUNTIME_RE = /\b(no runtime data|no runtime verification|runtime is unproven|preview deploy|not been (deployed|verified at runtime)|without a (preview |)deploy|no deploy(ed| evidence)?)\b/i;
 const TEST_WIRING_RE = /\b(no (automated |unit |integration )?tests?|test(s)? (are|were)? ?(not|n't)|zero test|without tests?|test script|tests? (are )?not (executed|run|wired|declared)|not (executed|run|wired) by (any )?(declared )?(check )?script)\b/i;
 const ENV_RE = /\b(exit(ed)? (code )?12[67]|command not found|: not found|eslint: not found|tsx: not found|npm ci|node_modules|cannot find module|MODULE_NOT_FOUND|sh: \w+:|permission denied|cannot execute|exec format error|noexec)\b/i;
@@ -101,6 +102,19 @@ export function classifyFinding(f, ctx = {}) {
     // below promoting it, which it otherwise would, since the finding is
     // deliberately `high` so that it stops a merge.
     if (f.source === "harness_env")
+        return "env";
+    // rc.3: the same fact, argued by the MODEL rather than established by the
+    // harness. The adversary writes "the typecheck cannot run: tsc is not
+    // installed" as high/quality, and `isNonDemotable` below -- correctly, in
+    // general -- refuses to let a keyword demote a high-severity finding. So the
+    // one class of high-severity finding that genuinely cannot be fixed in a diff
+    // was the one class the guard protected, and on StitchGuard PR #1168 the
+    // missing `tsc` bought repair cycle after repair cycle that changed nothing.
+    //
+    // `detectVerificationBlocker` is structural and narrow: it requires the
+    // unavailability itself, not a mention of tooling. `env` is merge-blocking
+    // and non-cycle-driving, which is exactly the treatment this needs.
+    if (detectVerificationBlocker(f))
         return "env";
     // Runtime dimension with no live deploy evidence: the harness decides whether
     // to push; the worker cannot conjure runtime data in a code cycle.

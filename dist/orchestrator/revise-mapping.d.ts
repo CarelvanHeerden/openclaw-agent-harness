@@ -47,7 +47,13 @@ export interface MapFinding {
     line?: number;
     /** beta.119: other paths that must ALSO change for the fix to be complete. */
     relatedFiles?: string[] | null;
+    /** rc.3: lifecycle state; see finding-lifecycle.ts. Absent means open. */
+    lifecycleState?: string;
+    /** rc.3: stable identity across chunks and cycles. */
+    fingerprint?: string;
 }
+/** rc.3: whether this finding should be handed to a code worker at all. */
+export declare function isRoutableLifecycle(f: MapFinding): boolean;
 /** Sub-task shape we read for mapping. */
 export interface MapSubTask {
     seq: number;
@@ -251,6 +257,41 @@ export declare function mapFindingsToSubTasks(subTasks: MapSubTask[], findings: 
      */
     stuckKeys?: Set<string>;
 }): ReviseMappingResult;
+/**
+ * rc.3: a group of unowned findings that should become one repair sub-task.
+ */
+export interface RepairGroup {
+    /** Every repo-relative path the group's fixes need, `file` plus co-fix. */
+    files: string[];
+    findings: MapFinding[];
+}
+/**
+ * rc.3: turn the findings nobody owns into dedicated repair work.
+ *
+ * A finding whose file no sub-task declared became a "mapping miss": attached
+ * to every sub-task as broadcast context. That sounds like the safe default and
+ * is not. On StitchGuard PR #1168 findings about the integration UI, the
+ * credentials, authorization, OpenAPI, the help content, the schema and the
+ * migration were all handed to sub-tasks like "Declare SAST workflow routes",
+ * whose workers correctly refused to edit files they did not own. The finding
+ * survived, was re-raised, and was re-routed to the same people next cycle.
+ *
+ * b131 already solved this shape for an unroutable CI failure by giving it its
+ * own sub-task. This generalises that: group the unowned findings by the files
+ * their fixes touch -- two findings that share a file belong in one task, so a
+ * worker is not asked to edit a file another worker is editing in the same
+ * cycle -- and hand each group back so the caller can create a sub-task with
+ * exactly those files granted.
+ *
+ * Only findings that name a file and are diff-addressable. One that names
+ * nothing has no scope to grant and stays broadcast, which is what b131's CI
+ * sub-task is for.
+ */
+export declare function groupUnownedFindingsForRepair(misses: MapFinding[]): RepairGroup[];
+/** rc.3: the brief a repair sub-task is given. */
+export declare function renderRepairIntent(group: RepairGroup): string;
+/** rc.3: a stable title, so a second repair cycle refreshes rather than stacks. */
+export declare function repairSubTaskTitle(group: RepairGroup): string;
 /**
  * Build the per-sub-task revise dispatch hint from a deterministic assignment.
  * Replaces the reviseSpecApplied warm-context render + the raw-dump fallback:
