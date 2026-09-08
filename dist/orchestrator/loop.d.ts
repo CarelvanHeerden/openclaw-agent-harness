@@ -797,6 +797,19 @@ export declare class OrchestratorLoop {
     private checkpoint;
     private addCost;
     private saveReview;
+    /** rc.3: every finding this session has ever established, with its state. */
+    private loadFindingRecords;
+    private saveFindingRecords;
+    /**
+     * rc.3: give this cycle's findings their identities and their history.
+     *
+     * Runs on the effective report, after the deterministic findings have been
+     * folded in, so the convention/scope/typecheck findings get fingerprints and
+     * lifecycle states too. Returns the report with its findings reconciled;
+     * every failure path returns the report untouched, because a review that
+     * cannot be reconciled is still a review.
+     */
+    private reconcileCycleFindings;
     /**
      * beta.38: re-entrancy guard. If a loop for this session is already running
      * in this process (plugin re-register mid-run), do NOT start a second one --

@@ -33,7 +33,8 @@ import type {
 } from "../crystallise/prompt-refiner.js";
 import { renderGroundingBlock, type ClarificationGrounding } from "../crystallise/clarification-guard.js";
 import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/lead.js";
-import type { ReviewReport } from "../orchestrator/adversary.js";
+import type { ReviewReport, ReviewFinding } from "../orchestrator/adversary.js";
+import { dedupeFindings } from "../orchestrator/finding-lifecycle.js";
 import { renderConventionsForPrompt } from "../orchestrator/repo-conventions.js";
 import { renderScoutForPrompt } from "../orchestrator/lead-scout.js";
 import { buildAgentEnv, registerDeniedEnvVar } from "./shared/env.js";
@@ -1962,6 +1963,8 @@ export async function runAdversarySdk(params: {
   diffText: string;
   timeoutSeconds: number;
   apiKey?: string;
+  /** rc.3: optional; records what cross-chunk deduplication collapsed. */
+  logger?: { info?: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void };
 }): Promise<{
   parsed: { verdict: "pass" | "revise" | "block"; findings: unknown[]; summary: string };
   sdkSessionId: string;
@@ -2011,10 +2014,30 @@ export async function runAdversarySdk(params: {
     tokensOut += r.tokensOut;
   }
 
+  // rc.3: collapse the same complaint arriving from two chunks.
+  //
+  // Each chunk is shown the prior chunks' findings and asked not to repeat
+  // them. That is a request, not a mechanism, and on StitchGuard PR #1168 the
+  // schema/migration finding, the request-race, the validation gap and the
+  // credential-scope concern each came back two or three times -- every copy
+  // counted as its own blocker and routed to its own worker. Deduplicating at
+  // the aggregation point means nothing downstream has to know the review was
+  // chunked at all.
+  const deduped = dedupeFindings(findings as ReviewFinding[]);
+  if (deduped.duplicates.length > 0) {
+    params.logger?.info?.("[adversary] collapsed equivalent findings across chunks", {
+      event: "adversary.finding_deduplicated",
+      chunkCount: chunks.length,
+      before: findings.length,
+      after: deduped.kept.length,
+      duplicates: deduped.duplicates.map((d) => ({ fingerprint: d.fingerprint, duplicateOf: d.duplicateOfFingerprint, reason: d.reason, file: d.file })),
+    });
+  }
+
   return {
     parsed: {
       verdict,
-      findings,
+      findings: deduped.kept,
       summary: `Reviewed in ${chunks.length} chunks (${diffBytes} bytes total). Aggregated verdict: ${verdict}.\n\n${summaries.join("\n\n")}`,
     },
     sdkSessionId,

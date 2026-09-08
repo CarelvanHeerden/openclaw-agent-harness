@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### A finding now has an identity, and keeps it across chunks and cycles
+
+A finding was a bare object in an array, and two failures followed from that.
+
+A diff too large for one adversary call is reviewed in chunks. Each chunk is
+shown the prior chunks' findings and asked not to repeat them, which is a
+request, not a mechanism — the aggregator did `findings.push(...)` with no
+deduplication at all. On StitchGuard PR #1168 the schema/migration complaint,
+the request race, the validation gap and the credential-scope concern each came
+back two or three times, and every copy was counted as its own blocker and
+routed to its own worker.
+
+And every cycle re-derived its finding set from nothing. A defect fixed in
+cycle 2 could be re-raised in cycle 3 by a differently-worded finding, with no
+record that it had ever been closed; meanwhile later cycles kept finding new
+medium concerns in feature code nobody had touched. The number of things to fix
+never fell, which is what whack-a-mole looks like from inside the loop.
+
+Findings are now fingerprinted and deduplicated — at chunk aggregation, so
+nothing downstream has to know the review was chunked, and again per cycle.
+Identity is two-tier: an exact hash over the normalised source, dimension,
+file, related files, title and detail catches the literal repeats, and a
+same-dimension, same-file, strong-title-overlap test catches the rewordings,
+which is most of what a chunked review produces. Merging keeps the worst
+severity and the union of `relatedFiles`, because a duplicate that named one
+more file the fix needs is the reason to merge it rather than drop it.
+
+A new `findings` table holds what the run believes is still true, keyed by
+`(session_id, fingerprint)`, with a lifecycle state — `open`, `resolved`,
+`stale`, `accepted`, `dispositioned`, `environment_blocked`, `late_discovery`
+— and the cycles it was first and last seen in. A finding the adversary stops
+raising is resolved. A resolved finding re-raised over a file nothing has
+touched since stays resolved, because the fix is still in the tree and
+re-reading the diff is not a regression; it reopens when its file changes
+again. `resolved`, `stale`, `accepted` and `dispositioned` no longer sustain a
+`revise` or hold a merge. An absent state means live, so every finding produced
+before rc.3 behaves exactly as it did.
+
+Cycle 1 is the full baseline review. After it, a new finding against code this
+run has not changed is admitted only when it is high or critical, security-
+significant, raised by the harness itself, or exposed by a fix in a previous
+cycle — and it is labelled `late_discovery` and records which of those it was.
+Anything below that bar is still recorded and still shown, but stops driving
+repair cycles.
+
+`isRecycledFinding` now requires the file to agree. Dimension plus two shared
+title words is a very loose net — "missing tenant scope on the credentials
+route" and "missing tenant scope on the connections route" share three — and a
+false match there is not cosmetic: a recycled finding cannot sustain a
+`revise`, so calling two different defects the same one let a live defect
+downgrade the verdict to `pass` and ship.
+
 ### The revise adversary read "don't redesign the schema" as "the schema shouldn't exist"
 
 A revise brief flattens three different kinds of instruction into one string:

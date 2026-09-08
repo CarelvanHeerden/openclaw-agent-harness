@@ -91,6 +91,20 @@ export declare function isAtLeastMedium(raw: unknown): boolean;
  */
 export declare function isBlockingFinding(f: ReviewFinding, cls: FindingClass): boolean;
 /**
+ * rc.3: the finding has an answer already, so it is not an argument for another
+ * cycle or against a merge.
+ *
+ * `resolved` -- the adversary stopped raising it and nothing has touched the
+ * file since. `stale` -- a re-raise with no regression behind it, or a late
+ * discovery below the bar. `accepted` / `dispositioned` -- a human decided.
+ *
+ * `open` and `late_discovery` are live; so is an absent state, which is every
+ * finding produced before rc.3 and every path that has not been through
+ * reconciliation. Reading an unknown state as settled would silently drop real
+ * findings, so the default is always "this counts".
+ */
+export declare function isSettledLifecycleState(f: ReviewFinding): boolean;
+/**
  * rc.5: whether a finding should stop a MERGE. A different question from
  * `isBlockingFinding`, which asks whether another worker cycle is worth running.
  *
@@ -120,6 +134,15 @@ export declare function blocksMerge(f: ReviewFinding, cls: FindingClass): boolea
  * from the "NEW this cycle" set (F3). Token-overlap on the title, mirroring the
  * conservative style of finding-hygiene.ts. Two findings match when they share
  * the same dimension AND >= `minShared` distinctive title tokens.
+ *
+ * rc.3: and now the same FILE. Dimension plus two shared title words is a very
+ * loose net -- "missing tenant scope on the credentials route" and "missing
+ * tenant scope on the connections route" share three -- and a false match here
+ * is not cosmetic: a recycled finding cannot sustain a `revise`, so calling two
+ * different defects the same one lets a live defect downgrade the verdict to
+ * `pass` and ship. Findings that both name a file must name the same file; a
+ * pair where either is file-less falls back to the old title-only comparison,
+ * because there is no location to disagree about.
  */
 export declare function isRecycledFinding(f: ReviewFinding, priorFindings: ReviewFinding[] | undefined, minShared?: number): boolean;
 /**

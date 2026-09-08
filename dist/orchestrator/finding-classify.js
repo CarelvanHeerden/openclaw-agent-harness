@@ -203,9 +203,28 @@ export function isAtLeastMedium(raw) {
  * surfaced but non-blocking.
  */
 export function isBlockingFinding(f, cls) {
+    if (isSettledLifecycleState(f))
+        return false;
     if (cls !== "diff_addressable")
         return false;
     return isAtLeastMedium(f.severity);
+}
+/**
+ * rc.3: the finding has an answer already, so it is not an argument for another
+ * cycle or against a merge.
+ *
+ * `resolved` -- the adversary stopped raising it and nothing has touched the
+ * file since. `stale` -- a re-raise with no regression behind it, or a late
+ * discovery below the bar. `accepted` / `dispositioned` -- a human decided.
+ *
+ * `open` and `late_discovery` are live; so is an absent state, which is every
+ * finding produced before rc.3 and every path that has not been through
+ * reconciliation. Reading an unknown state as settled would silently drop real
+ * findings, so the default is always "this counts".
+ */
+export function isSettledLifecycleState(f) {
+    const s = f.lifecycleState;
+    return s === "resolved" || s === "stale" || s === "accepted" || s === "dispositioned";
 }
 /**
  * rc.5: whether a finding should stop a MERGE. A different question from
@@ -232,6 +251,12 @@ export function isBlockingFinding(f, cls) {
  * a human reads them, not on a gate that can only deadlock.
  */
 export function blocksMerge(f, cls) {
+    // rc.3: a finding somebody already answered -- fixed, accepted, or re-raised
+    // with nothing behind it -- cannot hold the merge. `environment_blocked` is
+    // deliberately NOT in that set: it is the case where nobody can act and the
+    // merge must still stop.
+    if (isSettledLifecycleState(f))
+        return false;
     // The medium floor applies to both. An adversary aside about a missing linter
     // is an `env` finding too, and a `low` one should no more stop a merge than a
     // `low` defect does. The beta.115 gate finding is deliberately `high`, so the
@@ -245,6 +270,15 @@ export function blocksMerge(f, cls) {
  * from the "NEW this cycle" set (F3). Token-overlap on the title, mirroring the
  * conservative style of finding-hygiene.ts. Two findings match when they share
  * the same dimension AND >= `minShared` distinctive title tokens.
+ *
+ * rc.3: and now the same FILE. Dimension plus two shared title words is a very
+ * loose net -- "missing tenant scope on the credentials route" and "missing
+ * tenant scope on the connections route" share three -- and a false match here
+ * is not cosmetic: a recycled finding cannot sustain a `revise`, so calling two
+ * different defects the same one lets a live defect downgrade the verdict to
+ * `pass` and ship. Findings that both name a file must name the same file; a
+ * pair where either is file-less falls back to the old title-only comparison,
+ * because there is no location to disagree about.
  */
 export function isRecycledFinding(f, priorFindings, minShared = 2) {
     if (!priorFindings || priorFindings.length === 0)
@@ -254,11 +288,16 @@ export function isRecycledFinding(f, priorFindings, minShared = 2) {
         .replace(/[^a-z0-9\s]/g, " ")
         .split(/\s+/)
         .filter((t) => t.length >= 4));
+    const path = (p) => (p ?? "").trim().replace(/^\.\//, "").replace(/^\/+/, "").toLowerCase();
     const cur = toks(f.title);
     if (cur.size === 0)
         return false;
+    const curFile = path(f.file);
     for (const p of priorFindings) {
         if (p.dimension !== f.dimension)
+            continue;
+        const prevFile = path(p.file);
+        if (curFile && prevFile && curFile !== prevFile)
             continue;
         const prev = toks(p.title);
         let shared = 0;
