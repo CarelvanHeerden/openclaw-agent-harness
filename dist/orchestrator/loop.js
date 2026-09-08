@@ -173,6 +173,22 @@ export function declaredCovers(committedFile, declared) {
     const f = committedFile.trim().replace(/^\.\//, "");
     return f.startsWith(`${d}/`);
 }
+/**
+ * rc.3: did this worker turn leave work on disk that nothing committed?
+ *
+ * The three no-change decisions in this file all asked `!result.commitSha`,
+ * which is true both for "the worker had nothing to do" and for "the worker did
+ * the work and the commit never happened". Only the second is a data-loss risk,
+ * and only the working tree can tell them apart. Falls back to the beta.53
+ * `uncommittedFiles` list for results produced before the reconciliation
+ * existed.
+ */
+export function workerLeftUncommittedWork(result) {
+    const recon = result.commitReconciliation;
+    if (recon)
+        return recon.dirtyFiles.length > 0;
+    return (result.uncommittedFiles ?? []).length > 0;
+}
 /** beta.34: extract the PR number from a GitHub PR URL (.../pull/846). */
 function parsePrNumber(prUrl) {
     const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
@@ -1085,7 +1101,7 @@ export class OrchestratorLoop {
             }
             catch (err) {
                 this.deps.state.audit("loop.plan_resume_failed", { sessionId, error: String(err) }, sessionId);
-                return this.finaliseFailedPreserveWorktree(sessionId, `plan_resume_failed: ${String(err)}`, row.cycles_ran, row.cost_usd);
+                return await this.finaliseFailedPreserveWorktree(sessionId, `plan_resume_failed: ${String(err)}`, row.cycles_ran, row.cost_usd);
             }
         }
         // beta.63 (Part B): log the lead SDK call boundaries (request/response) into
@@ -1324,7 +1340,7 @@ export class OrchestratorLoop {
                     this.deps.logger.error("[loop] re-allocated worktree has lost commits this session already made; refusing to continue on a truncated branch", {
                         sessionId, headSha: check.headSha, unreachable: check.unreachable,
                     });
-                    return this.finaliseFailed(sessionId, `ledger_commits_unreachable_at_resume: ${check.detail}`, 1, 0);
+                    return await this.finaliseFailed(sessionId, `ledger_commits_unreachable_at_resume: ${check.detail}`, 1, 0);
                 }
             }
             // beta.63 (convention-awareness Fix 1): now that the repo is checked out
@@ -1419,7 +1435,7 @@ export class OrchestratorLoop {
             }
             this.deps.interactionLog?.log(sessionId, { event: "plan_failed", phase: "plan", error: String(err) });
             this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
-            return this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd + failedPlanCostUsd);
+            return await this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd + failedPlanCostUsd);
         }
         // beta.119: ASK THE QUESTION BEFORE SPENDING THE MONEY. The CI-optimisation
         // run planned a one-line `.github/workflows/ci.yml` edit, executed it,
@@ -1439,7 +1455,7 @@ export class OrchestratorLoop {
                 if (verdict === false) {
                     this.deps.logger.error("[loop] the plan edits GitHub Actions workflows but the routed token lacks the `workflow` scope; stopping before any sub-task runs", { sessionId, files: workflowFiles });
                     this.deps.interactionLog?.log(sessionId, { event: "workflow_scope_missing", phase: "plan", files: workflowFiles });
-                    return this.finaliseFailed(sessionId, `workflow_scope_missing: ${describeMissingWorkflowScope(workflowFiles)}`, 0, row.cost_usd);
+                    return await this.finaliseFailed(sessionId, `workflow_scope_missing: ${describeMissingWorkflowScope(workflowFiles)}`, 0, row.cost_usd);
                 }
             }
         }
@@ -2113,6 +2129,34 @@ export class OrchestratorLoop {
            SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
            WHERE id = ?`).run(result.status, result.costUsd, JSON.stringify(result.filesChanged), result.commitSha ?? null, result.sdkSessionId ?? null, result.reason ?? null, Date.now(), Date.now(), subTaskId);
                     this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                    // rc.3: say what git actually did this turn. The five states are decided
+                    // in reconcileWorkerCommit from HEAD-before, HEAD-after and porcelain;
+                    // this is where they become searchable history.
+                    {
+                        const recon = result.commitReconciliation;
+                        if (recon) {
+                            const common = { sessionId, seq: st.seq, cycle, state: recon.state };
+                            if (recon.workerCommitSha) {
+                                this.deps.state.audit("loop.worker_existing_commit_detected", { ...common, workerCommitSha: recon.workerCommitSha, headBefore: recon.headBefore }, sessionId);
+                            }
+                            if (recon.dirtyBefore.length > 0) {
+                                this.deps.state.audit("loop.worker_dirty_worktree_detected", { ...common, dirtyFiles: recon.dirtyBefore.slice(0, 100), dirtyCount: recon.dirtyBefore.length }, sessionId);
+                            }
+                            if (recon.harnessCommitSha) {
+                                this.deps.state.audit("loop.worker_safe_commit_created", { ...common, harnessCommitSha: recon.harnessCommitSha, files: recon.dirtyBefore.length }, sessionId);
+                            }
+                            if (recon.state === "uncommitted_changes" || recon.state === "git_error") {
+                                this.deps.state.audit("loop.worker_commit_failure_reconciled", {
+                                    ...common,
+                                    headBefore: recon.headBefore,
+                                    headAfter: recon.headAfter,
+                                    dirtyFiles: recon.dirtyFiles.slice(0, 100),
+                                    dirtyCount: recon.dirtyFiles.length,
+                                    error: (recon.error ?? "").slice(0, 2000),
+                                }, sessionId);
+                            }
+                        }
+                    }
                     // v2 smoke: a refused tool call is a first-class audit event.
                     //
                     // It rides beside `worker_end_turn` rather than inside it because the
@@ -2207,7 +2251,24 @@ export class OrchestratorLoop {
                     // PASS instead of a false-fail. A real cycle-1 mutate (or a revise pass
                     // that DID commit) keeps effectiveTaskMode === taskMode, so it still
                     // requires commit_made.
-                    const effectiveTaskMode = cycle > 1 && st.taskMode === "mutate" && !result.commitSha ? "observe" : st.taskMode;
+                    //
+                    // rc.3: and only when the tree is CLEAN. A `mutate` sub-task whose
+                    // edits are sitting uncommitted has not "correctly made no change" --
+                    // demoting it to `observe` here would pass the contract over the top of
+                    // work that is about to be thrown away.
+                    const workerDirty = workerLeftUncommittedWork(result);
+                    const effectiveTaskMode = cycle > 1 && st.taskMode === "mutate" && !result.commitSha && !workerDirty
+                        ? "observe"
+                        : st.taskMode;
+                    if (workerDirty && cycle > 1 && st.taskMode === "mutate" && !result.commitSha) {
+                        this.deps.state.audit("loop.cycle_no_change_rejected_dirty", {
+                            sessionId,
+                            seq: st.seq,
+                            cycle,
+                            gate: "contract_selection",
+                            dirtyFiles: (result.commitReconciliation?.dirtyFiles ?? result.uncommittedFiles ?? []).slice(0, 100),
+                        }, sessionId);
+                    }
                     if (effectiveTaskMode !== st.taskMode) {
                         this.deps.state.audit("loop.subtask_revise_no_change", { sessionId, seq: st.seq, cycle, taskMode: st.taskMode ?? "unspecified", effectiveTaskMode: "observe", trigger: "contract_selection" }, sessionId);
                         this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_no_change", phase: "worker", seq: st.seq, cycle, effectiveTaskMode: "observe" });
@@ -2757,7 +2818,20 @@ export class OrchestratorLoop {
                             const failedResults = verification.results.filter((x) => !x.passed);
                             const onlyNoChangeFailures = failedResults.length > 0 &&
                                 failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
-                            const workerMadeNoCommit = !result.commitSha; // worker itself reports no commit
+                            // rc.3: "no commit" is only a legal no-op when there is also
+                            // nothing on disk waiting to be committed. Downgrading a dirty tree
+                            // to `completed_no_change` is how PR #1168 cycle 4 shipped a
+                            // no-change verdict over live modifications.
+                            const workerMadeNoCommit = !result.commitSha && !workerLeftUncommittedWork(result);
+                            if (cycle > 1 && onlyNoChangeFailures && !result.commitSha && !workerMadeNoCommit) {
+                                this.deps.state.audit("loop.cycle_no_change_rejected_dirty", {
+                                    sessionId,
+                                    seq: st.seq,
+                                    cycle,
+                                    gate: "verification_downgrade",
+                                    dirtyFiles: (result.commitReconciliation?.dirtyFiles ?? result.uncommittedFiles ?? []).slice(0, 100),
+                                }, sessionId);
+                            }
                             if (cycle > 1 && onlyNoChangeFailures && workerMadeNoCommit) {
                                 this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`).run(`revise no-op: worker made no change (${verification.summary}); code already satisfies criteria`, Date.now(), subTaskId);
                                 this.deps.state.audit("loop.subtask_revise_no_change", {
@@ -3468,7 +3542,7 @@ export class OrchestratorLoop {
                     // beta.78 (Feature 2): per-user daily hard-cap abort.
                     if (failed.err === "daily_max_exhausted")
                         return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
-                    return this.finaliseFailed(sessionId, String(failed.err), cycle, totalCost);
+                    return await this.finaliseFailed(sessionId, String(failed.err), cycle, totalCost);
                 }
                 // 2b. Reviewing
                 // beta.7 fix #2 (hard cap inside review): don't start the adversary if
@@ -3574,7 +3648,7 @@ export class OrchestratorLoop {
                         // Fail rather than pause: a text answer cannot restore a branch, and
                         // reviewing or shipping this diff would silently omit work the run
                         // already did. The commits survive under the rescue refs.
-                        return this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${check.detail}`, cycle, totalCost);
+                        return await this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${check.detail}`, cycle, totalCost);
                     }
                 }
                 this.emitPhaseTiming(sessionId, "executing", cycle, executeStart, {
@@ -3600,7 +3674,25 @@ export class OrchestratorLoop {
                     cycleBaseSha &&
                     this.deps.worktreeHeadSha) {
                     const tipNow = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
-                    if (tipNow && tipNow === cycleBaseSha && !cycleResolvedContractWithoutCommit) {
+                    // rc.3: an unmoved tip is necessary but not sufficient. PR #1168 cycle 4
+                    // took this exit with modified files in the worktree, carried cycle 3's
+                    // findings forward, and terminated -- the work was never reviewed and
+                    // never committed. Ask the working tree before believing "no change".
+                    const dirtyNow = tipNow && tipNow === cycleBaseSha ? await this.worktreeDirtyFiles(sessionId, plan.worktreePath) : [];
+                    if (dirtyNow.length > 0) {
+                        this.deps.state.audit("loop.cycle_no_change_rejected_dirty", {
+                            sessionId,
+                            cycle,
+                            gate: "cycle_early_exit",
+                            headSha: tipNow,
+                            dirtyFiles: dirtyNow.slice(0, 100),
+                            dirtyCount: dirtyNow.length,
+                        }, sessionId);
+                        this.deps.logger.warn("[loop] refusing the no-change early exit: the worktree has uncommitted changes", {
+                            sessionId, cycle, dirtyCount: dirtyNow.length,
+                        });
+                    }
+                    if (tipNow && tipNow === cycleBaseSha && dirtyNow.length === 0 && !cycleResolvedContractWithoutCommit) {
                         const carriedBlocking = this.countBlockingFindings(lastReview.findings ?? []);
                         this.deps.state.audit("loop.cycle_no_change_early_exit", {
                             sessionId,
@@ -3638,7 +3730,7 @@ export class OrchestratorLoop {
                             carriedBlocking,
                         });
                         this.deps.state.audit("loop.cycle_no_change_blocked", { sessionId, cycle, headSha: tipNow, verdict: lastReview.verdict, carriedBlocking, reason }, sessionId);
-                        return this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
+                        return await this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
                     }
                 }
                 let report;
@@ -3851,7 +3943,7 @@ export class OrchestratorLoop {
                     catch (err) {
                         const diagnosis = diagnosePushFailure(err);
                         this.deps.state.audit("loop.preview_push_failed", { sessionId, cycle, branch: plan.branch, failureKind: diagnosis.kind, error: String(err), worktreePreserved: true }, sessionId);
-                        return this.finaliseFailedPreserveWorktree(sessionId, `preview_push_error (${diagnosis.kind}; worktree preserved): ${String(err)}`, cycle, totalCost);
+                        return await this.finaliseFailedPreserveWorktree(sessionId, `preview_push_error (${diagnosis.kind}; worktree preserved): ${String(err)}`, cycle, totalCost);
                     }
                     let previewRuntime;
                     try {
@@ -3872,7 +3964,7 @@ export class OrchestratorLoop {
                     this.deps.state.audit("loop.preview_runtime", { sessionId, cycle, headSha: previewHeadSha || null, status: previewRuntime?.status ?? "unavailable", deploymentUrl: previewRuntime?.deploymentUrl ?? null }, sessionId);
                     if (previewRuntime?.provider !== "vercel" ||
                         (previewRuntime.status !== "ok" && previewRuntime.status !== "build_failed")) {
-                        return this.finaliseFailedPreserveWorktree(sessionId, `preview_runtime_unavailable (exact SHA ${previewHeadSha.slice(0, 12)} was not verified; worktree preserved)`, cycle, totalCost);
+                        return await this.finaliseFailedPreserveWorktree(sessionId, `preview_runtime_unavailable (exact SHA ${previewHeadSha.slice(0, 12)} was not verified; worktree preserved)`, cycle, totalCost);
                     }
                     const runtimeReviewStart = Date.now();
                     this.deps.interactionLog?.logSdkRequest(sessionId, {
@@ -4053,7 +4145,7 @@ export class OrchestratorLoop {
                     break;
                 }
                 if (decision.nextStatus === "failed") {
-                    return this.finaliseFailed(sessionId, decision.reason, cycle, totalCost);
+                    return await this.finaliseFailed(sessionId, decision.reason, cycle, totalCost);
                 }
                 if (decision.nextStatus === "aborted") {
                     return await this.finaliseAbortSalvaging(sessionId, decision.reason, cycle, totalCost);
@@ -4072,7 +4164,7 @@ export class OrchestratorLoop {
             }
             // 3. Push + PR (the ship gate; may send us back for a repair cycle)
             if (!lastReview) {
-                return this.finaliseFailed(sessionId, "no_review_produced", cycle, totalCost);
+                return await this.finaliseFailed(sessionId, "no_review_produced", cycle, totalCost);
             }
             // beta.127: reset per attempt. A green second attempt must not inherit the
             // first attempt's red verdict.
@@ -4157,7 +4249,7 @@ export class OrchestratorLoop {
                     event: "pr_open_failed", phase: "finalize", cycle, error: String(err), failureKind: diagnosis.kind,
                 });
                 this.deps.logger.error("[loop] push/PR-open failed; PRESERVING the worktree so the commits can be recovered", { sessionId, branch: plan.branch, worktreePath: plan.worktreePath, kind: diagnosis.kind });
-                return this.finaliseFailedPreserveWorktree(sessionId, `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({
+                return await this.finaliseFailedPreserveWorktree(sessionId, `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({
                     diagnosis, branch: plan.branch, worktreePath: plan.worktreePath, error: String(err),
                 })}`, cycle, totalCost);
             }
@@ -5151,7 +5243,7 @@ export class OrchestratorLoop {
         if (this.refuseUnreviewedSalvage(sessionId, "best_effort_verify", { seq: st.seq, cycle })) {
             const why = "verify_timeout_no_adversary_review: the VERIFY sub-task timed out and no adversary review has ever run for this session, so there is nothing to ship behind. " +
                 "The commits are preserved in the worktree -- run harness_resume to review and push them.";
-            this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
+            await this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
             // Distinct from "shipped": both short-circuit the caller's terminal fail
             // path, but only one of them opened a PR. Reporting this as shipped would
             // hand back an outcome with an empty prUrl and a session that never
@@ -5176,7 +5268,7 @@ export class OrchestratorLoop {
             this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr_failed", phase: "finalize", seq: st.seq, error: String(pushErr) });
             // Push failed -- preserve the worktree so the branch is still inspectable.
             const why = `verify_timeout_best_effort_pr_failed: ${String(pushErr)}`;
-            this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
+            await this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
             // Signals to the caller that we ALREADY handled the terminal transition,
             // short-circuiting its own terminal fail path.
             //
@@ -6112,10 +6204,38 @@ export class OrchestratorLoop {
         };
     }
     /**
+     * rc.3: the uncommitted files in a worktree, or [] when there are none.
+     *
+     * Returns [] only when git answered and said the tree is clean. A probe that
+     * is unwired returns [] too -- an older embedder that never injected it keeps
+     * its previous behaviour rather than having every no-change exit blocked --
+     * but a probe that THREW returns nothing-known, and the callers here treat
+     * that as "do not claim the tree is clean" by their own logic.
+     */
+    async worktreeDirtyFiles(sessionId, worktreePath) {
+        if (!worktreePath || !this.deps.worktreeStatusPorcelain)
+            return [];
+        try {
+            return await this.deps.worktreeStatusPorcelain(worktreePath);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] could not read the working tree status", { sessionId, worktreePath, err: String(err) });
+            this.deps.state.audit("loop.worktree_status_probe_indeterminate", { sessionId, worktreePath, error: String(err?.message ?? err).slice(0, 500) }, sessionId);
+            // A sentinel the callers can see: we could not confirm the tree is clean,
+            // so no-change and release decisions must not be taken.
+            return ["<status probe failed>"];
+        }
+    }
+    /**
      * beta.120: does this aborting session have commits worth protecting? Mirrors
      * the stall path's probe. Fails CLOSED -- any doubt reports "yes", because a
      * false positive costs a preserved directory and a false negative costs the
      * work.
+     *
+     * rc.3: "commits" was too narrow. A worktree whose HEAD never moved can still
+     * hold every edit the run made, and this probe answering "nothing to salvage"
+     * sent it to `finaliseAbort`, which force-removes the directory. Uncommitted
+     * files now count as work worth protecting.
      */
     async abortHasSalvageableCommits(sessionId, row) {
         if (!row?.worktree_path || !row?.repo)
@@ -6155,7 +6275,17 @@ export class OrchestratorLoop {
             const baseSha = this.planBaseSha(sessionId);
             if (!baseSha)
                 return true;
-            return head !== baseSha;
+            if (head !== baseSha)
+                return true;
+            // rc.3: HEAD never moved. Before concluding there is nothing here, look at
+            // the working tree -- the whole run's output can be sitting in it
+            // uncommitted, and `finaliseAbort` deletes the directory.
+            const dirty = await this.worktreeDirtyFiles(sessionId, row.worktree_path);
+            if (dirty.length > 0) {
+                this.deps.state.audit("loop.abort_dirty_worktree_salvageable", { sessionId, worktreePath: row.worktree_path, headSha: head, dirtyFiles: dirty.slice(0, 100), dirtyCount: dirty.length }, sessionId);
+                return true;
+            }
+            return false;
         }
         catch (err) {
             this.deps.logger.warn("[loop] abort commit probe failed; assuming there IS work to protect", { sessionId, err: String(err) });
@@ -6438,7 +6568,20 @@ export class OrchestratorLoop {
      * release the worktree. Centralises the six failure-return sites so we
      * cannot forget to release the worktree on new failure paths.
      */
-    finaliseFailed(sessionId, reason, cycles, totalCostUsd) {
+    async finaliseFailed(sessionId, reason, cycles, totalCostUsd) {
+        // rc.3: a failure that has something to lose keeps its worktree.
+        //
+        // This path releases the directory, which is right for a session that died
+        // before it produced anything and wrong for one holding commits or a tree
+        // full of uncommitted edits. `finaliseFailedPreserveWorktree` already exists
+        // for the second case and was only ever reached from the review-crash
+        // routes, so a verification failure over a dirty tree -- the state
+        // StitchGuard PR #1168 cycle 4 ended in -- deleted the work on the way out.
+        const recoverable = await this.failureHasRecoverableWork(sessionId);
+        if (recoverable) {
+            this.deps.state.audit("loop.failed_recoverable_work_detected", { sessionId, reason, cycles, ...recoverable }, sessionId);
+            return await this.finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd);
+        }
         // beta.73 (D3): ALWAYS audit the failure reason (greppable terminal).
         // beta.96: audit the reason BEFORE setStatus -- setStatus -> deliverProgress
         // (native Slack terminal post) reads this reason to build the headline; the
@@ -6451,6 +6594,31 @@ export class OrchestratorLoop {
         return { status: "failed", sessionId, reason, cycles, totalCostUsd };
     }
     /**
+     * rc.3: is there anything in this failing session's worktree worth keeping?
+     *
+     * Returns the evidence when there is (so the audit can say what saved the
+     * directory) and null when the session genuinely produced nothing. Fails
+     * OPEN in the safe direction only where it can: an unreadable status probe
+     * counts as "something might be there", the same reading beta.129 settled on
+     * for the HEAD probe.
+     */
+    async failureHasRecoverableWork(sessionId) {
+        const row = this.deps.state.db
+            .prepare(`SELECT worktree_path FROM sessions WHERE id = ?`)
+            .get(sessionId);
+        if (!row?.worktree_path)
+            return null;
+        const planBase = this.planBaseSha(sessionId);
+        const headSha = this.deps.worktreeHeadSha
+            ? await this.deps.worktreeHeadSha(row.worktree_path).catch(() => "")
+            : "";
+        const commitsAhead = Boolean(headSha && planBase && headSha !== planBase);
+        const dirty = await this.worktreeDirtyFiles(sessionId, row.worktree_path);
+        if (!commitsAhead && dirty.length === 0)
+            return null;
+        return { headSha, commitsAhead, dirtyCount: dirty.length };
+    }
+    /**
      * beta.62 (fix #3): terminal-fail a session WITHOUT releasing the worktree,
      * so the on-disk commit chain stays inspectable. Used for a review CRASH
      * that could NOT be salvaged into a graceful PR (e.g. a cycle-1 crash with
@@ -6459,7 +6627,7 @@ export class OrchestratorLoop {
      * because the crash path released the worktree; preserving it means a human
      * can `git log`/push the branch manually even when the harness couldn't.
      */
-    finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd) {
+    async finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd) {
         // beta.96: audit the reason BEFORE setStatus so the native terminal post
         // (deliverProgress) sees it (see finaliseFailed for the full rationale).
         // beta.74 (D3 nit): also emit the canonical `loop.failed{reason}` event so
@@ -6470,7 +6638,30 @@ export class OrchestratorLoop {
         // review-crash terminals (session 666fc103). The reason string is preserved
         // on both events; this just unifies the event name.
         this.deps.state.audit("loop.failed", { sessionId, reason, cycles, worktreePreserved: true }, sessionId);
-        this.deps.state.audit("loop.failed_worktree_preserved", { sessionId, reason, cycles }, sessionId);
+        // rc.3: say WHERE the preserved work is and WHAT is in it. "Worktree
+        // preserved" without a path, a HEAD and a dirty-file list is not a recovery
+        // action -- the operator still has to go and find the directory, and an
+        // uncommitted tree looks identical to an empty one until someone looks.
+        const row = this.deps.state.db
+            .prepare(`SELECT branch, worktree_path FROM sessions WHERE id = ?`)
+            .get(sessionId);
+        const headSha = row?.worktree_path && this.deps.worktreeHeadSha
+            ? await this.deps.worktreeHeadSha(row.worktree_path).catch(() => "")
+            : "";
+        const dirty = await this.worktreeDirtyFiles(sessionId, row?.worktree_path);
+        this.deps.state.audit("loop.failed_worktree_preserved", {
+            sessionId,
+            reason,
+            cycles,
+            worktreePath: row?.worktree_path ?? null,
+            branch: row?.branch ?? null,
+            headSha: headSha || null,
+            dirtyFiles: dirty.slice(0, 100),
+            dirtyCount: dirty.length,
+            recoveryAction: row?.worktree_path
+                ? `Inspect ${row.worktree_path} (branch ${row?.branch ?? "unknown"}); run harness_resume to continue, or push the branch by hand. Nothing here has been deleted.`
+                : "No worktree path is recorded for this session.",
+        }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "failed_worktree_preserved", phase: "finalize", reason });
         // rc.3: mark the row so the startup self-heal leaves the directory alone.
         // beta.129 did this for the abort path and this path was missed, so the
@@ -6688,7 +6879,7 @@ export class OrchestratorLoop {
             // inspectable on disk.
             const reason = "cancelled_dead_loop";
             this.deps.logger.error("[loop] stall-sweep reaping cancelled session with a dead loop", { sessionId: row.id, phase: row.status });
-            this.finaliseFailedPreserveWorktree(row.id, reason, row.cycles_ran ?? 0, row.cost_usd ?? 0);
+            await this.finaliseFailedPreserveWorktree(row.id, reason, row.cycles_ran ?? 0, row.cost_usd ?? 0);
             this.deps.state.audit("loop.stall_sweep_terminated", { sessionId: row.id, phase: row.status, reason }, row.id);
             this.deps.interactionLog?.log(row.id, { event: "stall_sweep_terminated", phase: mapPhase(row.status), reason });
             terminated.push({ sessionId: row.id, phase: row.status, reason });
@@ -6764,7 +6955,7 @@ export class OrchestratorLoop {
             }
         }
         // Not salvageable into a PR -- fail terminally but PRESERVE the worktree.
-        this.finaliseFailedPreserveWorktree(sessionId, "stalled_no_progress", cycles, totalCost);
+        await this.finaliseFailedPreserveWorktree(sessionId, "stalled_no_progress", cycles, totalCost);
         return "failed_preserved";
     }
     /** beta.63: read the persisted lead plan JSON for a session (or null). */
@@ -7046,9 +7237,9 @@ export class OrchestratorLoop {
             // Not salvageable into a PR -- fail, but keep the worktree (fix #3).
             if (!priorReview) {
                 this.refuseUnreviewedSalvage(sessionId, "review_crash", { cycle, infra, selfVerifyGreen });
-                return this.finaliseFailedPreserveWorktree(sessionId, `${reason}; no adversary review has ever run for this session, so the commits are preserved in the worktree rather than pushed -- run harness_resume to review and push them`, cycle, totalCost);
+                return await this.finaliseFailedPreserveWorktree(sessionId, `${reason}; no adversary review has ever run for this session, so the commits are preserved in the worktree rather than pushed -- run harness_resume to review and push them`, cycle, totalCost);
             }
-            return this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
+            return await this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
         }
         // rc.3: `eligible` now implies a prior review exists, so the beta.90
         // synthesized placeholder report is gone. It only ever existed to give the
@@ -7071,7 +7262,7 @@ export class OrchestratorLoop {
             this.deps.state.audit("loop.review_crash_pr_failed", { sessionId, cycle, error: String(pushErr?.message ?? pushErr) }, sessionId);
             // Push failed too -- preserve the worktree so the branch is still
             // inspectable on disk.
-            return this.finaliseFailedPreserveWorktree(sessionId, `${reason}; graceful_pr_failed: ${String(pushErr)}`, cycle, totalCost);
+            return await this.finaliseFailedPreserveWorktree(sessionId, `${reason}; graceful_pr_failed: ${String(pushErr)}`, cycle, totalCost);
         }
         const recReason = infra
             ? `The adversary review for cycle ${cycle} crashed on an INFRASTRUCTURE error (e.g. out of disk) before producing a verdict, but all ${selfVerify.length} sub-task(s) self-verified green. ` +

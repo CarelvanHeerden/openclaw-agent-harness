@@ -95,9 +95,9 @@ test("beta74: index.ts runAdversary resolves the requester token and passes it t
 
 test("beta74 (D3 nit): finaliseFailedPreserveWorktree also emits canonical loop.failed", () => {
   const src = readFileSync(join(root, "src/orchestrator/loop.ts"), "utf8");
-  const idx = src.indexOf("private finaliseFailedPreserveWorktree(");
+  const idx = src.indexOf("private async finaliseFailedPreserveWorktree(");
   assert.ok(idx > 0, "method exists");
-  const body = src.slice(idx, idx + 900);
+  const body = src.slice(idx, idx + 1400);
   assert.match(body, /audit\(\s*["']loop\.failed["']/, "emits loop.failed");
   assert.match(body, /loop\.failed_worktree_preserved/, "still emits the preserve-worktree event too");
 });

@@ -1507,6 +1507,10 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     // `.catch(() => "")`, which is the right place for it -- they want a
     // best-effort sha; only the salvage guard needs to know it failed.
     worktreeHeadSha: async (worktreePath: string) => git.baseSha(worktreePath),
+    // rc.3: no `.catch(() => [])` here on purpose. The loop has to be able to
+    // tell a clean tree from an unanswerable probe before it declares a
+    // no-change exit or releases a worktree.
+    worktreeStatusPorcelain: async (worktreePath: string) => git.statusPorcelain(worktreePath),
     // beta.67 (Bug B): fork-point + branch commit-count probes for the
     // plan_base_sha capture (at plan_ready) and the adversary diff-base sanity
     // log. The adversary review then diffs against the branch's own

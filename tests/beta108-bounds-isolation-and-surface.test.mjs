@@ -373,11 +373,14 @@ test("beta108: the early exit is guarded on every precondition", () => {
   const loop = S("src/orchestrator/loop.ts");
   const i = loop.indexOf("early_exit_no_change_cycle");
   assert.ok(i > 0, "the guard must exist");
-  const block = loop.slice(i, i + 1200);
+  const block = loop.slice(i, i + 2600);
   assert.match(block, /cycle > 1/, "a first cycle with no diff still deserves a review");
   assert.match(block, /lastReview/, "there must be a prior verdict to carry forward");
   assert.match(block, /cycleBaseSha/, "an unreadable sha must not read as 'no change'");
   assert.match(block, /tipNow === cycleBaseSha/);
+  // rc.3: an unmoved tip is necessary, not sufficient -- #1168 cycle 4 took
+  // this exit over a worktree full of uncommitted edits.
+  assert.match(block, /dirtyNow\.length === 0/, "the working tree has a vote too");
   assert.match(block, /loop\.cycle_no_change_early_exit/);
   assert.match(block, /carriedBlocking/, "the carried review must still govern whether shipping is safe");
 });

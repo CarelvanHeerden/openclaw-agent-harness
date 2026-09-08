@@ -177,9 +177,9 @@ test("beta73 fix2: git adapter exposes remoteBranchExistsByUrl (worktree-free ch
 
 test("beta73 fix3: finaliseFailed audits its reason (loop.failed) — no more silent fails", () => {
   const src = readFileSync(join(root, "src/orchestrator/loop.ts"), "utf8");
-  const idx = src.indexOf("private finaliseFailed(");
+  const idx = src.indexOf("private async finaliseFailed(");
   assert.ok(idx > 0, "finaliseFailed exists");
-  const body = src.slice(idx, idx + 1200);
+  const body = src.slice(idx, idx + 2400);
   assert.match(body, /audit\(\s*["']loop\.failed["']/, "finaliseFailed must audit loop.failed");
   assert.match(body, /reason/, "the audit payload carries the reason");
 });
