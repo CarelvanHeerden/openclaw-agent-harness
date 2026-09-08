@@ -63,7 +63,52 @@ export function runtimeBanner(input) {
             return `NO RUNTIME DATA AVAILABLE: ${p} bridge returned an error. Do NOT sign off on runtime concerns; flag as MEDIUM.`;
     }
 }
+/**
+ * rc.3: the labelled brief sections for a revise review.
+ *
+ * Five sections in the order the spec names them, plus the precedence rules
+ * that stop the exclusions being read backwards in time. Returns `null` for an
+ * ordinary run, whose prompt is unchanged.
+ */
+export function buildRevisionBriefSections(input) {
+    const rev = input.revision;
+    if (!rev)
+        return null;
+    return [
+        "## ORIGINAL FEATURE CONTRACT (SOURCE OF TRUTH for spec fidelity)",
+        rev.originalFeatureContract,
+        "",
+        "## OPERATOR REVISION DIRECTIVES",
+        "What the operator asked this revision to change. These are ADDITIVE corrections to the contract above, not a replacement for it.",
+        ...(rev.directives.length > 0 ? rev.directives.map((d) => `- ${d}`) : ["- (none recorded)"]),
+        ...(rev.guidance ? ["", `Operator guidance, verbatim: ${rev.guidance}`] : []),
+        "",
+        "## REVISION-ONLY OUT-OF-SCOPE RULES",
+        ...(rev.outOfScopeRules.length > 0 ? rev.outOfScopeRules.map((r) => `- ${r}`) : ["- (none recorded)"]),
+        "",
+        "## PRECEDENCE (read this before judging anything below)",
+        "- The ORIGINAL FEATURE CONTRACT remains authoritative. The feature was accepted against it and it is still what the PR is for.",
+        "- The OPERATOR REVISION DIRECTIVES are additive corrections. They narrow what this revision should DO; they do not narrow what the PR is ALLOWED to contain.",
+        "- The REVISION-ONLY OUT-OF-SCOPE RULES constrain NEW work in this revision. They are not retroactive: they do NOT prohibit code the feature already landed before this revision started.",
+        "- Concretely: 'no new schema or migration redesign' means do not redesign the schema NOW. It is NOT a finding that the feature's existing models and migration exist.",
+        "- Do NOT recommend removing original feature code merely because it falls outside the narrow revision task. Recommend removal only when the operator explicitly asked for it, or when the code is itself defective.",
+        "",
+        "## REVISION DELTA",
+        rev.revisionStartSha
+            ? `Files this revision itself committed (${rev.revisionStartSha.slice(0, 12)}..HEAD). Everything else in the diff is pre-existing feature code:`
+            : "Files this revision itself committed. Everything else in the diff is pre-existing feature code:",
+        ...(rev.deltaFiles.length > 0 ? rev.deltaFiles.map((f) => `- ${f}`) : ["- (no files committed by this revision yet)"]),
+        "",
+        "## COMPLETE PR DIFF FOR CORRECTNESS CONTEXT",
+        rev.originalPrBaseSha
+            ? `The diff you have been given is the WHOLE pull request (${rev.originalPrBaseSha.slice(0, 12)}..HEAD), not just the revision delta.`
+            : "The diff you have been given is the WHOLE pull request, not just the revision delta.",
+        "Review all of it for correctness and security: a revision can break code it never touched, and a defect in the original feature is still a defect. Judge SCOPE against the revision delta; judge CORRECTNESS against the whole diff.",
+        "",
+    ];
+}
 export function buildAdversarySystemPrompt(input) {
+    const revisionSections = buildRevisionBriefSections(input);
     return [
         "You are an adversarial code reviewer. Your job is to find EVERY reason this diff should not ship.",
         "Do not be diplomatic. Be exhaustive but honest.",
@@ -72,9 +117,11 @@ export function buildAdversarySystemPrompt(input) {
         // asked to judge "spec fidelity" while `crystallisedPrompt` was accepted
         // as input and then dropped on the floor -- it reviewed against only the
         // lead's checklist paraphrase, inflating spurious `revise` verdicts.
-        "## The brief (SOURCE OF TRUTH for spec fidelity)",
-        input.crystallisedPrompt,
-        "",
+        //
+        // rc.3: a revise gets the same content split into labelled sections, so the
+        // feature contract, the operator's directives and the revision-only
+        // exclusions can each be read for what they are.
+        ...(revisionSections ?? ["## The brief (SOURCE OF TRUTH for spec fidelity)", input.crystallisedPrompt, ""]),
         "## Dimensions",
         // beta.116: each heading states the EXACT token to put in `dimension`. The
         // prose headings alone produced `codebase-fit` 21 times against `fit` once,

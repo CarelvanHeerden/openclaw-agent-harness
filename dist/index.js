@@ -874,7 +874,7 @@ export function bootstrapHarnessSync(api) {
                 gitStatusPorcelain: (wt) => git.statusPorcelain(wt),
             }, resumeSessionId, dispatchHint, onStreamSlow, modelOverride, firstTokenTimeoutSecondsOverride);
         },
-        runAdversary: async ({ brief, plan, runtime, requester, baseSha, priorFindings }) => {
+        runAdversary: async ({ brief, plan, runtime, requester, baseSha, priorFindings, revision }) => {
             // beta.67 (Bug B): diff against the branch's persisted FORK-POINT sha
             // (captured at plan_ready) so the adversary sees ONLY this branch's own
             // commits. beta.66 smoke #4 diffed against config.repos.default_base_branch
@@ -927,6 +927,10 @@ export function bootstrapHarnessSync(api) {
                     repoConventions: brief.repoConventions,
                     // beta.69 (F3): prior-cycle findings for provenance + the verdict gate.
                     priorFindings,
+                    // rc.3: present only on a revise. Replaces the flattened brief above
+                    // with labelled sections, so a revision-only exclusion is not read as
+                    // an indictment of the feature it is revising.
+                    revision,
                     // beta.69 (F1): a "no tests" finding is only diff-addressable when the
                     // repo actually declares a `test` script. Detect it from the worktree
                     // package.json so the classifier treats its absence as a process

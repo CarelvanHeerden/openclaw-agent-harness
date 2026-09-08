@@ -33,7 +33,7 @@ import type { StateStore } from "../state/store.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask, SubTaskVerify } from "./lead.js";
 import { elideFinalScopeSubTask } from "./lead.js";
-import type { ReviewReport, ReviewFinding } from "./adversary.js";
+import type { ReviewReport, ReviewFinding, AdversaryRevisionContext } from "./adversary.js";
 import type { WorkerResult } from "./worker.js";
 import {
   classifyWorkerOutcome,
@@ -746,6 +746,13 @@ export interface OrchestratorDeps {
      * treat recycled findings as non-new (they cannot sustain a `revise`).
      */
     priorFindings?: ReviewFinding[];
+    /**
+     * rc.3: labelled brief sections for a revise review -- the feature
+     * contract, the operator's directives and the revision-only exclusions,
+     * kept apart so an exclusion cannot be read as a complaint about code that
+     * predates it. Undefined on an ordinary run, which keeps the old prompt.
+     */
+    revision?: AdversaryRevisionContext;
   }) => Promise<ReviewReport>;
   fetchRuntime?: (params: { plan: LeadPlan; sessionId: string; waitForPreview?: boolean; commitSha?: string }) => Promise<RuntimeSnapshot | undefined>;
   previewVerificationEnabled?: boolean;
@@ -4794,6 +4801,7 @@ export class OrchestratorLoop {
       let report: ReviewReport;
       let rawReview: ReviewReport | undefined;
       let adversaryBaseSha: string | undefined;
+      let revisionContext: AdversaryRevisionContext | undefined;
       // beta.63 (Part B): adversary SDK call boundary logging.
       const reviewStart = Date.now();
       this.deps.interactionLog?.logSdkRequest(sessionId, {
@@ -4842,8 +4850,28 @@ export class OrchestratorLoop {
         } catch (err) {
           this.deps.logger.warn("[loop] adversary_diff_base sanity log failed (non-fatal)", { sessionId, err: String(err) });
         }
+        // rc.3: on a revise, hand the adversary the feature contract and the
+        // revision directives as separate sections. Built here rather than in
+        // the adapter because the loop is what knows the session id.
+        revisionContext = await this.buildRevisionReviewContext(sessionId, plan);
+        if (revisionContext) {
+          this.deps.state.audit(
+            "loop.review_diff_windows_selected",
+            {
+              sessionId,
+              cycle,
+              stage: "adversary",
+              correctnessBase: revisionContext.originalPrBaseSha ?? adversaryBaseSha ?? null,
+              revisionStartSha: revisionContext.revisionStartSha ?? null,
+              deltaFileCount: revisionContext.deltaFiles.length,
+              directiveCount: revisionContext.directives.length,
+              revisionOnlyOutOfScopeCount: revisionContext.outOfScopeRules.length,
+            },
+            sessionId,
+          );
+        }
         report = await withTimeout(
-          this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings }),
+          this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings, revision: revisionContext }),
           this.deps.config.loop.adversary_timeout_seconds,
           "adversary_timeout_seconds",
         );
@@ -5080,6 +5108,7 @@ export class OrchestratorLoop {
               requester: row.requester,
               baseSha: adversaryBaseSha,
               priorFindings: report.findings,
+              revision: revisionContext,
             }),
             this.deps.config.loop.adversary_timeout_seconds,
             "adversary_timeout_seconds",
@@ -7121,6 +7150,105 @@ export class OrchestratorLoop {
       event: "typecheck_gate_failed", phase: "review", cycle, script: scriptLabel, errorsInChangedFiles: mine.length,
     });
     return [buildTypecheckFinding(mine, scriptLabel)];
+  }
+
+  /**
+   * rc.3: assemble the labelled brief sections a revise adversary needs.
+   *
+   * Reads only what `harness_revise` and plan-ready already pinned to the row.
+   * Returns undefined for an ordinary run, and for a revise session that
+   * predates the baseline columns -- in both cases the adversary keeps the
+   * single-brief prompt it has always had.
+   */
+  private async buildRevisionReviewContext(
+    sessionId: string,
+    plan: LeadPlan,
+  ): Promise<AdversaryRevisionContext | undefined> {
+    let row:
+      | {
+          original_feature_brief: string | null;
+          operator_revision_brief: string | null;
+          revision_start_sha: string | null;
+          original_pr_base_sha: string | null;
+          plan_base_sha: string | null;
+        }
+      | undefined;
+    try {
+      row = this.deps.state.db
+        .prepare(
+          `SELECT original_feature_brief, operator_revision_brief, revision_start_sha, original_pr_base_sha, plan_base_sha
+             FROM sessions WHERE id = ?`,
+        )
+        .get(sessionId) as typeof row;
+    } catch {
+      return undefined;
+    }
+    if (!row?.operator_revision_brief || !row.original_feature_brief) return undefined;
+
+    let contract: string;
+    try {
+      const parsed = JSON.parse(row.original_feature_brief) as CrystallisedBrief;
+      contract = [
+        `Title: ${parsed.title}`,
+        `Motivation: ${parsed.motivation}`,
+        "Acceptance criteria:",
+        ...(parsed.acceptanceCriteria ?? []).map((c) => `- ${c}`),
+        ...(parsed.outOfScope?.length ? ["Out of scope (as the FEATURE declared it):", ...parsed.outOfScope.map((c) => `- ${c}`)] : []),
+      ].join("\n");
+    } catch {
+      // Stored before it was JSON, or stored by a hand-written row. The text is
+      // still the best contract we have; better a plain brief than none.
+      contract = row.original_feature_brief;
+    }
+
+    let directives: string[] = [];
+    let guidance: string | undefined;
+    try {
+      const parsed = JSON.parse(row.operator_revision_brief) as { directives?: string[]; guidance?: string | null };
+      directives = Array.isArray(parsed.directives) ? parsed.directives : [];
+      guidance = parsed.guidance ?? undefined;
+    } catch {
+      /* leave the section empty rather than fail the review */
+    }
+
+    const revisionStartSha = row.revision_start_sha ?? undefined;
+    let deltaFiles: string[] = [];
+    if (revisionStartSha && plan.worktreePath && this.deps.worktreeCommittedFiles) {
+      deltaFiles = await this.deps.worktreeCommittedFiles(plan.worktreePath, revisionStartSha).catch(() => [] as string[]);
+    }
+
+    return {
+      originalFeatureContract: contract,
+      directives,
+      guidance,
+      // The revision's own exclusions live on the revise brief, not the feature
+      // brief -- that separation is the whole point of the section.
+      outOfScopeRules: this.reviseOnlyOutOfScope(sessionId),
+      deltaFiles,
+      revisionStartSha,
+      originalPrBaseSha: row.original_pr_base_sha ?? row.plan_base_sha ?? undefined,
+    };
+  }
+
+  /**
+   * The `outOfScope` lines this REVISION declared, minus the ones the feature
+   * already declared. What is left is what the operator added this time round,
+   * and it is the only part that must not be read retroactively.
+   */
+  private reviseOnlyOutOfScope(sessionId: string): string[] {
+    try {
+      const row = this.deps.state.db
+        .prepare(`SELECT crystallised_prompt, original_feature_brief FROM sessions WHERE id = ?`)
+        .get(sessionId) as { crystallised_prompt: string | null; original_feature_brief: string | null } | undefined;
+      if (!row?.crystallised_prompt) return [];
+      const current = (JSON.parse(row.crystallised_prompt) as CrystallisedBrief).outOfScope ?? [];
+      const original = row.original_feature_brief
+        ? ((JSON.parse(row.original_feature_brief) as CrystallisedBrief).outOfScope ?? [])
+        : [];
+      return current.filter((c) => !original.includes(c));
+    } catch {
+      return [];
+    }
   }
 
   private async runFinalScopeCheck(sessionId: string, plan: LeadPlan, cycle: number): Promise<ReviewFinding[]> {

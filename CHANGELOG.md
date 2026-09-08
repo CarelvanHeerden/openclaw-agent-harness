@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### The revise adversary read "don't redesign the schema" as "the schema shouldn't exist"
+
+A revise brief flattens three different kinds of instruction into one string:
+what the feature was originally asked to do, what the operator now wants
+changed, and what this revision must not do. The adversary received that string
+under a single heading and had no way to tell the three apart. On StitchGuard
+PR #1168 it read the revision-only exclusion "no new schema or migration
+redesign" as a rule the *feature* had broken, and produced a high-severity
+finding telling workers to delete the Prisma models and the migration the whole
+PR was built on — in every cycle, because the wording that caused it was
+reproduced in every prompt.
+
+A revise prompt is now five labelled sections: the original feature contract,
+the operator's revision directives, the revision-only out-of-scope rules, the
+revision delta, and the complete PR diff. Between them is a precedence block
+saying what the structure is for — the feature contract stays authoritative, the
+directives are additive corrections, and the exclusions constrain new revision
+work rather than reaching backwards over code that predates them. Scope is
+judged against the delta; correctness is still judged against the whole diff,
+because a revision can break code it never touched and a defect the feature
+shipped with is still a defect.
+
+The sections are built from what `harness_revise` and plan-ready pinned to the
+row, not re-derived from the flattened brief, and the revision-only rules are
+the exclusions this revision added — one the feature already declared is not a
+revision-only rule. A revise session from before those columns existed, and any
+ordinary run, keeps the single-brief prompt unchanged.
+
 ### A focused revision judged its scope against the whole feature it was revising
 
 `runFinalScopeCheck` asks which files a run touched that its plan never claimed,

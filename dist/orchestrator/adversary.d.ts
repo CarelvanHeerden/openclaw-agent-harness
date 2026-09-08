@@ -20,6 +20,36 @@
  * `no_deploy_yet`/`build_failed`/`unavailable`, the adversary gets an
  * explicit banner and MUST refuse to sign off on the runtime dimension.
  */
+/**
+ * rc.3: what a REVISE session's adversary needs that an ordinary one does not.
+ *
+ * A revise brief flattens three different kinds of instruction into one string:
+ * what the feature was originally asked to do, what the operator now wants
+ * changed, and what this revision must not do. Handed that flattened text, the
+ * adversary on StitchGuard PR #1168 read the revision-only exclusion "no new
+ * schema or migration redesign" as a rule the *feature* had broken, and spent
+ * cycle after cycle telling workers to delete the Prisma models and the
+ * migration the whole PR was built on.
+ *
+ * Present only for a revise, and only once the baseline columns exist. An
+ * ordinary run leaves it undefined and gets the single-brief prompt unchanged.
+ */
+export interface AdversaryRevisionContext {
+    /** The ROOT feature brief. Still authoritative; the revision is additive. */
+    originalFeatureContract: string;
+    /** What THIS revision was asked to change, as the operator listed it. */
+    directives: string[];
+    /** The operator's free-text steer for this revision, verbatim. */
+    guidance?: string;
+    /** Exclusions that constrain NEW revision work only, never existing code. */
+    outOfScopeRules: string[];
+    /** Repo-relative files the revision itself committed (revisionStart..HEAD). */
+    deltaFiles: string[];
+    /** PR head before any revision work; the delta window's base. */
+    revisionStartSha?: string;
+    /** Fork point of the PR being revised; the correctness window's base. */
+    originalPrBaseSha?: string;
+}
 export interface AdversaryInput {
     crystallisedPrompt: string;
     diffPath: string;
@@ -56,6 +86,12 @@ export interface AdversaryInput {
      * add a test script). Derived from repoConventions / discovered scripts.
      */
     repoHasTestScript?: boolean;
+    /**
+     * rc.3: set for a revise session, so the prompt can separate the feature
+     * contract from the revision directives instead of flattening both into
+     * `crystallisedPrompt`. See `AdversaryRevisionContext`.
+     */
+    revision?: AdversaryRevisionContext;
 }
 export interface ReviewFinding {
     /**
@@ -124,6 +160,14 @@ export interface ReviewReport {
  * system prompt so runtime dimension is never silently skipped.
  */
 export declare function runtimeBanner(input: AdversaryInput): string;
+/**
+ * rc.3: the labelled brief sections for a revise review.
+ *
+ * Five sections in the order the spec names them, plus the precedence rules
+ * that stop the exclusions being read backwards in time. Returns `null` for an
+ * ordinary run, whose prompt is unchanged.
+ */
+export declare function buildRevisionBriefSections(input: AdversaryInput): string[] | null;
 export declare function buildAdversarySystemPrompt(input: AdversaryInput): string;
 export interface AdversaryDeps {
     logger: {

@@ -31,7 +31,7 @@ import type { PatRouter } from "../auth/pat-router.js";
 import type { StateStore } from "../state/store.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask } from "./lead.js";
-import type { ReviewReport, ReviewFinding } from "./adversary.js";
+import type { ReviewReport, ReviewFinding, AdversaryRevisionContext } from "./adversary.js";
 import type { WorkerResult } from "./worker.js";
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 /**
@@ -388,6 +388,13 @@ export interface OrchestratorDeps {
          * treat recycled findings as non-new (they cannot sustain a `revise`).
          */
         priorFindings?: ReviewFinding[];
+        /**
+         * rc.3: labelled brief sections for a revise review -- the feature
+         * contract, the operator's directives and the revision-only exclusions,
+         * kept apart so an exclusion cannot be read as a complaint about code that
+         * predates it. Undefined on an ordinary run, which keeps the old prompt.
+         */
+        revision?: AdversaryRevisionContext;
     }) => Promise<ReviewReport>;
     fetchRuntime?: (params: {
         plan: LeadPlan;
@@ -1071,6 +1078,21 @@ export declare class OrchestratorLoop {
      * thing it must never do is invent a green.
      */
     private runTypecheckGate;
+    /**
+     * rc.3: assemble the labelled brief sections a revise adversary needs.
+     *
+     * Reads only what `harness_revise` and plan-ready already pinned to the row.
+     * Returns undefined for an ordinary run, and for a revise session that
+     * predates the baseline columns -- in both cases the adversary keeps the
+     * single-brief prompt it has always had.
+     */
+    private buildRevisionReviewContext;
+    /**
+     * The `outOfScope` lines this REVISION declared, minus the ones the feature
+     * already declared. What is left is what the operator added this time round,
+     * and it is the only part that must not be read retroactively.
+     */
+    private reviseOnlyOutOfScope;
     private runFinalScopeCheck;
     /**
      * beta.78 (Feature 2): the configured per-user daily hard cap, or 0 when
