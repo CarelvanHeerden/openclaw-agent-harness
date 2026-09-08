@@ -671,6 +671,29 @@ export interface LoopConfig {
      */
     clarification_escalation_enabled?: boolean;
     /**
+     * rc.3: may a CALLING AGENT answer a clarification by itself, without putting
+     * it to a human? Default false, and false is the answer you want unless you
+     * have a specific reason otherwise.
+     *
+     * The `harness-clarification-steward` skill teaches an agent to relay a pause
+     * with a recommendation attached, and to answer only narrow, objectively
+     * verifiable contract-path mismatches when the operator has delegated that.
+     * The problem is what "delegated" means. Left to the skill alone it is a
+     * conversational judgment made by the same layer the policy is meant to
+     * constrain -- an agent deciding that "just handle it", said once about
+     * something else, was a standing grant. That is the failure mode this whole
+     * gate exists to prevent, so delegation is a config value an agent must READ
+     * rather than an instruction it can decide it received.
+     *
+     * With this false, `harness_answer` refuses any answer marked
+     * `answeredBy: "automation"`. It does NOT otherwise inspect who is calling:
+     * an agent that simply omits the marker is not caught here, and nothing in
+     * this repository can catch it. What this buys is that an honest agent cannot
+     * talk itself into acting, and a dishonest one has to misrepresent itself in
+     * a recorded tool call to do so.
+     */
+    clarification_auto_accept_delegated?: boolean;
+    /**
      * beta.62 (fix #2/#3): when a cycle-N adversary review CRASHES (SDK error,
      * parse error, or a post-review persist throw) rather than returning a
      * verdict, and (a) a PRIOR cycle already produced a completed adversary

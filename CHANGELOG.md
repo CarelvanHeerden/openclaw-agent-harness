@@ -60,6 +60,46 @@ their loop never left — it is sitting on that column polling — and an operat
 who says "yes" and then "no, make it two hours" is doing something reasonable
 that has always worked.
 
+### `accept` could retire a sub-task that committed nothing
+
+`accept` means "the committed work is right, the contract path was wrong". The
+handler never checked there was any committed work. Answered against a
+genuine-blocker pause — a worker saying it needs a credential — it pushed an
+acceptance criterion asserting in words that the sub-task *"was completed and
+COMMITTED on this branch"*, marked the ledger row completed, and resumed a plan
+that would now never revisit it. The b121 failure with a false statement
+attached, and reachable by a human, not only by an agent deciding for one.
+
+It now requires either a commit on the paused sub-task or disputed contract
+paths, and refuses otherwise with an explanation of what `accept` means and
+what the real options are. The run stays paused rather than resuming on a
+misreading: being stranded costs one more message, a false completion is not
+recoverable at all. This is a correctness check and not a policy gate — it does
+not care who answered, and the contract-mismatch escalation only fires when a
+real commit exists, so the legitimate path is untouched.
+
+Any refusal after the atomic claim now releases it, or an operator correcting a
+rejected answer would be told the question was already answered and left with
+no way to reach it. That applies to the pre-existing `planUpdateFailed` return
+as well, which had the same latent problem.
+
+### Delegation is a config value, not a remembered instruction
+
+New `loop.clarification_auto_accept_delegated`, default false. With it false,
+`harness_answer` refuses any answer marked `answeredBy: "automation"`.
+
+The steward skill permits an agent to answer narrow contract-path mismatches
+"under delegation", and left to the skill alone that word is a conversational
+judgment made by the same layer the policy is meant to constrain — an agent
+deciding that "just handle it", said once about something else, was a standing
+grant. Reading a config value is a materially harder thing to talk oneself into.
+
+The limit is worth stating: this catches an agent that declares itself, not one
+that stays quiet. An agent that omits the marker is indistinguishable from a
+human, and no amount of harness code can tell them apart. What it buys is that
+an honest agent cannot drift into acting, and a dishonest one has to
+misrepresent itself in a recorded tool call.
+
 Finally, an optional `answeredBy` records whether a decision came from a human
 or from a calling agent acting on its own. It is recorded, not enforced: the
 harness behaves identically either way. Only the length of an answer is
