@@ -189,6 +189,18 @@ export function workerLeftUncommittedWork(result) {
         return recon.dirtyFiles.length > 0;
     return (result.uncommittedFiles ?? []).length > 0;
 }
+/** rc.3: a TEXT column holding a JSON array, read defensively. */
+function parseJsonArray(raw) {
+    if (typeof raw !== "string" || raw.trim() === "")
+        return [];
+    try {
+        const v = JSON.parse(raw);
+        return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+    }
+    catch {
+        return [];
+    }
+}
 /** beta.34: extract the PR number from a GitHub PR URL (.../pull/846). */
 function parsePrNumber(prUrl) {
     const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
@@ -207,6 +219,7 @@ import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, descr
 import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { blocksMerge, classifyFinding, isBlockingFinding } from "./finding-classify.js";
+import { dedupeFindings, reconcileFindings } from "./finding-lifecycle.js";
 import { buildCiFailureFindings, describeCiFindings, CI_REPAIR_SUBTASK_TITLE, renderCiRepairIntent, } from "./ci-findings.js";
 import { isInfraCrash } from "./infra-crash.js";
 import { computeReviseScope } from "./revise-scope.js";
@@ -909,6 +922,100 @@ export class OrchestratorLoop {
            sdk_session_id = excluded.sdk_session_id,
            created_at = excluded.created_at`)
             .run(`${sessionId}-r${cycle}`, sessionId, cycle, report.verdict, JSON.stringify(report.findings), report.summary, report.costUsd, report.sdkSessionId ?? null, Date.now());
+    }
+    /** rc.3: every finding this session has ever established, with its state. */
+    loadFindingRecords(sessionId) {
+        try {
+            const rows = this.deps.state.db
+                .prepare(`SELECT fingerprint, state, severity, dimension, source, file, related_files, title, detail,
+                  first_seen_cycle, last_seen_cycle, resolved_cycle, late_discovery_reason
+             FROM findings WHERE session_id = ?`)
+                .all(sessionId);
+            return rows.map((r) => ({
+                fingerprint: String(r.fingerprint),
+                state: String(r.state),
+                severity: String(r.severity),
+                dimension: String(r.dimension),
+                source: r.source ?? null,
+                file: r.file ?? null,
+                relatedFiles: parseJsonArray(r.related_files),
+                title: String(r.title),
+                detail: String(r.detail ?? ""),
+                firstSeenCycle: Number(r.first_seen_cycle),
+                lastSeenCycle: Number(r.last_seen_cycle),
+                resolvedCycle: r.resolved_cycle === null || r.resolved_cycle === undefined ? null : Number(r.resolved_cycle),
+                lateDiscoveryReason: r.late_discovery_reason ?? null,
+            }));
+        }
+        catch {
+            // A store that predates the table, or a read that failed. The reconciler
+            // treats "no history" as cycle-1 conditions, which is the safe reading:
+            // nothing is silently declared resolved.
+            return [];
+        }
+    }
+    saveFindingRecords(sessionId, records) {
+        const now = Date.now();
+        const stmt = this.deps.state.db.prepare(`INSERT INTO findings (session_id, fingerprint, state, severity, dimension, source, file, related_files,
+                             title, detail, first_seen_cycle, last_seen_cycle, resolved_cycle,
+                             late_discovery_reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, fingerprint) DO UPDATE SET
+         state = excluded.state,
+         severity = excluded.severity,
+         related_files = excluded.related_files,
+         last_seen_cycle = excluded.last_seen_cycle,
+         resolved_cycle = excluded.resolved_cycle,
+         late_discovery_reason = COALESCE(excluded.late_discovery_reason, findings.late_discovery_reason),
+         updated_at = excluded.updated_at`);
+        for (const r of records) {
+            stmt.run(sessionId, r.fingerprint, r.state, r.severity, r.dimension, r.source ?? null, r.file ?? null, JSON.stringify(r.relatedFiles ?? []), r.title, r.detail ?? "", r.firstSeenCycle, r.lastSeenCycle, r.resolvedCycle ?? null, r.lateDiscoveryReason ?? null, now, now);
+        }
+    }
+    /**
+     * rc.3: give this cycle's findings their identities and their history.
+     *
+     * Runs on the effective report, after the deterministic findings have been
+     * folded in, so the convention/scope/typecheck findings get fingerprints and
+     * lifecycle states too. Returns the report with its findings reconciled;
+     * every failure path returns the report untouched, because a review that
+     * cannot be reconciled is still a review.
+     */
+    reconcileCycleFindings(sessionId, cycle, report, changedThisCycle) {
+        try {
+            const { kept, duplicates } = dedupeFindings(report.findings ?? []);
+            if (duplicates.length > 0) {
+                this.deps.state.audit("loop.finding_deduplicated", {
+                    sessionId, cycle, before: (report.findings ?? []).length, after: kept.length,
+                    duplicates: duplicates.slice(0, 50).map((d) => ({
+                        fingerprint: d.fingerprint, duplicateOf: d.duplicateOfFingerprint, reason: d.reason,
+                        dimension: d.dimension, file: d.file,
+                    })),
+                }, sessionId);
+            }
+            const prior = this.loadFindingRecords(sessionId);
+            const result = reconcileFindings({ cycle, current: kept, prior, changedThisCycle });
+            this.saveFindingRecords(sessionId, result.records);
+            if (result.transitions.length > 0) {
+                this.deps.state.audit("loop.finding_lifecycle_reconciled", {
+                    sessionId, cycle,
+                    open: result.records.filter((r) => r.state === "open" || r.state === "late_discovery").length,
+                    resolved: result.records.filter((r) => r.state === "resolved").length,
+                    stale: result.records.filter((r) => r.state === "stale").length,
+                    transitions: result.transitions.slice(0, 50),
+                }, sessionId);
+            }
+            for (const late of result.lateDiscoveries) {
+                this.deps.state.audit("loop.finding_late_discovery", { sessionId, cycle, ...late }, sessionId);
+            }
+            return { ...report, findings: result.findings };
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] rc.3 finding reconciliation failed (non-fatal); using the raw findings", {
+                sessionId, cycle, err: String(err),
+            });
+            return report;
+        }
     }
     /**
      * beta.38: re-entrancy guard. If a loop for this session is already running
@@ -4078,6 +4185,22 @@ export class OrchestratorLoop {
                         verdict: report.verdict,
                     });
                 }
+                // rc.3: findings get their identity here -- deduplicated, reconciled
+                // against everything this session already established, and stamped with a
+                // lifecycle state. After this point a finding the run already fixed no
+                // longer counts as a blocker, and a duplicate from another review chunk
+                // no longer counts twice.
+                //
+                // "What this cycle changed" is what separates a genuine regression from
+                // the adversary rediscovering something, and a late discovery from a
+                // review of the work in front of it. Read from the branch tip taken
+                // before this cycle's workers ran; an unreadable probe yields an empty
+                // list, which is the conservative reading (nothing is called unchanged
+                // that might have moved).
+                const changedThisCycle = cycleBaseSha && this.deps.worktreeCommittedFiles
+                    ? await this.deps.worktreeCommittedFiles(plan.worktreePath, cycleBaseSha).catch(() => [])
+                    : [];
+                report = this.reconcileCycleFindings(sessionId, cycle, report, changedThisCycle);
                 // The reviews table is the resumable source of truth, so persist the
                 // effective report that actually drives control flow—not the raw model
                 // response from before deterministic findings changed its verdict.

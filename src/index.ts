@@ -1288,6 +1288,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               ...params,
               execute: executorFor("adversary"),
               apiKey: await apiKeyForRole("adversary"),
+              logger: api.logger,
             });
             return {
               parsed: {

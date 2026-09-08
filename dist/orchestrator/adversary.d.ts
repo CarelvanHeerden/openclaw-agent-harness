@@ -134,6 +134,20 @@ export interface ReviewFinding {
      * same cycle.
      */
     relatedFiles?: string[] | null;
+    /**
+     * rc.3: stable identity across chunks and cycles. Assigned by
+     * `dedupeFindings`; see finding-lifecycle.ts. Absent on a finding that has
+     * not been through reconciliation yet.
+     */
+    fingerprint?: string;
+    /**
+     * rc.3: where this finding is in its life. Absent means `open` -- everything
+     * before rc.3 behaves as it always did. `resolved`, `stale`, `accepted` and
+     * `dispositioned` stop it driving repair cycles and blocking a merge.
+     */
+    lifecycleState?: import("./finding-lifecycle.js").FindingLifecycleState;
+    /** rc.3: why a post-cycle-1 finding against unchanged code was admitted. */
+    lateDiscoveryReason?: string;
 }
 export interface ReviewReport {
     verdict: "pass" | "revise" | "block";

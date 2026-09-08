@@ -961,6 +961,7 @@ export function bootstrapHarnessSync(api) {
                             ...params,
                             execute: executorFor("adversary"),
                             apiKey: await apiKeyForRole("adversary"),
+                            logger: api.logger,
                         });
                         return {
                             parsed: {

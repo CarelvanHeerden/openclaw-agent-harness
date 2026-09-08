@@ -61,6 +61,20 @@ function changingWorker(passes) {
  * longer than the arc, so an overshoot fails an assertion rather than the
  * fixture running out of data.
  */
+// rc.3: distinct defects, not the same sentence with a different ordinal.
+// Fingerprint deduplication (finding-lifecycle.ts) collapses same-dimension,
+// same-file findings whose titles differ only by a number -- correctly, because
+// that is what a chunked review produces -- and the old fixture was N copies of
+// one finding wearing an index. The arc only means something if each entry is
+// its own defect.
+const DEFECTS = [
+  "Credential private_key accepts a truthy non-string value",
+  "Connection testing authorises with read rather than admin permission",
+  "A stale request overwrites a newer filter result",
+  "The header row parses through parseInt and keeps trailing junk",
+  "The OpenAPI request schema rejects a field the route accepts",
+];
+
 function adversaryWithBlockingArc(arc) {
   let cycle = 0;
   return async () => {
@@ -72,8 +86,8 @@ function adversaryWithBlockingArc(arc) {
         severity: "high",
         dimension: "security",
         file: PATH,
-        title: `blocking finding ${i + 1} seen on cycle ${cycle}`,
-        detail: "d",
+        title: DEFECTS[i % DEFECTS.length],
+        detail: `seen on cycle ${cycle}`,
       })),
       summary: `cycle ${cycle}: ${n} blocking`,
       costUsd: 0.01,

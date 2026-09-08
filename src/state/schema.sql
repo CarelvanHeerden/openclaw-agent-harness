@@ -132,6 +132,33 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 CREATE INDEX IF NOT EXISTS idx_reviews_session ON reviews (session_id, cycle);
 
+-- rc.3: a finding's life, keyed by a fingerprint that survives rewording.
+-- `reviews` stores what each cycle said; this stores what the run believes is
+-- still true. Without it every cycle re-derived its finding set from nothing,
+-- so a defect fixed in cycle 2 could be re-raised in cycle 3 and counted as a
+-- fresh blocker (StitchGuard PR #1168).
+CREATE TABLE IF NOT EXISTS findings (
+  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  fingerprint           TEXT NOT NULL,
+  state                 TEXT NOT NULL,   -- open|resolved|stale|accepted|dispositioned|environment_blocked|late_discovery
+  severity              TEXT NOT NULL,
+  dimension             TEXT NOT NULL,
+  source                TEXT,
+  file                  TEXT,
+  related_files         TEXT NOT NULL DEFAULT '[]',
+  title                 TEXT NOT NULL,
+  detail                TEXT NOT NULL DEFAULT '',
+  first_seen_cycle      INTEGER NOT NULL,
+  last_seen_cycle       INTEGER NOT NULL,
+  resolved_cycle        INTEGER,
+  late_discovery_reason TEXT,
+  created_at            INTEGER NOT NULL,
+  updated_at            INTEGER NOT NULL,
+  PRIMARY KEY (session_id, fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_session_state ON findings (session_id, state);
+
 CREATE TABLE IF NOT EXISTS budgets_daily (
   day           TEXT NOT NULL,
   user          TEXT NOT NULL,

@@ -583,6 +583,11 @@ export declare function runAdversarySdk(params: {
     diffText: string;
     timeoutSeconds: number;
     apiKey?: string;
+    /** rc.3: optional; records what cross-chunk deduplication collapsed. */
+    logger?: {
+        info?: (m: string, meta?: unknown) => void;
+        warn: (m: string, meta?: unknown) => void;
+    };
 }): Promise<{
     parsed: {
         verdict: "pass" | "revise" | "block";

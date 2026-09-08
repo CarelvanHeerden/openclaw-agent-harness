@@ -26,6 +26,7 @@
  * stream, and the Anthropic Models API lookup.
  */
 import { renderGroundingBlock } from "../crystallise/clarification-guard.js";
+import { dedupeFindings } from "../orchestrator/finding-lifecycle.js";
 import { renderConventionsForPrompt } from "../orchestrator/repo-conventions.js";
 import { renderScoutForPrompt } from "../orchestrator/lead-scout.js";
 import { buildAgentEnv, registerDeniedEnvVar } from "./shared/env.js";
@@ -1546,10 +1547,29 @@ export async function runAdversarySdk(params) {
         tokensIn += r.tokensIn;
         tokensOut += r.tokensOut;
     }
+    // rc.3: collapse the same complaint arriving from two chunks.
+    //
+    // Each chunk is shown the prior chunks' findings and asked not to repeat
+    // them. That is a request, not a mechanism, and on StitchGuard PR #1168 the
+    // schema/migration finding, the request-race, the validation gap and the
+    // credential-scope concern each came back two or three times -- every copy
+    // counted as its own blocker and routed to its own worker. Deduplicating at
+    // the aggregation point means nothing downstream has to know the review was
+    // chunked at all.
+    const deduped = dedupeFindings(findings);
+    if (deduped.duplicates.length > 0) {
+        params.logger?.info?.("[adversary] collapsed equivalent findings across chunks", {
+            event: "adversary.finding_deduplicated",
+            chunkCount: chunks.length,
+            before: findings.length,
+            after: deduped.kept.length,
+            duplicates: deduped.duplicates.map((d) => ({ fingerprint: d.fingerprint, duplicateOf: d.duplicateOfFingerprint, reason: d.reason, file: d.file })),
+        });
+    }
     return {
         parsed: {
             verdict,
-            findings,
+            findings: deduped.kept,
             summary: `Reviewed in ${chunks.length} chunks (${diffBytes} bytes total). Aggregated verdict: ${verdict}.\n\n${summaries.join("\n\n")}`,
         },
         sdkSessionId,
