@@ -166,9 +166,23 @@ test("rc3: acting automatically requires a re-read, the sequence, and the canoni
 });
 
 test("rc3: the skill says what it must record, and that secrets are never among it", () => {
-  assert.match(src, /never\s+its text/, "the harness logs the answer's length, not the answer");
+  assert.match(src, /only its length/, "the harness logs the answer's length, not the answer");
   assert.match(src, /Never include secrets, tokens or credential values/i);
   assert.match(src, /acting under `loop\.clarification_auto_accept_delegated`/, "an automatic answer names its authority");
+  // rc.3: and it says what the harness now records by itself, so the steward
+  // does not have to reproduce the whole trail in the thread.
+  assert.match(src, /clarification verbatim/i);
+  assert.match(src, /policy version/i);
+});
+
+test("rc3: the skill tells the agent to pass its evidence, and that an empty one is not evidence", () => {
+  assert.match(src, /\*\*Pass `evidence`\.\*\*/, "the harness refuses an automatic answer that carries none");
+  assert.match(src, /evidence: "/, "the paste-ready automatic call includes the field");
+  assert.match(
+    src,
+    /If you cannot state the evidence, you have not established it/i,
+    "an anti-pattern for the obvious way around the check",
+  );
 });
 
 test("rc3: the checklist is present, because that is what gets read under pressure", () => {

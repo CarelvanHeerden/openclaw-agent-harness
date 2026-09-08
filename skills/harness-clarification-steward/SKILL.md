@@ -195,6 +195,11 @@ When you do act:
   applying it.
 - **Pass `answeredBy: "automation"`**, so the decision is distinguishable from a
   human's in the audit trail afterwards.
+- **Pass `evidence`.** The harness refuses an automatic answer that carries
+  none. Put Rule 3's five items in it: the changed-file list, the worker commit
+  sha, the test/typecheck/lint results, the scope confirmation and the reason
+  the deviation is safe. It is recorded verbatim, so write it for somebody
+  reviewing the decision months later, and keep secrets out of it.
 - **Use the canonical answer, `accept`.** Not "accept this", not "looks fine",
   not "yes". The harness matches on the leading word and the others are folded
   in as corrections to the brief instead.
@@ -209,24 +214,28 @@ harness_answer({
   answer: "accept",
   clarificationSeq: <the seq you just re-read>,
   answeredBy: "automation",
+  evidence: "<changed files, commit sha, check results, scope, why it is safe>",
   invokedBy: "<the delegating user's slack id>"
 })
 ```
 
 ### Record what you did
 
-The harness's audit trail records the session, the sequence, the invoker, the
-timestamp, whether the answer was automatic, and the answer's length — never
-its text, because an answer can quote a brief.
+The harness's audit trail records the session, the sequence, the requester and
+the invoker, the clarification verbatim, the decision, your `evidence`, the
+policy version in force, the timestamp and whether the answer was automatic. It
+does **not** record the answer text — only its length — because an answer can
+quote a brief.
 
-Everything else is **yours to record**, and you must post it in the thread where
-the human can see it:
+That is the durable record. Post the same thing in the thread where the human
+can see it, because an audit table nobody is reading is not oversight:
 
 - The exact clarification you answered.
 - The decision, and the evidence that supported it.
 - That you were acting under `loop.clarification_auto_accept_delegated`.
 
-Never include secrets, tokens or credential values in anything you post.
+Never include secrets, tokens or credential values in anything you post or pass
+as `evidence`.
 
 ## Anti-patterns
 
@@ -242,6 +251,7 @@ Never include secrets, tokens or credential values in anything you post.
 | Answer `"accept this commit"` | Answer `"accept"` |
 | Omit `clarificationSeq` because you only just read it | Pass it — that is exactly the race it prevents |
 | Deduplicate retries yourself | Let the harness's atomic claim refuse the second call |
+| Answer automatically with an empty `evidence` to satisfy the check | If you cannot state the evidence, you have not established it |
 
 ## Checklist before any automatic answer
 
@@ -251,7 +261,7 @@ Never include secrets, tokens or credential values in anything you post.
       scope check and a clean file list — all from live tool calls?
 - [ ] Is the expected path free of Rule 4's categories?
 - [ ] Did I re-read the clarification just now?
-- [ ] Am I passing `clarificationSeq` and `answeredBy: "automation"`?
+- [ ] Am I passing `clarificationSeq`, `answeredBy: "automation"` and `evidence`?
 - [ ] Is the answer the single word `accept`?
 
 Any unchecked box means relay it and let the human decide.

@@ -1,6 +1,49 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.3
+
+Safer clarification stewardship, correct revision-review semantics, a stable
+finding lifecycle, reliable repair routing, and work that survives a failure.
+Most of what follows came out of one production run — StitchGuard PR #1168,
+session `51fd67cc` — which found six different ways to spend a budget on
+nothing.
+
+### An automatic answer now has to be reviewable afterwards
+
+The rc.3 gates on `harness_answer` — the sequence guard, the atomic claim, the
+delegation flag — all fire at the right moment and recorded almost nothing.
+`loop.clarification_answered` carried the session, the sequence, the invoker
+and the answer's length: enough to know that something was answered, not enough
+to know what the question was, who it belonged to, what the answer did, or
+which rules were in force when it was allowed.
+
+Every answer now records the clarification verbatim (bounded at 2000
+characters), the requester and the invoker, the decision the answer amounted to
+— `accept`, `skip`, `abort` or `guidance` — the policy version in force, and
+whether a human or an agent gave it. The answer text is still never recorded,
+only its length, because an answer can quote a brief and `state.audit()` has no
+redaction of its own.
+
+`CLARIFICATION_POLICY_VERSION` is deliberately separate from the plugin
+version. "Was this allowed at the time" is a question about the rules in force
+then, and a version that moves whenever anything ships cannot answer it.
+
+An automatic answer must now carry its `evidence`: the changed-file list, the
+worker commit, the check results and why the deviation is safe. The harness
+cannot judge whether the evidence is any good, so this is a shallow check — but
+it makes the fail-closed default real rather than aspirational, and it means an
+automatic decision can be reviewed against what it claimed at the time. An
+agent that cannot state its evidence has not established it. Humans are never
+asked for evidence; they are the default path, and the requirement is the price
+of answering instead of one, not a new tax on answering.
+
+The three automatic-answer events the spec asks for are emitted:
+`tool.clarification_auto_accept_attempted` before the gates, then
+`_succeeded` or `_rejected` with the reason — `not_delegated`, `no_evidence`,
+`stale_sequence`, `already_answered`, `no_committed_work_to_accept`. The
+attempt is recorded first so a refusal is never silent.
+`clarification_recommendation_generated` has no harness-side emitter: the
+recommendation is the steward skill's output, produced a layer above this code.
 
 ### A missing compiler bought four repair cycles, and nobody could have spent them
 

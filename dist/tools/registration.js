@@ -19,6 +19,7 @@ import { RouteOverlay, normaliseOrg } from "../auth/route-overlay.js";
 import { measureParaphraseDrift, readRequestFile } from "./brief-source.js";
 import { BRIEF_CONFIRMATION_KIND, BRIEF_CONFIRMATION_SEQ, decideBriefConfirmation, isBriefConfirmationPause, parseConfirmationReply, renderBriefConfirmation, } from "./brief-confirmation.js";
 import { isTimeExtensionPause, listenerLooksAlive, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
+import { CLARIFICATION_POLICY_VERSION } from "../version.js";
 function toDispose(x) {
     return () => {
         if (typeof x === "function")
@@ -30,6 +31,21 @@ function toDispose(x) {
                 x.unregister();
         }
     };
+}
+/**
+ * rc.3: what the answer DID, for the audit trail, without recording the answer
+ * text itself. `abort`, `skip` and `accept` are the three that change the run
+ * irreversibly and are the three the policy forbids answering automatically
+ * without evidence, so a log that only says "answered" is not much of a log.
+ */
+function classifyAnswerDecision(answerText) {
+    if (/^(abort|cancel)\b/i.test(answerText))
+        return "abort";
+    if (/^skip\b/i.test(answerText))
+        return "skip";
+    if (/^accept\b/i.test(answerText) || /^keep(-|\s)?commit\b/i.test(answerText))
+        return "accept";
+    return "guidance";
 }
 export function registerHarnessTools(api, runtime) {
     const disposers = [];
@@ -1273,12 +1289,16 @@ export function registerHarnessTools(api, runtime) {
                     enum: ["human", "automation"],
                     description: "Optional. 'automation' when a calling agent decided this without putting it to a human. Recorded in the audit trail so an automatic answer is distinguishable afterwards; it does not change what the harness does with the answer.",
                 },
+                evidence: {
+                    type: "string",
+                    description: "Optional for a human answer, REQUIRED when answeredBy is 'automation': the evidence the decision rests on -- the changed-file list, the worker commit sha, the check results, and why the deviation is safe. Recorded verbatim (bounded) in the audit trail. An automatic answer with no evidence is refused, because an unevidenced automatic answer cannot be reviewed afterwards.",
+                },
             },
             required: ["sessionId", "answer", "invokedBy"],
             additionalProperties: false,
         },
         execute: async (_callId, input) => {
-            const { sessionId, answer, invokedBy, clarificationSeq, answeredBy } = input;
+            const { sessionId, answer, invokedBy, clarificationSeq, answeredBy, evidence } = input;
             // beta.57 (P2): invokedBy is REQUIRED -- this tool injects human text
             // into the brief and re-drives spend, so it must be authorised.
             if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
@@ -1286,7 +1306,7 @@ export function registerHarnessTools(api, runtime) {
             }
             const row = liveDb()
                 .prepare(`SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_subtask,
-                    clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd
+                    clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd, requester_gh
                FROM sessions WHERE id = ?`)
                 .get(sessionId);
             if (!row)
@@ -1300,6 +1320,37 @@ export function registerHarnessTools(api, runtime) {
             const trimmed = answer.trim();
             const seq = row.clarification_seq ?? -1;
             const automated = answeredBy === "automation";
+            // rc.3: the audit spine for this answer. Every event below carries the
+            // same identifying fields, because the question an auditor asks is
+            // "who answered what, on which pause, under which rules" and answering
+            // it should not mean joining four differently-shaped payloads.
+            //
+            // The clarification itself is recorded VERBATIM but bounded. It is
+            // harness-authored text about sub-tasks and paths, and without it the
+            // log records a decision with no record of what was decided. The
+            // ANSWER text stays out -- it can quote a brief, and `state.audit()`
+            // has no redaction of its own.
+            const answerFacts = {
+                sessionId,
+                seq,
+                policyVersion: CLARIFICATION_POLICY_VERSION,
+                requester: row.requester_gh ?? null,
+                invokedBy: invokedBy ?? null,
+                answeredBy: answeredBy ?? "human",
+                automated,
+                clarification: (row.clarification_question ?? "").slice(0, 2000),
+                decision: classifyAnswerDecision(trimmed),
+                at: Date.now(),
+            };
+            const evidenceText = (evidence ?? "").trim();
+            const rejectAutomatic = (reason) => {
+                if (!automated)
+                    return;
+                liveState().audit("tool.clarification_auto_accept_rejected", { ...answerFacts, reason, evidence: evidenceText.slice(0, 2000) }, sessionId);
+            };
+            if (automated) {
+                liveState().audit("tool.clarification_auto_accept_attempted", { ...answerFacts, evidence: evidenceText.slice(0, 2000), hasEvidence: evidenceText.length > 0 }, sessionId);
+            }
             // rc.3: the claim below makes this pause un-answerable a second time,
             // which is the point -- but any refusal AFTER it has to give the pause
             // back, or an operator correcting a rejected answer would be told the
@@ -1319,7 +1370,8 @@ export function registerHarnessTools(api, runtime) {
             // caller saying "this answer belongs to that question", which is the
             // only claim the harness can actually check.
             if (typeof clarificationSeq === "number" && Number.isFinite(clarificationSeq) && clarificationSeq !== seq) {
-                liveState().audit("tool.answer_stale_seq", { sessionId, suppliedSeq: clarificationSeq, openSeq: seq, invokedBy: invokedBy ?? null, automated }, sessionId);
+                liveState().audit("tool.answer_stale_seq", { ...answerFacts, suppliedSeq: clarificationSeq, openSeq: seq }, sessionId);
+                rejectAutomatic("stale_sequence");
                 return {
                     content: [{
                             type: "text",
@@ -1339,7 +1391,8 @@ export function registerHarnessTools(api, runtime) {
             // an honest agent cannot talk itself into acting, and a dishonest one
             // has to misrepresent itself in a recorded tool call.
             if (automated && liveConfig().loop.clarification_auto_accept_delegated !== true) {
-                liveState().audit("tool.answer_automation_not_delegated", { sessionId, seq, invokedBy: invokedBy ?? null }, sessionId);
+                liveState().audit("tool.answer_automation_not_delegated", { ...answerFacts }, sessionId);
+                rejectAutomatic("not_delegated");
                 return {
                     content: [{
                             type: "text",
@@ -1348,6 +1401,28 @@ export function registerHarnessTools(api, runtime) {
                                 `recommendation and let them answer it.`,
                         }],
                     details: { ok: false, automationNotDelegated: true, seq },
+                };
+            }
+            // rc.3: an automatic answer with no evidence is refused. The policy the
+            // steward follows is "recommend accept only when the evidence proves
+            // the implementation is correct and only the contract path was wrong",
+            // and an agent that cannot state that evidence has not established it.
+            //
+            // This is a shallow check -- the harness cannot judge whether the
+            // evidence is any good -- but it makes the fail-closed default real
+            // rather than aspirational, and it means every automatic answer in the
+            // audit trail can be reviewed against what it claimed at the time.
+            // Also before the claim, so a refused caller leaves the pause open.
+            if (automated && evidenceText.length === 0) {
+                rejectAutomatic("no_evidence");
+                return {
+                    content: [{
+                            type: "text",
+                            text: `Not answering: an automatic answer must carry its evidence. Pass \`evidence\` with the changed-file ` +
+                                `list, the worker commit sha, the check results and why the deviation is safe -- or relay the ` +
+                                `question to a human with your recommendation and let them answer it.`,
+                        }],
+                    details: { ok: false, automationWithoutEvidence: true, seq },
                 };
             }
             // rc.3: claim the pause atomically. A new question always resets
@@ -1369,7 +1444,8 @@ export function registerHarnessTools(api, runtime) {
                  WHERE id = ? AND status = 'awaiting_clarification' AND clarification_answer IS NULL`)
                     .run(trimmed, Date.now(), sessionId);
                 if (claimed.changes === 0) {
-                    liveState().audit("tool.answer_already_claimed", { sessionId, seq, invokedBy: invokedBy ?? null, automated }, sessionId);
+                    liveState().audit("tool.answer_already_claimed", { ...answerFacts }, sessionId);
+                    rejectAutomatic("already_answered");
                     return {
                         content: [{
                                 type: "text",
@@ -1379,7 +1455,10 @@ export function registerHarnessTools(api, runtime) {
                     };
                 }
             }
-            liveState().audit("loop.clarification_answered", { sessionId, seq, answerLen: trimmed.length, invokedBy: invokedBy ?? null, answeredBy: answeredBy ?? "human", automated }, sessionId);
+            liveState().audit("loop.clarification_answered", { ...answerFacts, answerLen: trimmed.length, evidence: evidenceText.slice(0, 2000) }, sessionId);
+            if (automated) {
+                liveState().audit("tool.clarification_auto_accept_succeeded", { ...answerFacts, answerLen: trimmed.length, evidence: evidenceText.slice(0, 2000) }, sessionId);
+            }
             // beta.129: a wall-clock question is answered by a loop that never left.
             // It is sitting at the review boundary polling this very column, so the
             // write above IS the answer. Re-driving loop.run here would start a
@@ -1591,7 +1670,8 @@ export function registerHarnessTools(api, runtime) {
                     // Being stranded costs one more message; a false completion is not
                     // recoverable at all.
                     releaseClaim();
-                    liveState().audit("tool.answer_accept_without_committed_work", { sessionId, seq, invokedBy: invokedBy ?? null, automated }, sessionId);
+                    liveState().audit("tool.answer_accept_without_committed_work", { ...answerFacts }, sessionId);
+                    rejectAutomatic("no_committed_work_to_accept");
                     return {
                         content: [{
                                 type: "text",
