@@ -84,6 +84,7 @@ const DEFAULTS = {
         worker_protocol_retry_enabled: true,
         worker_protocol_max_attempts: 3,
         clarification_escalation_enabled: true,
+        clarification_auto_accept_delegated: false,
         graceful_pr_on_review_crash: true,
         session_stall_seconds: 1800,
         stall_auto_terminal: true,

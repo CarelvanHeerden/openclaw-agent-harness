@@ -119,7 +119,7 @@ test("rc3: a filename match still beats a directory match when both are availabl
 // Two: harness_answer
 // ---------------------------------------------------------------------------
 
-function makeRuntime() {
+function makeRuntime({ delegated = false } = {}) {
   const db = new Database(":memory:");
   db.exec(readFileSync(resolve(here, "..", "dist", "state", "schema.sql"), "utf8"));
   const audits = [];
@@ -136,7 +136,7 @@ function makeRuntime() {
     budgets: {},
     repos: { allowed: ["o/r"] },
     brief: {},
-    loop: {},
+    loop: { clarification_auto_accept_delegated: delegated },
   };
   const runtime = {
     config,
@@ -153,8 +153,12 @@ function makeRuntime() {
   return { db, audits, runs, tools, state };
 }
 
-/** A session paused mid-run on an ordinary sub-task clarification. */
-function pause(db, { seq = 4, answer = null } = {}) {
+/**
+ * A session paused mid-run on an ordinary sub-task clarification. By default it
+ * is a contract-path mismatch: disputed paths present, which is what makes
+ * `accept` a meaningful answer. Pass `subtask` to model a different pause.
+ */
+function pause(db, { seq = 4, answer = null, subtask } = {}) {
   const id = "s-rc3";
   db.prepare(
     `INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
@@ -166,7 +170,7 @@ function pause(db, { seq = 4, answer = null } = {}) {
     JSON.stringify({ title: "t", acceptanceCriteria: ["a"], outOfScope: [], filesLikelyTouched: [] }),
     Date.now(), Date.now(),
     "Which path did you mean?", seq, answer,
-    JSON.stringify({ title: "sub", expectedPaths: ["src/a.ts"], actualPaths: ["src/b.ts"] }),
+    JSON.stringify(subtask ?? { title: "sub", expectedPaths: ["src/a.ts"], actualPaths: ["src/b.ts"] }),
   );
   return id;
 }
@@ -226,7 +230,7 @@ test("rc3: the same question cannot be answered twice", { skip }, async () => {
 });
 
 test("rc3: an automatic answer is recorded as automatic", { skip }, async () => {
-  const { db, audits, tools } = makeRuntime();
+  const { db, audits, tools } = makeRuntime({ delegated: true });
   const id = pause(db, { seq: 4 });
   await tools.get("harness_answer").execute(null, {
     sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4, answeredBy: "automation",
@@ -250,15 +254,129 @@ test("rc3: an answer with no marker is recorded as human", { skip }, async () =>
   assert.equal(ev.payload.automated, false);
 });
 
-test("rc3: the marker is advisory -- it does not gate anything", { skip }, async () => {
-  const { db, tools } = makeRuntime();
+test("rc3: an agent cannot answer by itself unless the deployment delegated it", { skip }, async () => {
+  const { db, audits, tools } = makeRuntime({ delegated: false });
   const id = pause(db, { seq: 4 });
-  // Carel's call: the policy lives in the steward skill, not in a harness
-  // config gate. The harness records what it is told and behaves identically.
   const out = await tools.get("harness_answer").execute(null, {
-    sessionId: id, answer: "accept", invokedBy: "U1", answeredBy: "automation",
+    sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4, answeredBy: "automation",
+  });
+  assert.equal(out.details.ok, false);
+  assert.equal(out.details.automationNotDelegated, true);
+  assert.match(out.content[0].text, /relay the question to a human/i);
+  // Refused BEFORE the claim, so the pause is exactly as it was found and a
+  // human can still answer it.
+  const row = db.prepare(`SELECT clarification_answer, status FROM sessions WHERE id = ?`).get(id);
+  assert.equal(row.clarification_answer, null);
+  assert.equal(row.status, "awaiting_clarification");
+  assert.ok(audits.some((a) => a.event === "tool.answer_automation_not_delegated"));
+});
+
+test("rc3: a human answering the same pause is unaffected by the delegation flag", { skip }, async () => {
+  const { db, tools } = makeRuntime({ delegated: false });
+  const id = pause(db, { seq: 4 });
+  const out = await tools.get("harness_answer").execute(null, {
+    sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4,
   });
   assert.equal(out.details.ok, true);
+});
+
+test("rc3: the flag catches an agent that declares itself, and nothing else", { skip }, async () => {
+  // Worth pinning because it is the honest limit of this gate. An agent that
+  // simply omits the marker is indistinguishable from a human here, and no
+  // amount of harness code can tell them apart. What the flag buys is that an
+  // honest agent cannot talk itself into acting, and a dishonest one has to
+  // misrepresent itself in a recorded tool call.
+  const { db, tools } = makeRuntime({ delegated: false });
+  const id = pause(db, { seq: 4 });
+  const out = await tools.get("harness_answer").execute(null, {
+    sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4, answeredBy: "human",
+  });
+  assert.equal(out.details.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// Three: accept must have something to accept
+// ---------------------------------------------------------------------------
+
+test("rc3: accept is refused when the paused sub-task committed nothing", { skip }, async () => {
+  // The live bug. `accept` means "the work landed, only the contract path was
+  // wrong". Answered against a genuine-blocker pause it used to push an
+  // acceptance criterion asserting the sub-task "was completed and COMMITTED on
+  // this branch", mark the ledger row completed, and resume a plan that would
+  // never revisit it -- the b121 failure with a false statement attached.
+  const { db, audits, tools } = makeRuntime();
+  const id = pause(db, { seq: 4, subtask: { title: "add SAST persistence", intent: "needs a credential" } });
+  const out = await tools.get("harness_answer").execute(null, {
+    sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4,
+  });
+  assert.equal(out.details.ok, false);
+  assert.equal(out.details.acceptWithoutCommittedWork, true);
+  assert.match(out.content[0].text, /no commit/i, "the refusal says why");
+  assert.match(out.content[0].text, /still paused and still answerable/i, "and that nothing is stranded");
+
+  // Nothing was retired and nothing was asserted about the work.
+  const brief = JSON.parse(db.prepare(`SELECT crystallised_prompt FROM sessions WHERE id = ?`).get(id).crystallised_prompt);
+  assert.ok(
+    !(brief.acceptanceCriteria ?? []).some((c) => /ALREADY DONE/.test(c)),
+    "no false 'already committed' claim is written into the brief",
+  );
+  assert.ok(audits.some((a) => a.event === "tool.answer_accept_without_committed_work"));
+});
+
+test("rc3: a refused accept gives the pause back, so the operator can answer again", { skip }, async () => {
+  // Without releasing the claim, the corrected answer would bounce as
+  // already-answered and the operator would have no way to reach the question.
+  const { db, tools } = makeRuntime();
+  const id = pause(db, { seq: 4, subtask: { title: "add SAST persistence" } });
+  await tools.get("harness_answer").execute(null, { sessionId: id, answer: "accept", invokedBy: "U1" });
+  assert.equal(db.prepare(`SELECT clarification_answer FROM sessions WHERE id = ?`).get(id).clarification_answer, null);
+
+  const retry = await tools.get("harness_answer").execute(null, {
+    sessionId: id, answer: "use the service account token", invokedBy: "U1", clarificationSeq: 4,
+  });
+  assert.equal(retry.details.ok, true, "the second, correct answer lands");
+});
+
+test("rc3: accept still works when the sub-task has a real commit", { skip }, async () => {
+  // The legitimate path, with the disputed paths removed so the commit sha is
+  // the only thing carrying it. A contract mismatch only escalates when a real
+  // commit exists, so this must not have been narrowed.
+  const { db, tools } = makeRuntime();
+  const id = pause(db, { seq: 4, subtask: { title: "add the migration" } });
+  db.prepare(
+    `INSERT INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, commit_sha, created_at, updated_at)
+     VALUES ('st1', ?, 1, 4, 'add the migration', 'm', 'failed_verification', 'abc1234', ?, ?)`,
+  ).run(id, Date.now(), Date.now());
+  const out = await tools.get("harness_answer").execute(null, {
+    sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4,
+  });
+  assert.equal(out.details.ok, true);
+  const row = db.prepare(`SELECT status, summary FROM sub_tasks WHERE id = 'st1'`).get();
+  assert.equal(row.status, "completed");
+  assert.match(row.summary, /operator accepted committed work/);
+});
+
+test("rc3: the refusal applies to a human and an agent alike", { skip }, async () => {
+  // Not a policy gate: `accept` has no referent without committed work, and
+  // that is true whoever said it. Most of these answers come from humans.
+  const { db, tools } = makeRuntime({ delegated: true });
+  const id = pause(db, { seq: 4, subtask: { title: "blocked on access" } });
+  for (const answeredBy of ["human", "automation"]) {
+    db.prepare(`UPDATE sessions SET status = 'awaiting_clarification', clarification_answer = NULL WHERE id = ?`).run(id);
+    const out = await tools.get("harness_answer").execute(null, {
+      sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4, answeredBy,
+    });
+    assert.equal(out.details.acceptWithoutCommittedWork, true, `refused for ${answeredBy}`);
+  }
+});
+
+test("rc3: keep-commit is the same answer and gets the same check", { skip }, async () => {
+  const { db, tools } = makeRuntime();
+  const id = pause(db, { seq: 4, subtask: { title: "blocked" } });
+  const out = await tools.get("harness_answer").execute(null, {
+    sessionId: id, answer: "keep-commit", invokedBy: "U1",
+  });
+  assert.equal(out.details.acceptWithoutCommittedWork, true);
 });
 
 test("rc3: an unauthorised invoker is still refused before anything is claimed", { skip }, async () => {

@@ -1300,6 +1300,14 @@ export function registerHarnessTools(api, runtime) {
             const trimmed = answer.trim();
             const seq = row.clarification_seq ?? -1;
             const automated = answeredBy === "automation";
+            // rc.3: the claim below makes this pause un-answerable a second time,
+            // which is the point -- but any refusal AFTER it has to give the pause
+            // back, or an operator correcting a rejected answer would be told the
+            // question was already answered and left with no way to reach it.
+            const releaseClaim = () => {
+                liveDb().prepare(`UPDATE sessions SET clarification_answer = NULL, updated_at = ? WHERE id = ?`)
+                    .run(Date.now(), sessionId);
+            };
             // rc.3: a STALE-ANSWER guard. Until now this tool took no notion of
             // WHICH question it was answering: it wrote whatever text arrived onto
             // whatever pause happened to be open. An answer composed against seq 4,
@@ -1319,6 +1327,27 @@ export function registerHarnessTools(api, runtime) {
                                 `clarification ${seq}. Re-read the current question with harness_progress before answering.`,
                         }],
                     details: { ok: false, staleSeq: true, suppliedSeq: clarificationSeq, openSeq: seq },
+                };
+            }
+            // rc.3: automation answers only under delegation, and delegation is a
+            // config value rather than something an agent decides it was granted.
+            // Deliberately BEFORE the claim, so a refused caller leaves the pause
+            // exactly as it found it.
+            //
+            // The limit of this is worth being honest about: it catches an agent
+            // that declares itself, not one that stays quiet. What it buys is that
+            // an honest agent cannot talk itself into acting, and a dishonest one
+            // has to misrepresent itself in a recorded tool call.
+            if (automated && liveConfig().loop.clarification_auto_accept_delegated !== true) {
+                liveState().audit("tool.answer_automation_not_delegated", { sessionId, seq, invokedBy: invokedBy ?? null }, sessionId);
+                return {
+                    content: [{
+                            type: "text",
+                            text: `Not answering: this deployment has not delegated clarification answers to an agent ` +
+                                `(loop.clarification_auto_accept_delegated is false). Relay the question to a human with your ` +
+                                `recommendation and let them answer it.`,
+                        }],
+                    details: { ok: false, automationNotDelegated: true, seq },
                 };
             }
             // rc.3: claim the pause atomically. A new question always resets
@@ -1533,6 +1562,48 @@ export function registerHarnessTools(api, runtime) {
                         expectedPaths.add(p);
                 }
                 const actualPaths = (paused.actualPaths ?? []).filter((p) => typeof p === "string" && !!p.trim());
+                // rc.3: `accept` MEANS "the committed work is right, the contract path
+                // was wrong". If there is no committed work, that sentence has no
+                // referent -- and everything below acts as though it did. It pushes an
+                // acceptance criterion asserting the sub-task "was completed and
+                // COMMITTED on this branch", marks the ledger row completed, and
+                // resumes a plan that will now never revisit it.
+                //
+                // So answering `accept` to a genuine-blocker pause ("I need a
+                // credential") retired the sub-task and wrote a false statement into
+                // the brief. That is the b121 failure with a lie attached, and it was
+                // reachable by a human, not just by an agent deciding for one.
+                //
+                // This is a correctness check, not a policy gate: it does not care who
+                // answered. The contract-mismatch escalation only fires when a real
+                // commit sha exists, so the legitimate path is unaffected. Disputed
+                // paths count as evidence too, in case the sha was recorded elsewhere.
+                const ledger = liveDb()
+                    .prepare(`SELECT commit_sha FROM sub_tasks
+                 WHERE session_id = ? AND seq = ?
+                   AND cycle = (SELECT MAX(cycle) FROM sub_tasks WHERE session_id = ? AND seq = ?)`)
+                    .get(sessionId, seq, sessionId, seq);
+                const hasCommittedWork = !!(ledger?.commit_sha ?? "").trim() || expectedPaths.size > 0 || actualPaths.length > 0;
+                if (!hasCommittedWork) {
+                    // Leave the run paused rather than folding this in as guidance. An
+                    // operator who typed `accept` here has misread the question, and
+                    // resuming on a misreading is exactly how b121 lost a migration.
+                    // Being stranded costs one more message; a false completion is not
+                    // recoverable at all.
+                    releaseClaim();
+                    liveState().audit("tool.answer_accept_without_committed_work", { sessionId, seq, invokedBy: invokedBy ?? null, automated }, sessionId);
+                    return {
+                        content: [{
+                                type: "text",
+                                text: `Not accepting: sub-task ${seq} has no commit, so there is no committed work to accept. ` +
+                                    `"accept" means the work landed and only the plan's contract path was wrong. This pause is ` +
+                                    `asking something else -- re-read it with harness_progress and answer what it actually asks. ` +
+                                    `To drop the sub-task entirely answer "skip" (durable: it will never be planned again), or ` +
+                                    `"abort" to stop the run. The session is still paused and still answerable.`,
+                            }],
+                        details: { ok: false, acceptWithoutCommittedWork: true, seq },
+                    };
+                }
                 // Persist what "the contract path was wrong" means. Without this,
                 // the stored plan is resumed unchanged and the same stale path
                 // reappears on every revise cycle, forcing the operator to accept the
@@ -1555,6 +1626,10 @@ export function registerHarnessTools(api, runtime) {
                         }
                     }
                     catch (err) {
+                        // rc.3: this refusal predates the atomic claim and would otherwise
+                        // strand the pause -- answered as far as the claim is concerned,
+                        // but never acted on.
+                        releaseClaim();
                         return {
                             content: [{ type: "text", text: `Could not persist the accepted contract correction: ${String(err)}` }],
                             details: { ok: false, planUpdateFailed: true, sessionId },
