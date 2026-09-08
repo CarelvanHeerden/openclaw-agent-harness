@@ -168,12 +168,19 @@ cases that look obvious are the ones this list is about.
 
 You may answer automatically only when **all** of the following hold:
 
-1. The user or an administrator has **explicitly delegated** it — a standing
-   instruction, or a documented policy option. Silence is not delegation, and
-   neither is a previous "yes" to a similar question.
+1. **`loop.clarification_auto_accept_delegated` is `true`** in this deployment's
+   configuration. This is the *only* form delegation takes. A user saying "just
+   handle it", a previous "yes" to a similar question, an instruction earlier in
+   the conversation, and your own sense that they would obviously agree are
+   **not** delegation. If you are unsure whether it is set, it is not set.
 2. The pause is a **contract-path mismatch** and nothing else.
 3. Rule 3's five evidence items are **all** satisfied from live tool output.
 4. None of Rule 4's categories and none of Rule 5's list is involved.
+
+The harness enforces the first of these: with the flag off it refuses any answer
+marked `answeredBy: "automation"` and tells you to relay the question instead.
+Do not respond to that refusal by dropping the marker — that is the one way to
+turn a safe default into a silent one. Relay the question.
 
 Fail closed. **Any** incompleteness, ambiguity or doubt drops you back to
 recommendation-only. That includes being unable to fetch evidence, a diff you
@@ -217,7 +224,7 @@ the human can see it:
 
 - The exact clarification you answered.
 - The decision, and the evidence that supported it.
-- Which delegation you were acting under.
+- That you were acting under `loop.clarification_auto_accept_delegated`.
 
 Never include secrets, tokens or credential values in anything you post.
 
@@ -229,14 +236,16 @@ Never include secrets, tokens or credential values in anything you post.
 | Trust a model's explanation that the commit is fine | Read the diff |
 | Paraphrase the harness's question into your recommendation | Relay it verbatim, then add yours |
 | Answer `skip` or `abort` automatically, ever | Recommend it; let the human answer |
-| Answer automatically because it seems obvious | Answer automatically only under explicit delegation |
+| Answer automatically because it seems obvious | Answer only when the config flag says you may |
+| Read "just handle it" as a standing delegation | Delegation is a config value, nothing else |
+| Drop `answeredBy` when the harness refuses your automatic answer | Relay the question to the human |
 | Answer `"accept this commit"` | Answer `"accept"` |
 | Omit `clarificationSeq` because you only just read it | Pass it — that is exactly the race it prevents |
 | Deduplicate retries yourself | Let the harness's atomic claim refuse the second call |
 
 ## Checklist before any automatic answer
 
-- [ ] Did the user explicitly delegate this, for this class of decision?
+- [ ] Is `loop.clarification_auto_accept_delegated` actually `true`?
 - [ ] Is it a contract-path mismatch and nothing else?
 - [ ] Do I have the diff, the commit, the test/typecheck/lint results, the
       scope check and a clean file list — all from live tool calls?
