@@ -16,8 +16,8 @@ and add one labelled recommendation — accept, skip, abort, or human decision
 required — with a short reason and a paste-ready `harness_answer` call carrying
 the sequence.
 
-It may answer on the user's behalf only for contract-path mismatches, only
-under explicit delegation, and only with the diff, the commit, the
+It may answer on the user's behalf only for contract-path mismatches, only when
+`loop.clarification_auto_accept_delegated` is on, and only with the diff, the commit, the
 test/typecheck/lint results, a scope check and a clean file list all in hand.
 Anything less fails closed to recommending. Budget, scope, brief approval,
 security boundaries, schemas, migrations, credentials, destructive actions,
@@ -25,11 +25,10 @@ generated files, and **every `skip` and every `abort`** are relayed and left to
 the human — b121 is why: an operator answered `skip` meaning "carry on" and a
 correct, committed migration was dropped from every subsequent plan.
 
-The policy lives in the skill rather than in `harness_answer`, which is
-Carel's call. The harness stays neutral about who decided and records what it
-is told through the new `answeredBy` field. The consequence is worth stating
-plainly: this skill is the safety mechanism, and nothing in this repository can
-make a calling agent obey it.
+The recommendation policy lives in the skill; the one thing the harness holds
+is whether an agent may act at all. The consequence is worth stating plainly:
+below that flag, this skill is the safety mechanism, and nothing in this
+repository can make a calling agent obey it.
 
 ### A contract naming a bare directory matched nothing
 
