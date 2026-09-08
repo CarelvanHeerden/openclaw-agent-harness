@@ -1014,6 +1014,21 @@ export interface LoopConfig {
    */
   revise_route_co_fix_owners?: boolean;
   /**
+   * rc.3: give a reviewer finding whose files no sub-task declared its own
+   * repair sub-task, with exactly those files granted and a verification
+   * contract generated from them.
+   *
+   * Such a finding used to be broadcast to every sub-task as context. On
+   * StitchGuard PR #1168 findings about the integration UI, credentials,
+   * authorization, OpenAPI, help content, the schema and the migration were
+   * shown to tasks like "Declare SAST workflow routes", whose workers correctly
+   * refused to edit files outside their scope -- so the finding survived, was
+   * re-raised, and was re-routed to the same people the next cycle.
+   *
+   * Default true. Set false for the pre-rc.3 broadcast-to-all behaviour.
+   */
+  finding_repair_subtasks_enabled?: boolean;
+  /**
    * beta.119: extra execute+review cycles the loop may grant ITSELF past
    * `max_cycles` when the adversary's finding count is trending down and the
    * budget covers another cycle.
@@ -1627,6 +1642,7 @@ const DEFAULTS: HarnessConfig = {
     revise_adopt_orphan_findings: true,
     revise_max_adoptions_per_cycle: 3,
     revise_route_co_fix_owners: true,
+    finding_repair_subtasks_enabled: true,
     max_cycle_extensions: 1,
     workflow_scope_precheck: true,
     early_exit_no_change_cycle: true,

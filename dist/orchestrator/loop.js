@@ -220,10 +220,11 @@ import { verifySubTaskOutput } from "./verify.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { blocksMerge, classifyFinding, isBlockingFinding } from "./finding-classify.js";
 import { dedupeFindings, reconcileFindings } from "./finding-lifecycle.js";
+import { detectVerificationBlocker, describeVerificationBlocker, } from "./verification-blocker.js";
 import { buildCiFailureFindings, describeCiFindings, CI_REPAIR_SUBTASK_TITLE, renderCiRepairIntent, } from "./ci-findings.js";
 import { isInfraCrash } from "./infra-crash.js";
 import { computeReviseScope } from "./revise-scope.js";
-import { mapFindingsToSubTasks, buildScopedReviseHint, } from "./revise-mapping.js";
+import { mapFindingsToSubTasks, buildScopedReviseHint, groupUnownedFindingsForRepair, renderRepairIntent, repairSubTaskTitle, } from "./revise-mapping.js";
 import { detectWorkerConfab } from "./worker-confab-detect.js";
 import { detectStuckFindings, findingKey, coFixFiles, describeUnresolvable, } from "./cross-cutting-findings.js";
 import { diagnosePushFailure, describePreservedPushFailure } from "./push-failure.js";
@@ -1007,6 +1008,21 @@ export class OrchestratorLoop {
             }
             for (const late of result.lateDiscoveries) {
                 this.deps.state.audit("loop.finding_late_discovery", { sessionId, cycle, ...late }, sessionId);
+            }
+            // rc.3: a blocker has to be visible as a blocker, with the action that
+            // clears it. Recorded once per transition into the state, not on every
+            // cycle that re-observes it.
+            for (const t of result.transitions) {
+                if (t.to !== "environment_blocked")
+                    continue;
+                const f = result.findings.find((x) => x.fingerprint === t.fingerprint);
+                const blocker = f ? detectVerificationBlocker(f) : null;
+                this.deps.state.audit("loop.verification_blocker_recorded", {
+                    sessionId, cycle, fingerprint: t.fingerprint, title: t.title, file: t.file,
+                    kind: blocker?.kind ?? null, subject: blocker?.subject ?? null,
+                    humanAction: blocker?.humanAction ?? t.reason,
+                    assignedToWorker: false,
+                }, sessionId);
             }
             return { ...report, findings: result.findings };
         }
@@ -1794,6 +1810,24 @@ export class OrchestratorLoop {
                         routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
                         stuckKeys,
                     });
+                    // rc.3: a finding whose file no sub-task declared gets its OWN sub-task
+                    // with those files granted, instead of being shown to everyone as
+                    // context nobody is allowed to act on. Re-map afterwards so the new
+                    // sub-tasks actually receive the findings that created them.
+                    const repairSeqs = this.addFindingRepairSubTasks(sessionId, cycle, plan, reviseMapping);
+                    if (repairSeqs.length > 0) {
+                        reviseMapping = mapFindingsToSubTasks(plan.subTasks.map((s) => ({
+                            seq: s.seq,
+                            filesLikelyTouched: s.filesLikelyTouched,
+                            contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
+                            coFixGrantedFiles: s.coFixGrantedFiles,
+                        })), lastReview.findings, (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }), {
+                            adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
+                            maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
+                            routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
+                            stuckKeys,
+                        });
+                    }
                     for (const a of reviseMapping.assignments)
                         reviseAssignmentBySeq.set(a.seq, a);
                     reviseSpecApplied = reviseMapping.anyTargeted;
@@ -4705,6 +4739,19 @@ export class OrchestratorLoop {
         if (unresolvedAcrossCycles.length > 0) {
             finalReason = `${finalReason}\n\n${describeUnresolvable(unresolvedAcrossCycles)}`;
         }
+        // rc.3: a verification blocker is the one do_not_merge no cycle can clear,
+        // so the note has to say what WOULD clear it. Without this the operator
+        // reads "do not merge: the typecheck could not run" and has nothing to act
+        // on but the log -- which is how the missing `tsc` on StitchGuard PR #1168
+        // survived four repair cycles and shipped anyway.
+        {
+            const blockers = (lastReview.findings ?? [])
+                .map((f) => ({ f, b: detectVerificationBlocker(f) }))
+                .filter((x) => x.b !== null);
+            if (blockers.length > 0) {
+                finalReason = `${finalReason}\n\n${blockers.map(({ f, b }) => describeVerificationBlocker(f, b)).join("\n\n")}`;
+            }
+        }
         // beta.97 (Fix #7): if we shipped on max-cycles with a CONVERGING finding
         // trend, append an explicit ask-to-extend note. The merge recommendation is
         // UNCHANGED (still do_not_merge / needs_human_review); this is purely the
@@ -6819,6 +6866,84 @@ export class OrchestratorLoop {
         }
         this.deps.state.audit("loop.ci_repair_subtask_added", { sessionId, cycle, seq, findings: ciFindings.length, detailChars: detail.length }, sessionId);
         this.deps.logger.info("[loop] beta.131: the CI failure named no file, so it gets its own sub-task rather than being broadcast to everyone", { sessionId, cycle, seq });
+    }
+    /**
+     * rc.3: give an unowned finding a sub-task that is allowed to fix it.
+     *
+     * b131 established the shape for an unroutable CI failure; this is the same
+     * argument for a reviewer finding. A finding whose file no sub-task declared
+     * became a mapping miss and was broadcast to every sub-task as context, which
+     * reads as safe and is not. On StitchGuard PR #1168 findings about the
+     * integration UI, credentials, authorization, OpenAPI, help content, the
+     * schema and the migration were routed into tasks like "Declare SAST workflow
+     * routes", whose workers correctly refused to edit files they did not own --
+     * so the finding survived, was re-raised, and was re-routed to the same
+     * people the next cycle.
+     *
+     * The grant is explicit and narrow: the finding's own file plus the co-fix
+     * files it names, nothing else, with a verification contract generated from
+     * exactly those paths. Findings that share a file land in one sub-task, so
+     * two workers are never editing the same file in the same cycle.
+     *
+     * Returns the seqs it created or refreshed, so the caller can re-map.
+     */
+    addFindingRepairSubTasks(sessionId, cycle, plan, mapping) {
+        if (this.deps.config.loop.finding_repair_subtasks_enabled === false)
+            return [];
+        // An orphan the nearest sub-task already adopted has an owner with context;
+        // a fresh worker starting cold on the same file is worse.
+        const adopted = new Set(mapping.orphanAdoptions.map((a) => a.finding));
+        const unowned = mapping.mappingMisses.filter((f) => !adopted.has(f));
+        const groups = groupUnownedFindingsForRepair(unowned);
+        if (groups.length === 0)
+            return [];
+        const touched = [];
+        for (const group of groups) {
+            const title = repairSubTaskTitle(group);
+            const existing = plan.subTasks.find((s) => s.title === title);
+            if (existing) {
+                existing.intent = renderRepairIntent(group);
+                existing.filesLikelyTouched = [...new Set([...(existing.filesLikelyTouched ?? []), ...group.files])];
+                touched.push(existing.seq);
+                this.deps.state.audit("loop.repair_subtask_refreshed", { sessionId, cycle, seq: existing.seq, files: group.files, findings: group.findings.length }, sessionId);
+                continue;
+            }
+            const seq = plan.subTasks.reduce((m, s) => Math.max(m, s.seq), 0) + 1;
+            plan.subTasks.push({
+                seq,
+                title,
+                intent: renderRepairIntent(group),
+                filesLikelyTouched: [...group.files],
+                successCriteria: group.findings.map((f) => `Resolved: ${f.title ?? "(untitled finding)"}`),
+                estimatedTokens: 40_000,
+                taskMode: "mutate",
+                // The contract is generated from the granted files themselves, which is
+                // the only honest one available: these are the paths the repair was
+                // authorised for, so they are the paths it has to land in.
+                verify: group.files.map((path) => ({ kind: "file_committed", path })),
+            });
+            touched.push(seq);
+            this.deps.state.audit("loop.repair_subtask_created", {
+                sessionId, cycle, seq, files: group.files,
+                findings: group.findings.map((f) => ({
+                    fingerprint: f.fingerprint ?? null,
+                    title: f.title ?? null,
+                    severity: f.severity,
+                    dimension: f.dimension,
+                })),
+            }, sessionId);
+            this.deps.logger.info("[loop] rc.3: a reviewer finding named files no sub-task owned, so it gets its own repair sub-task with those files granted", { sessionId, cycle, seq, files: group.files });
+        }
+        // The plan on the row is what the progress UI and the smoke report read.
+        try {
+            this.deps.state.db
+                .prepare(`UPDATE sessions SET lead_plan_json = ? WHERE id = ?`)
+                .run(JSON.stringify(plan), sessionId);
+        }
+        catch (err) {
+            this.deps.logger.warn("[loop] could not persist the finding repair sub-task(s)", { sessionId, err: String(err) });
+        }
+        return touched;
     }
     /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
     planBaseSha(sessionId) {

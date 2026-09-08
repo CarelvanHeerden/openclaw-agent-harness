@@ -113,6 +113,7 @@ const DEFAULTS = {
         revise_adopt_orphan_findings: true,
         revise_max_adoptions_per_cycle: 3,
         revise_route_co_fix_owners: true,
+        finding_repair_subtasks_enabled: true,
         max_cycle_extensions: 1,
         workflow_scope_precheck: true,
         early_exit_no_change_cycle: true,

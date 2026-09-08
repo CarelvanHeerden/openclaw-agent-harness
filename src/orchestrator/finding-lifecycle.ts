@@ -28,6 +28,7 @@
  */
 
 import type { ReviewFinding } from "./adversary.js";
+import { detectVerificationBlocker } from "./verification-blocker.js";
 
 /**
  * Where a finding is in its life.
@@ -359,6 +360,36 @@ export function reconcileFindings(input: ReconcileInput): ReconcileResult {
       prior.find((p) => findingsAreEquivalent(recordAsFinding(p), f));
     const file = normaliseFindingPath(f.file);
     const fileChangedThisCycle = file.length > 0 && changed.has(file);
+
+    // rc.3: nothing a worker edits will fix a missing binary, an uninstalled
+    // dependency or a network fault, so it never enters the open population at
+    // all. It still holds the merge (`env` is merge-blocking), it is never
+    // routed to a worker, and it does not buy repair cycles.
+    const blocker = detectVerificationBlocker(f);
+    if (blocker) {
+      const fingerprint = existing?.fingerprint ?? fp;
+      const reason = `${blocker.kind}: ${blocker.humanAction}`;
+      seen.add(fingerprint);
+      records.push({
+        ...(existing ?? newRecord(f, fingerprint, cycle, "environment_blocked")),
+        state: "environment_blocked",
+        severity: f.severity,
+        lastSeenCycle: cycle,
+        lateDiscoveryReason: reason,
+      });
+      findings.push({ ...f, fingerprint, lifecycleState: "environment_blocked" });
+      if (!existing || existing.state !== "environment_blocked") {
+        transitions.push({
+          fingerprint,
+          title: f.title,
+          file: f.file ?? null,
+          from: existing?.state ?? "new",
+          to: "environment_blocked",
+          reason,
+        });
+      }
+      continue;
+    }
 
     // A human or the operator already settled this one. Their answer outranks
     // the adversary raising it again.

@@ -27,6 +27,7 @@
  */
 
 import type { ReviewFinding } from "./adversary.js";
+import { detectVerificationBlocker } from "./verification-blocker.js";
 
 export type FindingClass =
   | "diff_addressable"
@@ -137,6 +138,19 @@ export function classifyFinding(f: ReviewFinding, ctx: ClassifyCtx = {}): Findin
   // below promoting it, which it otherwise would, since the finding is
   // deliberately `high` so that it stops a merge.
   if (f.source === "harness_env") return "env";
+
+  // rc.3: the same fact, argued by the MODEL rather than established by the
+  // harness. The adversary writes "the typecheck cannot run: tsc is not
+  // installed" as high/quality, and `isNonDemotable` below -- correctly, in
+  // general -- refuses to let a keyword demote a high-severity finding. So the
+  // one class of high-severity finding that genuinely cannot be fixed in a diff
+  // was the one class the guard protected, and on StitchGuard PR #1168 the
+  // missing `tsc` bought repair cycle after repair cycle that changed nothing.
+  //
+  // `detectVerificationBlocker` is structural and narrow: it requires the
+  // unavailability itself, not a mention of tooling. `env` is merge-blocking
+  // and non-cycle-driving, which is exactly the treatment this needs.
+  if (detectVerificationBlocker(f)) return "env";
 
   // Runtime dimension with no live deploy evidence: the harness decides whether
   // to push; the worker cannot conjure runtime data in a code cycle.

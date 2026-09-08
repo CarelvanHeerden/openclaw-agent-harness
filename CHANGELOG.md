@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+### A missing compiler bought four repair cycles, and nobody could have spent them
+
+`tsc` was not installed in the harness environment on StitchGuard PR #1168. The
+adversary reported that as a high-severity quality finding, which is a fair
+description of the situation and a useless instruction to a worker: no edit to
+the diff produces a compiler. The finding drove a repair cycle, the cycle
+changed nothing, the next review found the binary still missing and raised it
+again. Four cycles of a $20 run went that way.
+
+The harness already had the right mechanism for its own tooling facts —
+`source: "harness_env"` classifies straight to `env`, which blocks the merge
+without driving cycles — but the finding here was written by the model, and
+`isNonDemotable` refuses to let a keyword demote a high-severity finding.
+Correctly, in general. The one class of high-severity finding that no diff can
+resolve was the one class the guard protected.
+
+Missing binaries, uninstalled dependencies, unavailable browser or preview
+runtimes, network failures and broken worktrees are now detected structurally
+and recorded as verification blockers. A blocker keeps `do_not_merge`, is never
+routed to a worker, is never described as an application defect, and puts the
+concrete action that would clear it — install this, restore that, provide this
+evidence — into the ship note, because a stalled run is only actionable to
+somebody who is told what to do.
+
+The bar for this is deliberately high, and the detection is narrow in two ways:
+it requires the unavailability itself rather than a mention of tooling, and it
+requires the finding to be *about* the unavailability. "RCE in the upload
+handler", detailed "eslint: not found, so nothing caught it", is a critical
+defect with an aside, and it stays a critical defect. A false positive here
+would silently stop a genuine defect driving repair cycles, which is exactly
+what `isNonDemotable` exists to prevent.
+
+### A finding nobody owned was sent to everybody, and everybody declined
+
+When a finding named a file no sub-task had been granted, the mapper attached
+it to every sub-task in the plan. Each worker then read an instruction to fix a
+file outside its scope and refused — correctly; that refusal is the scope
+boundary working. But the finding survived the cycle unfixed, was re-raised by
+the next review, and was broadcast to the same people again. On StitchGuard
+PR #1168 that happened to findings about the integration UI, credentials,
+authorization, OpenAPI, help content, the schema and the migration, several of
+which were routed into a sub-task called "Declare SAST workflow routes".
+
+Unowned, diff-addressable findings are now clustered by the files their fixes
+touch and given their own repair sub-tasks, with those files explicitly granted
+and a verification contract generated over them. Findings that share a file
+become one task rather than two competing ones. A second cycle refreshes an
+existing repair task instead of stacking another beside it, and an orphan a
+nearby sub-task has already adopted is left where it is. A finding with no file
+at all still goes to everyone, because there is no scope to grant.
+
+`loop.finding_repair_subtasks_enabled` turns this off; it defaults to on, and
+with it off the broadcast behaviour is unchanged.
+
 ### A finding now has an identity, and keeps it across chunks and cycles
 
 A finding was a bare object in an array, and two failures followed from that.

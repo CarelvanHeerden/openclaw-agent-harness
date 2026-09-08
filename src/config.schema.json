@@ -480,6 +480,11 @@
           "default": true,
           "description": "beta.119: also route a finding to the owners of the OTHER files its fix needs (the adversary's `relatedFiles`, plus any repo path the finding's prose names). The b118 smoke raised 'the upload route discards the kind/title fields the drawer sends' in all three cycles and fixed it in none: routing was correct, but the route file's owner could not act alone -- persisting the fields needed a Prisma column it did not own, and removing the dead dropdown needed the drawer it did not own. It reported no-change, indistinguishable from 'already correct', and the finding was re-raised until the cycle ceiling. Set false for pre-b119 single-owner routing."
         },
+        "finding_repair_subtasks_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "rc.3: give a reviewer finding whose files no sub-task declared its own repair sub-task, with exactly those files granted and a verification contract generated from them. Such a finding used to be broadcast to every sub-task as context; on StitchGuard PR #1168 findings about the integration UI, credentials, authorization, OpenAPI, help content, the schema and the migration were shown to tasks like 'Declare SAST workflow routes', whose workers correctly refused to edit files outside their scope -- so the finding survived, was re-raised, and was re-routed to the same people next cycle. Set false for the pre-rc.3 broadcast-to-all behaviour."
+        },
         "max_cycle_extensions": {
           "type": "integer",
           "minimum": 0,
