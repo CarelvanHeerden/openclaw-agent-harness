@@ -446,6 +446,11 @@ export class BackendRouter {
         effort: r.effort,
         timeoutSeconds: params.timeoutSeconds,
         streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
+        // The hop that was missing. `runWorkerAcp` has always accepted this and
+        // defaulted it to 30s; every structured role reached it through here
+        // without one, so `loop.sdk_first_token_timeout_seconds` configured
+        // nothing for six of the eight roles.
+        firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
         validation: params.validation ?? { requiredKeys: [], label: role },
         logger,
         // Honoured, not ignored. The adversary drives its own ladder and reads
@@ -473,6 +478,9 @@ export class BackendRouter {
         tokensOut: out.tokensOut,
         raw: out.raw,
         stopReason: out.stopReason,
+        // Which deadline ended the turn, if one did. The caller's ladder reads
+        // this before it tries to parse `raw`.
+        timeout: out.timeout,
       };
     };
   }

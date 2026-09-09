@@ -226,6 +226,34 @@ export interface HarnessRuntime {
         repairBudgetUsd?: number;
     }) => Promise<MergePrResult>;
     /**
+     * rc.4: associate an EXISTING pull request with the session that produced it,
+     * after a failure lost the association.
+     *
+     * `pr_number` is written on the ship path only, so a session that pushed its
+     * work, opened a PR and then failed holds neither -- and `harness_revise`
+     * refuses a row with no PR. The only route back was to rebuild the feature.
+     *
+     * Two-phase by construction. The default is a read-only dry run that reports
+     * the proposed association and its evidence; applying requires `apply: true`
+     * plus the `expectedHeadSha` the dry run reported, and re-reads the PR so a
+     * head that moved in between refuses instead of linking stale evidence.
+     *
+     * Linking is an association and nothing more. It does not start a run, push,
+     * create or merge anything, and it leaves status, findings, spend and the
+     * merge recommendation exactly as the failure left them.
+     */
+    linkPr: (args: {
+        sessionId: string;
+        /** `owner/name`. Required: a PR number alone is ambiguous across repositories. */
+        repo: string;
+        prNumber: number;
+        invokedBy: string;
+        /** Default false -- a read-only dry run. */
+        apply?: boolean;
+        /** Required when `apply` is true; must equal the PR head the dry run saw. */
+        expectedHeadSha?: string;
+    }) => Promise<LinkPrResult>;
+    /**
      * Resolve the credential service name the pat-router would use for a repo
      * (or the first allowed repo when omitted). For health/introspection.
      */
@@ -306,6 +334,33 @@ export interface MergePrResult {
         deploymentUrl?: string;
         logsExcerpt?: string;
     };
+    /** Human-facing message summarising the outcome. */
+    message: string;
+}
+/** rc.4: result of a harness_link_pr invocation (dry run or apply). */
+export interface LinkPrResult {
+    ok: boolean;
+    /** True when this was a read-only dry run. No row was written. */
+    dryRun: boolean;
+    /** True when the association was written by THIS call. */
+    applied?: boolean;
+    /** True when the identical association already existed; nothing was written. */
+    alreadyLinked?: boolean;
+    /** True when the caller is not authorised. Distinct from a verification failure. */
+    unauthorised?: boolean;
+    sessionId?: string;
+    repo?: string;
+    prNumber?: number;
+    prUrl?: string;
+    /** PR head sha the verification ran against. Echo it back to apply. */
+    headSha?: string;
+    /** Human-readable lines describing what was checked. */
+    evidence?: string[];
+    /** Why the link was refused. Empty iff ok. */
+    blockers?: {
+        kind: string;
+        message: string;
+    }[];
     /** Human-facing message summarising the outcome. */
     message: string;
 }

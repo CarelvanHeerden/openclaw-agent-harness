@@ -13,7 +13,7 @@ export declare const PLUGIN_DESCRIPTION = "Multi-agent development harness: crys
  */
 export declare const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.3";
 export declare const PLUGIN_VERSION: {
-    readonly pluginVersion: "2.0.0-rc.3";
+    readonly pluginVersion: "2.0.0-rc.4";
     readonly schemaVersion: 1;
     readonly claudeSdkVersion: "0.3.207";
 };

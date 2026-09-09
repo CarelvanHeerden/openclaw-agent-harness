@@ -16,7 +16,7 @@ export const PLUGIN_DESCRIPTION =
 export const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.3";
 
 export const PLUGIN_VERSION = {
-  pluginVersion: "2.0.0-rc.3",
+  pluginVersion: "2.0.0-rc.4",
   schemaVersion: 1,
   claudeSdkVersion: "0.3.207",
 } as const;

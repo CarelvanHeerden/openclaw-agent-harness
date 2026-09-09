@@ -90,7 +90,22 @@ CREATE TABLE IF NOT EXISTS sessions (
   original_pr_base_sha     TEXT,              -- fork point of the PR being revised
   revision_start_sha       TEXT,              -- PR head BEFORE any revision work; scope-check base
   original_feature_brief   TEXT,              -- JSON: the ROOT feature brief, still authoritative
-  operator_revision_brief  TEXT               -- JSON: { guidance, directives } for THIS revision
+  operator_revision_brief  TEXT,              -- JSON: { guidance, directives } for THIS revision
+  -- rc.4: an operator-recovered PR association. A session can fail AFTER its
+  -- work is pushed and a PR exists, and until now nothing could tell the
+  -- harness so: `pr_number` was written only on the success path, so the run
+  -- that produced the PR did not know it had one, and the only way to revise
+  -- the PR was to rebuild the feature from scratch.
+  --
+  -- These columns record that the link was asserted by a human rather than
+  -- observed by the loop, together with the evidence it was accepted on. They
+  -- say NOTHING about whether the work is good: `status`, the review verdict
+  -- and `merge_recommendation` are left exactly as the failure left them.
+  pr_link_state            TEXT,              -- 'recovered' when linked by an operator; NULL when the loop opened the PR itself
+  pr_linked_at             INTEGER,           -- epoch ms the association was applied
+  pr_linked_by             TEXT,              -- slack user id of the operator who applied it
+  pr_link_head_sha         TEXT,              -- PR head sha at the moment of linking; a later head is not this evidence
+  pr_link_evidence         TEXT               -- JSON: the checks that passed, so the link is reviewable afterwards
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

@@ -503,6 +503,37 @@ CREATE TABLE audit_log (
 | Git push rejected (SAML) | `git push` returncode + stderr grep | Emit `git format-patch` to prompt file, ping user with fallback flow |
 | GitHub PAT invalid or missing scope | REST call 401/403 | Fail session at start with clear error listing required scopes |
 | Vercel logs unavailable | REST 4xx / no deployment for branch | Adversary runs without runtime input, notes gap in report |
+| Session fails after its PR is open | `pr_number` unwritten while the branch and PR exist on the remote | The association is recoverable, not lost. `harness_link_pr` records it after verifying the session's own commits are on the PR (see below) |
+
+### Recovering a lost PR association
+
+`pr_number` and `final_pr_url` are written on the ship path, so a session that
+pushes, opens a PR and then fails holds a branch and no PR. Since
+`harness_revise` requires a PR on the row, the failure removed the PR from the
+reach of the workflow built to change it.
+
+`harness_link_pr` (`src/orchestrator/pr-link.ts`) is the supported repair. Two
+properties matter architecturally:
+
+- **The evidence is commit lineage, not the branch name.** Harness branches
+  embed the session id, so a name match would be trivially satisfiable by a
+  branch force-pushed over unrelated work. The verifier reads the commit shas
+  the sub-task ledger recorded and asks the provider whether they are on the PR;
+  the fork point is a second, independent tie. Repository, head repository (a
+  fork is refused), head branch, base branch and open/unmerged state are checked
+  too. Anything unestablished is a blocker, and a provider error is reported as
+  absent evidence rather than as a mismatch.
+- **It writes an association and nothing else.** `status`, the review verdict,
+  `merge_recommendation`, spend and cycle count are untouched, so a recovered PR
+  still fails the merge gate and a session that was never reviewed produces a
+  revise brief that says *unreviewed* rather than reporting zero findings. The
+  link is recorded as `pr_link_state = 'recovered'` with the evidence it was
+  accepted on, so it stays distinguishable from one the loop made itself.
+
+The action is two-phase: a read-only dry run reports the evidence, and the apply
+carries the head sha the dry run saw and re-runs the whole verification, so a
+branch that moves between reading and confirming refuses. Operator procedure and
+the full blocker table are in [OPERATIONS.md](OPERATIONS.md#recovering-a-pr-whose-session-failed).
 
 ---
 

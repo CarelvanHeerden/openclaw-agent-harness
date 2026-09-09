@@ -2,8 +2,8 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a lead plans, workers write code in isolated git worktrees, and an adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: release candidate.* Version `2.0.0-rc.3`. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for model-provider credentials and the verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
-> Documentation snapshot reviewed as of `2.0.0-rc.3`.
+> *Status: release candidate.* Version `2.0.0-rc.4`. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for model-provider credentials and the verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> Documentation snapshot reviewed as of `2.0.0-rc.4`.
 >
 > **beta.136:** the two settings that default to off are now documented where you would look for them: `repos.never_commit_paths` keeps a regenerated tree out of the commit, and without `brief.request_file_roots` a `harness_run({ requestPath })` is refused. Both are in [CONFIGURATION.md](docs/CONFIGURATION.md).
 > **beta.135:** onboarding asks which org, so one person can hold a separate token per org and per provider instead of one token standing for everything.
@@ -241,6 +241,7 @@ All 19 tools are called by the *agent*, not typed by the user. A person says
 - `harness_revise` -- address the outstanding findings and update the SAME PR; takes `prNumber` or `sessionId`, or neither to get the picker. Two optional steers: `dropFindings: [n]` excludes stale findings by index, and `guidance: "..."` says what the fix must actually DO, for when a finding names a symptom but understates the remedy and each cycle keeps satisfying it the cheapest way. Guidance is folded into the brief as an authoritative instruction the lead, workers and adversary all see; it adds intent only and cannot drop a finding or lower a severity.
 - `harness_list_revisable` -- shipped PRs that are not merge-ready, for "what's still outstanding?"
 - `harness_merge_pr` -- merge and verify the deploy. Refuses anything the review did not sign off on, and the refusal says why.
+- `harness_link_pr` -- reconnect a session that failed *after* opening its PR, so `harness_revise` can update that PR instead of rebuilding the feature. Dry run by default: it verifies against provider metadata -- repository, head repository (a fork is refused), head branch, base branch, open/unmerged state, and whether the session's own recorded commits are actually on the PR -- then reports the evidence and writes nothing. Applying takes a second call with `apply: true` and the `expectedHeadSha` the dry run reported, and refuses if the head moved in between. Linking is an association only: the session keeps its failed status, its findings and its spend, and an unreviewed PR still cannot merge.
 
 **Diagnosis and operations**
 

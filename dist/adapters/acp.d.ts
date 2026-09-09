@@ -5,6 +5,33 @@ import { type VersionAssessment } from "./opencode-version.js";
 /** The harness-side stop reasons the worker contract expects. */
 export type WorkerStopReason = "end_turn" | "max_tokens" | "tool_error" | "timeout" | "canceled" | "first_token_timeout";
 /**
+ * WHICH deadline ran out.
+ *
+ * The three watchdogs measure different things, but two of them report the
+ * same `stopReason`: a stream that never opened and a stream that opened and
+ * then said nothing both end as `first_token_timeout`, because the loop's
+ * retry logic wants one answer to "retry on a fresh session?" for both. That
+ * conflation is deliberate and is kept.
+ *
+ * What it cannot do is tell an operator which timer to raise. On the incident
+ * this type was added for, the reviewer died before its first token on all
+ * three attempts and the only number anyone could see was "30s" -- which
+ * matched no configured value, because it was `runWorkerAcp`'s own default and
+ * the configured one had never been passed in. Reporting the deadline the
+ * watchdog actually armed, next to the phase it belongs to, is what makes that
+ * visible without reading the source.
+ */
+export type AcpTimeoutKind = "stream_open" | "first_token" | "overall";
+export interface AcpTimeoutInfo {
+    kind: AcpTimeoutKind;
+    /** The deadline that was armed, in seconds. The EFFECTIVE value, not the configured one. */
+    deadlineSeconds: number;
+    /** Wall time from turn start to the abort. */
+    elapsedMs: number;
+}
+/** Human-readable, for an error a person has to act on. */
+export declare function describeAcpTimeout(t: AcpTimeoutInfo): string;
+/**
  * The `usage` object on a `session/prompt` result.
  *
  * Every field optional, and the cache fields spelled several ways, because
@@ -95,6 +122,14 @@ export interface RunWorkerAcpResult {
     finalMessage: string;
     streamOpened: boolean;
     msToFirstToken?: number;
+    /**
+     * Set when a watchdog ended the turn; `null` when the agent finished.
+     *
+     * `stopReason` says the turn was cut short and roughly how, but a caller
+     * deciding whether to parse the reply needs to know that there IS no reply
+     * to parse, and which deadline to report to the operator. See `AcpTimeoutInfo`.
+     */
+    timeout: AcpTimeoutInfo | null;
     /** Cache tokens, when the agent reported a split. Priced separately in M8. */
     tokensCached?: number;
     /**
@@ -174,8 +209,20 @@ export interface RunStructuredAcpParams<T> {
     model: string;
     /** ACP thought-level value, when the role configured one. */
     effort?: string;
+    /** The overall turn budget, and the hard limit: the phase timers below cannot outlast it. */
     timeoutSeconds: number;
     streamOpenTimeoutSeconds?: number;
+    /**
+     * Phase-2 deadline: stream open -> first token.
+     *
+     * The reason this is here at all. `runWorkerAcp` has always accepted it and
+     * defaults it to 30s, but nothing on the structured path passed it, so
+     * `loop.sdk_first_token_timeout_seconds` governed the worker roles and was
+     * silently inert for the six structured ones. An operator who raised it
+     * because their reviewer was slow to start saw no change and no explanation,
+     * because the 30s in the logs was a default they had never set.
+     */
+    firstTokenTimeoutSeconds?: number;
     validation: JsonValidationOptions<T>;
     maxAttempts?: number;
     secretToken?: string;
@@ -213,6 +260,8 @@ export interface RunStructuredAcpResult<T> {
      */
     raw: string;
     stopReason: WorkerStopReason | null;
+    /** The deadline that ended the last turn, or `null` if the agent finished it. */
+    timeout: AcpTimeoutInfo | null;
 }
 /**
  * Run one of the six tool-less roles over ACP.

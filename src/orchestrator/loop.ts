@@ -8617,6 +8617,46 @@ export class OrchestratorLoop {
    * because the crash path released the worktree; preserving it means a human
    * can `git log`/push the branch manually even when the harness couldn't.
    */
+  /**
+   * rc.4: the recovery instruction on a preserved-worktree failure.
+   *
+   * This used to say "run harness_resume to continue". `harness_resume` refuses
+   * a terminal session and replies "it is terminal (failed). Use harness_revise
+   * to start a fresh revise" -- and `harness_revise` refuses a row with no PR.
+   * So the one message written specifically to tell an operator how to recover
+   * named a tool that sent them to a second tool that refused them, in exactly
+   * the situation the message exists for.
+   *
+   * The route depends on what the failure left behind, so the instruction does
+   * too: a session that got as far as opening a PR can be revised directly, one
+   * whose PR exists but was never recorded needs linking first, and one that
+   * never pushed has only its worktree.
+   */
+  private preservedWorktreeRecoveryAction(
+    sessionId: string,
+    row: { branch: string | null; worktree_path: string | null } | undefined,
+  ): string {
+    if (!row?.worktree_path) return "No worktree path is recorded for this session.";
+    const where = `Inspect ${row.worktree_path} (branch ${row.branch ?? "unknown"}). Nothing here has been deleted.`;
+    let pr: { pr_number: number | null; repo: string | null } | undefined;
+    try {
+      pr = this.deps.state.db
+        .prepare(`SELECT pr_number, repo FROM sessions WHERE id = ?`)
+        .get(sessionId) as { pr_number: number | null; repo: string | null } | undefined;
+    } catch {
+      /* the instruction is still worth emitting without it */
+    }
+    if (pr?.pr_number) {
+      return `${where} The PR is recorded, so harness_revise (sessionId ${sessionId}) will build on this branch and update PR #${pr.pr_number}.`;
+    }
+    return (
+      `${where} harness_resume will refuse this session -- it is terminal. If a PR was already opened for ` +
+      `branch ${row.branch ?? "this branch"}, recover the association with harness_link_pr ` +
+      `(sessionId ${sessionId}, repo ${pr?.repo || "<owner/name>"}, the PR number) and then harness_revise it; ` +
+      `harness_link_pr is a dry run until you pass apply. Otherwise push the branch by hand.`
+    );
+  }
+
   private async finaliseFailedPreserveWorktree(
     sessionId: string,
     reason: string,
@@ -8637,6 +8677,9 @@ export class OrchestratorLoop {
     // preserved" without a path, a HEAD and a dirty-file list is not a recovery
     // action -- the operator still has to go and find the directory, and an
     // uncommitted tree looks identical to an empty one until someone looks.
+    //
+    // rc.4: and say something the operator can actually DO. See
+    // `preservedWorktreeRecoveryAction`.
     const row = this.deps.state.db
       .prepare(`SELECT branch, worktree_path FROM sessions WHERE id = ?`)
       .get(sessionId) as { branch: string | null; worktree_path: string | null } | undefined;
@@ -8656,13 +8699,16 @@ export class OrchestratorLoop {
         headSha: headSha || null,
         dirtyFiles: dirty.slice(0, 100),
         dirtyCount: dirty.length,
-        recoveryAction: row?.worktree_path
-          ? `Inspect ${row.worktree_path} (branch ${row?.branch ?? "unknown"}); run harness_resume to continue, or push the branch by hand. Nothing here has been deleted.`
-          : "No worktree path is recorded for this session.",
+        recoveryAction: this.preservedWorktreeRecoveryAction(sessionId, row),
       },
       sessionId,
     );
-    this.deps.interactionLog?.log(sessionId, { event: "failed_worktree_preserved", phase: "finalize", reason });
+    this.deps.interactionLog?.log(sessionId, {
+      event: "failed_worktree_preserved",
+      phase: "finalize",
+      reason,
+      recoveryAction: this.preservedWorktreeRecoveryAction(sessionId, row),
+    });
     // rc.3: mark the row so the startup self-heal leaves the directory alone.
     // beta.129 did this for the abort path and this path was missed, so the
     // function whose name is a promise to preserve the worktree kept it only

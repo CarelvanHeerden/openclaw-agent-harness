@@ -80,13 +80,58 @@ export declare function getPullRequest(input: {
     repoFullName: string;
     prNumber: number;
     ghToken: string;
+    apiBase?: string;
 }): Promise<{
     headSha: string;
     state: string;
     merged: boolean;
     mergeable: boolean | null;
     baseBranch: string;
+    /**
+     * rc.4: the fields the recovery path needs to tell "this session's PR" from
+     * "a PR whose branch has the same name". `headRepoFullName` is null when the
+     * head repository has been deleted, which is itself disqualifying.
+     */
+    headRepoFullName: string | null;
+    headRef: string;
+    draft: boolean;
+    htmlUrl: string;
 }>;
+/**
+ * rc.4: every commit sha on a PR, oldest first.
+ *
+ * This is the evidence a link stands on. A branch name proves nothing -- it can
+ * be force-pushed over unrelated work and still read the same -- so the
+ * recovery path asks whether the session's own commits are actually present.
+ *
+ * Paginated because the answer must be complete: a truncated list turns a
+ * genuine match into a refusal, and this is the check the whole action rests
+ * on. GitHub caps this endpoint at 250 commits; beyond that it reports what it
+ * can, and `truncated` tells the caller not to read absence as proof.
+ */
+export declare function listPullRequestCommits(input: {
+    repoFullName: string;
+    prNumber: number;
+    ghToken: string;
+    apiBase?: string;
+}): Promise<{
+    shas: string[];
+    truncated: boolean;
+}>;
+/**
+ * rc.4: the merge base of two refs, as the provider computes it.
+ *
+ * Used as the second, independent tie between a session and a PR: the session
+ * recorded the fork point it planned against, and a PR built on a different
+ * base is not the one it produced.
+ */
+export declare function getMergeBase(input: {
+    repoFullName: string;
+    base: string;
+    head: string;
+    ghToken: string;
+    apiBase?: string;
+}): Promise<string | null>;
 export type CiState = "success" | "failure" | "pending" | "none" | "unknown";
 /**
  * beta.119: the structured evidence behind a CI verdict. `getCombinedStatus`

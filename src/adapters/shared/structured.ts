@@ -34,6 +34,19 @@ import {
   type StructuredCallError,
 } from "./json.js";
 
+/**
+ * A deadline the backend stopped waiting on, as the ladder needs to see it.
+ *
+ * Structurally the ACP adapter's `AcpTimeoutInfo`, restated here so this module
+ * stays backend-agnostic -- it is the shared ladder both backends climb, and
+ * importing an ACP type into it would make the SDK path depend on ACP.
+ */
+export interface StructuredTimeout {
+  kind: "stream_open" | "first_token" | "overall";
+  deadlineSeconds: number;
+  elapsedMs: number;
+}
+
 /** One model call. The ladder supplies the correction; the backend makes the call. */
 export type StructuredAttempt = (correction: string | null) => Promise<{
   raw: string;
@@ -43,10 +56,19 @@ export type StructuredAttempt = (correction: string | null) => Promise<{
   sessionId: string;
   /** True when the backend knows the reply was cut off at the output ceiling. */
   truncated?: boolean;
+  /**
+   * Set when a watchdog ended the turn rather than the model finishing it.
+   *
+   * Checked BEFORE extraction. A turn that was cut off did not produce a badly
+   * formatted document, it produced no document, and the two need opposite
+   * responses: one is answered by telling the model how to format, the other
+   * only by waiting longer or fixing the backend.
+   */
+  timeout?: StructuredTimeout | null;
 }>;
 
 export interface LadderAttempt {
-  outcome: "ok" | "invalid_json" | "truncated" | "repaired" | "call_failed";
+  outcome: "ok" | "invalid_json" | "truncated" | "repaired" | "call_failed" | "timed_out";
   detail?: string;
   costUsd: number;
 }
@@ -76,6 +98,18 @@ export interface LadderExhaustedError extends Error {
   costUsd: number;
   lastRaw: string;
   role: string;
+  /**
+   * The deadline that ended the last attempt, when one did.
+   *
+   * Present so a caller can tell an unreachable backend from an incoherent one
+   * WITHOUT parsing the message. `isAdversaryFormatError` is the caller that
+   * matters: it re-runs the whole review on a "your reply was not valid JSON"
+   * nudge, which is right for a model that rambled and wrong for a backend
+   * that never answered -- and its regex matched the timeout message too.
+   */
+  timeout?: StructuredTimeout | null;
+  /** True when EVERY attempt ended on a deadline. No reply was ever seen. */
+  allTimedOut: boolean;
 }
 
 export interface LadderOptions<T> {
@@ -107,6 +141,7 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
   let sessionId = "";
   let lastRaw = "";
   let correction: string | null = null;
+  let lastTimeout: StructuredTimeout | null = null;
 
   for (let i = 0; i < maxAttempts; i++) {
     let call: Awaited<ReturnType<StructuredAttempt>>;
@@ -118,8 +153,18 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
       // reported as free.
       const spent = (err as StructuredCallError)?.costUsd ?? 0;
       costUsd += spent;
-      attempts.push({ outcome: "call_failed", detail: String((err as Error)?.message ?? err), costUsd: spent });
-      if (i === maxAttempts - 1) throw exhausted(opts.role, attempts, costUsd, lastRaw, err);
+      // A backend that times out by THROWING (the SDK stream-open wedge) is
+      // the same event as one that times out by returning; only the control
+      // flow differs, and the operator should not have to know which backend
+      // they are on to read the trail.
+      const thrownTimeout = (err as { timeout?: StructuredTimeout })?.timeout ?? null;
+      if (thrownTimeout) lastTimeout = thrownTimeout;
+      attempts.push({
+        outcome: thrownTimeout ? "timed_out" : "call_failed",
+        detail: thrownTimeout ? describeTimeout(thrownTimeout) : String((err as Error)?.message ?? err),
+        costUsd: spent,
+      });
+      if (i === maxAttempts - 1) throw exhausted(opts.role, attempts, costUsd, lastRaw, err, lastTimeout, { label: opts.validation.label, sessionId });
       correction = "The previous attempt failed before producing a reply. Answer with the JSON document only.";
       continue;
     }
@@ -129,6 +174,42 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
     tokensOut += call.tokensOut;
     if (!sessionId) sessionId = call.sessionId;
     lastRaw = call.raw;
+
+    // Rung 0: did we get a reply at all?
+    //
+    // This runs BEFORE extraction, and it is the whole point of the rung. A
+    // turn a watchdog cut short has nothing to extract; running the ladder on
+    // it anyway produces "extractJson failed: no JSON in output", which reads
+    // as a model that answered badly and sends the next attempt a correction
+    // telling it to fix its formatting. On the incident this was written for
+    // the reviewer never emitted a token on any of three attempts, and every
+    // one of them was reported, retried and finally surfaced as a JSON fault.
+    //
+    // Partial text counts as timed out too. A cut-off reply can easily contain
+    // a plausible-looking JSON fragment, and repairing that fragment into a
+    // valid document would fabricate a review out of a truncated one.
+    if (call.timeout) {
+      lastTimeout = call.timeout;
+      attempts.push({
+        outcome: "timed_out",
+        detail: `${describeTimeout(call.timeout)}${call.raw.trim().length > 0 ? `; ${call.raw.trim().length} chars of partial output discarded` : ""}`,
+        costUsd: call.costUsd,
+      });
+      opts.logger?.warn(`[${opts.role}] attempt ${i + 1} hit a deadline before a usable reply; not treating this as malformed JSON`, {
+        role: opts.role,
+        kind: call.timeout.kind,
+        deadlineSeconds: call.timeout.deadlineSeconds,
+        partialChars: call.raw.trim().length,
+      });
+      if (i === maxAttempts - 1) throw exhausted(opts.role, attempts, costUsd, lastRaw, new Error(describeTimeout(call.timeout)), lastTimeout, { label: opts.validation.label, sessionId });
+      // Say nothing about JSON. The previous turn produced no document to be
+      // wrong about, and each rung is a fresh session, so there is no context
+      // in which "your previous reply" even refers to anything.
+      correction =
+        "The previous attempt was stopped before any reply arrived. Begin your answer immediately with the JSON " +
+        "document and keep it short.";
+      continue;
+    }
 
     // Rungs 1 and 2: extract, then validate.
     try {
@@ -168,7 +249,7 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
         costUsd: call.costUsd,
       });
 
-      if (i === maxAttempts - 1) throw exhausted(opts.role, attempts, costUsd, lastRaw, err);
+      if (i === maxAttempts - 1) throw exhausted(opts.role, attempts, costUsd, lastRaw, err, lastTimeout, { label: opts.validation.label, sessionId });
 
       // Rung 4: retry, told what went wrong. A truncation needs LESS output,
       // not a restated contract -- re-asserting the contract re-truncates
@@ -182,18 +263,53 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
   }
 
   /* c8 ignore next */
-  throw exhausted(opts.role, attempts, costUsd, lastRaw, new Error("ladder exhausted"));
+  throw exhausted(opts.role, attempts, costUsd, lastRaw, new Error("ladder exhausted"), lastTimeout, { label: opts.validation.label, sessionId });
 }
 
-function exhausted(role: string, attempts: LadderAttempt[], costUsd: number, lastRaw: string, cause: unknown): LadderExhaustedError {
+export function describeTimeout(t: StructuredTimeout): string {
+  const phase =
+    t.kind === "stream_open"
+      ? "the backend never opened its stream"
+      : t.kind === "first_token"
+        ? "the backend opened its stream but produced no token"
+        : "the turn exceeded its overall budget";
+  return `timed out after ${t.deadlineSeconds}s (${phase}; waited ${Math.round(t.elapsedMs / 1000)}s)`;
+}
+
+function exhausted(
+  role: string,
+  attempts: LadderAttempt[],
+  costUsd: number,
+  lastRaw: string,
+  cause: unknown,
+  timeout?: StructuredTimeout | null,
+  where?: { label?: string; sessionId?: string },
+): LadderExhaustedError {
   const trail = attempts.map((a, i) => `#${i + 1} ${a.outcome}${a.detail ? `: ${a.detail}` : ""}`).join("; ");
-  const err = new Error(
-    `[${role}] could not obtain a valid JSON document after ${attempts.length} attempt(s): ${trail}`,
-  ) as LadderExhaustedError;
+  const allTimedOut = attempts.length > 0 && attempts.every((a) => a.outcome === "timed_out");
+  // The chunk and the session: a chunked review makes several of these calls,
+  // and "the adversary timed out" does not say which one or give anyone a
+  // session to go and read.
+  const at = [
+    where?.label && where.label !== role ? where.label : null,
+    where?.sessionId ? `session ${where.sessionId}` : null,
+  ].filter(Boolean).join(", ");
+  // Lead with the cause when it is a deadline. The old text opened with "could
+  // not obtain a valid JSON document", which is true of a timeout and also
+  // completely misleading about it: it names the symptom the operator cannot
+  // act on and buries the one they can. Which timer, and what it was set to,
+  // is the whole actionable content of this error.
+  const scope = at ? `[${role}] (${at})` : `[${role}]`;
+  const headline = allTimedOut
+    ? `${scope} every one of ${attempts.length} attempt(s) ${describeTimeout(timeout!)} -- the backend produced no reviewable output`
+    : `${scope} could not obtain a valid JSON document after ${attempts.length} attempt(s)`;
+  const err = new Error(`${headline}: ${trail}`) as LadderExhaustedError;
   err.attempts = attempts;
   err.costUsd = costUsd;
   err.lastRaw = lastRaw;
   err.role = role;
+  err.timeout = timeout ?? null;
+  err.allTimedOut = allTimedOut;
   (err as { cause?: unknown }).cause = cause;
   return err;
 }

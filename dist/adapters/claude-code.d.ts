@@ -30,6 +30,7 @@ import { type ClarificationGrounding } from "../crystallise/clarification-guard.
 import type { LeadPlan, LeadPlanSubTask, WorkerContext } from "../orchestrator/lead.js";
 import type { ReviewReport } from "../orchestrator/adversary.js";
 import { type JsonValidationOptions, type LeadAttemptInfo } from "./shared/json.js";
+import { type StructuredTimeout } from "./shared/structured.js";
 import { type BackendCapabilities, type CapabilityTier } from "./backend.js";
 export { describeJsonSyntaxFault, extractAndValidateJson, extractJson, repairTruncatedJson, type JsonValidationOptions, type LeadAttemptInfo, type StructuredCallError, } from "./shared/json.js";
 export { splitDiffOnFileBoundaries } from "./shared/diff.js";
@@ -364,6 +365,19 @@ export interface StructuredExecParams<T> {
     apiKey?: string;
     maxOutputTokens?: number;
     streamOpenTimeoutSeconds?: number;
+    /**
+     * Phase-2 deadline: stream open -> first token. From
+     * `loop.sdk_first_token_timeout_seconds`.
+     *
+     * ACP-only in effect, and deliberately so. `structuredCall` does not enable
+     * partial messages, so on the SDK path assistant text arrives only when the
+     * turn COMPLETES and a first-token timer would fire on every legitimately
+     * slow call -- see the note on `streamOpenTimeoutSeconds` below. It is
+     * declared on the shared params rather than on the ACP ones because the
+     * caller does not know which backend its role is pointed at; the SDK
+     * executor ignores it, which is the correct behaviour and not an oversight.
+     */
+    firstTokenTimeoutSeconds?: number;
     skipParse?: boolean;
 }
 export interface StructuredExecResult<T> {
@@ -374,6 +388,14 @@ export interface StructuredExecResult<T> {
     tokensOut: number;
     raw: string;
     stopReason: string | null;
+    /**
+     * Set when a watchdog ended the turn instead of the model finishing it.
+     *
+     * Optional so the SDK executor, which has no such classification, is
+     * unchanged. A caller must treat `undefined` as "not known to have timed
+     * out", never as "definitely completed".
+     */
+    timeout?: StructuredTimeout | null;
 }
 /**
  * How a structured role's single turn is actually executed.
@@ -582,6 +604,14 @@ export declare function runAdversarySdk(params: {
     systemPrompt: string;
     diffText: string;
     timeoutSeconds: number;
+    /**
+     * `loop.sdk_first_token_timeout_seconds`, forwarded to each chunk's call.
+     *
+     * Every chunk of a chunked review gets the same deadline: the phase this
+     * bounds is the backend starting to speak, which does not get easier on
+     * chunk seven than it was on chunk one.
+     */
+    firstTokenTimeoutSeconds?: number;
     apiKey?: string;
     /** rc.3: optional; records what cross-chunk deduplication collapsed. */
     logger?: {

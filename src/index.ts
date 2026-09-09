@@ -67,7 +67,8 @@ import {
   SCOUT_DENIED_TOOLS,
   SCOUT_MAX_TURNS,
 } from "./orchestrator/lead-scout.js";
-import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getTokenScopes, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getMergeBase, getTokenScopes, listPullRequestCommits, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { linkPullRequest } from "./orchestrator/pr-link.js";
 import { canPushWorkflows } from "./orchestrator/workflow-scope.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
@@ -280,6 +281,34 @@ export interface HarnessRuntime {
    */
   mergePr: (args: { sessionId: string; invokedBy?: string; repairBudgetUsd?: number }) => Promise<MergePrResult>;
   /**
+   * rc.4: associate an EXISTING pull request with the session that produced it,
+   * after a failure lost the association.
+   *
+   * `pr_number` is written on the ship path only, so a session that pushed its
+   * work, opened a PR and then failed holds neither -- and `harness_revise`
+   * refuses a row with no PR. The only route back was to rebuild the feature.
+   *
+   * Two-phase by construction. The default is a read-only dry run that reports
+   * the proposed association and its evidence; applying requires `apply: true`
+   * plus the `expectedHeadSha` the dry run reported, and re-reads the PR so a
+   * head that moved in between refuses instead of linking stale evidence.
+   *
+   * Linking is an association and nothing more. It does not start a run, push,
+   * create or merge anything, and it leaves status, findings, spend and the
+   * merge recommendation exactly as the failure left them.
+   */
+  linkPr: (args: {
+    sessionId: string;
+    /** `owner/name`. Required: a PR number alone is ambiguous across repositories. */
+    repo: string;
+    prNumber: number;
+    invokedBy: string;
+    /** Default false -- a read-only dry run. */
+    apply?: boolean;
+    /** Required when `apply` is true; must equal the PR head the dry run saw. */
+    expectedHeadSha?: string;
+  }) => Promise<LinkPrResult>;
+  /**
    * Resolve the credential service name the pat-router would use for a repo
    * (or the first allowed repo when omitted). For health/introspection.
    */
@@ -357,6 +386,31 @@ export interface MergePrResult {
   recommendation?: "merge" | "do_not_merge" | "needs_human_review";
   /** Deploy verification outcome (when Vercel enabled + a merge happened). */
   deploy?: { status: "ready" | "error" | "pending" | "unavailable"; detail: string; deploymentUrl?: string; logsExcerpt?: string };
+  /** Human-facing message summarising the outcome. */
+  message: string;
+}
+
+/** rc.4: result of a harness_link_pr invocation (dry run or apply). */
+export interface LinkPrResult {
+  ok: boolean;
+  /** True when this was a read-only dry run. No row was written. */
+  dryRun: boolean;
+  /** True when the association was written by THIS call. */
+  applied?: boolean;
+  /** True when the identical association already existed; nothing was written. */
+  alreadyLinked?: boolean;
+  /** True when the caller is not authorised. Distinct from a verification failure. */
+  unauthorised?: boolean;
+  sessionId?: string;
+  repo?: string;
+  prNumber?: number;
+  prUrl?: string;
+  /** PR head sha the verification ran against. Echo it back to apply. */
+  headSha?: string;
+  /** Human-readable lines describing what was checked. */
+  evidence?: string[];
+  /** Why the link was refused. Empty iff ok. */
+  blockers?: { kind: string; message: string }[];
   /** Human-facing message summarising the outcome. */
   message: string;
 }
@@ -678,7 +732,22 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     if (!inner) return undefined;
     return (async (params) => {
       await ensureBackendReady();
-      return inner(params);
+      // The watchdog windows are supplied HERE, at the one place every
+      // structured role passes through, rather than at each of the six call
+      // sites. A role that forgets to pass them does not get a quiet default:
+      // there is nowhere to forget them.
+      //
+      // This is the fix for the incident. `loop.sdk_first_token_timeout_seconds`
+      // reached the worker roles through `runWorker` and reached the structured
+      // ones through nothing at all, so `runWorkerAcp` fell back to its own 30s
+      // and the reviewer died before its first token three times against a
+      // deadline no operator had chosen. An explicit caller value still wins,
+      // so this sets a floor of configuration, not a ceiling.
+      return inner({
+        ...params,
+        firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds ?? config.loop.sdk_first_token_timeout_seconds,
+        streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds ?? config.loop.sdk_stream_open_timeout_seconds,
+      });
     }) as typeof inner;
   };
 
@@ -1287,6 +1356,11 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             const r = await runAdversarySdk({
               ...params,
               execute: executorFor("adversary"),
+              // Belt and braces with the `executorFor` wrapper: the adversary
+              // is the role the incident happened to, and it is also the only
+              // one that drives its own ladder, so it states the deadline it
+              // expects rather than relying on a layer below to remember.
+              firstTokenTimeoutSeconds: config.loop.sdk_first_token_timeout_seconds,
               apiKey: await apiKeyForRole("adversary"),
               logger: api.logger,
             });
@@ -2144,6 +2218,61 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         message: `Merged PR #${row.pr_number} (squash, ${mergeSha.slice(0, 12)}).${deployMsg}${repairMessage}`,
       };
     },
+
+    // ---- rc.4: recover a lost PR association ----
+    //
+    // StitchGuard session 112673df pushed nine commits and opened PR #1168,
+    // then failed before `pr_number` was written. `harness_revise` refuses a row
+    // with no PR, so the PR was unreachable by the one workflow built to change
+    // it, and the documented alternative was to build the feature again.
+    //
+    // The temptation is to write the column by hand. That is the thing this
+    // exists to prevent: a hand-written association is unverified, unaudited,
+    // and indistinguishable afterwards from one the loop made itself.
+    linkPr: async (args) =>
+      linkPullRequest(
+        {
+          db: state.db,
+          audit: (event, payload, sessionId) => state.audit(event, payload, sessionId),
+          authorisedUsers: config.slack.authorised_users,
+          defaultBaseBranch: config.repos.default_base_branch,
+          // The requester on the session row owns the credential route, not the
+          // operator doing the linking: the link is read against the same access
+          // the run itself had, so recovering a PR cannot reach a repository the
+          // session could not.
+          fetchPr: async ({ repo, prNumber, requester }) => {
+            const resolution = pat.resolve({
+              slackUserId: requester,
+              gitHubUser: repo.split("/")[0]!,
+              repoFullName: repo,
+            });
+            const ghToken = await resolveGitToken(resolution);
+            const pr = await getPullRequest({ repoFullName: repo, prNumber, ghToken, apiBase: resolution.apiBase });
+            const commits = await listPullRequestCommits({ repoFullName: repo, prNumber, ghToken, apiBase: resolution.apiBase });
+            const mergeBaseSha = await getMergeBase({
+              repoFullName: repo,
+              base: pr.baseBranch,
+              head: pr.headSha,
+              ghToken,
+              apiBase: resolution.apiBase,
+            });
+            return {
+              headRepo: pr.headRepoFullName,
+              headRef: pr.headRef,
+              headSha: pr.headSha,
+              baseRef: pr.baseBranch,
+              state: pr.state,
+              merged: pr.merged,
+              draft: pr.draft,
+              htmlUrl: pr.htmlUrl,
+              commitShas: commits.shas,
+              commitsTruncated: commits.truncated,
+              mergeBaseSha,
+            };
+          },
+        },
+        args,
+      ),
     disposers: [],
   };
 

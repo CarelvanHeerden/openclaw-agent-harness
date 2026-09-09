@@ -191,13 +191,72 @@ const GH_HEADERS = (token) => ({
 });
 /** beta.34: fetch a PR's head SHA + state (open/closed, merged). */
 export async function getPullRequest(input) {
-    const res = await fetch(`https://api.github.com/repos/${input.repoFullName}/pulls/${input.prNumber}`, {
+    const apiBase = input.apiBase ?? "https://api.github.com";
+    const res = await fetch(`${apiBase}/repos/${input.repoFullName}/pulls/${input.prNumber}`, {
         headers: GH_HEADERS(input.ghToken),
     });
     if (!res.ok)
         throw new Error(`GitHub get PR #${input.prNumber} failed ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const j = (await res.json());
-    return { headSha: j.head.sha, state: j.state, merged: j.merged, mergeable: j.mergeable, baseBranch: j.base.ref };
+    return {
+        headSha: j.head.sha,
+        state: j.state,
+        merged: j.merged,
+        mergeable: j.mergeable,
+        baseBranch: j.base.ref,
+        headRepoFullName: j.head.repo?.full_name ?? null,
+        headRef: j.head.ref,
+        draft: !!j.draft,
+        htmlUrl: j.html_url ?? `https://github.com/${input.repoFullName}/pull/${input.prNumber}`,
+    };
+}
+/**
+ * rc.4: every commit sha on a PR, oldest first.
+ *
+ * This is the evidence a link stands on. A branch name proves nothing -- it can
+ * be force-pushed over unrelated work and still read the same -- so the
+ * recovery path asks whether the session's own commits are actually present.
+ *
+ * Paginated because the answer must be complete: a truncated list turns a
+ * genuine match into a refusal, and this is the check the whole action rests
+ * on. GitHub caps this endpoint at 250 commits; beyond that it reports what it
+ * can, and `truncated` tells the caller not to read absence as proof.
+ */
+export async function listPullRequestCommits(input) {
+    const apiBase = input.apiBase ?? "https://api.github.com";
+    const shas = [];
+    let truncated = false;
+    for (let page = 1; page <= 3; page += 1) {
+        const res = await fetch(`${apiBase}/repos/${input.repoFullName}/pulls/${input.prNumber}/commits?per_page=100&page=${page}`, { headers: GH_HEADERS(input.ghToken) });
+        if (!res.ok) {
+            throw new Error(`GitHub list PR #${input.prNumber} commits failed ${res.status}: ${(await res.text()).slice(0, 300)}`);
+        }
+        const page$ = (await res.json());
+        for (const c of page$)
+            shas.push(c.sha);
+        if (page$.length < 100)
+            return { shas, truncated: false };
+        if (page === 3)
+            truncated = true;
+    }
+    return { shas, truncated };
+}
+/**
+ * rc.4: the merge base of two refs, as the provider computes it.
+ *
+ * Used as the second, independent tie between a session and a PR: the session
+ * recorded the fork point it planned against, and a PR built on a different
+ * base is not the one it produced.
+ */
+export async function getMergeBase(input) {
+    const apiBase = input.apiBase ?? "https://api.github.com";
+    const res = await fetch(`${apiBase}/repos/${input.repoFullName}/compare/${encodeURIComponent(input.base)}...${encodeURIComponent(input.head)}`, { headers: GH_HEADERS(input.ghToken) });
+    // A missing comparison is not evidence of a mismatch, so it returns null and
+    // lets the caller fall back to the commit-lineage check rather than refusing.
+    if (!res.ok)
+        return null;
+    const j = (await res.json());
+    return j.merge_base_commit?.sha ?? null;
 }
 /** Check-run conclusions that mean CI is red. */
 const FAILED_CONCLUSIONS = ["failure", "timed_out", "cancelled", "action_required", "stale"];

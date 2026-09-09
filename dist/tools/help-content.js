@@ -64,6 +64,13 @@ const CAPABILITIES = {
             tools: ["harness_merge_pr"],
         },
         {
+            what: "Reconnect a run that failed AFTER it had already opened a pull request, so that pull request can be revised " +
+                "instead of built again. It checks that the run's own commits are really on the pull request, shows what it found, " +
+                "and waits for you to confirm before recording anything.",
+            say: ["that run failed but the PR exists — reconnect them", "why can't it revise 1168?"],
+            tools: ["harness_link_pr"],
+        },
+        {
             what: "Explain why a run ended where it did, and what it found.",
             say: ["why did it stop?", "what did the review say?"],
             tools: ["harness_session_get", "harness_logs"],
@@ -102,6 +109,7 @@ const ALL_TOOLS = [
     "harness_resume",
     "harness_answer",
     "harness_merge_pr",
+    "harness_link_pr",
     "harness_list_revisable",
     "harness_revise",
     "harness_onboard",
