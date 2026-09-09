@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.4
+
+Two recoveries and two deadlines. A run that failed after opening its pull
+request can now be reconnected to it instead of rebuilt, and a reviewer that
+never got a token back from its backend now says so instead of reporting the
+silence as malformed JSON. Nothing here loosens a merge gate: a recovered PR is
+still unreviewed until the adversary reviews it, and a review that did not
+happen still cannot become a pass.
 
 ### A configured first-token timeout governed the workers and nothing else
 

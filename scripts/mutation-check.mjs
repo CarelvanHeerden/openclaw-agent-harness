@@ -2584,7 +2584,11 @@ const MUTATIONS = [
     // throwing turns "no reviewer was reachable" into "the reviewer approved".
     name: "an exhausted ladder throws (v2): a pass-shaped default converts an outage into an approval",
     file: "dist/adapters/shared/structured.js",
-    find: "            if (i === maxAttempts - 1)\n                throw exhausted(opts.role, attempts, costUsd, lastRaw, err);\n            // Rung 4: retry, told what went wrong.",
+    // rc.4 re-anchor: `exhausted` gained the timeout classification and the
+    // role/chunk/session it is reported against, so the old call text no
+    // longer exists. The mechanism under test is unchanged -- exhaustion must
+    // THROW rather than return a pass-shaped document.
+    find: "            if (i === maxAttempts - 1)\n                throw exhausted(opts.role, attempts, costUsd, lastRaw, err, lastTimeout, { label: opts.validation.label, sessionId });\n            // Rung 4: retry, told what went wrong.",
     replace: "            if (i === maxAttempts - 1)\n                return { parsed: { verdict: \"pass\", findings: [], summary: \"\" }, raw: lastRaw, costUsd, tokensIn, tokensOut, sessionId, attempts, repaired: false };\n            // Rung 4: retry, told what went wrong.",
     tests: ["tests/v2-backend-contract.test.mjs"],
   },
@@ -2605,6 +2609,72 @@ const MUTATIONS = [
     find: "            const wasTruncated = call.truncated === true || looksTruncatedJson(call.raw);",
     replace: "            const wasTruncated = true;",
     tests: ["tests/v2-backend-contract.test.mjs"],
+  },
+
+  // ------------------------------------- rc.4: a timeout is not a JSON fault
+  {
+    // The incident. Without this gate a turn a watchdog cut short reaches the
+    // extractor, fails as "no JSON in output", and is re-asked to fix its
+    // formatting -- three times, against a backend that never emitted a byte.
+    // Worse, a PARTIAL reply reaches the truncation-repair rung, and a cut-off
+    // fragment closes cleanly into a passing verdict the model never reached.
+    name: "a timed-out turn never reaches the parser (rc): its silence was reported as malformed JSON",
+    file: "dist/adapters/shared/structured.js",
+    find: "        if (call.timeout) {\n            lastTimeout = call.timeout;",
+    replace: "        if (false) {\n            lastTimeout = call.timeout;",
+    tests: ["tests/rc4-structured-first-token-timeout.test.mjs"],
+  },
+  {
+    // isAdversaryFormatError gates a SECOND full review. Its regex matched the
+    // ladder's exhaustion text whatever the cause, so three timed-out attempts
+    // bought three more on a nudge insisting the model had emitted prose.
+    name: "a timeout is not a format error (rc): matching it buys three more reviews from a silent backend",
+    file: "dist/orchestrator/adversary.js",
+    find: "    if (err?.allTimedOut === true)\n        return false;",
+    replace: "    if (false)\n        return false;",
+    tests: ["tests/rc4-structured-first-token-timeout.test.mjs"],
+  },
+  {
+    // The plumbing itself. runWorkerAcp defaults this to 30s, so dropping the
+    // forward does not error -- it silently reinstates a deadline no operator
+    // configured, which is exactly how the bug went unnoticed.
+    name: "the configured first-token deadline is forwarded (rc): dropping it silently restores a 30s default",
+    file: "dist/adapters/acp.js",
+    find: "            firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,\n            acpGuard: denyAll,",
+    replace: "            acpGuard: denyAll,",
+    tests: ["tests/rc4-structured-first-token-timeout.test.mjs"],
+  },
+
+  // ------------------------------------- rc.4: recovering a lost PR association
+  {
+    // The whole point of the verification. A branch NAME matching is not
+    // evidence -- `harness/x-112673df` can be recreated by anyone, and two
+    // sessions can share a branch. Without the lineage check the tool attaches
+    // a session to whatever PR it is pointed at.
+    name: "a link requires the session's OWN commits on the PR (rc): a matching branch name is not evidence",
+    file: "dist/orchestrator/pr-link.js",
+    find: "    else if (matchedCommitShas.length === 0) {\n        blockers.push({\n            kind: \"lineage_mismatch\",",
+    replace: "    else if (false) {\n        blockers.push({\n            kind: \"lineage_mismatch\",",
+    tests: ["tests/rc4-pr-link-recovery.test.mjs"],
+  },
+  {
+    // Between the dry run and the apply the branch can be force-pushed, and the
+    // commits that justified the link stop being the commits on the PR. Without
+    // the re-check the apply persists evidence that is no longer true.
+    name: "an apply refuses a head that moved (rc): the evidence the dry run showed is no longer on the PR",
+    file: "dist/orchestrator/pr-link.js",
+    find: "    if (expectedHeadSha.trim().toLowerCase() !== pr.headSha.trim().toLowerCase()) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc4-pr-link-recovery.test.mjs"],
+  },
+  {
+    // Silently moving an existing association loses the first one, and the
+    // operator who set it has no way to find out.
+    name: "a conflicting link is refused, not moved (rc): re-pointing a session loses the association it had",
+    file: "dist/orchestrator/pr-link.js",
+    find: "        blockers.push({\n            kind: \"conflicting_link\",",
+    replace: "        ({\n            kind: \"conflicting_link\",",
+    tests: ["tests/rc4-pr-link-recovery.test.mjs"],
   },
 
   // ------------------------------------- v2.0.0 M5: the ACP backend

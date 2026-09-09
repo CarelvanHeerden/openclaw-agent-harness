@@ -329,8 +329,27 @@ test("rc4: a timed-out review is not re-run as a format error", skip, () => {
   );
   assert.equal(isAdversaryFormatError(timeoutErr), false, "a silent backend must not be re-asked to fix its formatting");
 
-  // Structural, not textual: the flag alone is enough even if the wording drifts.
-  assert.equal(isAdversaryFormatError(Object.assign(new Error("anything at all"), { allTimedOut: true })), false);
+  // Each guard has to hold on its own. There are three, deliberately, and the
+  // way redundancy rots is that every case is caught by some OTHER one, so a
+  // guard can be deleted with every test still green. Each of these carries a
+  // message that WOULD match the format regex, leaving exactly one guard
+  // standing between it and a wasted second review.
+  const looksLikeFormat = "[adversary] extractJson failed: no JSON in output";
+  assert.equal(
+    isAdversaryFormatError(Object.assign(new Error(looksLikeFormat), { allTimedOut: true })),
+    false,
+    "the allTimedOut flag alone must be enough",
+  );
+  assert.equal(
+    isAdversaryFormatError(Object.assign(new Error(looksLikeFormat), { timeout: { kind: "overall", deadlineSeconds: 900, elapsedMs: 900_000 } })),
+    false,
+    "a single timed-out attempt among others must be enough",
+  );
+  assert.equal(
+    isAdversaryFormatError(new Error(`${looksLikeFormat} -- timed out after 45s`)),
+    false,
+    "and the message alone must be enough, for an error thrown by something that carries no flags",
+  );
 
   // The genuine format error it exists for still matches.
   assert.equal(isAdversaryFormatError(new Error("[adversary] extractJson failed: no JSON in output")), true);
