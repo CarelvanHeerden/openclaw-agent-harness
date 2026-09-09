@@ -25,6 +25,18 @@
  * WHAT HAPPENS AT THE END is the part that matters. See `onExhaustion`.
  */
 import { type JsonValidationOptions } from "./json.js";
+/**
+ * A deadline the backend stopped waiting on, as the ladder needs to see it.
+ *
+ * Structurally the ACP adapter's `AcpTimeoutInfo`, restated here so this module
+ * stays backend-agnostic -- it is the shared ladder both backends climb, and
+ * importing an ACP type into it would make the SDK path depend on ACP.
+ */
+export interface StructuredTimeout {
+    kind: "stream_open" | "first_token" | "overall";
+    deadlineSeconds: number;
+    elapsedMs: number;
+}
 /** One model call. The ladder supplies the correction; the backend makes the call. */
 export type StructuredAttempt = (correction: string | null) => Promise<{
     raw: string;
@@ -34,9 +46,18 @@ export type StructuredAttempt = (correction: string | null) => Promise<{
     sessionId: string;
     /** True when the backend knows the reply was cut off at the output ceiling. */
     truncated?: boolean;
+    /**
+     * Set when a watchdog ended the turn rather than the model finishing it.
+     *
+     * Checked BEFORE extraction. A turn that was cut off did not produce a badly
+     * formatted document, it produced no document, and the two need opposite
+     * responses: one is answered by telling the model how to format, the other
+     * only by waiting longer or fixing the backend.
+     */
+    timeout?: StructuredTimeout | null;
 }>;
 export interface LadderAttempt {
-    outcome: "ok" | "invalid_json" | "truncated" | "repaired" | "call_failed";
+    outcome: "ok" | "invalid_json" | "truncated" | "repaired" | "call_failed" | "timed_out";
     detail?: string;
     costUsd: number;
 }
@@ -64,6 +85,18 @@ export interface LadderExhaustedError extends Error {
     costUsd: number;
     lastRaw: string;
     role: string;
+    /**
+     * The deadline that ended the last attempt, when one did.
+     *
+     * Present so a caller can tell an unreachable backend from an incoherent one
+     * WITHOUT parsing the message. `isAdversaryFormatError` is the caller that
+     * matters: it re-runs the whole review on a "your reply was not valid JSON"
+     * nudge, which is right for a model that rambled and wrong for a backend
+     * that never answered -- and its regex matched the timeout message too.
+     */
+    timeout?: StructuredTimeout | null;
+    /** True when EVERY attempt ended on a deadline. No reply was ever seen. */
+    allTimedOut: boolean;
 }
 export interface LadderOptions<T> {
     /** Which role is asking, for messages and audit. */
@@ -87,6 +120,7 @@ export interface LadderOptions<T> {
  * caller must do with it is `onExhaustion`, below.
  */
 export declare function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<LadderResult<T>>;
+export declare function describeTimeout(t: StructuredTimeout): string;
 /**
  * The direction each role fails in, when no valid document could be obtained.
  *

@@ -401,7 +401,25 @@ export interface AdversaryDeps {
  * before giving up.
  */
 export function isAdversaryFormatError(err: unknown): boolean {
+  // rc.4: a review that never arrived is not a review that came back badly
+  // formatted, and this predicate is what decides whether to spend a SECOND
+  // full review on a format nudge.
+  //
+  // The ladder's exhaustion error used to read "could not obtain a valid JSON
+  // document ... extractJson failed: no JSON in output" whatever the cause, so
+  // three timed-out attempts matched here and bought three more, all told
+  // "your previous response was NOT a valid ReviewReport ... you likely
+  // emitted a tool/bash call or prose". The backend had not emitted anything.
+  // Six calls, no review, and an operator-facing explanation describing a
+  // formatting mistake that never happened.
+  //
+  // The flag is structural rather than another regex over the message: the
+  // ladder knows which of its attempts hit a deadline, and a message is a bad
+  // place to keep a fact the thrower already has.
+  if ((err as { allTimedOut?: boolean })?.allTimedOut === true) return false;
+  if ((err as { timeout?: unknown })?.timeout) return false;
   const msg = String((err as Error)?.message ?? err);
+  if (/timed out after \d+s/i.test(msg)) return false;
   return /JSON missing required keys|JSON\.parse failed|extractJson failed|parsed to non-object|failed typeCheck/i.test(msg);
 }
 

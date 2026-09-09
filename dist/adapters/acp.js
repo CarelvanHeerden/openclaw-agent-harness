@@ -36,6 +36,15 @@ import { redactSecrets } from "./git-worktree.js";
 import { buildAgentEnv } from "./shared/env.js";
 import { runStructuredLadder } from "./shared/structured.js";
 import { assessOpenCodeVersion } from "./opencode-version.js";
+/** Human-readable, for an error a person has to act on. */
+export function describeAcpTimeout(t) {
+    const phase = t.kind === "stream_open"
+        ? "the backend never opened its stream"
+        : t.kind === "first_token"
+            ? "the backend opened its stream but produced no token"
+            : "the turn exceeded its overall budget";
+    return `${phase} within ${t.deadlineSeconds}s (waited ${Math.round(t.elapsedMs / 1000)}s)`;
+}
 /**
  * `max_turn_requests` and `refusal` have no harness equivalent. Both mean the
  * turn ended without finishing the work, which is what `tool_error` signals to
@@ -379,6 +388,8 @@ export async function runWorkerAcp(params) {
         t.unref?.();
     };
     let abortReason = null;
+    /** Which deadline ran out, kept separately from the coarser `abortReason`. */
+    let timeoutInfo = null;
     const timers = [];
     const arm = (ms, fn) => {
         const t = setTimeout(fn, ms);
@@ -389,13 +400,17 @@ export async function runWorkerAcp(params) {
     arm(streamOpenTimeoutSeconds * 1000, () => {
         if (!streamOpened) {
             abortReason = "first_token_timeout";
+            timeoutInfo = { kind: "stream_open", deadlineSeconds: streamOpenTimeoutSeconds, elapsedMs: Date.now() - startedAt };
             pushLog(`[acp] stream-open watchdog fired after ${streamOpenTimeoutSeconds}s`);
             reap();
         }
     });
-    // Overall turn budget.
+    // Overall turn budget. The hard limit: it is armed unconditionally at turn
+    // start and is never rearmed, extended or disarmed by either phase timer, so
+    // no combination of the other two can outlast it.
     arm(timeoutSeconds * 1000, () => {
         abortReason = "timeout";
+        timeoutInfo = { kind: "overall", deadlineSeconds: timeoutSeconds, elapsedMs: Date.now() - startedAt };
         pushLog(`[acp] turn timeout after ${timeoutSeconds}s`);
         reap();
     });
@@ -407,6 +422,7 @@ export async function runWorkerAcp(params) {
             arm(firstTokenTimeoutSeconds * 1000, () => {
                 if (msToFirstToken === undefined) {
                     abortReason = "first_token_timeout";
+                    timeoutInfo = { kind: "first_token", deadlineSeconds: firstTokenTimeoutSeconds, elapsedMs: Date.now() - startedAt };
                     pushLog(`[acp] first-token watchdog fired after ${firstTokenTimeoutSeconds}s`);
                     reap();
                 }
@@ -752,6 +768,10 @@ export async function runWorkerAcp(params) {
         contextSize,
         deniedToolCalls: denied,
         unguardedReads,
+        // `null` when the turn ended on its own terms. A caller must be able to
+        // tell "the model answered with nothing" from "we stopped waiting", and
+        // `finalMessage: ""` looks identical in both cases.
+        timeout: timeoutInfo,
     };
 }
 /**
@@ -821,6 +841,7 @@ export async function runStructuredAcp(params) {
         return { allow: false, reason: `role '${params.role}' runs with no tools` };
     };
     let lastStopReason = null;
+    let lastTimeout = null;
     const runTurn = async (correction) => {
         const turn = await runWorkerAcp({
             agent: params.agent,
@@ -831,6 +852,7 @@ export async function runStructuredAcp(params) {
             effort: params.effort,
             timeoutSeconds: params.timeoutSeconds,
             streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
+            firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
             acpGuard: denyAll,
             secretToken: params.secretToken,
             logger: params.logger,
@@ -846,8 +868,11 @@ export async function runStructuredAcp(params) {
         // this path discards. Whatever the agent put on stderr, and the stop
         // reason it ended on, are the only evidence there is.
         if (turn.finalMessage.trim().length === 0) {
-            params.logger?.warn(`[acp/${params.role}] turn produced NO text at all`, {
+            params.logger?.warn(turn.timeout
+                ? `[acp/${params.role}] turn produced NO text: ${describeAcpTimeout(turn.timeout)}`
+                : `[acp/${params.role}] turn produced NO text at all`, {
                 role: params.role,
+                timeout: turn.timeout,
                 stopReason: turn.stopReason,
                 denied: turn.deniedToolCalls.length,
                 tokensIn: turn.tokensIn,
@@ -858,6 +883,7 @@ export async function runStructuredAcp(params) {
                 logsTail: turn.logsExcerpt.slice(-1500),
             });
         }
+        lastTimeout = turn.timeout;
         return {
             raw: turn.finalMessage,
             costUsd: turn.costUsd,
@@ -865,6 +891,11 @@ export async function runStructuredAcp(params) {
             tokensOut: turn.tokensOut,
             sessionId: turn.sdkSessionId,
             truncated: turn.stopReason === "max_tokens",
+            // The ladder checks this BEFORE it tries to extract JSON. A turn we
+            // stopped waiting for has no reply to parse, and treating its silence as
+            // a formatting mistake is what produced three "no JSON in output"
+            // attempts against a backend that had not spoken once.
+            timeout: turn.timeout,
         };
     };
     // The caller owns extraction, validation and retry. Climbing a second ladder
@@ -882,6 +913,7 @@ export async function runStructuredAcp(params) {
             repaired: false,
             raw: turn.raw,
             stopReason: lastStopReason,
+            timeout: lastTimeout,
         };
     }
     const r = await runStructuredLadder({
@@ -901,6 +933,7 @@ export async function runStructuredAcp(params) {
         repaired: r.repaired,
         raw: r.raw,
         stopReason: lastStopReason,
+        timeout: lastTimeout,
     };
 }
 /**

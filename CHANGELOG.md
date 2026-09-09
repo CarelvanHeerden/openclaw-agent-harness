@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### A configured first-token timeout governed the workers and nothing else
+
+`loop.sdk_first_token_timeout_seconds` reached the worker roles through
+`runWorker`. It reached the six structured roles — adversary, lead,
+crystalliser, classifier, revise_spec, worker_context — through nothing at all.
+`runWorkerAcp` had always accepted the option and defaulted it to 30 seconds, so
+those roles ran on that default however the setting was configured, and an
+operator raising it saw no change and no explanation. The 30 in the logs matched
+nothing in their config file because it was never their number.
+
+It is now supplied at `executorFor`, the single point every structured role
+passes through, so a role cannot reach a backend without one. An explicit caller
+value still wins. On the Claude Code SDK path it remains deliberately
+inapplicable — that path does not enable partial messages, so text arrives only
+when the turn completes and a first-token timer would fire on every slow call —
+and the setting's documentation now says which roles and which backends it
+governs. The three deadlines stay separate, and the overall turn budget is still
+the hard limit that neither phase timer can extend.
+
+### A review nobody waited for was reported as a review that answered badly
+
+An adversary turn cut short by a watchdog arrived at the JSON ladder looking
+exactly like one that had replied with an empty string, because the only thing
+distinguishing them — which deadline had fired — was discarded. So the ladder
+ran its JSON machinery over the silence: extract, fail, and re-ask with "your
+previous reply could not be parsed as the required JSON", to a backend that had
+not emitted a byte. Then `isAdversaryFormatError` matched the resulting
+"extractJson failed: no JSON in output" and bought three more attempts on a
+format nudge insisting the model had emitted prose or a tool call. Six calls, no
+review, and an operator-facing explanation of a formatting mistake that never
+happened.
+
+The adapter now reports which of the three deadlines ended a turn, and the
+ladder checks that before it tries to extract anything. A timed-out attempt is
+recorded as `timed_out`, is never repaired, and is retried — on a fresh session,
+within the same bounded budget, with no nested ladder — without being told its
+last reply was malformed. Partial output is discarded rather than repaired,
+because a cut-off fragment can close into a plausible passing verdict the model
+never reached. Exhaustion now leads with the deadline, the phase, the role, the
+chunk and the session instead of the JSON symptom, and preserves the spend.
+
+None of this softens the outcome: a review that did not happen still fails
+closed, still keeps the worktree, and still cannot become a `pass`.
+
 ### A run could produce a pull request and then fail out of ever knowing it
 
 `pr_number` is written on the ship path. A session that clones, plans, commits,

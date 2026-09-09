@@ -732,7 +732,22 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     if (!inner) return undefined;
     return (async (params) => {
       await ensureBackendReady();
-      return inner(params);
+      // The watchdog windows are supplied HERE, at the one place every
+      // structured role passes through, rather than at each of the six call
+      // sites. A role that forgets to pass them does not get a quiet default:
+      // there is nowhere to forget them.
+      //
+      // This is the fix for the incident. `loop.sdk_first_token_timeout_seconds`
+      // reached the worker roles through `runWorker` and reached the structured
+      // ones through nothing at all, so `runWorkerAcp` fell back to its own 30s
+      // and the reviewer died before its first token three times against a
+      // deadline no operator had chosen. An explicit caller value still wins,
+      // so this sets a floor of configuration, not a ceiling.
+      return inner({
+        ...params,
+        firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds ?? config.loop.sdk_first_token_timeout_seconds,
+        streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds ?? config.loop.sdk_stream_open_timeout_seconds,
+      });
     }) as typeof inner;
   };
 
@@ -1341,6 +1356,11 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             const r = await runAdversarySdk({
               ...params,
               execute: executorFor("adversary"),
+              // Belt and braces with the `executorFor` wrapper: the adversary
+              // is the role the incident happened to, and it is also the only
+              // one that drives its own ladder, so it states the deadline it
+              // expects rather than relying on a layer below to remember.
+              firstTokenTimeoutSeconds: config.loop.sdk_first_token_timeout_seconds,
               apiKey: await apiKeyForRole("adversary"),
               logger: api.logger,
             });

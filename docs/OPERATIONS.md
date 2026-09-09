@@ -184,8 +184,43 @@ Implication for long-running sessions: **there is no TTL**. If a PAT is rotated 
 
 Tokens are never persisted to disk by the credentials adapter, never written to `.git/config`, and never appear in the process argv (git operations use short-lived `x-access-token` URLs).
 
+## Tuning the reviewer's start-up deadline
+
+The three watchdogs around a model turn measure different things and are tuned
+separately. Raising the wrong one changes nothing, which is worth knowing before
+you start.
+
+| Setting | Bounds | Fires when |
+| --- | --- | --- |
+| `loop.sdk_stream_open_timeout_seconds` | 10–600, default 120 | the backend was launched but never opened its stream |
+| `loop.sdk_first_token_timeout_seconds` | 10–1800, default 30 | the stream opened but no token arrived |
+| `loop.adversary_timeout_seconds` | default 900 | the whole review exceeded its budget |
+
+The overall budget is the hard limit. The two phase deadlines sit inside it and
+cannot extend it, so setting a first-token window larger than the overall one
+just means the overall one fires first.
+
+**Which to raise.** Read the failure message; as of rc.4 it names the phase and
+the deadline it was actually given. "The backend opened its stream but produced
+no token within 30s" is the first-token window. "The backend never opened its
+stream" is the stream-open window, which is usually a launch or credentials
+problem rather than a slow model. A structured role running on the Claude Code
+SDK has no first-token phase at all — text arrives only when the turn completes
+— so for those roles the first-token setting does nothing and stream-open is the
+one to raise.
+
+Changes take effect on the next run; no restart is needed beyond the harness
+picking up its configuration. Nothing needs to be re-linked or resumed.
+
+**One caveat if you are reading old logs.** Before rc.4 this setting reached the
+worker roles but not the six structured ones, so a reviewer on an ACP backend
+always used a hard-coded 30 seconds no matter what the config said. A log line
+reporting a 30-second first-token timeout from before rc.4 is not evidence about
+your configured value, because your configured value was never consulted.
+
 ## Troubleshooting
 
+- **The adversary timed out before its first token**: the review failed closed and nothing shipped — this is not a review that passed, and the session keeps its worktree. Raise `loop.sdk_first_token_timeout_seconds` (see above) if the backend is merely slow to start; if it never opened its stream, check the backend's launch and credentials instead. The harness will not retry a timeout as a formatting problem, so repeated identical timeouts mean the backend, not the prompt.
 - **PAT push rejected with 403 (SAML)**: the org enforces SAML SSO. Authorise the PAT in the org's PAT settings, then retry. Alternative: emit `git format-patch` to a workspace directory and apply locally (see MEMORY.md).
 - **Vercel logs empty**: preview deploy has not landed yet. Adversary receives an explicit "NO RUNTIME DATA" banner and will not sign off on runtime concerns. Wait or increase `previewWaitSeconds`.
 - **Session stuck in `crystallising`**: user never replied. Manually mark `aborted` in `sessions` or let the harness time out (default 24h).

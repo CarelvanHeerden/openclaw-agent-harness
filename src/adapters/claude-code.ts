@@ -52,7 +52,7 @@ import {
 import { evaluateStreamSlowTick } from "./shared/stream.js";
 import { CHUNK_MAX_BYTES, DIFF_SINGLE_CHUNK_BYTES, splitDiffOnFileBoundaries } from "./shared/diff.js";
 import { PRICES, isUnknownModel, mostExpensivePrice } from "./shared/pricing.js";
-import { runStructuredLadder } from "./shared/structured.js";
+import { runStructuredLadder, type StructuredTimeout } from "./shared/structured.js";
 import { subTaskSizingInstruction, type BackendCapabilities, type CapabilityTier } from "./backend.js";
 
 // Re-exported so the many existing importers of this module keep working. The
@@ -825,6 +825,19 @@ export interface StructuredExecParams<T> {
   apiKey?: string;
   maxOutputTokens?: number;
   streamOpenTimeoutSeconds?: number;
+  /**
+   * Phase-2 deadline: stream open -> first token. From
+   * `loop.sdk_first_token_timeout_seconds`.
+   *
+   * ACP-only in effect, and deliberately so. `structuredCall` does not enable
+   * partial messages, so on the SDK path assistant text arrives only when the
+   * turn COMPLETES and a first-token timer would fire on every legitimately
+   * slow call -- see the note on `streamOpenTimeoutSeconds` below. It is
+   * declared on the shared params rather than on the ACP ones because the
+   * caller does not know which backend its role is pointed at; the SDK
+   * executor ignores it, which is the correct behaviour and not an oversight.
+   */
+  firstTokenTimeoutSeconds?: number;
   skipParse?: boolean;
 }
 
@@ -836,6 +849,14 @@ export interface StructuredExecResult<T> {
   tokensOut: number;
   raw: string;
   stopReason: string | null;
+  /**
+   * Set when a watchdog ended the turn instead of the model finishing it.
+   *
+   * Optional so the SDK executor, which has no such classification, is
+   * unchanged. A caller must treat `undefined` as "not known to have timed
+   * out", never as "definitely completed".
+   */
+  timeout?: StructuredTimeout | null;
 }
 
 /**
@@ -883,7 +904,22 @@ async function structuredCall<T>(params: {
    * on the very failure the ladder exists to climb out of.
    */
   skipParse?: boolean;
-}): Promise<{ parsed: T; sdkSessionId: string; costUsd: number; tokensIn: number; tokensOut: number; raw: string; stopReason: string | null }> {
+}): Promise<{
+  parsed: T;
+  sdkSessionId: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  raw: string;
+  stopReason: string | null;
+  /**
+   * Always `null` here, and that is a statement rather than a stub: on this
+   * path a RETURN means the turn completed. The SDK's stream-open wedge throws
+   * (carrying its own `timeout`), and there is no first-token phase to time out
+   * because partial messages are not enabled -- see `streamOpenTimeoutSeconds`.
+   */
+  timeout: StructuredTimeout | null;
+}> {
   const sdk = await loadSdk();
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), params.timeoutSeconds * 1000);
@@ -1021,11 +1057,20 @@ async function structuredCall<T>(params: {
     // beta.99 (P0-7): re-label a stream-open wedge so it is distinguishable
     // from a genuine model/JSON failure and can be retried on a fresh session.
     if (streamOpenTimedOut) {
-      throw new Error(
+      const e = new Error(
         `[stream_open_timeout] the SDK stream never opened within ${Math.round(streamOpenWindowMs / 1000)}s ` +
           `(subprocess or upstream POST wedged before the first byte); aborted instead of waiting out the ` +
           `full ${params.timeoutSeconds}s call timeout`,
       );
+      // rc.4: the same structural classification the ACP path returns, on the
+      // path that throws instead. A caller deciding whether to re-ask for
+      // better formatting should not have to tell these two apart by regex.
+      (e as Error & { timeout?: StructuredTimeout }).timeout = {
+        kind: "stream_open",
+        deadlineSeconds: Math.round(streamOpenWindowMs / 1000),
+        elapsedMs: Date.now() - startedAt,
+      };
+      throw e;
     }
     throw err;
   } finally {
@@ -1067,7 +1112,7 @@ async function structuredCall<T>(params: {
     const json = extractJson(raw);
     parsed = JSON.parse(json) as T;
   }
-  return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw, stopReason };
+  return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw, stopReason, timeout: null };
 }
 
 
@@ -1917,6 +1962,8 @@ async function reviewOnce(
   params: {
     model: string;
     timeoutSeconds: number;
+    /** `loop.sdk_first_token_timeout_seconds`. Honoured on the ACP path; see StructuredExecParams. */
+    firstTokenTimeoutSeconds?: number;
     apiKey?: string;
     logger?: { warn: (m: string, meta?: unknown) => void };
     execute?: StructuredExecutor;
@@ -1935,6 +1982,7 @@ async function reviewOnce(
         systemPrompt,
         userMessage: correction ? `${userMessage}\n\n${correction}` : userMessage,
         timeoutSeconds: params.timeoutSeconds,
+        firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
         apiKey: params.apiKey,
         // The ladder does the extraction and validation, so the call itself
         // must hand back the RAW reply rather than parsing it first --
@@ -1950,6 +1998,10 @@ async function reviewOnce(
         tokensOut: r.tokensOut,
         sessionId: r.sdkSessionId,
         truncated: r.stopReason === "max_tokens",
+        // Previously `stopReason` was read for `max_tokens` and discarded
+        // otherwise, so a turn that timed out arrived at the ladder looking
+        // exactly like one that had answered with an empty string.
+        timeout: r.timeout ?? null,
       };
     },
   });
@@ -1962,6 +2014,14 @@ export async function runAdversarySdk(params: {
   systemPrompt: string;
   diffText: string;
   timeoutSeconds: number;
+  /**
+   * `loop.sdk_first_token_timeout_seconds`, forwarded to each chunk's call.
+   *
+   * Every chunk of a chunked review gets the same deadline: the phase this
+   * bounds is the backend starting to speak, which does not get easier on
+   * chunk seven than it was on chunk one.
+   */
+  firstTokenTimeoutSeconds?: number;
   apiKey?: string;
   /** rc.3: optional; records what cross-chunk deduplication collapsed. */
   logger?: { info?: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void };

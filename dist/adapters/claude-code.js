@@ -732,9 +732,18 @@ async function structuredCall(params) {
         // beta.99 (P0-7): re-label a stream-open wedge so it is distinguishable
         // from a genuine model/JSON failure and can be retried on a fresh session.
         if (streamOpenTimedOut) {
-            throw new Error(`[stream_open_timeout] the SDK stream never opened within ${Math.round(streamOpenWindowMs / 1000)}s ` +
+            const e = new Error(`[stream_open_timeout] the SDK stream never opened within ${Math.round(streamOpenWindowMs / 1000)}s ` +
                 `(subprocess or upstream POST wedged before the first byte); aborted instead of waiting out the ` +
                 `full ${params.timeoutSeconds}s call timeout`);
+            // rc.4: the same structural classification the ACP path returns, on the
+            // path that throws instead. A caller deciding whether to re-ask for
+            // better formatting should not have to tell these two apart by regex.
+            e.timeout = {
+                kind: "stream_open",
+                deadlineSeconds: Math.round(streamOpenWindowMs / 1000),
+                elapsedMs: Date.now() - startedAt,
+            };
+            throw e;
         }
         throw err;
     }
@@ -781,7 +790,7 @@ async function structuredCall(params) {
         const json = extractJson(raw);
         parsed = JSON.parse(json);
     }
-    return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw, stopReason };
+    return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw, stopReason, timeout: null };
 }
 export async function runClassifierSdk(params) {
     const groundingBlock = params.grounding ? renderGroundingBlock(params.grounding) : "";
@@ -1489,6 +1498,7 @@ async function reviewOnce(params, systemPrompt, userMessage, label) {
                 systemPrompt,
                 userMessage: correction ? `${userMessage}\n\n${correction}` : userMessage,
                 timeoutSeconds: params.timeoutSeconds,
+                firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
                 apiKey: params.apiKey,
                 // The ladder does the extraction and validation, so the call itself
                 // must hand back the RAW reply rather than parsing it first --
@@ -1504,6 +1514,10 @@ async function reviewOnce(params, systemPrompt, userMessage, label) {
                 tokensOut: r.tokensOut,
                 sessionId: r.sdkSessionId,
                 truncated: r.stopReason === "max_tokens",
+                // Previously `stopReason` was read for `max_tokens` and discarded
+                // otherwise, so a turn that timed out arrived at the ladder looking
+                // exactly like one that had answered with an empty string.
+                timeout: r.timeout ?? null,
             };
         },
     });

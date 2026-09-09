@@ -147,6 +147,33 @@ async function runTurn(id, sessionId) {
       update(sessionId, { sessionUpdate: "tool_call", kind: "execute", title: "thinking" });
       return;
 
+    // Opens the stream, thinks for FAKE_ACP_FIRST_TOKEN_DELAY_MS, then answers
+    // with valid JSON. A slow reviewer rather than a wedged one: whether this
+    // succeeds is decided entirely by the first-token deadline it is run
+    // against, which is the property the incident turned on.
+    case "slow-first-token": {
+      update(sessionId, { sessionUpdate: "tool_call", kind: "execute", title: "thinking" });
+      const delay = Number(process.env.FAKE_ACP_FIRST_TOKEN_DELAY_MS ?? 400);
+      await new Promise((r) => setTimeout(r, delay));
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { text: '{"verdict":"revise","findings":[],"summary":"slow but answered"}' },
+      });
+      return reply(id, { stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 11 } });
+    }
+
+    // Opens the stream and emits a PARTIAL, unclosed JSON document, then never
+    // finishes. The dangerous shape: there is text, and it looks like the start
+    // of a review, so anything that repairs truncated JSON could close it into
+    // a valid-looking verdict that the model never reached.
+    case "partial-then-hang":
+      update(sessionId, { sessionUpdate: "tool_call", kind: "execute", title: "thinking" });
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { text: '{"verdict":"pass","findings":[],"summ' },
+      });
+      return;
+
     case "max-tokens":
       update(sessionId, { sessionUpdate: "agent_message_chunk", content: { text: "partial" } });
       return reply(id, { stopReason: "max_tokens" });

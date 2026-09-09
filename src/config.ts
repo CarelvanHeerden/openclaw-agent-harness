@@ -1136,6 +1136,22 @@ export interface LoopConfig {
    * (4-5ms), while the stall is ALWAYS in PHASE 1 (call-init -> stream-open,
    * see `sdk_stream_open_timeout_seconds`). So the phase-2 default is LOWERED
    * 90 -> 30 (still generous vs a <10ms healthy phase 2). Clamped to [10, 1800].
+   *
+   * rc.4: this also governs the SIX STRUCTURED ROLES (adversary, lead,
+   * crystalliser, classifier, revise_spec, worker_context) -- but only where
+   * they run on an ACP backend such as OpenCode, and only as of rc.4.
+   *
+   * It was inert for them before. `runWorkerAcp` accepted a first-token window
+   * and defaulted it to 30s; nothing on the structured path ever passed one, so
+   * this setting configured the worker roles and quietly did nothing for the
+   * other six. An operator whose reviewer kept dying before its first token
+   * could raise this as far as the 1800s ceiling and watch it fail at 30s
+   * every time, against a deadline that appeared in no configuration file.
+   *
+   * On the Claude Code SDK path it remains deliberately inapplicable: that path
+   * does not enable partial messages, so assistant text arrives only when the
+   * turn COMPLETES and a first-token timer would fire on every legitimately
+   * slow call. Raise `sdk_stream_open_timeout_seconds` for those roles instead.
    */
   sdk_first_token_timeout_seconds?: number;
   /**

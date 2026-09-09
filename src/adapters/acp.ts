@@ -53,6 +53,44 @@ export type WorkerStopReason =
   | "first_token_timeout";
 
 /**
+ * WHICH deadline ran out.
+ *
+ * The three watchdogs measure different things, but two of them report the
+ * same `stopReason`: a stream that never opened and a stream that opened and
+ * then said nothing both end as `first_token_timeout`, because the loop's
+ * retry logic wants one answer to "retry on a fresh session?" for both. That
+ * conflation is deliberate and is kept.
+ *
+ * What it cannot do is tell an operator which timer to raise. On the incident
+ * this type was added for, the reviewer died before its first token on all
+ * three attempts and the only number anyone could see was "30s" -- which
+ * matched no configured value, because it was `runWorkerAcp`'s own default and
+ * the configured one had never been passed in. Reporting the deadline the
+ * watchdog actually armed, next to the phase it belongs to, is what makes that
+ * visible without reading the source.
+ */
+export type AcpTimeoutKind = "stream_open" | "first_token" | "overall";
+
+export interface AcpTimeoutInfo {
+  kind: AcpTimeoutKind;
+  /** The deadline that was armed, in seconds. The EFFECTIVE value, not the configured one. */
+  deadlineSeconds: number;
+  /** Wall time from turn start to the abort. */
+  elapsedMs: number;
+}
+
+/** Human-readable, for an error a person has to act on. */
+export function describeAcpTimeout(t: AcpTimeoutInfo): string {
+  const phase =
+    t.kind === "stream_open"
+      ? "the backend never opened its stream"
+      : t.kind === "first_token"
+        ? "the backend opened its stream but produced no token"
+        : "the turn exceeded its overall budget";
+  return `${phase} within ${t.deadlineSeconds}s (waited ${Math.round(t.elapsedMs / 1000)}s)`;
+}
+
+/**
  * `max_turn_requests` and `refusal` have no harness equivalent. Both mean the
  * turn ended without finishing the work, which is what `tool_error` signals to
  * the retry logic. The raw reason is preserved in logsExcerpt for the audit.
@@ -159,6 +197,14 @@ export interface RunWorkerAcpResult {
   finalMessage: string;
   streamOpened: boolean;
   msToFirstToken?: number;
+  /**
+   * Set when a watchdog ended the turn; `null` when the agent finished.
+   *
+   * `stopReason` says the turn was cut short and roughly how, but a caller
+   * deciding whether to parse the reply needs to know that there IS no reply
+   * to parse, and which deadline to report to the operator. See `AcpTimeoutInfo`.
+   */
+  timeout: AcpTimeoutInfo | null;
   /** Cache tokens, when the agent reported a split. Priced separately in M8. */
   tokensCached?: number;
   /**
@@ -560,6 +606,8 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
   };
 
   let abortReason: WorkerStopReason | null = null;
+  /** Which deadline ran out, kept separately from the coarser `abortReason`. */
+  let timeoutInfo: AcpTimeoutInfo | null = null;
   const timers: NodeJS.Timeout[] = [];
   const arm = (ms: number, fn: () => void): void => {
     const t = setTimeout(fn, ms);
@@ -571,13 +619,17 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
   arm(streamOpenTimeoutSeconds * 1000, () => {
     if (!streamOpened) {
       abortReason = "first_token_timeout";
+      timeoutInfo = { kind: "stream_open", deadlineSeconds: streamOpenTimeoutSeconds, elapsedMs: Date.now() - startedAt };
       pushLog(`[acp] stream-open watchdog fired after ${streamOpenTimeoutSeconds}s`);
       reap();
     }
   });
-  // Overall turn budget.
+  // Overall turn budget. The hard limit: it is armed unconditionally at turn
+  // start and is never rearmed, extended or disarmed by either phase timer, so
+  // no combination of the other two can outlast it.
   arm(timeoutSeconds * 1000, () => {
     abortReason = "timeout";
+    timeoutInfo = { kind: "overall", deadlineSeconds: timeoutSeconds, elapsedMs: Date.now() - startedAt };
     pushLog(`[acp] turn timeout after ${timeoutSeconds}s`);
     reap();
   });
@@ -590,6 +642,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
       arm(firstTokenTimeoutSeconds * 1000, () => {
         if (msToFirstToken === undefined) {
           abortReason = "first_token_timeout";
+          timeoutInfo = { kind: "first_token", deadlineSeconds: firstTokenTimeoutSeconds, elapsedMs: Date.now() - startedAt };
           pushLog(`[acp] first-token watchdog fired after ${firstTokenTimeoutSeconds}s`);
           reap();
         }
@@ -949,6 +1002,10 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     contextSize,
     deniedToolCalls: denied,
     unguardedReads,
+    // `null` when the turn ended on its own terms. A caller must be able to
+    // tell "the model answered with nothing" from "we stopped waiting", and
+    // `finalMessage: ""` looks identical in both cases.
+    timeout: timeoutInfo,
   };
 }
 
@@ -1001,8 +1058,20 @@ export interface RunStructuredAcpParams<T> {
   model: string;
   /** ACP thought-level value, when the role configured one. */
   effort?: string;
+  /** The overall turn budget, and the hard limit: the phase timers below cannot outlast it. */
   timeoutSeconds: number;
   streamOpenTimeoutSeconds?: number;
+  /**
+   * Phase-2 deadline: stream open -> first token.
+   *
+   * The reason this is here at all. `runWorkerAcp` has always accepted it and
+   * defaults it to 30s, but nothing on the structured path passed it, so
+   * `loop.sdk_first_token_timeout_seconds` governed the worker roles and was
+   * silently inert for the six structured ones. An operator who raised it
+   * because their reviewer was slow to start saw no change and no explanation,
+   * because the 30s in the logs was a default they had never set.
+   */
+  firstTokenTimeoutSeconds?: number;
   validation: JsonValidationOptions<T>;
   maxAttempts?: number;
   secretToken?: string;
@@ -1038,6 +1107,8 @@ export interface RunStructuredAcpResult<T> {
    */
   raw: string;
   stopReason: WorkerStopReason | null;
+  /** The deadline that ended the last turn, or `null` if the agent finished it. */
+  timeout: AcpTimeoutInfo | null;
 }
 
 /**
@@ -1074,6 +1145,7 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
   };
 
   let lastStopReason: WorkerStopReason | null = null;
+  let lastTimeout: AcpTimeoutInfo | null = null;
 
   const runTurn = async (correction: string | null) => {
     const turn = await runWorkerAcp({
@@ -1085,6 +1157,7 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
       effort: params.effort,
       timeoutSeconds: params.timeoutSeconds,
       streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
+      firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
       acpGuard: denyAll,
       secretToken: params.secretToken,
       logger: params.logger,
@@ -1099,8 +1172,13 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
     // this path discards. Whatever the agent put on stderr, and the stop
     // reason it ended on, are the only evidence there is.
     if (turn.finalMessage.trim().length === 0) {
-      params.logger?.warn(`[acp/${params.role}] turn produced NO text at all`, {
+      params.logger?.warn(
+        turn.timeout
+          ? `[acp/${params.role}] turn produced NO text: ${describeAcpTimeout(turn.timeout)}`
+          : `[acp/${params.role}] turn produced NO text at all`,
+        {
         role: params.role,
+        timeout: turn.timeout,
         stopReason: turn.stopReason,
         denied: turn.deniedToolCalls.length,
         tokensIn: turn.tokensIn,
@@ -1109,8 +1187,10 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
         contextUsed: turn.contextUsed ?? null,
         contextSize: turn.contextSize ?? null,
         logsTail: turn.logsExcerpt.slice(-1500),
-      });
+        },
+      );
     }
+    lastTimeout = turn.timeout;
     return {
       raw: turn.finalMessage,
       costUsd: turn.costUsd,
@@ -1118,6 +1198,11 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
       tokensOut: turn.tokensOut,
       sessionId: turn.sdkSessionId,
       truncated: turn.stopReason === "max_tokens",
+      // The ladder checks this BEFORE it tries to extract JSON. A turn we
+      // stopped waiting for has no reply to parse, and treating its silence as
+      // a formatting mistake is what produced three "no JSON in output"
+      // attempts against a backend that had not spoken once.
+      timeout: turn.timeout,
     };
   };
 
@@ -1136,6 +1221,7 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
       repaired: false,
       raw: turn.raw,
       stopReason: lastStopReason,
+      timeout: lastTimeout,
     };
   }
 
@@ -1157,6 +1243,7 @@ export async function runStructuredAcp<T>(params: RunStructuredAcpParams<T>): Pr
     repaired: r.repaired,
     raw: r.raw,
     stopReason: lastStopReason,
+    timeout: lastTimeout,
   };
 }
 
