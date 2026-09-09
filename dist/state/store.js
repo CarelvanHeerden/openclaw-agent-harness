@@ -115,6 +115,14 @@ export function openStateStoreSync(pathHint) {
         { table: "sessions", column: "revision_start_sha", type: "TEXT" }, // PR head before any revision work
         { table: "sessions", column: "original_feature_brief", type: "TEXT" }, // JSON: the root feature brief
         { table: "sessions", column: "operator_revision_brief", type: "TEXT" }, // JSON: { guidance, directives }
+        // rc.4: an operator-recovered PR association. `pr_number` is written on the
+        // ship path only, so a session that failed after its PR existed had no way
+        // to say so and no way to be revised.
+        { table: "sessions", column: "pr_link_state", type: "TEXT" }, // 'recovered' when a human asserted the link
+        { table: "sessions", column: "pr_linked_at", type: "INTEGER" }, // epoch ms
+        { table: "sessions", column: "pr_linked_by", type: "TEXT" }, // slack user id of the operator
+        { table: "sessions", column: "pr_link_head_sha", type: "TEXT" }, // PR head sha the evidence was gathered against
+        { table: "sessions", column: "pr_link_evidence", type: "TEXT" }, // JSON: the checks that passed
     ];
     for (const m of additiveMigrations) {
         try {

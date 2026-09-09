@@ -185,7 +185,9 @@ test("the tool description tells the caller what guidance cannot do", () => {
 });
 
 test("guidance is threaded from the tool input into the brief", () => {
-  assert.match(regSrc, /const \{ requester, prNumber, sessionId, budgetUsd, dropFindings, guidance \} = input as/);
+  // rc.4 added `repo` to disambiguate a PR number across repositories, so the
+  // destructure is matched by its ends rather than by an exact field list.
+  assert.match(regSrc, /const \{ requester, prNumber, sessionId,[^}]*\bguidance \} = input as/);
   assert.match(regSrc, /buildReviseBrief\(row, \{ dropFindings, guidance \}\)/);
   assert.match(regSrc, /const guidance = normaliseGuidance\(opts\.guidance\);/, "and normalised on the way in");
 });

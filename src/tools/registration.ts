@@ -708,6 +708,63 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     ),
   );
 
+  // ---- harness_link_pr (rc.4) ----
+  //
+  // The supported repair for a session that produced a PR and then failed
+  // before recording it. StitchGuard session 112673df pushed nine commits and
+  // opened PR #1168; the failure came before `pr_number` was written, so
+  // `harness_revise` -- the one workflow that could have updated that PR --
+  // refused the row for having no PR to revise.
+  //
+  // Read-only by default. The apply is a second call carrying the head sha the
+  // dry run reported, so an operator cannot approve one PR and link another.
+  disposers.push(
+    toDispose(
+      api.registerTool({
+        name: "harness_link_pr",
+        description:
+          "Recover the association between a FAILED harness session and the pull request it already produced, so harness_revise can update that same PR instead of rebuilding the feature. " +
+          "DRY RUN BY DEFAULT: called without `apply: true` it writes nothing and reports the proposed association, the evidence for it, and any blockers. " +
+          "To apply, call again with `apply: true` and `expectedHeadSha` set to the head sha the dry run reported — the apply re-reads the PR and refuses if the head has moved. " +
+          "Verification is against provider metadata, not the branch name: the repository, head repository (a fork is refused), head branch, base branch, open/unmerged state, and above all whether the session's own recorded commits are actually on the PR. " +
+          "Linking is an association ONLY. It does not start a run, push, create or merge a PR, and it does not change the session's failed status, findings, spend or merge recommendation — a linked PR still needs a fresh adversary review before it can merge. " +
+          "Params: { sessionId, repo: 'owner/name', prNumber, invokedBy, apply?, expectedHeadSha? }. invokedBy must be in slack.authorised_users.",
+        parameters: {
+          type: "object",
+          properties: {
+            sessionId: { type: "string", minLength: 1, description: "The failed session whose work is already on the PR." },
+            repo: {
+              type: "string",
+              minLength: 3,
+              description: "Repository as 'owner/name'. REQUIRED: a PR number alone is ambiguous across repositories, and must match the repo the session ran against.",
+            },
+            prNumber: { type: "number", minimum: 1, description: "The existing pull request number in that repository." },
+            invokedBy: { type: "string", minLength: 1, description: "Slack user id of the operator. REQUIRED; must be in slack.authorised_users." },
+            apply: {
+              type: "boolean",
+              description: "Default false (dry run, writes nothing). Set true to persist the association; requires expectedHeadSha.",
+            },
+            expectedHeadSha: {
+              type: "string",
+              minLength: 7,
+              description: "The PR head sha reported by the dry run. Required when apply is true; a head that has moved since refuses the apply.",
+            },
+          },
+          required: ["sessionId", "repo", "prNumber", "invokedBy"],
+          additionalProperties: false,
+        },
+        execute: async (_callId: unknown, input: unknown) => {
+          const { sessionId, repo, prNumber, invokedBy, apply, expectedHeadSha } = input as {
+            sessionId: string; repo: string; prNumber: number; invokedBy: string;
+            apply?: boolean; expectedHeadSha?: string;
+          };
+          const res = await liveRuntime().linkPr({ sessionId, repo, prNumber, invokedBy, apply, expectedHeadSha });
+          return { content: [{ type: "text", text: res.message }], details: res };
+        },
+      }),
+    ),
+  );
+
   disposers.push(
     toDispose(
       api.registerTool({
@@ -2808,25 +2865,55 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     merge_recommendation_reason: string | null;
     crystallised_prompt: string | null;
     created_at: number;
+    /** rc.4: 'recovered' when an operator linked the PR after a failure. */
+    pr_link_state: string | null;
+    status: string;
   }
+
+  /** The columns every revisable-row read selects. One list, so they cannot drift. */
+  const REVISABLE_COLUMNS = `id, repo, branch, pr_number, final_pr_url, merge_recommendation,
+                merge_recommendation_reason, crystallised_prompt, created_at, pr_link_state, status`;
 
   // A session is "revisable" iff it shipped a PR that isn't merge-ready.
   // status='done' (shipped), pr_number present, and merge_recommendation is
   // anything other than 'merge' (do_not_merge, or null when shipped at max
   // cycles without a clean pass).
+  //
+  // rc.4: or it FAILED holding a PR an operator has since linked back to it.
+  // Those never reach status='done' -- the failure is what lost the PR in the
+  // first place -- so the ship-path filter hid exactly the sessions that most
+  // need revising. Their status stays 'failed'; only their visibility changes.
   function listRevisableRows(): RevisableRow[] {
     return liveDb()
       .prepare(
-        `SELECT id, repo, branch, pr_number, final_pr_url, merge_recommendation,
-                merge_recommendation_reason, crystallised_prompt, created_at
+        `SELECT ${REVISABLE_COLUMNS}
            FROM sessions
-          WHERE status = 'done'
-            AND pr_number IS NOT NULL
-            AND (merge_recommendation IS NULL OR merge_recommendation != 'merge')
+          WHERE pr_number IS NOT NULL
+            AND (
+                  (status = 'done' AND (merge_recommendation IS NULL OR merge_recommendation != 'merge'))
+               OR (pr_link_state = 'recovered' AND (pr_merged IS NULL OR pr_merged = 0))
+            )
           ORDER BY created_at DESC
           LIMIT 50`,
       )
       .all() as unknown as RevisableRow[];
+  }
+
+  /**
+   * rc.4: true when a session has no adversary review AT ALL.
+   *
+   * `latestFindings` returning undefined already meant this, but every caller
+   * read it as "no findings", which is the opposite conclusion: a session that
+   * was never reviewed has an unknown verdict, not a clean one. A recovered
+   * session that failed before its first review is exactly this shape, and the
+   * revise brief built from it used to read "the adversary review returned
+   * revise with 0 finding(s)" -- a sentence describing a review that never ran.
+   */
+  function hasNoReviewContext(sessionId: string): boolean {
+    const r = liveDb()
+      .prepare(`SELECT 1 AS present FROM reviews WHERE session_id = ? LIMIT 1`)
+      .get(sessionId) as { present: number } | undefined;
+    return !r;
   }
 
   // Load the LATEST review's findings for a session (highest cycle).
@@ -2869,6 +2956,14 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
       reason: row.merge_recommendation_reason ?? null,
       findingCount: fnd?.findings.length ?? 0,
       lastVerdict: fnd?.verdict ?? null,
+      // rc.4: a recovered row is a FAILED session whose PR an operator linked
+      // back to it. It appears here so it can be revised, and these two fields
+      // are why it must not read like the shipped rows beside it: its status is
+      // still the failure, and `findingCount: 0` on it means nothing reviewed
+      // this PR rather than nothing was wrong with it.
+      status: row.status,
+      linkState: row.pr_link_state ?? null,
+      reviewed: !hasNoReviewContext(row.id),
       // beta.49: expose each finding with its 1-based index + a conditional
       // flag, so a caller can pass dropFindings:[n] for stale/wrong findings
       // and see which will be auto-demoted (verify-premise-first) by C.
@@ -2919,6 +3014,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     opts: { dropFindings?: number[]; guidance?: string } = {},
   ): (RunnableBrief & { _reviseMeta?: { total: number; dropped: number[]; demoted: number[]; guidance?: string } }) | { error: string } {
     const fnd = latestFindings(row.id);
+    const noReviewContext = hasNoReviewContext(row.id);
     let orig: Partial<RunnableBrief> = {};
     try {
       if (row.crystallised_prompt) orig = JSON.parse(row.crystallised_prompt) as Partial<RunnableBrief>;
@@ -2970,8 +3066,18 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     // serve. A worker that reaches finding 3 has already been told what
     // resolving it has to achieve.
     const guidance = normaliseGuidance(opts.guidance);
+    // rc.4: a session that was never reviewed has no findings because nothing
+    // looked, not because nothing is wrong. The brief has to say which, or the
+    // revise reads as a short list of nothing to do and the run treats an
+    // unreviewed PR as an approved one.
+    const unreviewed = noReviewContext;
     const acceptance = [
-      "Address each adversary finding listed below without regressing the original acceptance criteria.",
+      unreviewed
+        ? "This PR has NOT been reviewed by the adversary. There are no findings to address because no review has run, " +
+          "which is NOT the same as a clean review. Treat the original acceptance criteria below as the work to verify, " +
+          "make only the changes needed to satisfy them on the existing branch, and expect a full adversary review of the " +
+          "whole PR at the end of this cycle. Do not assume any part of the existing work has been checked."
+        : "Address each adversary finding listed below without regressing the original acceptance criteria.",
       ...(guidance ? [guidanceAcceptanceLine(guidance)] : []),
       ...(demotedIdx.length
         ? [
@@ -2985,12 +3091,16 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
     }
     const brief: RunnableBrief = {
       title: orig.title ? `Revise: ${orig.title}` : `Revise PR #${row.pr_number}`,
-      motivation:
-        `Revise the existing PR #${row.pr_number} on branch ${row.branch}. The adversary review returned ` +
-        `${fnd?.verdict ?? "revise"} with ${allFindings.length} finding(s)` +
-        (droppedIdx.length ? ` (excluding dropped finding(s) ${droppedIdx.join(", ")})` : "") +
-        (row.merge_recommendation_reason ? ` (merge recommendation: ${row.merge_recommendation_reason})` : "") +
-        `. Build ON the existing branch -- do not start over. Only make the changes needed to resolve the findings.`,
+      motivation: unreviewed
+        ? `Revise the existing PR #${row.pr_number} on branch ${row.branch}. ` +
+          `This PR's session ended before any adversary review ran, so there is no review context and no verdict — ` +
+          `the PR is UNREVIEWED, not approved. Build ON the existing branch -- do not start over. ` +
+          `Complete and correct the work against the original acceptance criteria; a full adversary review runs at the end of the cycle.`
+        : `Revise the existing PR #${row.pr_number} on branch ${row.branch}. The adversary review returned ` +
+          `${fnd?.verdict ?? "revise"} with ${allFindings.length} finding(s)` +
+          (droppedIdx.length ? ` (excluding dropped finding(s) ${droppedIdx.join(", ")})` : "") +
+          (row.merge_recommendation_reason ? ` (merge recommendation: ${row.merge_recommendation_reason})` : "") +
+          `. Build ON the existing branch -- do not start over. Only make the changes needed to resolve the findings.`,
       acceptanceCriteria: acceptance,
       filesLikelyTouched: Array.isArray(orig.filesLikelyTouched) ? orig.filesLikelyTouched : [],
       outOfScope: Array.isArray(orig.outOfScope)
@@ -3096,6 +3206,12 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             requester: { type: "string", minLength: 1, description: "Slack user id of the invoker. Must be in slack.authorised_users." },
             prNumber: { type: "number", description: "PR number to revise. Alternative to sessionId." },
             sessionId: { type: "string", minLength: 1, description: "Shipped session id to revise. Alternative to prNumber." },
+            repo: {
+              type: "string",
+              minLength: 3,
+              description:
+                "Repository as 'owner/name'. Disambiguates `prNumber`, which is only unique within a repository. Required when the same PR number exists in more than one repo the harness has run against.",
+            },
             budgetUsd: { type: "number", minimum: 0.05, description: "Optional per-session budget override for the revise run." },
             dropFindings: {
               type: "array",
@@ -3120,10 +3236,11 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
-          const { requester, prNumber, sessionId, budgetUsd, dropFindings, guidance } = input as {
+          const { requester, prNumber, sessionId, repo, budgetUsd, dropFindings, guidance } = input as {
             requester: string;
             prNumber?: number;
             sessionId?: string;
+            repo?: string;
             budgetUsd?: number;
             dropFindings?: number[];
             guidance?: string;
@@ -3152,19 +3269,44 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           let row: RevisableRow | undefined;
           if (sessionId) {
             row = liveDb()
-              .prepare(
-                `SELECT id, repo, branch, pr_number, final_pr_url, merge_recommendation, merge_recommendation_reason, crystallised_prompt, created_at FROM sessions WHERE id = ?`,
-              )
+              .prepare(`SELECT ${REVISABLE_COLUMNS} FROM sessions WHERE id = ?`)
               .get(sessionId) as unknown as RevisableRow | undefined;
+            if (row && repo && row.repo.trim().toLowerCase() !== repo.trim().toLowerCase()) {
+              return {
+                content: [{ type: "text", text: `Session ${sessionId} ran against ${row.repo}, not ${repo}.` }],
+                details: { ok: false, repoMismatch: true, sessionRepo: row.repo },
+              };
+            }
           } else if (prNumber !== undefined) {
-            row = liveDb()
+            // rc.4: a PR number is only unique WITHIN a repository. This lookup
+            // took the most recent row with that number across every repo the
+            // harness has ever run against, so with two repos in play it could
+            // resolve #1168 to the wrong feature entirely and revise it. The
+            // recovery path makes that more likely, not less: linking populates
+            // `pr_number` on rows that never had one.
+            const candidates = liveDb()
               .prepare(
-                `SELECT id, repo, branch, pr_number, final_pr_url, merge_recommendation, merge_recommendation_reason, crystallised_prompt, created_at FROM sessions WHERE pr_number = ? ORDER BY created_at DESC LIMIT 1`,
+                `SELECT ${REVISABLE_COLUMNS} FROM sessions WHERE pr_number = ?${repo ? ` AND lower(repo) = lower(?)` : ``} ORDER BY created_at DESC`,
               )
-              .get(prNumber) as unknown as RevisableRow | undefined;
+              .all(...(repo ? [prNumber, repo] : [prNumber])) as unknown as RevisableRow[];
+            const repos = [...new Set(candidates.map((c) => c.repo.toLowerCase()))];
+            if (repos.length > 1) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      `PR #${prNumber} is ambiguous: it matches sessions in ${repos.length} repositories (${repos.join(", ")}). ` +
+                      `Pass \`repo\` to say which one, or pass \`sessionId\`.`,
+                  },
+                ],
+                details: { ok: false, ambiguous: true, repos },
+              };
+            }
+            row = candidates[0];
           }
           if (!row) {
-            return { content: [{ type: "text", text: `No shipped session found for ${sessionId ? `session ${sessionId}` : `PR #${prNumber}`}.` }], details: { ok: false, notFound: true } };
+            return { content: [{ type: "text", text: `No shipped session found for ${sessionId ? `session ${sessionId}` : `PR #${prNumber}${repo ? ` in ${repo}` : ``}`}.` }], details: { ok: false, notFound: true } };
           }
           if (!row.pr_number || !row.branch) {
             return { content: [{ type: "text", text: `Session ${row.id} has no PR/branch to revise.` }], details: { ok: false, noPr: true } };

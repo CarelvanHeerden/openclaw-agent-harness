@@ -1345,6 +1345,22 @@ export declare class OrchestratorLoop {
      * because the crash path released the worktree; preserving it means a human
      * can `git log`/push the branch manually even when the harness couldn't.
      */
+    /**
+     * rc.4: the recovery instruction on a preserved-worktree failure.
+     *
+     * This used to say "run harness_resume to continue". `harness_resume` refuses
+     * a terminal session and replies "it is terminal (failed). Use harness_revise
+     * to start a fresh revise" -- and `harness_revise` refuses a row with no PR.
+     * So the one message written specifically to tell an operator how to recover
+     * named a tool that sent them to a second tool that refused them, in exactly
+     * the situation the message exists for.
+     *
+     * The route depends on what the failure left behind, so the instruction does
+     * too: a session that got as far as opening a PR can be revised directly, one
+     * whose PR exists but was never recorded needs linking first, and one that
+     * never pushed has only its worktree.
+     */
+    private preservedWorktreeRecoveryAction;
     private finaliseFailedPreserveWorktree;
     /**
      * beta.63 (Part A): the LATE-STAGE STALL WATCHDOG.

@@ -60,6 +60,99 @@ If the container is restarted mid-session:
 5. If no per-worker session exists (interrupted during planning), the harness
    resumes from the crystallised prompt with the lead replay path.
 
+## Recovering a PR whose session failed
+
+A session writes `pr_number` on the ship path only. A run that pushed its work,
+opened a pull request and *then* failed holds neither the number nor the URL, so
+`harness_revise` refuses it ("has no PR/branch to revise") and the PR is
+unreachable by the one workflow built to change it.
+
+`harness_link_pr` records the association after the fact. It is deliberately
+two-phase and read-only by default.
+
+**1. Dry run.** Writes nothing.
+
+```
+harness_link_pr {
+  sessionId:  "112673df-68e0-4846-ae97-30121ea2c02d",
+  repo:       "Stitch-Vercel/StitchGuard",
+  prNumber:   1168,
+  invokedBy:  "U…"            // must be in slack.authorised_users
+}
+```
+
+It reports the proposed association, the evidence, and any blockers. Read the
+evidence rather than the verdict: the check that matters is the commit-lineage
+line, because everything else can be true of a PR that is not this session's.
+
+**2. Apply.** Requires the head sha the dry run reported.
+
+```
+harness_link_pr { …as above…, apply: true, expectedHeadSha: "1410e98d…" }
+```
+
+The apply re-reads the PR and re-runs the whole verification. If the head moved
+in between — someone pushed, or the branch was force-pushed — it refuses, because
+the evidence you approved is no longer the evidence in front of it.
+
+### What it verifies
+
+`repo` is required and must match the repository the session ran against: a PR
+number is only unique *within* a repository. Beyond that it checks the head
+repository (a fork is refused, since the harness cannot push a revision to one),
+the head branch, the base branch, that the PR is open and unmerged, and — the
+one that carries the weight — that commit shas the session's own sub-task ledger
+recorded are actually present on the PR.
+
+A matching branch name is explicitly **not** sufficient. Harness branches embed
+the session id, so name-matching would appear to work while accepting a branch
+that had been force-pushed over unrelated work.
+
+### Failure messages, and what each means
+
+| Blocker | What happened | What to do |
+| --- | --- | --- |
+| `repo_mismatch` | The request names a different repository than the session ran against. | Check the session id; nothing about the PR can resolve this. |
+| `head_repo_mismatch` | The PR's head is a fork, or the head repository was deleted. | Not recoverable. A revision cannot push to a fork head. |
+| `branch_mismatch` | The PR's head branch is not the branch the session pushed. | Confirm you have the right PR. |
+| `base_mismatch` | The PR targets a base other than `repos.default_base_branch`. | Retarget the PR, or accept that a revision would be reviewed against the wrong base. |
+| `not_open` / `merged` | The PR is closed, or already merged. | Reopen it first. The harness will not reopen a PR for you, and a merged PR has nothing to revise. |
+| `no_session_commits` | The session's ledger records no commit shas at all. | Not recoverable: there is no evidence tying the session to any PR. |
+| `lineage_mismatch` | None of the session's recorded commits are on the PR. | Usually a force-push, or the wrong PR. Check the branch history. |
+| `base_sha_mismatch` | The PR forks from a different commit than the session planned against. | The PR was built on a different base; confirm it is the right one. |
+| `conflicting_link` | The session already points at another PR, or this PR is already recovered onto another session. | Deliberately not overridable. Unlinking is not offered. |
+| `head_moved` | The PR head changed between the dry run and the apply. | Re-run the dry run and read the evidence again. |
+
+A provider error (404, 503, an expired token) is reported as *"no evidence to
+link on"* rather than as a mismatch. Absence of evidence is never treated as
+permission.
+
+### What linking does not do
+
+It does not start a run, push a commit, create or merge a PR, or touch any other
+session. It leaves `status`, the review findings, the spend and the cycle count
+exactly as the failure left them, and it does not write a merge recommendation —
+so a recovered PR still reads as `do_not_merge` at the merge gate.
+
+A recovered session becomes visible to `harness_list_revisable` (with
+`status: "failed"`, `linkState: "recovered"` and `reviewed: false`) and can be
+revised in the normal way. The revision checks out the existing branch at its
+tip and updates the same PR.
+
+If the session never got as far as a review, the revise brief says the PR is
+**unreviewed** rather than reporting zero findings, and a full adversary review
+runs at the end of the cycle. An unreviewed PR is not an approved one.
+
+### Revise the linked PR before deleting its branch
+
+The link is verified against the PR as it stands when you apply it, and an open
+PR guarantees its head branch exists at that moment. The revise, which may come
+later, checks out `origin/<branch>`; if the branch has been deleted in between,
+the checkout falls back to the base branch and the revise builds from there
+instead of from the PR head. That fallback is recorded as `reset_to_base` in the
+worktree decision log — if you see it on a revise you expected to continue a PR,
+stop and check whether the branch still exists rather than letting the run push.
+
 ## Cost forensics
 
 To investigate a cost spike:

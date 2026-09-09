@@ -51,7 +51,8 @@ import { catalogueStore } from "./state/price-cache.js";
 import { memoiseSuccess } from "./adapters/shared/once.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { buildScoutSystemPrompt, buildScoutUserMessage, SCOUT_ALLOWED_TOOLS, SCOUT_DENIED_TOOLS, SCOUT_MAX_TURNS, } from "./orchestrator/lead-scout.js";
-import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getTokenScopes, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getMergeBase, getTokenScopes, listPullRequestCommits, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { linkPullRequest } from "./orchestrator/pr-link.js";
 import { canPushWorkflows } from "./orchestrator/workflow-scope.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
@@ -1805,6 +1806,56 @@ export function bootstrapHarnessSync(api) {
                 message: `Merged PR #${row.pr_number} (squash, ${mergeSha.slice(0, 12)}).${deployMsg}${repairMessage}`,
             };
         },
+        // ---- rc.4: recover a lost PR association ----
+        //
+        // StitchGuard session 112673df pushed nine commits and opened PR #1168,
+        // then failed before `pr_number` was written. `harness_revise` refuses a row
+        // with no PR, so the PR was unreachable by the one workflow built to change
+        // it, and the documented alternative was to build the feature again.
+        //
+        // The temptation is to write the column by hand. That is the thing this
+        // exists to prevent: a hand-written association is unverified, unaudited,
+        // and indistinguishable afterwards from one the loop made itself.
+        linkPr: async (args) => linkPullRequest({
+            db: state.db,
+            audit: (event, payload, sessionId) => state.audit(event, payload, sessionId),
+            authorisedUsers: config.slack.authorised_users,
+            defaultBaseBranch: config.repos.default_base_branch,
+            // The requester on the session row owns the credential route, not the
+            // operator doing the linking: the link is read against the same access
+            // the run itself had, so recovering a PR cannot reach a repository the
+            // session could not.
+            fetchPr: async ({ repo, prNumber, requester }) => {
+                const resolution = pat.resolve({
+                    slackUserId: requester,
+                    gitHubUser: repo.split("/")[0],
+                    repoFullName: repo,
+                });
+                const ghToken = await resolveGitToken(resolution);
+                const pr = await getPullRequest({ repoFullName: repo, prNumber, ghToken, apiBase: resolution.apiBase });
+                const commits = await listPullRequestCommits({ repoFullName: repo, prNumber, ghToken, apiBase: resolution.apiBase });
+                const mergeBaseSha = await getMergeBase({
+                    repoFullName: repo,
+                    base: pr.baseBranch,
+                    head: pr.headSha,
+                    ghToken,
+                    apiBase: resolution.apiBase,
+                });
+                return {
+                    headRepo: pr.headRepoFullName,
+                    headRef: pr.headRef,
+                    headSha: pr.headSha,
+                    baseRef: pr.baseBranch,
+                    state: pr.state,
+                    merged: pr.merged,
+                    draft: pr.draft,
+                    htmlUrl: pr.htmlUrl,
+                    commitShas: commits.shas,
+                    commitsTruncated: commits.truncated,
+                    mergeBaseSha,
+                };
+            },
+        }, args),
         disposers: [],
     };
     // Tools (sync)

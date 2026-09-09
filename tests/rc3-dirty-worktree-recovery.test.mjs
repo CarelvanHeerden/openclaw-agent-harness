@@ -466,7 +466,13 @@ test("34c: preserving a worktree records where it is and what is in it", skipDis
   assert.equal(preserved.payload.worktreePath, repo.dir);
   assert.equal(preserved.payload.headSha, head);
   assert.deepEqual(preserved.payload.dirtyFiles, ["src/thing.ts"], "'preserved' is not a recovery action without this");
-  assert.match(preserved.payload.recoveryAction, /harness_resume/);
+  // rc.4: this used to assert only that the message mentioned `harness_resume`,
+  // which was the bug -- harness_resume refuses the `failed` status this very
+  // function sets. The message has to point somewhere that actually accepts it.
+  assert.match(preserved.payload.recoveryAction, new RegExp(repo.dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(preserved.payload.recoveryAction, /harness_resume will refuse/);
+  assert.match(preserved.payload.recoveryAction, /harness_link_pr/, "no PR is recorded, so linking comes first");
+  assert.match(preserved.payload.recoveryAction, /harness_revise/);
 });
 
 test("34d: an unreadable status probe never reads as a clean tree", skipDist, async () => {

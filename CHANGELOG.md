@@ -1,5 +1,90 @@
 # Changelog
 
+## Unreleased
+
+### A run could produce a pull request and then fail out of ever knowing it
+
+`pr_number` is written on the ship path. A session that clones, plans, commits,
+pushes and opens a PR — and then fails — never reaches that write, so the row
+holds a branch and no PR. `harness_revise` is the one workflow built to change
+an existing PR, and its first check is whether the row has one, so it refused
+with "has no PR/branch to revise". The PR was real, the work was real, and the
+only supported route to changing it was to build the feature again.
+
+StitchGuard session `112673df` is the case: nine commits, PR #1168 open on
+`harness/sast-sheet-source-code-dashboard-112673df`, and a session row that
+could not see any of it.
+
+The obvious repair is to write the column by hand, and that is the thing worth
+refusing. A hand-written association is unverified, unaudited, and afterwards
+indistinguishable from one the loop made itself. `harness_link_pr` is the
+supported version.
+
+The verification is where the care went, because the obvious check is the wrong
+one. That branch name *contains the session id*, so matching on it would have
+"worked" on this exact case while being equally happy with a branch that had
+been force-pushed over unrelated work, a fork pointing a same-named branch
+somewhere else, or a different repository's #1168. What makes a PR *this
+session's* PR is that the session's own commits are on it, so the load-bearing
+check reads the sub-task ledger's commit shas and asks the provider whether they
+are actually there. Repository, head repository, head branch, base branch,
+open/unmerged state and the fork point are all checked too, and the fork point
+is a second independent tie rather than a substitute for the first. Anything
+that cannot be established is a blocker: a 404 or a dead token reports "no
+evidence to link on" rather than a mismatch, because absence of evidence must
+never read as permission.
+
+It is two-phase for a reason that is not ceremony. The default is a dry run that
+writes nothing and prints the evidence; applying needs a second call carrying
+the head sha the dry run reported, and re-runs the entire verification rather
+than just comparing that sha. So a branch force-pushed between reading and
+confirming refuses, and an operator cannot approve one PR and link another.
+
+What it deliberately leaves alone is the rest of the row. The write sets the
+association columns and nothing else — status stays `failed`, the findings, the
+spend and the cycle count stand, and no merge recommendation is invented, which
+means a recovered PR still reads as `do_not_merge` at the gate. A repeat of the
+same request is a no-op; a second PR on the same session, or a second session on
+the same PR, is refused rather than silently moved.
+
+Two things fell out of making the recovered session revisable. `listRevisableRows`
+filtered on `status = 'done'`, which hid exactly the sessions that need this most
+— the failure is what lost the PR in the first place — so it now also admits
+linked rows, while their status stays `failed` and the picker says so. And the
+revise brief for a session that was never reviewed used to read "the adversary
+review returned revise with 0 finding(s)", a sentence describing a review that
+did not happen and reading, to a worker, exactly like a PR that came back clean.
+It now says the PR is unreviewed, which is not the same as approved.
+
+### The recovery instruction named a tool that refuses the state it was written for
+
+`finaliseFailedPreserveWorktree` exists to keep a failed run's work and tell the
+operator how to get it back. Its instruction said "run `harness_resume` to
+continue" — on a session the same function marks `failed`. `harness_resume`
+refuses a terminal session and replies "it is terminal (failed). Use
+`harness_revise` to start a fresh revise", and `harness_revise` refused a row
+with no PR. The one message written to explain the recovery sent the operator to
+a tool that sent them to a tool that turned them away.
+
+It now depends on what the failure actually left behind: a session that recorded
+its PR is told to revise it, one whose PR exists but was never recorded is told
+to link it first (and that linking is a dry run until `apply`), and one that
+never pushed is told it has a worktree and nothing else. It also says outright
+that `harness_resume` will refuse, rather than letting the operator discover
+that themselves.
+
+### A PR number was treated as unique across every repository
+
+`harness_revise` resolved `prNumber` with `WHERE pr_number = ? ORDER BY
+created_at DESC LIMIT 1`, across every repository the harness had ever run
+against. With two repos in play, "revise 1168" could resolve to the wrong
+feature and revise it.
+
+It was latent before and is not now: recovery populates `pr_number` on rows that
+never had one, so the collision space only grows. The lookup now takes an
+optional `repo`, and refuses with the list of candidates when a number matches
+more than one repository rather than picking the most recent.
+
 ## 2.0.0-rc.3
 
 Safer clarification stewardship, correct revision-review semantics, a stable
