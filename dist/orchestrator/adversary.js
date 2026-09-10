@@ -366,6 +366,7 @@ export async function runAdversary(input, deps) {
     const classifyCtx = {
         repoHasTestScript: input.repoHasTestScript === true,
         runtimeUnavailable,
+        hasDeclaredGenerators: input.hasDeclaredGenerators === true,
     };
     const gated = gateVerdict({
         verdict: result.parsed.verdict,

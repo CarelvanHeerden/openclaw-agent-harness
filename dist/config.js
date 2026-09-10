@@ -165,6 +165,13 @@ const DEFAULTS = {
         max_repair_cycles: 1,
         repair_subtask_enabled: true,
         workflow_runs_fallback: true,
+        // rc.5 (#2): bounded revalidation of the remote branch tip after a push.
+        // Sized for GitHub's brief metadata lag behind a landed ref (observed
+        // during the PR #1168 recovery), NOT for an outage -- four reads over
+        // ~4.5s. A permanent mismatch is a refusal to claim publication, so
+        // raising these buys patience, never a greener answer.
+        publication_verify_attempts: 4,
+        publication_verify_delay_ms: 1500,
     },
     vercel: {
         api_key_env: "VERCEL_TOKEN",
@@ -253,6 +260,9 @@ const DEFAULTS = {
         // for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task
         // (a deterministic diff/tsc rescue), NOT as a verify gate.
         run_repo_check_scripts: false,
+        // rc.5: no generators, and deliberately no built-in default for any
+        // toolchain. An operator declares ownership or nothing is authorized.
+        generators: [],
         check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
         check_script_timeout_seconds: 600,
         typecheck_gate: true,

@@ -500,6 +500,29 @@ export interface OrchestratorDeps {
     /** Read the current HEAD sha of a worktree (for commit_made verification). */
     worktreeHeadSha?: (worktreePath: string) => Promise<string>;
     /**
+     * rc.5 (#2): reads the TRUE tip of `branch` on the remote (`git ls-remote`),
+     * routed through the requester's credentials like every other provider call.
+     *
+     * This is the only thing in the harness that can establish publication.
+     * Everything #1168 mistook for proof -- a preview-enabled flag, a resolved
+     * callback, an existing PR URL, a posted review comment -- was true while 35
+     * commits sat unpushed on local disk. Resolve `undefined` for "no such
+     * branch"; throw only when the remote could not be READ (that is
+     * `verification_unavailable`, which is refused, not assumed green).
+     *
+     * Optional so the many loop test doubles that never reach a ship keep
+     * working; production wires it unconditionally (see index.ts) and
+     * `publicationVerificationRequired` makes its absence a loud, audited
+     * refusal to claim verified publication rather than a silent downgrade.
+     */
+    remoteBranchSha?: (params: {
+        plan: LeadPlan;
+        branch: string;
+        requester?: string;
+    }) => Promise<string | undefined>;
+    /** rc.5 (#2): injectable delay for bounded publication revalidation; keeps tests instant. */
+    sleep?: (ms: number) => Promise<void>;
+    /**
      * rc.3: `git status --porcelain` for a worktree, as the evidence that licenses
      * a no-change exit.
      *
@@ -1060,6 +1083,48 @@ export declare class OrchestratorLoop {
      * Emits `loop.convention_check_ran` per run and `loop.convention_check_failed`
      * per non-zero exit.
      */
+    /**
+     * rc.5: the ClassifyCtx every gating site in the loop must use.
+     *
+     * `hasDeclaredGenerators` has to match what the adversary's own gate used, or
+     * the two disagree about whether a stale-bundle finding blocks: the adversary
+     * would file it `process` (non-blocking) while the loop counted it as a
+     * blocker, and the run would revise on a finding the reviewer had excused.
+     */
+    private get classifyCtx();
+    /**
+     * rc.5: report a broken `verify.generators` mapping as a blocking finding.
+     *
+     * Two failure modes, both of which used to be invisible until they surfaced
+     * as an unexplained contract miss on the generated file:
+     *
+     *   - a REJECTED mapping (ambiguous ownership, a path that escapes the repo,
+     *     a script name that is not a plain script name). The path ends up
+     *     unowned, so nothing regenerates it and nothing exempts it either.
+     *   - MISSING TOOLING: the mapping names a script the worktree's package.json
+     *     does not declare, so the worker cannot run it and the artifact can
+     *     never appear.
+     *
+     * Blocking (`high`) on purpose. This is a configuration fault that makes some
+     * contract unsatisfiable; shipping past it would mean merging a branch whose
+     * derived files are known-absent or known-stale.
+     */
+    private runGeneratorConfigCheck;
+    /**
+     * rc.5: the generated-artifact half of a sub-task's verification context.
+     *
+     * Shared by all three `verifySubTaskOutput` call sites so they cannot drift
+     * on which paths count as derived -- the first pass, the retry, and the
+     * re-verify must agree, or a contract could fail on one and pass on another.
+     *
+     * `generatorScriptDeclared` is resolved against the WORKTREE's package.json,
+     * not the harness's, and is cached per call because the same script is asked
+     * about once per contract. A worktree we cannot read package.json from
+     * reports every script as declared: that downgrades the failure text from
+     * "missing tooling" to "did not run", which is the claim we can still stand
+     * behind without having seen the manifest.
+     */
+    private generatorVerifyCtx;
     private runFinalVerifyChecks;
     /**
      * beta.94 (Feature 1b): DETERMINISTIC FINAL SCOPE CHECK. Replaces the
@@ -1361,6 +1426,69 @@ export declare class OrchestratorLoop {
      * never pushed has only its worktree.
      */
     private preservedWorktreeRecoveryAction;
+    /**
+     * rc.5 (#2): can this run PROVE publication at all?
+     *
+     * True whenever the remote probe is wired. Production wires it
+     * unconditionally; a loop test double that never reaches a ship does not.
+     * Kept as a named getter rather than an inline `!!this.deps.remoteBranchSha`
+     * so the distinction between "verified" and "unverifiable" is a thing the
+     * code says out loud, and so the two branches are separately pinned.
+     */
+    private get publicationVerificationRequired();
+    /**
+     * The commit we are about to claim as published. Empty string when the probe
+     * is missing or the read fails -- callers MUST treat that as
+     * `candidate_unknown` and never as "nothing changed".
+     */
+    private resolveCandidateSha;
+    /**
+     * Read the remote back and decide whether `expectedSha` is really there.
+     * Bounded and cancellable; see `verifyRemoteSha` for why the retry exists
+     * (observed provider metadata lag during the #1168 recovery, NOT a hope that
+     * a failed push will spontaneously succeed).
+     */
+    private verifyPublication;
+    /**
+     * rc.5 (#2): PUBLISH THE CANDIDATE, THEN PROVE IT.
+     *
+     * The single door every ship path goes through. It exists because #1168's
+     * finalisation chose its callback from `previewVerificationEnabled` -- a fact
+     * about CONFIGURATION -- and then reported the result as publication. The
+     * choice here is made from `existing` evidence about THIS EXACT SHA instead:
+     *
+     *   - evidence covers the candidate, and the remote still agrees
+     *       -> the commit is already on the remote. Open/update the PR only.
+     *          (This is what keeps a passing preview run from pushing twice.)
+     *   - anything else -- no evidence, evidence for a DIFFERENT sha (the CI
+     *     workflow got authored after the preview push), or a remote that no
+     *     longer matches
+     *       -> push. A PR-only adapter is never a substitute for a push.
+     *
+     * Then the remote is read back regardless of which branch ran, because a
+     * resolved callback is not evidence. Only a confirmed read mints
+     * {@link PublicationEvidence}.
+     */
+    private publishCandidate;
+    /**
+     * rc.5 (#2): persist the proof, so resume/recovery and an operator reading
+     * the row can tell a shipped session from a #1168 one without re-deriving it.
+     *
+     * Writes ONLY on positive evidence. A null publication leaves the columns
+     * NULL, which reads as "never verified" -- deliberately not as "verified
+     * absent", and deliberately not overwriting an earlier verified SHA with a
+     * blank on some later unverifiable pass.
+     */
+    private recordPublicationEvidence;
+    /**
+     * rc.5 (#2): terminal for a run whose work is NOT on the remote.
+     *
+     * Distinct from a push failure only in what it knows: here the push (or the
+     * PR-only call) RESOLVED and the remote still does not hold the candidate.
+     * That is the #1168 shape exactly, and pre-rc.5 it was reported as shipped.
+     * Preserves the worktree, because it is now provably the only copy.
+     */
+    private finaliseUnpublished;
     private finaliseFailedPreserveWorktree;
     /**
      * beta.63 (Part A): the LATE-STAGE STALL WATCHDOG.

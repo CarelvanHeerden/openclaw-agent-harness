@@ -748,6 +748,18 @@
           "type": "boolean",
           "default": true,
           "description": "beta.125: when the Checks API is permanently denied (401/403/404), read the commit's CI from the Actions workflow-runs API instead of giving up. b124 reported the denial and told the operator to grant 'Checks: read' -- a permission that does not exist. Fine-grained PATs cannot call the Checks API at all; GitHub lists it as a known limitation and its own REST reference is wrong on this point. The same token's 'Actions: read', which IS supported, lists every workflow run on the sha with the same status/conclusion vocabulary, so on any repo whose CI is GitHub Actions the verdict was always one endpoint away. Only fires on a permanent denial -- a transient 5xx is still re-polled against the real endpoint. A green obtained this way is reported as a green WITH a caveat naming the source, because a check run posted by a third-party GitHub App is invisible to this endpoint. Set false to restore b124 behaviour."
+        },
+        "publication_verify_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 4,
+          "description": "rc.5 (#2): how many times the harness re-reads the remote branch tip (git ls-remote) when confirming that a push published the exact candidate SHA. This exists for ONE observed phenomenon -- GitHub's PR metadata can briefly lag a successful push, so an immediate read can disagree with a ref that demonstrably just landed. It is NOT a retry for a failed push: the harness never re-pushes during verification, and a permanent mismatch is reported as UNPUBLISHED (worktree preserved) rather than waited out. Raising this buys patience, never a greener answer."
+        },
+        "publication_verify_delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1500,
+          "description": "rc.5 (#2): delay between publication revalidation reads, in milliseconds. See publication_verify_attempts."
         }
       },
       "description": "beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness polls the commit's combined GitHub status/check-runs and treats CI as the verification spine."
@@ -1170,6 +1182,31 @@
           "maximum": 65536,
           "default": 8192,
           "description": "beta.70 (F4): V8 heap ceiling (MB) applied via NODE_OPTIONS on the retry after a check script dies of a heap OOM (exit 134 / 'Ineffective mark-compacts near heap limit'). On Thanos-scale repos tsc --noEmit OOMs at the 4 GB default; 8 GB clears it. A persisted OOM after the retry becomes a BLOCKING finding. Default 8192."
+        },
+        "generators": {
+          "type": "array",
+          "default": [],
+          "description": "rc.5: operator-declared ownership of GENERATED artifacts, mapping a package.json script to the repo-relative paths it produces. Until rc.5 the worker and adversary were told the harness regenerated derived artifacts in a post-worker convention-check phase; no such phase exists (that phase runs CHECK scripts, commits nothing, and is off by default since beta.81), so verification demanded a file nobody was going to write and reported its absence as a path mismatch. A mapping assigns generation to the WORKER, scoped to the named script and paths. It authorizes worker-side execution only -- the harness never runs these scripts. Ownership is NEVER inferred: an unmapped path is an ordinary file that gets no generation AND no exemption from the normal contract checks. Default [].",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["script", "produces"],
+            "properties": {
+              "script": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                "description": "A package.json script name, run by the worker as `npm run <script>`. Restricted to a plain script name because this value is executed: anything carrying shell syntax, arguments, or a path is refused rather than sanitised."
+              },
+              "produces": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                },
+                "description": "Repo-relative paths this script owns. An entry ending in '/' is a directory prefix and owns everything beneath it; anything else is an exact file path. Paths must stay inside the repository, and a path claimed by two scripts is refused as ambiguous so that neither is authorized for it."
+              }
+            }
+          }
         }
       }
     },

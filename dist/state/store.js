@@ -123,6 +123,15 @@ export function openStateStoreSync(pathHint) {
         { table: "sessions", column: "pr_linked_by", type: "TEXT" }, // slack user id of the operator
         { table: "sessions", column: "pr_link_head_sha", type: "TEXT" }, // PR head sha the evidence was gathered against
         { table: "sessions", column: "pr_link_evidence", type: "TEXT" }, // JSON: the checks that passed
+        // rc.5 (#2): PUBLICATION EVIDENCE. Which commit was proven to be on the
+        // remote, and when it was read back. Before this, the only durable record
+        // of a ship was `final_pr_url` + status 'done' -- and StitchGuard PR #1168
+        // had both while 35 commits sat unpushed on local disk, because a PR URL
+        // says a PR exists, not that it describes this run's work. NULL means
+        // publication was never verified; it never means verified-absent.
+        { table: "sessions", column: "published_sha", type: "TEXT" }, // commit observed at the remote branch tip
+        { table: "sessions", column: "published_at", type: "INTEGER" }, // epoch ms of that observation
+        { table: "sessions", column: "published_branch", type: "TEXT" }, // branch the SHA was observed on
     ];
     for (const m of additiveMigrations) {
         try {

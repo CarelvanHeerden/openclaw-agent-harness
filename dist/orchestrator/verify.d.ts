@@ -24,6 +24,7 @@
  * fs.stat instead of git diff, fixing the untracked-file bug from beta.8.
  */
 import type { SubTaskVerify } from "./lead.js";
+import type { GeneratorMap } from "./generated-artifacts.js";
 export interface VerifyProbeResult {
     kind: SubTaskVerify["kind"];
     passed: boolean;
@@ -248,5 +249,23 @@ export declare function verifySubTaskOutput(verify: SubTaskVerify[] | undefined,
      * resolves. Requires that probe; off leaves the strict mtime path intact.
      */
     acceptRenameAsWrite?: boolean;
+    /**
+     * rc.5: operator-declared ownership of generated artifacts. When a contract
+     * path is owned by a generator, two things change: the revise relaxations
+     * are refused (a derived file accepted as "already correct from an earlier
+     * cycle" is stale by construction once its sources move), and a failure is
+     * reported as a generation failure rather than a path mismatch.
+     *
+     * Absent/empty leaves every contract on the pre-rc.5 path, which is the
+     * default -- `verify.generators` is empty unless an operator declares it.
+     */
+    generators?: GeneratorMap;
+    /**
+     * Does the repo declare the mapped script? Injected rather than read here
+     * so the verifier stays pure. When omitted, a mapped script is ASSUMED
+     * declared: that yields the "did not run" message instead of the "missing
+     * tooling" one, which is the weaker claim of the two.
+     */
+    generatorScriptDeclared?: (script: string) => boolean;
 }, probes: VerifyProbes): Promise<VerifyOutcome>;
 //# sourceMappingURL=verify.d.ts.map

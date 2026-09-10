@@ -35,6 +35,19 @@ export interface ContractMismatch {
      * ALL prior sub-tasks and cycles, not just this turn.
      */
     changedOnBranch?: string[];
+    /**
+     * rc.5: expected paths that are GENERATED artifacts, with the script that
+     * owns each. When a missing path is derived, the standard question is a lie
+     * in both directions: "the contract path was wrong" is not what happened, and
+     * "tell me where the work belongs" has no answer, because the operator
+     * already declared where the generator writes. The honest report is that the
+     * generator did not run, or cannot.
+     */
+    generated?: {
+        path: string;
+        script: string;
+        scriptDeclared: boolean;
+    }[];
 }
 /** Expected paths this sub-task's own commit did not touch. */
 export declare function missingFromCommit(m: ContractMismatch): string[];

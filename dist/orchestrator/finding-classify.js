@@ -141,21 +141,26 @@ export function classifyFinding(f, ctx = {}) {
     if (demotable && ENV_RE.test(text)) {
         return "env";
     }
-    // beta.70 (F2): generated-artifact / OKF-bundle regeneration findings. The
-    // convention-check phase (post-worker) runs the repo's declared regen + check
-    // scripts and is the authoritative enforcer. Flagging "bundle not
-    // regenerated" is redundant with that phase and must not sustain a revise
-    // (PR #870 root cause). Checked AFTER runtime/env so a real env-127 still
-    // wins; both `process` and `env` are non-blocking so gating is unaffected.
+    // beta.70 (F2): generated-artifact / OKF-bundle regeneration findings must
+    // not sustain a revise (PR #870 root cause: a 19-min cycle-2 worker re-ran
+    // `npm run okf` across 1436 files for a zero diff). Checked AFTER runtime/env
+    // so a real env-127 still wins; both `process` and `env` are non-blocking so
+    // gating is unaffected.
     //
     // rc.3: this is the one demotion that applies at ANY severity, because it is
-    // not really a judgement about the finding -- the convention phase regenerates
-    // the bundle deterministically, so the complaint is answered by machinery
-    // rather than argued about. A high-severity "the bundle is stale" is still
-    // just a stale bundle (beta.127 asserts exactly this). It earns the exemption
-    // by being narrow: the bare verb "regenerate" was removed from the pattern in
-    // rc.3 precisely so it cannot reach findings that are not about an artifact.
-    if (GENERATED_ARTIFACT_RE.test(text)) {
+    // not really a judgement about the finding -- the complaint is answered by
+    // machinery rather than argued about. It earns the exemption by being narrow:
+    // the bare verb "regenerate" was removed from the pattern in rc.3 precisely
+    // so it cannot reach findings that are not about an artifact.
+    //
+    // rc.5 supplies the missing premise. The justification named "the convention
+    // phase", which runs CHECK scripts, commits nothing, and is off by default --
+    // so on a stock deployment the demotion was handing a stale artifact a pass
+    // and pointing at a phase that never ran. The demotion now requires a real
+    // owner: an operator-declared generator for this repo. With no mapping,
+    // nothing regenerates the bundle, so "the bundle is stale" is an unanswered
+    // defect and keeps whatever weight the adversary gave it.
+    if (ctx.hasDeclaredGenerators === true && GENERATED_ARTIFACT_RE.test(text)) {
         return "process";
     }
     if (!demotable)

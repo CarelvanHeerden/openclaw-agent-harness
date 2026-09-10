@@ -36,7 +36,13 @@ import { deriveMergeRecommendation } from "../dist/orchestrator/merge-recommenda
 
 const S = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 
-const CTX = { repoHasTestScript: false, runtimeUnavailable: false };
+// rc.5: `hasDeclaredGenerators` describes a repo that HAS an operator-declared
+// generator owning its derived artifacts. These tests are about the severity
+// ratchet, and the historical PR #870 demotion they pin only holds when
+// something actually regenerates the bundle. Whether an UNOWNED stale bundle
+// still blocks is the rc.5 question, asserted in
+// rc5-generated-artifact-ownership.test.mjs.
+const CTX = { repoHasTestScript: false, runtimeUnavailable: false, hasDeclaredGenerators: true };
 
 /** The gate as the loop applies it: a downgraded pass IS a clean pass. */
 const reachesCleanPass = (findings, verdict = "revise") =>
@@ -157,7 +163,9 @@ test("rc3: the ship gate and the merge tool agree on what blocks", () => {
   // non-blocking, and severity alone made it an unoverridable permanent refusal.
   // It now reads the same predicate the recommendation does.
   const src = S("src/index.ts");
-  assert.match(src, /blocksMerge\(f, classifyFinding\(f, \{ repoHasTestScript: true \}\)\)/);
+  // rc.5 (generated-artifact ownership): the ctx literal became a shared `cctx`
+  // so this gate carries hasDeclaredGenerators too. Same claim, one binding.
+  assert.match(src, /blocksMerge\(f, classifyFinding\(f, cctx\)\)/);
   assert.doesNotMatch(
     src,
     /hasBlockingFinding = findings\.some\(\(f\) => isAtLeastMedium\(f\.severity\)\)/,

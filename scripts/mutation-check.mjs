@@ -2410,6 +2410,80 @@ const MUTATIONS = [
     tests: ["tests/sdk-compliance.test.mjs", "tests/rc4-severity-consolidation.test.mjs"],
   },
 
+  // ---- rc.5 (#2): publication is a fact about the remote, or it is nothing ----
+  {
+    // THE DEFECT, restored verbatim. StitchGuard PR #1168: finalisation picked
+    // its callback from `previewVerificationEnabled` -- a fact about CONFIG --
+    // so a `revise` verdict (whose preview push never runs) took the PR-only
+    // branch, found the revision's existing PR, and shipped 35 unpushed commits.
+    name: "publication cannot be chosen from a config flag (rc.5): #1168's false ship",
+    file: "dist/orchestrator/loop.js",
+    find: "                const published = await this.publishCandidate({\n                    sessionId, plan, brief, reviewReport: lastReview, requester: row.requester,\n                    cycle, stage: \"finalize\", existing: publication,\n                });",
+    replace:
+      "                const published = this.deps.previewVerificationEnabled === true && this.deps.openPullRequest\n" +
+      "                    ? { ok: true, prUrl: await this.deps.openPullRequest({ plan, brief, reviewReport: lastReview, requester: row.requester }), evidence: null, reusedPush: true, verified: false, candidateSha: \"\" }\n" +
+      "                    : { ok: true, prUrl: await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester }), evidence: null, reusedPush: false, verified: false, candidateSha: \"\" };",
+    tests: ["tests/rc5-publication-verification.test.mjs"],
+  },
+  {
+    // Accept the push callback's own success as proof. This is the second half
+    // of #1168: the callback resolved, so the run believed it had published.
+    name: "a resolved callback is not publication (rc.5): the remote must be read back",
+    file: "dist/orchestrator/loop.js",
+    find: "        const verified = await this.verifyPublication({ sessionId, plan, requester, expectedSha: candidateSha, cycle, stage });\n        if (!verified.ok) {",
+    replace: "        const verified = await this.verifyPublication({ sessionId, plan, requester, expectedSha: candidateSha, cycle, stage });\n        if (false) {",
+    tests: ["tests/rc5-publication-verification.test.mjs"],
+  },
+  {
+    // Evidence that names no SHA is the #1168 state model: `published: true`.
+    // Ignore the candidate and any later commit inherits the preview push's
+    // proof -- including the CI workflow the harness itself commits.
+    name: "evidence covers one SHA only (rc.5): a later commit cannot inherit a push",
+    file: "dist/orchestrator/publication.js",
+    find: "export function evidenceCoversCandidate(evidence, candidateSha, branch) {\n    if (!evidence)\n        return false;",
+    replace: "export function evidenceCoversCandidate(evidence, candidateSha, branch) {\n    if (evidence)\n        return true;\n    if (!evidence)\n        return false;",
+    tests: ["tests/rc5-publication-verification.test.mjs"],
+  },
+  {
+    // Poll CI on the LOCAL head again. In #1168 GitHub had never seen that SHA,
+    // so there were no checks to be red and the absence read as a green.
+    name: "CI describes the PUBLISHED sha (rc.5): an unpublished commit has no CI to read",
+    file: "dist/orchestrator/loop.js",
+    find: "                let headSha = publication?.sha ?? \"\";",
+    replace: "                let headSha = \"\";",
+    tests: ["tests/rc5-publication-verification.test.mjs"],
+  },
+  {
+    // Treat a permanent mismatch as good enough. This is the concurrent-work
+    // case: the tip is somebody else's commit and claiming it is a false ship.
+    name: "a mismatched remote tip is refused (rc.5): never claim another commit as ours",
+    file: "dist/orchestrator/publication.js",
+    find: "    return {\n        ok: false,\n        kind: \"remote_mismatch\",",
+    replace: "    return {\n        ok: true,\n        observedSha: observed,\n        attempts,\n        kind: \"remote_mismatch\",",
+    tests: ["tests/rc5-publication-verification.test.mjs"],
+  },
+  {
+    // Drop the 7-character floor and two unrelated commits sharing a leading
+    // hex digit "match". The whole publication check is a SHA comparison, so
+    // this is the difference between proof and coincidence.
+    name: "a SHA prefix must actually identify a commit (rc.5): no 1-character matches",
+    file: "dist/orchestrator/publication.js",
+    find: "const SHA_RE = /^[0-9a-f]{7,40}$/i;",
+    replace: "const SHA_RE = /^[0-9a-f]{1,40}$/i;",
+    tests: ["tests/rc5-publication-verification.test.mjs"],
+  },
+  {
+    // Release the worktree anyway. This is what turned #1168 from a reporting
+    // bug into the loss of the only copy of 35 commits.
+    name: "unpublished work keeps its worktree (rc.5): cleanup must not destroy the only copy",
+    file: "dist/orchestrator/loop.js",
+    find: "    async finaliseUnpublished(params) {",
+    replace:
+      "    async finaliseUnpublished(params) {\n" +
+      "        await this.tryReleaseWorktree(params.sessionId, params.plan.repo, params.plan.worktreePath, \"shipped\");",
+    tests: ["tests/rc5-publication-verification.test.mjs"],
+  },
+
   // ---- rc.5: the merge gate asks the same question the verdict gate does ----
   {
     // PR #1084 exactly. Put the disjunction back and the caller's classified 0
@@ -2466,8 +2540,10 @@ const MUTATIONS = [
     // alongside an env finding would be deferred to CI and merged on green.
     name: "the CI deferral stays env-ONLY (rc.5): a real defect must not ride along",
     file: "src/index.ts",
-    find: 'blockers.every((f) => classifyFinding(f, { repoHasTestScript: true }) === "env")',
-    replace: 'blockers.some((f) => classifyFinding(f, { repoHasTestScript: true }) === "env")',
+    // rc.5 re-anchored: the inline ctx literal became a shared `cctx` so this
+    // gate carries hasDeclaredGenerators too. The mechanism is unchanged.
+    find: 'blockers.every((f) => classifyFinding(f, cctx) === "env")',
+    replace: 'blockers.some((f) => classifyFinding(f, cctx) === "env")',
     tests: ["tests/rc5-merge-gate-classification.test.mjs", "tests/beta36-merge-gate-and-config.test.mjs"],
   },
   {
@@ -2675,6 +2751,63 @@ const MUTATIONS = [
     find: "        blockers.push({\n            kind: \"conflicting_link\",",
     replace: "        ({\n            kind: \"conflicting_link\",",
     tests: ["tests/rc4-pr-link-recovery.test.mjs"],
+  },
+
+  // ------------------------------- rc.5: generated-artifact ownership
+  {
+    // Ownership decides who may EXECUTE a script. Two mappings claiming one
+    // path is a config fault with no right answer; picking the first claimant
+    // runs a command the operator did not unambiguously authorize for it.
+    name: "ambiguous generator ownership fails closed (rc): a contested path picks a script by declaration order",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "        if (scripts.length > 1) {\n            ambiguous.add(path);",
+    replace: "        if (false) {\n            ambiguous.add(path);",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // A `produces` entry that escapes the repo would point generation, and the
+    // ownership behaviour that follows from it, at a file outside the worktree.
+    name: "a generator path cannot escape the repo (rc): ../ in produces reaches outside the worktree",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "            if (segments.length === 0)\n                return null;\n            segments.pop();",
+    replace: "            segments.pop();",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // This value is executed by the worker as `npm run <script>`. Accepting
+    // anything but a plain script name lets config carry shell syntax.
+    name: "the generator script name is validated (rc): the executed value would accept shell syntax",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "        if (!SCRIPT_NAME_RE.test(script)) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // The stale-output rule. Without it a derived file passes on an earlier
+    // cycle's commit, which ships a bundle whose sources have since moved.
+    name: "a derived artifact is not accepted from an earlier cycle (rc): stale generated output ships",
+    file: "dist/orchestrator/verify.js",
+    find: "                if (genOwner && (v.reviseRelaxed || reviseCycle) && probes.fileCommittedSince) {",
+    replace: "                if (false && probes.fileCommittedSince) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // The demotion was justified by a regeneration phase that does not exist.
+    // Ungating it hands a stale artifact a pass on every repo, declared or not.
+    name: "a stale bundle is only excused when something owns it (rc): the demotion returns to unconditional",
+    file: "dist/orchestrator/finding-classify.js",
+    find: "    if (ctx.hasDeclaredGenerators === true && GENERATED_ARTIFACT_RE.test(text)) {",
+    replace: "    if (GENERATED_ARTIFACT_RE.test(text)) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs", "tests/beta70-ten-minute-ceiling.test.mjs"],
+  },
+  {
+    // The rescue relocates a contract onto a same-basename file the worker did
+    // touch. For a declared generator path that turns "it never ran" into a pass.
+    name: "a generated contract is never rescued onto a sibling (rc): an unrun generator passes as a moved file",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    return paths.filter((p) => !map?.ownerOf(p));",
+    replace: "    return paths.filter(() => true);",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
 
   // ------------------------------------- v2.0.0 M5: the ACP backend

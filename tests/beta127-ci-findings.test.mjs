@@ -61,13 +61,20 @@ test("every CI finding is blocking, whatever words are in the log", () => {
   // mentioning regeneration. Without the source short-circuit the run would
   // ship over a red build, and only on the failures unlucky enough to be
   // worded this way, which is the worst possible way for it to be wrong.
+  //
+  // rc.5: the ctx declares a generator. A CI finding must survive the buckets
+  // at their most permissive, and the generated-artifact bucket only demotes
+  // when a generator is declared -- so a repo WITHOUT one is the easy case.
+  // This is also what keeps the mutation honest: CI findings are high-severity
+  // and therefore non-demotable by the guarded buckets, which leaves the
+  // generated-artifact rule as the only one the short-circuit has to beat.
   for (const log of [
     "FAIL src/a.test.ts\n  ● boom\n    Cannot find module './missing'",
     "FAIL src/b.test.ts\n  ● boom\n    the okf bundle is stale, run npm run okf to regenerate",
     "FAIL src/c.test.ts\n  ● boom\n    Error: exited 127: eslint: not found",
   ]) {
     const [f] = buildCiFailureFindings(log);
-    const cls = classifyFinding(f, { repoHasTestScript: true });
+    const cls = classifyFinding(f, { repoHasTestScript: true, hasDeclaredGenerators: true });
     assert.equal(cls, "diff_addressable", `should not be downgraded: ${log.slice(0, 40)}`);
     assert.equal(isBlockingFinding(f, cls), true);
   }
@@ -76,11 +83,15 @@ test("every CI finding is blocking, whatever words are in the log", () => {
 test("a finding the adversary raised is still classified on its merits", () => {
   // The short-circuit is keyed on `source`, so it must not leak to normal
   // findings -- an adversary complaint about a stale bundle is still `process`.
+  //
+  // rc.5: that demotion now requires a declared generator to own the regen,
+  // so the ctx says one exists. Without it the finding is `diff_addressable`,
+  // which is the point of the rc.5 fix rather than a CI-routing question.
   const f = {
     dimension: "quality", severity: "high",
     title: "the okf bundle is stale", detail: "run npm run okf to regenerate", file: "a.ts",
   };
-  assert.equal(classifyFinding(f, { repoHasTestScript: true }), "process");
+  assert.equal(classifyFinding(f, { repoHasTestScript: true, hasDeclaredGenerators: true }), "process");
 });
 
 test("an unrecognised runner still produces one blocking, unrouted finding", () => {

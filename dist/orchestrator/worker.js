@@ -14,6 +14,8 @@
  * by the orchestrator after adversarial review passes.
  */
 import { renderConventionsForPrompt } from "./repo-conventions.js";
+import { authorizedGeneratorsForPaths, renderGeneratorInstruction, resolveGenerators, } from "./generated-artifacts.js";
+import { inferVerifyContract } from "./verify-contract.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 /**
@@ -80,7 +82,14 @@ export function renderWorkerContextBlock(ctx) {
     }
     return lines.join("\n");
 }
-export function buildWorkerSystemPrompt(brief, subTask) {
+export function buildWorkerSystemPrompt(brief, subTask, 
+/**
+ * rc.5: the generators this sub-task is authorized to run, already narrowed
+ * to the paths it owes (see authorizedGeneratorsForPaths). Empty/omitted
+ * leaves the blanket no-generators guard fully in force, which is the default
+ * because `verify.generators` is empty unless an operator declares it.
+ */
+authorizedGenerators = []) {
     const lines = [
         `You are a focused code-writing worker. Your job is ONE sub-task, nothing more.`,
         ``,
@@ -151,13 +160,18 @@ export function buildWorkerSystemPrompt(brief, subTask) {
     // pushed the harness polls GitHub's combined status/check-runs. Do NOT run
     // the suite/build/lint locally as a verification gate.
     `- DO NOT run the test suite, a build, or lint "to green" in your turn. That`, `  means: do NOT run \`npm test\`, \`npx vitest run\`, \`npm run build\`, \`tsc\`,`, `  \`npx eslint .\`, or any whole-project check as a VERIFICATION step. GitHub`, `  CI runs those AFTER the harness pushes your branch, and the harness reads`, `  the CI result. Nobody needs you to prove green locally, and there is NO`, `  async test runner / background watcher / "test-run event" in this harness.`, `  Your job is to WRITE the correct code and COMMIT it. Committing the correct`, `  change is what completes the sub-task; CI does the verifying.`, `- HARD STOP RULE: if you are about to write "I'll wait for", "waiting for the`, `  notification/event/signal", "the monitor/watcher/observer/background process`, `  will notify me", or any phrase implying something will resume you -- STOP.`, `  That mechanism does not exist. Run the command inline instead and continue.`, `  Ending your turn on such a phrase = the sub-task FAILS with zero work done.`, `- Do not go off-plan to self-verify by running the suite/build/lint. Make`, `  the required edit and commit. Committing the correct change is what`, `  completes the sub-task; GitHub CI verifies it after the push. (If THIS`, `  sub-task's success criteria are literally "a test asserts X", WRITE that`, `  test file and commit it -- authoring a test is code; RUNNING the suite to`, `  green is not your job.)`, 
-    // beta.70 (F1): worker-turn slimming. The harness runs the repo's declared
-    // check scripts (typecheck, lint, and any generator like `npm run okf`) in
-    // a POST-WORKER convention-check phase -- see repo-conventions.ts. In
-    // PR #870 the cycle-2 worker burned 19 min running `npm run okf` (a
-    // 1436-file regenerator) + a repo-wide `tsc` inside its own turn to land a
-    // 3-line diff, duplicating work the pipeline does downstream. Keep heavy
-    // repo-wide tooling OUT of the worker turn.
+    // beta.70 (F1): worker-turn slimming. In PR #870 the cycle-2 worker burned
+    // 19 min running `npm run okf` (a 1436-file regenerator) + a repo-wide
+    // `tsc` inside its own turn to land a 3-line diff. Keep heavy repo-wide
+    // tooling OUT of the worker turn.
+    //
+    // rc.5 corrects the JUSTIFICATION this guard used to carry. It claimed the
+    // harness ran generators "in a POST-WORKER convention-check phase". It does
+    // not: that phase runs CHECK scripts, commits nothing, and is off by
+    // default since beta.81. So the guard stands on its own cost rationale, and
+    // the one authorized exception is a NAMED generator for a NAMED path the
+    // sub-task already owes -- appended below from verify.generators. What is
+    // forbidden is SPECULATIVE repo-wide tooling, not producing a deliverable.
     // beta.81 (Track B / B1) EXTENDS this beta.70 guard: not only "no repo-wide
     // generators/builds/typechecks in-turn" but "no local verification runs at
     // all" -- CI is the verification spine now.
@@ -167,6 +181,12 @@ export function buildWorkerSystemPrompt(brief, subTask) {
     const conventionBlock = renderConventionsForPrompt(brief.repoConventions, "worker");
     if (conventionBlock)
         lines.push(conventionBlock);
+    // rc.5: the narrow, named exception to the guard above. It goes AFTER the
+    // prohibition so the worker reads the general rule and then the specific
+    // authorization, rather than a rule it has to remember an exception to.
+    const generatorBlock = renderGeneratorInstruction(authorizedGenerators);
+    if (generatorBlock)
+        lines.push(generatorBlock);
     return lines.join("\n");
 }
 /**
@@ -211,7 +231,18 @@ modelOverride,
  * start against an identical deadline just fails identically.
  */
 firstTokenTimeoutSecondsOverride) {
-    const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
+    // rc.5: authorize generators for exactly the paths this sub-task owes. The
+    // contract is derived with the SAME inference the verifier uses, so the set
+    // the worker is told to produce cannot drift from the set it is judged on --
+    // which is the drift that made the old contract impossible to satisfy.
+    const generatorMap = resolveGenerators(deps.config.verify?.generators);
+    const contractPaths = [
+        ...inferVerifyContract(subTask)
+            .map((c) => ("path" in c ? c.path : undefined))
+            .filter((p) => typeof p === "string" && p.length > 0),
+        ...(subTask.filesLikelyTouched ?? []),
+    ];
+    const systemPrompt = buildWorkerSystemPrompt(brief, subTask, authorizedGeneratorsForPaths(generatorMap, contractPaths));
     const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
         (dispatchHint ? `\n\n${dispatchHint}` : "");
     const baseSha = await deps.gitBaseSha(worktreePath);

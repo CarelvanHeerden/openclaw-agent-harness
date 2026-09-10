@@ -36,6 +36,14 @@ const F = (over = {}) => ({
 // ---------------------------------------------------------------------------
 // F2: OKF-regen / generated-artifact findings classify as non-blocking `process`
 // ---------------------------------------------------------------------------
+// rc.5: this demotion now requires a DECLARED owner for regeneration. It was
+// justified by the post-worker convention-check phase regenerating the bundle
+// "deterministically" -- a phase that runs CHECK scripts, commits nothing, and
+// is off by default, so on a stock deployment the demotion passed a stale
+// artifact and cited machinery that never ran. With `verify.generators` mapped,
+// the premise holds and the beta.70 behaviour is unchanged.
+const GENERATORS_DECLARED = { hasDeclaredGenerators: true };
+
 test("beta70 F2: OKF-bundle-regen findings classify as process (non-blocking)", { skip: classify === null }, () => {
   const { classifyFinding, isBlockingFinding } = classify;
   const cases = [
@@ -46,9 +54,23 @@ test("beta70 F2: OKF-bundle-regen findings classify as process (non-blocking)", 
     "okf:check reports the bundle must be regenerated",
   ];
   for (const title of cases) {
-    const cls = classifyFinding(F({ dimension: "fit", severity: "medium", title }));
+    const cls = classifyFinding(F({ dimension: "fit", severity: "medium", title }), GENERATORS_DECLARED);
     assert.equal(cls, "process", `"${title}" should be process, got ${cls}`);
     assert.equal(isBlockingFinding(F({ dimension: "fit", severity: "medium", title }), cls), false, `"${title}" must be non-blocking`);
+  }
+});
+
+test("rc5: the SAME findings are NOT demoted when no generator owns regeneration", { skip: classify === null }, () => {
+  const { classifyFinding } = classify;
+  for (const title of [
+    "The OKF bundle was not regenerated after this change",
+    "keep-okf-current: bundle is stale",
+  ]) {
+    assert.equal(
+      classifyFinding(F({ dimension: "fit", severity: "medium", title })),
+      "diff_addressable",
+      `"${title}" has no declared owner, so nothing will fix it -- it must keep its weight`,
+    );
   }
 });
 
@@ -80,10 +102,25 @@ test("beta70 F2: gateVerdict keeps a clean pass when the only findings are OKF-r
       F({ dimension: "runtime", severity: "info", title: "No runtime data" }),
       F({ dimension: "quality", severity: "low", title: "skip: 0 is redundant" }),
     ],
-    ctx: { repoHasTestScript: true, runtimeUnavailable: true },
+    // rc.5: the OKF demotion requires a declared generator to own the regen.
+    ctx: { repoHasTestScript: true, runtimeUnavailable: true, hasDeclaredGenerators: true },
   });
   assert.equal(gated.verdict, "pass", "no NEW blocking finding -> converged pass");
   assert.equal(gated.newBlocking.length, 0);
+});
+
+test("rc5: the same gate SUSTAINS the revise when nothing owns regeneration", { skip: classify === null }, () => {
+  const { gateVerdict } = classify;
+  const gated = gateVerdict({
+    verdict: "revise",
+    findings: [
+      F({ dimension: "fit", severity: "medium", title: "OKF bundle not regenerated" }),
+      F({ dimension: "runtime", severity: "info", title: "No runtime data" }),
+    ],
+    ctx: { repoHasTestScript: true, runtimeUnavailable: true },
+  });
+  assert.equal(gated.verdict, "revise", "an unowned stale bundle is a real, unanswered defect");
+  assert.equal(gated.newBlocking.length, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -207,11 +244,22 @@ test("beta70 F1: worker prompt forbids repo-wide generators/typecheck in-turn", 
   assert.match(w, /convention-check phase/);
 });
 
-test("beta70 F1: worker convention guidance defers regeneration to the harness", () => {
+// rc.5 REPLACES the beta.70 assertion that used to live here. It pinned the
+// defect: it required the worker guidance to say regeneration was "handled by
+// the harness AFTER your turn in its convention-check phase" and required the
+// adversary to stay silent about a stale bundle on the same grounds. No such
+// phase exists, so the worker was forbidden to generate, the reviewer was
+// forbidden to complain, and verification then demanded the file anyway.
+test("rc5: convention guidance no longer defers regeneration to a phase that does not exist", () => {
   const c = S("src/orchestrator/repo-conventions.ts");
-  assert.match(c, /do NOT run regenerators yourself/);
-  // adversary guidance no longer raises a bare bundle-not-regenerated finding
-  assert.match(c, /do NOT raise a finding merely because a generated bundle/);
+  assert.doesNotMatch(c, /handled by the harness AFTER your turn/);
+  assert.doesNotMatch(c, /the harness regenerates derived artifacts for you/);
+  assert.doesNotMatch(c, /post-worker convention-check phase/);
+  assert.doesNotMatch(c, /do NOT raise a finding merely because a generated bundle/);
+  // What it says instead: generation happens only under an explicit, named
+  // authorization, and the reviewer judges the source change on its merits.
+  assert.match(c, /ONLY when this sub-task explicitly authorizes a named generator script/);
+  assert.match(c, /operator-declared generator mapping/);
 });
 
 test("beta70 F2: loop convention-fold only force-revises on a BLOCKING finding", () => {

@@ -153,6 +153,103 @@ instead of from the PR head. That fallback is recorded as `reset_to_base` in the
 worktree decision log — if you see it on a revise you expected to continue a PR,
 stop and check whether the branch still exists rather than letting the run push.
 
+## Published, approved, and unpublished
+
+These are three different things, and until rc.5 the harness could report the
+third as the first.
+
+**Published** means a commit is on the remote branch, proven by reading the
+branch tip back after the push. **Approved** means a human decided to merge it;
+the harness never claims this. **Unpublished** means the run's commits exist
+only in its worktree — the run is *not* shipped, whatever else succeeded.
+
+### What went wrong before rc.5
+
+Stitch-Vercel/StitchGuard PR #1168. Two revision sessions built 24 and 11
+commits, ended with review verdict `revise`, and were recorded as shipped.
+GitHub received neither history, and both worktrees were then released — so the
+only copy of 35 commits was deleted, and the next revision started again from
+the stale remote implementation.
+
+Every step succeeded. Preview verification was enabled; the preview push runs
+only for a `pass` verdict, so a `revise` pushed nothing; finalisation
+nevertheless chose the PR-only callback *because preview was enabled*; that
+callback found the revision's existing pull request and posted the review
+comment; and finalisation read the resolved callback as publication, polled CI
+on the local worktree HEAD, found no checks on a commit GitHub had never seen,
+and shipped. A config flag, a resolved callback, a real PR URL, a posted comment
+and a local branch name were all true while nothing had been published.
+
+### What the harness does now
+
+The candidate SHA is resolved *after* every commit-producing finalisation step,
+including the CI-workflow authoring the harness does itself. It is pushed unless
+that exact commit is already proven to be on the remote, and the remote branch
+tip is then read back (`git ls-remote`, through the requester's own credentials)
+before anything is called published. CI is polled on the published SHA, so an
+absence of checks can no longer be collected from a commit the provider has
+never seen.
+
+Evidence names a SHA, never a boolean. A commit made after a push — the authored
+CI workflow is the common case — does not inherit the earlier commit's proof;
+the run audits `loop.publication_evidence_invalidated` and publishes again.
+
+Publishing a non-passing candidate is unchanged policy: it goes up for review
+with its blocking findings and its do-not-merge recommendation intact. Published
+is not approved. Where policy prohibits publication — an abort or stall salvage
+that never got an adversary review, for instance — the run reports an explicit
+unpublished outcome and keeps the work.
+
+### Reading the outcome
+
+| Signal | Meaning |
+| --- | --- |
+| `loop.shipped` with `publicationVerified: true` | The remote branch tip was read and equals `publishedSha`. |
+| `loop.unpublished` | The call resolved and the remote still does not hold the candidate. Terminal, worktree preserved. |
+| `loop.publication_evidence_invalidated` | HEAD moved after a push; the new candidate is being published on its own merits. |
+| `loop.publication_reused_push` | The candidate was already on the remote, so the PR was opened without a second push. |
+| `loop.ci_polled_unverified_sha` | CI was polled on a commit whose publication could not be verified. Treat any green with suspicion. |
+| `sessions.published_sha` / `published_at` | The durable record. NULL means never verified — it does **not** mean verified-absent. |
+
+`loop.unpublished` carries a `failureKind`:
+
+| Kind | What happened | What to do |
+| --- | --- | --- |
+| `remote_missing` | The branch does not exist on the remote. | Nothing from the run reached it. Push the preserved worktree by hand. |
+| `remote_mismatch` | The branch tip is a commit the harness did not publish. | Likely concurrent work. The harness will never force-push over it; reconcile the two histories yourself. |
+| `verification_unavailable` | The remote could not be read (credentials, network). | Publication is *unknown*, not absent. Fix access, then read the branch before deciding whether to push. |
+| `candidate_unknown` | No candidate SHA could be resolved. | There is nothing to verify or publish; inspect the worktree. |
+
+### Recovering unpublished work
+
+The terminal message names the branch, the candidate SHA and the worktree, which
+is deliberately *not* released on this path. To recover:
+
+```
+git -C <worktree> log --oneline origin/<branch>..HEAD   # what never left
+git -C <worktree> push origin <branch>                  # publish it
+```
+
+Then use `harness_link_pr` (above) if the session needs its PR association back,
+and `harness_revise` to continue.
+
+### Sessions that shipped before rc.5
+
+`published_sha` is NULL for every session that predates this change, including
+ones that genuinely published. That is intentional: the column records a read of
+the remote, and no such read was ever performed for those runs. The harness does
+not backfill them, and it does not push historical divergent tips. If you need
+to know whether an old session's work is on the remote, read the branch.
+
+### Tuning
+
+Verification re-reads the branch tip up to `ci.publication_verify_attempts`
+times (default 4) with `ci.publication_verify_delay_ms` between reads (default
+1500). This exists for one observed phenomenon: GitHub's PR metadata can briefly
+lag a successful push, which is exactly what we saw during the #1168 recovery.
+It is not a retry for a failed push — the harness never re-pushes during
+verification — so raising these buys patience, never a greener answer.
+
 ## Cost forensics
 
 To investigate a cost spike:
@@ -218,8 +315,67 @@ always used a hard-coded 30 seconds no matter what the config said. A log line
 reporting a 30-second first-token timeout from before rc.4 is not evidence about
 your configured value, because your configured value was never consulted.
 
+## Who regenerates derived artifacts
+
+If your repo commits generated files — an OKF bundle, a codegen client, a
+generated docs section — you must tell the harness which script produces them.
+Nothing is inferred.
+
+```jsonc
+"verify": {
+  "generators": [
+    { "script": "okf", "produces": ["okf/bundle.json"] },
+    { "script": "codegen", "produces": ["src/generated/"] }
+  ]
+}
+```
+
+A `produces` entry ending in `/` owns everything beneath it; anything else is an
+exact file. Paths must stay inside the repository, and a path claimed by two
+scripts is refused as ambiguous — neither script is authorized for it.
+
+**What a mapping does.** When a sub-task's contract or declared scope names a
+mapped path, the worker is told to run that specific script and commit what it
+writes. That is the only exception to the standing "do not run repo-wide
+generators" rule, and it is scoped to the named script and the named paths, so
+no turn can be talked into a speculative whole-repo regeneration.
+
+**What it does not do.** It never authorizes the harness to run anything. The
+harness reads your mapping and reports on it; the worker executes. This keeps
+the beta.81 line intact: commands that decide pass/fail belong to CI, and
+commands that produce a committed deliverable belong to the worker.
+
+**What happens without a mapping.** A generated path with no mapping is treated
+as an ordinary file. Nothing regenerates it, and it gets no exemption either —
+the contract on it is enforced normally, and a reviewer finding that the bundle
+is stale keeps whatever weight the reviewer gave it. That is deliberate: with no
+declared owner there is no machinery to answer the complaint, so it stands.
+
+**Reading the failures.** Three are distinct and all name the cause directly:
+
+| Report | What happened |
+| --- | --- |
+| `... is a GENERATED artifact -- the generator that owns it (npm run X) did not run` | The script exists; the worker did not run it, or it wrote nothing. |
+| `MISSING TOOLING: verify.generators maps it to X, but package.json declares no such script` | Your mapping names a script the repo does not have. Nothing can produce the file until you fix one or the other. |
+| `... was NOT rewritten in this window ... the committed artifact is stale` | The file was committed by an earlier cycle and its sources have since moved. A derived file is never accepted on an earlier cycle's work. |
+
+None of these are path mismatches, and the harness will not ask you to relocate
+a generated file: its location is something you declared, not something the
+planner guessed.
+
+**A note on earlier releases.** Before rc.5 the worker was told "do NOT run
+regenerators yourself ... the harness regenerates derived artifacts for you",
+the reviewer was told not to flag a stale bundle for the same reason, and
+verification then required the generated file to be committed. The phase all
+three cited runs check scripts, commits nothing, and has been off by default
+since beta.81. If you are reading logs from before rc.5, a "contract path
+mismatch" on a generated file is that defect, not a misplaced file.
+
 ## Troubleshooting
 
+- **A contract failed on a generated file**: read the message rather than the path. If it says the generator did not run, the worker was not authorized for that path — add it to `verify.generators`. If it says MISSING TOOLING, the mapped script is not in the repo's `package.json`. If it says stale, the artifact predates the sources it is derived from and must be regenerated. See "Who regenerates derived artifacts" above.
+- **The run says NOT PUBLISHED**: the push (or PR call) resolved and the remote still does not hold this run's commits. The work is preserved in the named worktree and the terminal message gives both SHAs — see "Published, approved, and unpublished" above for the `failureKind` table and the recovery commands. Do not force-push; on `remote_mismatch` the branch tip is somebody else's commit.
+- **A session reads as shipped but the PR looks unchanged**: check `sessions.published_sha` against the PR head. If it is NULL and the session predates rc.5, publication was never verified for that run — read the branch rather than trusting the status.
 - **The adversary timed out before its first token**: the review failed closed and nothing shipped — this is not a review that passed, and the session keeps its worktree. Raise `loop.sdk_first_token_timeout_seconds` (see above) if the backend is merely slow to start; if it never opened its stream, check the backend's launch and credentials instead. The harness will not retry a timeout as a formatting problem, so repeated identical timeouts mean the backend, not the prompt.
 - **PAT push rejected with 403 (SAML)**: the org enforces SAML SSO. Authorise the PAT in the org's PAT settings, then retry. Alternative: emit `git format-patch` to a workspace directory and apply locally (see MEMORY.md).
 - **Vercel logs empty**: preview deploy has not landed yet. Adversary receives an explicit "NO RUNTIME DATA" banner and will not sign off on runtime concerns. Wait or increase `previewWaitSeconds`.

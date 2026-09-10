@@ -24,6 +24,7 @@
  * fs.stat instead of git diff, fixing the untracked-file bug from beta.8.
  */
 import { anyPathMatches } from "./path-match.js";
+import { describeGeneratedArtifactFailure, describeStaleGeneratedArtifact } from "./generated-artifacts.js";
 /**
  * Pure evaluator: given per-check booleans, decide overall pass/fail and
  * build the summary. Separated so tests don't need real probes.
@@ -51,6 +52,19 @@ export function evaluateVerification(results) {
 export async function verifySubTaskOutput(verify, ctx, probes) {
     if (!verify || verify.length === 0)
         return evaluateVerification([]);
+    /**
+     * rc.5: the generator owning a contract path, or null. Centralised so
+     * `file_written` and `file_committed` cannot diverge on what counts as
+     * generated -- a split verdict between those two kinds on one file is
+     * exactly the beta.105 class of bug.
+     */
+    const generatedOwner = (path) => ctx.generators?.ownerOf(path) ?? null;
+    const generatedFailure = (path, owner, baseDetail) => describeGeneratedArtifactFailure({
+        path,
+        owner,
+        scriptDeclared: ctx.generatorScriptDeclared?.(owner.script) ?? true,
+        baseDetail,
+    });
     // beta.95: on a revise cycle (cycle > 1), a TARGETED file (reviseRelaxed NOT
     // set -- the review DID target it, so the worker was expected to re-touch it)
     // is legitimately older-than-this-sub-task (cycle 1 wrote it first) and its
@@ -85,6 +99,24 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                 break;
             }
             case "file_written": {
+                // rc.5: STALE-OUTPUT REJECTION. The two relaxations below both accept a
+                // file on the strength of an EARLIER cycle's work. That reasoning is
+                // sound for hand-written source (the review did not target it, so it is
+                // still correct) and false for a derived artifact: if anything it is
+                // derived from moved, the committed copy is stale. So a generator-owned
+                // path skips both relaxations and takes the strict fresh-work path,
+                // where "was it rewritten in this window?" is asked directly.
+                const genOwner = generatedOwner(v.path);
+                if (genOwner && (v.reviseRelaxed || reviseCycle)) {
+                    const r = await probes.fileWrittenSince(v.path, ctx.subTaskStartMs);
+                    results.push({
+                        kind: v.kind,
+                        passed: r.written,
+                        detail: r.written ? `regenerated this sub-task: ${r.detail}` : describeStaleGeneratedArtifact(v.path, genOwner),
+                        path: v.path,
+                    });
+                    break;
+                }
                 // beta.85: REVISE-RELAXED. On a revise cycle, a contract file the review
                 // did NOT target was already shipped correctly in a prior cycle; the
                 // worker correctly left it untouched. Requiring a fresh mtime this
@@ -136,12 +168,22 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                             detail = `path introduced by this sub-task (${introduced.changeType}); mtime predates it (git mv preserves mtime): ${introduced.detail}`;
                         }
                     }
-                    results.push({ kind: v.kind, passed, detail, path: v.path });
+                    results.push({
+                        kind: v.kind,
+                        passed,
+                        detail: !passed && genOwner ? generatedFailure(v.path, genOwner, detail) : detail,
+                        path: v.path,
+                    });
                 }
                 else {
                     // Backward compat: beta.8 behaviour (git diff, excludes untracked)
                     const r = await probes.fileWrittenSince(v.path, ctx.subTaskStartMs);
-                    results.push({ kind: v.kind, passed: r.written, detail: r.detail, path: v.path });
+                    results.push({
+                        kind: v.kind,
+                        passed: r.written,
+                        detail: !r.written && genOwner ? generatedFailure(v.path, genOwner, r.detail) : r.detail,
+                        path: v.path,
+                    });
                 }
                 break;
             }
@@ -152,6 +194,20 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
             }
             // ---- beta.9 kinds ----
             case "file_committed": {
+                // rc.5: STALE-OUTPUT REJECTION, same rule as file_written above. A
+                // generator-owned path is not eligible for either revise relaxation;
+                // it must appear with a real diff in THIS sub-task's window.
+                const genOwner = generatedOwner(v.path);
+                if (genOwner && (v.reviseRelaxed || reviseCycle) && probes.fileCommittedSince) {
+                    const r = await probes.fileCommittedSince(v.path, ctx.baseSha);
+                    results.push({
+                        kind: v.kind,
+                        passed: r.committed,
+                        detail: r.committed ? `regenerated this sub-task: ${r.detail}` : describeStaleGeneratedArtifact(v.path, genOwner),
+                        path: v.path,
+                    });
+                    break;
+                }
                 // beta.85: REVISE-RELAXED (same rationale as file_written above): a
                 // not-targeted revise file passes on present+committed-in-branch.
                 if (v.reviseRelaxed && probes.fileCommittedInBranch) {
@@ -177,7 +233,16 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     // beta.84 (#1): carry the exact contract path on the result so a
                     // post-mortem no longer has to reconstruct the mapping from row
                     // order (Staging's QoL nit -- `path` was merged/empty before).
-                    results.push({ kind: v.kind, passed: r.committed, detail: r.detail, path: v.path });
+                    //
+                    // rc.5: when the path is generator-owned, say WHY it is absent. The
+                    // probe's detail describes a path-resolution miss, which for a
+                    // derived file is the symptom, not the cause.
+                    results.push({
+                        kind: v.kind,
+                        passed: r.committed,
+                        detail: !r.committed && genOwner ? generatedFailure(v.path, genOwner, r.detail) : r.detail,
+                        path: v.path,
+                    });
                 }
                 else {
                     // beta.57 (P1): FAIL CLOSED. A missing probe used to skip-pass,
