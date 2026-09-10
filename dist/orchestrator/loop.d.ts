@@ -1060,6 +1060,48 @@ export declare class OrchestratorLoop {
      * Emits `loop.convention_check_ran` per run and `loop.convention_check_failed`
      * per non-zero exit.
      */
+    /**
+     * rc.5: the ClassifyCtx every gating site in the loop must use.
+     *
+     * `hasDeclaredGenerators` has to match what the adversary's own gate used, or
+     * the two disagree about whether a stale-bundle finding blocks: the adversary
+     * would file it `process` (non-blocking) while the loop counted it as a
+     * blocker, and the run would revise on a finding the reviewer had excused.
+     */
+    private get classifyCtx();
+    /**
+     * rc.5: report a broken `verify.generators` mapping as a blocking finding.
+     *
+     * Two failure modes, both of which used to be invisible until they surfaced
+     * as an unexplained contract miss on the generated file:
+     *
+     *   - a REJECTED mapping (ambiguous ownership, a path that escapes the repo,
+     *     a script name that is not a plain script name). The path ends up
+     *     unowned, so nothing regenerates it and nothing exempts it either.
+     *   - MISSING TOOLING: the mapping names a script the worktree's package.json
+     *     does not declare, so the worker cannot run it and the artifact can
+     *     never appear.
+     *
+     * Blocking (`high`) on purpose. This is a configuration fault that makes some
+     * contract unsatisfiable; shipping past it would mean merging a branch whose
+     * derived files are known-absent or known-stale.
+     */
+    private runGeneratorConfigCheck;
+    /**
+     * rc.5: the generated-artifact half of a sub-task's verification context.
+     *
+     * Shared by all three `verifySubTaskOutput` call sites so they cannot drift
+     * on which paths count as derived -- the first pass, the retry, and the
+     * re-verify must agree, or a contract could fail on one and pass on another.
+     *
+     * `generatorScriptDeclared` is resolved against the WORKTREE's package.json,
+     * not the harness's, and is cached per call because the same script is asked
+     * about once per contract. A worktree we cannot read package.json from
+     * reports every script as declared: that downgrades the failure text from
+     * "missing tooling" to "did not run", which is the claim we can still stand
+     * behind without having seen the manifest.
+     */
+    private generatorVerifyCtx;
     private runFinalVerifyChecks;
     /**
      * beta.94 (Feature 1b): DETERMINISTIC FINAL SCOPE CHECK. Replaces the

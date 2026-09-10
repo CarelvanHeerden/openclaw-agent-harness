@@ -7,6 +7,12 @@
  * (falls back to sensible defaults).
  */
 
+// Type-only, so this stays erased at runtime and adds no module edge. The
+// mapping is defined next to the ownership rules that interpret it.
+import type { GeneratorMapping } from "./orchestrator/generated-artifacts.js";
+
+export type { GeneratorMapping };
+
 export interface HarnessConfig {
   slack: SlackConfig;
   budgets: BudgetsConfig;
@@ -261,7 +267,12 @@ export interface VerifyConfig {
    * (from package.json#scripts) inline + blocking in the worktree. A non-zero
    * exit becomes a REVISE-worthy `loop.convention_check_failed` finding, NOT a
    * hard run-fail (the code may be correct and only a bundle stale). An
-   * unrunnable / network-needing script is logged non-fatal + noted. Default true.
+   * unrunnable / network-needing script is logged non-fatal + noted.
+   *
+   * Default FALSE since beta.81, which retired the local runner from the
+   * verification spine (this doc comment still claimed `true` until rc.5). This
+   * phase runs CHECK scripts only -- it has never run a generator and commits
+   * nothing. See `verify.generators` for who owns derived artifacts.
    */
   run_repo_check_scripts: boolean;
   /**
@@ -287,6 +298,29 @@ export interface VerifyConfig {
    * Default 8192.
    */
   check_script_heap_retry_mb?: number;
+  /**
+   * rc.5: operator-declared ownership of GENERATED artifacts -- a mapping from
+   * a package.json script to the repo-relative paths it produces.
+   *
+   * Until rc.5 three prompt sites told the worker and the adversary that the
+   * harness regenerated derived artifacts "in its own post-worker convention-
+   * check phase". It never did: that phase runs CHECK scripts, commits nothing,
+   * and has been off by default since beta.81. Verification then demanded the
+   * generated file anyway and reported its absence as a path mismatch.
+   *
+   * A mapping here assigns generation to the WORKER, scoped to the named script
+   * and the paths it declares. It authorizes worker-side execution only; the
+   * harness never runs these scripts itself.
+   *
+   * Ownership is NEVER inferred. An unmapped path is an ordinary file: no
+   * generation is authorized for it, and it gets no exemption from the normal
+   * contract checks. A `produces` entry ending in `/` is a directory prefix;
+   * anything else is an exact file. Paths must stay inside the repository, and
+   * a path claimed by two scripts is refused as ambiguous.
+   *
+   * Default [] -- no generators, and no built-in defaults for any toolchain.
+   */
+  generators?: GeneratorMapping[];
 }
 
 export interface LogConfig {
@@ -1798,6 +1832,9 @@ const DEFAULTS: HarnessConfig = {
     // for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task
     // (a deterministic diff/tsc rescue), NOT as a verify gate.
     run_repo_check_scripts: false,
+    // rc.5: no generators, and deliberately no built-in default for any
+    // toolchain. An operator declares ownership or nothing is authorized.
+    generators: [],
     check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
     check_script_timeout_seconds: 600,
     typecheck_gate: true,

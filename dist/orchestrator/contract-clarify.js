@@ -80,6 +80,15 @@ export function buildContractClarification(m) {
         `everything the plan expected.`);
     lines.push("");
     lines.push(`It was expected to change ${missing.join(" and ")}, and did not.`);
+    // rc.5: name the real cause before offering options that assume a wrong path.
+    const missingGenerated = (m.generated ?? []).filter((g) => missing.some((p) => pathMatches(g.path, p)));
+    for (const g of missingGenerated) {
+        lines.push(g.scriptDeclared
+            ? `${g.path} is a GENERATED artifact produced by \`npm run ${g.script}\`. This is not a wrong path -- ` +
+                `the generator did not run, or ran and wrote nothing.`
+            : `${g.path} is a GENERATED artifact mapped to \`npm run ${g.script}\`, but this repo declares no such ` +
+                `script. MISSING TOOLING: it cannot be produced until that is fixed, and no answer here will change that.`);
+    }
     if (m.statedReason)
         lines.push(`The worker's explanation: ${m.statedReason}`);
     lines.push("");

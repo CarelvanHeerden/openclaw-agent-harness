@@ -40,6 +40,18 @@ export interface ClassifyCtx {
      * finding that merely restates "no preview deploy" is `unproven_runtime`.
      */
     runtimeUnavailable?: boolean;
+    /**
+     * rc.5: does an operator-declared generator actually own the regeneration of
+     * derived artifacts in this repo (`verify.generators` is non-empty)?
+     *
+     * The generated-artifact demotion below exists because regeneration is
+     * "answered by machinery rather than argued about". That was only ever true
+     * if some machinery answers it. With no mapping, nothing regenerates the
+     * bundle, and demoting the finding to non-blocking ships the stale artifact
+     * on the strength of a phase that does not run. Default false, which is the
+     * safe reading: no declared owner means the finding stands.
+     */
+    hasDeclaredGenerators?: boolean;
 }
 /**
  * Classify a single finding. Pure. Order matters: the most "structurally

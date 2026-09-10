@@ -46,7 +46,7 @@ import {
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -241,9 +241,10 @@ import {
   rescueMatchesContractPath,
 } from "./basename-rescue.js";
 import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
+import { generatorScriptDeclared, rescuableContractPaths, resolveGenerators } from "./generated-artifacts.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult, type CheckScript } from "./repo-conventions.js";
-import { blocksMerge, classifyFinding, isBlockingFinding } from "./finding-classify.js";
+import { blocksMerge, classifyFinding, isBlockingFinding, type ClassifyCtx } from "./finding-classify.js";
 import { dedupeFindings, reconcileFindings, type FindingRecord } from "./finding-lifecycle.js";
 import {
   detectVerificationBlocker,
@@ -3577,6 +3578,7 @@ export class OrchestratorLoop {
                 cycle,
                 reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                 acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                ...this.generatorVerifyCtx(plan.worktreePath),
               },
               probes,
             );
@@ -3807,6 +3809,7 @@ export class OrchestratorLoop {
                         cycle,
                         reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                         acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                        ...this.generatorVerifyCtx(workerWorktree),
                       },
                       retryProbes,
                     );
@@ -4283,7 +4286,18 @@ export class OrchestratorLoop {
               this.deps.buildVerifyProbes
             ) {
               try {
-                const expected = [...new Set(failedResults.map((x) => x.path!).filter(Boolean))];
+                // rc.5: a GENERATED path is never rescued. The rescue exists
+                // because the lead may have guessed a source file's location
+                // wrong, so a same-basename file the worker did touch is
+                // probably the one it meant. A derived file has no such
+                // ambiguity: the operator declared exactly which path the
+                // generator writes. Rescuing it onto a same-basename sibling
+                // would launder "the generator never ran" into a pass.
+                const genMap = this.generatorVerifyCtx(workerWorktree).generators;
+                const isGenerated = (p: string) => !!genMap?.ownerOf(p);
+                const expected = rescuableContractPaths(genMap, [
+                  ...new Set(failedResults.map((x) => x.path!).filter(Boolean)),
+                ]);
                 const actual = (result.filesChanged ?? []).filter((f): f is string => typeof f === "string" && !!f.trim());
                 const repoFiles = await this.deps.listRepoFiles(workerWorktree);
                 // beta.122: the same idea, one condition further out. A
@@ -4299,7 +4313,9 @@ export class OrchestratorLoop {
                   proposeDirectoryRescue({ expected, actual });
                 if (rescue) {
                   const rescued = contract.map((v) =>
-                    "path" in v && rescueMatchesContractPath(v.path, rescue) ? { ...v, path: rescue.to } : v,
+                    "path" in v && !isGenerated(v.path) && rescueMatchesContractPath(v.path, rescue)
+                      ? { ...v, path: rescue.to }
+                      : v,
                   );
                   const rescueProbes = this.deps.buildVerifyProbes({
                     plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
@@ -4312,6 +4328,7 @@ export class OrchestratorLoop {
                       cycle,
                       reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                       acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                      ...this.generatorVerifyCtx(workerWorktree),
                     },
                     rescueProbes,
                   );
@@ -4429,9 +4446,22 @@ export class OrchestratorLoop {
                       .worktreeCommittedFiles(workerWorktree, planBaseShaForVerify)
                       .catch(() => [] as string[])
                   : [];
+              // rc.5: annotate any expected path a declared generator owns, so
+              // the question reports "the generator did not run" instead of
+              // asking a human to relocate a file whose location is declared.
+              const genCtx = this.generatorVerifyCtx(workerWorktree);
+              const generated = expected
+                .map((p) => {
+                  const owner = genCtx.generators?.ownerOf(p);
+                  return owner
+                    ? { path: p, script: owner.script, scriptDeclared: genCtx.generatorScriptDeclared?.(owner.script) ?? true }
+                    : null;
+                })
+                .filter((g): g is { path: string; script: string; scriptDeclared: boolean } => g !== null);
               const mismatch = {
                 seq: st.seq, title: st.title, commitSha: result.commitSha!,
                 expected, actual, statedReason, changedOnBranch,
+                ...(generated.length > 0 ? { generated } : {}),
               };
               const auto = autoResolveContract(mismatch);
               if (auto.resolved && this.deps.config.loop.auto_resolve_satisfied_contract !== false) {
@@ -4814,6 +4844,11 @@ export class OrchestratorLoop {
       // recommendation. The adversary reads the diff, not the compiler.
       const typeFindings = await this.runTypecheckGate(sessionId, plan, cycle);
       if (typeFindings.length > 0) conventionFindings.push(...typeFindings);
+      // rc.5: broken generated-artifact ownership config is an ACTIONABLE
+      // failure, reported here rather than left to emerge as a path mismatch
+      // on whichever contract happens to name an unproducible file.
+      const generatorFindings = this.runGeneratorConfigCheck(sessionId, plan, cycle);
+      if (generatorFindings.length > 0) conventionFindings.push(...generatorFindings);
 
       this.setStatus(sessionId, "reviewing");
       await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
@@ -5168,7 +5203,7 @@ export class OrchestratorLoop {
       // blocking and still triggers the revise.
       if (conventionFindings.length > 0) {
         const blockingConvention = conventionFindings.filter((f) =>
-          isBlockingFinding(f, classifyFinding(f, { repoHasTestScript: true })),
+          isBlockingFinding(f, classifyFinding(f, this.classifyCtx)),
         );
         report = {
           ...report,
@@ -5299,7 +5334,7 @@ export class OrchestratorLoop {
           this.addCost(sessionId, runtimeReport.costUsd);
           await this.deps.budget.recordSpend(row.requester, runtimeReport.costUsd, sessionId);
           const blockingConvention = conventionFindings.filter((finding) =>
-            isBlockingFinding(finding, classifyFinding(finding, { repoHasTestScript: true })),
+            isBlockingFinding(finding, classifyFinding(finding, this.classifyCtx)),
           );
           report = {
             ...runtimeReport,
@@ -7067,6 +7102,137 @@ export class OrchestratorLoop {
    * Emits `loop.convention_check_ran` per run and `loop.convention_check_failed`
    * per non-zero exit.
    */
+  /**
+   * rc.5: the ClassifyCtx every gating site in the loop must use.
+   *
+   * `hasDeclaredGenerators` has to match what the adversary's own gate used, or
+   * the two disagree about whether a stale-bundle finding blocks: the adversary
+   * would file it `process` (non-blocking) while the loop counted it as a
+   * blocker, and the run would revise on a finding the reviewer had excused.
+   */
+  private get classifyCtx(): ClassifyCtx {
+    return {
+      repoHasTestScript: true,
+      hasDeclaredGenerators: !resolveGenerators(this.deps.config.verify?.generators).empty,
+    };
+  }
+
+  /**
+   * rc.5: report a broken `verify.generators` mapping as a blocking finding.
+   *
+   * Two failure modes, both of which used to be invisible until they surfaced
+   * as an unexplained contract miss on the generated file:
+   *
+   *   - a REJECTED mapping (ambiguous ownership, a path that escapes the repo,
+   *     a script name that is not a plain script name). The path ends up
+   *     unowned, so nothing regenerates it and nothing exempts it either.
+   *   - MISSING TOOLING: the mapping names a script the worktree's package.json
+   *     does not declare, so the worker cannot run it and the artifact can
+   *     never appear.
+   *
+   * Blocking (`high`) on purpose. This is a configuration fault that makes some
+   * contract unsatisfiable; shipping past it would mean merging a branch whose
+   * derived files are known-absent or known-stale.
+   */
+  private runGeneratorConfigCheck(sessionId: string, plan: LeadPlan, cycle: number): ReviewFinding[] {
+    const generators = resolveGenerators(this.deps.config.verify?.generators);
+    if (generators.empty && generators.errors.length === 0) return [];
+    const findings: ReviewFinding[] = [];
+
+    for (const e of generators.errors) {
+      this.deps.state.audit(
+        "loop.generator_config_invalid",
+        { sessionId, cycle, script: e.script, path: e.path, reason: e.reason },
+        sessionId,
+      );
+      findings.push({
+        dimension: "quality",
+        severity: "high",
+        title: `verify.generators rejected the mapping for '${e.script}'`,
+        detail:
+          `${e.path ? `Path '${e.path}': ` : ""}${e.reason}. No generator is authorized for the affected path(s), so ` +
+          `nothing will regenerate them -- and they are NOT exempt from their contract checks. Fix the harness ` +
+          `verify.generators config; this is not a defect in the branch's code.`,
+      });
+    }
+
+    // Missing tooling: read the worktree's manifest, not the harness's.
+    let scripts: Record<string, unknown> | undefined;
+    try {
+      if (plan.worktreePath) {
+        const pkg = JSON.parse(readFileSync(join(plan.worktreePath, "package.json"), "utf8")) as {
+          scripts?: Record<string, unknown>;
+        };
+        scripts = pkg.scripts ?? {};
+      }
+    } catch {
+      // Unreadable manifest is not evidence a script is missing. Stay silent
+      // rather than accuse the operator's config on the strength of an fs error.
+      scripts = undefined;
+    }
+    if (scripts !== undefined) {
+      for (const e of generators.entries) {
+        if (generatorScriptDeclared(scripts, e.script)) continue;
+        const owned = [...e.files, ...e.dirs].join(", ");
+        this.deps.state.audit(
+          "loop.generator_script_missing",
+          { sessionId, cycle, script: e.script, produces: [...e.files, ...e.dirs] },
+          sessionId,
+        );
+        findings.push({
+          dimension: "quality",
+          severity: "high",
+          title: `Generator script '${e.script}' is not declared by the repo`,
+          detail:
+            `verify.generators maps ${owned} to \`npm run ${e.script}\`, but this repo's package.json declares no ` +
+            `'${e.script}' script. MISSING TOOLING: the worker cannot run it, so those artifacts can never be ` +
+            `produced and any contract naming them is unsatisfiable. Add the script to the repo or correct the mapping.`,
+        });
+      }
+    }
+    return findings;
+  }
+
+  /**
+   * rc.5: the generated-artifact half of a sub-task's verification context.
+   *
+   * Shared by all three `verifySubTaskOutput` call sites so they cannot drift
+   * on which paths count as derived -- the first pass, the retry, and the
+   * re-verify must agree, or a contract could fail on one and pass on another.
+   *
+   * `generatorScriptDeclared` is resolved against the WORKTREE's package.json,
+   * not the harness's, and is cached per call because the same script is asked
+   * about once per contract. A worktree we cannot read package.json from
+   * reports every script as declared: that downgrades the failure text from
+   * "missing tooling" to "did not run", which is the claim we can still stand
+   * behind without having seen the manifest.
+   */
+  private generatorVerifyCtx(worktreePath: string | null | undefined) {
+    const generators = resolveGenerators(this.deps.config.verify?.generators);
+    if (generators.empty) return {};
+    let scripts: Record<string, unknown> | undefined;
+    let read = false;
+    return {
+      generators,
+      generatorScriptDeclared: (script: string) => {
+        if (!read) {
+          read = true;
+          try {
+            if (worktreePath) {
+              const pkg = JSON.parse(readFileSync(join(worktreePath, "package.json"), "utf8")) as {
+                scripts?: Record<string, unknown>;
+              };
+              scripts = pkg.scripts ?? {};
+            }
+          } catch {
+            scripts = undefined;
+          }
+        }
+        return scripts === undefined ? true : generatorScriptDeclared(scripts, script);
+      },
+    };
+  }
+
   private async runFinalVerifyChecks(sessionId: string, plan: LeadPlan, cycle: number): Promise<ReviewFinding[]> {
     const vcfg = this.deps.config.verify;
     if (!vcfg || vcfg.run_repo_check_scripts === false) return [];
@@ -9076,7 +9242,7 @@ export class OrchestratorLoop {
    */
   private countBlockingFindings(findings: ReviewFinding[] | undefined): number {
     if (!findings) return 0;
-    return findings.filter((f) => isBlockingFinding(f, classifyFinding(f, { repoHasTestScript: true }))).length;
+    return findings.filter((f) => isBlockingFinding(f, classifyFinding(f, this.classifyCtx))).length;
   }
 
   /**
@@ -9087,7 +9253,7 @@ export class OrchestratorLoop {
    */
   private mergeBlockingFindings(findings: ReviewFinding[] | undefined): ReviewFinding[] {
     if (!findings) return [];
-    return findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true })));
+    return findings.filter((f) => blocksMerge(f, classifyFinding(f, this.classifyCtx)));
   }
 
   /**

@@ -17,6 +17,12 @@
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./lead.js";
 import { renderConventionsForPrompt } from "./repo-conventions.js";
+import {
+  authorizedGeneratorsForPaths,
+  renderGeneratorInstruction,
+  resolveGenerators,
+} from "./generated-artifacts.js";
+import { inferVerifyContract } from "./verify-contract.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 
@@ -334,6 +340,13 @@ export function buildWorkerSystemPrompt(
     repoConventions?: import("./repo-conventions.js").RepoConvention[];
   },
   subTask: LeadPlanSubTask,
+  /**
+   * rc.5: the generators this sub-task is authorized to run, already narrowed
+   * to the paths it owes (see authorizedGeneratorsForPaths). Empty/omitted
+   * leaves the blanket no-generators guard fully in force, which is the default
+   * because `verify.generators` is empty unless an operator declares it.
+   */
+  authorizedGenerators: { script: string; paths: string[] }[] = [],
 ): string {
   const lines: string[] = [
     `You are a focused code-writing worker. Your job is ONE sub-task, nothing more.`,
@@ -472,13 +485,18 @@ export function buildWorkerSystemPrompt(
     `  sub-task's success criteria are literally "a test asserts X", WRITE that`,
     `  test file and commit it -- authoring a test is code; RUNNING the suite to`,
     `  green is not your job.)`,
-    // beta.70 (F1): worker-turn slimming. The harness runs the repo's declared
-    // check scripts (typecheck, lint, and any generator like `npm run okf`) in
-    // a POST-WORKER convention-check phase -- see repo-conventions.ts. In
-    // PR #870 the cycle-2 worker burned 19 min running `npm run okf` (a
-    // 1436-file regenerator) + a repo-wide `tsc` inside its own turn to land a
-    // 3-line diff, duplicating work the pipeline does downstream. Keep heavy
-    // repo-wide tooling OUT of the worker turn.
+    // beta.70 (F1): worker-turn slimming. In PR #870 the cycle-2 worker burned
+    // 19 min running `npm run okf` (a 1436-file regenerator) + a repo-wide
+    // `tsc` inside its own turn to land a 3-line diff. Keep heavy repo-wide
+    // tooling OUT of the worker turn.
+    //
+    // rc.5 corrects the JUSTIFICATION this guard used to carry. It claimed the
+    // harness ran generators "in a POST-WORKER convention-check phase". It does
+    // not: that phase runs CHECK scripts, commits nothing, and is off by
+    // default since beta.81. So the guard stands on its own cost rationale, and
+    // the one authorized exception is a NAMED generator for a NAMED path the
+    // sub-task already owes -- appended below from verify.generators. What is
+    // forbidden is SPECULATIVE repo-wide tooling, not producing a deliverable.
     // beta.81 (Track B / B1) EXTENDS this beta.70 guard: not only "no repo-wide
     // generators/builds/typechecks in-turn" but "no local verification runs at
     // all" -- CI is the verification spine now.
@@ -498,6 +516,11 @@ export function buildWorkerSystemPrompt(
   // repo's declared conventions must be carried in the prompt explicitly.
   const conventionBlock = renderConventionsForPrompt(brief.repoConventions, "worker");
   if (conventionBlock) lines.push(conventionBlock);
+  // rc.5: the narrow, named exception to the guard above. It goes AFTER the
+  // prohibition so the worker reads the general rule and then the specific
+  // authorization, rather than a rule it has to remember an exception to.
+  const generatorBlock = renderGeneratorInstruction(authorizedGenerators);
+  if (generatorBlock) lines.push(generatorBlock);
   return lines.join("\n");
 }
 
@@ -552,7 +575,22 @@ export async function runWorker(
    */
   firstTokenTimeoutSecondsOverride?: number,
 ): Promise<WorkerResult> {
-  const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
+  // rc.5: authorize generators for exactly the paths this sub-task owes. The
+  // contract is derived with the SAME inference the verifier uses, so the set
+  // the worker is told to produce cannot drift from the set it is judged on --
+  // which is the drift that made the old contract impossible to satisfy.
+  const generatorMap = resolveGenerators(deps.config.verify?.generators);
+  const contractPaths = [
+    ...inferVerifyContract(subTask)
+      .map((c) => ("path" in c ? c.path : undefined))
+      .filter((p): p is string => typeof p === "string" && p.length > 0),
+    ...(subTask.filesLikelyTouched ?? []),
+  ];
+  const systemPrompt = buildWorkerSystemPrompt(
+    brief,
+    subTask,
+    authorizedGeneratorsForPaths(generatorMap, contractPaths),
+  );
   const userMessage =
     `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
     (dispatchHint ? `\n\n${dispatchHint}` : "");

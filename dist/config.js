@@ -253,6 +253,9 @@ const DEFAULTS = {
         // for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task
         // (a deterministic diff/tsc rescue), NOT as a verify gate.
         run_repo_check_scripts: false,
+        // rc.5: no generators, and deliberately no built-in default for any
+        // toolchain. An operator declares ownership or nothing is authorized.
+        generators: [],
         check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
         check_script_timeout_seconds: 600,
         typecheck_gate: true,

@@ -218,8 +218,65 @@ always used a hard-coded 30 seconds no matter what the config said. A log line
 reporting a 30-second first-token timeout from before rc.4 is not evidence about
 your configured value, because your configured value was never consulted.
 
+## Who regenerates derived artifacts
+
+If your repo commits generated files — an OKF bundle, a codegen client, a
+generated docs section — you must tell the harness which script produces them.
+Nothing is inferred.
+
+```jsonc
+"verify": {
+  "generators": [
+    { "script": "okf", "produces": ["okf/bundle.json"] },
+    { "script": "codegen", "produces": ["src/generated/"] }
+  ]
+}
+```
+
+A `produces` entry ending in `/` owns everything beneath it; anything else is an
+exact file. Paths must stay inside the repository, and a path claimed by two
+scripts is refused as ambiguous — neither script is authorized for it.
+
+**What a mapping does.** When a sub-task's contract or declared scope names a
+mapped path, the worker is told to run that specific script and commit what it
+writes. That is the only exception to the standing "do not run repo-wide
+generators" rule, and it is scoped to the named script and the named paths, so
+no turn can be talked into a speculative whole-repo regeneration.
+
+**What it does not do.** It never authorizes the harness to run anything. The
+harness reads your mapping and reports on it; the worker executes. This keeps
+the beta.81 line intact: commands that decide pass/fail belong to CI, and
+commands that produce a committed deliverable belong to the worker.
+
+**What happens without a mapping.** A generated path with no mapping is treated
+as an ordinary file. Nothing regenerates it, and it gets no exemption either —
+the contract on it is enforced normally, and a reviewer finding that the bundle
+is stale keeps whatever weight the reviewer gave it. That is deliberate: with no
+declared owner there is no machinery to answer the complaint, so it stands.
+
+**Reading the failures.** Three are distinct and all name the cause directly:
+
+| Report | What happened |
+| --- | --- |
+| `... is a GENERATED artifact -- the generator that owns it (npm run X) did not run` | The script exists; the worker did not run it, or it wrote nothing. |
+| `MISSING TOOLING: verify.generators maps it to X, but package.json declares no such script` | Your mapping names a script the repo does not have. Nothing can produce the file until you fix one or the other. |
+| `... was NOT rewritten in this window ... the committed artifact is stale` | The file was committed by an earlier cycle and its sources have since moved. A derived file is never accepted on an earlier cycle's work. |
+
+None of these are path mismatches, and the harness will not ask you to relocate
+a generated file: its location is something you declared, not something the
+planner guessed.
+
+**A note on earlier releases.** Before rc.5 the worker was told "do NOT run
+regenerators yourself ... the harness regenerates derived artifacts for you",
+the reviewer was told not to flag a stale bundle for the same reason, and
+verification then required the generated file to be committed. The phase all
+three cited runs check scripts, commits nothing, and has been off by default
+since beta.81. If you are reading logs from before rc.5, a "contract path
+mismatch" on a generated file is that defect, not a misplaced file.
+
 ## Troubleshooting
 
+- **A contract failed on a generated file**: read the message rather than the path. If it says the generator did not run, the worker was not authorized for that path — add it to `verify.generators`. If it says MISSING TOOLING, the mapped script is not in the repo's `package.json`. If it says stale, the artifact predates the sources it is derived from and must be regenerated. See "Who regenerates derived artifacts" above.
 - **The adversary timed out before its first token**: the review failed closed and nothing shipped — this is not a review that passed, and the session keeps its worktree. Raise `loop.sdk_first_token_timeout_seconds` (see above) if the backend is merely slow to start; if it never opened its stream, check the backend's launch and credentials instead. The harness will not retry a timeout as a formatting problem, so repeated identical timeouts mean the backend, not the prompt.
 - **PAT push rejected with 403 (SAML)**: the org enforces SAML SSO. Authorise the PAT in the org's PAT settings, then retry. Alternative: emit `git format-patch` to a workspace directory and apply locally (see MEMORY.md).
 - **Vercel logs empty**: preview deploy has not landed yet. Adversary receives an explicit "NO RUNTIME DATA" banner and will not sign off on runtime concerns. Wait or increase `previewWaitSeconds`.

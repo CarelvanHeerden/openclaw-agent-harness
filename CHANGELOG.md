@@ -1,5 +1,68 @@
 # Changelog
 
+## Unreleased
+
+### The harness promised to generate a file, then required it to exist
+
+Three places told the worker and the reviewer that regeneration was somebody
+else's job. The worker's convention block: "any bundle/artifact REGENERATION
+step (e.g. running `npm run okf`) is handled by the harness AFTER your turn in
+its convention-check phase -- do NOT run regenerators yourself". The worker
+prompt: "DO NOT run ... bundle/artifact regenerators". The reviewer's: "do NOT
+raise a finding merely because a generated bundle/artifact was not regenerated
+-- the harness regenerates derived artifacts in its own post-worker
+convention-check phase". Verification then required the generated file to have
+been committed.
+
+No such phase exists. `runFinalVerifyChecks` runs the repo's declared *check*
+scripts — the default allowlist is `okf:check`, `lint`, `typecheck`, `test` —
+never a generator, and it commits nothing. Since beta.81 it has also been off by
+default, so on a stock deployment the phase all three cited did not run at all.
+Because nothing in the verify layer knew a path was derived, the file's absence
+came out of the contract path-resolution machinery as a path mismatch: the
+harness reported that it could not find the file, and asked a human where the
+work belonged, when the answer was that nobody had been allowed to write it.
+
+Generation is now assigned to the worker, scoped to paths an operator declares
+in the new `verify.generators` mapping of a script to the paths it produces.
+When a sub-task's contract names a mapped path, the worker is told to run that
+named script and commit the result — the one authorized exception to the
+no-generators rule, and still narrow enough to preserve the beta.70 lesson that
+sent a worker on a 19-minute speculative regeneration for a zero diff. The
+harness never runs these scripts; the mapping authorizes the worker only, which
+keeps beta.81's line where it was drawn. Commands that decide pass/fail belong
+to CI; commands that produce a committed deliverable belong to the worker, and a
+bundle the repo requires committed is part of the change rather than a check on
+it.
+
+Ownership is never inferred — not from script names, not from directory names,
+and there is no built-in default for any toolchain. A path claimed by two
+scripts is refused as ambiguous rather than guessed at, and a `produces` entry
+that escapes the repository is rejected. An unmapped path stays an ordinary
+file: no generation, and no exemption from its contract checks either.
+
+Failures now say what happened. A missing derived file reports that its
+generator did not run, or that the mapped script is absent from the repo's
+`package.json` and the artifact can therefore never be produced; a broken
+mapping is a blocking finding in its own right rather than something that
+emerges later as an unsatisfiable contract; and the human escalation names the
+generator instead of asking where a declared path should have gone. Stale output
+is rejected: a derived file is no longer accepted on the strength of an earlier
+cycle's commit, because once its sources move the committed copy is stale by
+construction. The contract-path rescue also refuses to relocate a generated
+contract onto a same-basename sibling, which would have turned "the generator
+never ran" into a pass.
+
+One fail-open closed with it. The rule demoting "the bundle is stale" to a
+non-blocking `process` finding was justified by that same phantom phase
+regenerating deterministically. It now requires a declared generator to exist:
+with nothing owning regeneration, the complaint is unanswered and keeps the
+weight the reviewer gave it. The beta.70 behaviour is unchanged for repos that
+declare one.
+
+Also corrected: the doc comment on `verify.run_repo_check_scripts` still claimed
+"Default true" three releases after beta.81 made it `false`.
+
 ## 2.0.0-rc.4
 
 Two recoveries and two deadlines. A run that failed after opening its pull

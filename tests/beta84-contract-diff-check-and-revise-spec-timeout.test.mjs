@@ -192,9 +192,17 @@ test("beta.84 #1: file_committed FAILS when probe reports diffLines=0, and echoe
 test("beta.84 #1: verify.ts echoes the contract path on file_committed + file_written results", skip, () => {
   const src = readSrc("src/orchestrator/verify.ts");
   assert.ok(/VerifyProbeResult[\s\S]{0,900}path\?:\s*string/.test(src), "VerifyProbeResult must gain optional path");
+  // rc.5 widened the window: the generated-artifact stale-rejection branch now
+  // sits at the top of this case. The claim is unchanged -- the first result
+  // pushed for file_committed must carry the contract path -- and the branch
+  // rc.5 added is held to it too, by the assertion below.
   assert.ok(
-    /case "file_committed"[\s\S]{0,600}path:\s*v\.path/.test(src),
+    /case "file_committed"[\s\S]{0,1200}path:\s*v\.path/.test(src),
     "file_committed result must carry v.path",
+  );
+  assert.ok(
+    /describeStaleGeneratedArtifact\(v\.path, genOwner\),\s*\n\s*path:\s*v\.path/.test(src),
+    "the rc.5 stale-generated-artifact result must carry v.path too",
   );
   assert.ok(
     /fileCommittedSince\?:[\s\S]{0,200}diffLines\?:\s*number/.test(src),

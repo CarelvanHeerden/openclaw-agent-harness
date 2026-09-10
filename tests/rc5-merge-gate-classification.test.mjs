@@ -266,7 +266,11 @@ test("a verdict the gate passes with no merge blockers is never do_not_merge", (
 test("the loop supplies the merge-blocking count it computed", () => {
   const src = S("src/orchestrator/loop.ts");
   assert.match(src, /mergeBlockingFindings\(findings: ReviewFinding\[\] \| undefined\)/, "the loop must count merge blockers");
-  assert.match(src, /blocksMerge\(f, classifyFinding\(f, \{ repoHasTestScript: true \}\)\)/);
+  // rc.5: the inline ctx literal became `this.classifyCtx`, shared by every
+  // gating site so the loop cannot disagree with the adversary about whether a
+  // generated-artifact finding blocks. The claim is unchanged: classify, then ask.
+  assert.match(src, /blocksMerge\(f, classifyFinding\(f, this\.classifyCtx\)\)/);
+  assert.match(src, /private get classifyCtx\(\): ClassifyCtx/);
   // Anchored to the start of a line so a commented-out wiring fails here rather
   // than matching its own corpse.
   assert.match(src, /^\s*mergeBlockingFindings: mergeBlockers\.length,$/m, "and pass the count to the recommendation");
@@ -285,7 +289,10 @@ test("step 4 cannot fall back to raw severity when the caller has counted", () =
 
 test("harness_merge_pr classifies rather than reading raw severity", () => {
   const src = S("src/index.ts");
-  assert.match(src, /blocksMerge\(f, classifyFinding\(f, \{ repoHasTestScript: true \}\)\)/);
+  // rc.5: the ctx is built once as `cctx` so this gate uses the same
+  // hasDeclaredGenerators reading as the review it is gating on.
+  assert.match(src, /blocksMerge\(f, classifyFinding\(f, cctx\)\)/);
+  assert.match(src, /hasDeclaredGenerators: !resolveGenerators\(config\.verify\?\.generators\)\.empty/);
   assert.doesNotMatch(src, /hasBlockingFinding = findings\.some\(\(f\) => isAtLeastMedium\(f\.severity\)\)/);
 });
 
@@ -301,7 +308,7 @@ test("an env-only block is deferred to CI, and refused unless CI is explicitly g
     /deferToCi = rec !== "merge" && !overridable && envOnlyBlock && !reviewCrashPr && lastVerdict !== "block"/,
   );
   // `every` -- one real defect alongside the env finding and the deferral is off.
-  assert.match(src, /blockers\.every\(\(f\) => classifyFinding\(f, \{ repoHasTestScript: true \}\) === "env"\)/);
+  assert.match(src, /blockers\.every\(\(f\) => classifyFinding\(f, cctx\) === "env"\)/);
   // Green means green. Written as !== "success" so a new CI state refuses.
   assert.match(src, /if \(deferToCi && ci !== "success"\)/);
   assert.doesNotMatch(src, /if \(deferToCi && ci === "none"\)/, "must fail toward the refusal, not enumerate states");

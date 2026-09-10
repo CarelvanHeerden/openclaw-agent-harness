@@ -277,7 +277,17 @@ export declare function buildWorkerSystemPrompt(brief: {
     relevantConcepts?: WorkerConceptRef[];
     /** beta.63 (Fix 1): repo conventions ingested at brief build. Optional. */
     repoConventions?: import("./repo-conventions.js").RepoConvention[];
-}, subTask: LeadPlanSubTask): string;
+}, subTask: LeadPlanSubTask, 
+/**
+ * rc.5: the generators this sub-task is authorized to run, already narrowed
+ * to the paths it owes (see authorizedGeneratorsForPaths). Empty/omitted
+ * leaves the blanket no-generators guard fully in force, which is the default
+ * because `verify.generators` is empty unless an operator declares it.
+ */
+authorizedGenerators?: {
+    script: string;
+    paths: string[];
+}[]): string;
 /**
  * Beta.21: choose which concepts are pertinent to this specific sub-task.
  * Filters to concepts whose `path` matches one of the sub-task's likely

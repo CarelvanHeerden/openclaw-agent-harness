@@ -2466,8 +2466,10 @@ const MUTATIONS = [
     // alongside an env finding would be deferred to CI and merged on green.
     name: "the CI deferral stays env-ONLY (rc.5): a real defect must not ride along",
     file: "src/index.ts",
-    find: 'blockers.every((f) => classifyFinding(f, { repoHasTestScript: true }) === "env")',
-    replace: 'blockers.some((f) => classifyFinding(f, { repoHasTestScript: true }) === "env")',
+    // rc.5 re-anchored: the inline ctx literal became a shared `cctx` so this
+    // gate carries hasDeclaredGenerators too. The mechanism is unchanged.
+    find: 'blockers.every((f) => classifyFinding(f, cctx) === "env")',
+    replace: 'blockers.some((f) => classifyFinding(f, cctx) === "env")',
     tests: ["tests/rc5-merge-gate-classification.test.mjs", "tests/beta36-merge-gate-and-config.test.mjs"],
   },
   {
@@ -2675,6 +2677,63 @@ const MUTATIONS = [
     find: "        blockers.push({\n            kind: \"conflicting_link\",",
     replace: "        ({\n            kind: \"conflicting_link\",",
     tests: ["tests/rc4-pr-link-recovery.test.mjs"],
+  },
+
+  // ------------------------------- rc.5: generated-artifact ownership
+  {
+    // Ownership decides who may EXECUTE a script. Two mappings claiming one
+    // path is a config fault with no right answer; picking the first claimant
+    // runs a command the operator did not unambiguously authorize for it.
+    name: "ambiguous generator ownership fails closed (rc): a contested path picks a script by declaration order",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "        if (scripts.length > 1) {\n            ambiguous.add(path);",
+    replace: "        if (false) {\n            ambiguous.add(path);",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // A `produces` entry that escapes the repo would point generation, and the
+    // ownership behaviour that follows from it, at a file outside the worktree.
+    name: "a generator path cannot escape the repo (rc): ../ in produces reaches outside the worktree",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "            if (segments.length === 0)\n                return null;\n            segments.pop();",
+    replace: "            segments.pop();",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // This value is executed by the worker as `npm run <script>`. Accepting
+    // anything but a plain script name lets config carry shell syntax.
+    name: "the generator script name is validated (rc): the executed value would accept shell syntax",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "        if (!SCRIPT_NAME_RE.test(script)) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // The stale-output rule. Without it a derived file passes on an earlier
+    // cycle's commit, which ships a bundle whose sources have since moved.
+    name: "a derived artifact is not accepted from an earlier cycle (rc): stale generated output ships",
+    file: "dist/orchestrator/verify.js",
+    find: "                if (genOwner && (v.reviseRelaxed || reviseCycle) && probes.fileCommittedSince) {",
+    replace: "                if (false && probes.fileCommittedSince) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // The demotion was justified by a regeneration phase that does not exist.
+    // Ungating it hands a stale artifact a pass on every repo, declared or not.
+    name: "a stale bundle is only excused when something owns it (rc): the demotion returns to unconditional",
+    file: "dist/orchestrator/finding-classify.js",
+    find: "    if (ctx.hasDeclaredGenerators === true && GENERATED_ARTIFACT_RE.test(text)) {",
+    replace: "    if (GENERATED_ARTIFACT_RE.test(text)) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs", "tests/beta70-ten-minute-ceiling.test.mjs"],
+  },
+  {
+    // The rescue relocates a contract onto a same-basename file the worker did
+    // touch. For a declared generator path that turns "it never ran" into a pass.
+    name: "a generated contract is never rescued onto a sibling (rc): an unrun generator passes as a moved file",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    return paths.filter((p) => !map?.ownerOf(p));",
+    replace: "    return paths.filter(() => true);",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
 
   // ------------------------------------- v2.0.0 M5: the ACP backend

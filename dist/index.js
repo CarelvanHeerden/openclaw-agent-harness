@@ -64,6 +64,7 @@ import { runLeadPlanner } from "./orchestrator/lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/worker.js";
 import { runAdversary as runAdversaryCore } from "./orchestrator/adversary.js";
 import { discoverCheckScripts, ingestRepoConventions } from "./orchestrator/repo-conventions.js";
+import { resolveGenerators } from "./orchestrator/generated-artifacts.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
@@ -959,6 +960,10 @@ export function bootstrapHarnessSync(api) {
                             return false;
                         }
                     })(),
+                    // rc.5: only demote a "the bundle is stale" finding when something
+                    // actually owns regenerating it. Without a declared generator the
+                    // complaint is unanswered, so it keeps its weight.
+                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
                 }, {
                     logger: api.logger,
                     readDiff: async (p) => (await readFile(p, "utf8")),
@@ -1635,11 +1640,16 @@ export function bootstrapHarnessSync(api) {
                 // non-blocking; severity alone made it an unoverridable blocker on every
                 // run on a host with no `tsc`, which is a permanent refusal rather than
                 // a safety check. Classify, then ask what the class means for a merge.
-                const blockers = findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true })));
+                // rc.5: same ClassifyCtx the loop and the adversary used, so this gate
+                // cannot reach a different verdict on a generated-artifact finding than
+                // the review that produced it.
+                const cctx = {
+                    repoHasTestScript: true,
+                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
+                };
+                const blockers = findings.filter((f) => blocksMerge(f, classifyFinding(f, cctx)));
                 hasBlockingFinding = blockers.length > 0;
-                envOnlyBlock =
-                    blockers.length > 0 &&
-                        blockers.every((f) => classifyFinding(f, { repoHasTestScript: true }) === "env");
+                envOnlyBlock = blockers.length > 0 && blockers.every((f) => classifyFinding(f, cctx) === "env");
             }
             catch { /* ignore malformed */ }
             // ---- GATE (beta.36: Vercel-aware) ----

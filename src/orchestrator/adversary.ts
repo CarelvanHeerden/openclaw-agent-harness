@@ -91,6 +91,13 @@ export interface AdversaryInput {
    */
   repoHasTestScript?: boolean;
   /**
+   * rc.5: true when an operator has declared a generator that owns derived
+   * artifacts (`verify.generators` is non-empty). Gates the generated-artifact
+   * demotion, which used to fire unconditionally on the strength of a
+   * regeneration phase that does not exist -- see ClassifyCtx.
+   */
+  hasDeclaredGenerators?: boolean;
+  /**
    * rc.3: set for a revise session, so the prompt can separate the feature
    * contract from the revision directives instead of flattening both into
    * `crystallisedPrompt`. See `AdversaryRevisionContext`.
@@ -553,6 +560,7 @@ export async function runAdversary(
   const classifyCtx: ClassifyCtx = {
     repoHasTestScript: input.repoHasTestScript === true,
     runtimeUnavailable,
+    hasDeclaredGenerators: input.hasDeclaredGenerators === true,
   };
   const gated = gateVerdict({
     verdict: result.parsed.verdict,
