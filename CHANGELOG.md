@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.5
+
+Two ways the harness told the truth about neither a file nor a push. One
+assigned artifact generation to a phase that does not exist and then required
+its output to have been committed; the other read a configuration flag as proof
+of publication and reported 35 unpushed commits as shipped. Nothing here loosens
+a merge gate: a published non-passing candidate keeps its blocking findings and
+its do-not-merge recommendation, and every new failure mode fails closed with
+the work preserved on disk.
 
 ### A run could report work as shipped without ever pushing it
 
