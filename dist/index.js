@@ -1113,6 +1113,26 @@ export function bootstrapHarnessSync(api) {
             }
             return { remoteSha };
         },
+        /**
+         * rc.5 (#2): the ground truth for publication -- `git ls-remote` against
+         * the real remote, through the SAME requester credential routing as every
+         * other provider call (never a borrowed token, never a logged secret).
+         *
+         * Returns undefined for "no such branch". Throws only when the remote could
+         * not be READ, which the loop classifies as `verification_unavailable` and
+         * refuses to treat as publication. This is what StitchGuard PR #1168 had no
+         * equivalent of: nothing in the ship path ever asked GitHub what was
+         * actually on the branch.
+         */
+        remoteBranchSha: async ({ plan, branch, requester }) => {
+            const resolution = pat.resolve({
+                slackUserId: requester ?? config.slack.authorised_users[0],
+                gitHubUser: plan.repo.split("/")[0],
+                repoFullName: plan.repo,
+            });
+            const gitToken = await resolveGitToken(resolution);
+            return await git.remoteBranchSha(plan.worktreePath, "origin", branch, gitToken);
+        },
         openPullRequest: async ({ plan, brief, reviewReport, requester }) => {
             const resolution = pat.resolve({
                 slackUserId: requester ?? config.slack.authorised_users[0],

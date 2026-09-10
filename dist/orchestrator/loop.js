@@ -229,6 +229,7 @@ import { mapFindingsToSubTasks, buildScopedReviseHint, groupUnownedFindingsForRe
 import { detectWorkerConfab } from "./worker-confab-detect.js";
 import { detectStuckFindings, findingKey, coFixFiles, describeUnresolvable, } from "./cross-cutting-findings.js";
 import { diagnosePushFailure, describePreservedPushFailure } from "./push-failure.js";
+import { verifyRemoteSha, evidenceCoversCandidate, describeUnpublished, describePublicationState, } from "./publication.js";
 import { planTouchesWorkflows, describeMissingWorkflowScope } from "./workflow-scope.js";
 import { ABORT_REASONS_WORTH_SHIPPING, describeAbortSalvage, shouldReserveTimeToShip } from "./abort-salvage.js";
 import { TIME_EXTENSION_SEQ, parseTimeExtensionReply, renderTimeExtensionMarker, renderTimeExtensionQuestion, } from "./time-extension.js";
@@ -1718,6 +1719,17 @@ export class OrchestratorLoop {
         let ciNeverRegisteredCaveat = null;
         let ciRepairCyclesGranted = 0;
         let lastCiFindings = [];
+        // rc.5 (#2): the ONLY record that a specific commit reached the remote.
+        // Deliberately holds a SHA rather than a boolean, so a HEAD that moves
+        // after publication (the CI-workflow authoring below commits) stops being
+        // covered instead of silently inheriting the old commit's proof. Declared
+        // out here with `prUrl` because a preview push in one ship attempt can
+        // legitimately serve a later attempt -- but only for the same SHA.
+        let publication = null;
+        // rc.5 (#2): the SHA the CI verdict below actually describes. Recorded
+        // separately from the published SHA so "CI was green" can never be read as
+        // being about a commit CI never saw.
+        let ciPolledSha = "";
         // Measured across every ship attempt, so the timing reflects what the run
         // actually spent getting to a shippable state.
         const shipStart = Date.now();
@@ -4174,6 +4186,18 @@ export class OrchestratorLoop {
                             throw new Error(`preview branch tip mismatch: expected ${previewHeadSha}, received ${pushed.remoteSha || "(missing)"}`);
                         }
                         this.deps.state.audit("loop.preview_branch_pushed", { sessionId, cycle, branch: plan.branch, headSha: previewHeadSha }, sessionId);
+                        // rc.5 (#2): the preview push is a REAL publication of a SPECIFIC
+                        // commit -- `pushBranchForPreview` already re-reads the remote tip
+                        // and throws unless it equals `previewHeadSha`, which is exactly the
+                        // proof this evidence records. Finalisation reuses it (and skips a
+                        // second push) only while the candidate is still this same SHA.
+                        publication = {
+                            sha: previewHeadSha,
+                            branch: plan.branch,
+                            repo: plan.repo,
+                            verifiedAt: Date.now(),
+                            via: "pushed",
+                        };
                     }
                     catch (err) {
                         const diagnosis = diagnosePushFailure(err);
@@ -4460,10 +4484,45 @@ export class OrchestratorLoop {
                 }
             }
             try {
-                prUrl =
-                    this.deps.previewVerificationEnabled === true && this.deps.openPullRequest
-                        ? await this.deps.openPullRequest({ plan, brief, reviewReport: lastReview, requester: row.requester })
-                        : await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview, requester: row.requester });
+                // rc.5 (#2): THE FIX FOR PR #1168.
+                //
+                // Pre-rc.5 this line read `previewVerificationEnabled === true` and, if
+                // so, called the PR-ONLY callback. That flag says preview verification is
+                // CONFIGURED; it says nothing about whether a push happened. The preview
+                // push above runs only for a `pass` verdict, so every `revise` run with
+                // preview enabled took the PR-only branch, found the revision's existing
+                // PR, posted a comment, and was recorded as shipped with its commits
+                // still on local disk. Two sessions lost 35 commits that way.
+                //
+                // `publishCandidate` asks the question that actually matters -- is the
+                // commit I am about to ship already proven to be on the remote? -- and
+                // pushes whenever the answer is no. Note the ordering: it resolves the
+                // candidate AFTER the CI-workflow authoring above, so a workflow commit
+                // that moves HEAD invalidates the preview push's evidence instead of
+                // inheriting it.
+                const published = await this.publishCandidate({
+                    sessionId, plan, brief, reviewReport: lastReview, requester: row.requester,
+                    cycle, stage: "finalize", existing: publication,
+                });
+                if (!published.ok) {
+                    if (published.kind === "push_failed") {
+                        // Same shape as before: let the existing push-failure catch below
+                        // classify it, audit it and preserve the worktree.
+                        throw published.pushError;
+                    }
+                    // The call RESOLVED and the remote still does not hold the candidate.
+                    // This is the #1168 shape; it is not shipped.
+                    return await this.finaliseUnpublished({
+                        sessionId, plan, cycle, totalCost,
+                        kind: published.kind,
+                        candidateSha: published.candidateSha,
+                        observedSha: published.observedSha,
+                        detail: published.message,
+                        prUrl: published.prUrl,
+                    });
+                }
+                prUrl = published.prUrl;
+                publication = published.evidence;
                 // beta.129: record the PR the MOMENT it exists, not only if the run
                 // reaches a terminal `shipped`. b127 opens the PR here and can then
                 // re-enter the loop for a CI repair cycle, so a run that later aborted
@@ -4518,14 +4577,31 @@ export class OrchestratorLoop {
             // status may not exist yet on this SHA; do not block the deliverable).
             // beta.127: declared outside the ship-attempt loop, above.
             {
-                let headSha = "";
-                try {
-                    headSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
-                }
-                catch {
-                    headSha = "";
+                // rc.5 (#2): poll CI on the PUBLISHED commit, not the local one.
+                //
+                // Pre-rc.5 this read the worktree HEAD and polled that. In #1168 nothing
+                // had been pushed, so GitHub had never heard of the SHA -- there were no
+                // checks to be red, the outcome resolved as "no CI", and the run shipped.
+                // Absent CI on an unpublished commit is not a green light; it is not even
+                // a reading. `publication.sha` is a commit somebody confirmed is on the
+                // remote, so a CI answer about it means something.
+                let headSha = publication?.sha ?? "";
+                if (!headSha) {
+                    try {
+                        headSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+                    }
+                    catch {
+                        headSha = "";
+                    }
+                    if (headSha) {
+                        // Only reachable when publication could not be verified at all (no
+                        // probe wired). Say so, so a green here is never read as proof the
+                        // published commit is green.
+                        this.deps.state.audit("loop.ci_polled_unverified_sha", { sessionId, cycle, sha: headSha, reason: "no verified publication evidence for this candidate" }, sessionId);
+                    }
                 }
                 if (headSha && (this.deps.ciCombinedStatus || this.deps.ciSnapshot)) {
+                    ciPolledSha = headSha;
                     this.setStatus(sessionId, "reviewing");
                     this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
                     const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
@@ -4811,11 +4887,29 @@ export class OrchestratorLoop {
                 cycleExtensionsGranted, effectiveCeiling,
             }, sessionId);
         }
+        // rc.5 (#2): say which of the three states this run is in, on the record an
+        // operator actually reads. #1168 reported "shipped" for work that was never
+        // pushed, so "published" now names the SHA it published and repeats that
+        // published is not approved -- a `revise` verdict goes up for review with
+        // its blocking findings intact, and must not be merged.
+        finalReason = `${finalReason}\n\n${describePublicationState({
+            published: !!publication,
+            verdict: lastReview.verdict,
+            sha: publication?.sha,
+        })}`;
         const prNumber = parsePrNumber(prUrl);
         this.deps.state.db
             .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
             .run(prUrl, prNumber ?? null, finalRecommendation, finalReason, Date.now(), sessionId);
-        this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: finalRecommendation, reason: finalReason, ciOverride: !!ciOverride }, sessionId);
+        this.recordPublicationEvidence(sessionId, publication);
+        this.deps.state.audit("loop.shipped", {
+            sessionId, prUrl, prNumber, mergeRecommendation: finalRecommendation, reason: finalReason, ciOverride: !!ciOverride,
+            // The commit this outcome is actually about. Absent means publication
+            // could not be verified -- never that it was verified as absent.
+            publishedSha: publication?.sha ?? null,
+            publicationVerified: !!publication,
+            ciSha: ciPolledSha || null,
+        }, sessionId);
         this.emitPhaseTiming(sessionId, "ship", cycle, shipPhaseStart, {
             prNumber,
             mergeRecommendation: finalRecommendation,
@@ -5525,8 +5619,29 @@ export class OrchestratorLoop {
             costUsd: 0, tokensIn: 0, tokensOut: 0,
         };
         let prUrl;
+        let publication = null;
         try {
-            prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester });
+            // rc.5 (#2): this path always pushed, so it was never the #1168 defect --
+            // but it never checked either, and "the callback resolved" is not
+            // publication. `existing: null` means it always pushes; the value added
+            // here is that the remote is read back before anything is called shipped.
+            const published = await this.publishCandidate({
+                sessionId, plan, brief, reviewReport, requester,
+                cycle, stage: "best_effort_verify", existing: null,
+            });
+            if (!published.ok) {
+                if (published.kind === "push_failed")
+                    throw published.pushError;
+                const why = `verify_timeout_best_effort_unpublished (${published.kind}): ${published.message}`;
+                await this.finaliseUnpublished({
+                    sessionId, plan, cycle, totalCost,
+                    kind: published.kind, candidateSha: published.candidateSha,
+                    observedSha: published.observedSha, detail: published.message, prUrl: published.prUrl,
+                });
+                return { preserved: why };
+            }
+            prUrl = published.prUrl;
+            publication = published.evidence;
         }
         catch (pushErr) {
             this.deps.state.audit("loop.best_effort_verify_pr_failed", { sessionId, seq: st.seq, error: String(pushErr?.message ?? pushErr) }, sessionId);
@@ -5550,7 +5665,11 @@ export class OrchestratorLoop {
         this.deps.state.db
             .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
             .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
-        this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaBestEffortVerify: true }, sessionId);
+        this.recordPublicationEvidence(sessionId, publication);
+        this.deps.state.audit("loop.shipped", {
+            sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaBestEffortVerify: true,
+            publishedSha: publication?.sha ?? null, publicationVerified: !!publication,
+        }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr", phase: "finalize", seq: st.seq, prUrl, prNumber });
         await this.tryReleaseWorktree(sessionId, plan.repo, plan.worktreePath, "shipped");
         return "shipped";
@@ -6666,14 +6785,38 @@ export class OrchestratorLoop {
                         tokensIn: 0,
                         tokensOut: 0,
                     };
-                    const prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester: row.requester });
+                    // rc.5 (#2): the salvage releases the worktree on success, so an
+                    // unverified "salvaged" is the same loss as #1168 with a different
+                    // label. Prove the remote has it, or fall through to the preserve
+                    // tail below, which keeps every commit.
+                    const published = await this.publishCandidate({
+                        sessionId, plan, brief, reviewReport, requester: row.requester,
+                        cycle: cycles, stage: "abort_salvage", existing: null,
+                    });
+                    if (!published.ok) {
+                        if (published.kind === "push_failed")
+                            throw published.pushError;
+                        this.deps.state.audit("loop.abort_salvage_unpublished", {
+                            sessionId, abortReason: reason, failureKind: published.kind,
+                            candidateSha: published.candidateSha || "(unresolved)",
+                            observedSha: published.observedSha ?? null, detail: published.message,
+                        }, sessionId);
+                        // Deliberately NOT a throw: fall through to the preserve tail, which
+                        // is the correct outcome for commits that exist only on disk.
+                        throw new Error(`abort_salvage_unpublished (${published.kind}): ${published.message}`);
+                    }
+                    const prUrl = published.prUrl;
                     const recReason = describeAbortSalvage(reason, cycles, lastReview);
                     const prNumber = parsePrNumber(prUrl);
                     this.setStatus(sessionId, "done");
                     this.deps.state.db
                         .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
                         .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
-                    this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaAbortSalvage: true, abortReason: reason }, sessionId);
+                    this.recordPublicationEvidence(sessionId, published.evidence);
+                    this.deps.state.audit("loop.shipped", {
+                        sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaAbortSalvage: true, abortReason: reason,
+                        publishedSha: published.evidence?.sha ?? null, publicationVerified: !!published.evidence,
+                    }, sessionId);
                     this.deps.state.audit("loop.abort_salvaged_to_pr", { sessionId, abortReason: reason, prUrl, prNumber, cycles }, sessionId);
                     this.deps.interactionLog?.log(sessionId, { event: "abort_salvage_pr", phase: "finalize", prUrl, prNumber, reason });
                     await this.tryReleaseWorktree(sessionId, row.repo, row.worktree_path, "shipped");
@@ -7250,6 +7393,262 @@ export class OrchestratorLoop {
             `(sessionId ${sessionId}, repo ${pr?.repo || "<owner/name>"}, the PR number) and then harness_revise it; ` +
             `harness_link_pr is a dry run until you pass apply. Otherwise push the branch by hand.`);
     }
+    /**
+     * rc.5 (#2): can this run PROVE publication at all?
+     *
+     * True whenever the remote probe is wired. Production wires it
+     * unconditionally; a loop test double that never reaches a ship does not.
+     * Kept as a named getter rather than an inline `!!this.deps.remoteBranchSha`
+     * so the distinction between "verified" and "unverifiable" is a thing the
+     * code says out loud, and so the two branches are separately pinned.
+     */
+    get publicationVerificationRequired() {
+        return typeof this.deps.remoteBranchSha === "function";
+    }
+    /**
+     * The commit we are about to claim as published. Empty string when the probe
+     * is missing or the read fails -- callers MUST treat that as
+     * `candidate_unknown` and never as "nothing changed".
+     */
+    async resolveCandidateSha(worktreePath) {
+        if (!this.deps.worktreeHeadSha)
+            return "";
+        const head = await this.deps.worktreeHeadSha(worktreePath).catch(() => "");
+        return head?.trim() ?? "";
+    }
+    /**
+     * Read the remote back and decide whether `expectedSha` is really there.
+     * Bounded and cancellable; see `verifyRemoteSha` for why the retry exists
+     * (observed provider metadata lag during the #1168 recovery, NOT a hope that
+     * a failed push will spontaneously succeed).
+     */
+    async verifyPublication(params) {
+        const probe = this.deps.remoteBranchSha;
+        if (!probe) {
+            return {
+                ok: false,
+                kind: "verification_unavailable",
+                attempts: 0,
+                detail: "no remote-SHA probe is wired, so publication cannot be verified",
+            };
+        }
+        const result = await verifyRemoteSha({
+            expectedSha: params.expectedSha,
+            branch: params.plan.branch,
+            repo: params.plan.repo,
+            readRemoteSha: () => probe({ plan: params.plan, branch: params.plan.branch, requester: params.requester }),
+            attempts: this.deps.config.ci?.publication_verify_attempts,
+            delayMs: this.deps.config.ci?.publication_verify_delay_ms,
+            sleep: this.deps.sleep,
+            // Bounded by attempts AND by the run's own clock, so a session being
+            // torn down does not sit here re-reading a remote nobody will act on.
+            signal: params.deadlineMs === undefined
+                ? undefined
+                : { get aborted() { return Date.now() > params.deadlineMs; } },
+        });
+        this.deps.state.audit(result.ok ? "loop.publication_verified" : "loop.publication_unverified", {
+            sessionId: params.sessionId,
+            cycle: params.cycle,
+            stage: params.stage,
+            branch: params.plan.branch,
+            repo: params.plan.repo,
+            expectedSha: params.expectedSha,
+            observedSha: result.ok ? result.observedSha : result.observedSha,
+            attempts: result.attempts,
+            ...(result.ok ? {} : { failureKind: result.kind, detail: result.detail }),
+        }, params.sessionId);
+        return result;
+    }
+    /**
+     * rc.5 (#2): PUBLISH THE CANDIDATE, THEN PROVE IT.
+     *
+     * The single door every ship path goes through. It exists because #1168's
+     * finalisation chose its callback from `previewVerificationEnabled` -- a fact
+     * about CONFIGURATION -- and then reported the result as publication. The
+     * choice here is made from `existing` evidence about THIS EXACT SHA instead:
+     *
+     *   - evidence covers the candidate, and the remote still agrees
+     *       -> the commit is already on the remote. Open/update the PR only.
+     *          (This is what keeps a passing preview run from pushing twice.)
+     *   - anything else -- no evidence, evidence for a DIFFERENT sha (the CI
+     *     workflow got authored after the preview push), or a remote that no
+     *     longer matches
+     *       -> push. A PR-only adapter is never a substitute for a push.
+     *
+     * Then the remote is read back regardless of which branch ran, because a
+     * resolved callback is not evidence. Only a confirmed read mints
+     * {@link PublicationEvidence}.
+     */
+    async publishCandidate(params) {
+        const { sessionId, plan, brief, reviewReport, requester, cycle, stage } = params;
+        const candidateSha = await this.resolveCandidateSha(plan.worktreePath);
+        // Does prior evidence cover THIS commit? Branch-scoped and SHA-scoped:
+        // evidence for the pre-workflow-authoring HEAD must not carry the commit
+        // that replaced it.
+        let reuse = evidenceCoversCandidate(params.existing, candidateSha, plan.branch);
+        if (params.existing && !reuse) {
+            this.deps.state.audit("loop.publication_evidence_invalidated", {
+                sessionId, cycle, stage, branch: plan.branch,
+                publishedSha: params.existing.sha,
+                candidateSha: candidateSha || "(unresolved)",
+                reason: candidateSha ? "head_moved_after_publication" : "candidate_sha_unresolved",
+            }, sessionId);
+        }
+        let reuseRevalidatedAt = 0;
+        if (reuse && this.publicationVerificationRequired) {
+            // Evidence ages. Re-read before trusting it, so a branch deleted or
+            // advanced between the preview push and here cannot be reported as ours.
+            // Skipped entirely when no probe is wired: the evidence we hold was
+            // itself minted from a verified push, and re-pushing on the strength of
+            // a check we cannot run would be exactly the unconditional push the
+            // brief rules out.
+            const recheck = await this.verifyPublication({ sessionId, plan, requester, expectedSha: candidateSha, cycle, stage: `${stage}_reuse_recheck` });
+            if (recheck.ok) {
+                reuseRevalidatedAt = Date.now();
+            }
+            else if (recheck.kind === "remote_mismatch") {
+                // The tip is a commit we did not publish. Re-pushing would either be
+                // rejected as non-fast-forward or, with force, destroy it. Refuse.
+                return {
+                    ok: false,
+                    kind: "remote_mismatch",
+                    candidateSha,
+                    observedSha: recheck.observedSha,
+                    message: recheck.detail,
+                };
+            }
+            else {
+                // Branch gone, or unreadable. Publishing again is the correct move --
+                // and if the remote genuinely cannot be reached, the push fails loudly.
+                reuse = false;
+            }
+        }
+        let prUrl;
+        try {
+            if (reuse && this.deps.openPullRequest) {
+                this.deps.state.audit("loop.publication_reused_push", { sessionId, cycle, stage, branch: plan.branch, sha: candidateSha }, sessionId);
+                prUrl = await this.deps.openPullRequest({ plan, brief, reviewReport, requester });
+            }
+            else {
+                this.deps.state.audit("loop.publication_push_started", { sessionId, cycle, stage, branch: plan.branch, candidateSha: candidateSha || "(unresolved)" }, sessionId);
+                prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester });
+            }
+        }
+        catch (err) {
+            return { ok: false, kind: "push_failed", candidateSha, message: String(err), pushError: err };
+        }
+        if (reuse) {
+            // Nothing was pushed, because the commit was already there and proven to
+            // be. Carry the original evidence forward rather than re-minting it: its
+            // `verifiedAt` is when the remote was last actually read.
+            return {
+                ok: true,
+                prUrl,
+                evidence: { ...params.existing, verifiedAt: reuseRevalidatedAt || params.existing.verifiedAt },
+                reusedPush: true,
+                verified: true,
+                candidateSha,
+            };
+        }
+        if (!this.publicationVerificationRequired) {
+            // Unverifiable, and said so. The run continues on the pre-rc.5 contract
+            // (the push callback resolved), but nothing downstream may call this
+            // VERIFIED publication -- `evidence` is null, so no CI result and no
+            // terminal claim can attach itself to a SHA nobody confirmed.
+            this.deps.state.audit("loop.publication_unverifiable", { sessionId, cycle, stage, branch: plan.branch, candidateSha: candidateSha || "(unresolved)", reason: "no remoteBranchSha probe wired" }, sessionId);
+            return { ok: true, prUrl, evidence: null, reusedPush: false, verified: false, candidateSha };
+        }
+        const verified = await this.verifyPublication({ sessionId, plan, requester, expectedSha: candidateSha, cycle, stage });
+        if (!verified.ok) {
+            return {
+                ok: false,
+                kind: verified.kind,
+                candidateSha,
+                observedSha: verified.observedSha,
+                message: verified.detail,
+                prUrl,
+            };
+        }
+        return {
+            ok: true,
+            prUrl,
+            evidence: {
+                sha: verified.observedSha,
+                branch: plan.branch,
+                repo: plan.repo,
+                verifiedAt: Date.now(),
+                via: reuse ? "already_present" : "pushed",
+            },
+            reusedPush: reuse,
+            verified: true,
+            candidateSha,
+        };
+    }
+    /**
+     * rc.5 (#2): persist the proof, so resume/recovery and an operator reading
+     * the row can tell a shipped session from a #1168 one without re-deriving it.
+     *
+     * Writes ONLY on positive evidence. A null publication leaves the columns
+     * NULL, which reads as "never verified" -- deliberately not as "verified
+     * absent", and deliberately not overwriting an earlier verified SHA with a
+     * blank on some later unverifiable pass.
+     */
+    recordPublicationEvidence(sessionId, evidence) {
+        if (!evidence)
+            return;
+        try {
+            this.deps.state.db
+                .prepare(`UPDATE sessions SET published_sha = ?, published_at = ?, published_branch = ?, updated_at = ? WHERE id = ?`)
+                .run(evidence.sha, evidence.verifiedAt, evidence.branch, Date.now(), sessionId);
+        }
+        catch (err) {
+            // The audit trail already carries it; a column that failed to write must
+            // not take down a run that genuinely published.
+            this.deps.logger.warn("[loop] could not persist publication evidence", { sessionId, err: String(err) });
+        }
+    }
+    /**
+     * rc.5 (#2): terminal for a run whose work is NOT on the remote.
+     *
+     * Distinct from a push failure only in what it knows: here the push (or the
+     * PR-only call) RESOLVED and the remote still does not hold the candidate.
+     * That is the #1168 shape exactly, and pre-rc.5 it was reported as shipped.
+     * Preserves the worktree, because it is now provably the only copy.
+     */
+    async finaliseUnpublished(params) {
+        this.deps.state.audit("loop.unpublished", {
+            sessionId: params.sessionId,
+            cycle: params.cycle,
+            branch: params.plan.branch,
+            repo: params.plan.repo,
+            failureKind: params.kind,
+            candidateSha: params.candidateSha || "(unresolved)",
+            observedSha: params.observedSha ?? null,
+            prUrl: params.prUrl ?? null,
+            worktreePreserved: true,
+            worktreePath: params.plan.worktreePath,
+        }, params.sessionId);
+        // Keep the PR association even though the PR does not describe this work:
+        // losing it is how a recoverable session becomes an orphan (beta.129).
+        if (params.prUrl) {
+            try {
+                this.deps.state.db
+                    .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, updated_at = ? WHERE id = ?`)
+                    .run(params.prUrl, parsePrNumber(params.prUrl) ?? null, Date.now(), params.sessionId);
+            }
+            catch { /* the terminal message still names it */ }
+        }
+        return await this.finaliseFailedPreserveWorktree(params.sessionId, `publication_unverified (${params.kind}): ${describeUnpublished({
+            kind: params.kind,
+            expectedSha: params.candidateSha,
+            observedSha: params.observedSha,
+            branch: params.plan.branch,
+            repo: params.plan.repo,
+            worktreePath: params.plan.worktreePath,
+            prUrl: params.prUrl,
+            detail: params.detail,
+        })}`, params.cycle, params.totalCost);
+    }
     async finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd) {
         // beta.96: audit the reason BEFORE setStatus so the native terminal post
         // (deliverProgress) sees it (see finaliseFailed for the full rationale).
@@ -7563,7 +7962,25 @@ export class OrchestratorLoop {
                         tokensIn: 0,
                         tokensOut: 0,
                     };
-                    const prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester: row.requester });
+                    // rc.5 (#2): a stall salvage is the LAST place that may claim to have
+                    // rescued work it did not actually publish -- the whole point of the
+                    // path is that the commits are otherwise lost, and it releases the
+                    // worktree on success. Verify the remote before doing that.
+                    const published = await this.publishCandidate({
+                        sessionId, plan, brief, reviewReport, requester: row.requester,
+                        cycle: cycles, stage: "stall_recovery", existing: null,
+                    });
+                    if (!published.ok) {
+                        if (published.kind === "push_failed")
+                            throw published.pushError;
+                        await this.finaliseUnpublished({
+                            sessionId, plan, cycle: cycles, totalCost,
+                            kind: published.kind, candidateSha: published.candidateSha,
+                            observedSha: published.observedSha, detail: published.message, prUrl: published.prUrl,
+                        });
+                        return "failed_preserved";
+                    }
+                    const prUrl = published.prUrl;
                     const recReason = `The session STALLED (no forward progress past the watchdog window) before a final verdict, but the branch has commits. ` +
                         `Opened for MANUAL human review -- there is no machine sign-off, so this is NOT auto-mergeable.`;
                     const prNumber = parsePrNumber(prUrl);
@@ -7571,7 +7988,11 @@ export class OrchestratorLoop {
                     this.deps.state.db
                         .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
                         .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
-                    this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaStallRecovery: true }, sessionId);
+                    this.recordPublicationEvidence(sessionId, published.evidence);
+                    this.deps.state.audit("loop.shipped", {
+                        sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaStallRecovery: true,
+                        publishedSha: published.evidence?.sha ?? null, publicationVerified: !!published.evidence,
+                    }, sessionId);
                     this.deps.interactionLog?.log(sessionId, { event: "stall_graceful_pr", phase: "finalize", prUrl, prNumber });
                     await this.tryReleaseWorktree(sessionId, row.repo, row.worktree_path, "shipped");
                     return "graceful_pr";
@@ -7879,13 +8300,25 @@ export class OrchestratorLoop {
         // review (the prior cycle's) or the synthesized infra-crash review, flagged
         // needs_human_review.
         let prUrl;
+        let crashPublication = null;
         try {
-            prUrl = await this.deps.pushBranchAndOpenPr({
-                plan: ctx.plan,
-                brief: ctx.brief,
-                reviewReport: reviewForPr,
-                requester: ctx.row.requester,
+            // rc.5 (#2): same rule as every other ship path -- the remote is read
+            // back before this is called a PR holding the run's commits.
+            const published = await this.publishCandidate({
+                sessionId, plan: ctx.plan, brief: ctx.brief, reviewReport: reviewForPr,
+                requester: ctx.row.requester, cycle, stage: "review_crash_recovery", existing: null,
             });
+            if (!published.ok) {
+                if (published.kind === "push_failed")
+                    throw published.pushError;
+                return await this.finaliseUnpublished({
+                    sessionId, plan: ctx.plan, cycle, totalCost,
+                    kind: published.kind, candidateSha: published.candidateSha,
+                    observedSha: published.observedSha, detail: published.message, prUrl: published.prUrl,
+                });
+            }
+            prUrl = published.prUrl;
+            crashPublication = published.evidence;
         }
         catch (pushErr) {
             this.deps.state.audit("loop.review_crash_pr_failed", { sessionId, cycle, error: String(pushErr?.message ?? pushErr) }, sessionId);
@@ -7903,9 +8336,14 @@ export class OrchestratorLoop {
         this.deps.state.db
             .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
             .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
-        this.deps.state.audit("loop.shipped", { sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaReviewCrashRecovery: true, viaInfraCrash: infra }, sessionId);
-        // The deliverable is safely on origin as a PR; releasing the local
-        // worktree is fine here (unlike the non-graceful path).
+        this.recordPublicationEvidence(sessionId, crashPublication);
+        this.deps.state.audit("loop.shipped", {
+            sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaReviewCrashRecovery: true, viaInfraCrash: infra,
+            publishedSha: crashPublication?.sha ?? null, publicationVerified: !!crashPublication,
+        }, sessionId);
+        // The deliverable is safely on origin as a PR -- rc.5 (#2): now actually
+        // CONFIRMED to be, by reading the remote back. Releasing the local worktree
+        // is fine here (unlike the non-graceful path).
         await this.tryReleaseWorktree(sessionId, ctx.plan.repo, ctx.plan.worktreePath, "shipped");
         return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
     }

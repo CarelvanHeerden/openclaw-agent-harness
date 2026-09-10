@@ -150,6 +150,19 @@ export interface CiConfig {
    */
   workflow_runs_fallback?: boolean;
   /**
+   * rc.5 (#2): how many times the harness re-reads the remote branch tip when
+   * confirming that a push published the exact candidate SHA. Default 4.
+   *
+   * This covers ONE observed phenomenon: GitHub's PR metadata can briefly lag
+   * a successful git push, so an immediate read can disagree with a ref that
+   * demonstrably just landed. It is not a retry for a failed push -- the
+   * harness never re-pushes here, and a permanent mismatch is reported as
+   * UNPUBLISHED rather than waited out.
+   */
+  publication_verify_attempts?: number;
+  /** rc.5 (#2): delay between publication revalidation reads, ms. Default 1500. */
+  publication_verify_delay_ms?: number;
+  /**
    * beta.127: how many extra cycles a RED CI may buy, at the ship gate.
    *
    * Before b127, CI ran once, after the loop had already decided to finish, and
@@ -1744,6 +1757,13 @@ const DEFAULTS: HarnessConfig = {
     max_repair_cycles: 1,
     repair_subtask_enabled: true,
     workflow_runs_fallback: true,
+    // rc.5 (#2): bounded revalidation of the remote branch tip after a push.
+    // Sized for GitHub's brief metadata lag behind a landed ref (observed
+    // during the PR #1168 recovery), NOT for an outage -- four reads over
+    // ~4.5s. A permanent mismatch is a refusal to claim publication, so
+    // raising these buys patience, never a greener answer.
+    publication_verify_attempts: 4,
+    publication_verify_delay_ms: 1500,
   },
   vercel: {
     api_key_env: "VERCEL_TOKEN",

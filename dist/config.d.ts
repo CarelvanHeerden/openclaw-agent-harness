@@ -142,6 +142,19 @@ export interface CiConfig {
      */
     workflow_runs_fallback?: boolean;
     /**
+     * rc.5 (#2): how many times the harness re-reads the remote branch tip when
+     * confirming that a push published the exact candidate SHA. Default 4.
+     *
+     * This covers ONE observed phenomenon: GitHub's PR metadata can briefly lag
+     * a successful git push, so an immediate read can disagree with a ref that
+     * demonstrably just landed. It is not a retry for a failed push -- the
+     * harness never re-pushes here, and a permanent mismatch is reported as
+     * UNPUBLISHED rather than waited out.
+     */
+    publication_verify_attempts?: number;
+    /** rc.5 (#2): delay between publication revalidation reads, ms. Default 1500. */
+    publication_verify_delay_ms?: number;
+    /**
      * beta.127: how many extra cycles a RED CI may buy, at the ship gate.
      *
      * Before b127, CI ran once, after the loop had already decided to finish, and

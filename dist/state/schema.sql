@@ -105,7 +105,17 @@ CREATE TABLE IF NOT EXISTS sessions (
   pr_linked_at             INTEGER,           -- epoch ms the association was applied
   pr_linked_by             TEXT,              -- slack user id of the operator who applied it
   pr_link_head_sha         TEXT,              -- PR head sha at the moment of linking; a later head is not this evidence
-  pr_link_evidence         TEXT               -- JSON: the checks that passed, so the link is reviewable afterwards
+  pr_link_evidence         TEXT,              -- JSON: the checks that passed, so the link is reviewable afterwards
+
+  -- rc.5 (#2): PUBLICATION EVIDENCE. Which commit was proven to be on the
+  -- remote, and when the remote was read to establish that. Before this, the
+  -- durable record of a ship was `final_pr_url` plus status 'done' -- and
+  -- StitchGuard PR #1168 had both while 35 commits sat unpushed on local disk,
+  -- because a PR URL says a PR exists, not that it describes this run's work.
+  -- NULL means publication was never verified. It never means verified-absent.
+  published_sha            TEXT,              -- commit observed at the remote branch tip
+  published_at             INTEGER,           -- epoch ms of that observation
+  published_branch         TEXT               -- branch the sha was observed on
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

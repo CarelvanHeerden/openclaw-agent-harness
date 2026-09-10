@@ -290,7 +290,13 @@ test("beta81/B3: loop authors a workflow before push + polls CI after (wired in 
   // path, so it always lands in the reviewed branch.
   const authorIdx = src.indexOf("this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath })");
   const previewPushIdx = src.indexOf('this.deps.state.audit("loop.preview_push_started"');
-  const fallbackPushIdx = src.indexOf(": await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport: lastReview");
+  // rc.5 (#2): finalisation no longer picks its callback from a config flag --
+  // it goes through publishCandidate, which resolves the candidate SHA AFTER
+  // the authoring above and pushes unless that exact commit is already proven
+  // to be on the remote. The ordering property this test guards is unchanged
+  // (and strengthened: a workflow commit now invalidates the preview push's
+  // evidence rather than shipping under it).
+  const fallbackPushIdx = src.indexOf('cycle, stage: "finalize", existing: publication,');
   assert.ok(authorIdx > 0 && previewPushIdx > 0 && authorIdx < previewPushIdx, "workflow authored before preview push");
   assert.ok(authorIdx < fallbackPushIdx, "workflow authored before fallback push/open");
   // CI failure/timeout OVERRIDES the merge rec to needs_human_review.

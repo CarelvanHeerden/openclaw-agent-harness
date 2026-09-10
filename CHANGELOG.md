@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+### A run could report work as shipped without ever pushing it
+
+Stitch-Vercel/StitchGuard PR #1168. Two revision sessions built 24 and 11
+commits, ended with review verdict `revise`, and were recorded as shipped.
+GitHub received neither history, and both worktrees were released afterwards, so
+the only copy of 35 commits was deleted and the next revision started again from
+the stale remote implementation.
+
+Nothing threw. Preview verification was enabled; the preview push runs only for
+a `pass` verdict, so a `revise` pushed nothing; finalisation nevertheless chose
+the PR-only callback, because the condition it tested was
+`previewVerificationEnabled === true` — a fact about configuration, standing in
+for a fact about the remote. That callback creates or finds the pull request and
+posts the review comment, which on a revision succeeds against the PR that
+already exists. Finalisation read the resolved callback as publication, polled
+CI on the local worktree HEAD, found no checks on a commit GitHub had never
+seen, and shipped. A config flag, a resolved callback, a real PR URL, a posted
+comment and a local branch name were every one of them true while the work sat
+on local disk.
+
+Publication is now a fact about the remote and is established in exactly one
+way: reading the branch tip back after the push (`git ls-remote`, through the
+requester's existing credential routing). The candidate SHA is resolved *after*
+every commit-producing finalisation step — including the CI workflow the harness
+authors and commits itself — and is pushed unless that exact commit is already
+proven to be there. The PR-only callback is reached only behind that proof,
+which is what still keeps a passing preview run from pushing twice.
+
+Evidence names a SHA rather than setting a flag. `published: true` is the shape
+that let one commit inherit another's publication, so a HEAD that moves after a
+push invalidates the earlier proof (`loop.publication_evidence_invalidated`) and
+the new candidate is published on its own merits. CI is polled on the published
+SHA, so the specific false green behind #1168 — no checks on a commit the
+provider had never heard of — cannot be collected at all.
+
+When the remote does not hold the candidate, the run is terminal and
+**unpublished**: `loop.unpublished` with a `failureKind` of `remote_missing`,
+`remote_mismatch`, `verification_unavailable` or `candidate_unknown`, the
+worktree preserved, the PR association kept so the session stays revisable, and
+a message naming the expected SHA, the observed tip and the recovery commands. A
+tip that is neither the old nor the expected commit is somebody else's work: the
+harness reports it and never force-pushes over it. An unreadable remote is
+`UNKNOWN`, which is refused rather than assumed green.
+
+Transient provider lag is handled where it belongs. During the #1168 recovery
+the immediate read disagreed with a ref that had demonstrably just landed, and
+subsequent reads agreed, so verification re-reads up to
+`ci.publication_verify_attempts` times (default 4, `publication_verify_delay_ms`
+apart, cancellable). It never re-pushes, and a permanent mismatch is reported
+rather than waited out.
+
+Publishing a non-passing candidate is unchanged policy — it goes up for review
+with its blocking findings and do-not-merge intact — and the terminal summary now
+says which of published, approved and unpublished applies. Published is not
+approved; unpublished is not shipped. The salvage paths (best-effort verify,
+abort salvage, stall recovery, review-crash recovery) always pushed, but never
+checked; they now go through the same verification, because each of them
+releases the worktree on success.
+
+`sessions` gains `published_sha`, `published_at` and `published_branch` via
+additive migration. NULL means publication was never verified — never that it
+was verified absent. Sessions that predate this change are not backfilled and
+their divergent tips are not pushed: the column records a read of the remote,
+and no such read was ever made for them.
+
 ### The harness promised to generate a file, then required it to exist
 
 Three places told the worker and the reviewer that regeneration was somebody
