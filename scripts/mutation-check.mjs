@@ -3291,6 +3291,13 @@ const MUTATIONS = [
     replace: "                if (false) {",
     tests: ["tests/rc6-budget-headroom.test.mjs"],
   },
+  {
+    name: "money is never delegated (rc.6): a run that hits its ceiling can vote itself past it",
+    file: "dist/tools/registration.js",
+    find: "            if (automated && isBudgetExtensionPause(row.clarification_subtask)) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc3-clarification-audit.test.mjs"],
+  },
 ];
 
 /**

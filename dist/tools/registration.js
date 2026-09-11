@@ -1440,6 +1440,35 @@ export function registerHarnessTools(api, runtime) {
             // that declares itself, not one that stays quiet. What it buys is that
             // an honest agent cannot talk itself into acting, and a dishonest one
             // has to misrepresent itself in a recorded tool call.
+            // rc.6: MONEY IS NEVER DELEGATED. A budget-extension pause asks the
+            // operator to raise the figure the run is measured against, and the
+            // answer moves `budget_usd` on the session row. Every other pause this
+            // tool resolves asks the steward to judge work that has already been
+            // done and paid for; this one asks it to authorise more spending.
+            //
+            // The delegation flag below is a deployment saying "an agent may answer
+            // clarifications on my behalf". It was written about contract-path
+            // deviations, and reading it as consent to self-fund would let a run
+            // that just hit its ceiling clear the ceiling and continue -- with a
+            // recorded rationale, which makes it worse, not better. The per-user
+            // daily and monthly caps would still hold, so this is not unbounded,
+            // but the session budget is the operator's own number and only the
+            // operator moves it. Refused before the pause is claimed, so the
+            // question stays open for the human it was asked of.
+            if (automated && isBudgetExtensionPause(row.clarification_subtask)) {
+                liveState().audit("tool.answer_budget_extension_refused_automation", { ...answerFacts }, sessionId);
+                rejectAutomatic("budget_grant_not_delegable");
+                return {
+                    content: [{
+                            type: "text",
+                            text: `Not answering: a BUDGET extension cannot be granted by an agent. This question asks for more ` +
+                                `money than the requester authorised, and that decision is the operator's alone -- no delegation ` +
+                                `setting changes it. Relay the question to a human with your recommendation (what has been spent, ` +
+                                `what remains, and what the extra buys) and let them answer it. The pause stays open.`,
+                        }],
+                    details: { ok: false, budgetGrantNotDelegable: true, seq },
+                };
+            }
             if (automated && liveConfig().loop.clarification_auto_accept_delegated !== true) {
                 liveState().audit("tool.answer_automation_not_delegated", { ...answerFacts }, sessionId);
                 rejectAutomatic("not_delegated");

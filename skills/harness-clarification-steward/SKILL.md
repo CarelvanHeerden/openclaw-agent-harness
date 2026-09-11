@@ -179,6 +179,10 @@ You may answer automatically only when **all** of the following hold:
 
 The harness enforces the first of these: with the flag off it refuses any answer
 marked `answeredBy: "automation"` and tells you to relay the question instead.
+It also enforces Rule 5's budget line without reference to the flag — a
+budget-extension pause is refused for an automatic answer in every deployment,
+because raising the figure the run is measured against is the operator's
+decision and no configuration delegates it.
 Do not respond to that refusal by dropping the marker — that is the one way to
 turn a safe default into a silent one. Relay the question.
 
