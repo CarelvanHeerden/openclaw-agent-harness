@@ -1341,7 +1341,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           // rc.5: only demote a "the bundle is stale" finding when something
           // actually owns regenerating it. Without a declared generator the
           // complaint is unanswered, so it keeps its weight.
-          hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
+          hasDeclaredGenerators: !resolveGenerators(config.verify?.generators, { neverCommitPaths: config.repos.never_commit_paths }).empty,
         },
         {
           logger: api.logger,
@@ -2054,7 +2054,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // the review that produced it.
         const cctx = {
           repoHasTestScript: true,
-          hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
+          hasDeclaredGenerators: !resolveGenerators(config.verify?.generators, { neverCommitPaths: config.repos.never_commit_paths }).empty,
         };
         const blockers = findings.filter((f) => blocksMerge(f, classifyFinding(f, cctx)));
         hasBlockingFinding = blockers.length > 0;

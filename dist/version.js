@@ -10,10 +10,18 @@ export const PLUGIN_DESCRIPTION = "Multi-agent development harness: crystallise 
  * Bump this whenever what may be answered automatically changes. It moves
  * independently of `pluginVersion`, which changes for reasons that have nothing
  * to do with the policy.
+ *
+ * rc.6: a budget-extension pause may not be answered by an agent under any
+ * configuration. The steward's own rules already said so ("Budget approval or
+ * any increase"), but only the delegation flag was enforced, so a delegated
+ * deployment would have taken the grant. The version moves because that is the
+ * difference between "the docs asked nicely" and "the harness refused" -- an
+ * answer audited under rc.3 could have raised a ceiling; one audited under
+ * rc.6 could not.
  */
-export const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.3";
+export const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.6";
 export const PLUGIN_VERSION = {
-    pluginVersion: "2.0.0-rc.5",
+    pluginVersion: "2.0.0-rc.6",
     schemaVersion: 1,
     claudeSdkVersion: "0.3.207",
 };

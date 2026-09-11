@@ -64,6 +64,19 @@ export interface GeneratorMapping {
      * never has to be guessed from the shape of a path.
      */
     produces: string[];
+    /**
+     * rc.6: repo-relative paths this script READS, in the same file/`dir/` form
+     * as `produces`. Optional, and the reason it exists is narrow.
+     *
+     * Freshness is otherwise unprovable. The harness never executes a generator
+     * (see the header), so when a derived artifact did not change it cannot tell
+     * "nobody ran the generator" from "the generator ran and was a legitimate
+     * no-op". rc.5 resolved that by assuming the worst and failing, which is how
+     * a sub-task whose only change was a test file kept being told its committed
+     * OpenAPI bundle was stale. Declared inputs turn the question into one git
+     * can answer: did anything this script reads change while its output did not?
+     */
+    inputs?: string[];
 }
 /** A mapping that survived validation. Paths are normalised, repo-relative. */
 export interface ResolvedGenerator {
@@ -72,6 +85,10 @@ export interface ResolvedGenerator {
     files: string[];
     /** Directory prefixes (each with a trailing `/`) owned by this script. */
     dirs: string[];
+    /** rc.6: exact input file paths. Empty when the operator declared none. */
+    inputs: string[];
+    /** rc.6: input directory prefixes (each with a trailing `/`). */
+    inputDirs: string[];
 }
 /** A rejected mapping entry. These are configuration errors, never silent. */
 export interface GeneratorConfigError {
@@ -86,6 +103,25 @@ export interface GeneratorConfigError {
  * ownership exemptions that follow from it, at a file outside the worktree.
  */
 export declare function normaliseRepoPath(raw: string): string | null;
+/**
+ * rc.6: does a `repos.never_commit_paths` pathspec cover this path?
+ *
+ * WHY THIS CHECK EXISTS. `never_commit_paths` is not advisory. Its enforcement
+ * (`revertNeverCommitPaths`) unstages AND restores every matching path before
+ * the commit, so work under it is discarded, not merely skipped. Point a
+ * generator at a tree that is also excluded and the contract becomes literally
+ * unsatisfiable: the worker is instructed to run the script and commit what it
+ * writes, the harness throws the result away, the contract then fails because
+ * the artifact was never committed, and the failure text advises re-running the
+ * generator -- which will be thrown away again.
+ *
+ * The observed configuration had exactly this shape: `okf` declared as the
+ * generator for `okf/...`, and `never_commit_paths: ["okf/**"]`.
+ *
+ * Supports the `*` / `**` / `?` pathspec forms an operator would write here. A
+ * pattern with no wildcard owns its subtree, as a git pathspec does.
+ */
+export declare function neverCommitCovers(patterns: readonly string[] | undefined, path: string): boolean;
 /**
  * The validated ownership map. Construct with {@link resolveGenerators}.
  *
@@ -114,7 +150,14 @@ export interface GeneratorMap {
  * both cases the affected paths end up unowned, which means "ordinary file" --
  * no generation, no exemption.
  */
-export declare function resolveGenerators(raw: GeneratorMapping[] | undefined): GeneratorMap;
+export declare function resolveGenerators(raw: GeneratorMapping[] | undefined, opts?: {
+    /**
+     * rc.6: `repos.never_commit_paths`. A produced path this covers is rejected
+     * -- see {@link neverCommitCovers} for why that combination cannot be
+     * satisfied by any worker.
+     */
+    neverCommitPaths?: string[];
+}): GeneratorMap;
 /**
  * Contract paths still eligible for a topology rescue.
  *
@@ -167,6 +210,69 @@ export declare function describeGeneratedArtifactFailure(params: {
     scriptDeclared: boolean;
     baseDetail: string;
 }): string;
-/** Reason a generated artifact was rejected as stale. */
-export declare function describeStaleGeneratedArtifact(path: string, owner: ResolvedGenerator): string;
+/** rc.6: which of this generator's declared inputs changed in the window. */
+export declare function changedGeneratorInputs(owner: ResolvedGenerator, changedFiles: readonly string[]): string[];
+/**
+ * rc.6: is a derived artifact that did not change in this window acceptable?
+ *
+ * THE RULE rc.5 GOT WRONG. rc.5 required a generator-owned path to be rewritten
+ * inside the current sub-task's window on every revise cycle, and failed it
+ * otherwise with the words "its sources moved, so the committed artifact is
+ * stale". Neither clause was ever checked. Nothing established that any source
+ * had moved, and nothing compared the artifact to anything -- the only fact in
+ * evidence was "this file did not change", which for a deterministic generator
+ * is the expected outcome of a test-only sub-task. The compliance-calendar run
+ * hit this repeatedly and had no way through it: the only action that satisfies
+ * a diff requirement is a fake diff, which is the one thing a derived file must
+ * never contain.
+ *
+ * So the four states the report separates are separated here, and the harness
+ * only claims the ones it can evidence:
+ *
+ *   - REGENERATED   the artifact changed in this window. Nothing to decide.
+ *   - MISSING       it is not in the branch at all. The generator never ran,
+ *                   and that is a fact, not an inference. Fail.
+ *   - STALE         a declared input changed and the output did not. Also a
+ *                   fact. Fail, and name the inputs.
+ *   - UNPROVEN      it is present, unchanged, and no input evidence exists.
+ *                   A no-op is as consistent with this as a skipped generator,
+ *                   and the harness cannot execute the script to find out
+ *                   (deliberately -- see the header). Accept, and say so.
+ *
+ * The UNPROVEN accept is the deliberate loosening, and it is bounded three
+ * ways: the artifact must already be committed in the branch, the sub-task must
+ * not have been targeted at that file, and an operator who declares `inputs`
+ * converts it into a real STALE check. Repos that care also run a `*:check`
+ * script in CI, which is the deterministic answer this layer cannot compute.
+ */
+export type GeneratedFreshness = {
+    verdict: "regenerated";
+    detail: string;
+    passed: true;
+} | {
+    verdict: "missing";
+    detail: string;
+    passed: false;
+} | {
+    verdict: "stale";
+    detail: string;
+    passed: false;
+    changedInputs: string[];
+} | {
+    verdict: "unproven";
+    detail: string;
+    passed: true;
+};
+export declare function assessGeneratedFreshness(params: {
+    path: string;
+    owner: ResolvedGenerator;
+    /** The artifact itself changed inside this sub-task's window. */
+    writtenThisWindow: boolean;
+    /** It exists and is committed somewhere in the branch. */
+    presentInBranch: boolean;
+    /** The window's changed files, or null when the harness could not read them. */
+    changedFiles: readonly string[] | null;
+    /** Probe text, carried through so a failure stays diagnosable. */
+    baseDetail: string;
+}): GeneratedFreshness;
 //# sourceMappingURL=generated-artifacts.d.ts.map

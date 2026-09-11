@@ -183,6 +183,10 @@ const TIGHT_CLOCK = {
   session_hard_timeout_seconds: s(3),
   time_extension_wait_seconds: s(5),
   time_extension_default_seconds: 1800,
+  // rc.6: the money ask waits in place exactly as the clock ask does, so it
+  // needs the same scaled window. Left at its 300s default it would sit out
+  // five real minutes inside a test whose whole clock is three scaled seconds.
+  budget_extension_wait_seconds: s(5),
 };
 
 /** Passes review, slowly -- which is what makes the cycle look expensive. */

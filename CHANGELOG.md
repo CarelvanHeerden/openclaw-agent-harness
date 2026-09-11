@@ -1,5 +1,151 @@
 # Changelog
 
+## 2.0.0-rc.6
+
+Four ways one specification failed to become a merge-ready PR, taken from the
+Stitch-Vercel/StitchGuard #1184 postmortem, plus two defects found while fixing
+them. The first three are separate defects with one shape in common: the harness
+acted on something it had not established — an approval it could not read, a
+staleness it never checked, a set of compiler errors it never saw. The fourth is
+different: two rules that were each correct alone, composing into a run that
+overspent the number it called a cap and was then refused a repair for
+overspending it.
+
+Nothing here loosens a merge gate or a security posture. Two rules did get
+looser. Generated-artifact freshness now refuses only what it can evidence —
+and refuses more than before once inputs are declared. And a money-based stop
+now asks the operator before refusing useful work, which is the authority
+`:moneybag:` has always carried, pulled at the moment of the decision instead of
+pushed by whoever happened to be watching. The per-user monthly cap remains the
+one wall a run cannot talk past.
+
+### An approval the harness could not read started the run anyway
+
+The pre-spend gate invites the operator to name a budget and a wall clock in the
+reply. He replied `Confirm, $60, 10 hours`. Neither clause carried a cue word,
+so neither parsed; the reply was therefore not an approval; and the caller did
+the only thing it knew how to do with a non-approval — filed the whole string as
+an authoritative acceptance criterion of the feature and started the run at the
+$50 and five hours nobody had asked for. `$60, 10 hours` became a stated
+requirement of a compliance calendar. Three hours and $53.81 later the run found
+four red CI jobs and declined the repair cycle that would have fixed them,
+because $53.81 was over the $50 it had never been told to raise.
+
+Plain shorthand is now read: a bare amount or duration in a reply that is
+otherwise nothing but an affirmation can only mean the limits, because there is
+no other content for it to belong to. That gate is what keeps `confirm, but the
+price threshold should be $60` a feature correction. Cues may now also follow
+their number (`a 10 hour budget`), and `budget of 10 hours` is a clock rather
+than a $10 cap.
+
+Anything still control-shaped and unreadable — `budget of 0`, `time budget of
+400 hours`, `budget -$50`, two different values for one control — now stops. The
+session stays paused on the same gate with its answer claim released, one narrow
+question is asked quoting the operator's own words, and nothing is spent. A
+started run reports the limits read back out of the session row rather than the
+ones the handler meant to write, and a limit that failed to persist blocks the
+start instead of running under numbers nobody chose.
+
+### Generated artifacts could be required in a tree whose commits are discarded
+
+`verify.generators` authorises a worker to run a named script and commit what it
+writes. `repos.never_commit_paths` unstages and *restores* matching paths before
+every commit. Nothing checked that the two did not overlap, and the observed
+configuration overlapped exactly: the `okf` generator produced `okf/...`, and
+`never_commit_paths` was `["okf/**"]`. The worker was told to generate and
+commit, the harness discarded the result, the contract failed because the
+artifact was never committed, and the failure text advised re-running the
+generator. An overlapping `produces` entry is now a configuration error,
+surfaced as a blocking finding naming both settings.
+
+### A derived artifact was called stale on evidence nobody had gathered
+
+rc.5 failed any generator-owned path not rewritten in the current window, saying
+"its sources moved, so the committed artifact is stale". Neither clause was
+checked. The only fact in evidence was that the file had not changed — which,
+for a deterministic generator on a test-only sub-task, is the expected outcome,
+and the only action that satisfies a diff requirement on a derived file is a
+falsified diff.
+
+The four states are now distinguished and only the evidenced ones fail. Absent
+from the branch means the generator never ran, and still fails. A declared input
+that changed while the output did not is stale, still fails, and now names the
+inputs it rests on. Present, unchanged and unprovable is accepted as a valid
+no-op, and says so rather than inventing a reason. Mappings may declare
+`inputs`, which converts the unprovable case into a real staleness check.
+
+### The compiler's diagnostics were truncated before anything read them
+
+The check-script runner returned one copy of a script's output: the last 4,000
+characters. The typecheck gate parsed that. The compliance-calendar branch's
+compiler emitted 40 diagnostics across three changed test files; the tail held
+one, so three revise cycles were spent routing workers at a single file while 39
+errors in two other files stayed broken and shipped to a red CI.
+
+Runs now keep the whole capture for analysis alongside the bounded tail used for
+display and model prompts, with a 2 MB analysis ceiling that discloses itself
+when it bites. The finding carries every affected file into routing via
+`relatedFiles`, titles itself with the file count, and samples errors
+round-robin so a file holding 38 of 40 cannot crowd the others out of the text a
+worker reads.
+
+### The run overspent the number it called a cap, then was refused for overspending it
+
+The compliance-calendar run finished at $53.81 against a $50 session budget, hit
+a four-job CI failure, and declined the repair cycle with `reason: "budget"`.
+Neither half was a bug. beta.78 made the session budget soft for ordinary work —
+it warns and continues, and the per-user daily cap is the hard boundary. beta.120
+then made the extension gate measure hard against the same number, because the
+harness electing to buy itself another cycle with money the requester did not
+authorise is a different act from a worker running long.
+
+Read together they hand the whole budget to whoever spends first and refuse the
+only consumer measured against it, so the run overspends *and* ships red. The
+approved figure is now divided before anything spends it: an implementation
+target that is still soft, and a repair reserve (`loop.repair_reserve_ratio`,
+30% by default) that repair measures its own spend against and never reads the
+run's total to reach. An extension may no longer reach into that reserve, which
+is stricter than b120's rule, not looser. The first repair is funded without
+being priced as an implementation cycle — that pricing is what produced the
+refusal, since a repair fixes named CI findings on a branch already built and
+reviewed. Subsequent repairs are held to what the first actually cost, and
+`ci.max_repair_cycles` still bounds the count.
+
+The five money-based stops — the next sub-task, the adversary review, a cycle
+extension, the daily-cap cycle stop, and CI repair — no longer refuse in silence.
+Each asks the operator first, on beta.129's wall-clock machinery: a bounded wait,
+a heartbeat, a resumable pause that keeps the worktree and cycle history, and a
+timeout that does exactly what the run would have done unasked. A grant raises
+the session budget, persists so a resume honours it, and may not more than double
+the approved figure in one go. `loop.budget_extension_ask_enabled: false`
+restores the silent refusals.
+
+Reporting changed with it, since RC-2 of the postmortem is a naming complaint
+with teeth. The soft-budget warning says "target". The approval receipt no longer
+claims the run stops when it hits the budget, and states the repair reserve. A
+declined repair records `repairFunding` — `no_reserve` is a setting an operator
+can change, `reserve_exhausted` is a run that spent what it was given, and
+`"budget"` alone could not tell them apart.
+
+### An agent could have granted itself the money it just asked for
+
+Found while wiring the ask above. Routing budget extensions through
+`harness_answer` put them behind that tool's existing automation gates —
+delegation flag, evidence — and those gates were written about contract-path
+deviations. A deployment with `loop.clarification_auto_accept_delegated: true`
+would therefore have let an agent answer a budget question, and the caller with
+the clearest motive to raise a ceiling is the run that just hit one. The
+steward's own instructions already listed "Budget approval or any increase"
+among the things it must never answer, but nothing enforced it.
+
+An automatic answer to a budget-extension pause is now refused under every
+configuration, before the pause is claimed, so the question stays open for the
+operator it was asked of. The refusal says that no delegation setting changes
+it, to close the obvious next move. `CLARIFICATION_POLICY_VERSION` moves to
+`clarification-policy/2026-09-rc.6` accordingly: it is stamped on every answer
+audit precisely so that "was this allowed at the time" is answerable, and the
+answer differs before and after this change.
+
 ## 2.0.0-rc.5
 
 Two ways the harness told the truth about neither a file nor a push. One

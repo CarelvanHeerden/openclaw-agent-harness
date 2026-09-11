@@ -433,8 +433,11 @@ const MUTATIONS = [
   {
     name: "help stays in sync (b108): the README drifted to 9 of 19 tools unnoticed",
     file: "dist/tools/help-content.js",
-    find: '"harness_revise",',
-    replace: "",
+    // The bare name also appears in an example's `tools:` array, and rc.6 made
+    // ambiguous anchors an error rather than a silent first-match. Aimed at the
+    // canonical list, which is the one the README is compared against.
+    find: '    "harness_list_revisable",\n    "harness_revise",\n',
+    replace: '    "harness_list_revisable",\n',
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
   {
@@ -1311,8 +1314,17 @@ const MUTATIONS = [
   {
     name: "time and money are parsed separately (b123): 'a time budget of 3 hours' read as a $3 cap",
     file: "dist/tools/brief-confirmation.js",
-    find: "    const t = TIME_CLAUSE.exec(working);",
-    replace: "    const t = null;",
+    // Re-aimed in rc.6. The old anchor was the single `TIME_CLAUSE.exec` call,
+    // which is now one of three patterns tried in order -- and `BUDGET_OF_DURATION`
+    // matches this very string, so disabling `TIME_CLAUSE` alone changes nothing
+    // and the mutation reported a coverage gap that was really redundancy.
+    //
+    // The cut is the narrower half of b123's mechanism and the half that names
+    // the bug: recognising the duration is not enough, because if the words stay
+    // in the string the money regex reads "budget of 3 hours" as a $3 cap. This
+    // anchor reproduces exactly that.
+    find: "        working = tidyRemainder(working.replace(t[0], \" \"));",
+    replace: "        working = working;",
     tests: ["tests/beta123-confirmation-clauses.test.mjs"],
   },
 
@@ -1524,8 +1536,10 @@ const MUTATIONS = [
   {
     name: "CI findings carry the source marker that keeps them blocking (b127)",
     file: "dist/orchestrator/ci-findings.js",
-    find: 'source: "ci",\n            dimension: "quality",',
-    replace: 'dimension: "quality",',
+    // `title: testName` is what distinguishes the per-file finding from the
+    // "N files are failing" summary, which carries the same two lines.
+    find: 'source: "ci",\n            dimension: "quality",\n            severity: "high",\n            title: testName',
+    replace: 'dimension: "quality",\n            severity: "high",\n            title: testName',
     tests: ["tests/beta127-ci-findings.test.mjs"],
   },
   {
@@ -1708,8 +1722,13 @@ const MUTATIONS = [
     // do-not-merge for want of one assertion and $30 of unspent cap.
     name: "a clock-only refusal ASKS first (b130): #1058 shipped red with $30 unspent and no question",
     file: "dist/orchestrator/loop.js",
-    find: "trigger: \"ci_repair\",",
-    replace: "trigger: \"review\",",
+    // rc.6 added a MONEY ask at the same decision, with the same trigger name,
+    // earlier in the file. A bare `trigger: "ci_repair",` then matched that one
+    // first and this mutation quietly started sabotaging the wrong ask -- which
+    // b130's tests do not watch, so it reported itself as a coverage gap. The
+    // anchor now carries the line that only the clock ask has.
+    find: "                        observedCycleMs: maxCycleMs,\n                        trigger: \"ci_repair\",",
+    replace: "                        observedCycleMs: maxCycleMs,\n                        trigger: \"review\",",
     tests: ["tests/beta130-ci-repair-ask.test.mjs"],
   },
   {
@@ -1895,8 +1914,10 @@ const MUTATIONS = [
     // to be broken for the check to mean anything.
     name: "b81's recovery path keeps the commits it promises (b132)",
     file: "src/index.ts",
-    find: "UPDATE sessions SET status = 'failed', worktree_preserved = 1, updated_at = ? WHERE id = ?`",
-    replace: "UPDATE sessions SET status = 'failed', updated_at = ? WHERE id = ?`",
+    // Both recovery branches write this statement; the comment above the
+    // resume-at-subtask one is what tells them apart.
+    find: "// aborts. The flag is what actually keeps it.\n          state.db\n            .prepare(`UPDATE sessions SET status = 'failed', worktree_preserved = 1, updated_at = ? WHERE id = ?`)",
+    replace: "// aborts. The flag is what actually keeps it.\n          state.db\n            .prepare(`UPDATE sessions SET status = 'failed', updated_at = ? WHERE id = ?`)",
     tests: ["tests/beta132-listener-liveness.test.mjs"],
   },
   {
@@ -2783,9 +2804,10 @@ const MUTATIONS = [
     tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
   {
-    // The stale-output rule. Without it a derived file passes on an earlier
-    // cycle's commit, which ships a bundle whose sources have since moved.
-    name: "a derived artifact is not accepted from an earlier cycle (rc): stale generated output ships",
+    // rc.6 replaced the unconditional stale rejection with an evidence-based
+    // verdict, but the branch still has to be REACHED: without it a derived
+    // file whose declared inputs moved passes on the ordinary relaxation.
+    name: "a derived artifact is judged as derived (rc): the generator branch is skipped entirely",
     file: "dist/orchestrator/verify.js",
     find: "                if (genOwner && (v.reviseRelaxed || reviseCycle) && probes.fileCommittedSince) {",
     replace: "                if (false && probes.fileCommittedSince) {",
@@ -3083,6 +3105,199 @@ const MUTATIONS = [
     replace: "                done = true;\n                inFlight = undefined;",
     tests: ["tests/v2-backend-wiring.test.mjs"],
   },
+
+  // --------------------------------------------------------- rc.6 (#1184)
+  // The compliance-calendar chain. Each of these restores one link of it.
+  {
+    // THE link. "Confirm, $60, 10 hours" could not be read as limits, so it was
+    // filed as an acceptance criterion and the run started at the defaults --
+    // then declined the CI repair for crossing a cap nobody had raised.
+    name: "an unreadable control STOPS the run (rc.6): #1184's reply starts a session at the wrong limits",
+    file: "dist/tools/registration.js",
+    find: "                if (parsed.ambiguities.length > 0) {",
+    replace: "                if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // The re-ask has to be answerable. Leaving the answer claim in place strands
+    // the session on a question it just asked.
+    name: "the re-ask releases the answer claim (rc.6): the corrected reply is refused as already answered",
+    file: "dist/tools/registration.js",
+    find: "                        .prepare(`UPDATE sessions SET clarification_question = ?, clarification_answer = NULL, updated_at = ? WHERE id = ?`)",
+    replace: "                        .prepare(`UPDATE sessions SET clarification_question = ?, updated_at = ? WHERE id = ?`)",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // Reading the shorthand at all.
+    name: "bare shorthand is read as limits (rc.6): '$60, 10 hours' goes back to meaning nothing",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // ...and the gate that keeps it from eating the feature. Without the
+    // affirmation-only condition, "the price threshold should be $60" caps the
+    // run at $60 and deletes the words from the operator's correction.
+    name: "shorthand needs an affirmation-only reply (rc.6): a price in a correction becomes the budget",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {",
+    replace: "        if (bd || bm) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // A named control with no usable number must not fall through to prose.
+    name: "an unusable amount is an ambiguity (rc.6): 'budget -$50' silently keeps the default",
+    file: "dist/tools/brief-confirmation.js",
+    find: "    if (MONEY_CUE_RESIDUE.test(working) || CURRENCY_CUE_RESIDUE.test(working)) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // The unwinnable contract: generation authorized into a tree whose commits
+    // are reverted. The worker writes it, the harness discards it, the contract
+    // fails, and the advice is to do it again.
+    name: "generation cannot target a never-commit path (rc.6): the unwinnable okf contract returns",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "            if (neverCommitCovers(opts?.neverCommitPaths, norm)) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // Freshness must still FAIL on evidence. rc.6 loosened the no-evidence case;
+    // if it also loosened the evidenced one, a genuinely stale artifact ships.
+    name: "a moved input makes an artifact stale (rc.6): evidenced staleness stops being caught",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    if (changedInputs.length > 0) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // ...and the artifact that was never produced at all.
+    name: "an absent artifact still fails (rc.6): a generator that never ran passes as a no-op",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    if (!presentInBranch) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // #1184 verbatim: 40 diagnostics in the stream, one in the last 4,000
+    // characters, three repair cycles aimed at a single file.
+    name: "diagnostics are parsed from the FULL capture (rc.6): the 4,000-char tail decides what the harness knows",
+    file: "dist/orchestrator/typecheck-gate.js",
+    find: "    return parseTscErrors(result.output ?? result.outputTail ?? \"\");",
+    replace: "    return parseTscErrors(result.outputTail ?? result.output ?? \"\");",
+    tests: ["tests/rc6-full-diagnostics.test.mjs"],
+  },
+  {
+    // ...and the runner half of it. If `output` is just the tail again, the
+    // gate above is reading a truncated stream however it is written.
+    name: "the runner keeps a full capture (rc.6): analysis silently drops back to the display tail",
+    file: "dist/orchestrator/repo-conventions.js",
+    find: "        output: truncated ? combined.slice(-OUTPUT_ANALYSIS_CHARS) : combined,",
+    replace: "        output: combined.slice(-4000),",
+    tests: ["tests/rc6-full-diagnostics.test.mjs"],
+  },
+  {
+    // Seeing all 40 is worth nothing if the finding still routes at one file.
+    name: "every affected file reaches routing (rc.6): a three-file break is handed over as one",
+    file: "dist/orchestrator/typecheck-gate.js",
+    find: "        ...(files.length > 1 ? { relatedFiles: files.slice(1) } : {}),",
+    replace: "        ...(false ? { relatedFiles: files.slice(1) } : {}),",
+    tests: ["tests/rc6-full-diagnostics.test.mjs"],
+  },
+
+  // --- rc.6: the budget partition and the money ask (#1184 RC-2) -----------
+
+  {
+    // The single most important line of the change. Without it the first
+    // repair is priced as an implementation cycle -- which is what refused
+    // #1184's repair -- and no reserve an operator would plausibly configure
+    // ever wins that comparison.
+    name: "the FIRST repair is not priced as an implementation cycle (rc.6): #1184's repair is refused again",
+    file: "dist/orchestrator/budget-policy.js",
+    find: '        return { funded: true, basis: "first_repair" };',
+    replace: '        return { funded: false, basis: "reserve_exhausted", shortfallUsd: 0 };',
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    name: "the reserve is carved OUT of the budget (rc.6): implementation is sized against money repair is holding",
+    file: "dist/orchestrator/budget-policy.js",
+    find: "        implementationTargetUsd: round2(approved - reserve),",
+    replace: "        implementationTargetUsd: round2(approved),",
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    name: "the reserve cannot swallow the run (rc.6): a 95% reserve starves ordinary work from cycle one",
+    file: "dist/orchestrator/budget-policy.js",
+    find: "    const ratio = Math.max(0, Math.min(MAX_REPAIR_RESERVE_RATIO, rawRatio));",
+    replace: "    const ratio = Math.max(0, rawRatio);",
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    // A zero default makes the whole mechanism opt-in, which is how #1184's
+    // deployment would have kept its old behaviour while reading as fixed.
+    name: "the reserve is on by default (rc.6): the fix becomes opt-in and nobody opts in",
+    file: "dist/orchestrator/budget-policy.js",
+    find: "export const DEFAULT_REPAIR_RESERVE_RATIO = 0.3;",
+    replace: "export const DEFAULT_REPAIR_RESERVE_RATIO = 0;",
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    name: "a second repair IS held to the reserve (rc.6): 'always fund the first' becomes an unbounded series",
+    file: "dist/orchestrator/budget-policy.js",
+    find: "    if (wouldSpend <= policy.repairReserveUsd)",
+    replace: "    if (true)",
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    // An operator can fix "no reserve configured"; they cannot fix "this run
+    // has used what it was given". Reporting one as the other sends them to
+    // the wrong lever, which is the reporting fault RC-2 is about.
+    name: "an unconfigured reserve is told apart from a spent one (rc.6): the operator is sent to the wrong lever",
+    file: "dist/orchestrator/budget-policy.js",
+    find: '        return { funded: false, basis: "no_reserve", shortfallUsd: 0 };',
+    replace: '        return { funded: false, basis: "reserve_exhausted", shortfallUsd: 0 };',
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    name: "'no more than $20' is an approval (rc.6): the extension the operator just granted is thrown away",
+    file: "dist/orchestrator/budget-extension.js",
+    find: "    if (!captured && SOFT_NEGATIVE.test(raw))",
+    replace: "    if (SOFT_NEGATIVE.test(raw))",
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    name: "a granted amount is bounded (rc.6): a typo in a reply costs the month's budget",
+    file: "dist/orchestrator/budget-extension.js",
+    find: "    const clamp = (n) => Math.max(0, Math.min(Math.round(n * 100) / 100, max));",
+    replace: "    const clamp = (n) => Math.max(0, Math.round(n * 100) / 100);",
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    // beta.130 persisted an extended deadline for exactly this reason: a
+    // resume that reverts to the original figure stops the run a second time
+    // for a reason the operator has already overruled.
+    name: "a granted budget reaches the ROW (rc.6): a resume undoes what the operator authorised",
+    file: "dist/orchestrator/loop.js",
+    find: "                .run(raised, Date.now(), sessionId);",
+    replace: "                .run(previous.authorizedMaximumUsd, Date.now(), sessionId);",
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    name: "a repair short of money is ASKED about (rc.6): back to shipping a red build without a question",
+    file: "dist/orchestrator/loop.js",
+    find: "                if (wantsRepair && ceilingOk && !budgetOk && !budgetExtensionRefused) {",
+    replace: "                if (false) {",
+    tests: ["tests/rc6-budget-headroom.test.mjs"],
+  },
+  {
+    name: "money is never delegated (rc.6): a run that hits its ceiling can vote itself past it",
+    file: "dist/tools/registration.js",
+    find: "            if (automated && isBudgetExtensionPause(row.clarification_subtask)) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc3-clarification-audit.test.mjs"],
+  },
 ];
 
 /**
@@ -3129,9 +3344,27 @@ function runTests(files) {
  * relaxed; everything else, including which lines follow which, still has to
  * match exactly, so an anchor cannot silently start matching different code.
  */
+/*
+ * rc.6: an EXACT match must also be a unique one.
+ *
+ * The elastic path has always refused ambiguity ("ambiguous or absent: refuse
+ * to guess"), but the exact path took the first hit and said nothing. rc.6
+ * added a second ask at the CI-repair decision carrying the same
+ * `trigger: "ci_repair"` line as b130's, earlier in the file, and b130's
+ * mutation silently moved onto it -- sabotaging code its tests do not watch and
+ * reporting the result as a missing assertion. Forty minutes to produce a
+ * misleading answer.
+ *
+ * That is the benign direction. The dangerous one is a duplicated anchor whose
+ * first hit happens to break something unrelated that the named tests DO catch:
+ * a green line, measured against the wrong code. Refusing is cheap; the anchor
+ * just has to carry one more line of context.
+ */
 function locate(src, find) {
   const at = src.indexOf(find);
-  if (at >= 0) return { text: find, elastic: false };
+  if (at >= 0) {
+    return src.indexOf(find, at + find.length) >= 0 ? null : { text: find, elastic: false };
+  }
   if (!find.includes("\n")) return null;
 
   const pattern = find

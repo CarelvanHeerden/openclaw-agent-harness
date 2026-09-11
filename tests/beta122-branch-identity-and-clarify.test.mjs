@@ -293,11 +293,17 @@ test("the applied budget is written to the session and clamped by the ceiling", 
   const src = S("src/tools/registration.ts");
   const i = src.indexOf("parseConfirmationReply(trimmed)");
   assert.ok(i > 0);
-  // beta.123: widened from 1600. The window is a character count, so adding
-  // the time-budget clause beside the money one pushed the last assertion out
-  // of range and failed a test about behaviour that had not changed -- the
-  // recurring cost of pinning source text by offset rather than by meaning.
-  const window = src.slice(i, i + 2600);
+  // rc.6: bounded by MEANING rather than by a character count.
+  //
+  // beta.123 widened this from 1600 to 2600 because a new clause pushed the
+  // last assertion out of range, and its comment named the cost of pinning
+  // source by offset. rc.6 added the ambiguity gate in the same place and would
+  // have collected the same tax, so the window now runs from the parse to the
+  // end of the branch it is about -- which is where these four facts have to
+  // live no matter how much is inserted between them.
+  const end = src.indexOf("tool.answer_brief_confirmed", i);
+  assert.ok(end > i, "the brief-confirmation branch must still end in its own audit event");
+  const window = src.slice(i, end);
   assert.match(window, /UPDATE sessions SET budget_usd = \?/, "it must reach the column the loop enforces against");
   assert.match(window, /session_hard_ceiling_usd/, "the advertised ceiling still binds");
   assert.match(window, /tool\.answer_brief_budget_set/);

@@ -292,7 +292,10 @@ test("harness_merge_pr classifies rather than reading raw severity", () => {
   // rc.5: the ctx is built once as `cctx` so this gate uses the same
   // hasDeclaredGenerators reading as the review it is gating on.
   assert.match(src, /blocksMerge\(f, classifyFinding\(f, cctx\)\)/);
-  assert.match(src, /hasDeclaredGenerators: !resolveGenerators\(config\.verify\?\.generators\)\.empty/);
+  // rc.6 gave resolveGenerators a second argument (never_commit_paths), so this
+  // is matched on the property it is about -- the gate reads generator presence
+  // from the resolved map -- rather than on the exact call text.
+  assert.match(src, /hasDeclaredGenerators: !resolveGenerators\(config\.verify\?\.generators[\s\S]{0,120}?\)\.empty/);
   assert.doesNotMatch(src, /hasBlockingFinding = findings\.some\(\(f\) => isAtLeastMedium\(f\.severity\)\)/);
 });
 

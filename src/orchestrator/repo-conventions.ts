@@ -185,8 +185,26 @@ export interface CheckScriptResult {
   script: string;
   ran: boolean;
   exitCode: number | null;
-  /** Tail of combined stdout+stderr (bounded). */
+  /** Tail of combined stdout+stderr, for DISPLAY and prompts (bounded). */
   outputTail: string;
+  /**
+   * rc.6: the whole combined stdout+stderr, for ANALYSIS.
+   *
+   * `outputTail` is 4,000 characters, and until rc.6 it was the only copy the
+   * runner returned -- so `parseTscErrors(r.outputTail)` in the typecheck gate
+   * was reading the last 4 KB of a compiler run and calling the result "the
+   * errors". On StitchGuard #1184 the compiler emitted 40 diagnostics across
+   * three changed test files; the tail held ONE, and the harness spent three
+   * repair cycles routing workers at that single file while 39 other errors sat
+   * outside the window. Truncation is a display concern. It must never decide
+   * what the harness knows.
+   *
+   * Bounded by {@link OUTPUT_ANALYSIS_CHARS} so a runaway script still cannot
+   * exhaust memory, and `outputTruncated` says when that ceiling actually bit.
+   */
+  output: string;
+  /** rc.6: true when even the analysis ceiling clipped the output. */
+  outputTruncated?: boolean;
   /** Non-fatal reason the script was skipped (not on allowlist / unrunnable / timed out). */
   skippedReason?: string;
   /** True when the failure is a network/build limitation (non-fatal note, not a finding). */
@@ -210,6 +228,26 @@ export const HEAP_OOM_RE =
 
 /** Bound the captured output tail so a noisy script can't blow up the audit/log. */
 const OUTPUT_TAIL_CHARS = 4000;
+
+/**
+ * rc.6: the ANALYSIS ceiling, two orders of magnitude above the display one.
+ *
+ * Big enough that no real compiler, linter or test run reaches it (the #1184
+ * typecheck job was ~120 KB), small enough that a script looping on output
+ * cannot exhaust the process. When it does bite, `outputTruncated` records it,
+ * so "we saw everything" and "we saw as much as we allow" stay distinguishable.
+ */
+export const OUTPUT_ANALYSIS_CHARS = 2_000_000;
+
+/** Split one capture into the display tail and the bounded analysis copy. */
+function captureOutput(combined: string): Pick<CheckScriptResult, "outputTail" | "output" | "outputTruncated"> {
+  const truncated = combined.length > OUTPUT_ANALYSIS_CHARS;
+  return {
+    outputTail: combined.length > OUTPUT_TAIL_CHARS ? combined.slice(-OUTPUT_TAIL_CHARS) : combined,
+    output: truncated ? combined.slice(-OUTPUT_ANALYSIS_CHARS) : combined,
+    ...(truncated ? { outputTruncated: true } : {}),
+  };
+}
 
 /**
  * Fix 2: run the repo-declared check scripts, INLINE + BLOCKING, in the
@@ -247,14 +285,14 @@ export function runCheckScripts(params: {
   for (const s of params.discovered) {
     if (!allow.has(s.name)) {
       // Never run a non-allowlisted script; do not even record it as ran.
-      results.push({ script: s.name, ran: false, exitCode: null, outputTail: "", skippedReason: "not on verify.check_script_allowlist" });
+      results.push({ script: s.name, ran: false, exitCode: null, outputTail: "", output: "", skippedReason: "not on verify.check_script_allowlist" });
       continue;
     }
     let out;
     try {
       out = run(s.name, params.repoRoot, timeoutMs);
     } catch (err) {
-      results.push({ script: s.name, ran: false, exitCode: null, outputTail: "", unrunnable: true, skippedReason: `spawn error: ${String(err)}` });
+      results.push({ script: s.name, ran: false, exitCode: null, outputTail: "", output: "", unrunnable: true, skippedReason: `spawn error: ${String(err)}` });
       continue;
     }
     let combined = `${out.stdout ?? ""}${out.stderr ?? ""}`;
@@ -271,25 +309,25 @@ export function runCheckScripts(params: {
       try {
         retry = run(s.name, params.repoRoot, timeoutMs, heapRetryMb);
       } catch (err) {
-        results.push({ script: s.name, ran: false, exitCode: out.status ?? 134, outputTail: combined.slice(-OUTPUT_TAIL_CHARS), oom: true, heapRetried: true, skippedReason: `heap-retry spawn error: ${String(err)}` });
+        results.push({ script: s.name, ran: false, exitCode: out.status ?? 134, ...captureOutput(combined), oom: true, heapRetried: true, skippedReason: `heap-retry spawn error: ${String(err)}` });
         continue;
       }
       out = retry;
       combined = `${out.stdout ?? ""}${out.stderr ?? ""}`;
       // Still OOM after the larger heap? BLOCKING failure, not a skip.
       if (out.status === 134 || HEAP_OOM_RE.test(combined)) {
-        results.push({ script: s.name, ran: true, exitCode: out.status ?? 134, outputTail: combined.slice(-OUTPUT_TAIL_CHARS), oom: true, heapRetried: true });
+        results.push({ script: s.name, ran: true, exitCode: out.status ?? 134, ...captureOutput(combined), oom: true, heapRetried: true });
         continue;
       }
     }
-    const outputTail = combined.length > OUTPUT_TAIL_CHARS ? combined.slice(-OUTPUT_TAIL_CHARS) : combined;
+    const captured = captureOutput(combined);
     if (out.timedOut) {
-      results.push({ script: s.name, ran: false, exitCode: null, outputTail, unrunnable: true, skippedReason: `timed out after ${params.timeoutSeconds}s` });
+      results.push({ script: s.name, ran: false, exitCode: null, ...captured, unrunnable: true, skippedReason: `timed out after ${params.timeoutSeconds}s` });
       continue;
     }
     if (out.error) {
       // A spawn/tool-missing/network error is UNRUNNABLE (non-fatal), not a finding.
-      results.push({ script: s.name, ran: false, exitCode: out.status ?? null, outputTail, unrunnable: true, skippedReason: `unrunnable: ${String(out.error)}` });
+      results.push({ script: s.name, ran: false, exitCode: out.status ?? null, ...captured, unrunnable: true, skippedReason: `unrunnable: ${String(out.error)}` });
       continue;
     }
     // beta.69 (F4): exit 127 / "command not found" means the check-script binary
@@ -300,7 +338,7 @@ export function runCheckScripts(params: {
     // `unrunnable` (non-fatal note) so they never become a revise-worthy finding.
     // The worktree bootstrap (git-worktree.ts) owns repairing the env.
     if (out.status === 127 || /\b(command not found|: not found|MODULE_NOT_FOUND|cannot find module)\b/i.test(combined)) {
-      results.push({ script: s.name, ran: false, exitCode: out.status ?? 127, outputTail, unrunnable: true, skippedReason: `env_unavailable: check-script binary missing (exit 127 / command not found)` });
+      results.push({ script: s.name, ran: false, exitCode: out.status ?? 127, ...captured, unrunnable: true, skippedReason: `env_unavailable: check-script binary missing (exit 127 / command not found)` });
       continue;
     }
     // beta.73 (fix 1): exit 126 / "Permission denied" / "cannot execute" means the
@@ -314,10 +352,10 @@ export function runCheckScripts(params: {
     // the container layer is mounting the tmpfs with `exec`; the harness surfaces
     // it as an env note and lets the adversary verdict stand.
     if (out.status === 126 || /\b(permission denied|cannot execute|exec format error|operation not permitted)\b/i.test(combined)) {
-      results.push({ script: s.name, ran: false, exitCode: out.status ?? 126, outputTail, unrunnable: true, skippedReason: `env_unavailable: check-script not executable (exit 126 / permission denied -- likely a noexec mount)` });
+      results.push({ script: s.name, ran: false, exitCode: out.status ?? 126, ...captured, unrunnable: true, skippedReason: `env_unavailable: check-script not executable (exit 126 / permission denied -- likely a noexec mount)` });
       continue;
     }
-    results.push({ script: s.name, ran: true, exitCode: out.status ?? null, outputTail, heapRetried: heapRetried || undefined });
+    results.push({ script: s.name, ran: true, exitCode: out.status ?? null, ...captured, heapRetried: heapRetried || undefined });
   }
   return results;
 }

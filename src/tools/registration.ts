@@ -32,13 +32,17 @@ import {
   BRIEF_CONFIRMATION_SEQ,
   type ConfirmMode,
   decideBriefConfirmation,
+  describeControlAmbiguities,
   isBriefConfirmation,
   isBriefConfirmationPause,
   parseConfirmationReply,
   renderBriefConfirmation,
+  renderLimitsReceipt,
   type RiskLevel,
 } from "./brief-confirmation.js";
 import { isTimeExtensionPause, listenerLooksAlive, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
+import { isBudgetExtensionPause, readBudgetExtensionWaitUntil } from "../orchestrator/budget-extension.js";
+import { resolveBudgetPolicy } from "../orchestrator/budget-policy.js";
 import { CLARIFICATION_POLICY_VERSION } from "../version.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 
@@ -1697,6 +1701,36 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         // that declares itself, not one that stays quiet. What it buys is that
         // an honest agent cannot talk itself into acting, and a dishonest one
         // has to misrepresent itself in a recorded tool call.
+        // rc.6: MONEY IS NEVER DELEGATED. A budget-extension pause asks the
+        // operator to raise the figure the run is measured against, and the
+        // answer moves `budget_usd` on the session row. Every other pause this
+        // tool resolves asks the steward to judge work that has already been
+        // done and paid for; this one asks it to authorise more spending.
+        //
+        // The delegation flag below is a deployment saying "an agent may answer
+        // clarifications on my behalf". It was written about contract-path
+        // deviations, and reading it as consent to self-fund would let a run
+        // that just hit its ceiling clear the ceiling and continue -- with a
+        // recorded rationale, which makes it worse, not better. The per-user
+        // daily and monthly caps would still hold, so this is not unbounded,
+        // but the session budget is the operator's own number and only the
+        // operator moves it. Refused before the pause is claimed, so the
+        // question stays open for the human it was asked of.
+        if (automated && isBudgetExtensionPause(row.clarification_subtask)) {
+          liveState().audit("tool.answer_budget_extension_refused_automation", { ...answerFacts }, sessionId);
+          rejectAutomatic("budget_grant_not_delegable");
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Not answering: a BUDGET extension cannot be granted by an agent. This question asks for more ` +
+                `money than the requester authorised, and that decision is the operator's alone -- no delegation ` +
+                `setting changes it. Relay the question to a human with your recommendation (what has been spent, ` +
+                `what remains, and what the extra buys) and let them answer it. The pause stays open.`,
+            }],
+            details: { ok: false, budgetGrantNotDelegable: true, seq },
+          };
+        }
         if (automated && liveConfig().loop.clarification_auto_accept_delegated !== true) {
           liveState().audit("tool.answer_automation_not_delegated", { ...answerFacts }, sessionId);
           rejectAutomatic("not_delegated");
@@ -1746,7 +1780,10 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         // is sitting on this column polling -- and an operator who says "yes"
         // and then "no, make it 2 hours" is doing something reasonable that has
         // always worked. There is no plan mutation there to duplicate.
-        if (isTimeExtensionPause(row.clarification_subtask)) {
+        //
+        // rc.6: a budget pause is the same animal for the same reason, so it
+        // takes the same exemption and the same live-loop handling below.
+        if (isTimeExtensionPause(row.clarification_subtask) || isBudgetExtensionPause(row.clarification_subtask)) {
           liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
         } else {
           const claimed = liveDb()
@@ -1784,8 +1821,11 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         // It is sitting at the review boundary polling this very column, so the
         // write above IS the answer. Re-driving loop.run here would start a
         // second run against the same worktree and the same branch.
-        if (isTimeExtensionPause(row.clarification_subtask)) {
-          const waitUntilMs = readTimeExtensionWaitUntil(row.clarification_subtask);
+        const budgetPause = isBudgetExtensionPause(row.clarification_subtask);
+        if (isTimeExtensionPause(row.clarification_subtask) || budgetPause) {
+          const waitUntilMs = budgetPause
+            ? readBudgetExtensionWaitUntil(row.clarification_subtask)
+            : readTimeExtensionWaitUntil(row.clarification_subtask);
           // beta.132: the window says what the loop INTENDED, not whether it is
           // still there. Session 2b4c1d33 answered 28 seconds into a 5-minute
           // window and was told the run would pick it up; the process holding
@@ -1795,7 +1835,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (alive) {
             const windowOpen = Date.now() < waitUntilMs;
             liveState().audit(
-              "tool.answer_time_extension",
+              budgetPause ? "tool.answer_budget_extension" : "tool.answer_time_extension",
               { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, waitUntilMs, windowOpen },
               sessionId,
             );
@@ -1827,7 +1867,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // replied "ship", or said nothing at all.
           const prUrl = (row.final_pr_url ?? "").trim();
           liveState().audit(
-            "tool.answer_time_extension_listener_lost",
+            budgetPause ? "tool.answer_budget_extension_listener_lost" : "tool.answer_time_extension_listener_lost",
             {
               sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null,
               waitUntilMs, windowWasOpen: Date.now() < waitUntilMs,
@@ -1910,6 +1950,47 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // SESSION, not a change to the spec. b121 filed "Confirm, Budget $40"
           // as an authoritative acceptance criterion and ran at $10 regardless.
           const parsed = parseConfirmationReply(trimmed);
+          // rc.6 (#1184): a control we could see and could not read stops here.
+          //
+          // The old shape had two outcomes -- approval, or a correction folded
+          // into the brief -- and BOTH started the run. So "Confirm, $60, 10
+          // hours" started at the $50/5h defaults with "$60, 10 hours" pasted
+          // into the acceptance criteria as an authoritative requirement of the
+          // feature. There is now a third outcome, and it is the only one that
+          // does not spend money: leave the session exactly as it is, paused on
+          // this same gate, and ask one narrow question. A corrected reply
+          // re-enters this branch because the pause marker is untouched.
+          if (parsed.ambiguities.length > 0) {
+            const ask = describeControlAmbiguities(parsed.ambiguities);
+            // Release the answer claim taken above. It exists to stop one pause
+            // being answered twice and mutating the plan twice -- but nothing
+            // here was applied, so leaving it set would make the re-ask
+            // unanswerable ("already been answered") and strand the session on a
+            // question it had just asked.
+            liveDb()
+              .prepare(`UPDATE sessions SET clarification_question = ?, clarification_answer = NULL, updated_at = ? WHERE id = ?`)
+              .run(ask, Date.now(), sessionId);
+            liveState().audit(
+              "tool.answer_brief_control_ambiguous",
+              {
+                sessionId,
+                answerLen: trimmed.length,
+                invokedBy: invokedBy ?? null,
+                ambiguities: parsed.ambiguities.map((a) => ({ control: a.control, kind: a.kind })),
+              },
+              sessionId,
+            );
+            return {
+              content: [{ type: "text", text: ask }],
+              details: {
+                ok: true,
+                sessionId,
+                started: false,
+                controlAmbiguous: true,
+                ambiguities: parsed.ambiguities,
+              },
+            };
+          }
           const approved = parsed.approves;
           let budgetApplied: number | undefined;
           if (typeof parsed.budgetUsd === "number") {
@@ -1948,12 +2029,60 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               `OPERATOR CORRECTION TO THIS BRIEF (given before any work began, after reviewing the crystallised version): ${parsed.remainder || trimmed}. This supersedes anything above that contradicts it -- the operator is describing what they actually asked for, so treat it as the authoritative reading.`,
             );
           }
+          // rc.6: read the limits back out of the row before anything is
+          // dispatched, and report those. Writing a budget and then announcing
+          // the number we meant to write is how an operator ends up believing a
+          // cap is in force that never reached the session -- the belief the
+          // whole #1184 chain ran on. Checked while the session is still paused,
+          // so a failed write leaves it resumable rather than stranded in
+          // `planning` with nothing running.
+          const persisted = liveDb()
+            .prepare(`SELECT budget_usd, hard_timeout_seconds FROM sessions WHERE id = ?`)
+            .get(sessionId) as { budget_usd?: number | null; hard_timeout_seconds?: number | null } | undefined;
+          const effectiveLimits = {
+            budgetUsd: Number(persisted?.budget_usd ?? 0),
+            hardTimeoutSeconds: Number(
+              persisted?.hard_timeout_seconds ?? liveConfig().loop?.session_hard_timeout_seconds ?? 7200,
+            ),
+            // rc.6: derived from the SAME resolver the loop will use, so the
+            // figure quoted here is the figure repair actually gets.
+            repairReserveUsd: resolveBudgetPolicy({
+              authorizedMaximumUsd: Number(persisted?.budget_usd ?? 0),
+              repairReserveRatio: liveConfig().loop?.repair_reserve_ratio,
+            }).repairReserveUsd,
+            ...(budgetApplied !== undefined && parsed.budgetUsd !== undefined && parsed.budgetUsd > budgetApplied
+              ? { requestedBudgetUsd: parsed.budgetUsd }
+              : {}),
+          };
+          // A control the operator asked for that is not in the row is a failed
+          // write, not a detail. Say so rather than starting under limits they
+          // did not choose.
+          const unpersisted: string[] = [];
+          if (budgetApplied !== undefined && effectiveLimits.budgetUsd !== budgetApplied) unpersisted.push("budget");
+          if (timeoutApplied !== undefined && effectiveLimits.hardTimeoutSeconds !== timeoutApplied) unpersisted.push("wall clock");
+          if (unpersisted.length > 0) {
+            liveState().audit(
+              "tool.answer_brief_limits_not_persisted",
+              { sessionId, unpersisted, budgetApplied: budgetApplied ?? null, timeoutApplied: timeoutApplied ?? null, observed: effectiveLimits },
+              sessionId,
+            );
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `I did not start the run. You set the ${unpersisted.join(" and ")}, but reading the session back ` +
+                  `shows ${renderLimitsReceipt(effectiveLimits)} — so the limit you gave did not stick, and starting ` +
+                  `would run under numbers you did not choose. This is a harness fault, not a problem with your reply.`,
+              }],
+              details: { ok: false, sessionId, started: false, limitsNotPersisted: unpersisted },
+            };
+          }
           liveDb()
             .prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', clarification_question = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ?`)
             .run(JSON.stringify(brief), Date.now(), sessionId);
           liveState().audit(
             approved ? "tool.answer_brief_confirmed" : "tool.answer_brief_corrected",
-            { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, budgetApplied: budgetApplied ?? null, timeoutApplied: timeoutApplied ?? null },
+            { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, budgetApplied: budgetApplied ?? null, timeoutApplied: timeoutApplied ?? null, effectiveLimits },
             sessionId,
           );
           void liveRuntime().loop.run(sessionId, brief).catch((err) => {
@@ -1964,13 +2093,18 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               type: "text",
               text: `${approved
                 ? `Brief confirmed; session ${sessionId} is running.`
-                : `Correction folded into the brief; session ${sessionId} is running with it.`}${
-                budgetApplied !== undefined ? ` Budget set to $${budgetApplied.toFixed(2)}.` : ""
-              }${
-                timeoutApplied !== undefined ? ` Wall clock set to ${(timeoutApplied / 3600).toFixed(timeoutApplied % 3600 === 0 ? 0 : 1)}h.` : ""
+                : `Correction folded into the brief; session ${sessionId} is running with it.`} ${
+                // rc.6: the limits are stated unconditionally and come from the
+                // row, not from what this handler tried to write. An operator
+                // who names no cap needs to see the one they are getting just
+                // as much as one who does.
+                renderLimitsReceipt(effectiveLimits)
               } Poll harness_progress every ~45s and relay \`headline\` until terminal.`,
             }],
-            details: { ok: true, sessionId, resumed: true, briefConfirmed: approved, briefCorrected: !approved, budgetUsd: budgetApplied ?? null, hardTimeoutSeconds: timeoutApplied ?? null },
+            details: {
+              ok: true, sessionId, resumed: true, briefConfirmed: approved, briefCorrected: !approved,
+              budgetUsd: effectiveLimits.budgetUsd, hardTimeoutSeconds: effectiveLimits.hardTimeoutSeconds,
+            },
           };
         }
 

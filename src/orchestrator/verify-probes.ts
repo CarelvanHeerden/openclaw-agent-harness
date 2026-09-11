@@ -316,6 +316,19 @@ export function createVerifyProbes(
           return { introduced: false, changeType: "", detail: `git log error: ${String(err)}` };
         }
       },
+      /**
+       * rc.6: the window's committed files, verbatim. No contract-path
+       * resolution -- generator inputs are operator-declared, so a fuzzy match
+       * here would let an unrelated file be read as proof that a generator's
+       * sources moved, and fail a correct artifact as stale.
+       */
+      changedFilesSince: async (branchBaseSha: string) => {
+        try {
+          return await git.listCommittedFiles(worktreePath, branchBaseSha);
+        } catch {
+          return [];
+        }
+      },
       fileCommittedInBranch: async (path: string, branchBaseSha: string) => {
         try {
           const files = await git.listCommittedFiles(worktreePath, branchBaseSha);

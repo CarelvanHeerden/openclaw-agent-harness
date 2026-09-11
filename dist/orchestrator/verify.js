@@ -24,7 +24,7 @@
  * fs.stat instead of git diff, fixing the untracked-file bug from beta.8.
  */
 import { anyPathMatches } from "./path-match.js";
-import { describeGeneratedArtifactFailure, describeStaleGeneratedArtifact } from "./generated-artifacts.js";
+import { assessGeneratedFreshness, describeGeneratedArtifactFailure } from "./generated-artifacts.js";
 /**
  * Pure evaluator: given per-check booleans, decide overall pass/fail and
  * build the summary. Separated so tests don't need real probes.
@@ -65,6 +65,27 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
         scriptDeclared: ctx.generatorScriptDeclared?.(owner.script) ?? true,
         baseDetail,
     });
+    /**
+     * rc.6: decide a generator-owned path that did NOT change in this window.
+     *
+     * Both callers previously failed it outright as stale. The two extra facts
+     * this gathers -- is it in the branch at all, and did any declared input move
+     * -- are what turn that assumption into a verdict. Both probes are optional;
+     * when neither is wired the outcome degrades to "present, unproven", which is
+     * the same answer `assessGeneratedFreshness` gives for an operator who
+     * declared no inputs.
+     */
+    const assessGenerated = async (path, owner, writtenThisWindow, baseDetail) => {
+        let presentInBranch = true;
+        if (!writtenThisWindow && probes.fileCommittedInBranch) {
+            const inBranch = await probes.fileCommittedInBranch(path, ctx.branchBaseSha ?? ctx.baseSha);
+            presentInBranch = inBranch.present;
+        }
+        const changedFiles = !writtenThisWindow && probes.changedFilesSince
+            ? await probes.changedFilesSince(ctx.branchBaseSha ?? ctx.baseSha).catch(() => null)
+            : null;
+        return assessGeneratedFreshness({ path, owner, writtenThisWindow, presentInBranch, changedFiles, baseDetail });
+    };
     // beta.95: on a revise cycle (cycle > 1), a TARGETED file (reviseRelaxed NOT
     // set -- the review DID target it, so the worker was expected to re-touch it)
     // is legitimately older-than-this-sub-task (cycle 1 wrote it first) and its
@@ -99,22 +120,15 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                 break;
             }
             case "file_written": {
-                // rc.5: STALE-OUTPUT REJECTION. The two relaxations below both accept a
-                // file on the strength of an EARLIER cycle's work. That reasoning is
-                // sound for hand-written source (the review did not target it, so it is
-                // still correct) and false for a derived artifact: if anything it is
-                // derived from moved, the committed copy is stale. So a generator-owned
-                // path skips both relaxations and takes the strict fresh-work path,
-                // where "was it rewritten in this window?" is asked directly.
+                // rc.5 sent a generator-owned path down a strict fresh-write path on
+                // every revise cycle, and failed it as "stale" whenever it had not been
+                // rewritten. rc.6 keeps the strict path -- but decides the not-rewritten
+                // case on evidence instead of assumption. See `assessGeneratedFreshness`.
                 const genOwner = generatedOwner(v.path);
                 if (genOwner && (v.reviseRelaxed || reviseCycle)) {
                     const r = await probes.fileWrittenSince(v.path, ctx.subTaskStartMs);
-                    results.push({
-                        kind: v.kind,
-                        passed: r.written,
-                        detail: r.written ? `regenerated this sub-task: ${r.detail}` : describeStaleGeneratedArtifact(v.path, genOwner),
-                        path: v.path,
-                    });
+                    const f = await assessGenerated(v.path, genOwner, r.written, r.detail);
+                    results.push({ kind: v.kind, passed: f.passed, detail: f.detail, path: v.path });
                     break;
                 }
                 // beta.85: REVISE-RELAXED. On a revise cycle, a contract file the review
@@ -194,18 +208,12 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
             }
             // ---- beta.9 kinds ----
             case "file_committed": {
-                // rc.5: STALE-OUTPUT REJECTION, same rule as file_written above. A
-                // generator-owned path is not eligible for either revise relaxation;
-                // it must appear with a real diff in THIS sub-task's window.
+                // rc.6: evidence-based freshness, same rule as file_written above.
                 const genOwner = generatedOwner(v.path);
                 if (genOwner && (v.reviseRelaxed || reviseCycle) && probes.fileCommittedSince) {
                     const r = await probes.fileCommittedSince(v.path, ctx.baseSha);
-                    results.push({
-                        kind: v.kind,
-                        passed: r.committed,
-                        detail: r.committed ? `regenerated this sub-task: ${r.detail}` : describeStaleGeneratedArtifact(v.path, genOwner),
-                        path: v.path,
-                    });
+                    const f = await assessGenerated(v.path, genOwner, r.committed, r.detail);
+                    results.push({ kind: v.kind, passed: f.passed, detail: f.detail, path: v.path });
                     break;
                 }
                 // beta.85: REVISE-RELAXED (same rationale as file_written above): a

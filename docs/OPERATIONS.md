@@ -250,6 +250,103 @@ lag a successful push, which is exactly what we saw during the #1168 recovery.
 It is not a retry for a failed push — the harness never re-pushes during
 verification — so raising these buys patience, never a greener answer.
 
+## Approving a brief, and the limits that actually apply
+
+`brief.confirm_before_spend` pauses each crystallised brief for an operator, and
+the reply is answered with `harness_answer`. The reply does two jobs at once: it
+says yes, and it may adjust the budget or the wall clock. Ordinary shorthand
+works — `Confirm, $60, 10 hours`, `yes, budget $60 and a 10 hour budget`, `ok —
+10 hrs` — in any order, and with or without the word "budget" attached to each
+number.
+
+**Bare numbers count only in a reply that is otherwise pure agreement.** If
+removing the numbers leaves something that still reads as a plain yes, they are
+read as limits. If it leaves an instruction — `confirm, but the price threshold
+should be $60`, `confirm but set the retry limit to 3` — the whole reply is a
+correction to the brief, the `$60` belongs to the feature, and nothing is
+applied to the session's limits. This is the line that lets you write `$60`
+without a cue word while keeping a sentence about prices from silently becoming
+the run's cap.
+
+**A control the harness cannot read stops the run.** If the reply clearly aims
+at the budget or the clock but the amount is unusable — `budget -$50`, `time
+budget of 400 hours`, `budget $40 and cap $60` — the session stays paused and
+you get a narrow question naming the control and quoting your words back. It
+does not start at the default and it does not fold your words into the
+acceptance criteria. Answer again with a readable figure and the run starts.
+
+Before rc.6 both of those cases started the run anyway: the unreadable control
+was silently dropped, the default limit applied, and the control text was
+carried into the brief as a requirement. #1184 is what that looks like from the
+outside — an operator who approved `$60` got a $50 cap they never chose, and the
+run was later refused a CI repair for crossing it.
+
+**Every approval returns a receipt.** The response states the budget and
+wall-clock limit that were actually persisted, read back out of the session row
+rather than echoed from the request, and says so explicitly when a figure was
+clamped by the configured ceiling. It also names how much of the budget is held
+back for CI repair, and it no longer claims the run stops when it hits either
+number — that was true of the clock and false of the money. If the write did not
+land, the answer fails with the controls it could not persist and the session
+stays resumable; it is never flipped to `planning` on limits nobody stored.
+
+## What the session budget means
+
+The approved figure is divided before anything spends it:
+
+| Portion | Behaviour |
+| --- | --- |
+| Implementation target (70% by default) | What ordinary work is sized against. **Soft** — crossing it warns and the run continues. But the harness may not *elect* another implementation cycle past it. |
+| Repair reserve (`loop.repair_reserve_ratio`, 30% by default) | Held back for CI repair. Repair measures its **own** spend against this and never reads the run's total, so implementation overspend cannot consume it. |
+
+**Why the division exists.** #1184 spent $53.81 against a $50 budget and was
+then refused a repair cycle for being over $50. Both halves were behaving as
+designed: the session budget is soft for ordinary work (it warns; the daily cap
+is the hard admission boundary), while the extension gate measured hard against
+that same number, on the sound reasoning that the harness buying itself another
+cycle with unauthorised money is a different act. Composed, they hand the whole
+budget to whoever spends first and refuse the only consumer measured against it.
+The run overspends *and* ships red.
+
+**The first repair cycle is always funded** when a reserve exists and the hard
+caps allow it, without projecting a cost. A repair fixes a handful of named CI
+findings on a branch that is already built and reviewed; pricing it as another
+implementation cycle is what produced the refusal. Once a repair has run there
+is a measurement, and subsequent repairs are held to it. The number of repairs
+is separately bounded by `ci.max_repair_cycles`, which this does not change.
+
+**What is still hard.** `budgets.session_hard_ceiling_usd`, `budgets.daily_max_usd`,
+the per-user monthly cap, and `ci.max_repair_cycles`. Worst case is
+implementation's actual spend plus one repair cycle — the overshoot soft spend
+already permitted, now deliberate and accounted for.
+
+### When the money runs out, the harness asks
+
+Five decisions used to refuse work over money in silence: the next sub-task, the
+adversary review, a cycle extension, the daily-cap cycle stop, and CI repair.
+Each now pauses and asks the operator first, using the same machinery as the
+wall-clock question — a bounded wait, a heartbeat, and a resumable pause that
+keeps the worktree, cycle counter and findings history exactly as they are.
+
+This is not new authority. The `:moneybag:` reaction has always let an operator
+spend past the caps; reacting with it during the wait answers the question. What
+changed is that the harness now asks at the moment of the decision rather than
+relying on somebody watching.
+
+- Reply with an amount (`$20`, `50 more`) or a bare `yes` for one measured
+  cycle's worth. `no` or `ship` declines. `no more than $20` is an approval.
+- A grant raises the session budget, is persisted so a resume honours it, and
+  lifts the daily cap for the rest of that session.
+- One grant may not more than double the approved figure, so a typo costs a
+  clamp and an audit line rather than the month's budget.
+- **The per-user monthly cap is never askable.** It is enforced at session
+  admission in `BudgetEnforcer.check` and is the one wall a run cannot talk past.
+- An unanswered question changes nothing: when the window
+  (`loop.budget_extension_wait_seconds`, 300s) closes, the loop does exactly
+  what it would have done without asking, and it does not ask twice in one run.
+
+Set `loop.budget_extension_ask_enabled: false` to restore the silent refusals.
+
 ## Cost forensics
 
 To investigate a cost spike:
@@ -315,6 +412,29 @@ always used a hard-coded 30 seconds no matter what the config said. A log line
 reporting a 30-second first-token timeout from before rc.4 is not evidence about
 your configured value, because your configured value was never consulted.
 
+## What the harness reads from a failing check
+
+Check output is captured twice, for two different consumers:
+
+- **The display tail** — the last 4,000 characters. This is what goes into
+  prompts, terminal messages and the audit log, and it is bounded so a noisy
+  build cannot crowd out the rest of a model's context.
+- **The analysis capture** — up to 2 MB. This is what the harness parses. When a
+  run exceeds even that, the result carries an explicit truncation flag rather
+  than quietly shortening.
+
+The distinction matters because a failing `tsc` routinely prints far more than
+4,000 characters, and the errors it prints first — often in the files a sub-task
+actually touched — are the ones a tail drops. Before rc.6 both consumers read
+the same tail, so the harness's picture of a broken branch was whatever happened
+to fall at the end of the stream.
+
+A typecheck finding now reports the full count, samples errors across the
+affected files rather than taking the first few from one file, summarises the
+per-file counts on one line, and lists every affected file so the whole break is
+routed to a single worker. A finding that named only one file of three produced
+a fix that could not compile, and the same finding came back next cycle.
+
 ## Who regenerates derived artifacts
 
 If your repo commits generated files — an OKF bundle, a codegen client, a
@@ -324,8 +444,8 @@ Nothing is inferred.
 ```jsonc
 "verify": {
   "generators": [
-    { "script": "okf", "produces": ["okf/bundle.json"] },
-    { "script": "codegen", "produces": ["src/generated/"] }
+    { "script": "okf", "produces": ["okf/bundle.json"], "inputs": ["okf/src/"] },
+    { "script": "codegen", "produces": ["src/generated/"], "inputs": ["openapi.yaml"] }
   ]
 }
 ```
@@ -333,6 +453,20 @@ Nothing is inferred.
 A `produces` entry ending in `/` owns everything beneath it; anything else is an
 exact file. Paths must stay inside the repository, and a path claimed by two
 scripts is refused as ambiguous — neither script is authorized for it.
+
+`inputs` is optional and follows the same file-or-directory rule. It is what the
+harness reads to decide whether a committed artifact has gone stale; see the
+freshness table below. Without it, an artifact that nobody touched is accepted,
+because there is no evidence either way.
+
+**`produces` may not overlap `repos.never_commit_paths`.** That list does not
+merely discourage committing a path — `revertNeverCommitPaths` unstages *and
+restores* every match before each commit. A generator told to produce a path on
+that list is given a contract it cannot satisfy on any cycle: the worker
+regenerates the file, the pre-commit step puts it back, the contract fails, and
+the failure advice ("run the generator") is advice that cannot work. The harness
+now rejects this combination when it resolves the config, naming both the script
+and the path, rather than letting a run discover it one cycle at a time.
 
 **What a mapping does.** When a sub-task's contract or declared scope names a
 mapped path, the worker is told to run that specific script and commit what it
@@ -351,13 +485,30 @@ the contract on it is enforced normally, and a reviewer finding that the bundle
 is stale keeps whatever weight the reviewer gave it. That is deliberate: with no
 declared owner there is no machinery to answer the complaint, so it stands.
 
-**Reading the failures.** Three are distinct and all name the cause directly:
+**Reading the failures.** These are distinct and all name the cause directly:
 
 | Report | What happened |
 | --- | --- |
 | `... is a GENERATED artifact -- the generator that owns it (npm run X) did not run` | The script exists; the worker did not run it, or it wrote nothing. |
 | `MISSING TOOLING: verify.generators maps it to X, but package.json declares no such script` | Your mapping names a script the repo does not have. Nothing can produce the file until you fix one or the other. |
-| `... was NOT rewritten in this window ... the committed artifact is stale` | The file was committed by an earlier cycle and its sources have since moved. A derived file is never accepted on an earlier cycle's work. |
+| `... is stale: <input> changed on this branch ...` | A path you declared in `inputs` moved on this branch and the artifact derived from it did not. The message names the input, so the claim is checkable. |
+
+**How freshness is decided.** A generated path a contract names lands in exactly
+one of four states:
+
+| State | Outcome |
+| --- | --- |
+| Regenerated in this window | Passes. The worker ran the script and committed the result. |
+| Absent from the branch | Fails. A generator that never produced its artifact is not a no-op. |
+| Present, and a declared `inputs` path changed on this branch | Fails as stale, naming the input that moved. |
+| Present, unchanged, no `inputs` evidence | Passes. |
+
+That last row changed in rc.6. Before it, an untouched artifact was reported
+stale on the assertion that "its sources moved" — which nothing had checked, so
+a sub-task that legitimately did not touch the bundle failed a contract it had
+already satisfied. The harness never runs generators (see above), so it cannot
+tell an up-to-date artifact from a stale one by content; declaring `inputs` is
+how you turn that undecidable case back into a real check.
 
 None of these are path mismatches, and the harness will not ask you to relocate
 a generated file: its location is something you declared, not something the
@@ -373,7 +524,12 @@ mismatch" on a generated file is that defect, not a misplaced file.
 
 ## Troubleshooting
 
-- **A contract failed on a generated file**: read the message rather than the path. If it says the generator did not run, the worker was not authorized for that path — add it to `verify.generators`. If it says MISSING TOOLING, the mapped script is not in the repo's `package.json`. If it says stale, the artifact predates the sources it is derived from and must be regenerated. See "Who regenerates derived artifacts" above.
+- **A contract failed on a generated file**: read the message rather than the path. If it says the generator did not run, the worker was not authorized for that path — add it to `verify.generators`. If it says MISSING TOOLING, the mapped script is not in the repo's `package.json`. If it says stale, it names the declared input that moved, and the artifact must be regenerated from it. See "Who regenerates derived artifacts" above.
+- **The config is refused because a generator targets a never-commit path**: the two settings contradict each other, and the harness stops rather than starting a run whose contract can never pass. Either drop the path from `repos.never_commit_paths` (if the artifact is genuinely meant to be committed) or from the generator's `produces` (if it is not). See "Who regenerates derived artifacts" above.
+- **The run paused asking for money**: a money-based stop was about to refuse useful work. Answer with an amount or `yes`, or react `:moneybag:`; `ship` declines. Ignoring it is safe — the window closes and the run does what it would have done anyway. See "When the money runs out, the harness asks" above.
+- **A repair was declined with `reason: "budget"`**: read `repairFunding` in the same audit event. `no_reserve` means `loop.repair_reserve_ratio` is 0 for this deployment, which you can change; `reserve_exhausted` means this run has spent what it was given, which you cannot. Runs from before rc.6 have neither field, and their `"budget"` usually means implementation had already spent the figure repair was measured against.
+- **An approval came back as a question instead of starting the run**: the reply named the budget or the clock with an amount the harness could not use, so it stopped rather than starting at a default you did not choose. The question quotes the words it could not read. See "Approving a brief, and the limits that actually apply" above.
+- **A typecheck finding keeps coming back**: check whether it names every file. Findings raised before rc.6 were built from a 4,000-character tail, so a break spanning several files could be handed over as one, fixed partially, and re-raised. See "What the harness reads from a failing check" above.
 - **The run says NOT PUBLISHED**: the push (or PR call) resolved and the remote still does not hold this run's commits. The work is preserved in the named worktree and the terminal message gives both SHAs — see "Published, approved, and unpublished" above for the `failureKind` table and the recovery commands. Do not force-push; on `remote_mismatch` the branch tip is somebody else's commit.
 - **A session reads as shipped but the PR looks unchanged**: check `sessions.published_sha` against the PR head. If it is NULL and the session predates rc.5, publication was never verified for that run — read the branch rather than trusting the status.
 - **The adversary timed out before its first token**: the review failed closed and nothing shipped — this is not a review that passed, and the session keeps its worktree. Raise `loop.sdk_first_token_timeout_seconds` (see above) if the backend is merely slow to start; if it never opened its stream, check the backend's launch and credentials instead. The harness will not retry a timeout as a formatting problem, so repeated identical timeouts mean the backend, not the prompt.

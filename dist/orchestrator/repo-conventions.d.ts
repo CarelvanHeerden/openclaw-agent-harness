@@ -48,8 +48,26 @@ export interface CheckScriptResult {
     script: string;
     ran: boolean;
     exitCode: number | null;
-    /** Tail of combined stdout+stderr (bounded). */
+    /** Tail of combined stdout+stderr, for DISPLAY and prompts (bounded). */
     outputTail: string;
+    /**
+     * rc.6: the whole combined stdout+stderr, for ANALYSIS.
+     *
+     * `outputTail` is 4,000 characters, and until rc.6 it was the only copy the
+     * runner returned -- so `parseTscErrors(r.outputTail)` in the typecheck gate
+     * was reading the last 4 KB of a compiler run and calling the result "the
+     * errors". On StitchGuard #1184 the compiler emitted 40 diagnostics across
+     * three changed test files; the tail held ONE, and the harness spent three
+     * repair cycles routing workers at that single file while 39 other errors sat
+     * outside the window. Truncation is a display concern. It must never decide
+     * what the harness knows.
+     *
+     * Bounded by {@link OUTPUT_ANALYSIS_CHARS} so a runaway script still cannot
+     * exhaust memory, and `outputTruncated` says when that ceiling actually bit.
+     */
+    output: string;
+    /** rc.6: true when even the analysis ceiling clipped the output. */
+    outputTruncated?: boolean;
     /** Non-fatal reason the script was skipped (not on allowlist / unrunnable / timed out). */
     skippedReason?: string;
     /** True when the failure is a network/build limitation (non-fatal note, not a finding). */
@@ -68,6 +86,15 @@ export interface CheckScriptResult {
 }
 /** beta.70 (F4): V8 heap-OOM signature. exit 134 = SIGABRT; the message is the tell. */
 export declare const HEAP_OOM_RE: RegExp;
+/**
+ * rc.6: the ANALYSIS ceiling, two orders of magnitude above the display one.
+ *
+ * Big enough that no real compiler, linter or test run reaches it (the #1184
+ * typecheck job was ~120 KB), small enough that a script looping on output
+ * cannot exhaust the process. When it does bite, `outputTruncated` records it,
+ * so "we saw everything" and "we saw as much as we allow" stay distinguishable.
+ */
+export declare const OUTPUT_ANALYSIS_CHARS = 2000000;
 /**
  * Fix 2: run the repo-declared check scripts, INLINE + BLOCKING, in the
  * worktree. Only scripts whose name is on `allowlist` are run (a discovered

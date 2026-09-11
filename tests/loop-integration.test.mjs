@@ -23,7 +23,12 @@ function config(overrides = {}) {
     budgets: { monthly_per_user_usd: 1000, session_default_usd: 50, session_hard_ceiling_usd: 200, daily_warn_usd: 100, monthly_warn_ratio: 0.8 },
     repos: { allowed: ["o/*"], can_create: false, create_org: "", create_visibility: "private", default_base_branch: "main" },
     models: { lead: "claude-fable-5", worker: "claude-sonnet-5", adversary: "claude-fable-5", classifier: "claude-haiku-4-5" },
-    loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600 },
+    // rc.6: `budget_extension_ask_enabled: false` because the money tests in
+    // this file pin what the STOPS do, and with the ask on each one would sit
+    // out a five-minute window before doing it. That the flag genuinely
+    // restores the pre-rc.6 stop is part of what they now demonstrate; the ask
+    // itself is covered in tests/rc6-budget-headroom.test.mjs.
+    loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, budget_extension_ask_enabled: false },
     storage: { state_db_path: ":memory:", worktree_root: "/tmp/wt", audit_retention_days: 90, prune_terminal_sessions: 365 },
     pat_routing: { overrides: {}, commit_identity: {}, default_service_pattern: "github-{user}-{org}" },
     safety: {

@@ -31,6 +31,25 @@ export interface TscError {
 }
 export declare function parseTscErrors(output: string): TscError[];
 /**
+ * rc.6 (#1184): the diagnostics of a check-script run, from the WHOLE capture.
+ *
+ * This exists as its own function because the rule it encodes is one sentence
+ * long and was previously spelled out at each call site as
+ * `parseTscErrors(r.outputTail)` -- reading the last 4,000 characters of a
+ * compiler run and treating the result as its errors. On StitchGuard #1184 that
+ * turned 40 diagnostics across three changed files into one, and three revise
+ * cycles were spent repairing the single file the tail happened to end in.
+ *
+ * `outputTail` is for display and for model prompts, which must stay bounded.
+ * Analysis reads `output`. The fallback covers a caller that predates the split
+ * (and callers that synthesise a result), and is the only reason a truncated
+ * stream can still reach the parser.
+ */
+export declare function diagnosticsFrom(result: {
+    output?: string;
+    outputTail?: string;
+}): TscError[];
+/**
  * Errors in files this branch changed. Uses the shared tolerant matcher so a
  * route-group-normalised or differently-rooted path still lines up with the
  * committed-file list, the same way every other per-file check does.

@@ -40,7 +40,8 @@ const {
   renderGeneratorInstruction,
   generatorScriptDeclared,
   describeGeneratedArtifactFailure,
-  describeStaleGeneratedArtifact,
+  assessGeneratedFreshness,
+  neverCommitCovers,
 } = await import("../dist/orchestrator/generated-artifacts.js");
 const { buildWorkerSystemPrompt } = await import("../dist/orchestrator/worker.js");
 const { renderConventionsForPrompt } = await import("../dist/orchestrator/repo-conventions.js");
@@ -349,36 +350,99 @@ const staleArtifactProbes = {
   fileCommittedSince: async () => ({ committed: false, detail: "not in this sub-task's window" }),
 };
 
-test("rc5: STALE OUTPUT -- a generated file carried over from an earlier cycle is REJECTED", async () => {
+/**
+ * rc.6 REPLACED THE RULE THESE THREE TESTS PINNED.
+ *
+ * rc.5 failed every generator-owned path that had not been rewritten in the
+ * current window, and told the operator "its sources moved, so the committed
+ * artifact is stale". Neither half was ever checked: the only fact in evidence
+ * was that the file had not changed, which for a deterministic generator is the
+ * expected result of a test-only sub-task. The compliance-calendar run
+ * (StitchGuard #1184) hit it repeatedly with no way through -- the only action
+ * that satisfies a diff requirement on a derived file is a falsified diff.
+ *
+ * rc.6 keeps every rejection it can evidence and drops the one it cannot. The
+ * cases below are the four states, and which of them the harness can prove.
+ */
+test("rc6: an unchanged artifact with no input evidence is a no-op, not a stale failure", async () => {
   const out = await verifySubTaskOutput(
     [{ kind: "file_committed", path: "okf/bundle.json", reviseRelaxed: true }],
     { ...baseCtx, cycle: 2, generators: okfMap },
     staleArtifactProbes,
   );
-  assert.equal(out.ok, false, "a stale derived artifact must not pass on an earlier cycle's commit");
-  assert.match(out.results[0].detail, /stale/i);
-  assert.match(out.results[0].detail, /npm run okf/);
-  assert.match(out.results[0].detail, /Re-run the generator and commit the result/);
+  assert.equal(out.ok, true, "rc.5 failed this, and nothing could ever have made it pass");
+  assert.match(out.results[0].detail, /did not change in this sub-task/);
+  assert.match(out.results[0].detail, /no inputs\[\] are declared/, "the reason it cannot be proven must be stated");
+  assert.doesNotMatch(out.results[0].detail, /sources moved/, "and no claim may be made that was never checked");
 });
 
-test("rc5: STALE OUTPUT -- the same rejection applies to file_written", async () => {
+test("rc6: the same acceptance applies to file_written", async () => {
   const out = await verifySubTaskOutput(
     [{ kind: "file_written", path: "okf/bundle.json", reviseRelaxed: true }],
     { ...baseCtx, cycle: 2, generators: okfMap },
     staleArtifactProbes,
   );
-  assert.equal(out.ok, false);
-  assert.match(out.results[0].detail, /stale/i);
+  assert.equal(out.ok, true);
+  assert.match(out.results[0].detail, /valid no-op/);
 });
 
-test("rc5: STALE OUTPUT -- the revise-TARGETED plan-base window cannot launder it either", async () => {
+test("rc6: an artifact that is NOT on the branch at all still fails", async () => {
+  // The generator never ran. That is a fact, not an inference, and rc.6 keeps
+  // every bit of rc.5's strictness about it.
+  const out = await verifySubTaskOutput(
+    [{ kind: "file_committed", path: "okf/bundle.json", reviseRelaxed: true }],
+    { ...baseCtx, cycle: 2, generators: okfMap },
+    { ...staleArtifactProbes, fileCommittedInBranch: async () => ({ present: false, detail: "not in branch" }) },
+  );
+  assert.equal(out.ok, false);
+  assert.match(out.results[0].detail, /not committed anywhere on this branch/);
+  assert.match(out.results[0].detail, /npm run okf/);
+});
+
+test("rc6: a declared input that moved while the artifact did not IS stale", async () => {
+  // With inputs declared the question becomes one git can answer, so the
+  // rejection rc.5 wanted is available -- now with the evidence attached.
+  const withInputs = resolveGenerators([
+    { script: "okf", produces: ["okf/"], inputs: ["src/lib/grc/"] },
+  ]);
+  const out = await verifySubTaskOutput(
+    [{ kind: "file_committed", path: "okf/bundle.json", reviseRelaxed: true }],
+    { ...baseCtx, cycle: 2, generators: withInputs },
+    {
+      ...staleArtifactProbes,
+      changedFilesSince: async () => ["src/lib/grc/compliance-calendar.ts", "README.md"],
+    },
+  );
+  assert.equal(out.ok, false);
+  assert.match(out.results[0].detail, /STALE/);
+  assert.match(out.results[0].detail, /compliance-calendar\.ts/, "the evidence must be named");
+});
+
+test("rc6: a test-only sub-task does not make a declared-input artifact stale", async () => {
+  // The exact shape the incident kept failing on: the only change was a test,
+  // which is not something the OpenAPI generator reads.
+  const withInputs = resolveGenerators([
+    { script: "okf", produces: ["okf/"], inputs: ["src/lib/grc/"] },
+  ]);
+  const out = await verifySubTaskOutput(
+    [{ kind: "file_committed", path: "okf/bundle.json", reviseRelaxed: true }],
+    { ...baseCtx, cycle: 2, generators: withInputs },
+    {
+      ...staleArtifactProbes,
+      changedFilesSince: async () => ["src/__tests__/lib/grc/compliance-calendar.test.ts"],
+    },
+  );
+  assert.equal(out.ok, true);
+  assert.match(out.results[0].detail, /none of its declared inputs changed/);
+});
+
+test("rc6: the revise-TARGETED plan-base window takes the same evidence-based route", async () => {
   const out = await verifySubTaskOutput(
     [{ kind: "file_committed", path: "okf/bundle.json" }],
     { ...baseCtx, cycle: 2, branchBaseSha: "planbase", reviseTargetedPlanbaseWindow: true, generators: okfMap },
-    staleArtifactProbes,
+    { ...staleArtifactProbes, fileCommittedInBranch: async () => ({ present: false, detail: "not in branch" }) },
   );
-  assert.equal(out.ok, false);
-  assert.match(out.results[0].detail, /stale/i);
+  assert.equal(out.ok, false, "a targeted generated path that is absent still cannot pass");
 });
 
 test("rc5: a genuinely REGENERATED artifact passes on the same revise cycle", async () => {
@@ -423,11 +487,69 @@ test("rc5: NO REGRESSION -- with no generators configured, verification is byte-
   assert.match(withNone.results[0].detail, /revise-relaxed/);
 });
 
-test("rc5: the stale message tells the operator what to do", () => {
-  const msg = describeStaleGeneratedArtifact("okf/bundle.json", { script: "okf", files: [], dirs: [] });
-  assert.match(msg, /GENERATED artifact/);
-  assert.match(msg, /its sources moved/);
-  assert.match(msg, /Re-run the generator/);
+test("rc6: every generated-artifact verdict says what was actually observed", () => {
+  const owner = { script: "okf", files: [], dirs: [], inputs: ["src/x.ts"], inputDirs: [] };
+  const base = { path: "okf/bundle.json", owner, baseDetail: "probe said no" };
+
+  const missing = assessGeneratedFreshness({ ...base, writtenThisWindow: false, presentInBranch: false, changedFiles: null });
+  assert.equal(missing.verdict, "missing");
+  assert.equal(missing.passed, false);
+  assert.match(missing.detail, /has not run/);
+
+  const stale = assessGeneratedFreshness({ ...base, writtenThisWindow: false, presentInBranch: true, changedFiles: ["src/x.ts"] });
+  assert.equal(stale.verdict, "stale");
+  assert.equal(stale.passed, false);
+  assert.match(stale.detail, /src\/x\.ts/, "a staleness claim must name the input it rests on");
+
+  const unproven = assessGeneratedFreshness({ ...base, writtenThisWindow: false, presentInBranch: true, changedFiles: ["docs/readme.md"] });
+  assert.equal(unproven.verdict, "unproven");
+  assert.equal(unproven.passed, true);
+
+  const fresh = assessGeneratedFreshness({ ...base, writtenThisWindow: true, presentInBranch: true, changedFiles: null });
+  assert.equal(fresh.verdict, "regenerated");
+  assert.equal(fresh.passed, true);
+});
+
+// ---------------------------------------------------------------------------
+// rc.6: the ownership map and the never-commit list cannot contradict
+// ---------------------------------------------------------------------------
+
+test("rc6: a produced path that never_commit_paths would revert is refused", () => {
+  // The observed StitchGuard configuration. `revertNeverCommitPaths` unstages
+  // AND restores matching paths, so the worker's generated output is discarded
+  // and the contract on it can never be met -- an unwinnable loop whose failure
+  // text advises the one action that cannot work.
+  const map = resolveGenerators(
+    [{ script: "okf", produces: ["okf/data-model/", "okf/api/"] }, { script: "openapi", produces: ["src/lib/openapi.generated.json"] }],
+    { neverCommitPaths: ["okf/**"] },
+  );
+  assert.equal(map.errors.length, 2, "both excluded paths must be reported, not just the first");
+  for (const e of map.errors) {
+    assert.equal(e.script, "okf");
+    assert.match(e.reason, /never_commit_paths/);
+    assert.match(e.reason, /unstages and RESTORES/, "the operator has to know why it is unsatisfiable");
+  }
+  assert.equal(map.ownerOf("okf/data-model/x.md"), null, "no generator may be authorized for it");
+  // The unaffected mapping survives: one bad overlap must not disarm the rest.
+  assert.equal(map.ownerOf("src/lib/openapi.generated.json")?.script, "openapi");
+});
+
+test("rc6: never_commit_paths patterns are matched, not string-compared", () => {
+  const covered = (patterns, path) => neverCommitCovers(patterns, path);
+  assert.equal(covered(["okf/**"], "okf/api/routes.md"), true);
+  assert.equal(covered(["okf/**"], "okf/"), true, "a produced directory prefix is covered by its subtree pattern");
+  assert.equal(covered(["okf"], "okf/api/routes.md"), true, "a bare pathspec owns its subtree, as git does");
+  assert.equal(covered(["okf/**"], "src/lib/openapi.generated.json"), false);
+  assert.equal(covered(["dist/*.js"], "dist/deep/nested.js"), false, "a single star must not cross a slash");
+  assert.equal(covered([], "okf/api/routes.md"), false);
+  assert.equal(covered(undefined, "okf/api/routes.md"), false);
+});
+
+test("rc6: an unresolvable inputs[] entry costs proof, not the whole mapping", () => {
+  const map = resolveGenerators([{ script: "openapi", produces: ["src/lib/openapi.generated.json"], inputs: ["../outside/x.ts"] }]);
+  assert.equal(map.ownerOf("src/lib/openapi.generated.json")?.script, "openapi", "ownership must survive a bad input");
+  assert.equal(map.errors.length, 1);
+  assert.match(map.errors[0].reason, /freshness cannot be proven/);
 });
 
 test("rc5: the basename rescue cannot launder a missing generated artifact onto a sibling", () => {

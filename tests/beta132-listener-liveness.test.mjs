@@ -78,13 +78,22 @@ test("beta132: the loop stamps the heartbeat before its first sleep", { skip }, 
   // waited for the first tick, the fastest answers -- the ones most likely to
   // reach a live loop -- would be the ones judged dead.
   const src = S("src/orchestrator/loop.ts");
-  const i = src.indexOf("stampClarificationHeartbeat(p.sessionId)");
-  assert.ok(i > 0, "the heartbeat must be stamped in the ask");
-  const j = src.indexOf('let answer = ""', i);
-  assert.ok(j > i, "the first stamp must come before the poll loop is entered");
-  // And again on every tick, or a five-minute window looks dead after twenty
-  // seconds of perfectly healthy waiting.
-  assert.equal(src.split("stampClarificationHeartbeat(p.sessionId)").length - 1, 2);
+  // rc.6: there are two asks now -- the clock's and the money's -- and both
+  // wait in place on the same column, so both need this property. Counting
+  // stamps across the whole file said nothing about either once a second ask
+  // existed, so each is checked in its own body.
+  for (const ask of ["askForTimeExtension", "askForBudgetExtension"]) {
+    const start = src.indexOf(`private async ${ask}(`);
+    assert.ok(start > 0, `${ask} must exist`);
+    const j = src.indexOf('let answer = ""', start);
+    assert.ok(j > start, `${ask}: the poll loop must be findable`);
+    const beforePoll = src.slice(start, j);
+    assert.match(beforePoll, /stampClarificationHeartbeat\(p\.sessionId\)/, `${ask}: the first stamp must come before the poll loop is entered`);
+    // And again on every tick, or a five-minute window looks dead after twenty
+    // seconds of perfectly healthy waiting.
+    const pollBody = src.slice(j, src.indexOf("clearPause();", j));
+    assert.match(pollBody, /stampClarificationHeartbeat\(p\.sessionId\)/, `${ask}: every tick must restamp`);
+  }
 });
 
 test("beta132: clearing the pause clears the heartbeat with it", { skip }, () => {

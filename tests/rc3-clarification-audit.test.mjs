@@ -20,10 +20,11 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-let registerHarnessTools, Database, CLARIFICATION_POLICY_VERSION, pathMatch;
+let registerHarnessTools, Database, CLARIFICATION_POLICY_VERSION, pathMatch, BUDGET_EXTENSION_KIND;
 try {
   ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
   ({ CLARIFICATION_POLICY_VERSION } = await import("../dist/version.js"));
+  ({ BUDGET_EXTENSION_KIND } = await import("../dist/orchestrator/budget-extension.js"));
   pathMatch = await import("../dist/orchestrator/path-match.js");
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
@@ -353,4 +354,63 @@ test("11: the acceptance is durable across a re-plan, because it is in the plan"
   // The sub-task is settled, so the resumed run walks past it rather than
   // re-dispatching it into the same wall.
   assert.equal(db.prepare(`SELECT status FROM sub_tasks WHERE id = 'st1'`).get().status, "completed");
+});
+
+// ---------------------------------------------------------------------------
+// rc.6 -- the one question an agent may never answer
+// ---------------------------------------------------------------------------
+
+test("rc.6: an agent cannot grant itself money, delegated or not", { skip }, async () => {
+  // Every other pause `harness_answer` resolves asks the steward to judge work
+  // that has already been done. A budget pause asks it to authorise MORE, and
+  // the answer moves `budget_usd` on the row. A run that has just hit its
+  // ceiling is exactly the caller with a motive to clear it.
+  //
+  // Delegation is the interesting case: `clarification_auto_accept_delegated`
+  // was written about contract-path deviations, and the refusal has to survive
+  // a deployment that turned it on. Both settings are asserted for that reason.
+  for (const delegated of [true, false]) {
+    const { db, audits, tools } = makeRuntime({ delegated });
+    const id = pause(db, {
+      seq: 4,
+      subtask: { kind: BUDGET_EXTENSION_KIND, waitUntilMs: Date.now() + 300_000 },
+    });
+    const out = await tools.get("harness_answer").execute(null, {
+      sessionId: id, answer: "yes, add $5", invokedBy: "U1", clarificationSeq: 4,
+      answeredBy: "automation", evidence: EVIDENCE,
+    });
+    assert.equal(out.details.ok, false, `refused with delegated=${delegated}`);
+    assert.equal(out.details.budgetGrantNotDelegable, true);
+    assert.match(out.content[0].text, /no delegation setting changes it/i,
+      "the refusal has to say that turning delegation on will not help");
+
+    const refused = audits.find((a) => a.event === "tool.answer_budget_extension_refused_automation");
+    assert.ok(refused, "the refusal is nameable in the audit trail on its own");
+    const rejected = audits.find((a) => a.event === "tool.clarification_auto_accept_rejected");
+    assert.equal(rejected?.payload.reason, "budget_grant_not_delegable");
+
+    // Refused BEFORE the claim: the human it was asked of must still be able
+    // to answer it. An agent that cannot grant money must not be able to
+    // consume the pause either.
+    assert.equal(db.prepare(`SELECT clarification_answer FROM sessions WHERE id = ?`).get(id).clarification_answer,
+      null, "the pause stays open for the operator");
+    assert.equal(audits.some((a) => a.event === "loop.clarification_answered"), false);
+  }
+});
+
+test("rc.6: a human answering the same budget question is unaffected", { skip }, async () => {
+  // The guard keys on `answeredBy`, so the operator's own answer has to still
+  // land -- otherwise the fix converts a bypass into a deadlock.
+  const { db, audits, tools } = makeRuntime({ delegated: false });
+  const id = pause(db, {
+    seq: 4,
+    subtask: { kind: BUDGET_EXTENSION_KIND, waitUntilMs: Date.now() + 300_000 },
+  });
+  const out = await tools.get("harness_answer").execute(null, {
+    sessionId: id, answer: "yes, add $5", invokedBy: "U1", clarificationSeq: 4,
+  });
+  assert.equal(out.details.ok, true);
+  assert.equal(db.prepare(`SELECT clarification_answer FROM sessions WHERE id = ?`).get(id).clarification_answer,
+    "yes, add $5");
+  assert.ok(audits.some((a) => a.event === "loop.clarification_answered"));
 });
