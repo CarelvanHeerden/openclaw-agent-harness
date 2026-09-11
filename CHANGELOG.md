@@ -1,5 +1,86 @@
 # Changelog
 
+## Unreleased
+
+Three ways one specification failed to become a merge-ready PR, taken from the
+Stitch-Vercel/StitchGuard #1184 postmortem. They are separate defects with one
+shape in common: the harness acted on something it had not established — an
+approval it could not read, a staleness it never checked, a set of compiler
+errors it never saw. Nothing here loosens a merge gate or a security posture,
+and the one rule that got looser (generated-artifact freshness) now refuses only
+what it can evidence, and refuses more of it than before when inputs are
+declared.
+
+### An approval the harness could not read started the run anyway
+
+The pre-spend gate invites the operator to name a budget and a wall clock in the
+reply. He replied `Confirm, $60, 10 hours`. Neither clause carried a cue word,
+so neither parsed; the reply was therefore not an approval; and the caller did
+the only thing it knew how to do with a non-approval — filed the whole string as
+an authoritative acceptance criterion of the feature and started the run at the
+$50 and five hours nobody had asked for. `$60, 10 hours` became a stated
+requirement of a compliance calendar. Three hours and $53.81 later the run found
+four red CI jobs and declined the repair cycle that would have fixed them,
+because $53.81 was over the $50 it had never been told to raise.
+
+Plain shorthand is now read: a bare amount or duration in a reply that is
+otherwise nothing but an affirmation can only mean the limits, because there is
+no other content for it to belong to. That gate is what keeps `confirm, but the
+price threshold should be $60` a feature correction. Cues may now also follow
+their number (`a 10 hour budget`), and `budget of 10 hours` is a clock rather
+than a $10 cap.
+
+Anything still control-shaped and unreadable — `budget of 0`, `time budget of
+400 hours`, `budget -$50`, two different values for one control — now stops. The
+session stays paused on the same gate with its answer claim released, one narrow
+question is asked quoting the operator's own words, and nothing is spent. A
+started run reports the limits read back out of the session row rather than the
+ones the handler meant to write, and a limit that failed to persist blocks the
+start instead of running under numbers nobody chose.
+
+### Generated artifacts could be required in a tree whose commits are discarded
+
+`verify.generators` authorises a worker to run a named script and commit what it
+writes. `repos.never_commit_paths` unstages and *restores* matching paths before
+every commit. Nothing checked that the two did not overlap, and the observed
+configuration overlapped exactly: the `okf` generator produced `okf/...`, and
+`never_commit_paths` was `["okf/**"]`. The worker was told to generate and
+commit, the harness discarded the result, the contract failed because the
+artifact was never committed, and the failure text advised re-running the
+generator. An overlapping `produces` entry is now a configuration error,
+surfaced as a blocking finding naming both settings.
+
+### A derived artifact was called stale on evidence nobody had gathered
+
+rc.5 failed any generator-owned path not rewritten in the current window, saying
+"its sources moved, so the committed artifact is stale". Neither clause was
+checked. The only fact in evidence was that the file had not changed — which,
+for a deterministic generator on a test-only sub-task, is the expected outcome,
+and the only action that satisfies a diff requirement on a derived file is a
+falsified diff.
+
+The four states are now distinguished and only the evidenced ones fail. Absent
+from the branch means the generator never ran, and still fails. A declared input
+that changed while the output did not is stale, still fails, and now names the
+inputs it rests on. Present, unchanged and unprovable is accepted as a valid
+no-op, and says so rather than inventing a reason. Mappings may declare
+`inputs`, which converts the unprovable case into a real staleness check.
+
+### The compiler's diagnostics were truncated before anything read them
+
+The check-script runner returned one copy of a script's output: the last 4,000
+characters. The typecheck gate parsed that. The compliance-calendar branch's
+compiler emitted 40 diagnostics across three changed test files; the tail held
+one, so three revise cycles were spent routing workers at a single file while 39
+errors in two other files stayed broken and shipped to a red CI.
+
+Runs now keep the whole capture for analysis alongside the bounded tail used for
+display and model prompts, with a 2 MB analysis ceiling that discloses itself
+when it bites. The finding carries every affected file into routing via
+`relatedFiles`, titles itself with the file count, and samples errors
+round-robin so a file holding 38 of 40 cannot crowd the others out of the text a
+worker reads.
+
 ## 2.0.0-rc.5
 
 Two ways the harness told the truth about neither a file nor a push. One

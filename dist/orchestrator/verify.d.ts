@@ -142,6 +142,16 @@ export interface VerifyProbes {
         detail: string;
     }>;
     /**
+     * rc.6: every file that changed in the window, unresolved and unfiltered.
+     *
+     * The other probes answer "did THIS contract path change", with basename and
+     * test-file fallbacks that exist to forgive a lead's path guess. Generator
+     * freshness asks the opposite question -- did anything a script READS change
+     * -- against operator-declared paths that need no forgiving. Optional: absent,
+     * staleness is simply not provable, which is a verdict this layer already has.
+     */
+    changedFilesSince?: (branchBaseSha: string) => Promise<string[]>;
+    /**
      * beta.105: was `path` ADDED or RENAMED-TO by a commit in `baseSha..HEAD` --
      * i.e. did THIS sub-task put the file at this path?
      *

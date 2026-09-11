@@ -200,9 +200,15 @@ test("beta.84 #1: verify.ts echoes the contract path on file_committed + file_wr
     /case "file_committed"[\s\S]{0,1200}path:\s*v\.path/.test(src),
     "file_committed result must carry v.path",
   );
-  assert.ok(
-    /describeStaleGeneratedArtifact\(v\.path, genOwner\),\s*\n\s*path:\s*v\.path/.test(src),
-    "the rc.5 stale-generated-artifact result must carry v.path too",
+  // rc.6 replaced the unconditional stale rejection with an evidence-based
+  // verdict (`assessGenerated`), so the text this used to grep for is gone. The
+  // claim is unchanged and now applies to both generator branches: whatever
+  // that helper decides, the result it produces still carries the contract path.
+  const generatorResults = src.match(/passed: f\.passed, detail: f\.detail, path: v\.path/g) ?? [];
+  assert.equal(
+    generatorResults.length,
+    2,
+    "both generated-artifact branches (file_written, file_committed) must carry v.path",
   );
   assert.ok(
     /fileCommittedSince\?:[\s\S]{0,200}diffLines\?:\s*number/.test(src),

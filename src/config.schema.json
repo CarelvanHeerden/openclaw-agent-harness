@@ -1186,7 +1186,7 @@
         "generators": {
           "type": "array",
           "default": [],
-          "description": "rc.5: operator-declared ownership of GENERATED artifacts, mapping a package.json script to the repo-relative paths it produces. Until rc.5 the worker and adversary were told the harness regenerated derived artifacts in a post-worker convention-check phase; no such phase exists (that phase runs CHECK scripts, commits nothing, and is off by default since beta.81), so verification demanded a file nobody was going to write and reported its absence as a path mismatch. A mapping assigns generation to the WORKER, scoped to the named script and paths. It authorizes worker-side execution only -- the harness never runs these scripts. Ownership is NEVER inferred: an unmapped path is an ordinary file that gets no generation AND no exemption from the normal contract checks. Default [].",
+          "description": "rc.5: operator-declared ownership of GENERATED artifacts, mapping a package.json script to the repo-relative paths it produces. Until rc.5 the worker and adversary were told the harness regenerated derived artifacts in a post-worker convention-check phase; no such phase exists (that phase runs CHECK scripts, commits nothing, and is off by default since beta.81), so verification demanded a file nobody was going to write and reported its absence as a path mismatch. A mapping assigns generation to the WORKER, scoped to the named script and paths. It authorizes worker-side execution only -- the harness never runs these scripts. Ownership is NEVER inferred: an unmapped path is an ordinary file that gets no generation AND no exemption from the normal contract checks. rc.6: a `produces` path also matched by repos.never_commit_paths is refused here rather than at run time -- that list unstages AND RESTORES its matches before every commit, so such a contract cannot pass on any cycle and its failure advice ('run the generator') cannot work. rc.6: optional `inputs` declare what an artifact is derived from, which is the only evidence the harness has for calling a committed artifact stale; without them an untouched artifact is accepted rather than failed on an assumption. Default [].",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -1203,7 +1203,14 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Repo-relative paths this script owns. An entry ending in '/' is a directory prefix and owns everything beneath it; anything else is an exact file path. Paths must stay inside the repository, and a path claimed by two scripts is refused as ambiguous so that neither is authorized for it."
+                "description": "Repo-relative paths this script owns. An entry ending in '/' is a directory prefix and owns everything beneath it; anything else is an exact file path. Paths must stay inside the repository, and a path claimed by two scripts is refused as ambiguous so that neither is authorized for it. rc.6: a path also matched by repos.never_commit_paths is refused, because that setting unstages and RESTORES the path before every commit -- the generator would be told to write it, the harness would discard the result, and the contract could never be satisfied."
+              },
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "rc.6: repo-relative paths this script READS, in the same file or 'dir/' form as produces. Optional, and used only to prove staleness. The harness never executes a generator, so when a derived artifact did not change it cannot otherwise tell 'nobody ran the generator' from 'the generator ran and was a legitimate no-op' -- rc.5 assumed the former and failed the contract, which made a sub-task whose only change was a test file unsatisfiable. With inputs declared, an artifact is reported stale only when git shows one of these paths changed while the artifact did not. Without them, an unchanged artifact that is already committed on the branch is accepted as an unproven no-op."
               }
             }
           }

@@ -210,7 +210,7 @@ import { inferVerifyContract } from "./verify-contract.js";
 import { rederiveContractPath, reconcileTestContractPaths } from "./contract-rederive.js";
 import { pathMatches, resolveContractPath } from "./path-match.js";
 import { autoResolveContract, buildContractClarification } from "./contract-clarify.js";
-import { parseTscErrors, errorsInChangedFiles, buildTypecheckFinding } from "./typecheck-gate.js";
+import { diagnosticsFrom, errorsInChangedFiles, buildTypecheckFinding } from "./typecheck-gate.js";
 import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedgerCommits } from "./ledger-integrity.js";
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-validate.js";
@@ -5904,7 +5904,7 @@ export class OrchestratorLoop {
     get classifyCtx() {
         return {
             repoHasTestScript: true,
-            hasDeclaredGenerators: !resolveGenerators(this.deps.config.verify?.generators).empty,
+            hasDeclaredGenerators: !resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths }).empty,
         };
     }
     /**
@@ -5925,7 +5925,7 @@ export class OrchestratorLoop {
      * derived files are known-absent or known-stale.
      */
     runGeneratorConfigCheck(sessionId, plan, cycle) {
-        const generators = resolveGenerators(this.deps.config.verify?.generators);
+        const generators = resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths });
         if (generators.empty && generators.errors.length === 0)
             return [];
         const findings = [];
@@ -5986,7 +5986,7 @@ export class OrchestratorLoop {
      * behind without having seen the manifest.
      */
     generatorVerifyCtx(worktreePath) {
-        const generators = resolveGenerators(this.deps.config.verify?.generators);
+        const generators = resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths });
         if (generators.empty)
             return {};
         let scripts;
@@ -6191,6 +6191,8 @@ export class OrchestratorLoop {
                     ran: true,
                     exitCode: direct.status ?? null,
                     outputTail: `${direct.stdout}\n${direct.stderr}`.slice(-20_000),
+                    // rc.6: the direct compiler run is analysed whole, like the script one.
+                    output: `${direct.stdout}\n${direct.stderr}`,
                 };
                 durationMs = Date.now() - startedAt;
             }
@@ -6227,7 +6229,9 @@ export class OrchestratorLoop {
             this.deps.interactionLog?.log(sessionId, { event: "typecheck_gate_ran", phase: "review", cycle, script: scriptLabel, clean: true });
             return [];
         }
-        let all = parseTscErrors(r.outputTail);
+        // rc.6 (#1184): the full capture, not the 4,000-character display tail --
+        // see `diagnosticsFrom`, which is where that rule now lives.
+        let all = diagnosticsFrom(r);
         // A wrapper can fail before invoking TypeScript. Retry with the pinned local
         // compiler once; if that also produces a non-zero unparseable result, the
         // gate is unavailable—not clean.
@@ -6241,9 +6245,11 @@ export class OrchestratorLoop {
                         ran: true,
                         exitCode: direct.status ?? null,
                         outputTail: `${direct.stdout}\n${direct.stderr}`.slice(-20_000),
+                        // rc.6: the direct compiler run is analysed whole, like the script one.
+                        output: `${direct.stdout}\n${direct.stderr}`,
                     };
                     durationMs = Date.now() - startedAt;
-                    all = parseTscErrors(r.outputTail);
+                    all = diagnosticsFrom(r);
                     if (r.exitCode === 0) {
                         this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script: scriptLabel, exitCode: 0, errorsTotal: 0, errorsInChangedFiles: 0, durationMs, via: direct.via }, sessionId);
                         return [];

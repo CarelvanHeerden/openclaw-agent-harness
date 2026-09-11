@@ -95,6 +95,52 @@ export function normaliseRepoPath(raw) {
     return trailingSlash ? `${p}/` : p;
 }
 /**
+ * rc.6: does a `repos.never_commit_paths` pathspec cover this path?
+ *
+ * WHY THIS CHECK EXISTS. `never_commit_paths` is not advisory. Its enforcement
+ * (`revertNeverCommitPaths`) unstages AND restores every matching path before
+ * the commit, so work under it is discarded, not merely skipped. Point a
+ * generator at a tree that is also excluded and the contract becomes literally
+ * unsatisfiable: the worker is instructed to run the script and commit what it
+ * writes, the harness throws the result away, the contract then fails because
+ * the artifact was never committed, and the failure text advises re-running the
+ * generator -- which will be thrown away again.
+ *
+ * The observed configuration had exactly this shape: `okf` declared as the
+ * generator for `okf/...`, and `never_commit_paths: ["okf/**"]`.
+ *
+ * Supports the `*` / `**` / `?` pathspec forms an operator would write here. A
+ * pattern with no wildcard owns its subtree, as a git pathspec does.
+ */
+export function neverCommitCovers(patterns, path) {
+    const target = normaliseRepoPath(path);
+    if (target === null)
+        return false;
+    // A directory prefix is covered when anything beneath it would be, so test a
+    // representative descendant rather than the prefix itself.
+    const probe = target.endsWith("/") ? `${target}__probe__` : target;
+    for (const raw of patterns ?? []) {
+        const p = (raw ?? "").trim().replace(/\\/g, "/").replace(/^\.\//, "");
+        if (!p)
+            continue;
+        if (!/[*?]/.test(p)) {
+            const bare = p.endsWith("/") ? p.slice(0, -1) : p;
+            if (probe === bare || probe.startsWith(`${bare}/`))
+                return true;
+            continue;
+        }
+        const rx = p
+            .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*\*\/?/g, "\u0000")
+            .replace(/\*/g, "[^/]*")
+            .replace(/\?/g, "[^/]")
+            .replace(/\u0000/g, "(?:.*)");
+        if (new RegExp(`^${rx}$`).test(probe))
+            return true;
+    }
+    return false;
+}
+/**
  * Validate operator config into an ownership map.
  *
  * Rejects, per entry: a non-plain script name, an empty `produces`, a path that
@@ -103,7 +149,7 @@ export function normaliseRepoPath(raw) {
  * both cases the affected paths end up unowned, which means "ordinary file" --
  * no generation, no exemption.
  */
-export function resolveGenerators(raw) {
+export function resolveGenerators(raw, opts) {
     const errors = [];
     const entries = [];
     const seenScripts = new Set();
@@ -137,6 +183,19 @@ export function resolveGenerators(raw) {
                 errors.push({ script, path: String(p), reason: "not a repo-relative path (absolute, empty, or escapes the repository)" });
                 continue;
             }
+            // rc.6: an excluded path can never hold a committed artifact, so
+            // authorizing a generator for it only produces an unwinnable contract.
+            if (neverCommitCovers(opts?.neverCommitPaths, norm)) {
+                errors.push({
+                    script,
+                    path: norm,
+                    reason: `also matched by repos.never_commit_paths, which unstages and RESTORES it before every commit -- so the ` +
+                        `generator would be told to write it, the harness would discard the result, and the contract on it could ` +
+                        `never be satisfied. Resolve the contradiction: either narrow never_commit_paths, or stop declaring this ` +
+                        `path as generated output`,
+                });
+                continue;
+            }
             const prior = claims.get(norm);
             if (prior) {
                 prior.push(script);
@@ -149,9 +208,25 @@ export function resolveGenerators(raw) {
             else
                 files.push(norm);
         }
+        // rc.6: inputs are advisory evidence, never authorization. A bad one costs
+        // the ability to PROVE staleness for this script and nothing else, so it is
+        // dropped with an error rather than taking the whole entry down with it.
+        const inputs = [];
+        const inputDirs = [];
+        for (const p of Array.isArray(m.inputs) ? m.inputs : []) {
+            const norm = normaliseRepoPath(p);
+            if (norm === null) {
+                errors.push({ script, path: String(p), reason: "inputs[] entry is not a repo-relative path; freshness cannot be proven from it" });
+                continue;
+            }
+            if (norm.endsWith("/"))
+                inputDirs.push(norm);
+            else
+                inputs.push(norm);
+        }
         if (files.length === 0 && dirs.length === 0)
             continue;
-        entries.push({ script, files, dirs });
+        entries.push({ script, files, dirs, inputs, inputDirs });
     }
     // Second pass: strip every path claimed by more than one script. Fail closed
     // on ambiguity -- neither claimant gets it.
@@ -171,6 +246,8 @@ export function resolveGenerators(raw) {
         script: e.script,
         files: e.files.filter((f) => !ambiguous.has(f)),
         dirs: e.dirs.filter((d) => !ambiguous.has(d)),
+        inputs: e.inputs,
+        inputDirs: e.inputDirs,
     }))
         .filter((e) => e.files.length > 0 || e.dirs.length > 0);
     return {
@@ -274,10 +351,55 @@ export function describeGeneratedArtifactFailure(params) {
         : `MISSING TOOLING: verify.generators maps it to \`${owner.script}\`, but package.json declares no such script, so it can never be produced`;
     return `${path} is a GENERATED artifact -- ${cause}. This is not a path-resolution mismatch. Probe detail: ${baseDetail}`;
 }
-/** Reason a generated artifact was rejected as stale. */
-export function describeStaleGeneratedArtifact(path, owner) {
-    return (`${path} is a GENERATED artifact owned by \`npm run ${owner.script}\` and was NOT rewritten in this window. ` +
-        `A derived file cannot be accepted as "already correct from an earlier cycle": its sources moved, so the ` +
-        `committed artifact is stale. Re-run the generator and commit the result.`);
+/** rc.6: which of this generator's declared inputs changed in the window. */
+export function changedGeneratorInputs(owner, changedFiles) {
+    if (owner.inputs.length === 0 && owner.inputDirs.length === 0)
+        return [];
+    const hits = [];
+    for (const raw of changedFiles) {
+        const f = normaliseRepoPath(raw);
+        if (f === null)
+            continue;
+        if (owner.inputs.includes(f) || owner.inputDirs.some((d) => f.startsWith(d)))
+            hits.push(f);
+    }
+    return hits;
+}
+export function assessGeneratedFreshness(params) {
+    const { path, owner, writtenThisWindow, presentInBranch, changedFiles, baseDetail } = params;
+    const script = `npm run ${owner.script}`;
+    if (writtenThisWindow) {
+        return { verdict: "regenerated", passed: true, detail: `regenerated this sub-task: ${baseDetail}` };
+    }
+    if (!presentInBranch) {
+        return {
+            verdict: "missing",
+            passed: false,
+            detail: `${path} is a GENERATED artifact owned by \`${script}\` and is not committed anywhere on this branch. ` +
+                `The generator has not run. Run it and commit what it writes. Probe detail: ${baseDetail}`,
+        };
+    }
+    const changedInputs = changedFiles ? changedGeneratorInputs(owner, changedFiles) : [];
+    if (changedInputs.length > 0) {
+        return {
+            verdict: "stale",
+            passed: false,
+            changedInputs,
+            detail: `${path} is a GENERATED artifact owned by \`${script}\` and is STALE: ${changedInputs.length} of its ` +
+                `declared inputs changed in this sub-task and the artifact did not (${changedInputs.slice(0, 5).join(", ")}` +
+                `${changedInputs.length > 5 ? `, and ${changedInputs.length - 5} more` : ""}). Re-run \`${script}\` and ` +
+                `commit the result.`,
+        };
+    }
+    const why = owner.inputs.length === 0 && owner.inputDirs.length === 0
+        ? `no inputs[] are declared for '${owner.script}', so staleness cannot be proven either way`
+        : `none of its declared inputs changed in this sub-task`;
+    return {
+        verdict: "unproven",
+        passed: true,
+        detail: `${path} is a committed GENERATED artifact that did not change in this sub-task, and ${why}. ` +
+            `Accepted: a deterministic generator producing identical bytes is a valid no-op, and demanding a diff would ` +
+            `only be satisfiable by falsifying one. Probe detail: ${baseDetail}`,
+    };
 }
 //# sourceMappingURL=generated-artifacts.js.map

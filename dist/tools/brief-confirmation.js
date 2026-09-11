@@ -190,6 +190,26 @@ const TIME_CLAUSE = new RegExp([
     String.raw `\s*(?:to|of|is|=|:|at)?\s*`,
     String.raw `(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b`,
 ].join(""), "i");
+const TIME_UNIT = String.raw `(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)`;
+/**
+ * rc.6: the cue can follow the number as easily as precede it. "Confirm, Budget
+ * $50 with a 10 hour budget" is one of the replies this gate actually received,
+ * and `TIME_CLAUSE` reads cue-then-number only, so the ten hours were lost while
+ * the fifty dollars landed.
+ */
+const TIME_CLAUSE_TRAILING = new RegExp([
+    String.raw `(?:\b(?:with|and|for|within|give|allow|in)\b\s+)?`,
+    String.raw `(?:\b(?:a|an|the|it|us|my|this)\b\s+)*`,
+    String.raw `(\d+(?:\.\d+)?)\s*` + TIME_UNIT,
+    String.raw `\s*(?:time\s*)?(?:budget|limit|cap|box)\b`,
+].join(""), "i");
+/**
+ * rc.6: "budget of 10 hours" is the trap the b123 comment names from the other
+ * direction. `BUDGET_CLAUSE` matches `budget`-then-number and would cap the run
+ * at $10; the unit says plainly that this is a clock. Time is parsed first, so
+ * matching it here is what stops the money regex ever seeing it.
+ */
+const BUDGET_OF_DURATION = new RegExp(String.raw `\bbudget\b\s*(?:to|of|is|=|:|at)?\s*(\d+(?:\.\d+)?)\s*` + TIME_UNIT + String.raw `\b`, "i");
 const MAX_TIMEOUT_SECONDS = 24 * 60 * 60;
 /**
  * The precision here is deliberately lopsided.
@@ -220,9 +240,38 @@ const BUDGET_CLAUSE = new RegExp(BUDGET_VERB +
         String.raw `\b(?:bump|raise|increase)\b[^.,;]*?\$\s*(\d+(?:\.\d{1,2})?)`,
     ].join("|") +
     ")", "i");
+/**
+ * rc.6: the shorthand, with no cue word at all.
+ *
+ * These are deliberately NOT part of the clauses above, and they are only ever
+ * consulted under the affirmation-only gate in `parseConfirmationReply`. A bare
+ * number is the one shape that can equally well belong to the feature ("the
+ * price threshold should be $60"), so the only safe licence to read it as a
+ * limit is that there is no feature text for it to belong to.
+ */
+const BARE_MONEY = /(?:\$\s*(\d+(?:\.\d{1,2})?)|(\d+(?:\.\d{1,2})?)\s*(?:usd|dollars?)\b)/i;
+const BARE_DURATION = new RegExp(String.raw `(\d+(?:\.\d+)?)\s*` + TIME_UNIT + String.raw `\b`, "i");
+/**
+ * rc.6: text that names a control and still has no number we can use.
+ *
+ * Scanned over what is LEFT once every clause above has been cut out, so a
+ * budget that parsed cleanly can never trip it. The windows are short and stop
+ * at clause punctuation on purpose: "confirm but set the retry limit to 3" has
+ * to stay an ordinary correction, and so does "the budget column should be an
+ * integer". What must not stay an ordinary correction is "budget -$50", where
+ * the operator plainly meant a cap and no cap was read.
+ */
+const MONEY_CUE_RESIDUE = /\bbudget\b[^.,;]{0,16}?(?:\d|\$)/i;
+const CURRENCY_CUE_RESIDUE = /\b(?:cap|ceiling|limit)\b[^.,;]{0,16}?(?:\$|\busd\b|\bdollars?\b)/i;
+const TIME_CUE_RESIDUE = /\b(?:time\s*(?:budget|limit|cap|box|out)|timebox|wall[-\s]?clock|deadline|timeout)\b[^.,;]{0,16}?\d/i;
 /** Tidy the sentence left behind once a clause has been cut out of it. */
 function tidyRemainder(text) {
     return text
+        // rc.6: a clause cut out of the MIDDLE leaves orphaned punctuation behind.
+        // "yes — $60, 10 hrs, please" reduces to "yes — , , please", which is the
+        // affirmation it always was and no longer looks like one.
+        .replace(/\s*[—–-]+\s*(?=[,;]|\s*$)/g, "")
+        .replace(/(?:\s*,\s*){2,}/g, ", ")
         // The conjunction that joined the two clauses is now dangling.
         .replace(/\s*(?:,|;|\band\b|\bbut\b|\bwith\b)\s*$/i, "")
         .replace(/^\s*(?:,|;|\band\b|\bbut\b|\bwith\b)\s*/i, "")
@@ -230,43 +279,181 @@ function tidyRemainder(text) {
         .replace(/\s{2,}/g, " ")
         .trim();
 }
+/**
+ * rc.6 (#1184): the same sentence, one release later, and the third distinct
+ * way this gate has mishandled it.
+ *
+ * The operator was invited to name a cap in his reply. He replied:
+ *
+ *     Confirm, $60, 10 hours
+ *
+ * Neither clause carries a cue word, so neither parsed, so the reply was not an
+ * approval -- and `registration.ts` does one thing with a non-approval: it
+ * files the WHOLE STRING as an authoritative acceptance criterion and starts
+ * the run anyway. "$60, 10 hours" became a stated requirement of a compliance
+ * calendar, and the session began at the $50 and five hours nobody had asked
+ * for. Three hours later it declined the CI repair that would have made the
+ * branch green, because it had spent $53.81 against the $50 it was never told
+ * to raise. Both halves of that outcome trace to this function returning
+ * `approves: false` with no limits.
+ *
+ * Two changes, pulling deliberately in opposite directions:
+ *
+ *  1. READ THE SHORTHAND. A bare "$60" or "10 hours" in a reply that is
+ *     otherwise nothing but "confirm" cannot mean anything except the limits,
+ *     because there is no other content for it to belong to. That gate -- the
+ *     leftovers must reduce to an affirmation -- is exactly what keeps
+ *     "confirm, but the price threshold should be $60" a feature correction.
+ *
+ *  2. FAIL CLOSED ON THE REST. Anything that names a control and still yields
+ *     no usable number ("budget of 0", "time budget of 400 hours", "budget
+ *     -$50") now stops the run and asks. Until rc.6 these fell through to
+ *     prose, which ignored the instruction AND pasted it into the spec. One
+ *     extra message is cheap; the alternative cost a session.
+ *
+ * The b122 asymmetry underneath is unchanged: inventing a cap is worse than
+ * missing one, because it sets a wrong ceiling AND deletes the operator's
+ * words from their correction.
+ */
 export function parseConfirmationReply(answer) {
     const raw = (answer ?? "").trim();
+    const ambiguities = [];
     // Time first, and cut it out before money is looked for: "a time budget of 3
     // hours" is `budget`-followed-by-a-number, and would otherwise be read as $3.
     let working = raw;
     let timeoutSeconds;
-    const t = TIME_CLAUSE.exec(working);
-    if (t) {
+    for (const re of [TIME_CLAUSE, BUDGET_OF_DURATION, TIME_CLAUSE_TRAILING]) {
+        const t = re.exec(working);
+        if (!t)
+            continue;
         const qty = Number(t[1]);
         const unit = (t[2] ?? "").toLowerCase();
         const seconds = Math.round(qty * (unit.startsWith("h") ? 3600 : 60));
-        // A duration that is zero, negative, absurd or unparseable is not an
-        // instruction we can act on -- leave the words in the correction rather
-        // than silently applying a nonsense ceiling.
         if (Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_TIMEOUT_SECONDS) {
             timeoutSeconds = seconds;
-            working = tidyRemainder(working.replace(t[0], " "));
         }
+        else {
+            // rc.6: a duration that is zero, negative or absurd is an instruction we
+            // cannot carry out. Before rc.6 the words were left in the correction and
+            // the run started on the default clock; now it stops and asks.
+            ambiguities.push({ control: "timeout", kind: "out_of_range", text: t[0].trim() });
+        }
+        // Cut it out either way. If it stays, the money regex reads "time budget of
+        // 0 hours" as a $0 cap and reports the wrong control back to the operator.
+        working = tidyRemainder(working.replace(t[0], " "));
+        break;
     }
     const m = BUDGET_CLAUSE.exec(working);
     const captured = m ? m.slice(1).find((g) => typeof g === "string" && g.length > 0) : undefined;
     const value = Number(captured);
     let budgetUsd;
-    // A nonsense or non-positive number is not a budget; leave the reply alone
-    // and let it be treated as an ordinary correction.
     if (m && Number.isFinite(value) && value > 0) {
         budgetUsd = value;
         working = tidyRemainder(working.replace(m[0], " "));
+    }
+    else if (m) {
+        ambiguities.push({ control: "budget", kind: "out_of_range", text: m[0].trim() });
+        working = tidyRemainder(working.replace(m[0], " "));
+    }
+    // rc.6: the shorthand pass, on trial. Bare numbers are only limits when
+    // nothing but an affirmation survives their removal, so everything here is
+    // computed against a copy and thrown away unless that holds.
+    {
+        let trial = working;
+        const trialAmbiguities = [];
+        let trialBudget = budgetUsd;
+        let trialTimeout = timeoutSeconds;
+        const bd = BARE_DURATION.exec(trial);
+        if (bd) {
+            const qty = Number(bd[1]);
+            const unit = (bd[2] ?? "").toLowerCase();
+            const seconds = Math.round(qty * (unit.startsWith("h") ? 3600 : 60));
+            const usable = Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_TIMEOUT_SECONDS;
+            if (!usable)
+                trialAmbiguities.push({ control: "timeout", kind: "out_of_range", text: bd[0].trim() });
+            else if (trialTimeout !== undefined && trialTimeout !== seconds) {
+                trialAmbiguities.push({ control: "timeout", kind: "conflicting_values", text: bd[0].trim() });
+            }
+            else
+                trialTimeout = seconds;
+            trial = tidyRemainder(trial.replace(bd[0], " "));
+        }
+        const bm = BARE_MONEY.exec(trial);
+        if (bm) {
+            const amount = Number(bm.slice(1).find((g) => typeof g === "string" && g.length > 0));
+            if (!Number.isFinite(amount) || amount <= 0) {
+                trialAmbiguities.push({ control: "budget", kind: "out_of_range", text: bm[0].trim() });
+            }
+            else if (trialBudget !== undefined && trialBudget !== amount) {
+                trialAmbiguities.push({ control: "budget", kind: "conflicting_values", text: bm[0].trim() });
+            }
+            else
+                trialBudget = amount;
+            trial = tidyRemainder(trial.replace(bm[0], " "));
+        }
+        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {
+            working = trial;
+            budgetUsd = trialBudget;
+            timeoutSeconds = trialTimeout;
+            ambiguities.push(...trialAmbiguities);
+        }
+    }
+    // rc.6: last, whatever named a control and never produced a number. Scanned
+    // over the leftovers, so a clause that parsed cleanly is already gone.
+    if (MONEY_CUE_RESIDUE.test(working) || CURRENCY_CUE_RESIDUE.test(working)) {
+        ambiguities.push({ control: "budget", kind: "unreadable_amount", text: working });
+    }
+    if (TIME_CUE_RESIDUE.test(working)) {
+        ambiguities.push({ control: "timeout", kind: "unreadable_amount", text: working });
     }
     const remainder = working === raw ? raw : tidyRemainder(working);
     return {
         budgetUsd,
         timeoutSeconds,
         remainder,
+        ambiguities,
         // Nothing left, or only an affirmation left, means those clauses were the
         // entire qualification -- so this IS an approval.
         approves: remainder.length === 0 || isBriefConfirmation(remainder),
     };
+}
+/**
+ * The narrow question to put back to the operator when a control could not be
+ * read. Deliberately quotes their own words and asks for one thing.
+ */
+export function describeControlAmbiguities(ambiguities) {
+    const lines = [];
+    lines.push(`I have not started the run, because part of that reply looks like a limit and I could not read it as one. ` +
+        `Guessing would either spend money you did not authorise or quietly keep a default you meant to change.`);
+    lines.push("");
+    for (const a of ambiguities) {
+        const name = a.control === "budget" ? "budget" : "wall clock";
+        const why = a.kind === "out_of_range"
+            ? `is not a ${name} the harness can run under`
+            : a.kind === "conflicting_values"
+                ? `gives the ${name} a second, different value`
+                : `names a ${name} but no amount I can read`;
+        lines.push(`  - "${a.text}" ${why}.`);
+    }
+    lines.push("");
+    lines.push(`Reply with the limits stated plainly and nothing else — for example "confirm, budget $60, 10 hours" — ` +
+        `or "confirm" on its own to start at the current limits.`);
+    return lines.join("\n");
+}
+/**
+ * rc.6: the receipt.
+ *
+ * The gate used to answer "Brief confirmed; session is running" whatever it had
+ * actually persisted, so an operator who set a cap and an operator whose cap was
+ * silently dropped read the same sentence. This states the numbers the run will
+ * be governed by, and its caller builds it from a re-read of the row rather than
+ * from what it intended to write.
+ */
+export function renderLimitsReceipt(limits) {
+    const clamped = typeof limits.requestedBudgetUsd === "number" && limits.requestedBudgetUsd > limits.budgetUsd
+        ? ` (you asked for $${limits.requestedBudgetUsd.toFixed(2)}; the operator ceiling is $${limits.budgetUsd.toFixed(2)})`
+        : "";
+    return (`Running under budget $${limits.budgetUsd.toFixed(2)}${clamped} and a wall clock of ` +
+        `${describeWallClock(limits.hardTimeoutSeconds)}. A run that hits either stops.`);
 }
 //# sourceMappingURL=brief-confirmation.js.map

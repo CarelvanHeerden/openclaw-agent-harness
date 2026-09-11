@@ -1311,8 +1311,17 @@ const MUTATIONS = [
   {
     name: "time and money are parsed separately (b123): 'a time budget of 3 hours' read as a $3 cap",
     file: "dist/tools/brief-confirmation.js",
-    find: "    const t = TIME_CLAUSE.exec(working);",
-    replace: "    const t = null;",
+    // Re-aimed in rc.6. The old anchor was the single `TIME_CLAUSE.exec` call,
+    // which is now one of three patterns tried in order -- and `BUDGET_OF_DURATION`
+    // matches this very string, so disabling `TIME_CLAUSE` alone changes nothing
+    // and the mutation reported a coverage gap that was really redundancy.
+    //
+    // The cut is the narrower half of b123's mechanism and the half that names
+    // the bug: recognising the duration is not enough, because if the words stay
+    // in the string the money regex reads "budget of 3 hours" as a $3 cap. This
+    // anchor reproduces exactly that.
+    find: "        working = tidyRemainder(working.replace(t[0], \" \"));",
+    replace: "        working = working;",
     tests: ["tests/beta123-confirmation-clauses.test.mjs"],
   },
 
@@ -2783,9 +2792,10 @@ const MUTATIONS = [
     tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
   {
-    // The stale-output rule. Without it a derived file passes on an earlier
-    // cycle's commit, which ships a bundle whose sources have since moved.
-    name: "a derived artifact is not accepted from an earlier cycle (rc): stale generated output ships",
+    // rc.6 replaced the unconditional stale rejection with an evidence-based
+    // verdict, but the branch still has to be REACHED: without it a derived
+    // file whose declared inputs moved passes on the ordinary relaxation.
+    name: "a derived artifact is judged as derived (rc): the generator branch is skipped entirely",
     file: "dist/orchestrator/verify.js",
     find: "                if (genOwner && (v.reviseRelaxed || reviseCycle) && probes.fileCommittedSince) {",
     replace: "                if (false && probes.fileCommittedSince) {",
@@ -3082,6 +3092,107 @@ const MUTATIONS = [
     find: "                done = true;",
     replace: "                done = true;\n                inFlight = undefined;",
     tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+
+  // --------------------------------------------------------- rc.6 (#1184)
+  // The compliance-calendar chain. Each of these restores one link of it.
+  {
+    // THE link. "Confirm, $60, 10 hours" could not be read as limits, so it was
+    // filed as an acceptance criterion and the run started at the defaults --
+    // then declined the CI repair for crossing a cap nobody had raised.
+    name: "an unreadable control STOPS the run (rc.6): #1184's reply starts a session at the wrong limits",
+    file: "dist/tools/registration.js",
+    find: "                if (parsed.ambiguities.length > 0) {",
+    replace: "                if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // The re-ask has to be answerable. Leaving the answer claim in place strands
+    // the session on a question it just asked.
+    name: "the re-ask releases the answer claim (rc.6): the corrected reply is refused as already answered",
+    file: "dist/tools/registration.js",
+    find: "                        .prepare(`UPDATE sessions SET clarification_question = ?, clarification_answer = NULL, updated_at = ? WHERE id = ?`)",
+    replace: "                        .prepare(`UPDATE sessions SET clarification_question = ?, updated_at = ? WHERE id = ?`)",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // Reading the shorthand at all.
+    name: "bare shorthand is read as limits (rc.6): '$60, 10 hours' goes back to meaning nothing",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // ...and the gate that keeps it from eating the feature. Without the
+    // affirmation-only condition, "the price threshold should be $60" caps the
+    // run at $60 and deletes the words from the operator's correction.
+    name: "shorthand needs an affirmation-only reply (rc.6): a price in a correction becomes the budget",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {",
+    replace: "        if (bd || bm) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // A named control with no usable number must not fall through to prose.
+    name: "an unusable amount is an ambiguity (rc.6): 'budget -$50' silently keeps the default",
+    file: "dist/tools/brief-confirmation.js",
+    find: "    if (MONEY_CUE_RESIDUE.test(working) || CURRENCY_CUE_RESIDUE.test(working)) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    // The unwinnable contract: generation authorized into a tree whose commits
+    // are reverted. The worker writes it, the harness discards it, the contract
+    // fails, and the advice is to do it again.
+    name: "generation cannot target a never-commit path (rc.6): the unwinnable okf contract returns",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "            if (neverCommitCovers(opts?.neverCommitPaths, norm)) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // Freshness must still FAIL on evidence. rc.6 loosened the no-evidence case;
+    // if it also loosened the evidenced one, a genuinely stale artifact ships.
+    name: "a moved input makes an artifact stale (rc.6): evidenced staleness stops being caught",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    if (changedInputs.length > 0) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // ...and the artifact that was never produced at all.
+    name: "an absent artifact still fails (rc.6): a generator that never ran passes as a no-op",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    if (!presentInBranch) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    // #1184 verbatim: 40 diagnostics in the stream, one in the last 4,000
+    // characters, three repair cycles aimed at a single file.
+    name: "diagnostics are parsed from the FULL capture (rc.6): the 4,000-char tail decides what the harness knows",
+    file: "dist/orchestrator/typecheck-gate.js",
+    find: "    return parseTscErrors(result.output ?? result.outputTail ?? \"\");",
+    replace: "    return parseTscErrors(result.outputTail ?? result.output ?? \"\");",
+    tests: ["tests/rc6-full-diagnostics.test.mjs"],
+  },
+  {
+    // ...and the runner half of it. If `output` is just the tail again, the
+    // gate above is reading a truncated stream however it is written.
+    name: "the runner keeps a full capture (rc.6): analysis silently drops back to the display tail",
+    file: "dist/orchestrator/repo-conventions.js",
+    find: "        output: truncated ? combined.slice(-OUTPUT_ANALYSIS_CHARS) : combined,",
+    replace: "        output: combined.slice(-4000),",
+    tests: ["tests/rc6-full-diagnostics.test.mjs"],
+  },
+  {
+    // Seeing all 40 is worth nothing if the finding still routes at one file.
+    name: "every affected file reaches routing (rc.6): a three-file break is handed over as one",
+    file: "dist/orchestrator/typecheck-gate.js",
+    find: "        ...(files.length > 1 ? { relatedFiles: files.slice(1) } : {}),",
+    replace: "        ...(false ? { relatedFiles: files.slice(1) } : {}),",
+    tests: ["tests/rc6-full-diagnostics.test.mjs"],
   },
 ];
 

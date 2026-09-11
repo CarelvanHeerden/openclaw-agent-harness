@@ -579,7 +579,7 @@ export async function runWorker(
   // contract is derived with the SAME inference the verifier uses, so the set
   // the worker is told to produce cannot drift from the set it is judged on --
   // which is the drift that made the old contract impossible to satisfy.
-  const generatorMap = resolveGenerators(deps.config.verify?.generators);
+  const generatorMap = resolveGenerators(deps.config.verify?.generators, { neverCommitPaths: deps.config.repos?.never_commit_paths });
   const contractPaths = [
     ...inferVerifyContract(subTask)
       .map((c) => ("path" in c ? c.path : undefined))
