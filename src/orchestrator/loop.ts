@@ -298,6 +298,21 @@ import {
   renderTimeExtensionQuestion,
   type TimeExtensionTrigger,
 } from "./time-extension.js";
+import {
+  assessRepairFunding,
+  describeBudgetPolicy,
+  projectCycleCostUsd,
+  resolveBudgetPolicy,
+  type BudgetPolicy,
+} from "./budget-policy.js";
+import {
+  BUDGET_EXTENSION_SEQ,
+  maxExtensionUsd,
+  parseBudgetExtensionReply,
+  renderBudgetExtensionMarker,
+  renderBudgetExtensionQuestion,
+  type BudgetExtensionTrigger,
+} from "./budget-extension.js";
 import { selectWorkerModel } from "./worker-model-select.js";
 import {
   selectObserveReports,
@@ -2396,6 +2411,28 @@ export class OrchestratorLoop {
     // we don't spam a warning on every sub-task once over the session budget.
     let sessionBudgetWarned = false;
 
+    // rc.6: the approved figure, divided before anything spends it. See
+    // budget-policy.ts for why the undivided field could not serve both
+    // implementation and repair. Reassigned, not const, because a granted
+    // budget extension raises the approved figure and everything derived from
+    // it must move with it.
+    let budgetPolicy = resolveBudgetPolicy({
+      authorizedMaximumUsd: row.budget_usd,
+      repairReserveRatio: this.deps.config.loop.repair_reserve_ratio,
+    });
+    // rc.6: an answered budget question carries the same authority as the
+    // `:moneybag:` reaction, so it has to be honoured everywhere that reaction
+    // is. OR'd into every `reactions.budgetBump` read rather than faked into
+    // the snapshot, so the audit trail can still tell a reaction from an answer.
+    let budgetOverrideGranted = false;
+    // Once the operator has declined (or let the window close), stop asking.
+    let budgetExtensionRefused = false;
+    // rc.6: total spend at the moment the first repair cycle was granted, which
+    // is what makes repair's own spend measurable. Repair is funded from the
+    // reserve and must never be charged for what implementation spent, so the
+    // gate reads `totalCost - repairSpendBaselineUsd` and never `totalCost`.
+    let repairSpendBaselineUsd = 0;
+
     // beta.76 (Option 1 -- contract re-derivation): the set of REAL file paths
     // the run's workers have actually touched/committed so far. This is GROUND
     // TRUTH for the repo's real directory conventions (discovered by the
@@ -2993,7 +3030,7 @@ export class OrchestratorLoop {
         {
           const subEst = this.estimateSubTaskCost(st, subTaskCosts);
           const dailyMax = this.dailyMaxUsd();
-          if (!reactions.budgetBump && dailyMax > 0) {
+          if (!reactions.budgetBump && !budgetOverrideGranted && dailyMax > 0) {
             const dailySoFar = this.safeDailySpend(row.requester);
             // beta.61 reserve: keep headroom for the pending adversary review +
             // push so a daily-cap abort doesn't strand committed work one
@@ -3003,13 +3040,43 @@ export class OrchestratorLoop {
             const reserve = row.budget_usd * Math.max(0, Math.min(0.9, reserveRatio));
             const dailyProjected = dailySoFar + subEst;
             if (dailyProjected + reserve > dailyMax) {
-              this.deps.state.audit(
-                "loop.daily_max_abort",
-                { sessionId, seq: st.seq, user: row.requester, dailySoFar, subEst, reserve, dailyMax },
-                sessionId,
-              );
-              this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
-              failed.err = "daily_max_exhausted"; failed.seq = st.seq; return;
+              // rc.6: this used to abort the run outright, mid-plan, with
+              // committed work in the worktree and nobody told until afterwards.
+              // The daily cap is an operator limit and the operator is exactly
+              // who can lift it, so ask before killing the run. An unanswered
+              // question aborts exactly as it did before.
+              let funded = false;
+              if (!budgetExtensionRefused) {
+                const grantedUsd = await this.askForBudgetExtension({
+                  sessionId,
+                  cycle,
+                  trigger: "sub_task",
+                  spentUsd: totalCost,
+                  policy: budgetPolicy,
+                  shortfallUsd: dailyProjected + reserve - dailyMax,
+                  observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
+                  dailyCapUsd: dailyMax,
+                  subTaskTitle: st.title,
+                  resumeStatus: "executing",
+                });
+                if (grantedUsd > 0) {
+                  budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
+                  budgetOverrideGranted = true;
+                  row.budget_usd = budgetPolicy.authorizedMaximumUsd;
+                  funded = true;
+                } else {
+                  budgetExtensionRefused = true;
+                }
+              }
+              if (!funded) {
+                this.deps.state.audit(
+                  "loop.daily_max_abort",
+                  { sessionId, seq: st.seq, user: row.requester, dailySoFar, subEst, reserve, dailyMax, askedForBudget: budgetExtensionRefused },
+                  sessionId,
+                );
+                this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
+                failed.err = "daily_max_exhausted"; failed.seq = st.seq; return;
+              }
             }
           }
         }
@@ -4842,8 +4909,32 @@ export class OrchestratorLoop {
         // (:moneybag:) still overrides.
         const dailyMax = this.dailyMaxUsd();
         const dailySoFar = this.safeDailySpend(row.requester);
-        const dailyWouldExceed = dailyMax > 0 && dailySoFar + reviewEstimate > dailyMax;
-        if (!reactions.budgetBump && dailyWouldExceed) {
+        let dailyWouldExceed = dailyMax > 0 && dailySoFar + reviewEstimate > dailyMax;
+        // rc.6: without a review nothing ships at all -- the branch is
+        // salvaged, not delivered -- so this is the most valuable dollar in the
+        // run and the worst one to refuse silently. Ask before abandoning it.
+        if (!reactions.budgetBump && !budgetOverrideGranted && dailyWouldExceed && !budgetExtensionRefused) {
+          const grantedUsd = await this.askForBudgetExtension({
+            sessionId,
+            cycle,
+            trigger: "review",
+            spentUsd: totalCost,
+            policy: budgetPolicy,
+            shortfallUsd: dailySoFar + reviewEstimate - dailyMax,
+            observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
+            dailyCapUsd: dailyMax,
+            resumeStatus: "reviewing",
+          });
+          if (grantedUsd > 0) {
+            budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
+            budgetOverrideGranted = true;
+            row.budget_usd = budgetPolicy.authorizedMaximumUsd;
+            dailyWouldExceed = false;
+          } else {
+            budgetExtensionRefused = true;
+          }
+        }
+        if (!reactions.budgetBump && !budgetOverrideGranted && dailyWouldExceed) {
           // beta.8 (adversary point): the adversary was the only actor that
           // caught the beta.6 confabulation, and beta.7's review-budget abort
           // HID that failure by skipping review on cost. The observable-side-
@@ -4853,7 +4944,7 @@ export class OrchestratorLoop {
           await this.runCheapObservableCheck(sessionId, plan, row.requester);
           this.deps.state.audit(
             "loop.review_budget_abort",
-            { sessionId, cycle, totalCost, reviewEstimate, dailySoFar, dailyMax, reason: "daily_max" },
+            { sessionId, cycle, totalCost, reviewEstimate, dailySoFar, dailyMax, reason: "daily_max", askedForBudget: budgetExtensionRefused },
             sessionId,
           );
           this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
@@ -5497,8 +5588,8 @@ export class OrchestratorLoop {
         { sessionId, cycle, verdict: report.verdict, findings: report.findings?.length ?? 0, blockingFindings },
         sessionId,
       );
-      const decision = OrchestratorLoop.advance({
-        currentStatus: "reviewing",
+      const advanceInput = {
+        currentStatus: "reviewing" as const,
         verdict: report.verdict,
         blockingFindings,
         shipWhenNoBlockingFindings: this.deps.config.loop.ship_when_no_blocking_findings !== false,
@@ -5510,7 +5601,7 @@ export class OrchestratorLoop {
         blockingCountsByCycle,
         cycleExtensionsGranted,
         maxCycleExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
-        budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd),
+        budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, budgetPolicy.implementationTargetUsd, budgetOverrideGranted),
         // beta.120 (fix 4): only meaningful once there is something to land.
         // beta.129: now sized against a MEASURED cycle, and against the
         // session's own ceiling rather than the configured default -- an
@@ -5534,7 +5625,43 @@ export class OrchestratorLoop {
           this.dailyMaxUsd() > 0 &&
           this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
         hardTimeout: Date.now() > hardDeadlineMs,
-      });
+      };
+      let decision = OrchestratorLoop.advance(advanceInput);
+
+      // rc.6: was money the ONLY thing standing between this run and another
+      // cycle? Asking `advance` a second time with the money satisfied is the
+      // way to know without restating its rules here -- it is a pure function,
+      // the second call costs nothing, and a copy of its conditions in this
+      // file would drift the first time somebody edited one of them.
+      if (
+        !budgetOverrideGranted &&
+        !budgetExtensionRefused &&
+        decision.nextStatus !== "executing"
+      ) {
+        const ifFunded = OrchestratorLoop.advance({ ...advanceInput, budgetHeadroomOk: true, budgetExhausted: false });
+        if (ifFunded.nextStatus === "executing") {
+          const dailyBlocked = advanceInput.budgetExhausted;
+          const grantedUsd = await this.askForBudgetExtension({
+            sessionId,
+            cycle,
+            trigger: dailyBlocked ? "daily_cap" : "cycle_extension",
+            spentUsd: totalCost,
+            policy: budgetPolicy,
+            shortfallUsd: Math.max(0, totalCost + projectCycleCostUsd(totalCost, cycle) - budgetPolicy.implementationTargetUsd),
+            observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
+            ...(dailyBlocked ? { dailyCapUsd: this.dailyMaxUsd() } : {}),
+            resumeStatus: "reviewing",
+          });
+          if (grantedUsd > 0) {
+            budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
+            budgetOverrideGranted = true;
+            row.budget_usd = budgetPolicy.authorizedMaximumUsd;
+            decision = ifFunded;
+          } else {
+            budgetExtensionRefused = true;
+          }
+        }
+      }
       this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
 
       // beta.129: the clock is about to land a branch that still has blocking
@@ -5550,7 +5677,7 @@ export class OrchestratorLoop {
         this.deps.config.loop.time_extension_ask_enabled !== false &&
         !timeExtensionRefused &&
         blockingFindings > 0 &&
-        this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd)
+        this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, budgetPolicy.implementationTargetUsd, budgetOverrideGranted)
       ) {
         const grantedSeconds = await this.askForTimeExtension({
           sessionId,
@@ -5848,7 +5975,25 @@ export class OrchestratorLoop {
     // reason: without the failing assertion there is nothing to hand a worker.
     {
       const repairCeiling = Math.max(0, this.deps.config.ci?.max_repair_cycles ?? 1);
-      const budgetOk = this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, row.budget_usd);
+      // rc.6: repair is paid for out of its own reserve, and the gate never
+      // reads `totalCost`. That is the whole #1184 fix. Before it, this asked
+      // "does the run's TOTAL spend plus a projected cycle fit inside the
+      // session budget?", so implementation spending $53.81 of $50 refused the
+      // repair that would have turned a red build green. Repair now answers for
+      // its own spending only; the daily cap and hard ceiling below are what
+      // still bound it.
+      const repairFunding = assessRepairFunding({
+        policy: budgetPolicy,
+        repairSpentUsd: Math.max(0, totalCost - repairSpendBaselineUsd),
+        repairCyclesGranted: ciRepairCyclesGranted,
+        projectedRepairCostUsd:
+          ciRepairCyclesGranted > 0
+            ? projectCycleCostUsd(Math.max(0, totalCost - repairSpendBaselineUsd), ciRepairCyclesGranted)
+            : 0,
+      });
+      let budgetOk =
+        repairFunding.funded &&
+        this.hardCapsAllow(row.requester, totalCost, cycle, budgetOverrideGranted);
       // beta.129: a repair cycle costs TIME as well as money, and b127 only
       // ever priced the money. Session d48ba433 was granted one with roughly
       // twenty minutes left on a clock that cycles were eating in twenty-five,
@@ -5887,8 +6032,38 @@ export class OrchestratorLoop {
       // This is a stronger case for interrupting a human than the b129 one:
       // the branch is already pushed, so the cost of a "yes" is bounded and
       // the prize is a green PR instead of one somebody has to finish by
-      // hand. Only the clock may be missing -- a ceiling or budget shortfall
-      // is a real no, and asking for time would not change either.
+      // hand. Only the clock may be missing -- a ceiling shortfall is a real
+      // no, and asking for time would not change it.
+      //
+      // rc.6: money is no longer a real no either. b130 wrote "a ceiling or
+      // budget shortfall is a real no" because there was nothing to be done
+      // about money mid-run; there is now, and it is the same ask. Money is
+      // asked FIRST because the clock question describes itself as "out of
+      // time, not out of money", which would be a lie if both were short.
+      if (wantsRepair && ceilingOk && !budgetOk && !budgetExtensionRefused) {
+        const grantedUsd = await this.askForBudgetExtension({
+          sessionId,
+          cycle,
+          trigger: "ci_repair",
+          spentUsd: totalCost,
+          policy: budgetPolicy,
+          shortfallUsd: repairFunding.funded ? 0 : (repairFunding.shortfallUsd ?? 0),
+          observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
+          ciSummary: describeCiFindings(lastCiFindings),
+          // The repair re-enters the loop as an execution cycle; the ship path
+          // it was asked from is not a phase to be parked in.
+          resumeStatus: "executing",
+        });
+        if (grantedUsd > 0) {
+          budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
+          budgetOverrideGranted = true;
+          row.budget_usd = budgetPolicy.authorizedMaximumUsd;
+          budgetOk = true;
+        } else {
+          budgetExtensionRefused = true;
+        }
+      }
+
       if (
         wantsRepair &&
         ceilingOk &&
@@ -5934,6 +6109,13 @@ export class OrchestratorLoop {
           {
             sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
             budgetOk, ceilingOk, clockOk, spentUsd: Number(totalCost.toFixed(4)),
+            // rc.6: `reason: "budget"` says money and nothing else, which is
+            // how #1184 read as "too expensive" when the truth was "somebody
+            // else spent the reserve". These say which.
+            repairFunding: repairFunding.basis,
+            repairReserveUsd: budgetPolicy.repairReserveUsd,
+            repairSpentUsd: Number(Math.max(0, totalCost - repairSpendBaselineUsd).toFixed(4)),
+            askedForBudget: budgetExtensionRefused,
             remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
             observedCycleMs: maxCycleMs,
             // beta.130: distinguishes "the clock said no" from "the clock said
@@ -5972,6 +6154,10 @@ export class OrchestratorLoop {
       }
 
       if (canRepair) {
+        // rc.6: everything spent from here is repair's, charged to the reserve
+        // rather than to the run. Stamped on the FIRST grant only, so a second
+        // repair is still measured from where repair began.
+        if (ciRepairCyclesGranted === 0) repairSpendBaselineUsd = totalCost;
         ciRepairCyclesGranted += 1;
         // Fold the CI findings into the review the next cycle maps from. They
         // carry `file`, so mapFindingsToSubTasks routes each one to whoever
@@ -7961,6 +8147,35 @@ export class OrchestratorLoop {
   }
 
   /**
+   * rc.6: the operator-configured walls, on their own.
+   *
+   * Split out of the gate below because repair now has to consult these
+   * WITHOUT the session-budget comparison that used to sit beside them --
+   * repair is funded from its own reserve, and folding the two together is what
+   * made implementation's overspend refuse it. `overridden` is the `:moneybag:`
+   * reaction or an answered budget question, which are the same authority.
+   *
+   * The per-user MONTHLY cap is deliberately absent: it lives in
+   * `BudgetEnforcer.check` at session admission and is the one limit nothing in
+   * the loop may spend past.
+   */
+  private hardCapsAllow(requester: string, spentUsd: number, cyclesRan: number, overridden: boolean): boolean {
+    try {
+      if (overridden) return true;
+      const projected = projectCycleCostUsd(spentUsd, cyclesRan);
+      const ceiling = this.deps.config.budgets?.session_hard_ceiling_usd;
+      if (typeof ceiling === "number" && ceiling > 0 && spentUsd + projected > ceiling) return false;
+      const daily = this.dailyMaxUsd();
+      if (daily > 0 && this.safeDailySpend(requester) + projected > daily) return false;
+      // With no ceiling configured at all we have nothing to measure against,
+      // so decline rather than extend into an unbounded spend.
+      return typeof ceiling === "number" && ceiling > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * beta.119: can this run genuinely afford one more execute+review cycle?
    *
    * Gate for the converging-trend cycle extension. "Converging" says another
@@ -7979,11 +8194,21 @@ export class OrchestratorLoop {
     requester: string,
     spentUsd: number,
     cyclesRan: number,
+    /**
+     * rc.6: the IMPLEMENTATION TARGET, not the whole approved figure. An
+     * extension is the harness buying itself more implementation, so it may not
+     * reach into the repair reserve to do it -- that reserve is the only thing
+     * standing between a red build and a do-not-merge PR. Strictly tighter than
+     * b120's rule, which measured against the undivided budget.
+     */
     sessionBudgetUsd?: number,
+    /** `:moneybag:`, or an answered budget question. */
+    overridden = false,
   ): boolean {
     try {
+      if (overridden) return true;
       if (cyclesRan < 1 || !(spentUsd > 0)) return false;
-      const projected = (spentUsd / cyclesRan) * 1.25;
+      const projected = projectCycleCostUsd(spentUsd, cyclesRan);
       // beta.120 (fix 6): respect the budget the REQUESTER set for this run.
       //
       // b119 checked only the global ceiling and the daily cap. Those are
@@ -8024,10 +8249,16 @@ export class OrchestratorLoop {
     try {
       const dailyMax = this.dailyMaxUsd();
       const dailySoFar = this.safeDailySpend(user);
+      // rc.6: "budget" here is a TARGET, and calling it anything firmer is the
+      // naming fault RC-2 of the #1184 postmortem is about -- an operator told
+      // they had passed a "cap" while the run carried on had no way to predict
+      // either behaviour. Say which number this is and what actually stops the
+      // run.
       let text =
-        `:warning: This run passed its session budget ` +
+        `:warning: This run passed its session budget TARGET ` +
         `($${totalCost.toFixed(2)} / $${sessionBudget.toFixed(2)}). It will keep going ` +
-        `— the hard stop is your daily cap.`;
+        `— the hard stop is your daily cap. The CI repair reserve is held separately, ` +
+        `so this does not cost the run its chance to fix a red build.`;
       if (typeof dailyMax === "number" && dailyMax > 0) {
         const remaining = Math.max(0, dailyMax - dailySoFar);
         const pct = Math.min(100, Math.round((dailySoFar / dailyMax) * 100));
@@ -8617,6 +8848,193 @@ export class OrchestratorLoop {
       p.sessionId,
     );
     return parsed.approved ? parsed.seconds : 0;
+  }
+
+  /**
+   * rc.6: ask the operator to fund a stop the loop is about to make on money.
+   *
+   * Deliberately the same shape as `askForTimeExtension`, down to the bounded
+   * wait, the heartbeat and the resume status, because it is the same act: the
+   * loop has run out of one resource, a human can supply more, and the only
+   * thing standing between them is that nobody thought to ask. Divergence
+   * between the two would be a maintenance trap, not a feature.
+   *
+   * Returns dollars granted, or 0 for declined / unanswered / disabled. Never
+   * throws: a question that cannot be posted must not be worse than not asking,
+   * so every failure path returns 0 and the caller proceeds as it always did.
+   */
+  private async askForBudgetExtension(p: {
+    sessionId: string;
+    cycle: number;
+    trigger: BudgetExtensionTrigger;
+    spentUsd: number;
+    policy: BudgetPolicy;
+    /** Roughly how far short the next step is, when it can be estimated. */
+    shortfallUsd: number;
+    /** A measured cycle, which is what a bare "yes" grants. */
+    observedCycleCostUsd: number;
+    dailyCapUsd?: number;
+    ciSummary?: string;
+    subTaskTitle?: string;
+    resumeStatus?: LoopStatus;
+  }): Promise<number> {
+    if (this.deps.config.loop.budget_extension_ask_enabled === false) return 0;
+    const waitSeconds = Math.max(0, this.deps.config.loop.budget_extension_wait_seconds ?? 300);
+    if (waitSeconds <= 0) return 0;
+
+    // A bare "yes" buys one more cycle of whatever this run has actually been
+    // costing. With nothing measured yet there is no honest figure, so fall
+    // back to a fraction of the approved budget rather than inventing one.
+    const defaultUsd =
+      p.observedCycleCostUsd > 0
+        ? Math.round(p.observedCycleCostUsd * 100) / 100
+        : Math.max(5, Math.round(p.policy.authorizedMaximumUsd * 0.2 * 100) / 100);
+    const maxUsd = maxExtensionUsd(p.policy.authorizedMaximumUsd);
+    if (defaultUsd <= 0 || maxUsd <= 0) return 0;
+
+    const waitUntilMs = Date.now() + waitSeconds * 1000;
+    const question = renderBudgetExtensionQuestion({
+      trigger: p.trigger,
+      cycle: p.cycle,
+      spentUsd: p.spentUsd,
+      authorizedMaximumUsd: p.policy.authorizedMaximumUsd,
+      shortfallUsd: p.shortfallUsd,
+      defaultUsd,
+      waitSeconds,
+      dailyCapUsd: p.dailyCapUsd,
+      ciSummary: p.ciSummary,
+      subTaskTitle: p.subTaskTitle,
+    });
+
+    try {
+      this.deps.state.db
+        .prepare(
+          `UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, clarification_subtask = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(question, BUDGET_EXTENSION_SEQ, renderBudgetExtensionMarker(waitUntilMs), Date.now(), p.sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not post the budget question; proceeding as if unasked", {
+        sessionId: p.sessionId,
+        err: String(err),
+      });
+      return 0;
+    }
+
+    this.deps.state.audit(
+      "loop.budget_extension_requested",
+      {
+        sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger,
+        spentUsd: Number(p.spentUsd.toFixed(4)),
+        authorizedMaximumUsd: p.policy.authorizedMaximumUsd,
+        repairReserveUsd: p.policy.repairReserveUsd,
+        shortfallUsd: Number(p.shortfallUsd.toFixed(4)),
+        waitSeconds, defaultUsd, maxUsd,
+      },
+      p.sessionId,
+    );
+    this.deps.interactionLog?.log(p.sessionId, { event: "budget_extension_requested", phase: "review", question });
+    this.setStatus(p.sessionId, "awaiting_clarification");
+
+    const clearPause = () => {
+      try {
+        this.deps.state.db
+          .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
+          .run(Date.now(), p.sessionId);
+      } catch (err) {
+        this.deps.logger.warn("[loop] could not clear the budget pause", { sessionId: p.sessionId, err: String(err) });
+      }
+    };
+
+    // beta.132's reasoning, unchanged: stamp before the first sleep so an
+    // answer that arrives in the first few seconds is not read as shouted at
+    // an empty room.
+    this.stampClarificationHeartbeat(p.sessionId);
+
+    let answer = "";
+    while (Date.now() < waitUntilMs) {
+      const sliceMs = Math.min(5000, Math.max(250, waitUntilMs - Date.now()));
+      await new Promise((r) => setTimeout(r, sliceMs));
+      this.stampClarificationHeartbeat(p.sessionId);
+      this.markProgress(p.sessionId, "budget_extension_wait", "review", {
+        cycle: p.cycle,
+        remainingMs: Math.max(0, waitUntilMs - Date.now()),
+      });
+      try {
+        const r = this.deps.state.db
+          .prepare(`SELECT clarification_answer AS a FROM sessions WHERE id = ?`)
+          .get(p.sessionId) as { a: string | null } | undefined;
+        if (r?.a && String(r.a).trim()) {
+          answer = String(r.a).trim();
+          break;
+        }
+      } catch (err) {
+        this.deps.logger.warn("[loop] budget-extension poll failed", { sessionId: p.sessionId, err: String(err) });
+      }
+      const reactions = await this.deps.readReactions(p.sessionId).catch(() => null);
+      // Either reaction answers the question without typing: :moneybag: IS the
+      // yes this is asking for, and :x: is the no.
+      if (reactions?.abort) break;
+      if (reactions?.budgetBump) {
+        answer = `yes (:moneybag:)`;
+        break;
+      }
+    }
+
+    clearPause();
+    this.setStatus(p.sessionId, p.resumeStatus ?? "reviewing");
+
+    if (!answer) {
+      this.deps.state.audit(
+        "loop.budget_extension_timeout",
+        { sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger, waitSeconds },
+        p.sessionId,
+      );
+      return 0;
+    }
+
+    const parsed = parseBudgetExtensionReply(answer, { defaultUsd, maxUsd });
+    this.deps.state.audit(
+      parsed.approved ? "loop.budget_extension_granted" : "loop.budget_extension_declined",
+      {
+        sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger,
+        usd: parsed.usd, interpretation: parsed.interpretation,
+        clamped: parsed.clamped === true, maxUsd,
+        answer: answer.slice(0, 300),
+      },
+      p.sessionId,
+    );
+    return parsed.approved ? parsed.usd : 0;
+  }
+
+  /**
+   * rc.6: apply a granted budget extension to the run and to the row.
+   *
+   * Persisted, for the reason beta.130 persisted an extended deadline: a
+   * crash-recovery or a later resume that reverted to the original figure would
+   * stop the run a second time for a reason the operator has already overruled.
+   */
+  private applyBudgetGrant(sessionId: string, previous: BudgetPolicy, grantedUsd: number): BudgetPolicy {
+    const raised = Math.round((previous.authorizedMaximumUsd + grantedUsd) * 100) / 100;
+    try {
+      this.deps.state.db
+        .prepare(`UPDATE sessions SET budget_usd = ?, updated_at = ? WHERE id = ?`)
+        .run(raised, Date.now(), sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not persist the granted budget; honouring it for this run only", {
+        sessionId,
+        err: String(err),
+      });
+    }
+    const policy = resolveBudgetPolicy({
+      authorizedMaximumUsd: raised,
+      repairReserveRatio: this.deps.config.loop.repair_reserve_ratio,
+    });
+    this.deps.state.audit(
+      "loop.budget_extension_applied",
+      { sessionId, grantedUsd, authorizedMaximumUsd: raised, policy: describeBudgetPolicy(policy) },
+      sessionId,
+    );
+    return policy;
   }
 
   /**

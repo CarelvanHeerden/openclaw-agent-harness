@@ -284,9 +284,68 @@ run was later refused a CI repair for crossing it.
 **Every approval returns a receipt.** The response states the budget and
 wall-clock limit that were actually persisted, read back out of the session row
 rather than echoed from the request, and says so explicitly when a figure was
-clamped by the configured ceiling. If the write did not land, the answer fails
-with the controls it could not persist and the session stays resumable — it is
-never flipped to `planning` on limits nobody stored.
+clamped by the configured ceiling. It also names how much of the budget is held
+back for CI repair, and it no longer claims the run stops when it hits either
+number — that was true of the clock and false of the money. If the write did not
+land, the answer fails with the controls it could not persist and the session
+stays resumable; it is never flipped to `planning` on limits nobody stored.
+
+## What the session budget means
+
+The approved figure is divided before anything spends it:
+
+| Portion | Behaviour |
+| --- | --- |
+| Implementation target (70% by default) | What ordinary work is sized against. **Soft** — crossing it warns and the run continues. But the harness may not *elect* another implementation cycle past it. |
+| Repair reserve (`loop.repair_reserve_ratio`, 30% by default) | Held back for CI repair. Repair measures its **own** spend against this and never reads the run's total, so implementation overspend cannot consume it. |
+
+**Why the division exists.** #1184 spent $53.81 against a $50 budget and was
+then refused a repair cycle for being over $50. Both halves were behaving as
+designed: the session budget is soft for ordinary work (it warns; the daily cap
+is the hard admission boundary), while the extension gate measured hard against
+that same number, on the sound reasoning that the harness buying itself another
+cycle with unauthorised money is a different act. Composed, they hand the whole
+budget to whoever spends first and refuse the only consumer measured against it.
+The run overspends *and* ships red.
+
+**The first repair cycle is always funded** when a reserve exists and the hard
+caps allow it, without projecting a cost. A repair fixes a handful of named CI
+findings on a branch that is already built and reviewed; pricing it as another
+implementation cycle is what produced the refusal. Once a repair has run there
+is a measurement, and subsequent repairs are held to it. The number of repairs
+is separately bounded by `ci.max_repair_cycles`, which this does not change.
+
+**What is still hard.** `budgets.session_hard_ceiling_usd`, `budgets.daily_max_usd`,
+the per-user monthly cap, and `ci.max_repair_cycles`. Worst case is
+implementation's actual spend plus one repair cycle — the overshoot soft spend
+already permitted, now deliberate and accounted for.
+
+### When the money runs out, the harness asks
+
+Five decisions used to refuse work over money in silence: the next sub-task, the
+adversary review, a cycle extension, the daily-cap cycle stop, and CI repair.
+Each now pauses and asks the operator first, using the same machinery as the
+wall-clock question — a bounded wait, a heartbeat, and a resumable pause that
+keeps the worktree, cycle counter and findings history exactly as they are.
+
+This is not new authority. The `:moneybag:` reaction has always let an operator
+spend past the caps; reacting with it during the wait answers the question. What
+changed is that the harness now asks at the moment of the decision rather than
+relying on somebody watching.
+
+- Reply with an amount (`$20`, `50 more`) or a bare `yes` for one measured
+  cycle's worth. `no` or `ship` declines. `no more than $20` is an approval.
+- A grant raises the session budget, is persisted so a resume honours it, and
+  lifts the daily cap for the rest of that session.
+- One grant may not more than double the approved figure, so a typo costs a
+  clamp and an audit line rather than the month's budget.
+- **The per-user monthly cap is never askable.** It is enforced at session
+  admission in `BudgetEnforcer.check` and is the one wall a run cannot talk past.
+- An unanswered question changes nothing: when the window
+  (`loop.budget_extension_wait_seconds`, 300s) closes, the loop does exactly
+  what it would have done without asking, and it does not ask twice in one run.
+
+Set `loop.budget_extension_ask_enabled: false` to restore the silent refusals.
 
 ## Cost forensics
 
@@ -467,6 +526,8 @@ mismatch" on a generated file is that defect, not a misplaced file.
 
 - **A contract failed on a generated file**: read the message rather than the path. If it says the generator did not run, the worker was not authorized for that path — add it to `verify.generators`. If it says MISSING TOOLING, the mapped script is not in the repo's `package.json`. If it says stale, it names the declared input that moved, and the artifact must be regenerated from it. See "Who regenerates derived artifacts" above.
 - **The config is refused because a generator targets a never-commit path**: the two settings contradict each other, and the harness stops rather than starting a run whose contract can never pass. Either drop the path from `repos.never_commit_paths` (if the artifact is genuinely meant to be committed) or from the generator's `produces` (if it is not). See "Who regenerates derived artifacts" above.
+- **The run paused asking for money**: a money-based stop was about to refuse useful work. Answer with an amount or `yes`, or react `:moneybag:`; `ship` declines. Ignoring it is safe — the window closes and the run does what it would have done anyway. See "When the money runs out, the harness asks" above.
+- **A repair was declined with `reason: "budget"`**: read `repairFunding` in the same audit event. `no_reserve` means `loop.repair_reserve_ratio` is 0 for this deployment, which you can change; `reserve_exhausted` means this run has spent what it was given, which you cannot. Runs from before rc.6 have neither field, and their `"budget"` usually means implementation had already spent the figure repair was measured against.
 - **An approval came back as a question instead of starting the run**: the reply named the budget or the clock with an amount the harness could not use, so it stopped rather than starting at a default you did not choose. The question quotes the words it could not read. See "Approving a brief, and the limits that actually apply" above.
 - **A typecheck finding keeps coming back**: check whether it names every file. Findings raised before rc.6 were built from a 4,000-character tail, so a break spanning several files could be handed over as one, fixed partially, and re-raised. See "What the harness reads from a failing check" above.
 - **The run says NOT PUBLISHED**: the push (or PR call) resolved and the remote still does not hold this run's commits. The work is preserved in the named worktree and the terminal message gives both SHAs — see "Published, approved, and unpublished" above for the `failureKind` table and the recovery commands. Do not force-push; on `remote_mismatch` the branch tip is somebody else's commit.

@@ -610,6 +610,34 @@ export interface LoopConfig {
      */
     time_extension_default_seconds: number;
     /**
+     * rc.6: fraction of the approved session budget held back for CI repair and
+     * the verification tail, carved out before implementation starts spending.
+     *
+     * #1184 spent $53.81 of a $50 budget and was then refused a repair cycle for
+     * being over $50: implementation is soft and may cross the number, repair was
+     * measured hard against it, so repair paid for implementation's overspend. A
+     * reserve gives repair its own pot, which it measures its own spend against
+     * and which no amount of implementation spend can consume. Clamped to 0.5 --
+     * a reserve larger than half the budget starves ordinary work. Default 0.3.
+     */
+    repair_reserve_ratio: number;
+    /**
+     * rc.6: may the loop ASK for more money when a money-based stop is about to
+     * refuse useful work? The `:moneybag:` reaction has always granted the same
+     * authority; this asks for it at the moment of the decision rather than
+     * relying on somebody watching. Never applies to the per-user monthly cap,
+     * which stays an outright refusal. Default true; false restores the silent
+     * refusals of rc.5 and earlier.
+     */
+    budget_extension_ask_enabled: boolean;
+    /**
+     * rc.6: how long the loop waits, in place, for an answer to that question.
+     * Bounded for beta.129's reason: an unanswered question must never be why a
+     * deliverable is missing. On timeout the loop does exactly what it would have
+     * done without asking. Default 300s.
+     */
+    budget_extension_wait_seconds: number;
+    /**
      * beta.40: stuck-loop reclaim threshold (seconds). The beta.38 re-entrancy
      * guard (`runningSessions`) is module-scoped and survives a plugin
      * re-register, but the loop it tracks can be torn down WITH the old runtime

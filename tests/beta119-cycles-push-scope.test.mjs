@@ -185,12 +185,20 @@ test("the extension's end-to-end coverage exists and is behavioural", () => {
   assert.match(scenario, /loop\.max_cycles_extended/);
 });
 
-test("budget headroom is measured from this run's own per-cycle spend", () => {
+test("budget headroom is measured from this run's own per-cycle spend", async () => {
+  // rc.6: the projection moved into a named, exported function, so the part of
+  // this that was a source pin is now just a call. The rest -- that the two
+  // operator caps are both consulted and that doubt fails closed -- moved with
+  // it into `hardCapsAllow`, which is where repair reads them from.
+  const { projectCycleCostUsd } = await import("../dist/orchestrator/budget-policy.js");
+  assert.equal(projectCycleCostUsd(40, 2), 25, "must project from real spend, not a guess: (40/2) * 1.25");
+  assert.equal(projectCycleCostUsd(0, 3), 0, "nothing measured is not the same as free");
+  assert.equal(projectCycleCostUsd(10, 0), 0, "no cycles is not the same as free");
+
   const src = S("src/orchestrator/loop.ts");
-  const i = src.indexOf("private hasBudgetHeadroomForAnotherCycle");
-  assert.ok(i > 0);
-  const body = src.slice(i, i + 1400);
-  assert.match(body, /spentUsd \/ cyclesRan/, "must project from real spend, not a guess");
+  const i = src.indexOf("private hardCapsAllow");
+  assert.ok(i > 0, "the operator caps must live in one named place");
+  const body = src.slice(i, src.indexOf("private hasBudgetHeadroomForAnotherCycle", i));
   assert.match(body, /session_hard_ceiling_usd/);
   assert.match(body, /dailyMaxUsd\(\)/, "the daily cap can be the binding constraint");
   assert.match(body, /return false/, "must fail closed");

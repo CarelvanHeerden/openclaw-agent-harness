@@ -617,6 +617,12 @@ export interface EffectiveLimits {
   hardTimeoutSeconds: number;
   /** Set when the operator asked for more than the operator-configured ceiling. */
   requestedBudgetUsd?: number;
+  /**
+   * rc.6: how much of the budget is held back for CI repair. Stated here
+   * because it is the operator's money being divided, and the division changes
+   * what the rest of the number buys them.
+   */
+  repairReserveUsd?: number;
 }
 
 /**
@@ -633,8 +639,17 @@ export function renderLimitsReceipt(limits: EffectiveLimits): string {
     typeof limits.requestedBudgetUsd === "number" && limits.requestedBudgetUsd > limits.budgetUsd
       ? ` (you asked for $${limits.requestedBudgetUsd.toFixed(2)}; the operator ceiling is $${limits.budgetUsd.toFixed(2)})`
       : "";
+  // rc.6: "a run that hits either stops" was true of the clock and false of the
+  // money, and the money half is RC-2 of the #1184 postmortem in one sentence.
+  // Spend is soft; the wall is the daily cap. Saying otherwise is what left an
+  // operator unable to predict either behaviour.
+  const reserve =
+    typeof limits.repairReserveUsd === "number" && limits.repairReserveUsd > 0
+      ? ` Of that, $${limits.repairReserveUsd.toFixed(2)} is held back for CI repair, so a red build can still be fixed.`
+      : "";
   return (
     `Running under budget $${limits.budgetUsd.toFixed(2)}${clamped} and a wall clock of ` +
-    `${describeWallClock(limits.hardTimeoutSeconds)}. A run that hits either stops.`
+    `${describeWallClock(limits.hardTimeoutSeconds)}. The clock is a hard stop; the budget is a target ` +
+    `— spend past it warns and the run continues, and your daily cap is what actually stops it.${reserve}`
   );
 }

@@ -1185,6 +1185,20 @@ export declare class OrchestratorLoop {
      */
     private safeDailySpend;
     /**
+     * rc.6: the operator-configured walls, on their own.
+     *
+     * Split out of the gate below because repair now has to consult these
+     * WITHOUT the session-budget comparison that used to sit beside them --
+     * repair is funded from its own reserve, and folding the two together is what
+     * made implementation's overspend refuse it. `overridden` is the `:moneybag:`
+     * reaction or an answered budget question, which are the same authority.
+     *
+     * The per-user MONTHLY cap is deliberately absent: it lives in
+     * `BudgetEnforcer.check` at session admission and is the one limit nothing in
+     * the loop may spend past.
+     */
+    private hardCapsAllow;
+    /**
      * beta.119: can this run genuinely afford one more execute+review cycle?
      *
      * Gate for the converging-trend cycle extension. "Converging" says another
@@ -1316,6 +1330,28 @@ export declare class OrchestratorLoop {
      * stale one finishes the ship rather than being promised to nobody.
      */
     private askForTimeExtension;
+    /**
+     * rc.6: ask the operator to fund a stop the loop is about to make on money.
+     *
+     * Deliberately the same shape as `askForTimeExtension`, down to the bounded
+     * wait, the heartbeat and the resume status, because it is the same act: the
+     * loop has run out of one resource, a human can supply more, and the only
+     * thing standing between them is that nobody thought to ask. Divergence
+     * between the two would be a maintenance trap, not a feature.
+     *
+     * Returns dollars granted, or 0 for declined / unanswered / disabled. Never
+     * throws: a question that cannot be posted must not be worse than not asking,
+     * so every failure path returns 0 and the caller proceeds as it always did.
+     */
+    private askForBudgetExtension;
+    /**
+     * rc.6: apply a granted budget extension to the run and to the row.
+     *
+     * Persisted, for the reason beta.130 persisted an extended deadline: a
+     * crash-recovery or a later resume that reverted to the original figure would
+     * stop the run a second time for a reason the operator has already overruled.
+     */
+    private applyBudgetGrant;
     /**
      * beta.130: persist an extended wall clock so a crash-recovery or a later
      * resume honours what the operator granted instead of reverting to the

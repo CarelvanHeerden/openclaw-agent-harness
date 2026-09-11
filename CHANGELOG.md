@@ -2,14 +2,21 @@
 
 ## Unreleased
 
-Three ways one specification failed to become a merge-ready PR, taken from the
-Stitch-Vercel/StitchGuard #1184 postmortem. They are separate defects with one
-shape in common: the harness acted on something it had not established — an
-approval it could not read, a staleness it never checked, a set of compiler
-errors it never saw. Nothing here loosens a merge gate or a security posture,
-and the one rule that got looser (generated-artifact freshness) now refuses only
-what it can evidence, and refuses more of it than before when inputs are
-declared.
+Four ways one specification failed to become a merge-ready PR, taken from the
+Stitch-Vercel/StitchGuard #1184 postmortem. The first three are separate defects
+with one shape in common: the harness acted on something it had not established
+— an approval it could not read, a staleness it never checked, a set of compiler
+errors it never saw. The fourth is different: two rules that were each correct
+alone, composing into a run that overspent the number it called a cap and was
+then refused a repair for overspending it.
+
+Nothing here loosens a merge gate or a security posture. Two rules did get
+looser. Generated-artifact freshness now refuses only what it can evidence —
+and refuses more than before once inputs are declared. And a money-based stop
+now asks the operator before refusing useful work, which is the authority
+`:moneybag:` has always carried, pulled at the moment of the decision instead of
+pushed by whoever happened to be watching. The per-user monthly cap remains the
+one wall a run cannot talk past.
 
 ### An approval the harness could not read started the run anyway
 
@@ -80,6 +87,44 @@ when it bites. The finding carries every affected file into routing via
 `relatedFiles`, titles itself with the file count, and samples errors
 round-robin so a file holding 38 of 40 cannot crowd the others out of the text a
 worker reads.
+
+### The run overspent the number it called a cap, then was refused for overspending it
+
+The compliance-calendar run finished at $53.81 against a $50 session budget, hit
+a four-job CI failure, and declined the repair cycle with `reason: "budget"`.
+Neither half was a bug. beta.78 made the session budget soft for ordinary work —
+it warns and continues, and the per-user daily cap is the hard boundary. beta.120
+then made the extension gate measure hard against the same number, because the
+harness electing to buy itself another cycle with money the requester did not
+authorise is a different act from a worker running long.
+
+Read together they hand the whole budget to whoever spends first and refuse the
+only consumer measured against it, so the run overspends *and* ships red. The
+approved figure is now divided before anything spends it: an implementation
+target that is still soft, and a repair reserve (`loop.repair_reserve_ratio`,
+30% by default) that repair measures its own spend against and never reads the
+run's total to reach. An extension may no longer reach into that reserve, which
+is stricter than b120's rule, not looser. The first repair is funded without
+being priced as an implementation cycle — that pricing is what produced the
+refusal, since a repair fixes named CI findings on a branch already built and
+reviewed. Subsequent repairs are held to what the first actually cost, and
+`ci.max_repair_cycles` still bounds the count.
+
+The five money-based stops — the next sub-task, the adversary review, a cycle
+extension, the daily-cap cycle stop, and CI repair — no longer refuse in silence.
+Each asks the operator first, on beta.129's wall-clock machinery: a bounded wait,
+a heartbeat, a resumable pause that keeps the worktree and cycle history, and a
+timeout that does exactly what the run would have done unasked. A grant raises
+the session budget, persists so a resume honours it, and may not more than double
+the approved figure in one go. `loop.budget_extension_ask_enabled: false`
+restores the silent refusals.
+
+Reporting changed with it, since RC-2 of the postmortem is a naming complaint
+with teeth. The soft-budget warning says "target". The approval receipt no longer
+claims the run stops when it hits the budget, and states the repair reserve. A
+declined repair records `repairFunding` — `no_reserve` is a setting an operator
+can change, `reserve_exhausted` is a run that spent what it was given, and
+`"budget"` alone could not tell them apart.
 
 ## 2.0.0-rc.5
 

@@ -19,6 +19,8 @@ import { RouteOverlay, normaliseOrg } from "../auth/route-overlay.js";
 import { measureParaphraseDrift, readRequestFile } from "./brief-source.js";
 import { BRIEF_CONFIRMATION_KIND, BRIEF_CONFIRMATION_SEQ, decideBriefConfirmation, describeControlAmbiguities, isBriefConfirmationPause, parseConfirmationReply, renderBriefConfirmation, renderLimitsReceipt, } from "./brief-confirmation.js";
 import { isTimeExtensionPause, listenerLooksAlive, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
+import { isBudgetExtensionPause, readBudgetExtensionWaitUntil } from "../orchestrator/budget-extension.js";
+import { resolveBudgetPolicy } from "../orchestrator/budget-policy.js";
 import { CLARIFICATION_POLICY_VERSION } from "../version.js";
 function toDispose(x) {
     return () => {
@@ -1483,7 +1485,10 @@ export function registerHarnessTools(api, runtime) {
             // is sitting on this column polling -- and an operator who says "yes"
             // and then "no, make it 2 hours" is doing something reasonable that has
             // always worked. There is no plan mutation there to duplicate.
-            if (isTimeExtensionPause(row.clarification_subtask)) {
+            //
+            // rc.6: a budget pause is the same animal for the same reason, so it
+            // takes the same exemption and the same live-loop handling below.
+            if (isTimeExtensionPause(row.clarification_subtask) || isBudgetExtensionPause(row.clarification_subtask)) {
                 liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
             }
             else {
@@ -1511,8 +1516,11 @@ export function registerHarnessTools(api, runtime) {
             // It is sitting at the review boundary polling this very column, so the
             // write above IS the answer. Re-driving loop.run here would start a
             // second run against the same worktree and the same branch.
-            if (isTimeExtensionPause(row.clarification_subtask)) {
-                const waitUntilMs = readTimeExtensionWaitUntil(row.clarification_subtask);
+            const budgetPause = isBudgetExtensionPause(row.clarification_subtask);
+            if (isTimeExtensionPause(row.clarification_subtask) || budgetPause) {
+                const waitUntilMs = budgetPause
+                    ? readBudgetExtensionWaitUntil(row.clarification_subtask)
+                    : readTimeExtensionWaitUntil(row.clarification_subtask);
                 // beta.132: the window says what the loop INTENDED, not whether it is
                 // still there. Session 2b4c1d33 answered 28 seconds into a 5-minute
                 // window and was told the run would pick it up; the process holding
@@ -1521,7 +1529,7 @@ export function registerHarnessTools(api, runtime) {
                 const alive = listenerLooksAlive(row.clarification_heartbeat_at);
                 if (alive) {
                     const windowOpen = Date.now() < waitUntilMs;
-                    liveState().audit("tool.answer_time_extension", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, waitUntilMs, windowOpen }, sessionId);
+                    liveState().audit(budgetPause ? "tool.answer_budget_extension" : "tool.answer_time_extension", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, waitUntilMs, windowOpen }, sessionId);
                     // A live loop owns this session. Even with the window a moment
                     // expired it is mid-shutdown and about to ship, so writing a
                     // verdict from here would race its own -- the answer is recorded
@@ -1548,7 +1556,7 @@ export function registerHarnessTools(api, runtime) {
                 // middle of: exactly what would have happened had the operator
                 // replied "ship", or said nothing at all.
                 const prUrl = (row.final_pr_url ?? "").trim();
-                liveState().audit("tool.answer_time_extension_listener_lost", {
+                liveState().audit(budgetPause ? "tool.answer_budget_extension_listener_lost" : "tool.answer_time_extension_listener_lost", {
                     sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null,
                     waitUntilMs, windowWasOpen: Date.now() < waitUntilMs,
                     heartbeatAt: row.clarification_heartbeat_at ?? null,
@@ -1692,6 +1700,12 @@ export function registerHarnessTools(api, runtime) {
                 const effectiveLimits = {
                     budgetUsd: Number(persisted?.budget_usd ?? 0),
                     hardTimeoutSeconds: Number(persisted?.hard_timeout_seconds ?? liveConfig().loop?.session_hard_timeout_seconds ?? 7200),
+                    // rc.6: derived from the SAME resolver the loop will use, so the
+                    // figure quoted here is the figure repair actually gets.
+                    repairReserveUsd: resolveBudgetPolicy({
+                        authorizedMaximumUsd: Number(persisted?.budget_usd ?? 0),
+                        repairReserveRatio: liveConfig().loop?.repair_reserve_ratio,
+                    }).repairReserveUsd,
                     ...(budgetApplied !== undefined && parsed.budgetUsd !== undefined && parsed.budgetUsd > budgetApplied
                         ? { requestedBudgetUsd: parsed.budgetUsd }
                         : {}),

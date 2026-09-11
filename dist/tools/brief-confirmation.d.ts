@@ -192,6 +192,12 @@ export interface EffectiveLimits {
     hardTimeoutSeconds: number;
     /** Set when the operator asked for more than the operator-configured ceiling. */
     requestedBudgetUsd?: number;
+    /**
+     * rc.6: how much of the budget is held back for CI repair. Stated here
+     * because it is the operator's money being divided, and the division changes
+     * what the rest of the number buys them.
+     */
+    repairReserveUsd?: number;
 }
 /**
  * rc.6: the receipt.
