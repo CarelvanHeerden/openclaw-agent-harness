@@ -3298,6 +3298,21 @@ const MUTATIONS = [
     replace: "            if (false) {",
     tests: ["tests/rc3-clarification-audit.test.mjs"],
   },
+  {
+    // The preflight's own first version shipped this. Reproduced with readdirSync
+    // rather than statSync so the mutation exercises the walk, not a missing import.
+    name: "a symlink is a LEAF (rc.6 preflight): the scan walks out of the repo it was pointed at",
+    file: "scripts/generator-config-preflight.mjs",
+    find: `    if (ent.isSymbolicLink()) {
+      out.push(relative(root, full).split(sep).join("/"));
+      continue;
+    }
+    if (ent.isDirectory()) walk(root, full, out);`,
+    replace: `    let isDir = ent.isDirectory();
+    if (ent.isSymbolicLink()) { try { readdirSync(full); isDir = true; } catch { isDir = false; } }
+    if (isDir) walk(root, full, out);`,
+    tests: ["tests/rc6-generator-preflight.test.mjs"],
+  },
 ];
 
 /**

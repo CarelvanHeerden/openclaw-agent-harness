@@ -468,6 +468,31 @@ the failure advice ("run the generator") is advice that cannot work. The harness
 now rejects this combination when it resolves the config, naming both the script
 and the path, rather than letting a run discover it one cycle at a time.
 
+Rejection is per-run, not at config load: the deployment keeps starting, and
+each rejected path becomes a blocking `high` finding on every cycle while the
+path itself falls back to being unowned — no generation, and no exemption from
+its ordinary contract check. So an existing deployment carrying this overlap
+does not break on upgrade; it stops shipping until the config is edited. To see
+what that will cost before upgrading:
+
+```
+node scripts/generator-config-preflight.mjs ~/.openclaw/openclaw.json --repo /path/to/checkout
+```
+
+It reads the config and the tree, writes to neither, names every overlap with
+the pattern causing it, and exits non-zero so it can gate a rollout. Given
+`--repo` it also proposes a narrowed exclusion list and flags any file that
+would become committable as a result.
+
+**Prefer narrowing to deleting.** Removing the excluding pattern resolves the
+overlap and reinstates what the pattern was added for — workers stage with `git
+add -A`, so an incidental regeneration sweeps the whole tree into an unrelated
+commit, and each swept file is counted as an out-of-scope write, which is
+blocking and which no worker can resolve when regenerating was the task. Keep
+the exclusion for everything no generator claims. There is no negation in this
+pathspec syntax, so that has to be written out as the sibling paths that remain,
+which is what the preflight computes.
+
 **What a mapping does.** When a sub-task's contract or declared scope names a
 mapped path, the worker is told to run that specific script and commit what it
 writes. That is the only exception to the standing "do not run repo-wide
