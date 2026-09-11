@@ -1,14 +1,15 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.6
 
 Four ways one specification failed to become a merge-ready PR, taken from the
-Stitch-Vercel/StitchGuard #1184 postmortem. The first three are separate defects
-with one shape in common: the harness acted on something it had not established
-— an approval it could not read, a staleness it never checked, a set of compiler
-errors it never saw. The fourth is different: two rules that were each correct
-alone, composing into a run that overspent the number it called a cap and was
-then refused a repair for overspending it.
+Stitch-Vercel/StitchGuard #1184 postmortem, plus two defects found while fixing
+them. The first three are separate defects with one shape in common: the harness
+acted on something it had not established — an approval it could not read, a
+staleness it never checked, a set of compiler errors it never saw. The fourth is
+different: two rules that were each correct alone, composing into a run that
+overspent the number it called a cap and was then refused a repair for
+overspending it.
 
 Nothing here loosens a merge gate or a security posture. Two rules did get
 looser. Generated-artifact freshness now refuses only what it can evidence —
@@ -125,6 +126,25 @@ claims the run stops when it hits the budget, and states the repair reserve. A
 declined repair records `repairFunding` — `no_reserve` is a setting an operator
 can change, `reserve_exhausted` is a run that spent what it was given, and
 `"budget"` alone could not tell them apart.
+
+### An agent could have granted itself the money it just asked for
+
+Found while wiring the ask above. Routing budget extensions through
+`harness_answer` put them behind that tool's existing automation gates —
+delegation flag, evidence — and those gates were written about contract-path
+deviations. A deployment with `loop.clarification_auto_accept_delegated: true`
+would therefore have let an agent answer a budget question, and the caller with
+the clearest motive to raise a ceiling is the run that just hit one. The
+steward's own instructions already listed "Budget approval or any increase"
+among the things it must never answer, but nothing enforced it.
+
+An automatic answer to a budget-extension pause is now refused under every
+configuration, before the pause is claimed, so the question stays open for the
+operator it was asked of. The refusal says that no delegation setting changes
+it, to close the obvious next move. `CLARIFICATION_POLICY_VERSION` moves to
+`clarification-policy/2026-09-rc.6` accordingly: it is stamped on every answer
+audit precisely so that "was this allowed at the time" is answerable, and the
+answer differs before and after this change.
 
 ## 2.0.0-rc.5
 
