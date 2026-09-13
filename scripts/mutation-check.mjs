@@ -3313,6 +3313,20 @@ const MUTATIONS = [
     if (isDir) walk(root, full, out);`,
     tests: ["tests/rc6-generator-preflight.test.mjs"],
   },
+  {
+    name: "a declared artifact is IN scope (rc.7): resolving the rc.6 overlap buys an abandoned cycle instead",
+    file: "dist/orchestrator/loop.js",
+    find: "        const outOfScope = committed.filter((f) => !inDeclaredScope(f) && generatorOwned.ownerOf(f) === null);",
+    replace: "        const outOfScope = committed.filter((f) => !inDeclaredScope(f));",
+    tests: ["tests/rc7-generated-scope.test.mjs"],
+  },
+  {
+    name: "the exemption is DECLARED, not inferred (rc.7): a config rc.6 refuses starts authorizing commits",
+    file: "dist/orchestrator/loop.js",
+    find: "        const generatorOwned = resolveGenerators(this.deps.config.verify?.generators, {\n            neverCommitPaths: this.deps.config.repos?.never_commit_paths,\n        });",
+    replace: "        const generatorOwned = resolveGenerators(this.deps.config.verify?.generators);",
+    tests: ["tests/rc7-generated-scope.test.mjs"],
+  },
 ];
 
 /**

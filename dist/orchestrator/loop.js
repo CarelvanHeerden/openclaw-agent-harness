@@ -6620,12 +6620,55 @@ export class OrchestratorLoop {
         if (!Array.isArray(committed) || committed.length === 0)
             return [];
         const declared = collectDeclaredScopeFiles(plan);
+        /*
+         * rc.7: a DECLARED generator output is in scope for the script that owns it.
+         *
+         * This check reads the plan and nothing else, so a generated artifact was
+         * only ever in scope when a sub-task happened to name it. That was harmless
+         * while such trees were also in `repos.never_commit_paths` -- the commit was
+         * reverted, so nothing reached this filter. rc.6 made that pairing a
+         * configuration error, which means the correct configuration is now the one
+         * where generated artifacts ARE committed, and a bundle regeneration lands
+         * every file it rewrites in front of this check as scope creep.
+         *
+         * On the StitchGuard OKF tree that is 1,663 files against a 500-file
+         * `scope_blowout_file_threshold`: not a `fit` finding but a thrown
+         * ScopeBlowoutError that abandons the cycle before review. Resolving the
+         * rc.6 contradiction would have bought an abandoned run in place of an
+         * unwinnable contract.
+         *
+         * Ownership is the operator's explicit declaration of which script writes
+         * which paths, so this is narrow and never inferred. It deliberately reads
+         * `ownerOf`, which is null for any mapping resolution REJECTED -- including
+         * one rejected for the never_commit overlap itself. A contradictory config
+         * therefore gets no exemption at all: it has to be fixed, not tolerated.
+         */
+        const generatorOwned = resolveGenerators(this.deps.config.verify?.generators, {
+            neverCommitPaths: this.deps.config.repos?.never_commit_paths,
+        });
         // A committed file is IN-SCOPE if it matches ANY declared contract path via
         // the shared tolerant path matcher (route-group / suffix / basename-dir) --
         // the same normalisation every per-file verifier uses, so we don't
         // false-flag a route-group-normalised path the worker legitimately wrote.
-        const outOfScope = committed.filter((f) => !declared.some((d) => declaredCovers(f, d)));
-        this.deps.state.audit("loop.final_scope_check_ran", { sessionId, cycle, committedCount: committed.length, declaredCount: declared.length, outOfScopeCount: outOfScope.length }, sessionId);
+        const inDeclaredScope = (f) => declared.some((d) => declaredCovers(f, d));
+        const generated = committed.filter((f) => !inDeclaredScope(f) && generatorOwned.ownerOf(f) !== null);
+        const outOfScope = committed.filter((f) => !inDeclaredScope(f) && generatorOwned.ownerOf(f) === null);
+        if (generated.length > 0) {
+            // Named, not silent. "The scope check stopped firing" and "the scope check
+            // excused 1,663 files it can name the owner of" are different events, and
+            // only one of them is this fix working.
+            this.deps.state.audit("loop.final_scope_check_generated", {
+                sessionId,
+                cycle,
+                count: generated.length,
+                owners: [...new Set(generated.map((f) => generatorOwned.ownerOf(f)?.script).filter(Boolean))],
+                sample: generated.slice(0, 20),
+            }, sessionId);
+        }
+        this.deps.state.audit("loop.final_scope_check_ran", {
+            sessionId, cycle, committedCount: committed.length, declaredCount: declared.length,
+            outOfScopeCount: outOfScope.length, generatedCount: generated.length,
+        }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "final_scope_check_ran", phase: "review", cycle, committedCount: committed.length, outOfScopeCount: outOfScope.length });
         if (outOfScope.length === 0)
             return [];

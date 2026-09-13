@@ -484,6 +484,15 @@ the pattern causing it, and exits non-zero so it can gate a rollout. Given
 `--repo` it also proposes a narrowed exclusion list and flags any file that
 would become committable as a result.
 
+**A declared output is in scope for the script that owns it.** The final scope
+check otherwise reads only the plan, so a regenerated bundle would arrive as
+hundreds or thousands of out-of-scope writes the moment you made it committable
+— past `loop.scope_blowout_file_threshold` that is an abandoned cycle, not a
+finding. The exemption follows the declaration and not the directory, so
+hand-written files beside a generated tree are still scope creep, and a mapping
+the harness rejected authorizes nothing. Exemptions are audited as
+`loop.final_scope_check_generated`, naming the owning script.
+
 **Prefer narrowing to deleting.** Removing the excluding pattern resolves the
 overlap and reinstates what the pattern was added for — workers stage with `git
 add -A`, so an incidental regeneration sweeps the whole tree into an unrelated

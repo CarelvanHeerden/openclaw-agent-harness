@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### A declared generated artifact was scope creep the moment it became committable
+
+rc.6 made a `verify.generators` output that `repos.never_commit_paths` also
+covers a configuration error, because the pair is a contract no worker can
+satisfy. Correct, and it left a second contradiction standing behind the first.
+
+The final scope check reads the plan and nothing else — the revision's approved
+files, each sub-task's `filesLikelyTouched`, its `verify[].path`. A generated
+artifact was in scope only when a sub-task happened to name one. That never
+mattered while those trees were also excluded from commits, because the revert
+ran first and this check never saw them. Resolving the rc.6 error means they
+*are* committed, so a bundle regeneration now arrives here as scope creep.
+
+On the StitchGuard OKF tree that is 1,663 files against a 500-file
+`scope_blowout_file_threshold` — not a `fit` finding but beta.110's thrown
+`ScopeBlowoutError`, which abandons the cycle before review. Fixing the rc.6
+contradiction, on its own, would have bought an abandoned run in place of an
+unwinnable contract: PR #961's shape at ten times the size.
+
+A committed file owned by a resolved generator mapping is now in scope for the
+script that owns it, audited as `loop.final_scope_check_generated` with the
+owning script named, so an exemption is never mistaken for the check having
+stopped running. This is narrow and never inferred: it follows the operator's
+declaration rather than the directory, so hand-written files living beside a
+generated tree are still scope creep. It reads `ownerOf`, which is null for any
+mapping rc.6 rejected — including one rejected for the never_commit overlap —
+so a contradictory configuration earns no exemption at all and still has to be
+fixed. beta.110's tripwire is unchanged for everything else, and a cache sweep
+alongside a legitimate regeneration still aborts on the cache alone.
+
+### A read-only preflight for the rc.6 overlap
+
+`scripts/generator-config-preflight.mjs` reads a config and optionally a
+checkout, names every overlap with the pattern causing it, and exits non-zero so
+it can gate a rollout. It writes to neither. Given `--repo` it proposes a
+narrowed exclusion list and flags any file that would become committable as a
+result, which is necessary because this pathspec syntax has no negation.
+
+It argues against the obvious fix. Deleting the excluding pattern resolves the
+overlap and reinstates what the pattern exists to prevent.
+
 ## 2.0.0-rc.6
 
 Four ways one specification failed to become a merge-ready PR, taken from the
