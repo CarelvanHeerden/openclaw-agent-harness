@@ -92,7 +92,21 @@ jobs:
         # rc.4: primary version only. This asks whether the tests are vacuous,
         # which is a property of the tests and not of the runtime, so paying for
         # it on every matrix leg buys a duplicate answer for ~13 minutes.
-        if: matrix.node-version == '24'
+        #
+        # rc.8: and not on a branch push. The `fix/**` push trigger above means
+        # one release asks this question three times about the same code --
+        # branch push, PR, merge -- for ~51 minutes of runner time and one
+        # answer. The PR is the gate and the main run still covers a direct
+        # push, so those two are kept. A branch push keeps install, typecheck,
+        # build, the dist-sync check, the suite and smoke, which is the fast
+        # pre-PR signal that trigger exists for; it just stops paying 17
+        # minutes for an answer the PR is about to give again.
+        #
+        # This step is ~17 of the job's ~18.5 minutes and grows ~2.8s per
+        # mutation, so it is the only step where any of this matters.
+        if: >-
+          matrix.node-version == '24' &&
+          (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
         timeout-minutes: 45
         run: node scripts/mutation-check.mjs
 
