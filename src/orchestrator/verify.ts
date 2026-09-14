@@ -266,6 +266,14 @@ export async function verifySubTaskOutput(
      * tooling" one, which is the weaker claim of the two.
      */
     generatorScriptDeclared?: (script: string) => boolean;
+    /**
+     * rc.7: `repos.never_commit_paths`, and the subset of it this sub-task was
+     * authorized to generate. Used only to EXPLAIN a failure: a contract on an
+     * excluded path the sub-task could not write reads exactly like a generator
+     * that never ran, and sends a worker to re-run it forever.
+     */
+    neverCommitPaths?: readonly string[];
+    authorizedGeneratedPaths?: readonly string[];
   },
   probes: VerifyProbes,
 ): Promise<VerifyOutcome> {
@@ -284,6 +292,8 @@ export async function verifySubTaskOutput(
       owner,
       scriptDeclared: ctx.generatorScriptDeclared?.(owner.script) ?? true,
       baseDetail,
+      neverCommitPaths: ctx.neverCommitPaths,
+      authorizedPaths: ctx.authorizedGeneratedPaths,
     });
 
   /**

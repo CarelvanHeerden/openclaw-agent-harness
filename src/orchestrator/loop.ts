@@ -241,7 +241,12 @@ import {
   rescueMatchesContractPath,
 } from "./basename-rescue.js";
 import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
-import { generatorScriptDeclared, rescuableContractPaths, resolveGenerators } from "./generated-artifacts.js";
+import {
+  authorizedGeneratedOutputs,
+  generatorScriptDeclared,
+  rescuableContractPaths,
+  resolveGenerators,
+} from "./generated-artifacts.js";
 import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult, type CheckScript } from "./repo-conventions.js";
 import { blocksMerge, classifyFinding, isBlockingFinding, type ClassifyCtx } from "./finding-classify.js";
@@ -3687,7 +3692,7 @@ export class OrchestratorLoop {
                 cycle,
                 reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                 acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                ...this.generatorVerifyCtx(plan.worktreePath),
+                ...this.generatorVerifyCtx(plan.worktreePath, contract),
               },
               probes,
             );
@@ -3918,7 +3923,7 @@ export class OrchestratorLoop {
                         cycle,
                         reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                         acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                        ...this.generatorVerifyCtx(workerWorktree),
+                        ...this.generatorVerifyCtx(workerWorktree, contract),
                       },
                       retryProbes,
                     );
@@ -4437,7 +4442,7 @@ export class OrchestratorLoop {
                       cycle,
                       reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                       acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                      ...this.generatorVerifyCtx(workerWorktree),
+                      ...this.generatorVerifyCtx(workerWorktree, rescued),
                     },
                     rescueProbes,
                   );
@@ -7455,7 +7460,7 @@ export class OrchestratorLoop {
   private get classifyCtx(): ClassifyCtx {
     return {
       repoHasTestScript: true,
-      hasDeclaredGenerators: !resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths }).empty,
+      hasDeclaredGenerators: !resolveGenerators(this.deps.config.verify?.generators).empty,
     };
   }
 
@@ -7477,7 +7482,7 @@ export class OrchestratorLoop {
    * derived files are known-absent or known-stale.
    */
   private runGeneratorConfigCheck(sessionId: string, plan: LeadPlan, cycle: number): ReviewFinding[] {
-    const generators = resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths });
+    const generators = resolveGenerators(this.deps.config.verify?.generators);
     if (generators.empty && generators.errors.length === 0) return [];
     const findings: ReviewFinding[] = [];
 
@@ -7549,13 +7554,28 @@ export class OrchestratorLoop {
    * "missing tooling" to "did not run", which is the claim we can still stand
    * behind without having seen the manifest.
    */
-  private generatorVerifyCtx(worktreePath: string | null | undefined) {
-    const generators = resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths });
+  private generatorVerifyCtx(
+    worktreePath: string | null | undefined,
+    /**
+     * rc.7: the contract about to be verified. Its paths are what decides
+     * whether THIS sub-task was authorized to write an excluded path, which is
+     * the difference between "the generator did not run" and "it ran and the
+     * output was reverted". Omitted, nothing is claimed authorized -- safe,
+     * because an unauthorized path is precisely the failing case.
+     */
+    contract?: readonly unknown[],
+  ) {
+    const generators = resolveGenerators(this.deps.config.verify?.generators);
     if (generators.empty) return {};
     let scripts: Record<string, unknown> | undefined;
     let read = false;
+    const contractPaths = (contract ?? [])
+      .map((c) => (c && typeof c === "object" && "path" in c ? (c as { path?: unknown }).path : undefined))
+      .filter((p): p is string => typeof p === "string" && p.length > 0);
     return {
       generators,
+      neverCommitPaths: this.deps.config.repos?.never_commit_paths,
+      authorizedGeneratedPaths: authorizedGeneratedOutputs(generators, contractPaths),
       generatorScriptDeclared: (script: string) => {
         if (!read) {
           read = true;
@@ -8069,13 +8089,12 @@ export class OrchestratorLoop {
      *
      * Ownership is the operator's explicit declaration of which script writes
      * which paths, so this is narrow and never inferred. It deliberately reads
-     * `ownerOf`, which is null for any mapping resolution REJECTED -- including
-     * one rejected for the never_commit overlap itself. A contradictory config
-     * therefore gets no exemption at all: it has to be fixed, not tolerated.
+     * `ownerOf`, which is null for any path whose mapping was REJECTED -- an
+     * unparseable script name, a path that escapes the repository, a tree two
+     * scripts both claim. A config the harness refused to resolve authorizes
+     * nothing here either.
      */
-    const generatorOwned = resolveGenerators(this.deps.config.verify?.generators, {
-      neverCommitPaths: this.deps.config.repos?.never_commit_paths,
-    });
+    const generatorOwned = resolveGenerators(this.deps.config.verify?.generators);
     // A committed file is IN-SCOPE if it matches ANY declared contract path via
     // the shared tolerant path matcher (route-group / suffix / basename-dir) --
     // the same normalisation every per-file verifier uses, so we don't

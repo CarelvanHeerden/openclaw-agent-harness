@@ -882,7 +882,7 @@ export function bootstrapHarnessSync(api) {
                 },
                 gitBaseSha: (wt) => git.baseSha(wt),
                 gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),
-                gitCommit: (wt, msg, id) => git.commit(wt, msg, id),
+                gitCommit: (wt, msg, id, authorizedPaths) => git.commit(wt, msg, id, authorizedPaths ?? []),
                 // beta.47: reconcile commit sha when the worker self-commits.
                 gitHeadSha: (wt) => git.baseSha(wt),
                 gitListCommittedFiles: (wt, base) => git.listCommittedFiles(wt, base),
@@ -963,7 +963,7 @@ export function bootstrapHarnessSync(api) {
                     // rc.5: only demote a "the bundle is stale" finding when something
                     // actually owns regenerating it. Without a declared generator the
                     // complaint is unanswered, so it keeps its weight.
-                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators, { neverCommitPaths: config.repos.never_commit_paths }).empty,
+                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
                 }, {
                     logger: api.logger,
                     readDiff: async (p) => (await readFile(p, "utf8")),
@@ -1665,7 +1665,7 @@ export function bootstrapHarnessSync(api) {
                 // the review that produced it.
                 const cctx = {
                     repoHasTestScript: true,
-                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators, { neverCommitPaths: config.repos.never_commit_paths }).empty,
+                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
                 };
                 const blockers = findings.filter((f) => blocksMerge(f, classifyFinding(f, cctx)));
                 hasBlockingFinding = blockers.length > 0;

@@ -191,3 +191,116 @@ test("beta114: the config field survives a parse and is absent by default", asyn
   const cfg = parseHarnessConfig({ ...base, repos: { allowed: ["owner/repo"], never_commit_paths: ["okf/**"] } });
   assert.deepEqual(cfg.repos.never_commit_paths, ["okf/**"]);
 });
+
+// ---------------------------------------------------------------------------
+// rc.7 -- the list stops the sweep, not the owner
+// ---------------------------------------------------------------------------
+//
+// beta.114 reverts unconditionally, which is right for the case it was written
+// for (a worker regenerating the bundle as a side effect of unrelated work) and
+// wrong for the one turn whose work the bundle IS. rc.5 gave the harness a way
+// to say which script owns which paths and authorized the worker to run it;
+// the commit then threw the result away, because the revert never consulted
+// that authorization. rc.6 called the combination a configuration error. rc.7
+// makes the two cooperate instead: the revert spares what THIS commit was
+// contracted to produce.
+//
+// Real git again, for b114's original reason -- the whole mechanism is staging
+// semantics, and a mock would pass a broken implementation.
+
+test("rc.7: the sub-task contracted to generate the bundle may commit it", async () => {
+  const dir = fresh();
+  writeFileSync(join(dir, "src/app/page.tsx"), "export const Page = () => 'feature';\n");
+  writeFileSync(join(dir, "okf/index.md"), "REGENERATED index\n");
+  writeFileSync(join(dir, "okf/libraries/it/a.md"), "REGENERATED a\n");
+
+  const sha = await adapter(["okf/**"]).commit(dir, "docs: regenerate the bundle", ID, ["okf/"]);
+  assert.ok(sha);
+  assert.deepEqual(
+    committedFiles(dir).sort(),
+    ["okf/index.md", "okf/libraries/it/a.md", "src/app/page.tsx"],
+    "the artifacts this turn owns are committed, not reverted",
+  );
+});
+
+test("rc.7: another sub-task's sweep is still reverted", async () => {
+  // The PR #961 case, unchanged. This turn owns nothing under okf/.
+  const dir = fresh();
+  writeFileSync(join(dir, "src/app/page.tsx"), "feature\n");
+  writeFileSync(join(dir, "okf/index.md"), "REGENERATED\n");
+
+  await adapter(["okf/**"]).commit(dir, "feat: unrelated", ID, ["src/generated/"]);
+  assert.deepEqual(committedFiles(dir), ["src/app/page.tsx"]);
+  assert.equal(readFileSync(join(dir, "okf/index.md"), "utf8"), "generated index\n", "restored, not merely unstaged");
+});
+
+test("rc.7: authorization is per path, not per tree", async () => {
+  // Eight mappings on StitchGuard, and a sub-task owns some and not others.
+  const dir = fresh();
+  writeFileSync(join(dir, "okf/index.md"), "REGENERATED index\n");
+  writeFileSync(join(dir, "okf/libraries/it/a.md"), "REGENERATED a\n");
+
+  await adapter(["okf/**"]).commit(dir, "docs: index only", ID, ["okf/index.md"]);
+  assert.deepEqual(committedFiles(dir), ["okf/index.md"]);
+  assert.equal(
+    readFileSync(join(dir, "okf/libraries/it/a.md"), "utf8"),
+    "generated a\n",
+    "a sibling this turn does not own is still reverted",
+  );
+});
+
+test("rc.7: an exact-file authorization does not spill onto its neighbours", async () => {
+  const dir = fresh();
+  writeFileSync(join(dir, "okf/libraries/it/a.md"), "REGENERATED a\n");
+  writeFileSync(join(dir, "okf/libraries/it/b.md"), "REGENERATED b\n");
+
+  await adapter(["okf/**"]).commit(dir, "docs: a only", ID, ["okf/libraries/it/a.md"]);
+  assert.deepEqual(committedFiles(dir), ["okf/libraries/it/a.md"]);
+});
+
+test("rc.7: omitting authorization keeps beta.114 exactly as it was", async () => {
+  // Every harness-authored commit goes through this path -- ciAuthorWorkflow and
+  // the rest are not sub-tasks and own nothing. They must not acquire an
+  // exemption by saying nothing.
+  const dir = fresh();
+  writeFileSync(join(dir, "src/app/page.tsx"), "feature\n");
+  writeFileSync(join(dir, "okf/index.md"), "REGENERATED\n");
+
+  await adapter(["okf/**"]).commit(dir, "harness commit", ID);
+  assert.deepEqual(committedFiles(dir), ["src/app/page.tsx"]);
+});
+
+test("rc.7: a commit of ONLY owned artifacts is a real commit", async () => {
+  // b114 turns a bundle-only commit into a no-op. When the bundle is the work,
+  // that no-op is the unwinnable contract: nothing is committed and the
+  // contract then fails because nothing was committed.
+  const dir = fresh();
+  writeFileSync(join(dir, "okf/index.md"), "REGENERATED\n");
+  const before = git(dir, "rev-parse", "HEAD");
+
+  const sha = await adapter(["okf/**"]).commit(dir, "docs: regenerate", ID, ["okf/"]);
+  assert.ok(sha, "the artifact IS the change");
+  assert.notEqual(git(dir, "rev-parse", "HEAD"), before);
+  assert.deepEqual(committedFiles(dir), ["okf/index.md"]);
+});
+
+test("rc.7: sparing one path does not spare the rest of the sweep", async () => {
+  // The mixed case, and the one most likely to go wrong: the revert switches
+  // from a glob pathspec to explicit paths so the spared file survives, and
+  // that switch must not take the other excluded files with it.
+  const dir = fresh();
+  mkdirSync(join(dir, "vendor"), { recursive: true });
+  writeFileSync(join(dir, "vendor/lib.js"), "vendored\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "vendor");
+
+  writeFileSync(join(dir, "okf/index.md"), "REGENERATED index\n");
+  writeFileSync(join(dir, "okf/libraries/it/a.md"), "SWEPT a\n");
+  writeFileSync(join(dir, "vendor/lib.js"), "SWEPT vendor\n");
+
+  await adapter(["okf/**", "vendor/**"]).commit(dir, "docs: index", ID, ["okf/index.md"]);
+  assert.deepEqual(committedFiles(dir), ["okf/index.md"]);
+  assert.equal(readFileSync(join(dir, "okf/libraries/it/a.md"), "utf8"), "generated a\n");
+  assert.equal(readFileSync(join(dir, "vendor/lib.js"), "utf8"), "vendored\n");
+  assert.equal(git(dir, "status", "--porcelain"), "", "and the tree is left clean either way");
+});

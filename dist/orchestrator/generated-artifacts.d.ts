@@ -104,19 +104,23 @@ export interface GeneratorConfigError {
  */
 export declare function normaliseRepoPath(raw: string): string | null;
 /**
- * rc.6: does a `repos.never_commit_paths` pathspec cover this path?
+ * Does a `repos.never_commit_paths` pathspec cover this path?
  *
- * WHY THIS CHECK EXISTS. `never_commit_paths` is not advisory. Its enforcement
- * (`revertNeverCommitPaths`) unstages AND restores every matching path before
- * the commit, so work under it is discarded, not merely skipped. Point a
- * generator at a tree that is also excluded and the contract becomes literally
- * unsatisfiable: the worker is instructed to run the script and commit what it
- * writes, the harness throws the result away, the contract then fails because
- * the artifact was never committed, and the failure text advises re-running the
- * generator -- which will be thrown away again.
+ * rc.6 used this to REFUSE a generator mapping whose output was also excluded,
+ * on the grounds that the pair was unsatisfiable: the worker is instructed to
+ * run the script and commit what it writes, the exclusion throws the result
+ * away, and the contract fails because the artifact was never committed.
  *
- * The observed configuration had exactly this shape: `okf` declared as the
- * generator for `okf/...`, and `never_commit_paths: ["okf/**"]`.
+ * rc.7 retired that refusal, because the premise stopped being true. The
+ * exclusion now spares the paths the committing sub-task is contracted to
+ * generate (see `revertNeverCommitPaths`), so the overlap is no longer a
+ * contradiction -- it is the intended configuration, and the one an operator
+ * with a checked-in generated bundle actually wants. The observed case was
+ * `okf` declared as the generator for `okf/...` alongside
+ * `never_commit_paths: ["okf/**"]`, and that config is now correct as written.
+ *
+ * Still used to EXPLAIN a failure (a contract on an excluded path that no
+ * sub-task was authorized to write) and by the config preflight.
  *
  * Supports the `*` / `**` / `?` pathspec forms an operator would write here. A
  * pattern with no wildcard owns its subtree, as a git pathspec does.
@@ -150,14 +154,7 @@ export interface GeneratorMap {
  * both cases the affected paths end up unowned, which means "ordinary file" --
  * no generation, no exemption.
  */
-export declare function resolveGenerators(raw: GeneratorMapping[] | undefined, opts?: {
-    /**
-     * rc.6: `repos.never_commit_paths`. A produced path this covers is rejected
-     * -- see {@link neverCommitCovers} for why that combination cannot be
-     * satisfied by any worker.
-     */
-    neverCommitPaths?: string[];
-}): GeneratorMap;
+export declare function resolveGenerators(raw: GeneratorMapping[] | undefined): GeneratorMap;
 /**
  * Contract paths still eligible for a topology rescue.
  *
@@ -183,6 +180,23 @@ export declare function generatorScriptDeclared(scripts: Record<string, unknown>
  * construction, so no turn can be talked into a speculative repo-wide run.
  * Grouped by script and returned in declaration order for a stable prompt.
  */
+/**
+ * rc.7: the never-commit paths a sub-task owing `paths` may keep in its commit.
+ *
+ * Authorization is at GENERATOR granularity, not path granularity, and the
+ * difference is the whole point. `authorizedGeneratorsForPaths` answers "which
+ * of the paths you asked about does a script own", which is the right question
+ * for the worker prompt -- it names the files the sub-task owes. It is the
+ * wrong question here: a generator rewrites its entire declared output every
+ * time it runs, so sparing only the intersecting subset would commit the index
+ * and revert the modules, leaving a bundle that is internally inconsistent and
+ * a tree that looks clean. Authorizing the script means authorizing what the
+ * script writes.
+ *
+ * A sub-task owing nothing generated authorizes nothing, which is the default
+ * and keeps beta.114 unconditional for every commit that is not a generation.
+ */
+export declare function authorizedGeneratedOutputs(map: GeneratorMap, paths: readonly string[]): string[];
 export declare function authorizedGeneratorsForPaths(map: GeneratorMap, paths: readonly string[]): {
     script: string;
     paths: string[];
@@ -209,6 +223,13 @@ export declare function describeGeneratedArtifactFailure(params: {
     owner: ResolvedGenerator;
     scriptDeclared: boolean;
     baseDetail: string;
+    /**
+     * rc.7: `repos.never_commit_paths`, when the sub-task that failed this
+     * contract was NOT authorized to write the path.
+     */
+    neverCommitPaths?: readonly string[];
+    /** rc.7: the never-commit paths that sub-task WAS authorized to write. */
+    authorizedPaths?: readonly string[];
 }): string;
 /** rc.6: which of this generator's declared inputs changed in the window. */
 export declare function changedGeneratorInputs(owner: ResolvedGenerator, changedFiles: readonly string[]): string[];

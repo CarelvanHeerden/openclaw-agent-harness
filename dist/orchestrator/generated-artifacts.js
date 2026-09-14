@@ -95,19 +95,23 @@ export function normaliseRepoPath(raw) {
     return trailingSlash ? `${p}/` : p;
 }
 /**
- * rc.6: does a `repos.never_commit_paths` pathspec cover this path?
+ * Does a `repos.never_commit_paths` pathspec cover this path?
  *
- * WHY THIS CHECK EXISTS. `never_commit_paths` is not advisory. Its enforcement
- * (`revertNeverCommitPaths`) unstages AND restores every matching path before
- * the commit, so work under it is discarded, not merely skipped. Point a
- * generator at a tree that is also excluded and the contract becomes literally
- * unsatisfiable: the worker is instructed to run the script and commit what it
- * writes, the harness throws the result away, the contract then fails because
- * the artifact was never committed, and the failure text advises re-running the
- * generator -- which will be thrown away again.
+ * rc.6 used this to REFUSE a generator mapping whose output was also excluded,
+ * on the grounds that the pair was unsatisfiable: the worker is instructed to
+ * run the script and commit what it writes, the exclusion throws the result
+ * away, and the contract fails because the artifact was never committed.
  *
- * The observed configuration had exactly this shape: `okf` declared as the
- * generator for `okf/...`, and `never_commit_paths: ["okf/**"]`.
+ * rc.7 retired that refusal, because the premise stopped being true. The
+ * exclusion now spares the paths the committing sub-task is contracted to
+ * generate (see `revertNeverCommitPaths`), so the overlap is no longer a
+ * contradiction -- it is the intended configuration, and the one an operator
+ * with a checked-in generated bundle actually wants. The observed case was
+ * `okf` declared as the generator for `okf/...` alongside
+ * `never_commit_paths: ["okf/**"]`, and that config is now correct as written.
+ *
+ * Still used to EXPLAIN a failure (a contract on an excluded path that no
+ * sub-task was authorized to write) and by the config preflight.
  *
  * Supports the `*` / `**` / `?` pathspec forms an operator would write here. A
  * pattern with no wildcard owns its subtree, as a git pathspec does.
@@ -149,7 +153,7 @@ export function neverCommitCovers(patterns, path) {
  * both cases the affected paths end up unowned, which means "ordinary file" --
  * no generation, no exemption.
  */
-export function resolveGenerators(raw, opts) {
+export function resolveGenerators(raw) {
     const errors = [];
     const entries = [];
     const seenScripts = new Set();
@@ -181,19 +185,6 @@ export function resolveGenerators(raw, opts) {
             const norm = normaliseRepoPath(p);
             if (norm === null) {
                 errors.push({ script, path: String(p), reason: "not a repo-relative path (absolute, empty, or escapes the repository)" });
-                continue;
-            }
-            // rc.6: an excluded path can never hold a committed artifact, so
-            // authorizing a generator for it only produces an unwinnable contract.
-            if (neverCommitCovers(opts?.neverCommitPaths, norm)) {
-                errors.push({
-                    script,
-                    path: norm,
-                    reason: `also matched by repos.never_commit_paths, which unstages and RESTORES it before every commit -- so the ` +
-                        `generator would be told to write it, the harness would discard the result, and the contract on it could ` +
-                        `never be satisfied. Resolve the contradiction: either narrow never_commit_paths, or stop declaring this ` +
-                        `path as generated output`,
-                });
                 continue;
             }
             const prior = claims.get(norm);
@@ -298,6 +289,34 @@ export function generatorScriptDeclared(scripts, script) {
  * construction, so no turn can be talked into a speculative repo-wide run.
  * Grouped by script and returned in declaration order for a stable prompt.
  */
+/**
+ * rc.7: the never-commit paths a sub-task owing `paths` may keep in its commit.
+ *
+ * Authorization is at GENERATOR granularity, not path granularity, and the
+ * difference is the whole point. `authorizedGeneratorsForPaths` answers "which
+ * of the paths you asked about does a script own", which is the right question
+ * for the worker prompt -- it names the files the sub-task owes. It is the
+ * wrong question here: a generator rewrites its entire declared output every
+ * time it runs, so sparing only the intersecting subset would commit the index
+ * and revert the modules, leaving a bundle that is internally inconsistent and
+ * a tree that looks clean. Authorizing the script means authorizing what the
+ * script writes.
+ *
+ * A sub-task owing nothing generated authorizes nothing, which is the default
+ * and keeps beta.114 unconditional for every commit that is not a generation.
+ */
+export function authorizedGeneratedOutputs(map, paths) {
+    const scripts = new Set(authorizedGeneratorsForPaths(map, paths).map((g) => g.script));
+    if (scripts.size === 0)
+        return [];
+    const out = [];
+    for (const e of map.entries) {
+        if (!scripts.has(e.script))
+            continue;
+        out.push(...e.files, ...e.dirs);
+    }
+    return [...new Set(out)];
+}
 export function authorizedGeneratorsForPaths(map, paths) {
     if (map.empty)
         return [];
@@ -345,11 +364,29 @@ export function renderGeneratorInstruction(owners) {
  * whether the reason it is absent is missing tooling or an unrun generator.
  */
 export function describeGeneratedArtifactFailure(params) {
-    const { path, owner, scriptDeclared, baseDetail } = params;
+    const { path, owner, scriptDeclared, baseDetail, neverCommitPaths, authorizedPaths } = params;
     const cause = scriptDeclared
         ? `the generator that owns it (\`npm run ${owner.script}\`) did not run, or ran and produced nothing`
         : `MISSING TOOLING: verify.generators maps it to \`${owner.script}\`, but package.json declares no such script, so it can never be produced`;
-    return `${path} is a GENERATED artifact -- ${cause}. This is not a path-resolution mismatch. Probe detail: ${baseDetail}`;
+    /*
+     * rc.7: the third cause, and the one that reads as either of the other two.
+     *
+     * rc.6 refused this configuration outright, which was wrong -- the overlap is
+     * legitimate, and the exclusion now spares whichever sub-task is contracted
+     * to produce the path. But it caught something real, and retiring the refusal
+     * must not retire the diagnosis: if NO sub-task was authorized, the generator
+     * may well have run correctly and had its output reverted, which presents as
+     * "the generator did not run" and sends a worker to re-run it forever.
+     */
+    const excluded = neverCommitCovers(neverCommitPaths, path) &&
+        !(authorizedPaths ?? []).some((p) => (p.endsWith("/") ? path.startsWith(p) : path === p));
+    const reverted = excluded
+        ? ` NOTE: this path is matched by repos.never_commit_paths, and this sub-task was not authorized to generate it, ` +
+            `so anything written here WAS REVERTED before the commit. Re-running the generator cannot fix that. The ` +
+            `sub-task contracted to produce this artifact must declare it (\`${owner.script}\` owns it), or the path must ` +
+            `come off never_commit_paths.`
+        : "";
+    return `${path} is a GENERATED artifact -- ${cause}. This is not a path-resolution mismatch.${reverted} Probe detail: ${baseDetail}`;
 }
 /** rc.6: which of this generator's declared inputs changed in the window. */
 export function changedGeneratorInputs(owner, changedFiles) {

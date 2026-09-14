@@ -64,6 +64,8 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
         owner,
         scriptDeclared: ctx.generatorScriptDeclared?.(owner.script) ?? true,
         baseDetail,
+        neverCommitPaths: ctx.neverCommitPaths,
+        authorizedPaths: ctx.authorizedGeneratedPaths,
     });
     /**
      * rc.6: decide a generator-owned path that did NOT change in this window.

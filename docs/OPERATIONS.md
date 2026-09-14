@@ -459,30 +459,39 @@ harness reads to decide whether a committed artifact has gone stale; see the
 freshness table below. Without it, an artifact that nobody touched is accepted,
 because there is no evidence either way.
 
-**`produces` may not overlap `repos.never_commit_paths`.** That list does not
-merely discourage committing a path — `revertNeverCommitPaths` unstages *and
-restores* every match before each commit. A generator told to produce a path on
-that list is given a contract it cannot satisfy on any cycle: the worker
-regenerates the file, the pre-commit step puts it back, the contract fails, and
-the failure advice ("run the generator") is advice that cannot work. The harness
-now rejects this combination when it resolves the config, naming both the script
-and the path, rather than letting a run discover it one cycle at a time.
+**`produces` may overlap `repos.never_commit_paths`, and usually should.** The
+two settings describe the same files and now share a vocabulary: a path on the
+exclusion list is reverted before every commit *except* the one made by a
+sub-task contracted to generate it. So a repository with a checked-in generated
+bundle keeps the blanket exclusion that stops unrelated sub-tasks sweeping the
+tree in, and the turn that owns the bundle still commits it.
 
-Rejection is per-run, not at config load: the deployment keeps starting, and
-each rejected path becomes a blocking `high` finding on every cycle while the
-path itself falls back to being unowned — no generation, and no exemption from
-its ordinary contract check. So an existing deployment carrying this overlap
-does not break on upgrade; it stops shipping until the config is edited. To see
-what that will cost before upgrading:
+Authorization is per generator, not per file. A sub-task owing any path a script
+produces may commit everything that script produces, because a generator
+rewrites its whole output each run — sparing only the paths the sub-task
+happened to name would commit the index and revert the modules.
+
+rc.6 refused this combination outright, on the grounds that the contract could
+not be satisfied. That was true then and is not now. If you narrowed an
+exclusion list to satisfy rc.6, you can put it back: an enumerated list of
+sibling directories silently loses protection for every directory added
+afterwards, which the blanket pattern covered for free.
+
+What still cannot be satisfied is an excluded path that **no** generator owns.
+Nothing can commit it, so a contract requiring it fails every cycle — and it
+fails looking exactly like a generator that never ran. The harness says so
+explicitly in that case, naming the exclusion rather than advising a re-run. To
+audit a deployment for it:
 
 ```
 node scripts/generator-config-preflight.mjs ~/.openclaw/openclaw.json --repo /path/to/checkout
 ```
 
-It reads the config and the tree, writes to neither, names every overlap with
-the pattern causing it, and exits non-zero so it can gate a rollout. Given
-`--repo` it also proposes a narrowed exclusion list and flags any file that
-would become committable as a result.
+It reads the config and the tree, writes to neither, and reports which excluded
+paths are owned by a declared generator and which are owned by nothing. It exits
+non-zero only for a genuinely rejected mapping — an unparseable script, a path
+escaping the repository, a tree two scripts both claim — so it can still gate a
+rollout.
 
 **A declared output is in scope for the script that owns it.** The final scope
 check otherwise reads only the plan, so a regenerated bundle would arrive as
@@ -559,7 +568,7 @@ mismatch" on a generated file is that defect, not a misplaced file.
 ## Troubleshooting
 
 - **A contract failed on a generated file**: read the message rather than the path. If it says the generator did not run, the worker was not authorized for that path — add it to `verify.generators`. If it says MISSING TOOLING, the mapped script is not in the repo's `package.json`. If it says stale, it names the declared input that moved, and the artifact must be regenerated from it. See "Who regenerates derived artifacts" above.
-- **The config is refused because a generator targets a never-commit path**: the two settings contradict each other, and the harness stops rather than starting a run whose contract can never pass. Either drop the path from `repos.never_commit_paths` (if the artifact is genuinely meant to be committed) or from the generator's `produces` (if it is not). See "Who regenerates derived artifacts" above.
+- **A generated file's contract says it WAS REVERTED**: the path is on `repos.never_commit_paths` and the sub-task that failed the contract was not authorized to generate it, so the output was undone before the commit. Re-running the generator cannot fix this. Either the sub-task that owes the artifact must declare it, or no generator owns the path at all — `scripts/generator-config-preflight.mjs --repo` tells you which. See "Who regenerates derived artifacts" above.
 - **The run paused asking for money**: a money-based stop was about to refuse useful work. Answer with an amount or `yes`, or react `:moneybag:`; `ship` declines. Ignoring it is safe — the window closes and the run does what it would have done anyway. See "When the money runs out, the harness asks" above.
 - **A repair was declined with `reason: "budget"`**: read `repairFunding` in the same audit event. `no_reserve` means `loop.repair_reserve_ratio` is 0 for this deployment, which you can change; `reserve_exhausted` means this run has spent what it was given, which you cannot. Runs from before rc.6 have neither field, and their `"budget"` usually means implementation had already spent the figure repair was measured against.
 - **An approval came back as a question instead of starting the run**: the reply named the budget or the clock with an amount the harness could not use, so it stopped rather than starting at a default you did not choose. The question quotes the words it could not read. See "Approving a brief, and the limits that actually apply" above.

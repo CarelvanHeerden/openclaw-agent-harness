@@ -2,6 +2,12 @@
 
 Author: Cursor · 2026-09-14 · Origin: Carel's question after the StitchGuard OKF conflict (rc.6, PRs #201–#203)
 
+**Status: phase 1 implemented in PR #203.** The rule, the plumbing and the
+migration below all shipped; `authorizedGeneratedOutputs` widened the
+authorization from the sub-task's declared paths to the whole of what the
+authorized script writes, for the reason given under "Plumbing". Phases 2 and 3
+remain proposals.
+
 ## Motivation
 
 `repos.never_commit_paths` and `verify.generators` are two mechanisms describing
@@ -213,7 +219,7 @@ It should run **last**, for the ordering reason above.
 
 | Phase | Change | Unblocks |
 | --- | --- | --- |
-| 1 | Ownership-scoped revert; retire the rc.6 overlap error; repurpose the preflight | StitchGuard runs with its existing config, unedited |
+| 1 ✅ | Ownership-scoped revert; retire the rc.6 overlap error; repurpose the preflight | StitchGuard runs with its existing config, unedited |
 | 2 | Conditional generation sub-task, appended last, triggered by changed `inputs` | The bundle has a standing owner instead of an accidental one |
 | 3 | Generated-output handling in review (summarise rather than diff verbatim) | The cost of owning a 1,663-file bundle |
 

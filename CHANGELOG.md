@@ -2,24 +2,71 @@
 
 ## Unreleased
 
+### The exclusion list reverted the one commit whose work it was
+
+`repos.never_commit_paths` and `verify.generators` describe the same files and
+had no shared vocabulary. One says a path must never be committed; the other
+says a script owns it and a sub-task may be contracted to produce it. Ownership
+carried no authority at commit time, so beta.114's revert — which unstages *and
+restores* every match — undid the output of the very turn that was told to
+generate it. The worker is authorized to run the script, instructed to commit
+what it writes, and the commit throws it away; the contract then fails because
+the artifact was never committed, and the advice is to run the generator again.
+
+rc.6 read that as a contradiction and refused the configuration. That diagnosis
+was right about the symptom and wrong about the cause. The configuration is what
+an operator with a checked-in generated bundle actually wants: a blanket
+exclusion so unrelated sub-tasks cannot sweep 141 files into a feature PR, and a
+generator that owns the tree for the turn that regenerates it. The defect was
+that the two mechanisms could not both be true at once.
+
+Now they can. A staged path on the exclusion list is reverted **unless the
+committing sub-task is authorized to generate it**. No new configuration: the
+binding already exists and is already per sub-task — the same authorization that
+tells a worker which script it may run now tells the commit which paths it may
+keep. Everything else is reverted exactly as before, including for a
+harness-authored commit, which is not a sub-task and owns nothing.
+
+Authorization is per generator rather than per file, because a generator
+rewrites its whole declared output each run; sparing only the paths a sub-task
+happened to name would commit the index and revert the modules, leaving a
+bundle inconsistent with itself and a worktree that looks clean.
+
+Consequences:
+
+- **The rc.6 overlap rejection is retired.** A deployment that narrowed its
+  exclusion list to satisfy rc.6 can put it back, and should: an enumerated list
+  of sibling directories loses protection for every directory added later, which
+  a blanket pattern covered for free. No deployment needs a config edit.
+- **The diagnosis survives the rejection.** An excluded path that *no* generator
+  owns still cannot be committed by anyone, and fails looking exactly like a
+  generator that never ran. A contract failure on such a path now says the
+  output was reverted and that re-running cannot help, instead of sending a
+  worker round the same loop.
+- **The preflight reports ownership coverage.** `generator-config-preflight.mjs`
+  no longer proposes a narrowing — the narrowing is no longer the fix. It reads
+  a config and optionally a checkout, writes to neither, and reports which
+  excluded paths a declared generator owns and which are owned by nothing. It
+  exits non-zero only for a mapping the harness genuinely rejects, so it can
+  still gate a rollout.
+
 ### A declared generated artifact was scope creep the moment it became committable
 
-rc.6 made a `verify.generators` output that `repos.never_commit_paths` also
-covers a configuration error, because the pair is a contract no worker can
-satisfy. Correct, and it left a second contradiction standing behind the first.
+Letting the owning sub-task commit its generated tree exposes a second
+contradiction standing behind the first.
 
 The final scope check reads the plan and nothing else — the revision's approved
 files, each sub-task's `filesLikelyTouched`, its `verify[].path`. A generated
 artifact was in scope only when a sub-task happened to name one. That never
 mattered while those trees were also excluded from commits, because the revert
-ran first and this check never saw them. Resolving the rc.6 error means they
-*are* committed, so a bundle regeneration now arrives here as scope creep.
+ran first and this check never saw them. Now that the owner commits them, a
+bundle regeneration arrives here as scope creep.
 
 On the StitchGuard OKF tree that is 1,663 files against a 500-file
 `scope_blowout_file_threshold` — not a `fit` finding but beta.110's thrown
-`ScopeBlowoutError`, which abandons the cycle before review. Fixing the rc.6
-contradiction, on its own, would have bought an abandoned run in place of an
-unwinnable contract: PR #961's shape at ten times the size.
+`ScopeBlowoutError`, which abandons the cycle before review. The commit fix on
+its own would have bought an abandoned run in place of an unwinnable contract:
+PR #961's shape at ten times the size.
 
 A committed file owned by a resolved generator mapping is now in scope for the
 script that owns it, audited as `loop.final_scope_check_generated` with the
@@ -27,21 +74,11 @@ owning script named, so an exemption is never mistaken for the check having
 stopped running. This is narrow and never inferred: it follows the operator's
 declaration rather than the directory, so hand-written files living beside a
 generated tree are still scope creep. It reads `ownerOf`, which is null for any
-mapping rc.6 rejected — including one rejected for the never_commit overlap —
-so a contradictory configuration earns no exemption at all and still has to be
-fixed. beta.110's tripwire is unchanged for everything else, and a cache sweep
-alongside a legitimate regeneration still aborts on the cache alone.
-
-### A read-only preflight for the rc.6 overlap
-
-`scripts/generator-config-preflight.mjs` reads a config and optionally a
-checkout, names every overlap with the pattern causing it, and exits non-zero so
-it can gate a rollout. It writes to neither. Given `--repo` it proposes a
-narrowed exclusion list and flags any file that would become committable as a
-result, which is necessary because this pathspec syntax has no negation.
-
-It argues against the obvious fix. Deleting the excluding pattern resolves the
-overlap and reinstates what the pattern exists to prevent.
+mapping the harness refused to resolve — an unparseable script, a path escaping
+the repository, a tree two scripts both claim — so a configuration it would not
+read earns no exemption here either. beta.110's tripwire is unchanged for
+everything else, and a cache sweep alongside a legitimate regeneration still
+aborts on the cache alone.
 
 ## 2.0.0-rc.6
 

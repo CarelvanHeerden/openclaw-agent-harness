@@ -3320,12 +3320,45 @@ const MUTATIONS = [
     replace: "        const outOfScope = committed.filter((f) => !inDeclaredScope(f));",
     tests: ["tests/rc7-generated-scope.test.mjs"],
   },
+  // --- rc.7: ownership-scoped commit exclusion ---------------------------
+  //
+  // The rc.6 mutation that lived here pinned the overlap REJECTION, which rc.7
+  // retired -- its "mutant" is now the shipping code. What replaces it pins the
+  // mechanism that made retiring it safe.
   {
-    name: "the exemption is DECLARED, not inferred (rc.7): a config rc.6 refuses starts authorizing commits",
-    file: "dist/orchestrator/loop.js",
-    find: "        const generatorOwned = resolveGenerators(this.deps.config.verify?.generators, {\n            neverCommitPaths: this.deps.config.repos?.never_commit_paths,\n        });",
-    replace: "        const generatorOwned = resolveGenerators(this.deps.config.verify?.generators);",
+    name: "the owner may COMMIT (rc.7): the generator runs, the commit is reverted, the contract never closes",
+    file: "dist/adapters/git-worktree.js",
+    find: "            const spared = authorizedPaths.length > 0 ? matched.filter(isAuthorized) : [];",
+    replace: "            const spared = [];",
+    tests: ["tests/beta114-never-commit-paths.test.mjs"],
+  },
+  {
+    name: "sparing is PER PATH (rc.7): one owned artifact re-opens the 141-file sweep b114 closed",
+    file: "dist/adapters/git-worktree.js",
+    find: "        const isAuthorized = (file) => authorizedPaths.some((p) => (p.endsWith(\"/\") ? file.startsWith(p) : file === p));",
+    replace: "        const isAuthorized = (_file) => authorizedPaths.length > 0;",
+    tests: ["tests/beta114-never-commit-paths.test.mjs"],
+  },
+  {
+    name: "the commit inherits the worker's authorization (rc.7): computed, then never passed on",
+    file: "dist/orchestrator/worker.js",
+    find: "    const reconciled = await reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha, authorizedGeneratedPaths);",
+    replace: "    const reconciled = await reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha);",
     tests: ["tests/rc7-generated-scope.test.mjs"],
+  },
+  {
+    name: "a generator writes its WHOLE output (rc.7): index committed, modules reverted, bundle inconsistent",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    const out = [];\n    for (const e of map.entries) {\n        if (!scripts.has(e.script))\n            continue;\n        out.push(...e.files, ...e.dirs);\n    }\n    return [...new Set(out)];",
+    replace: "    return authorizedGeneratorsForPaths(map, paths).flatMap((g) => g.paths);",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  {
+    name: "a reverted artifact says so (rc.7): the owner is told its own work 'did not run'",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    const excluded = neverCommitCovers(neverCommitPaths, path) &&\n        !(authorizedPaths ?? []).some((p) => (p.endsWith(\"/\") ? path.startsWith(p) : path === p));",
+    replace: "    const excluded = neverCommitCovers(neverCommitPaths, path);",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
 ];
 

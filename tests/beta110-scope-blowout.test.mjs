@@ -399,14 +399,25 @@ test("beta110: a failed review still emits phase_timing", () => {
 
 test("beta110: commit() excludes BEFORE it stages", () => {
   const src = S("src/adapters/git-worktree.ts");
-  const i = src.indexOf("async commit(worktreePath");
-  // Window widened in rc.2: the scratch-directory sweep sits between the
-  // function head and the staging call. The ordering claim is unchanged.
-  const body = src.slice(i, i + 1000);
-  assert.ok(
-    body.indexOf("applyHarnessExcludes") < body.indexOf('"add", "-A"'),
-    "excluding after staging would be useless",
-  );
+  // rc.7: anchored on `async commit(` rather than `async commit(worktreePath`,
+  // because the signature went multi-line when it gained the authorized-paths
+  // parameter. The old anchor then matched nothing, `indexOf` returned -1, and
+  // `slice(-1, ...)` read the last character of the file -- which is not a
+  // failure this pin was ever going to describe usefully.
+  const i = src.indexOf("async commit(");
+  assert.ok(i >= 0, "the commit method must be findable at all");
+  // Window widened in rc.2 (the scratch-directory sweep moved in between) and
+  // again in rc.7 (the new parameter and its comment). The ordering claim is
+  // unchanged both times; only the distance between head and staging call is.
+  const body = src.slice(i, i + 2000);
+  const excludes = body.indexOf("applyHarnessExcludes");
+  const stage = body.indexOf('"add", "-A"');
+  // Asserted separately, because `indexOf` returns -1 for a call that fell off
+  // the end of the window and `-1 < n` is exactly as true as a passing test.
+  // That is how this pin quietly stopped checking anything before rc.7.
+  assert.ok(excludes >= 0, "the exclude call must be inside the window");
+  assert.ok(stage >= 0, "so must the staging call -- widen the slice, do not delete the pin");
+  assert.ok(excludes < stage, "excluding after staging would be useless");
 });
 
 test("beta110: the blowout is not swallowed at the call site", () => {

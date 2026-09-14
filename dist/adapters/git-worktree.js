@@ -1263,11 +1263,30 @@ esac
      * from hand-written code by inspection -- `okf/**` is ordinary markdown --
      * and a harness that guessed would eventually discard someone's real work.
      * Empty list (the default) means this does nothing at all.
+     *
+     * rc.7: `authorizedPaths` are the paths THIS commit is allowed to write even
+     * though the list covers them -- the generated artifacts the sub-task was
+     * contracted to produce. The list exists to stop a worker sweeping in a tree
+     * that is not its work; it was never meant to stop the one turn whose work it
+     * IS. Without this, a worker is authorized to run the generator, instructed
+     * to commit what it writes, and then has the commit reverted by a rule that
+     * never consulted that authorization -- which is a contract it cannot satisfy
+     * on any cycle.
+     *
+     * Empty (the default) reverts everything matched, exactly as before, so a
+     * harness-authored commit -- which is not a sub-task and owns nothing --
+     * cannot acquire an exemption by omission.
+     *
+     * Paths arrive already normalised by `authorizedGeneratorsForPaths`: a
+     * trailing `/` is a directory prefix, anything else an exact file. The
+     * matching is kept deliberately dumb here so this adapter does not have to
+     * import the orchestrator to make a commit.
      */
-    async revertNeverCommitPaths(worktreePath) {
+    async revertNeverCommitPaths(worktreePath, authorizedPaths = []) {
         const globs = (this.opts.neverCommitPaths ?? []).map((g) => g.trim()).filter(Boolean);
         if (globs.length === 0)
             return [];
+        const isAuthorized = (file) => authorizedPaths.some((p) => (p.endsWith("/") ? file.startsWith(p) : file === p));
         try {
             // Ask git which STAGED paths match, so the log names real files rather
             // than the patterns, and so we skip the revert entirely when none match.
@@ -1290,6 +1309,39 @@ esac
             // it impossible rather than merely unreached.
             if (globs.length === 0)
                 return [];
+            // rc.7: split the matched set by ownership before anything is undone.
+            const spared = authorizedPaths.length > 0 ? matched.filter(isAuthorized) : [];
+            if (spared.length > 0) {
+                const sparedSet = new Set(spared);
+                const toRevert = matched.filter((f) => !sparedSet.has(f));
+                // Named on its own. "The exclusion let 1,663 files through" and "the
+                // exclusion stopped running" have to be different lines in the log.
+                this.opts.logger.info(`[git] rc.7: kept ${spared.length} never-commit path(s) this sub-task is contracted to generate`, {
+                    worktreePath,
+                    count: spared.length,
+                    sample: spared.slice(0, 10),
+                    event: "harness.never_commit_spared",
+                });
+                if (toRevert.length === 0)
+                    return [];
+                // Explicit paths rather than the globs, because the globs would take
+                // the spared files back. Chunked: a full bundle regeneration alongside
+                // one stray can put thousands of paths on one command line.
+                for (let i = 0; i < toRevert.length; i += 200) {
+                    const chunk = toRevert.slice(i, i + 200);
+                    await this.run(["-C", worktreePath, "restore", "--staged", "--", ...chunk]);
+                    await this.run(["-C", worktreePath, "restore", "--worktree", "--", ...chunk]).catch(() => undefined);
+                }
+                this.opts.logger.warn(`[git] beta.114: reverted ${toRevert.length} change(s) to never-commit path(s); they are not this change's work`, {
+                    worktreePath,
+                    globs,
+                    count: toRevert.length,
+                    sparedCount: spared.length,
+                    sample: toRevert.slice(0, 10),
+                    event: "harness.never_commit_reverted",
+                });
+                return toRevert;
+            }
             // Unstage, then restore the working tree, both scoped to the globs.
             // `--` keeps a pattern that looks like a revision from being read as one.
             await this.run(["-C", worktreePath, "restore", "--staged", "--", ...globs]);
@@ -1315,7 +1367,13 @@ esac
             return [];
         }
     }
-    async commit(worktreePath, message, identity) {
+    async commit(worktreePath, message, identity, 
+    /**
+     * rc.7: never-commit paths this commit is contracted to produce. Optional
+     * and empty by default, so a caller that is not a sub-task keeps beta.114's
+     * unconditional revert. See revertNeverCommitPaths.
+     */
+    authorizedPaths = []) {
         await this.sweepCommitMsgScratch(worktreePath);
         // rc.2: the worker's disposable scratch, for the same reason and at the
         // same point -- it cannot delete these itself, because `rm` is denied.
@@ -1329,7 +1387,7 @@ esac
         await this.run(["-C", worktreePath, "add", "-A"]);
         // beta.114: AFTER staging, because the paths this drops are tracked and so
         // invisible to the exclude-file mechanism above.
-        await this.revertNeverCommitPaths(worktreePath);
+        await this.revertNeverCommitPaths(worktreePath, authorizedPaths);
         const status = await this.run(["-C", worktreePath, "status", "--porcelain"]);
         if (!status.trim())
             return null;

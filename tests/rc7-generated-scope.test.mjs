@@ -157,20 +157,24 @@ test("rc.7: a real blowout still aborts, and generated files do not pad the coun
 // Fail closed on a config rc.6 rejects
 // ---------------------------------------------------------------------------
 
-test("rc.7: a mapping rejected for the never_commit overlap earns no exemption", async () => {
-  // The live StitchGuard config, exactly: eight okf mappings and `okf/**`.
-  // rc.6 refuses those mappings, so `ownerOf` is null for every path in them
-  // and the scope check treats them as ordinary files. The contradiction has to
-  // be FIXED -- this change must not quietly make it survivable.
-  const { loop } = scopeLoop({
+test("rc.7: the exclusion list does not withdraw the exemption", async () => {
+  // The live StitchGuard config, exactly: okf mappings alongside `okf/**`.
+  //
+  // rc.6 refused those mappings, which made `ownerOf` null and left the scope
+  // check treating a declared artifact as creep. rc.7 retired that refusal --
+  // the exclusion spares the sub-task contracted to generate the path -- so the
+  // overlap must now resolve and the artifact must be in scope. This is the
+  // case the whole change exists for; if it regresses, StitchGuard is back to
+  // an abandoned cycle.
+  const { loop, audits } = scopeLoop({
     committed: ["src/feature.ts", "okf/modules/m1.md"],
     generators: OKF,
     neverCommit: ["okf/**"],
   });
 
   const findings = await loop.runFinalScopeCheck("s1", PLAN, 1);
-  assert.equal(findings.length, 1, "a refused mapping authorizes nothing");
-  assert.equal(findings[0].file, "okf/modules/m1.md");
+  assert.deepEqual(findings, [], "a declared artifact is in scope whether or not it is also excluded");
+  assert.equal(audits.find((a) => a.event === "loop.final_scope_check_generated").payload.count, 1);
 });
 
 test("rc.7: an ambiguously-owned path earns no exemption either", async () => {
@@ -193,4 +197,80 @@ test("rc.7: with no generators declared the check is exactly what it was", async
   const findings = await loop.runFinalScopeCheck("s1", PLAN, 1);
   assert.deepEqual(findings.map((f) => f.file), ["src/stray.ts"]);
   assert.equal(audits.find((a) => a.event === "loop.final_scope_check_ran").payload.generatedCount, 0);
+});
+
+// ---------------------------------------------------------------------------
+// rc.7 -- the wiring: the worker spends its authorization twice
+// ---------------------------------------------------------------------------
+//
+// The exemption is only real if the set the worker was told it may GENERATE is
+// the same set the commit is told it may KEEP. Computing it twice was the whole
+// defect: the worker was authorized to run the script, instructed to commit
+// what it wrote, and had the result reverted by a rule that never asked.
+
+const { runWorker } = await import("../dist/orchestrator/worker.js");
+
+async function workerTurn({ generators, neverCommit, filesLikelyTouched }) {
+  const commits = [];
+  await runWorker(
+    "/tmp/wt",
+    { title: "t", motivation: "m", acceptanceCriteria: [] },
+    { seq: 1, title: "Regenerate the bundle", intent: "", filesLikelyTouched, successCriteria: [] },
+    { name: "H", email: "h@t.local" },
+    {
+      config: {
+        models: { worker: "w" },
+        safety: { worker_permission_mode: "acceptEdits" },
+        loop: { worker_timeout_seconds: 60 },
+        ...(generators ? { verify: { generators } } : {}),
+        ...(neverCommit ? { repos: { never_commit_paths: neverCommit } } : {}),
+      },
+      logger: LOGGER,
+      buildCanUseTool: () => async () => ({ allow: true }),
+      runWorkerModel: async () => ({
+        sdkSessionId: "s", stopReason: "end_turn", costUsd: 0, tokensIn: 0, tokensOut: 0,
+        logsExcerpt: "", finalMessage: "done", streamOpened: true,
+      }),
+      gitBaseSha: async () => "base0000",
+      gitListChangedFiles: async () => ["okf/modules/m1.md"],
+      gitCommit: async (_wt, _msg, _id, authorizedPaths) => {
+        commits.push(authorizedPaths ?? null);
+        return "c0ffee00";
+      },
+      gitListCommittedFiles: async () => [],
+    },
+  );
+  return commits;
+}
+
+test("rc.7: the worker hands its authorized paths to the commit", async () => {
+  const commits = await workerTurn({
+    generators: OKF,
+    neverCommit: ["okf/**"],
+    filesLikelyTouched: ["okf/modules/m1.md"],
+  });
+  assert.ok(commits.length > 0, "the turn has to reach a commit at all");
+  for (const authorized of commits) {
+    assert.deepEqual(authorized, ["okf/"], "the declared tree the sub-task owes, as the map normalised it");
+  }
+});
+
+test("rc.7: a sub-task that owes no generated path authorizes nothing", async () => {
+  // The PR #961 turn. It must arrive at the commit with an empty hand, or the
+  // exclusion stops being an exclusion.
+  const commits = await workerTurn({
+    generators: OKF,
+    neverCommit: ["okf/**"],
+    filesLikelyTouched: ["src/feature.ts"],
+  });
+  for (const authorized of commits) {
+    assert.deepEqual(authorized, [], "no declared output, no exemption");
+  }
+});
+
+test("rc.7: with no generators declared nothing is ever authorized", async () => {
+  const commits = await workerTurn({ neverCommit: ["okf/**"], filesLikelyTouched: ["okf/modules/m1.md"] });
+  for (const authorized of commits) {
+    assert.deepEqual(authorized, []);
+  }
 });

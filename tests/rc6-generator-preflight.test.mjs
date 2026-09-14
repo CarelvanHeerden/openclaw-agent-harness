@@ -1,27 +1,29 @@
-// rc.6 -- the preflight that tells an operator what rc.6 will refuse, before
-// they install it.
+// The generator-config preflight: what a deployment's `verify.generators` and
+// `repos.never_commit_paths` will actually do, before a run finds out.
 //
-// rc.6 turns a `verify.generators` path that `repos.never_commit_paths` also
-// covers into a blocking finding on every cycle. That is the right behaviour
-// and it resolves nothing on its own: a deployment carrying the contradiction
-// keeps loading and keeps failing until somebody edits the config. The
-// preflight exists so that edit can be made from evidence rather than from the
-// first blocked run.
+// The answer this reports reversed between rc.6 and rc.7, and the tests moved
+// with it. rc.6 refused an overlap outright and the script proposed a narrowing
+// to escape it. rc.7 made the exclusion spare whatever the committing sub-task
+// is contracted to generate, so the overlap is no longer a fault -- it is the
+// configuration an operator with a checked-in generated bundle wants, and the
+// narrowing the script used to propose is actively harmful, because enumerating
+// siblings loses protection for every directory added later.
 //
-// The symlink cases below are the reason this file exists at all. The first
+// So the script now reports ownership coverage, and the question worth asking
+// is "is every excluded path something can commit owned by a declared
+// generator", not "do these overlap".
+//
+// The symlink cases are load-bearing and predate the reversal. The first
 // version of the walker called statSync on a link and descended when the target
-// was a directory, directly contradicting the comment above it. Two ways that
-// bites a tool whose whole job is scanning someone else's repository:
+// was a directory, contradicting the comment above it. Two ways that bites a
+// tool whose job is scanning someone else's repository:
 //
-//   1. A link pointing outside the repo walks out of it, and every file found
-//      out there is reported as though it were repo-relative -- so the operator
-//      is told to keep protecting paths that do not exist in their tree, or
-//      worse, shown the contents of an unrelated directory.
-//   2. A link pointing at an ancestor never terminates.
+//   1. A link out of the repo walks out of it, and everything found out there
+//      is reported as though it were repo-relative.
+//   2. A link to an ancestor never terminates.
 //
-// A symlink is now a leaf, which is also what git thinks it is: a blob holding
-// the target path, not the tree at the other end. The thing that can be
-// committed is the link.
+// A symlink is a leaf, which is what git stores: a blob holding the target, not
+// the tree at the other end.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
@@ -39,8 +41,7 @@ const skipDist = {
 
 /**
  * Run the preflight and hand back its output and status. A non-zero exit is an
- * expected result here (it is how the script gates a rollout), so it must not
- * be thrown.
+ * expected result (it is how the script gates a rollout), so it must not throw.
  */
 function preflight(args, cwd) {
   try {
@@ -64,7 +65,7 @@ const GENERATORS = [
   { script: "codegen", produces: ["src/generated/"] },
 ];
 
-function world({ neverCommit = ["okf/**"], nested = true, links = false } = {}) {
+function world({ neverCommit = ["okf/**"], generators = GENERATORS, nested = true, links = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "preflight-"));
   const repo = join(dir, "repo");
   for (const d of ["okf/src", "okf/generated", "okf/vendor", "src/generated"]) {
@@ -89,7 +90,7 @@ function world({ neverCommit = ["okf/**"], nested = true, links = false } = {}) 
     symlinkSync(join(repo, "okf"), join(repo, "okf", "vendor", "cycle"));
   }
 
-  const inner = { repos: { never_commit_paths: neverCommit }, verify: { generators: GENERATORS } };
+  const inner = { repos: { never_commit_paths: neverCommit }, verify: { generators } };
   const config = nested
     ? { plugins: { entries: { "openclaw-agent-harness": { config: inner } } } }
     : inner;
@@ -102,118 +103,122 @@ function world({ neverCommit = ["okf/**"], nested = true, links = false } = {}) 
 // Symlinks
 // ---------------------------------------------------------------------------
 
-test("rc.6 preflight: a symlink out of the repository is not followed", skipDist, (t) => {
+test("preflight: a symlink out of the repository is not followed", skipDist, (t) => {
   const w = world({ links: true });
   t.after(w.cleanup);
   const { stdout } = preflight([w.configPath, "--repo", w.repo], w.dir);
 
   assert.ok(!stdout.includes("leak.md"), "a file outside the repository must never be reported as inside it");
-  assert.ok(!stdout.includes("outside/"), "nor may an out-of-tree directory appear in the proposal");
-  // The discriminating assertions. A walker that descends through the link
-  // reports the out-of-tree file under a repo-relative name -- `okf/escape/
-  // leak.md` -- which inflates the count and turns the proposal into
-  // `okf/escape/**`. Neither filename is printed on its own, so asserting only
-  // on `leak.md` above passes against the broken walker; these do not.
-  assert.ok(!stdout.includes("okf/escape/"), "nothing beneath the link may be reported: it is not in this tree");
-  assert.match(stdout, /"okf\/escape"$/m, "the link is a committable leaf and stays in the proposal as one");
-  assert.match(stdout, /currently covers 11 file\(s\)/, "9 real files plus 2 links, and nothing from outside");
+  assert.ok(!stdout.includes("outside/"), "nor may an out-of-tree directory appear in the report");
+  // The discriminating assertion. A walker that descends through the link finds
+  // the out-of-tree file and counts it, and no filename is printed for the
+  // counted set -- so asserting only on `leak.md` above passes against the
+  // broken walker. The count does not.
+  assert.match(stdout, /Excluded files in this checkout: 11/, "9 real files plus 2 links, nothing from outside");
 });
 
-test("rc.6 preflight: a symlink to an ancestor terminates", skipDist, (t) => {
+test("preflight: a symlink to an ancestor terminates", skipDist, (t) => {
   const w = world({ links: true });
   t.after(w.cleanup);
-  // preflight() fails the test on a timeout kill, so arriving here at all is
-  // the assertion. The count pins that the cycle was seen once, as a leaf.
-  const { stdout, code } = preflight([w.configPath, "--repo", w.repo], w.dir);
-  assert.equal(code, 1, "conflicts are still reported");
-  assert.match(stdout, /currently covers 11 file\(s\)/, "9 real files plus 2 links, each counted once");
+  // preflight() fails the test on a timeout kill, so arriving here is itself
+  // the assertion; the count pins that the cycle was seen once, as a leaf.
+  const { stdout } = preflight([w.configPath, "--repo", w.repo], w.dir);
+  assert.match(stdout, /Excluded files in this checkout: 11/);
 });
 
 // ---------------------------------------------------------------------------
-// What it reports
+// Ownership coverage
 // ---------------------------------------------------------------------------
 
-test("rc.6 preflight: every contradiction is named with the pattern that causes it", skipDist, (t) => {
+test("preflight: an overlap is reported as fine, and says why no edit is needed", skipDist, (t) => {
   const w = world();
   t.after(w.cleanup);
   const { stdout, code } = preflight([w.configPath, "--repo", w.repo], w.dir);
 
-  assert.equal(code, 1, "a contradiction must be able to gate a rollout");
-  assert.match(stdout, /2 contradiction\(s\)/);
-  assert.match(stdout, /script 'okf' produces 'okf\/bundle\.json'/);
-  assert.match(stdout, /script 'okf:index' produces 'okf\/index\.json'/);
-  assert.match(stdout, /excluded by never_commit_paths: okf\/\*\*/);
-  // The mapping that is fine has to be visible as fine, or an operator cannot
-  // tell a working config from an unexamined one.
-  assert.match(stdout, /1 mapping\(s\) rc\.6 accepts as-is/);
-  assert.match(stdout, /'codegen' -> src\/generated\//);
+  assert.equal(code, 0, "an overlap is no longer a fault, so it must not gate a rollout");
+  assert.match(stdout, /2 declared output\(s\) are covered by the exclusion list/);
+  assert.match(stdout, /okf\/bundle\.json -- owned by 'okf'/);
+  assert.match(stdout, /okf\/index\.json -- owned by 'okf:index'/);
+  assert.match(stdout, /No config edit is|no config edit is/i);
+  // The reversal has to be explicit, or an operator who read the rc.6 advice
+  // goes ahead and narrows anyway.
+  assert.match(stdout, /narrowing the list by hand would lose protection/i);
 });
 
-test("rc.6 preflight: the narrowing warns against simply deleting the pattern", skipDist, (t) => {
+test("preflight: excluded files nothing owns are counted and named", skipDist, (t) => {
+  // The case that genuinely cannot be satisfied: no generator claims these, so
+  // no sub-task can ever commit them.
   const w = world();
   t.after(w.cleanup);
   const { stdout } = preflight([w.configPath, "--repo", w.repo], w.dir);
 
-  // The two resolutions are not equivalent and the tool must not present them
-  // as though they were: deleting the pattern reinstates the sweep it exists
-  // to prevent.
-  assert.match(stdout, /Do not simply delete/);
-  assert.match(stdout, /141 of 154/, "the warning carries the evidence for itself");
-  for (const p of ['"okf/generated/**"', '"okf/src/**"', '"okf/vendor/**"']) {
-    assert.ok(stdout.includes(p), `the proposal keeps protecting ${p}`);
-  }
-  assert.ok(!stdout.includes('"okf/bundle.json"'), "and lifts the exclusion from the declared output");
+  assert.match(stdout, /owned by a generator \(committable by the sub-task that owns them\): 2/);
+  assert.match(stdout, /owned by nothing \(revert applies to every turn\):\s+7/);
+  assert.match(stdout, /okf\/src\/s1\.md/, "and they are named, since a contract on one reads as a dead generator");
 });
 
-test("rc.6 preflight: the proposed narrowing actually resolves the contradiction", skipDist, (t) => {
-  // The proposal is worth nothing if applying it does not produce a clean run,
-  // so the round trip is the test.
-  const w = world({ neverCommit: ["okf/generated/**", "okf/src/**", "okf/vendor/**"] });
+test("preflight: no overlap at all is reported plainly", skipDist, (t) => {
+  const w = world({ neverCommit: ["vendor/**"] });
+  t.after(w.cleanup);
+  const { stdout, code } = preflight([w.configPath, "--repo", w.repo], w.dir);
+  assert.equal(code, 0);
+  assert.match(stdout, /No declared output is covered by the exclusion list/);
+});
+
+// ---------------------------------------------------------------------------
+// Mapping faults, which ARE still blocking
+// ---------------------------------------------------------------------------
+
+test("preflight: an ambiguously-owned path is still a rejected mapping", skipDist, (t) => {
+  const w = world({
+    generators: [
+      { script: "okf", produces: ["okf/bundle.json"] },
+      { script: "okf-alt", produces: ["okf/bundle.json"] },
+    ],
+  });
   t.after(w.cleanup);
   const { stdout, code } = preflight([w.configPath, "--repo", w.repo], w.dir);
 
-  assert.equal(code, 0);
-  assert.match(stdout, /No generator\/never_commit_paths contradiction/);
-  assert.match(stdout, /3 mapping\(s\) rc\.6 accepts as-is/);
+  assert.equal(code, 1, "a rejected mapping still blocks runs, so it still gates a rollout");
+  assert.match(stdout, /1 rejected mapping\(s\)/);
+  assert.match(stdout, /ownership is ambiguous/);
 });
 
 // ---------------------------------------------------------------------------
 // Inputs it has to accept
 // ---------------------------------------------------------------------------
 
-test("rc.6 preflight: the plugin block is accepted on its own, not just the whole file", skipDist, (t) => {
+test("preflight: the plugin block is accepted on its own, not just the whole file", skipDist, (t) => {
   // An operator reaching for this is mid-incident. Requiring them to extract
   // the right sub-object first is a way to get a wrong answer from a correct
   // tool.
   const w = world({ nested: false });
   t.after(w.cleanup);
-  const { stdout, code } = preflight([w.configPath, "--repo", w.repo], w.dir);
-  assert.equal(code, 1);
+  const { stdout } = preflight([w.configPath, "--repo", w.repo], w.dir);
   assert.match(stdout, /read as a plugin config block/);
-  assert.match(stdout, /2 contradiction\(s\)/);
+  assert.match(stdout, /2 declared output\(s\) are covered/);
 });
 
-test("rc.6 preflight: without --repo it still names the patterns, without inventing a tree", skipDist, (t) => {
+test("preflight: without --repo it reports ownership but invents no tree", skipDist, (t) => {
   const w = world();
   t.after(w.cleanup);
-  const { stdout, code } = preflight([w.configPath], w.dir);
-  assert.equal(code, 1);
-  assert.match(stdout, /2 contradiction\(s\)/);
-  assert.match(stdout, /Patterns needing attention: okf\/\*\*/);
-  assert.ok(!stdout.includes("currently covers"), "it must not report on a tree it never read");
+  const { stdout } = preflight([w.configPath], w.dir);
+  assert.match(stdout, /2 declared output\(s\) are covered/);
+  assert.ok(!stdout.includes("Excluded files in this checkout"), "it must not report on a tree it never read");
+  assert.match(stdout, /Re-run with `--repo/);
 });
 
-test("rc.6 preflight: a config with no generators is not a finding", skipDist, (t) => {
+test("preflight: a config with no generators has nothing to report", skipDist, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "preflight-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const configPath = join(dir, "config.json");
   writeFileSync(configPath, JSON.stringify({ repos: { never_commit_paths: ["okf/**"] } }));
   const { stdout, code } = preflight([configPath], dir);
   assert.equal(code, 0, "an exclusion list on its own is an ordinary, correct configuration");
-  assert.match(stdout, /No verify\.generators declared/);
+  assert.match(stdout, /no interaction to report/);
 });
 
-test("rc.6 preflight: it writes nothing", skipDist, (t) => {
+test("preflight: it writes nothing", skipDist, (t) => {
   const w = world({ links: true });
   t.after(w.cleanup);
   const before = execFileSync("find", [w.dir, "-type", "f", "-exec", "shasum", "{}", ";"], { encoding: "utf8" });

@@ -218,7 +218,13 @@ export interface WorkerDeps {
     gitCommit: (worktreePath: string, message: string, identity: {
         name: string;
         email: string;
-    }) => Promise<string | null>;
+    }, 
+    /**
+     * rc.7: the generated paths THIS sub-task is contracted to produce, so
+     * `repos.never_commit_paths` does not revert the one commit that owns them.
+     * Omitted everywhere else, which keeps beta.114 unconditional by default.
+     */
+    authorizedPaths?: readonly string[]) => Promise<string | null>;
     gitListChangedFiles: (worktreePath: string, base: string) => Promise<string[]>;
     gitBaseSha: (worktreePath: string) => Promise<string>;
     /**

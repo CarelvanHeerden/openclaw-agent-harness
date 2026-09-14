@@ -14,7 +14,7 @@
  * by the orchestrator after adversarial review passes.
  */
 import { renderConventionsForPrompt } from "./repo-conventions.js";
-import { authorizedGeneratorsForPaths, renderGeneratorInstruction, resolveGenerators, } from "./generated-artifacts.js";
+import { authorizedGeneratedOutputs, authorizedGeneratorsForPaths, renderGeneratorInstruction, resolveGenerators, } from "./generated-artifacts.js";
 import { inferVerifyContract } from "./verify-contract.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
@@ -235,14 +235,22 @@ firstTokenTimeoutSecondsOverride) {
     // contract is derived with the SAME inference the verifier uses, so the set
     // the worker is told to produce cannot drift from the set it is judged on --
     // which is the drift that made the old contract impossible to satisfy.
-    const generatorMap = resolveGenerators(deps.config.verify?.generators, { neverCommitPaths: deps.config.repos?.never_commit_paths });
+    const generatorMap = resolveGenerators(deps.config.verify?.generators);
     const contractPaths = [
         ...inferVerifyContract(subTask)
             .map((c) => ("path" in c ? c.path : undefined))
             .filter((p) => typeof p === "string" && p.length > 0),
         ...(subTask.filesLikelyTouched ?? []),
     ];
-    const systemPrompt = buildWorkerSystemPrompt(brief, subTask, authorizedGeneratorsForPaths(generatorMap, contractPaths));
+    const authorizedGenerators = authorizedGeneratorsForPaths(generatorMap, contractPaths);
+    // rc.7: the same authorization, read twice from one source. It tells the
+    // worker which script it may run, and it tells the commit which never-commit
+    // paths belong to this turn. Deriving both from `contractPaths` is the point:
+    // a worker told to generate an artifact and then denied the commit has a
+    // contract it cannot satisfy on any cycle. The second read is wider than the
+    // first on purpose -- see authorizedGeneratedOutputs.
+    const authorizedGeneratedPaths = authorizedGeneratedOutputs(generatorMap, contractPaths);
+    const systemPrompt = buildWorkerSystemPrompt(brief, subTask, authorizedGenerators);
     const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
         (dispatchHint ? `\n\n${dispatchHint}` : "");
     const baseSha = await deps.gitBaseSha(worktreePath);
@@ -282,7 +290,7 @@ firstTokenTimeoutSecondsOverride) {
             reason: `sdk_error: ${String(err)}`,
         };
     }
-    const reconciled = await reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha);
+    const reconciled = await reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha, authorizedGeneratedPaths);
     const changed = reconciled.filesChanged;
     const commitSha = reconciled.commitSha;
     const commitShas = reconciled.commitShas;
@@ -361,7 +369,12 @@ firstTokenTimeoutSecondsOverride) {
  * committed-range gate is used and `reconciliation` is left undefined --
  * "we did not classify" rather than a fabricated classification.
  */
-async function reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha) {
+async function reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha, 
+/**
+ * rc.7: never-commit paths this sub-task is contracted to generate. Both
+ * commits below are this turn's work, so both carry it.
+ */
+authorizedGeneratedPaths = []) {
     const commitMessage = `harness(${subTask.seq}): ${subTask.title}`;
     const commitShas = [];
     const listCommitted = async () => {
@@ -376,7 +389,7 @@ async function reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps
         const changed = await deps.gitListChangedFiles(worktreePath, baseSha);
         let commitSha;
         if (changed.length > 0) {
-            commitSha = (await deps.gitCommit(worktreePath, commitMessage, commitIdentity)) ?? undefined;
+            commitSha = (await deps.gitCommit(worktreePath, commitMessage, commitIdentity, authorizedGeneratedPaths)) ?? undefined;
         }
         if (!commitSha && deps.gitHeadSha && baseSha) {
             const head = await deps.gitHeadSha(worktreePath).catch(() => "");
@@ -416,7 +429,7 @@ async function reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps
     let harnessCommitSha;
     if (dirtyBefore.length > 0) {
         try {
-            harnessCommitSha = (await deps.gitCommit(worktreePath, commitMessage, commitIdentity)) ?? undefined;
+            harnessCommitSha = (await deps.gitCommit(worktreePath, commitMessage, commitIdentity, authorizedGeneratedPaths)) ?? undefined;
         }
         catch (err) {
             return {
