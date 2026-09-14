@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.8
+
+One defect, one line. The worktree bootstrap did not ask npm for
+devDependencies on the branch that has a lockfile, and a harness running under
+`NODE_ENV=production` does have to ask. Every check script that needs a dev tool
+— which is most of them — exited 127 in an allocated worktree, and the harness
+reported that as a broken environment rather than a verdict.
+
+Nothing else changes: no gate, no default, no configuration. The fix is in the
+command the harness issues, not in npm configuration it does not own.
 
 ### The worktree installed everything except the tools the checks needed
 
