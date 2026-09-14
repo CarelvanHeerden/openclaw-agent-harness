@@ -569,12 +569,36 @@ export declare class GitAdapter {
      * from hand-written code by inspection -- `okf/**` is ordinary markdown --
      * and a harness that guessed would eventually discard someone's real work.
      * Empty list (the default) means this does nothing at all.
+     *
+     * rc.7: `authorizedPaths` are the paths THIS commit is allowed to write even
+     * though the list covers them -- the generated artifacts the sub-task was
+     * contracted to produce. The list exists to stop a worker sweeping in a tree
+     * that is not its work; it was never meant to stop the one turn whose work it
+     * IS. Without this, a worker is authorized to run the generator, instructed
+     * to commit what it writes, and then has the commit reverted by a rule that
+     * never consulted that authorization -- which is a contract it cannot satisfy
+     * on any cycle.
+     *
+     * Empty (the default) reverts everything matched, exactly as before, so a
+     * harness-authored commit -- which is not a sub-task and owns nothing --
+     * cannot acquire an exemption by omission.
+     *
+     * Paths arrive already normalised by `authorizedGeneratorsForPaths`: a
+     * trailing `/` is a directory prefix, anything else an exact file. The
+     * matching is kept deliberately dumb here so this adapter does not have to
+     * import the orchestrator to make a commit.
      */
     private revertNeverCommitPaths;
     commit(worktreePath: string, message: string, identity: {
         name: string;
         email: string;
-    }): Promise<string | null>;
+    }, 
+    /**
+     * rc.7: never-commit paths this commit is contracted to produce. Optional
+     * and empty by default, so a caller that is not a sub-task keeps beta.114's
+     * unconditional revert. See revertNeverCommitPaths.
+     */
+    authorizedPaths?: readonly string[]): Promise<string | null>;
     pushBranch(worktreePath: string, remote: string, branch: string, ghToken: string): Promise<void>;
     /**
      * beta.36: revert a list of (squash-)merge commits on `main`, newest first.

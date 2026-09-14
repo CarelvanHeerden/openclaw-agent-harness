@@ -36,6 +36,7 @@ const {
   resolveGenerators,
   normaliseRepoPath,
   authorizedGeneratorsForPaths,
+  authorizedGeneratedOutputs,
   rescuableContractPaths,
   renderGeneratorInstruction,
   generatorScriptDeclared,
@@ -511,27 +512,40 @@ test("rc6: every generated-artifact verdict says what was actually observed", ()
 });
 
 // ---------------------------------------------------------------------------
-// rc.6: the ownership map and the never-commit list cannot contradict
+// rc.7: the ownership map and the never-commit list COOPERATE
 // ---------------------------------------------------------------------------
 
-test("rc6: a produced path that never_commit_paths would revert is refused", () => {
-  // The observed StitchGuard configuration. `revertNeverCommitPaths` unstages
-  // AND restores matching paths, so the worker's generated output is discarded
-  // and the contract on it can never be met -- an unwinnable loop whose failure
-  // text advises the one action that cannot work.
-  const map = resolveGenerators(
-    [{ script: "okf", produces: ["okf/data-model/", "okf/api/"] }, { script: "openapi", produces: ["src/lib/openapi.generated.json"] }],
+test("rc.7: a produced path the never-commit list also covers is accepted", () => {
+  // rc.6 refused exactly this, because `revertNeverCommitPaths` discarded the
+  // worker's output and left a contract nothing could satisfy. rc.7 removed the
+  // premise: the revert now spares whatever the committing sub-task is
+  // contracted to generate, so the overlap is the configuration an operator
+  // with a checked-in generated bundle actually wants.
+  //
+  // This is the live StitchGuard shape. It must resolve clean, because the
+  // alternative -- narrowing the list by hand -- enumerates siblings and so
+  // silently loses protection for every directory added afterwards.
+  const map = resolveGenerators([
+    { script: "okf", produces: ["okf/data-model/", "okf/api/"] },
+    { script: "openapi", produces: ["src/lib/openapi.generated.json"] },
+  ]);
+  assert.deepEqual(map.errors, [], "an overlap is no longer a configuration fault");
+  assert.equal(map.ownerOf("okf/data-model/x.md")?.script, "okf");
+  assert.equal(map.ownerOf("src/lib/openapi.generated.json")?.script, "openapi");
+});
+
+test("rc.7: resolveGenerators no longer takes the exclusion list at all", () => {
+  // A pin, not a nicety. The retired option was the only reason the resolver
+  // knew about `repos.never_commit_paths`, and a caller still passing it would
+  // be silently ignored rather than refused -- so the signature is the thing
+  // worth holding still.
+  assert.equal(resolveGenerators.length, 1, "one parameter: the raw mappings");
+  const withStrayArg = resolveGenerators(
+    [{ script: "okf", produces: ["okf/api/"] }],
     { neverCommitPaths: ["okf/**"] },
   );
-  assert.equal(map.errors.length, 2, "both excluded paths must be reported, not just the first");
-  for (const e of map.errors) {
-    assert.equal(e.script, "okf");
-    assert.match(e.reason, /never_commit_paths/);
-    assert.match(e.reason, /unstages and RESTORES/, "the operator has to know why it is unsatisfiable");
-  }
-  assert.equal(map.ownerOf("okf/data-model/x.md"), null, "no generator may be authorized for it");
-  // The unaffected mapping survives: one bad overlap must not disarm the rest.
-  assert.equal(map.ownerOf("src/lib/openapi.generated.json")?.script, "openapi");
+  assert.deepEqual(withStrayArg.errors, []);
+  assert.equal(withStrayArg.ownerOf("okf/api/x.md")?.script, "okf");
 });
 
 test("rc6: never_commit_paths patterns are matched, not string-compared", () => {
@@ -694,4 +708,84 @@ test("rc5: the harness never runs a mapped generator itself -- authorization is 
   // No spawn/exec surface in the ownership module at all.
   assert.doesNotMatch(g, /spawnSync|execSync|child_process|\bexec\(/);
   assert.match(g, /authorizes SCOPED WORKER-SIDE generation only/i);
+});
+
+// ---------------------------------------------------------------------------
+// rc.7: what a commit may KEEP, as against what the sub-task owes
+// ---------------------------------------------------------------------------
+
+test("rc.7: authorizing a generator authorizes everything that generator writes", () => {
+  // The narrower reading -- spare only the contract paths -- is the tempting
+  // one and it is wrong. A generator rewrites its whole declared output every
+  // run, so sparing the intersection alone would commit `index` and revert the
+  // modules: a bundle inconsistent with itself, and a worktree left clean so
+  // nothing downstream notices.
+  const map = resolveGenerators([
+    { script: "okf", produces: ["okf/index.json", "okf/modules/"] },
+    { script: "codegen", produces: ["src/generated/"] },
+  ]);
+
+  assert.deepEqual(
+    authorizedGeneratorsForPaths(map, ["okf/index.json"]),
+    [{ script: "okf", paths: ["okf/index.json"] }],
+    "the worker prompt still names only what the sub-task owes",
+  );
+  assert.deepEqual(
+    authorizedGeneratedOutputs(map, ["okf/index.json"]).sort(),
+    ["okf/index.json", "okf/modules/"],
+    "the commit keeps the whole of what the authorized script writes",
+  );
+});
+
+test("rc.7: an unrelated generator is not authorized by proximity", () => {
+  const map = resolveGenerators([
+    { script: "okf", produces: ["okf/"] },
+    { script: "codegen", produces: ["src/generated/"] },
+  ]);
+  assert.deepEqual(authorizedGeneratedOutputs(map, ["okf/index.json"]), ["okf/"]);
+  assert.deepEqual(authorizedGeneratedOutputs(map, ["src/generated/api.ts"]), ["src/generated/"]);
+  assert.deepEqual(authorizedGeneratedOutputs(map, ["src/feature.ts"]), [], "owing nothing generated authorizes nothing");
+});
+
+test("rc.7: a contract failure on an excluded path the sub-task could not write says so", () => {
+  // The diagnostic rc.6 used to deliver by refusing the config outright. With
+  // the refusal retired it has to be delivered where the failure appears, or a
+  // reverted artifact reads as a generator that never ran -- and the advice
+  // ("run the generator") sends a worker round the same loop forever.
+  const map = resolveGenerators([{ script: "okf", produces: ["okf/"] }]);
+  const owner = map.ownerOf("okf/bundle.json");
+
+  const unauthorized = describeGeneratedArtifactFailure({
+    path: "okf/bundle.json",
+    owner,
+    scriptDeclared: true,
+    baseDetail: "not found at HEAD",
+    neverCommitPaths: ["okf/**"],
+    authorizedPaths: [],
+  });
+  assert.match(unauthorized, /WAS REVERTED before the commit/);
+  assert.match(unauthorized, /Re-running the generator cannot fix that/);
+  assert.match(unauthorized, /never_commit_paths/);
+
+  // The owning sub-task gets the ordinary message: its output was not reverted,
+  // so the generator really did fail to produce it.
+  const authorized = describeGeneratedArtifactFailure({
+    path: "okf/bundle.json",
+    owner,
+    scriptDeclared: true,
+    baseDetail: "not found at HEAD",
+    neverCommitPaths: ["okf/**"],
+    authorizedPaths: ["okf/"],
+  });
+  assert.ok(!authorized.includes("WAS REVERTED"), "the turn that owns the path must not be told its work was discarded");
+  assert.match(authorized, /did not run, or ran and produced nothing/);
+
+  // And a deployment with no exclusion list sees no change at all.
+  const unexcluded = describeGeneratedArtifactFailure({
+    path: "okf/bundle.json",
+    owner,
+    scriptDeclared: true,
+    baseDetail: "not found at HEAD",
+  });
+  assert.ok(!unexcluded.includes("WAS REVERTED"));
 });

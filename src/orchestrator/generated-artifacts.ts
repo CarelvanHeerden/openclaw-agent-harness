@@ -138,19 +138,23 @@ export function normaliseRepoPath(raw: string): string | null {
 }
 
 /**
- * rc.6: does a `repos.never_commit_paths` pathspec cover this path?
+ * Does a `repos.never_commit_paths` pathspec cover this path?
  *
- * WHY THIS CHECK EXISTS. `never_commit_paths` is not advisory. Its enforcement
- * (`revertNeverCommitPaths`) unstages AND restores every matching path before
- * the commit, so work under it is discarded, not merely skipped. Point a
- * generator at a tree that is also excluded and the contract becomes literally
- * unsatisfiable: the worker is instructed to run the script and commit what it
- * writes, the harness throws the result away, the contract then fails because
- * the artifact was never committed, and the failure text advises re-running the
- * generator -- which will be thrown away again.
+ * rc.6 used this to REFUSE a generator mapping whose output was also excluded,
+ * on the grounds that the pair was unsatisfiable: the worker is instructed to
+ * run the script and commit what it writes, the exclusion throws the result
+ * away, and the contract fails because the artifact was never committed.
  *
- * The observed configuration had exactly this shape: `okf` declared as the
- * generator for `okf/...`, and `never_commit_paths: ["okf/**"]`.
+ * rc.7 retired that refusal, because the premise stopped being true. The
+ * exclusion now spares the paths the committing sub-task is contracted to
+ * generate (see `revertNeverCommitPaths`), so the overlap is no longer a
+ * contradiction -- it is the intended configuration, and the one an operator
+ * with a checked-in generated bundle actually wants. The observed case was
+ * `okf` declared as the generator for `okf/...` alongside
+ * `never_commit_paths: ["okf/**"]`, and that config is now correct as written.
+ *
+ * Still used to EXPLAIN a failure (a contract on an excluded path that no
+ * sub-task was authorized to write) and by the config preflight.
  *
  * Supports the `*` / `**` / `?` pathspec forms an operator would write here. A
  * pattern with no wildcard owns its subtree, as a git pathspec does.
@@ -209,17 +213,7 @@ export interface GeneratorMap {
  * both cases the affected paths end up unowned, which means "ordinary file" --
  * no generation, no exemption.
  */
-export function resolveGenerators(
-  raw: GeneratorMapping[] | undefined,
-  opts?: {
-    /**
-     * rc.6: `repos.never_commit_paths`. A produced path this covers is rejected
-     * -- see {@link neverCommitCovers} for why that combination cannot be
-     * satisfied by any worker.
-     */
-    neverCommitPaths?: string[];
-  },
-): GeneratorMap {
+export function resolveGenerators(raw: GeneratorMapping[] | undefined): GeneratorMap {
   const errors: GeneratorConfigError[] = [];
   const entries: ResolvedGenerator[] = [];
   const seenScripts = new Set<string>();
@@ -254,20 +248,6 @@ export function resolveGenerators(
       const norm = normaliseRepoPath(p);
       if (norm === null) {
         errors.push({ script, path: String(p), reason: "not a repo-relative path (absolute, empty, or escapes the repository)" });
-        continue;
-      }
-      // rc.6: an excluded path can never hold a committed artifact, so
-      // authorizing a generator for it only produces an unwinnable contract.
-      if (neverCommitCovers(opts?.neverCommitPaths, norm)) {
-        errors.push({
-          script,
-          path: norm,
-          reason:
-            `also matched by repos.never_commit_paths, which unstages and RESTORES it before every commit -- so the ` +
-            `generator would be told to write it, the harness would discard the result, and the contract on it could ` +
-            `never be satisfied. Resolve the contradiction: either narrow never_commit_paths, or stop declaring this ` +
-            `path as generated output`,
-        });
         continue;
       }
       const prior = claims.get(norm);
@@ -373,6 +353,33 @@ export function generatorScriptDeclared(scripts: Record<string, unknown> | undef
  * construction, so no turn can be talked into a speculative repo-wide run.
  * Grouped by script and returned in declaration order for a stable prompt.
  */
+/**
+ * rc.7: the never-commit paths a sub-task owing `paths` may keep in its commit.
+ *
+ * Authorization is at GENERATOR granularity, not path granularity, and the
+ * difference is the whole point. `authorizedGeneratorsForPaths` answers "which
+ * of the paths you asked about does a script own", which is the right question
+ * for the worker prompt -- it names the files the sub-task owes. It is the
+ * wrong question here: a generator rewrites its entire declared output every
+ * time it runs, so sparing only the intersecting subset would commit the index
+ * and revert the modules, leaving a bundle that is internally inconsistent and
+ * a tree that looks clean. Authorizing the script means authorizing what the
+ * script writes.
+ *
+ * A sub-task owing nothing generated authorizes nothing, which is the default
+ * and keeps beta.114 unconditional for every commit that is not a generation.
+ */
+export function authorizedGeneratedOutputs(map: GeneratorMap, paths: readonly string[]): string[] {
+  const scripts = new Set(authorizedGeneratorsForPaths(map, paths).map((g) => g.script));
+  if (scripts.size === 0) return [];
+  const out: string[] = [];
+  for (const e of map.entries) {
+    if (!scripts.has(e.script)) continue;
+    out.push(...e.files, ...e.dirs);
+  }
+  return [...new Set(out)];
+}
+
 export function authorizedGeneratorsForPaths(
   map: GeneratorMap,
   paths: readonly string[],
@@ -430,12 +437,107 @@ export function describeGeneratedArtifactFailure(params: {
   owner: ResolvedGenerator;
   scriptDeclared: boolean;
   baseDetail: string;
+  /**
+   * rc.7: `repos.never_commit_paths`, when the sub-task that failed this
+   * contract was NOT authorized to write the path.
+   */
+  neverCommitPaths?: readonly string[];
+  /** rc.7: the never-commit paths that sub-task WAS authorized to write. */
+  authorizedPaths?: readonly string[];
 }): string {
-  const { path, owner, scriptDeclared, baseDetail } = params;
+  const { path, owner, scriptDeclared, baseDetail, neverCommitPaths, authorizedPaths } = params;
   const cause = scriptDeclared
     ? `the generator that owns it (\`npm run ${owner.script}\`) did not run, or ran and produced nothing`
     : `MISSING TOOLING: verify.generators maps it to \`${owner.script}\`, but package.json declares no such script, so it can never be produced`;
-  return `${path} is a GENERATED artifact -- ${cause}. This is not a path-resolution mismatch. Probe detail: ${baseDetail}`;
+  /*
+   * rc.7: the third cause, and the one that reads as either of the other two.
+   *
+   * rc.6 refused this configuration outright, which was wrong -- the overlap is
+   * legitimate, and the exclusion now spares whichever sub-task is contracted
+   * to produce the path. But it caught something real, and retiring the refusal
+   * must not retire the diagnosis: if NO sub-task was authorized, the generator
+   * may well have run correctly and had its output reverted, which presents as
+   * "the generator did not run" and sends a worker to re-run it forever.
+   */
+  const excluded =
+    neverCommitCovers(neverCommitPaths as string[] | undefined, path) &&
+    !(authorizedPaths ?? []).some((p) => (p.endsWith("/") ? path.startsWith(p) : path === p));
+  const reverted = excluded
+    ? ` NOTE: this path is matched by repos.never_commit_paths, and this sub-task was not authorized to generate it, ` +
+      `so anything written here WAS REVERTED before the commit. Re-running the generator cannot fix that. The ` +
+      `sub-task contracted to produce this artifact must declare it (\`${owner.script}\` owns it), or the path must ` +
+      `come off never_commit_paths.`
+    : "";
+  return `${path} is a GENERATED artifact -- ${cause}. This is not a path-resolution mismatch.${reverted} Probe detail: ${baseDetail}`;
+}
+
+/** rc.7: a generator whose sources moved and whose output nobody is going to write. */
+export interface PendingGeneration {
+  script: string;
+  /** The generator's whole declared output: what the appended sub-task owns. */
+  produces: string[];
+  /** The declared inputs that actually moved. The evidence, kept for the audit. */
+  changedInputs: string[];
+}
+
+/**
+ * rc.7: which generators need a turn that no sub-task in this plan will give them.
+ *
+ * THE GAP THIS CLOSES. Ownership only carries authority when somebody holds it.
+ * Phase 1 lets the sub-task contracted to produce an artifact commit it, which
+ * fixes the case where a sub-task happens to declare one of the generator's
+ * paths. Nothing guarantees one does. On the observed plans none did: the
+ * bundle was regenerated as a side effect of unrelated work, by whichever
+ * sub-task ran a script that happened to rewrite it, and that accident is what
+ * the whole thread has been chasing. An unclaimed generated tree goes stale
+ * instead, which is better than an unwinnable contract and still not good.
+ *
+ * TWO CONSTRAINTS, BOTH FROM SOMETHING THAT ALREADY WENT WRONG.
+ *
+ * It must be EVIDENCED. Appending a generation turn to every run costs money
+ * for nothing most of the time, and beta.70 paid for that lesson once already:
+ * a 19-minute speculative `npm run okf` across 1,436 files, for a zero diff.
+ * So a generator with no declared `inputs` is never triggered -- without inputs
+ * there is no evidence a regeneration is needed, and "run it just in case" is
+ * precisely the behaviour that was removed. Declaring inputs is how an operator
+ * opts in.
+ *
+ * It must be UNCLAIMED. If a sub-task already declares any path the generator
+ * owns, that sub-task is the owner and phase 1 already lets it commit. Adding a
+ * second turn would regenerate the same tree twice and race the first for the
+ * same files.
+ */
+export function pendingGenerations(params: {
+  map: GeneratorMap;
+  /** Files this branch has changed so far. */
+  changedFiles: readonly string[];
+  /** Every path the plan's sub-tasks already declare. */
+  claimedPaths: readonly string[];
+}): PendingGeneration[] {
+  const { map, changedFiles, claimedPaths } = params;
+  if (map.empty) return [];
+  const claimedScripts = new Set(
+    authorizedGeneratorsForPaths(map, claimedPaths).map((g) => g.script),
+  );
+  const out: PendingGeneration[] = [];
+  for (const e of map.entries) {
+    if (claimedScripts.has(e.script)) continue;
+    /*
+     * This single test enforces BOTH halves of "evidenced".
+     *
+     * `changedGeneratorInputs` returns empty for a generator that declared no
+     * inputs, so an undeclared generator can never produce evidence and can
+     * never be triggered -- which is beta.70's rule. An explicit
+     * `inputs.length === 0` guard above this read as the load-bearing check and
+     * was not: it could be deleted with every test still passing, because this
+     * line already refused the same case. A guard that cannot fail is worse
+     * than no guard, because it is where the next reader stops looking.
+     */
+    const changedInputs = changedGeneratorInputs(e, changedFiles);
+    if (changedInputs.length === 0) continue;
+    out.push({ script: e.script, produces: [...e.files, ...e.dirs], changedInputs });
+  }
+  return out;
 }
 
 /** rc.6: which of this generator's declared inputs changed in the window. */

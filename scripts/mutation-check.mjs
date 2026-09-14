@@ -731,9 +731,11 @@ const MUTATIONS = [
     tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
   },
   {
+    // rc.7: the call gained an authorized-paths argument. The claim is
+    // unchanged -- delete the call and the bundle ships again.
     name: "the generated tree is actually dropped (b114): 141 of PR #961's 154 files were regenerated bundle",
     file: "dist/adapters/git-worktree.js",
-    find: "await this.revertNeverCommitPaths(worktreePath);",
+    find: "await this.revertNeverCommitPaths(worktreePath, authorizedPaths);",
     replace: "",
     tests: ["tests/beta114-never-commit-paths.test.mjs"],
   },
@@ -3154,16 +3156,6 @@ const MUTATIONS = [
     tests: ["tests/rc6-typed-approval.test.mjs"],
   },
   {
-    // The unwinnable contract: generation authorized into a tree whose commits
-    // are reverted. The worker writes it, the harness discards it, the contract
-    // fails, and the advice is to do it again.
-    name: "generation cannot target a never-commit path (rc.6): the unwinnable okf contract returns",
-    file: "dist/orchestrator/generated-artifacts.js",
-    find: "            if (neverCommitCovers(opts?.neverCommitPaths, norm)) {",
-    replace: "            if (false) {",
-    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
-  },
-  {
     // Freshness must still FAIL on evidence. rc.6 loosened the no-evidence case;
     // if it also loosened the evidenced one, a genuinely stale artifact ships.
     name: "a moved input makes an artifact stale (rc.6): evidenced staleness stops being caught",
@@ -3312,6 +3304,96 @@ const MUTATIONS = [
     if (ent.isSymbolicLink()) { try { readdirSync(full); isDir = true; } catch { isDir = false; } }
     if (isDir) walk(root, full, out);`,
     tests: ["tests/rc6-generator-preflight.test.mjs"],
+  },
+  {
+    name: "a declared artifact is IN scope (rc.7): resolving the rc.6 overlap buys an abandoned cycle instead",
+    file: "dist/orchestrator/loop.js",
+    find: "        const outOfScope = committed.filter((f) => !inDeclaredScope(f) && generatorOwned.ownerOf(f) === null);",
+    replace: "        const outOfScope = committed.filter((f) => !inDeclaredScope(f));",
+    tests: ["tests/rc7-generated-scope.test.mjs"],
+  },
+  // --- rc.7: ownership-scoped commit exclusion ---------------------------
+  //
+  // The rc.6 mutation that lived here pinned the overlap REJECTION, which rc.7
+  // retired -- its "mutant" is now the shipping code. What replaces it pins the
+  // mechanism that made retiring it safe.
+  {
+    name: "the owner may COMMIT (rc.7): the generator runs, the commit is reverted, the contract never closes",
+    file: "dist/adapters/git-worktree.js",
+    find: "            const spared = authorizedPaths.length > 0 ? matched.filter(isAuthorized) : [];",
+    replace: "            const spared = [];",
+    tests: ["tests/beta114-never-commit-paths.test.mjs"],
+  },
+  {
+    name: "sparing is PER PATH (rc.7): one owned artifact re-opens the 141-file sweep b114 closed",
+    file: "dist/adapters/git-worktree.js",
+    find: "        const isAuthorized = (file) => authorizedPaths.some((p) => (p.endsWith(\"/\") ? file.startsWith(p) : file === p));",
+    replace: "        const isAuthorized = (_file) => authorizedPaths.length > 0;",
+    tests: ["tests/beta114-never-commit-paths.test.mjs"],
+  },
+  {
+    name: "the commit inherits the worker's authorization (rc.7): computed, then never passed on",
+    file: "dist/orchestrator/worker.js",
+    find: "    const reconciled = await reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha, authorizedGeneratedPaths);",
+    replace: "    const reconciled = await reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha);",
+    tests: ["tests/rc7-generated-scope.test.mjs"],
+  },
+  {
+    name: "a generator writes its WHOLE output (rc.7): index committed, modules reverted, bundle inconsistent",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    const out = [];\n    for (const e of map.entries) {\n        if (!scripts.has(e.script))\n            continue;\n        out.push(...e.files, ...e.dirs);\n    }\n    return [...new Set(out)];",
+    replace: "    return authorizedGeneratorsForPaths(map, paths).flatMap((g) => g.paths);",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
+  },
+  // --- rc.7 phase 2: the standing owner -------------------------------------
+  {
+    // Anchored on the real guard. An explicit `inputs.length === 0` test used to
+    // sit above this one and was dead: this line already refused the same case,
+    // so the mutation survived against a check that could not fail.
+    name: "generation is EVIDENCED (rc.7): beta.70's 19-minute speculative run, appended to every plan",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "        if (changedInputs.length === 0)\n            continue;",
+    replace: "        if (false)\n            continue;",
+    tests: ["tests/rc7-generation-subtask.test.mjs"],
+  },
+  {
+    name: "generation is UNCLAIMED (rc.7): two turns regenerate one tree and race for its files",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "        if (claimedScripts.has(e.script))\n            continue;",
+    replace: "        if (false)\n            continue;",
+    tests: ["tests/rc7-generation-subtask.test.mjs"],
+  },
+  {
+    name: "the appended turn is OPT-IN (rc.7): every deployment silently buys a worker turn on upgrade",
+    file: "dist/orchestrator/loop.js",
+    find: "        if (this.deps.config.verify?.append_generation_subtask !== true)",
+    replace: "        if (false)",
+    tests: ["tests/rc7-generation-subtask.test.mjs"],
+  },
+  // --- rc.7 phase 3: generated output is summarised, not hidden -------------
+  {
+    name: "the fold is DECLARED-only (rc.7): an unowned file is dropped from the review",
+    file: "dist/adapters/shared/diff.js",
+    find: "        if (!path || script === null) {",
+    replace: "        if (!path) {",
+    tests: ["tests/rc7-generated-review-fold.test.mjs"],
+  },
+  {
+    // Mutates the SOURCE, not dist: the guard lives in the composition root,
+    // which no test executes, so the pin that defends it reads src/index.ts.
+    // Pointed at dist this survived trivially -- the mutant was never read.
+    name: "the fold is OPT-IN (rc.7): every deployment's reviewer silently starts reading less",
+    file: "src/index.ts",
+    find: "      if (config.verify?.summarise_generated_for_review === true) {",
+    replace: "      if (config.verify?.summarise_generated_for_review !== true) {",
+    tests: ["tests/rc7-generated-review-fold.test.mjs"],
+  },
+  {
+    name: "a reverted artifact says so (rc.7): the owner is told its own work 'did not run'",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "    const excluded = neverCommitCovers(neverCommitPaths, path) &&\n        !(authorizedPaths ?? []).some((p) => (p.endsWith(\"/\") ? path.startsWith(p) : path === p));",
+    replace: "    const excluded = neverCommitCovers(neverCommitPaths, path);",
+    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
 ];
 

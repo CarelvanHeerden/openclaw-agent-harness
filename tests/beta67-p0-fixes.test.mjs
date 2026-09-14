@@ -254,13 +254,16 @@ test("beta67-B: adversary diff is generated from the session's plan_base_sha, no
   assert.match(src, /const diffBase = baseSha && baseSha\.length > 0 \? baseSha : config\.repos\.default_base_branch;/);
   // beta.74: git.diff now also takes the resolved adversary GitHub token so the
   // promisor base-sha fetch can authenticate.
-  assert.match(src, /const diffText = await git\.diff\(plan\.worktreePath, diffBase, adversaryGhToken\);/);
+  // rc.7: `let`, not `const` -- the generated-output fold may reassign it. The
+  // base the diff is taken against, which is what this test exists to hold, is
+  // unchanged.
+  assert.match(src, /let diffText = await git\.diff\(plan\.worktreePath, diffBase, adversaryGhToken\);/);
   // the loop threads the persisted plan_base_sha as baseSha
   const loop = S("src/orchestrator/loop.ts");
   assert.match(loop, /SELECT plan_base_sha FROM sessions WHERE id = \?/);
   // rc.3 appends `revision` for a revise session; the base sha it diffs
   // against is unchanged, which is the thing this test is here to hold.
-  assert.match(loop, /runAdversary\(\{ brief, plan, runtime, requester: row\.requester, baseSha: adversaryBaseSha, priorFindings: lastReview\?\.findings[,\s}]/);
+  assert.match(loop, /runAdversary\(\{ brief, plan, sessionId, runtime, requester: row\.requester, baseSha: adversaryBaseSha, priorFindings: lastReview\?\.findings[,\s}]/);
 });
 
 test("beta67-B: fork-point captured at plan_ready via worktreeMergeBase (loop.ts source)", () => {

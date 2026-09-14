@@ -65,6 +65,7 @@ import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestra
 import { runAdversary as runAdversaryCore } from "./orchestrator/adversary.js";
 import { discoverCheckScripts, ingestRepoConventions } from "./orchestrator/repo-conventions.js";
 import { resolveGenerators } from "./orchestrator/generated-artifacts.js";
+import { foldGeneratedFiles } from "./adapters/shared/diff.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
@@ -882,7 +883,7 @@ export function bootstrapHarnessSync(api) {
                 },
                 gitBaseSha: (wt) => git.baseSha(wt),
                 gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),
-                gitCommit: (wt, msg, id) => git.commit(wt, msg, id),
+                gitCommit: (wt, msg, id, authorizedPaths) => git.commit(wt, msg, id, authorizedPaths ?? []),
                 // beta.47: reconcile commit sha when the worker self-commits.
                 gitHeadSha: (wt) => git.baseSha(wt),
                 gitListCommittedFiles: (wt, base) => git.listCommittedFiles(wt, base),
@@ -891,7 +892,7 @@ export function bootstrapHarnessSync(api) {
                 gitStatusPorcelain: (wt) => git.statusPorcelain(wt),
             }, resumeSessionId, dispatchHint, onStreamSlow, modelOverride, firstTokenTimeoutSecondsOverride);
         },
-        runAdversary: async ({ brief, plan, runtime, requester, baseSha, priorFindings, revision }) => {
+        runAdversary: async ({ brief, plan, sessionId, runtime, requester, baseSha, priorFindings, revision }) => {
             // beta.67 (Bug B): diff against the branch's persisted FORK-POINT sha
             // (captured at plan_ready) so the adversary sees ONLY this branch's own
             // commits. beta.66 smoke #4 diffed against config.repos.default_base_branch
@@ -914,7 +915,31 @@ export function bootstrapHarnessSync(api) {
             catch (err) {
                 api.logger.warn("[harness] adversary diff: could not resolve GitHub token (promisor fetch may fail on a private repo)", { repo: plan.repo, err: String(err) });
             }
-            const diffText = await git.diff(plan.worktreePath, diffBase, adversaryGhToken);
+            let diffText = await git.diff(plan.worktreePath, diffBase, adversaryGhToken);
+            // rc.7: fold declared generated output down to a manifest.
+            //
+            // Off unless a deployment asks for it, and inert until ownership has been
+            // declared. The files are still NAMED, with line counts and owning
+            // script -- what goes is the content of files whose content is derived.
+            // Audited with the exact saving, because "the reviewer read less" is a
+            // thing an operator must be able to see having happened.
+            if (config.verify?.summarise_generated_for_review === true) {
+                const generators = resolveGenerators(config.verify?.generators);
+                if (!generators.empty) {
+                    const before = diffText.length;
+                    const { diff, folded } = foldGeneratedFiles(diffText, (f) => generators.ownerOf(f)?.script ?? null);
+                    if (folded.length > 0) {
+                        diffText = diff;
+                        state.audit("adversary.generated_output_folded", {
+                            fileCount: folded.length,
+                            scripts: [...new Set(folded.map((f) => f.script))],
+                            bytesBefore: before,
+                            bytesAfter: diffText.length,
+                            sample: folded.slice(0, 20).map((f) => f.path),
+                        }, sessionId);
+                    }
+                }
+            }
             const diffFile = resolve(config.storage.worktree_root.replace(/^~/, process.env.HOME ?? ""), `${Date.now()}.diff`);
             await mkdir(dirname(diffFile), { recursive: true });
             await writeFile(diffFile, diffText, "utf8");
@@ -963,7 +988,7 @@ export function bootstrapHarnessSync(api) {
                     // rc.5: only demote a "the bundle is stale" finding when something
                     // actually owns regenerating it. Without a declared generator the
                     // complaint is unanswered, so it keeps its weight.
-                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators, { neverCommitPaths: config.repos.never_commit_paths }).empty,
+                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
                 }, {
                     logger: api.logger,
                     readDiff: async (p) => (await readFile(p, "utf8")),
@@ -1665,7 +1690,7 @@ export function bootstrapHarnessSync(api) {
                 // the review that produced it.
                 const cctx = {
                     repoHasTestScript: true,
-                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators, { neverCommitPaths: config.repos.never_commit_paths }).empty,
+                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
                 };
                 const blockers = findings.filter((f) => blocksMerge(f, classifyFinding(f, cctx)));
                 hasBlockingFinding = blockers.length > 0;

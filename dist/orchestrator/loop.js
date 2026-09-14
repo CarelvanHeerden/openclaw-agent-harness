@@ -217,7 +217,7 @@ import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-vali
 import { applyPathCorrections, describePathCorrections } from "./plan-path-writeback.js";
 import { proposeBasenameRescue, proposeDirectoryRescue, repoDirsFromFiles, describeBasenameRescue, rescueMatchesContractPath, } from "./basename-rescue.js";
 import { verifySubTaskOutput } from "./verify.js";
-import { generatorScriptDeclared, rescuableContractPaths, resolveGenerators } from "./generated-artifacts.js";
+import { authorizedGeneratedOutputs, generatorScriptDeclared, pendingGenerations, rescuableContractPaths, resolveGenerators, } from "./generated-artifacts.js";
 import { ingestRepoConventions, discoverCheckScripts, runCheckScripts } from "./repo-conventions.js";
 import { blocksMerge, classifyFinding, isBlockingFinding } from "./finding-classify.js";
 import { dedupeFindings, reconcileFindings } from "./finding-lifecycle.js";
@@ -2776,7 +2776,7 @@ export class OrchestratorLoop {
                                 cycle,
                                 reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                                 acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                                ...this.generatorVerifyCtx(plan.worktreePath),
+                                ...this.generatorVerifyCtx(plan.worktreePath, contract),
                             }, probes);
                         }
                         catch (err) {
@@ -2975,7 +2975,7 @@ export class OrchestratorLoop {
                                                 cycle,
                                                 reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                                                 acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                                                ...this.generatorVerifyCtx(workerWorktree),
+                                                ...this.generatorVerifyCtx(workerWorktree, contract),
                                             }, retryProbes);
                                         }
                                         catch (err) {
@@ -3427,7 +3427,7 @@ export class OrchestratorLoop {
                                             cycle,
                                             reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                                             acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
-                                            ...this.generatorVerifyCtx(workerWorktree),
+                                            ...this.generatorVerifyCtx(workerWorktree, rescued),
                                         }, rescueProbes);
                                         this.deps.state.audit("loop.contract_path_basename_rescued", {
                                             sessionId, seq: st.seq, cycle,
@@ -3729,7 +3729,34 @@ export class OrchestratorLoop {
                  * tree; with concurrency gone they are pure liability, so they are gone
                  * too. See the v2 CHANGELOG entry for the measurement that motivated it.
                  */
-                for (const st of ordered) {
+                /*
+                 * rc.7 (phase 2): `ordered` may grow by exactly one.
+                 *
+                 * A generator whose declared inputs moved but whose output no sub-task
+                 * claims has no owner, so nobody regenerates it and the bundle goes
+                 * stale. The plan cannot know this in advance -- it depends on what the
+                 * sub-tasks actually changed -- so the decision is taken here, once, when
+                 * every planned sub-task has run and the evidence exists.
+                 *
+                 * An index loop rather than `for..of` because the array is appended to
+                 * mid-iteration, and the append is checked at the point the index passes
+                 * the end rather than at the bottom of the body, so the `continue`s above
+                 * cannot skip it. The appended sub-task then runs through exactly the
+                 * same dispatch: same deadline, same verification, same commit path,
+                 * same budget accounting.
+                 */
+                let generationChecked = false;
+                for (let i = 0;; i++) {
+                    if (i >= ordered.length) {
+                        if (generationChecked || failed.err)
+                            break;
+                        generationChecked = true;
+                        const appended = await this.appendGenerationSubTask({ sessionId, plan, cycle, ordered });
+                        if (!appended)
+                            break;
+                        ordered.push(appended);
+                    }
+                    const st = ordered[i];
                     // beta.123 (sweep): a sub-task can record a failure that a recovery
                     // path is about to retract, so the accumulator is read at the top of
                     // each iteration rather than mid-flight. Serial execution makes this
@@ -4112,7 +4139,7 @@ export class OrchestratorLoop {
                             revisionOnlyOutOfScopeCount: revisionContext.outOfScopeRules.length,
                         }, sessionId);
                     }
-                    report = await withTimeout(this.deps.runAdversary({ brief, plan, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings, revision: revisionContext }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds");
+                    report = await withTimeout(this.deps.runAdversary({ brief, plan, sessionId, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings, revision: revisionContext }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds");
                     rawReview = {
                         ...report,
                         findings: [...(report.findings ?? [])],
@@ -4316,6 +4343,7 @@ export class OrchestratorLoop {
                         const runtimeReport = await withTimeout(this.deps.runAdversary({
                             brief,
                             plan,
+                            sessionId,
                             runtime: previewRuntime,
                             requester: row.requester,
                             baseSha: adversaryBaseSha,
@@ -6075,7 +6103,7 @@ export class OrchestratorLoop {
     get classifyCtx() {
         return {
             repoHasTestScript: true,
-            hasDeclaredGenerators: !resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths }).empty,
+            hasDeclaredGenerators: !resolveGenerators(this.deps.config.verify?.generators).empty,
         };
     }
     /**
@@ -6096,7 +6124,7 @@ export class OrchestratorLoop {
      * derived files are known-absent or known-stale.
      */
     runGeneratorConfigCheck(sessionId, plan, cycle) {
-        const generators = resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths });
+        const generators = resolveGenerators(this.deps.config.verify?.generators);
         if (generators.empty && generators.errors.length === 0)
             return [];
         const findings = [];
@@ -6156,14 +6184,119 @@ export class OrchestratorLoop {
      * "missing tooling" to "did not run", which is the claim we can still stand
      * behind without having seen the manifest.
      */
-    generatorVerifyCtx(worktreePath) {
-        const generators = resolveGenerators(this.deps.config.verify?.generators, { neverCommitPaths: this.deps.config.repos?.never_commit_paths });
+    /**
+     * rc.7 (phase 2): give an unclaimed generated tree a standing owner.
+     *
+     * Returns the sub-task to append, or null when there is nothing to do -- the
+     * common case, and deliberately so. See `pendingGenerations` for the two
+     * conditions (declared inputs actually moved; no sub-task already claims the
+     * output) and for why both are required.
+     *
+     * It is a SUB-TASK, not orchestrator work. `verify.generators` "authorizes
+     * worker-side execution only; the harness never runs these scripts itself"
+     * (src/config.ts). Running the generator here would reverse that decision.
+     * Appending a turn gets the same outcome -- one owner, one commit, one known
+     * point in the plan -- without touching it.
+     *
+     * It runs LAST because a generator that runs before a later sub-task edits
+     * its sources produces a bundle that is stale by the time the PR opens. The
+     * freshness check catches that, correctly but late: a wasted cycle rather
+     * than a wrong merge.
+     */
+    async appendGenerationSubTask(params) {
+        const { sessionId, plan, cycle, ordered } = params;
+        if (this.deps.config.verify?.append_generation_subtask !== true)
+            return null;
+        const map = resolveGenerators(this.deps.config.verify?.generators);
+        if (map.empty)
+            return null;
+        // The evidence has to be what the branch actually changed. `filesLikelyTouched`
+        // is a plan-time guess, and the whole point of deciding here is that the
+        // guess is no longer the best available fact.
+        // The branch's fork point, the same one final verification diffs against.
+        const baseSha = (() => {
+            try {
+                const r = this.deps.state.db
+                    .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+                    .get(sessionId);
+                return r?.plan_base_sha ?? "";
+            }
+            catch {
+                return "";
+            }
+        })();
+        if (!this.deps.worktreeCommittedFiles || !plan.worktreePath || !baseSha)
+            return null;
+        const changedFiles = await this.deps.worktreeCommittedFiles(plan.worktreePath, baseSha).catch(() => []);
+        if (changedFiles.length === 0)
+            return null;
+        const pending = pendingGenerations({
+            map,
+            changedFiles,
+            claimedPaths: collectDeclaredScopeFiles({ ...plan, subTasks: ordered }),
+        });
+        if (pending.length === 0)
+            return null;
+        const seq = Math.max(0, ...ordered.map((s) => s.seq)) + 1;
+        const scripts = pending.map((p) => p.script);
+        const produces = [...new Set(pending.flatMap((p) => p.produces))];
+        // Only concrete files become a contract. A directory produce has no single
+        // path to assert, and inventing one would fail a generator that correctly
+        // writes a different set of files this time.
+        const contractFiles = produces.filter((p) => !p.endsWith("/"));
+        const subTask = {
+            seq,
+            title: `Regenerate derived artifacts (${scripts.join(", ")})`,
+            intent: `Declared inputs of ${scripts.map((s) => `\`${s}\``).join(", ")} changed in this branch, and no other ` +
+                `sub-task owns the output. Run ${scripts.map((s) => `\`npm run ${s}\``).join(" and ")} and commit whatever ` +
+                `it writes.\n\n` +
+                `Changed inputs: ${pending.flatMap((p) => p.changedInputs).slice(0, 20).join(", ")}\n` +
+                `Owned output: ${produces.join(", ")}\n\n` +
+                `Do NOT hand-edit these paths and do NOT make any other change -- this turn exists only to bring the ` +
+                `derived artifacts back into agreement with their sources. If the generator is missing or fails, say so ` +
+                `plainly and end the turn; do not commit a hand-written substitute.`,
+            filesLikelyTouched: produces,
+            successCriteria: [
+                `\`npm run ${scripts.join("` and `npm run ")}\` ran to completion`,
+                "the regenerated artifacts are committed",
+                "no file outside the generator's declared output was changed",
+            ],
+            estimatedTokens: 0,
+            // Empty rather than the prior seqs: position already guarantees this runs
+            // last, and a dependency on a sub-task that revise-scoping skipped would
+            // read as an unresolved dependency and fail the run.
+            dependsOn: [],
+            verify: contractFiles.map((path) => ({ kind: "file_committed", path })),
+        };
+        this.deps.state.audit("loop.generation_subtask_appended", {
+            sessionId, cycle, seq, scripts, produces,
+            changedInputs: pending.flatMap((p) => p.changedInputs).slice(0, 50),
+            contractCount: contractFiles.length,
+        }, sessionId);
+        this.deps.logger.info("[loop] rc.7: appending a generation sub-task -- declared inputs moved and nothing in the plan owns the output", { sessionId, cycle, seq, scripts });
+        return subTask;
+    }
+    generatorVerifyCtx(worktreePath, 
+    /**
+     * rc.7: the contract about to be verified. Its paths are what decides
+     * whether THIS sub-task was authorized to write an excluded path, which is
+     * the difference between "the generator did not run" and "it ran and the
+     * output was reverted". Omitted, nothing is claimed authorized -- safe,
+     * because an unauthorized path is precisely the failing case.
+     */
+    contract) {
+        const generators = resolveGenerators(this.deps.config.verify?.generators);
         if (generators.empty)
             return {};
         let scripts;
         let read = false;
+        const contractPaths = (contract ?? [])
+            .map((c) => (c && typeof c === "object" && "path" in c ? c.path : undefined))
+            .filter((p) => typeof p === "string" && p.length > 0);
         return {
             generators,
+            neverCommitPaths: this.deps.config.repos?.never_commit_paths,
+            authorizedGeneratedPaths: authorizedGeneratedOutputs(generators, contractPaths),
             generatorScriptDeclared: (script) => {
                 if (!read) {
                     read = true;
@@ -6620,12 +6753,54 @@ export class OrchestratorLoop {
         if (!Array.isArray(committed) || committed.length === 0)
             return [];
         const declared = collectDeclaredScopeFiles(plan);
+        /*
+         * rc.7: a DECLARED generator output is in scope for the script that owns it.
+         *
+         * This check reads the plan and nothing else, so a generated artifact was
+         * only ever in scope when a sub-task happened to name it. That was harmless
+         * while such trees were also in `repos.never_commit_paths` -- the commit was
+         * reverted, so nothing reached this filter. rc.6 made that pairing a
+         * configuration error, which means the correct configuration is now the one
+         * where generated artifacts ARE committed, and a bundle regeneration lands
+         * every file it rewrites in front of this check as scope creep.
+         *
+         * On the StitchGuard OKF tree that is 1,663 files against a 500-file
+         * `scope_blowout_file_threshold`: not a `fit` finding but a thrown
+         * ScopeBlowoutError that abandons the cycle before review. Resolving the
+         * rc.6 contradiction would have bought an abandoned run in place of an
+         * unwinnable contract.
+         *
+         * Ownership is the operator's explicit declaration of which script writes
+         * which paths, so this is narrow and never inferred. It deliberately reads
+         * `ownerOf`, which is null for any path whose mapping was REJECTED -- an
+         * unparseable script name, a path that escapes the repository, a tree two
+         * scripts both claim. A config the harness refused to resolve authorizes
+         * nothing here either.
+         */
+        const generatorOwned = resolveGenerators(this.deps.config.verify?.generators);
         // A committed file is IN-SCOPE if it matches ANY declared contract path via
         // the shared tolerant path matcher (route-group / suffix / basename-dir) --
         // the same normalisation every per-file verifier uses, so we don't
         // false-flag a route-group-normalised path the worker legitimately wrote.
-        const outOfScope = committed.filter((f) => !declared.some((d) => declaredCovers(f, d)));
-        this.deps.state.audit("loop.final_scope_check_ran", { sessionId, cycle, committedCount: committed.length, declaredCount: declared.length, outOfScopeCount: outOfScope.length }, sessionId);
+        const inDeclaredScope = (f) => declared.some((d) => declaredCovers(f, d));
+        const generated = committed.filter((f) => !inDeclaredScope(f) && generatorOwned.ownerOf(f) !== null);
+        const outOfScope = committed.filter((f) => !inDeclaredScope(f) && generatorOwned.ownerOf(f) === null);
+        if (generated.length > 0) {
+            // Named, not silent. "The scope check stopped firing" and "the scope check
+            // excused 1,663 files it can name the owner of" are different events, and
+            // only one of them is this fix working.
+            this.deps.state.audit("loop.final_scope_check_generated", {
+                sessionId,
+                cycle,
+                count: generated.length,
+                owners: [...new Set(generated.map((f) => generatorOwned.ownerOf(f)?.script).filter(Boolean))],
+                sample: generated.slice(0, 20),
+            }, sessionId);
+        }
+        this.deps.state.audit("loop.final_scope_check_ran", {
+            sessionId, cycle, committedCount: committed.length, declaredCount: declared.length,
+            outOfScopeCount: outOfScope.length, generatedCount: generated.length,
+        }, sessionId);
         this.deps.interactionLog?.log(sessionId, { event: "final_scope_check_ran", phase: "review", cycle, committedCount: committed.length, outOfScopeCount: outOfScope.length });
         if (outOfScope.length === 0)
             return [];

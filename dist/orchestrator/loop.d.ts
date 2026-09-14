@@ -373,6 +373,8 @@ export interface OrchestratorDeps {
     runAdversary: (params: {
         brief: CrystallisedBrief;
         plan: LeadPlan;
+        /** rc.7: so diff-shaping done in the adapter is attributable to the run. */
+        sessionId: string;
         runtime?: RuntimeSnapshot;
         requester?: string;
         /**
@@ -1124,6 +1126,26 @@ export declare class OrchestratorLoop {
      * "missing tooling" to "did not run", which is the claim we can still stand
      * behind without having seen the manifest.
      */
+    /**
+     * rc.7 (phase 2): give an unclaimed generated tree a standing owner.
+     *
+     * Returns the sub-task to append, or null when there is nothing to do -- the
+     * common case, and deliberately so. See `pendingGenerations` for the two
+     * conditions (declared inputs actually moved; no sub-task already claims the
+     * output) and for why both are required.
+     *
+     * It is a SUB-TASK, not orchestrator work. `verify.generators` "authorizes
+     * worker-side execution only; the harness never runs these scripts itself"
+     * (src/config.ts). Running the generator here would reverse that decision.
+     * Appending a turn gets the same outcome -- one owner, one commit, one known
+     * point in the plan -- without touching it.
+     *
+     * It runs LAST because a generator that runs before a later sub-task edits
+     * its sources produces a bundle that is stale by the time the PR opens. The
+     * freshness check catches that, correctly but late: a wasted cycle rather
+     * than a wrong merge.
+     */
+    private appendGenerationSubTask;
     private generatorVerifyCtx;
     private runFinalVerifyChecks;
     /**

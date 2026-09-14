@@ -1,35 +1,41 @@
 #!/usr/bin/env node
 /**
- * rc.6: tell an operator what `verify.generators` will do to their runs BEFORE
- * they install a build that enforces it.
+ * Report how `verify.generators` and `repos.never_commit_paths` interact in a
+ * deployment, before a run has to discover it.
  *
- * WHY THIS EXISTS. rc.6 refuses a `produces` path that `repos.never_commit_paths`
- * also covers, because that pair cannot be satisfied by any worker: the
- * generator is told to write the file, the exclusion list unstages AND restores
- * it before the commit, the contract then fails because the artifact was never
- * committed, and the failure advice ("run the generator") loses to the same
- * revert next cycle. rc.5 and earlier let that combination through and the run
- * simply never converged.
+ * HISTORY, BECAUSE THE ANSWER REVERSED. rc.6 refused a `produces` path that the
+ * exclusion list also covered, on the grounds that no worker could satisfy the
+ * contract: the generator is told to write the file, the exclusion unstages AND
+ * restores it before the commit, the contract fails because the artifact was
+ * never committed, and the advice ("run the generator") loses to the same
+ * revert next cycle. This script was written to help operators narrow the
+ * exclusion list out of that corner.
  *
- * Enforcement is per-run, not at config load: each rejected path becomes a
- * blocking `high` finding on every cycle, and the path itself ends up UNOWNED,
- * which means no generation and no exemption from its ordinary contract check.
- * So a deployment carrying this contradiction keeps loading and keeps failing,
- * which is a good reason to look at it on the ground before upgrading.
+ * rc.7 removed the premise instead. The exclusion now spares whatever the
+ * committing sub-task is contracted to generate, so the overlap is no longer a
+ * contradiction -- it is the configuration an operator with a checked-in
+ * generated bundle actually wants, and the narrowing this script used to
+ * propose is not merely unnecessary but harmful: enumerating siblings loses
+ * protection for every directory added later, which the blanket pattern covered
+ * for free.
  *
- * READ-ONLY BY CONSTRUCTION. This script opens the config and, optionally, the
- * repository tree. It writes nothing, to either. The narrowing it prints is a
- * proposal to review, not a change to apply -- deciding what belongs in version
- * control is not a decision a preflight gets to make.
+ * So this now reports OWNERSHIP COVERAGE. The question worth asking of such a
+ * config is no longer "do these overlap" (fine) but "is every excluded path
+ * that something must commit actually owned by a declared generator" -- because
+ * an excluded path that no generator owns can never be committed by anyone, and
+ * that is the case that still cannot be satisfied.
+ *
+ * READ-ONLY BY CONSTRUCTION. Opens the config and, optionally, the repository
+ * tree. Writes to neither.
  *
  * Usage:
  *   node scripts/generator-config-preflight.mjs <config.json> [--repo <path>]
  *
  * <config.json> may be a whole `~/.openclaw/openclaw.json` or just the plugin's
- * own config block; both shapes are recognised. Pass `--repo` to have the
- * proposal computed against the real tree rather than guessed.
+ * own config block; both shapes are recognised.
  *
- * Exit status is 1 when a contradiction is found, so this can gate a rollout.
+ * Exit status is 1 when a mapping is rejected outright, since that is still a
+ * configuration fault that blocks runs. An overlap on its own is not.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -101,110 +107,71 @@ console.log(`Generators:      ${generators.length} mapping(s)`);
 console.log(`never_commit:    ${neverCommit.length ? neverCommit.join(", ") : "(empty)"}`);
 console.log("");
 
-if (generators.length === 0) {
-  console.log("No verify.generators declared, so rc.6 has nothing to refuse here.");
-  process.exit(0);
+const map = resolveGenerators(generators);
+
+// ---------------------------------------------------------------------------
+// Mapping faults -- still real, still blocking
+// ---------------------------------------------------------------------------
+
+if (map.errors.length > 0) {
+  console.log(`${map.errors.length} rejected mapping(s). Each becomes a blocking 'high' finding on EVERY cycle,`);
+  console.log("and the affected paths are left unowned -- no generation, and no exemption either:");
+  console.log("");
+  for (const e of map.errors) {
+    console.log(`  script '${e.script}'${e.path ? ` path '${e.path}'` : ""}`);
+    console.log(`    ${e.reason}`);
+  }
+  console.log("");
+}
+
+if (map.entries.length > 0) {
+  console.log(`${map.entries.length} mapping(s) resolve cleanly:`);
+  for (const e of map.entries) {
+    const owns = [...e.files, ...e.dirs].join(", ");
+    const inputs = [...e.inputs, ...e.inputDirs];
+    console.log(`  '${e.script}' -> ${owns}${inputs.length ? ` (inputs: ${inputs.join(", ")})` : " (no inputs declared)"}`);
+  }
+  console.log("");
 }
 
 // ---------------------------------------------------------------------------
-// What rc.6 will do
+// Ownership coverage
 // ---------------------------------------------------------------------------
 
-// The harness's own resolver, not a re-implementation of it: a preflight that
-// disagrees with the thing it is previewing is worse than no preflight.
-const strict = resolveGenerators(generators, { neverCommitPaths: neverCommit });
-const withoutExclusions = resolveGenerators(generators);
-
-const conflicts = [];
-const otherErrors = [];
-for (const e of strict.errors) {
-  const alsoWithout = withoutExclusions.errors.some(
-    (o) => o.script === e.script && o.path === e.path && o.reason === e.reason,
-  );
-  // An error that survives with the exclusion list removed is a different
-  // problem wearing the same coat, and narrowing will not touch it.
-  if (alsoWithout) otherErrors.push(e);
-  else conflicts.push(e);
+if (neverCommit.length === 0 || map.empty) {
+  console.log("No exclusion list, or no resolved generator: there is no interaction to report.");
+  process.exit(map.errors.length > 0 ? 1 : 0);
 }
 
-if (conflicts.length === 0) {
-  console.log("No generator/never_commit_paths contradiction. rc.6 will not refuse any mapping on this ground.");
+const owned = [];
+for (const e of map.entries) {
+  for (const p of [...e.files, ...e.dirs]) {
+    if (neverCommitCovers(neverCommit, p)) owned.push({ path: p, script: e.script });
+  }
+}
+
+console.log("--- Ownership coverage ---");
+console.log("");
+if (owned.length === 0) {
+  console.log("No declared output is covered by the exclusion list. Nothing to reconcile.");
 } else {
-  console.log(`${conflicts.length} contradiction(s) -- each becomes a blocking 'high' finding on EVERY cycle:`);
+  console.log(`${owned.length} declared output(s) are covered by the exclusion list. Since rc.7 that is FINE:`);
+  console.log("the exclusion spares whichever sub-task is contracted to generate the path, and still reverts");
+  console.log("it for every other turn -- which is the sweep the list was added to stop. No config edit is");
+  console.log("needed, and narrowing the list by hand would lose protection for anything added later.");
   console.log("");
-  for (const c of conflicts) {
-    const covering = neverCommit.filter((p) => neverCommitCovers([p], c.path));
-    console.log(`  script '${c.script}' produces '${c.path}'`);
-    console.log(`    excluded by never_commit_paths: ${covering.join(", ")}`);
-  }
-  console.log("");
-  console.log("  Effect after upgrade: the path is dropped from the mapping, so nothing regenerates it");
-  console.log("  AND it keeps its ordinary contract check. The run is blocked twice over.");
+  for (const o of owned) console.log(`  ${o.path} -- owned by '${o.script}'`);
 }
-
-if (otherErrors.length > 0) {
-  console.log("");
-  console.log(`${otherErrors.length} other mapping error(s), unrelated to never_commit_paths:`);
-  for (const e of otherErrors) {
-    console.log(`  script '${e.script}'${e.path ? ` path '${e.path}'` : ""}: ${e.reason}`);
-  }
-}
-
-const healthy = strict.entries;
-if (healthy.length > 0) {
-  console.log("");
-  console.log(`${healthy.length} mapping(s) rc.6 accepts as-is:`);
-  for (const e of healthy) {
-    console.log(`  '${e.script}' -> ${[...e.files, ...e.dirs].join(", ")}${e.inputs.length || e.inputDirs.length ? ` (inputs: ${[...e.inputs, ...e.inputDirs].join(", ")})` : " (no inputs declared)"}`);
-  }
-}
-
-if (conflicts.length === 0) process.exit(0);
-
-// ---------------------------------------------------------------------------
-// A narrowing proposal
-// ---------------------------------------------------------------------------
-
-/**
- * The two ways out are not equivalent, and the difference is the whole point of
- * this section.
- *
- * DELETING the excluding pattern resolves the contradiction and reintroduces
- * what the pattern was added for. `never_commit_paths` exists because workers
- * stage with `git add -A`, so a build step that regenerates a checked-in bundle
- * as a side effect sweeps the entire tree into an unrelated commit -- 141 of
- * 154 files on ProjectThanos PR #961. Those files are then counted as
- * out-of-scope writes, which is a blocking `medium` finding no worker can
- * resolve, because regenerating was the sub-task.
- *
- * NARROWING keeps that protection for everything the generators do not claim,
- * and lifts it only from the artifacts an operator has deliberately declared as
- * owned output. That is the shape the documented example already has: a
- * specific `okf/bundle.json`, not the tree it lives in.
- *
- * There is no negation in this pathspec syntax -- see `neverCommitCovers` --
- * so "everything under here except these" has to be written out as the sibling
- * paths that remain. That is what the tree scan below is for.
- */
-console.log("");
-console.log("--- Narrowing ---");
-console.log("");
-console.log("Do not simply delete the excluding pattern. It is what stops a worker's incidental");
-console.log("regeneration from being swept into an unrelated commit by `git add -A` (ProjectThanos");
-console.log("PR #961: 141 of 154 committed files, every one of them a blocking out-of-scope write).");
-console.log("Narrow it instead, so the protection survives for everything no generator claims.");
-console.log("");
-
-const claimed = new Set();
-for (const c of conflicts) claimed.add(c.path);
-
-const implicated = neverCommit.filter((p) => [...claimed].some((path) => neverCommitCovers([p], path)));
 
 if (!repoPath) {
-  console.log("Re-run with `--repo <path>` to compute the replacement patterns against the real tree.");
-  console.log(`Patterns needing attention: ${implicated.join(", ")}`);
-  process.exit(1);
+  console.log("");
+  console.log("Re-run with `--repo <path>` to find excluded files that NO generator owns.");
+  process.exit(map.errors.length > 0 ? 1 : 0);
 }
+
+// ---------------------------------------------------------------------------
+// The case that still cannot be satisfied
+// ---------------------------------------------------------------------------
 
 /** Every file in the tree, repo-relative, skipping .git and node_modules. */
 function walk(root, dir = root, out = []) {
@@ -240,66 +207,24 @@ try {
   process.exit(2);
 }
 
-/** Is this file one of the declared generator outputs? */
-function isClaimed(file) {
-  for (const path of claimed) {
-    const norm = normaliseRepoPath(path);
-    if (norm === null) continue;
-    if (norm.endsWith("/")) {
-      if (file.startsWith(norm)) return true;
-    } else if (file === norm) return true;
-  }
-  return false;
+const covered = tree.filter((f) => neverCommitCovers(neverCommit, f));
+const unowned = covered.filter((f) => map.ownerOf(f) === null);
+
+console.log("");
+console.log(`Excluded files in this checkout: ${covered.length}`);
+console.log(`  owned by a generator (committable by the sub-task that owns them): ${covered.length - unowned.length}`);
+console.log(`  owned by nothing (revert applies to every turn):                   ${unowned.length}`);
+
+if (unowned.length > 0) {
+  console.log("");
+  console.log("The unowned files are the ones no run can ever commit. That is usually correct -- it is");
+  console.log("what the exclusion list is for. It is only a problem if a sub-task's contract requires");
+  console.log("one of them, which presents as a generator that 'did not run'. Worth a look if you see");
+  console.log("that failure on a path listed here:");
+  for (const f of unowned.slice(0, 20)) console.log(`    ${f}`);
+  if (unowned.length > 20) console.log(`    ... and ${unowned.length - 20} more`);
 }
 
-for (const pattern of implicated) {
-  const covered = tree.filter((f) => neverCommitCovers([pattern], f));
-  const keep = covered.filter((f) => !isClaimed(f));
-  const lift = covered.filter((f) => isClaimed(f));
-
-  console.log(`Pattern '${pattern}' currently covers ${covered.length} file(s) in the tree:`);
-  console.log(`  ${lift.length} declared as generator output -- the exclusion must be LIFTED from these`);
-  console.log(`  ${keep.length} claimed by no generator -- the exclusion must be KEPT for these`);
-  if (lift.length > 0 && lift.length <= 20) {
-    for (const f of lift) console.log(`    lift: ${f}`);
-  }
-  if (keep.length === 0) {
-    console.log("");
-    console.log(`  Every file this pattern covers is declared output, so '${pattern}' can be REMOVED.`);
-    console.log("  Removing it means those artifacts are committed by the worker that generates them,");
-    console.log("  which is what the mappings ask for. Confirm nothing under it is sensitive first.");
-    continue;
-  }
-
-  // Replacement patterns: the covered subtree, enumerated one level below the
-  // point where the claimed paths sit, minus the claimed entries themselves.
-  const prefixes = new Set();
-  for (const f of keep) {
-    const claimedDepths = [...claimed]
-      .map((c) => normaliseRepoPath(c))
-      .filter((c) => c !== null)
-      .map((c) => c.replace(/\/$/, "").split("/").length);
-    const depth = Math.max(1, Math.min(...(claimedDepths.length ? claimedDepths : [1])));
-    const parts = f.split("/");
-    prefixes.add(parts.length > depth ? `${parts.slice(0, depth).join("/")}/**` : f);
-  }
-  const proposal = [...prefixes].filter((p) => !tree.some((f) => neverCommitCovers([p], f) && isClaimed(f)));
-  const stillCovered = tree.filter((f) => proposal.some((p) => neverCommitCovers([p], f)));
-  const missed = keep.filter((f) => !stillCovered.includes(f));
-
-  console.log("");
-  console.log(`  Proposed replacement for '${pattern}':`);
-  for (const p of proposal.sort()) console.log(`    "${p}"`);
-  if (missed.length > 0) {
-    console.log("");
-    console.log(`  WARNING: ${missed.length} file(s) covered today would NOT be covered by that proposal,`);
-    console.log("  because a generator output sits alongside them and this syntax has no negation.");
-    console.log("  Those files become committable. Review them, or move the artifact out of the tree:");
-    for (const f of missed.slice(0, 20)) console.log(`    exposed: ${f}`);
-    if (missed.length > 20) console.log(`    ... and ${missed.length - 20} more`);
-  }
-  console.log("");
-}
-
-console.log("Nothing was written. Apply whichever of the above you judge correct, by hand.");
-process.exit(1);
+console.log("");
+console.log("Nothing was written.");
+process.exit(map.errors.length > 0 ? 1 : 0);

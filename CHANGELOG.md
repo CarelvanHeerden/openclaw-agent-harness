@@ -1,5 +1,149 @@
 # Changelog
 
+## 2.0.0-rc.7
+
+Two configuration mechanisms that described the same files with no shared
+vocabulary, and the three defects that produced. `repos.never_commit_paths` says
+a path must never be committed; `verify.generators` says a script owns it and a
+sub-task may be contracted to produce it. Ownership carried no authority at
+commit time, so the exclusion reverted the output of the very turn told to
+generate it -- and rc.6, reading that as a contradiction, refused the
+configuration an operator with a checked-in generated bundle actually wants.
+
+The two now cooperate: a path on the exclusion list is reverted unless the
+committing sub-task is authorized to generate it. That retires the rc.6
+refusal -- no deployment needs a config edit, and a list narrowed to satisfy
+rc.6 should be put back. Behind it, two things that were only visible once
+generated files could be committed: the final scope check counted a declared
+artifact as creep, and nothing in a plan reliably owned the tree at all.
+
+Nothing here loosens a merge gate or a security posture. Two additions could
+narrow what the harness does and both are OFF by default, because each should be
+a decision rather than something inherited on upgrade: appending a generation
+sub-task adds a worker turn and therefore cost, and summarising generated output
+for review narrows what the adversary reads.
+
+
+### The exclusion list reverted the one commit whose work it was
+
+`repos.never_commit_paths` and `verify.generators` describe the same files and
+had no shared vocabulary. One says a path must never be committed; the other
+says a script owns it and a sub-task may be contracted to produce it. Ownership
+carried no authority at commit time, so beta.114's revert — which unstages *and
+restores* every match — undid the output of the very turn that was told to
+generate it. The worker is authorized to run the script, instructed to commit
+what it writes, and the commit throws it away; the contract then fails because
+the artifact was never committed, and the advice is to run the generator again.
+
+rc.6 read that as a contradiction and refused the configuration. That diagnosis
+was right about the symptom and wrong about the cause. The configuration is what
+an operator with a checked-in generated bundle actually wants: a blanket
+exclusion so unrelated sub-tasks cannot sweep 141 files into a feature PR, and a
+generator that owns the tree for the turn that regenerates it. The defect was
+that the two mechanisms could not both be true at once.
+
+Now they can. A staged path on the exclusion list is reverted **unless the
+committing sub-task is authorized to generate it**. No new configuration: the
+binding already exists and is already per sub-task — the same authorization that
+tells a worker which script it may run now tells the commit which paths it may
+keep. Everything else is reverted exactly as before, including for a
+harness-authored commit, which is not a sub-task and owns nothing.
+
+Authorization is per generator rather than per file, because a generator
+rewrites its whole declared output each run; sparing only the paths a sub-task
+happened to name would commit the index and revert the modules, leaving a
+bundle inconsistent with itself and a worktree that looks clean.
+
+Consequences:
+
+- **The rc.6 overlap rejection is retired.** A deployment that narrowed its
+  exclusion list to satisfy rc.6 can put it back, and should: an enumerated list
+  of sibling directories loses protection for every directory added later, which
+  a blanket pattern covered for free. No deployment needs a config edit.
+- **The diagnosis survives the rejection.** An excluded path that *no* generator
+  owns still cannot be committed by anyone, and fails looking exactly like a
+  generator that never ran. A contract failure on such a path now says the
+  output was reverted and that re-running cannot help, instead of sending a
+  worker round the same loop.
+- **The preflight reports ownership coverage.** `generator-config-preflight.mjs`
+  no longer proposes a narrowing — the narrowing is no longer the fix. It reads
+  a config and optionally a checkout, writes to neither, and reports which
+  excluded paths a declared generator owns and which are owned by nothing. It
+  exits non-zero only for a mapping the harness genuinely rejects, so it can
+  still gate a rollout.
+
+### Nobody owned the generated tree, so it was owned by accident
+
+Phase 1 lets the sub-task contracted to produce an artifact commit it. That only
+helps when a sub-task *is* contracted to produce it, and on the runs behind this
+whole thread none was — the bundle was regenerated as a side effect of unrelated
+work, by whichever sub-task happened to run a script that rewrote it. PR #961's
+141 swept files were one sub-task's side effect carried by another's commit.
+Without an owner the tree simply goes stale instead, which is better than an
+unwinnable contract and still not good.
+
+`verify.append_generation_subtask` gives it a standing owner: one sub-task,
+appended to the plan, running the generator and committing what it writes. It is
+a sub-task rather than orchestrator work because `verify.generators` authorizes
+worker-side execution only, and the harness running the script itself would
+reverse that decision rather than implement it.
+
+Three bounds, each from something that already went wrong. It appends only on
+evidence — a generator with no declared `inputs` is never triggered, because
+"run it just in case" is beta.70's 19-minute speculative run across 1,436 files
+for a zero diff. It appends only when nothing in the plan already claims the
+output, since a second turn would regenerate the same tree twice and race the
+first for its files. And it runs last, because a generator that runs before a
+later sub-task edits its sources produces a bundle that is stale when the PR
+opens. Default off: this adds a worker turn, and therefore cost, to runs that
+did not have one.
+
+### The reviewer spent most of its budget reading machine output
+
+A regenerated bundle is real diff and went to the adversary verbatim. At 1,663
+files it pushes the review past the single-chunk ceiling, so it is split into
+chunks read in sequence and the hand-written change that needs review is
+scattered across calls that each see a fraction of it — while most of the money
+goes on reading generated content line by line.
+
+`verify.summarise_generated_for_review` folds declared generated output down to
+a manifest of itself. Every file is still named, with its line counts and the
+script that owns it, and the reviewer is told the omission is deliberate and
+invited to demand any of it back — so this narrows what is read, not what is
+disclosed. Only paths declared in `verify.generators` are eligible; nothing is
+inferred from a directory name. Default off, because "the reviewer reads less"
+should be a decision and not something inherited on upgrade.
+
+### A declared generated artifact was scope creep the moment it became committable
+
+Letting the owning sub-task commit its generated tree exposes a second
+contradiction standing behind the first.
+
+The final scope check reads the plan and nothing else — the revision's approved
+files, each sub-task's `filesLikelyTouched`, its `verify[].path`. A generated
+artifact was in scope only when a sub-task happened to name one. That never
+mattered while those trees were also excluded from commits, because the revert
+ran first and this check never saw them. Now that the owner commits them, a
+bundle regeneration arrives here as scope creep.
+
+On the StitchGuard OKF tree that is 1,663 files against a 500-file
+`scope_blowout_file_threshold` — not a `fit` finding but beta.110's thrown
+`ScopeBlowoutError`, which abandons the cycle before review. The commit fix on
+its own would have bought an abandoned run in place of an unwinnable contract:
+PR #961's shape at ten times the size.
+
+A committed file owned by a resolved generator mapping is now in scope for the
+script that owns it, audited as `loop.final_scope_check_generated` with the
+owning script named, so an exemption is never mistaken for the check having
+stopped running. This is narrow and never inferred: it follows the operator's
+declaration rather than the directory, so hand-written files living beside a
+generated tree are still scope creep. It reads `ownerOf`, which is null for any
+mapping the harness refused to resolve — an unparseable script, a path escaping
+the repository, a tree two scripts both claim — so a configuration it would not
+read earns no exemption here either. beta.110's tripwire is unchanged for
+everything else, and a cache sweep alongside a legitimate regeneration still
+aborts on the cache alone.
+
 ## 2.0.0-rc.6
 
 Four ways one specification failed to become a merge-ready PR, taken from the
