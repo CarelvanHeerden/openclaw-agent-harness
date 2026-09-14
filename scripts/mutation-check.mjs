@@ -3353,6 +3353,49 @@ const MUTATIONS = [
     replace: "    return authorizedGeneratorsForPaths(map, paths).flatMap((g) => g.paths);",
     tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
+  // --- rc.7 phase 2: the standing owner -------------------------------------
+  {
+    // Anchored on the real guard. An explicit `inputs.length === 0` test used to
+    // sit above this one and was dead: this line already refused the same case,
+    // so the mutation survived against a check that could not fail.
+    name: "generation is EVIDENCED (rc.7): beta.70's 19-minute speculative run, appended to every plan",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "        if (changedInputs.length === 0)\n            continue;",
+    replace: "        if (false)\n            continue;",
+    tests: ["tests/rc7-generation-subtask.test.mjs"],
+  },
+  {
+    name: "generation is UNCLAIMED (rc.7): two turns regenerate one tree and race for its files",
+    file: "dist/orchestrator/generated-artifacts.js",
+    find: "        if (claimedScripts.has(e.script))\n            continue;",
+    replace: "        if (false)\n            continue;",
+    tests: ["tests/rc7-generation-subtask.test.mjs"],
+  },
+  {
+    name: "the appended turn is OPT-IN (rc.7): every deployment silently buys a worker turn on upgrade",
+    file: "dist/orchestrator/loop.js",
+    find: "        if (this.deps.config.verify?.append_generation_subtask !== true)",
+    replace: "        if (false)",
+    tests: ["tests/rc7-generation-subtask.test.mjs"],
+  },
+  // --- rc.7 phase 3: generated output is summarised, not hidden -------------
+  {
+    name: "the fold is DECLARED-only (rc.7): an unowned file is dropped from the review",
+    file: "dist/adapters/shared/diff.js",
+    find: "        if (!path || script === null) {",
+    replace: "        if (!path) {",
+    tests: ["tests/rc7-generated-review-fold.test.mjs"],
+  },
+  {
+    // Mutates the SOURCE, not dist: the guard lives in the composition root,
+    // which no test executes, so the pin that defends it reads src/index.ts.
+    // Pointed at dist this survived trivially -- the mutant was never read.
+    name: "the fold is OPT-IN (rc.7): every deployment's reviewer silently starts reading less",
+    file: "src/index.ts",
+    find: "      if (config.verify?.summarise_generated_for_review === true) {",
+    replace: "      if (config.verify?.summarise_generated_for_review !== true) {",
+    tests: ["tests/rc7-generated-review-fold.test.mjs"],
+  },
   {
     name: "a reverted artifact says so (rc.7): the owner is told its own work 'did not run'",
     file: "dist/orchestrator/generated-artifacts.js",

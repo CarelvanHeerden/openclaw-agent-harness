@@ -388,6 +388,60 @@ export function describeGeneratedArtifactFailure(params) {
         : "";
     return `${path} is a GENERATED artifact -- ${cause}. This is not a path-resolution mismatch.${reverted} Probe detail: ${baseDetail}`;
 }
+/**
+ * rc.7: which generators need a turn that no sub-task in this plan will give them.
+ *
+ * THE GAP THIS CLOSES. Ownership only carries authority when somebody holds it.
+ * Phase 1 lets the sub-task contracted to produce an artifact commit it, which
+ * fixes the case where a sub-task happens to declare one of the generator's
+ * paths. Nothing guarantees one does. On the observed plans none did: the
+ * bundle was regenerated as a side effect of unrelated work, by whichever
+ * sub-task ran a script that happened to rewrite it, and that accident is what
+ * the whole thread has been chasing. An unclaimed generated tree goes stale
+ * instead, which is better than an unwinnable contract and still not good.
+ *
+ * TWO CONSTRAINTS, BOTH FROM SOMETHING THAT ALREADY WENT WRONG.
+ *
+ * It must be EVIDENCED. Appending a generation turn to every run costs money
+ * for nothing most of the time, and beta.70 paid for that lesson once already:
+ * a 19-minute speculative `npm run okf` across 1,436 files, for a zero diff.
+ * So a generator with no declared `inputs` is never triggered -- without inputs
+ * there is no evidence a regeneration is needed, and "run it just in case" is
+ * precisely the behaviour that was removed. Declaring inputs is how an operator
+ * opts in.
+ *
+ * It must be UNCLAIMED. If a sub-task already declares any path the generator
+ * owns, that sub-task is the owner and phase 1 already lets it commit. Adding a
+ * second turn would regenerate the same tree twice and race the first for the
+ * same files.
+ */
+export function pendingGenerations(params) {
+    const { map, changedFiles, claimedPaths } = params;
+    if (map.empty)
+        return [];
+    const claimedScripts = new Set(authorizedGeneratorsForPaths(map, claimedPaths).map((g) => g.script));
+    const out = [];
+    for (const e of map.entries) {
+        if (claimedScripts.has(e.script))
+            continue;
+        /*
+         * This single test enforces BOTH halves of "evidenced".
+         *
+         * `changedGeneratorInputs` returns empty for a generator that declared no
+         * inputs, so an undeclared generator can never produce evidence and can
+         * never be triggered -- which is beta.70's rule. An explicit
+         * `inputs.length === 0` guard above this read as the load-bearing check and
+         * was not: it could be deleted with every test still passing, because this
+         * line already refused the same case. A guard that cannot fail is worse
+         * than no guard, because it is where the next reader stops looking.
+         */
+        const changedInputs = changedGeneratorInputs(e, changedFiles);
+        if (changedInputs.length === 0)
+            continue;
+        out.push({ script: e.script, produces: [...e.files, ...e.dirs], changedInputs });
+    }
+    return out;
+}
 /** rc.6: which of this generator's declared inputs changed in the window. */
 export function changedGeneratorInputs(owner, changedFiles) {
     if (owner.inputs.length === 0 && owner.inputDirs.length === 0)

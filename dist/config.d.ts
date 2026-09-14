@@ -324,6 +324,44 @@ export interface VerifyConfig {
      * Default [] -- no generators, and no built-in defaults for any toolchain.
      */
     generators?: GeneratorMapping[];
+    /**
+     * rc.7: summarise declared generated output in the adversary's diff instead
+     * of sending it verbatim.
+     *
+     * A regenerated bundle is 1,663 files on the StitchGuard OKF tree. Sent whole
+     * it pushes the review past DIFF_SINGLE_CHUNK_BYTES and splits it into chunks
+     * reviewed in sequence, so the hand-written change that needs review is
+     * scattered across calls that each see a fraction of it, and most of the cost
+     * is spent reading machine output. Folded, every generated file is still
+     * named with its line counts and owning script -- the adversary knows exactly
+     * what changed and may demand to see any of it -- but the content is omitted.
+     *
+     * DEFAULT FALSE, deliberately. This narrows what the reviewer reads, and a
+     * deployment should choose that rather than inherit it on upgrade. Nothing
+     * outside `verify.generators` is ever eligible, so this is inert until
+     * ownership has been declared.
+     */
+    summarise_generated_for_review?: boolean;
+    /**
+     * rc.7: append a generation sub-task when a declared generator's `inputs`
+     * changed and no sub-task in the plan owns its output.
+     *
+     * Ownership only carries authority when somebody holds it. On the observed
+     * plans nobody did: the bundle was regenerated as a side effect of unrelated
+     * work by whichever sub-task happened to run a script that rewrote it, and
+     * that accident is the origin of this whole class of defect. This gives the
+     * tree a standing owner -- one turn, appended last, running the generator and
+     * committing what it writes.
+     *
+     * Evidenced, never speculative: a generator with no declared `inputs` is
+     * never triggered, because beta.70 already paid for "run it just in case" (a
+     * 19-minute `npm run okf` across 1,436 files, for a zero diff). Declaring
+     * inputs is how an operator opts a generator in.
+     *
+     * DEFAULT FALSE. This adds a worker turn, and therefore cost, to runs that
+     * did not previously have one. A deployment should choose that.
+     */
+    append_generation_subtask?: boolean;
 }
 export interface LogConfig {
     /** Master switch for the interaction log. Default true. */

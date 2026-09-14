@@ -50,6 +50,48 @@ Consequences:
   exits non-zero only for a mapping the harness genuinely rejects, so it can
   still gate a rollout.
 
+### Nobody owned the generated tree, so it was owned by accident
+
+Phase 1 lets the sub-task contracted to produce an artifact commit it. That only
+helps when a sub-task *is* contracted to produce it, and on the runs behind this
+whole thread none was — the bundle was regenerated as a side effect of unrelated
+work, by whichever sub-task happened to run a script that rewrote it. PR #961's
+141 swept files were one sub-task's side effect carried by another's commit.
+Without an owner the tree simply goes stale instead, which is better than an
+unwinnable contract and still not good.
+
+`verify.append_generation_subtask` gives it a standing owner: one sub-task,
+appended to the plan, running the generator and committing what it writes. It is
+a sub-task rather than orchestrator work because `verify.generators` authorizes
+worker-side execution only, and the harness running the script itself would
+reverse that decision rather than implement it.
+
+Three bounds, each from something that already went wrong. It appends only on
+evidence — a generator with no declared `inputs` is never triggered, because
+"run it just in case" is beta.70's 19-minute speculative run across 1,436 files
+for a zero diff. It appends only when nothing in the plan already claims the
+output, since a second turn would regenerate the same tree twice and race the
+first for its files. And it runs last, because a generator that runs before a
+later sub-task edits its sources produces a bundle that is stale when the PR
+opens. Default off: this adds a worker turn, and therefore cost, to runs that
+did not have one.
+
+### The reviewer spent most of its budget reading machine output
+
+A regenerated bundle is real diff and went to the adversary verbatim. At 1,663
+files it pushes the review past the single-chunk ceiling, so it is split into
+chunks read in sequence and the hand-written change that needs review is
+scattered across calls that each see a fraction of it — while most of the money
+goes on reading generated content line by line.
+
+`verify.summarise_generated_for_review` folds declared generated output down to
+a manifest of itself. Every file is still named, with its line counts and the
+script that owns it, and the reviewer is told the omission is deliberate and
+invited to demand any of it back — so this narrows what is read, not what is
+disclosed. Only paths declared in `verify.generators` are eligible; nothing is
+inferred from a directory name. Default off, because "the reviewer reads less"
+should be a decision and not something inherited on upgrade.
+
 ### A declared generated artifact was scope creep the moment it became committable
 
 Letting the owning sub-task commit its generated tree exposes a second

@@ -72,8 +72,18 @@ test("the dispatcher is a serial walk, not a concurrency pool", () => {
     assert.ok(!gone.test(loopSrc), `loop.ts still carries ${gone}`);
   }
   // And what replaced it: one sub-task at a time, in the session worktree.
-  assert.match(loopSrc, /for \(const st of ordered\)/, "sub-tasks are walked in topo order");
-  assert.match(loopSrc, /runOneInner\(st, plan\.worktreePath\)/, "each runs in the session worktree");
+  //
+  // rc.7 turned the `for..of` into an index loop so the array can be appended
+  // to mid-iteration (a generation sub-task, added last). Still one at a time
+  // and still awaited in the loop body, which is the property this holds -- the
+  // shape of the loop header never was.
+  assert.match(loopSrc, /for \(let i = 0; ; i\+\+\)/, "sub-tasks are walked in topo order");
+  assert.match(loopSrc, /const st = ordered\[i\]!;/, "one at a time, by index");
+  assert.match(
+    loopSrc,
+    /await withTimeout\(\s*runOneInner\(st, plan\.worktreePath\)/,
+    "each is awaited before the next begins, in the session worktree",
+  );
 });
 
 test("the pooled-slot lifecycle is gone from the git adapter", () => {
@@ -270,9 +280,11 @@ test("sub-tasks execute in topological order, one at a time", { skip }, async ()
 test("the sub-task deadline still bounds the whole sub-task, not just the model call", () => {
   // b59/b60: the hang that stalled a run for 5h30m was in git/IO around the
   // worker, not in the worker. The bound has to wrap runOneInner.
-  const at = loopSrc.indexOf("for (const st of ordered)");
-  assert.ok(at > 0);
-  const body = loopSrc.slice(at, at + 2500);
+  const at = loopSrc.indexOf("for (let i = 0; ; i++)");
+  assert.ok(at > 0, "the dispatch loop must be findable");
+  // Widened in rc.7: the append check sits between the loop header and the
+  // dispatch. The claim -- the deadline wraps the whole sub-task -- is unchanged.
+  const body = loopSrc.slice(at, at + 3500);
   assert.match(body, /withTimeout\(\s*runOneInner\(st, plan\.worktreePath\)/, "the deadline wraps the whole sub-task");
   assert.match(body, /subtask_deadline_seconds/);
 });

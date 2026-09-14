@@ -231,6 +231,48 @@ export declare function describeGeneratedArtifactFailure(params: {
     /** rc.7: the never-commit paths that sub-task WAS authorized to write. */
     authorizedPaths?: readonly string[];
 }): string;
+/** rc.7: a generator whose sources moved and whose output nobody is going to write. */
+export interface PendingGeneration {
+    script: string;
+    /** The generator's whole declared output: what the appended sub-task owns. */
+    produces: string[];
+    /** The declared inputs that actually moved. The evidence, kept for the audit. */
+    changedInputs: string[];
+}
+/**
+ * rc.7: which generators need a turn that no sub-task in this plan will give them.
+ *
+ * THE GAP THIS CLOSES. Ownership only carries authority when somebody holds it.
+ * Phase 1 lets the sub-task contracted to produce an artifact commit it, which
+ * fixes the case where a sub-task happens to declare one of the generator's
+ * paths. Nothing guarantees one does. On the observed plans none did: the
+ * bundle was regenerated as a side effect of unrelated work, by whichever
+ * sub-task ran a script that happened to rewrite it, and that accident is what
+ * the whole thread has been chasing. An unclaimed generated tree goes stale
+ * instead, which is better than an unwinnable contract and still not good.
+ *
+ * TWO CONSTRAINTS, BOTH FROM SOMETHING THAT ALREADY WENT WRONG.
+ *
+ * It must be EVIDENCED. Appending a generation turn to every run costs money
+ * for nothing most of the time, and beta.70 paid for that lesson once already:
+ * a 19-minute speculative `npm run okf` across 1,436 files, for a zero diff.
+ * So a generator with no declared `inputs` is never triggered -- without inputs
+ * there is no evidence a regeneration is needed, and "run it just in case" is
+ * precisely the behaviour that was removed. Declaring inputs is how an operator
+ * opts in.
+ *
+ * It must be UNCLAIMED. If a sub-task already declares any path the generator
+ * owns, that sub-task is the owner and phase 1 already lets it commit. Adding a
+ * second turn would regenerate the same tree twice and race the first for the
+ * same files.
+ */
+export declare function pendingGenerations(params: {
+    map: GeneratorMap;
+    /** Files this branch has changed so far. */
+    changedFiles: readonly string[];
+    /** Every path the plan's sub-tasks already declare. */
+    claimedPaths: readonly string[];
+}): PendingGeneration[];
 /** rc.6: which of this generator's declared inputs changed in the window. */
 export declare function changedGeneratorInputs(owner: ResolvedGenerator, changedFiles: readonly string[]): string[];
 /**

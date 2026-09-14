@@ -2,11 +2,14 @@
 
 Author: Cursor · 2026-09-14 · Origin: Carel's question after the StitchGuard OKF conflict (rc.6, PRs #201–#203)
 
-**Status: phase 1 implemented in PR #203.** The rule, the plumbing and the
-migration below all shipped; `authorizedGeneratedOutputs` widened the
-authorization from the sub-task's declared paths to the whole of what the
-authorized script writes, for the reason given under "Plumbing". Phases 2 and 3
-remain proposals.
+**Status: all three phases implemented in PR #203.** Two things changed from
+the plan below. `authorizedGeneratedOutputs` widened the authorization from the
+sub-task's declared paths to the whole of what the authorized script writes, so
+a generator cannot commit its index and have its modules reverted. And phases 2
+and 3 both ship behind flags defaulting to FALSE -- each adds cost (a worker
+turn) or narrows what the reviewer reads, and neither should arrive by upgrade.
+The naming question under "Naming" is still open and still deliberately not part
+of this change.
 
 ## Motivation
 
@@ -220,8 +223,8 @@ It should run **last**, for the ordering reason above.
 | Phase | Change | Unblocks |
 | --- | --- | --- |
 | 1 ✅ | Ownership-scoped revert; retire the rc.6 overlap error; repurpose the preflight | StitchGuard runs with its existing config, unedited |
-| 2 | Conditional generation sub-task, appended last, triggered by changed `inputs` | The bundle has a standing owner instead of an accidental one |
-| 3 | Generated-output handling in review (summarise rather than diff verbatim) | The cost of owning a 1,663-file bundle |
+| 2 ✅ | Conditional generation sub-task, appended last, triggered by changed `inputs` (`verify.append_generation_subtask`) | The bundle has a standing owner instead of an accidental one |
+| 3 ✅ | Generated-output handling in review (summarise rather than diff verbatim) (`verify.summarise_generated_for_review`) | The cost of owning a 1,663-file bundle |
 
 Phase 1 is the whole of the fix for the reported problem. Phases 2 and 3 are
 improvements, not prerequisites.

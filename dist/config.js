@@ -266,6 +266,8 @@ const DEFAULTS = {
         // rc.5: no generators, and deliberately no built-in default for any
         // toolchain. An operator declares ownership or nothing is authorized.
         generators: [],
+        summarise_generated_for_review: false,
+        append_generation_subtask: false,
         check_script_allowlist: ["okf:check", "lint", "typecheck", "test"],
         check_script_timeout_seconds: 600,
         typecheck_gate: true,

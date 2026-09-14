@@ -493,6 +493,55 @@ non-zero only for a genuinely rejected mapping — an unparseable script, a path
 escaping the repository, a tree two scripts both claim — so it can still gate a
 rollout.
 
+### Giving a generated tree a standing owner
+
+Ownership only carries authority when somebody holds it. If no sub-task declares
+any path a generator produces, nobody regenerates the tree and it goes stale —
+better than a contract nothing could satisfy, still not good. On the runs that
+produced this whole thread, nobody held it: the bundle was regenerated as a side
+effect of unrelated work by whichever sub-task happened to run a script that
+rewrote it.
+
+Set `verify.append_generation_subtask` to `true` and the harness appends one
+sub-task to the plan whose job is to run the generator and commit what it
+writes. Three things bound it:
+
+- **It only appends on evidence.** A generator with no declared `inputs` is
+  never triggered — without inputs there is nothing to show a regeneration is
+  needed, and "run it just in case" is the 19-minute speculative run over 1,436
+  files that beta.70 removed. Declaring `inputs` is how you opt a generator in.
+- **It only appends when nobody else owns the output.** If a sub-task already
+  declares one of the generator's paths, that sub-task is the owner and the
+  commit exclusion already spares it.
+- **It runs last.** A generator that runs before a later sub-task edits its
+  sources produces a bundle that is stale when the PR opens.
+
+The harness still never runs the generator itself; it appends a turn and the
+worker runs it, which is what `verify.generators` authorizes. Appending is
+audited as `loop.generation_subtask_appended` with the changed inputs that
+triggered it. Default is off, because this adds a worker turn and therefore
+cost to runs that did not have one.
+
+### Reviewing a large generated bundle
+
+A regenerated bundle is real diff — 1,663 files on the OKF tree — and it goes to
+the adversary verbatim. Past the single-chunk ceiling that splits the review into
+chunks read in sequence, so the hand-written change that actually needs review is
+scattered across calls that each see a fraction of it, and most of the cost goes
+on reading machine output.
+
+`verify.summarise_generated_for_review` replaces declared generated output in
+the review diff with a manifest of itself: every file named, with its line
+counts and owning script, and an instruction to the reviewer that the omission
+is deliberate and it may demand any of it back. Only paths declared in
+`verify.generators` are eligible; nothing is inferred from a directory name.
+What it removes is the line-by-line content of files whose content is derived —
+not the fact that they changed. Audited as
+`adversary.generated_output_folded` with the byte counts before and after.
+
+Default is off. This narrows what the reviewer reads, and that should be a
+decision rather than something inherited on upgrade.
+
 **A declared output is in scope for the script that owns it.** The final scope
 check otherwise reads only the plan, so a regenerated bundle would arrive as
 hundreds or thousands of out-of-scope writes the moment you made it committable
