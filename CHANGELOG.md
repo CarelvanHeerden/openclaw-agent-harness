@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.7
+
+Two configuration mechanisms that described the same files with no shared
+vocabulary, and the three defects that produced. `repos.never_commit_paths` says
+a path must never be committed; `verify.generators` says a script owns it and a
+sub-task may be contracted to produce it. Ownership carried no authority at
+commit time, so the exclusion reverted the output of the very turn told to
+generate it -- and rc.6, reading that as a contradiction, refused the
+configuration an operator with a checked-in generated bundle actually wants.
+
+The two now cooperate: a path on the exclusion list is reverted unless the
+committing sub-task is authorized to generate it. That retires the rc.6
+refusal -- no deployment needs a config edit, and a list narrowed to satisfy
+rc.6 should be put back. Behind it, two things that were only visible once
+generated files could be committed: the final scope check counted a declared
+artifact as creep, and nothing in a plan reliably owned the tree at all.
+
+Nothing here loosens a merge gate or a security posture. Two additions could
+narrow what the harness does and both are OFF by default, because each should be
+a decision rather than something inherited on upgrade: appending a generation
+sub-task adds a worker turn and therefore cost, and summarising generated output
+for review narrows what the adversary reads.
+
 
 ### The exclusion list reverted the one commit whose work it was
 

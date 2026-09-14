@@ -731,9 +731,11 @@ const MUTATIONS = [
     tests: ["tests/beta113-drbcp-run-defects.test.mjs"],
   },
   {
+    // rc.7: the call gained an authorized-paths argument. The claim is
+    // unchanged -- delete the call and the bundle ships again.
     name: "the generated tree is actually dropped (b114): 141 of PR #961's 154 files were regenerated bundle",
     file: "dist/adapters/git-worktree.js",
-    find: "await this.revertNeverCommitPaths(worktreePath);",
+    find: "await this.revertNeverCommitPaths(worktreePath, authorizedPaths);",
     replace: "",
     tests: ["tests/beta114-never-commit-paths.test.mjs"],
   },
@@ -3152,16 +3154,6 @@ const MUTATIONS = [
     find: "    if (MONEY_CUE_RESIDUE.test(working) || CURRENCY_CUE_RESIDUE.test(working)) {",
     replace: "    if (false) {",
     tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
-    // The unwinnable contract: generation authorized into a tree whose commits
-    // are reverted. The worker writes it, the harness discards it, the contract
-    // fails, and the advice is to do it again.
-    name: "generation cannot target a never-commit path (rc.6): the unwinnable okf contract returns",
-    file: "dist/orchestrator/generated-artifacts.js",
-    find: "            if (neverCommitCovers(opts?.neverCommitPaths, norm)) {",
-    replace: "            if (false) {",
-    tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
   {
     // Freshness must still FAIL on evidence. rc.6 loosened the no-evidence case;
