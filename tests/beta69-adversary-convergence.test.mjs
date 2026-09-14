@@ -231,8 +231,11 @@ test("beta69 (F4): runCheckScripts classifies exit 127 / command-not-found as un
 test("beta69 (F4): worktree bootstrap re-installs when a declared check-script binary is missing + uses --ignore-scripts (source)", () => {
   const src = S("src/adapters/git-worktree.ts");
   assert.match(src, /declaredCheckBinsPresent\(worktreePath\)/);
-  assert.match(src, /"ci", "--ignore-scripts"/);
-  assert.match(src, /"install", "--include=dev", "--ignore-scripts"/);
+  // rc.8: this pin used to require `"ci", "--ignore-scripts"` -- i.e. the
+  // lockfile path WITHOUT `--include=dev`, which is the defect itself. Both
+  // paths now carry the flag, from a single expression.
+  assert.match(src, /hasLock \? "ci" : "install", "--include=dev", "--ignore-scripts"/);
+  assert.doesNotMatch(src, /"ci", "--ignore-scripts"/);
 });
 
 test("beta69 (F5): loop discards a post-cancel adversary review + audits converged_on_green (source)", () => {

@@ -558,10 +558,17 @@ esac
             // peer-tree isn't needed locally -- the worker just needs importable
             // modules for reads), plus `--no-audit --no-fund` to speed it up. `npm
             // ci` respects the lockfile so the tree is still deterministic.
+            // rc.8: `--include=dev` on BOTH paths. The harness inherits
+            // NODE_ENV=production from its container, and under that npm defaults to
+            // `omit=dev`: the lockfile path installed the runtime tree and skipped
+            // every devDependency. StitchGuard declares TypeScript there, so `tsc`
+            // was absent from the allocated worktree and the check scripts exited
+            // 127 -- which beta.69 (F4) above correctly classifies as
+            // `env_unavailable`, so review reported a broken environment rather than
+            // a finding. The flag was already on the no-lockfile branch; the two
+            // branches now carry it in ONE place so they cannot drift apart again.
             const speed = ["--no-audit", "--no-fund", "--legacy-peer-deps"];
-            const args = hasLock
-                ? ["ci", "--ignore-scripts", ...speed]
-                : ["install", "--include=dev", "--ignore-scripts", ...speed];
+            const args = [hasLock ? "ci" : "install", "--include=dev", "--ignore-scripts", ...speed];
             this.opts.logger?.info?.(`[git-worktree] bootstrapping deps (npm ${args[0]}) in ${worktreePath}`);
             await this.runCmd("npm", args, worktreePath, this.opts.bootstrapTimeoutMs ?? 600_000);
             this.opts.logger?.info?.(`[git-worktree] deps bootstrap complete in ${worktreePath}`);

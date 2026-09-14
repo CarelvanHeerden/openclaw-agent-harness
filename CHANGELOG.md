@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### The worktree installed everything except the tools the checks needed
+
+The harness runs in a container that sets `NODE_ENV=production`, and npm reads
+it: under that setting npm defaults to `omit=dev`. The allocator's bootstrap
+took the lockfile branch, `npm ci --ignore-scripts --no-audit --no-fund
+--legacy-peer-deps`, and npm duly installed the runtime tree and skipped every
+devDependency.
+
+StitchGuard declares TypeScript in `devDependencies`. So `node_modules` was
+populated, `node_modules/.bin/tsc` was not, `npm run typecheck` exited 127, and
+beta.69 (F4) classified that — correctly — as `env_unavailable`. Review
+reported a broken environment rather than a verdict, every cycle, for a repo
+whose tooling was fine. A populated tree is why this looked like the target
+repo's problem: the failure mode of an install that skips half its work is
+indistinguishable from a repo that forgot to declare a dependency.
+
+The no-lockfile branch had passed `--include=dev` since beta.53. Only the
+lockfile branch was missing it, which is why this lasted: the fix was already
+written, one branch over. Both branches now take the flag from a single
+expression, so they cannot diverge again.
+
+Restoring `include=dev` in the container user's `~/.npmrc` fixes it too, and is
+how the defect was found. That is a host workaround — it repairs one machine
+and leaves the harness broken everywhere else — so the fix is in the command
+the harness issues, not in configuration it does not own. Nothing here reads or
+writes an `.npmrc`, and `NODE_ENV` is left exactly as inherited.
+
+Everything else about the bootstrap is unchanged: `--ignore-scripts`
+(beta.69 F4), `--legacy-peer-deps` and the `--no-audit --no-fund` pair
+(beta.85), the disk preflight (beta.76), the timeout, the redaction, and
+beta.69's bin-aware skip — which means a worktree left half-populated by the
+old command self-heals on its next allocation rather than staying broken.
+
 ## 2.0.0-rc.7
 
 Two configuration mechanisms that described the same files with no shared

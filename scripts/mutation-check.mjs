@@ -3395,6 +3395,33 @@ const MUTATIONS = [
     replace: "    const excluded = neverCommitCovers(neverCommitPaths, path);",
     tests: ["tests/rc5-generated-artifact-ownership.test.mjs"],
   },
+
+  // --- rc.8: the bootstrap must ask for devDependencies explicitly ----------
+  {
+    // The defect verbatim: the branch that has a lockfile drops the flag. On a
+    // host with NODE_ENV=production that is StitchGuard's missing `tsc`.
+    name: "the LOCKFILE path asks for dev deps (rc.8): NODE_ENV=production silently omits them",
+    file: "dist/adapters/git-worktree.js",
+    find: 'const args = [hasLock ? "ci" : "install", "--include=dev", "--ignore-scripts", ...speed];',
+    replace: 'const args = hasLock ? ["ci", "--ignore-scripts", ...speed] : ["install", "--include=dev", "--ignore-scripts", ...speed];',
+    tests: ["tests/rc8-bootstrap-dev-deps.test.mjs"],
+  },
+  {
+    name: "the NO-LOCKFILE path keeps asking too (rc.8): beta.53's half of the fix, deleted",
+    file: "dist/adapters/git-worktree.js",
+    find: 'const args = [hasLock ? "ci" : "install", "--include=dev", "--ignore-scripts", ...speed];',
+    replace: 'const args = [hasLock ? "ci" : "install", "--ignore-scripts", ...speed];',
+    tests: ["tests/rc8-bootstrap-dev-deps.test.mjs"],
+  },
+  {
+    // beta.85's flags are load-bearing for other repos; rc.8 must not have
+    // traded one install failure for another while rewriting this expression.
+    name: "the rewrite kept beta.85's flags (rc.8): an ERESOLVE peer conflict aborts the bootstrap again",
+    file: "dist/adapters/git-worktree.js",
+    find: 'const speed = ["--no-audit", "--no-fund", "--legacy-peer-deps"];',
+    replace: 'const speed = ["--no-audit", "--no-fund"];',
+    tests: ["tests/rc8-bootstrap-dev-deps.test.mjs"],
+  },
 ];
 
 /**
