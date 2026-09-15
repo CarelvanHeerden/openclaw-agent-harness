@@ -142,15 +142,6 @@ export function learnRemapsForDir(staleDir, realFiles) {
     }
     return [...best.values()];
 }
-/**
- * Re-derive a single stale contract path against the run's real touched files.
- * Returns the corrected path (leading prefix remapped to the discovered
- * convention, tail + basename preserved) or the ORIGINAL path unchanged when no
- * evidence-backed remap applies.
- *
- * When multiple remaps apply, the one with the LONGEST shared tail wins (most
- * specific). Ties are broken deterministically by the corrected string.
- */
 export function rederiveContractPath(contract, realFiles) {
     const c = normalisePath(contract);
     if (!c || !c.includes("/"))
@@ -202,6 +193,45 @@ export function rederiveContractPath(contract, realFiles) {
         const corrected = normalisePath(`${newDir}/${base}`);
         if (corrected === c)
             return { path: contract, remapped: false };
+        /*
+         * rc.9: a shared directory suffix does not authorise moving a requirement
+         * into a DIFFERENT KIND OF TREE.
+         *
+         * StitchGuard, audit 5408. The plan required a documentation artifact at
+         * `okf/api/webhooks/client-offboarding-slack.md`. An earlier sub-task had
+         * touched `src/__tests__/api/webhooks/linear-webhook-status-sync.test.ts`.
+         * The two directories share the two-segment tail `api/webhooks`, so the
+         * rule below learned `okf -> src/__tests__` and rewrote the documentation
+         * requirement into the test tree. One file was the entire evidence: no
+         * basename in common, no extension in common, not even the same kind of
+         * artifact. The plan was then written back, so the OKF path was gone, and
+         * the worker's next turn duly announced it would create "the
+         * harness-required help companion path src/__tests__/api/webhooks/...".
+         *
+         * The rc1 guard above (>= 2 segments) was written for exactly this shape
+         * after `src -> src/__tests__` via `components`. It draws the line at the
+         * WIDTH of the evidence; this draws it at the KIND, which is the part a
+         * wider tail can never establish. `.../foo.md` under `__tests__` is a test
+         * path by `isTestFilePath`, and an OKF document is not, so the crossing is
+         * detectable without knowing anything about either repository.
+         *
+         * Test-to-test and source-to-source corrections -- every case beta.76,
+         * beta.93 and beta.100 were written for -- are unaffected.
+         */
+        if (!isTestFilePath(c) && isTestFilePath(corrected)) {
+            return {
+                path: contract,
+                remapped: false,
+                suggestion: {
+                    path: corrected,
+                    via: rm,
+                    confidence: "low",
+                    reason: `the only evidence is a shared '${rm.tail}' directory suffix, and applying it would move a ` +
+                        `non-test requirement into a test tree ('${rm.from || "<root>"}' -> '${rm.to}'). A shared suffix ` +
+                        `does not establish that a documentation artifact belongs under tests.`,
+                },
+            };
+        }
         return { path: corrected, remapped: true, via: rm };
     }
     return { path: contract, remapped: false };

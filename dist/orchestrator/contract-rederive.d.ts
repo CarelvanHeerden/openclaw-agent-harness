@@ -114,11 +114,27 @@ export declare function learnRemapsForDir(staleDir: string, realFiles: string[])
  * When multiple remaps apply, the one with the LONGEST shared tail wins (most
  * specific). Ties are broken deterministically by the corrected string.
  */
-export declare function rederiveContractPath(contract: string, realFiles: string[]): {
+/**
+ * rc.9: a correction the evidence supports but the rules decline to apply.
+ *
+ * Returned instead of silently rewriting, so the candidate and its provenance
+ * survive into the audit and can be put to a human, rather than being either
+ * acted on or thrown away.
+ */
+export interface RederiveSuggestion {
+    path: string;
+    via: PrefixRemap;
+    /** Why it was not applied. Operator-facing. */
+    reason: string;
+    confidence: "low";
+}
+export interface RederiveResult {
     path: string;
     remapped: boolean;
     via?: PrefixRemap;
-};
+    suggestion?: RederiveSuggestion;
+}
+export declare function rederiveContractPath(contract: string, realFiles: string[]): RederiveResult;
 /** A 1:1 reconciliation of a stale TEST contract path onto the test file the sub-task really committed. */
 export interface TestContractReconcile {
     /** The stale (lead-authored) contract path. */

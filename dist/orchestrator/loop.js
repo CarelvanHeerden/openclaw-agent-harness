@@ -2562,6 +2562,21 @@ export class OrchestratorLoop {
                         if (!("path" in v) || !v.path || v.kind === "file_in_pr")
                             return v;
                         const rd = rederiveContractPath(v.path, [...discoveredRealPaths]);
+                        if (rd.suggestion) {
+                            // rc.9: a correction the evidence hinted at but the rules declined.
+                            // Recorded with its provenance and confidence so it is available to a
+                            // human, and NOT added to pathCorrections -- the contract and the
+                            // plan keep the path the brief asked for.
+                            this.deps.state.audit("loop.contract_path_correction_suggested", {
+                                sessionId, seq: st.seq, cycle, kind: v.kind,
+                                keeping: v.path,
+                                candidate: rd.suggestion.path,
+                                via: rd.suggestion.via,
+                                confidence: rd.suggestion.confidence,
+                                reason: rd.suggestion.reason,
+                            }, sessionId);
+                            this.deps.logger.warn("[loop] rc.9: declined to re-derive a contract path across artifact kinds; keeping the declared path", { sessionId, seq: st.seq, keeping: v.path, candidate: rd.suggestion.path });
+                        }
                         if (!rd.remapped)
                             return v;
                         pathCorrections.push({ from: v.path, to: rd.path });
