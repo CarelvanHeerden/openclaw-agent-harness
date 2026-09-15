@@ -381,6 +381,52 @@ test("rc.9: a corrupt, truncated or missing bundle is NEVER a checkpoint", { ski
   assert.match(restored.reason, /not a usable checkpoint/);
 });
 
+test("rc.9: verification is what catches a bad bundle, before anything calls it durable", { skip }, async () => {
+  /*
+   * The tests above corrupt a bundle AFTER it was written, which proves the
+   * load path re-checks its bytes. It does not prove the WRITE path verifies
+   * anything -- with real git, `bundle create` always produces something
+   * `bundle verify` accepts, so removing the verify call changes no result.
+   * The mutation check found exactly that hole in this file.
+   *
+   * So: make the creation step produce a file that is not a bundle, and let
+   * real git be the one to reject it. Now the verify call is load-bearing.
+   */
+  const root = tmp();
+  const wt = join(root, "wt");
+  const ck = join(root, "durable");
+  const { branch } = makeRepo(wt, { commits: 2 });
+
+  let verifyRan = false;
+  const sabotagedGit = async (args, cwd) => {
+    if (args[0] === "bundle" && args[1] === "create") {
+      // Exit 0, leave a file, and make it garbage -- the shape of a truncated
+      // write or a full disk, both of which git reports as success often
+      // enough to matter.
+      writeFileSync(args[2], "this is not a git bundle\n");
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (args[0] === "bundle" && args[1] === "verify") verifyRan = true;
+    return bundle.defaultGitRunner(args, cwd);
+  };
+
+  const res = await bundle.createCheckpoint({
+    sessionId: SESSION, cycle: 1, worktreePath: wt, branch, checkpointRoot: ck, git: sabotagedGit,
+  });
+
+  assert.equal(verifyRan, true, "the write path must verify before publishing");
+  assert.equal(res.durable, false, "an unverifiable bundle is not a checkpoint");
+  assert.equal(res.manifest.recoverable, false);
+  assert.match(res.manifest.error, /did not verify/);
+
+  // And it left nothing behind that a later restore could mistake for work.
+  assert.equal(bundle.latestCheckpoint(ck, SESSION), null);
+  const dir = bundle.checkpointDirFor(ck, SESSION);
+  const { readdirSync } = await import("node:fs");
+  const stray = readdirSync(dir).filter((n) => n.endsWith(".bundle") || n.endsWith(".tmp"));
+  assert.deepEqual(stray, [], "the rejected bundle is cleaned up, not left to be found later");
+});
+
 test("rc.9: a failed checkpoint is RECORDED as failed, and does not throw into the run", { skip }, async () => {
   const root = tmp();
   const res = await bundle.createCheckpoint({
