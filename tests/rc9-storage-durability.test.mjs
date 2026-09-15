@@ -109,17 +109,54 @@ test("rc.9 incident: an empty worktrees root is not health, it is nine missing c
 
 test("rc.9: a surviving worktree whose OBJECT STORE is gone is just as dead, and much easier to miss", { skip }, async () => {
   // The nastier half of the incident: `.repos/<owner>/<repo>.git` lives INSIDE
-  // the worktrees root, so it shares the mount's fate. `ls` still shows files.
+  // the worktrees root, so it shares the mount's fate. `ls` still shows files
+  // in the worktree, and git cannot read a single one of them.
   const bare = health.bareCachePathFor("/data/worktrees", REPO);
   assert.equal(bare, "/data/worktrees/.repos/Stitch-Vercel/StitchGuard.git");
 
+  const gitLink = `${WORKTREE}/.git`;
   const findings = await health.reconcileSessionsToDisk(
     [{ id: SESSION, status: "paused", repo: REPO, branch: "b", worktreePath: WORKTREE, recordedCommits: [] }],
-    { worktreesRoot: "/data/worktrees", exists: (p) => p === WORKTREE },
+    {
+      worktreesRoot: "/data/worktrees",
+      // The worktree and its `.git` link survived; the bare repo it points into did not.
+      exists: (p) => p === WORKTREE || p === gitLink,
+      readText: () => `gitdir: ${bare}/worktrees/${SESSION}\n`,
+    },
   );
   assert.equal(findings[0].state, "missing_objects");
-  assert.match(findings[0].reason, /object store/);
+  assert.match(findings[0].reason, /the git directory it points at/);
   assert.match(findings[0].reason, /unusable/);
+});
+
+test("rc.9: the object-store check asks the checkout, not the configuration", { skip }, async () => {
+  // A false "your work is gone" is worse than no check at all -- it is the one
+  // message an operator has to be able to believe. So a session whose objects
+  // live somewhere the adapter's layout would not predict is NOT condemned.
+  const ok = await health.reconcileSessionsToDisk(
+    [{ id: SESSION, status: "executing", repo: REPO, branch: "b", worktreePath: WORKTREE, recordedCommits: [] }],
+    {
+      worktreesRoot: "/somewhere/else/entirely",
+      exists: (p) => p === WORKTREE || p === `${WORKTREE}/.git` || p.startsWith("/opt/git-cache"),
+      readText: () => "gitdir: /opt/git-cache/StitchGuard.git/worktrees/x\n",
+    },
+  );
+  assert.deepEqual(ok, [], "objects that exist elsewhere are still objects");
+
+  // And without a reader we decline to guess rather than condemning.
+  const noReader = await health.reconcileSessionsToDisk(
+    [{ id: SESSION, status: "executing", repo: REPO, branch: "b", worktreePath: WORKTREE, recordedCommits: [] }],
+    { worktreesRoot: "/data/worktrees", exists: (p) => p === WORKTREE || p === `${WORKTREE}/.git` },
+  );
+  assert.deepEqual(noReader, []);
+
+  // A checkout with no `.git` at all is unambiguous, though.
+  const noGit = await health.reconcileSessionsToDisk(
+    [{ id: SESSION, status: "executing", repo: REPO, branch: "b", worktreePath: WORKTREE, recordedCommits: [] }],
+    { worktreesRoot: "/data/worktrees", exists: (p) => p === WORKTREE },
+  );
+  assert.equal(noGit[0].state, "missing_objects");
+  assert.match(noGit[0].reason, /no \.git entry at all/);
 });
 
 test("rc.9: commits the DB claims but git cannot find are reported, with the shas", { skip }, async () => {
@@ -574,13 +611,35 @@ test("rc.9: resume and answer both refuse to drive a loop into storage that is g
   const src = readFileSync(new URL("../src/tools/registration.ts", import.meta.url), "utf8");
   assert.match(src, /tool\.resume_refused_storage/);
   assert.match(src, /tool\.answer_refused_storage/);
-  assert.match(src, /FATAL_STORAGE_STATES/);
+  assert.match(src, /function storageIsUnrecoverable/);
+  // A missing worktree with nothing committed is not a disaster -- beta.101
+  // re-allocates one -- and a gate that cries wolf gets forced past.
+  assert.match(src, /return lost && storage\.missingCommits\.length > 0;/);
   // The refusal must not be a cleanup. The incident's remaining evidence is
   // worth more than the tidiness.
   assert.match(src, /Nothing has been deleted and the session row is/);
   assert.match(src, /The pause is still open and nothing has been/);
   // Wall-clock and budget pauses keep working -- their loop never left.
   assert.match(src, /!isTimeExtensionPause\(row\.clarification_subtask\) && !isBudgetExtensionPause/);
+});
+
+test("rc.9: the gate is narrow and certain; the deep finding comes from the recorded check", { skip }, () => {
+  const src = readFileSync(new URL("../src/tools/registration.ts", import.meta.url), "utf8");
+
+  // One rule: recorded work with nowhere left to live. A worktree that was
+  // reaped from a session that committed nothing is not an emergency, and a
+  // gate that stops people for those is a gate they learn to force past.
+  assert.match(src, /return lost && storage\.missingCommits\.length > 0;/);
+
+  // Commit reachability is one git process per commit. It belongs to startup,
+  // not to a path an operator is waiting on -- but the answer it wrote down is
+  // still honoured, so the deep case does gate once it has been found.
+  assert.match(src, /Structural checks only/);
+  assert.match(src, /row\.storage_state === "missing_commits"/);
+  assert.ok(
+    !/unreachableCommits/.test(src.slice(src.indexOf("async function checkSessionStorage"), src.indexOf("function storageIsUnrecoverable"))),
+    "the tool gate must not shell out per commit",
+  );
 });
 
 test("rc.9: startup says what it MEASURED, not a verdict on the storage", { skip }, () => {

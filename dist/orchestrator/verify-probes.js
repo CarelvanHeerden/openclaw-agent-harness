@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveContractPath } from "./path-match.js";
 export function createVerifyProbes(ctx) {
@@ -124,7 +125,41 @@ export function createVerifyProbes(ctx) {
                 }
                 catch {
                     try {
-                        const committed = await git.listCommittedFiles(worktreePath, baseSha).catch(() => []);
+                        /*
+                         * rc.9: before concluding the file is absent, check that the place
+                         * we are looking in still exists.
+                         *
+                         * This is the incident's reporting failure in miniature. When the
+                         * worktree is gone -- tmpfs restart, reaped directory, bad path --
+                         * `stat` throws, `listCommittedFiles` throws and was swallowed to
+                         * `[]`, and the verdict came out as "no file matching contract
+                         * path (checked literal + 0 committed)". That sentence describes a
+                         * worker who did not write a file. It was produced by a harness
+                         * that could not look.
+                         */
+                        if (!existsSync(worktreePath)) {
+                            return {
+                                exists: false,
+                                nonEmpty: false,
+                                indeterminate: true,
+                                detail: `the worktree ${worktreePath} does not exist, so this check could not be performed -- this is NOT evidence the file is missing`,
+                            };
+                        }
+                        let listFailed = null;
+                        const committed = await git
+                            .listCommittedFiles(worktreePath, baseSha)
+                            .catch((err) => {
+                            listFailed = err instanceof Error ? err.message : String(err);
+                            return [];
+                        });
+                        if (listFailed !== null) {
+                            return {
+                                exists: false,
+                                nonEmpty: false,
+                                indeterminate: true,
+                                detail: `could not list committed files in ${worktreePath} (${listFailed}); the check could not be performed`,
+                            };
+                        }
                         // beta.59: per-sub-task-scoped commit list -> basename-unique fallback safe.
                         // beta.76: + test-file-unique for a descriptively-named test file.
                         const match = resolveContractPath(committed, path, { allowBasenameFallback: true, allowTestFileFallback: true });
@@ -140,7 +175,8 @@ export function createVerifyProbes(ctx) {
                     }
                     catch (err2) {
                         const msg = err2 instanceof Error ? err2.message : String(err2);
-                        return { exists: false, nonEmpty: false, detail: `stat error: ${msg}` };
+                        // An error reaching the filesystem is not a finding about the file.
+                        return { exists: false, nonEmpty: false, indeterminate: true, detail: `stat error: ${msg}` };
                     }
                 }
             },
@@ -356,13 +392,17 @@ export function createVerifyProbes(ctx) {
                     const res = await fetch(url, {
                         headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" },
                     });
+                    // rc.9: 404 means the file is not there. 401/403/5xx mean the
+                    // question was not answered, and reporting those as absence is how a
+                    // token problem turns into "the worker did not write the file".
                     return {
                         exists: res.status === 200,
                         detail: `${resolution.provider} contents lookup HTTP ${res.status} for ${path}@${branch}`,
+                        ...(res.status === 200 || res.status === 404 ? {} : { indeterminate: true }),
                     };
                 }
                 catch (err) {
-                    return { exists: false, detail: `contents lookup error: ${String(err)}` };
+                    return { exists: false, detail: `contents lookup error: ${String(err)}`, indeterminate: true };
                 }
             },
             /** pr_opened / pr_state / file_in_pr helper: PRs whose head is `branch`. Provider-aware. */
@@ -385,7 +425,16 @@ export function createVerifyProbes(ctx) {
                                 url: m.web_url ?? "",
                             }))
                             : [];
-                        return { count: prs.length, prs, detail: `gitlab MR count ${prs.length} for source_branch=${branch}` };
+                        // rc.9: `res.ok` was never checked, so a 403 body parsed to `[]`
+                        // and became "no MR exists" -- a definitive answer built on a
+                        // failed request.
+                        return {
+                            count: prs.length, prs,
+                            detail: res.ok
+                                ? `gitlab MR count ${prs.length} for source_branch=${branch}`
+                                : `gitlab MR lookup HTTP ${res.status} for source_branch=${branch}`,
+                            ...(res.ok ? {} : { indeterminate: true }),
+                        };
                     }
                     const url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls?head=${owner}:${encodeURIComponent(branch)}&state=all`;
                     const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
@@ -403,10 +452,16 @@ export function createVerifyProbes(ctx) {
                             merged: !!p.merged_at,
                         }))
                         : [];
-                    return { count: prs.length, prs, detail: `github PR count ${prs.length} for head=${owner}:${branch}` };
+                    return {
+                        count: prs.length, prs,
+                        detail: res.ok
+                            ? `github PR count ${prs.length} for head=${owner}:${branch}`
+                            : `github PR lookup HTTP ${res.status} for head=${owner}:${branch}`,
+                        ...(res.ok ? {} : { indeterminate: true }),
+                    };
                 }
                 catch (err) {
-                    return { count: 0, prs: [], detail: `PR lookup error: ${String(err)}` };
+                    return { count: 0, prs: [], detail: `PR lookup error: ${String(err)}`, indeterminate: true };
                 }
             },
             /** file_in_pr: GET /repos/.../pulls/{n}/files. Provider-aware. */
@@ -423,7 +478,13 @@ export function createVerifyProbes(ctx) {
                         const files = (j.changes ?? [])
                             .map((c) => ({ filename: c.new_path ?? c.old_path ?? "" }))
                             .filter((f) => f.filename);
-                        return { files, detail: `gitlab MR !${prNumber} changes ${files.length}` };
+                        return {
+                            files,
+                            detail: res.ok
+                                ? `gitlab MR !${prNumber} changes ${files.length}`
+                                : `gitlab MR !${prNumber} changes lookup HTTP ${res.status}`,
+                            ...(res.ok ? {} : { indeterminate: true }),
+                        };
                     }
                     url = `${resolution.apiBase}/repos/${owner}/${repoName}/pulls/${prNumber}/files?per_page=100`;
                     const res = await fetch(url, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } });
@@ -431,10 +492,16 @@ export function createVerifyProbes(ctx) {
                     const files = Array.isArray(arr)
                         ? arr.filter((f) => typeof f.filename === "string").map((f) => ({ filename: f.filename }))
                         : [];
-                    return { files, detail: `github PR #${prNumber} files ${files.length}` };
+                    return {
+                        files,
+                        detail: res.ok
+                            ? `github PR #${prNumber} files ${files.length}`
+                            : `github PR #${prNumber} files lookup HTTP ${res.status}`,
+                        ...(res.ok ? {} : { indeterminate: true }),
+                    };
                 }
                 catch (err) {
-                    return { files: [], detail: `PR files lookup error: ${String(err)}` };
+                    return { files: [], detail: `PR files lookup error: ${String(err)}`, indeterminate: true };
                 }
             },
             /** commit_sha_matches helper: local worktree HEAD SHA. */

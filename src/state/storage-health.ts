@@ -89,7 +89,14 @@ export function claimsLocalStorage(status: string): boolean {
   return WORK_BEARING_STATUSES.has((status ?? "").trim());
 }
 
-/** The bare object cache the git adapter would use for a repo. */
+/**
+ * The bare object cache the git adapter would use for a repo.
+ *
+ * Diagnostic only -- it describes the adapter's layout, and the incident's
+ * fatal detail is that this path sits INSIDE the worktrees root and therefore
+ * shares its mount's fate. Reconciliation does not decide anything from it;
+ * see the `.git` link resolution below for why.
+ */
 export function bareCachePathFor(worktreesRoot: string, repoFullName: string): string {
   const [owner, repo] = (repoFullName ?? "").split("/");
   return join(worktreesRoot, ".repos", owner ?? "", `${repo ?? ""}.git`);
@@ -98,6 +105,8 @@ export function bareCachePathFor(worktreesRoot: string, repoFullName: string): s
 export interface ReconcileDeps {
   worktreesRoot: string;
   exists?: (p: string) => boolean;
+  /** Reads a `.git` link file. Without it, object-store checks are skipped rather than guessed. */
+  readText?: (p: string) => string;
   /**
    * Which of `shas` are NOT reachable in the repository at `worktreePath`.
    * Injected because it shells out to git. When absent, commit reachability is
@@ -147,15 +156,46 @@ export async function reconcileSessionsToDisk(
       continue;
     }
 
-    const bare = bareCachePathFor(deps.worktreesRoot, s.repo);
-    if (!exists(bare)) {
-      // The worktree survived but its object store did not. Git cannot read a
-      // worktree whose objects are gone, so this is as fatal as the first case
-      // and much easier to miss, because `ls` still shows files.
+    /*
+     * Does the checkout still have its objects?
+     *
+     * Asked of the checkout itself rather than inferred from configuration. An
+     * earlier draft computed `<worktrees_root>/.repos/<owner>/<repo>.git` and
+     * reported its absence, which is the layout the adapter happens to use --
+     * and a session created any other way (a plain clone, a relocated root, a
+     * test fixture) would have been declared broken while being perfectly fine.
+     * A false "your work is gone" is worse than no check: it is the one message
+     * an operator must be able to believe.
+     *
+     * A linked worktree's `.git` is a FILE containing `gitdir: <path>`. That
+     * path is the only authority on where its objects live, and in the incident
+     * it pointed inside the mount that had just been wiped.
+     */
+    const dotGit = join(wt, ".git");
+    const objectsGone = (): string | null => {
+      if (!exists(dotGit)) return `${wt} has no .git entry at all, so it is not a usable checkout`;
+      const readText = deps.readText;
+      if (!readText) return null; // cannot follow the link; do not guess
+      let contents: string;
+      try {
+        contents = readText(dotGit);
+      } catch {
+        return null; // a directory .git reads as an error here, which is fine
+      }
+      const m = /^gitdir:\s*(.+)$/m.exec(contents.trim());
+      if (!m) return null;
+      const target = m[1]!.trim();
+      const resolved = target.startsWith("/") ? target : join(wt, target);
+      return exists(resolved)
+        ? null
+        : `the worktree ${wt} exists but the git directory it points at (${resolved}) does not; the checkout is unusable`;
+    };
+    const objectsReason = objectsGone();
+    if (objectsReason) {
       out.push({
         sessionId: s.id,
         state: "missing_objects",
-        reason: `the worktree ${wt} exists but its git object store ${bare} does not; the checkout is unusable`,
+        reason: objectsReason,
         missingCommits: [...s.recordedCommits],
       });
       continue;

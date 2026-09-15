@@ -539,6 +539,7 @@ beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness 
 - **`storage.prune_terminal_sessions`** — `boolean`, default `false`.
 - **`storage.prune_terminal_sessions_days`** — `integer`, default `365`.
 - **`storage.min_free_disk_bytes`** — `integer`, default `1073741824`.
+- **`storage.checkpoint_root`** — `string`, default `""` (empty). rc.9: where durable checkpoints (git bundles) are written; MUST outlive the worktrees root, and must not be inside it. Empty disables durable checkpointing.
 
 #### `safety`
 

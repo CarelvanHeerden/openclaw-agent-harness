@@ -2924,6 +2924,7 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
   try {
     const { reconcileSessionsToDisk } = await import("./state/storage-health.js");
     const { execFileSync } = await import("node:child_process");
+    const { readFileSync } = await import("node:fs");
     const worktreesRoot = config.storage.worktree_root.replace(/^~/, process.env.HOME ?? "");
     const rows = state.db
       .prepare(
@@ -2953,6 +2954,7 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
       })),
       {
         worktreesRoot,
+        readText: (p) => readFileSync(p, "utf8"),
         unreachableCommits: async (wt, shas) =>
           shas.filter((sha) => {
             try {

@@ -259,9 +259,12 @@ test("beta100: the pause reuses the b55 resumable machinery (worktree preserved)
   // b105 inserted the basename rescue and b111 the auto-resolution between the
   // mismatch test and the escalation, so the window keeps widening.
   // rc1 follow-up inserted the pre-rederive original-path mapping, so widen again.
+  // rc.9 added a durable checkpoint on the rescue's success path -- a rescued
+  // sub-task is a verified completion, and those are exactly what now get their
+  // commits bundled to durable storage. Widen once more.
   const block = loopSrc.slice(loopSrc.indexOf("const PATH_MISMATCH_KINDS"));
-  assert.match(block.slice(0, 14000), /clarify\.question = buildContractClarification/);
-  assert.match(block.slice(0, 14000), /clarify\.seq = st\.seq/);
+  assert.match(block.slice(0, 16000), /clarify\.question = buildContractClarification/);
+  assert.match(block.slice(0, 16000), /clarify\.seq = st\.seq/);
 });
 
 // --- 7. config + version ------------------------------------------------------

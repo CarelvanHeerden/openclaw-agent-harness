@@ -26,6 +26,21 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+/*
+ * rc.9: a worktree path that actually exists.
+ *
+ * These fixtures paired a recorded commit with `/w`, a directory that has never
+ * existed on any machine. That combination is now exactly what `harness_answer`
+ * refuses -- it is the StitchGuard shape: work the database claims, in a
+ * checkout that is gone. The tests here are about answer semantics, so give
+ * them a real directory and let the storage tests own the storage question.
+ */
+const FIXTURE_WORKTREE = mkdtempSync(`${tmpdir()}/rc3-answer-wt-`);
+// A checkout with its git directory, which is what these sessions have.
+mkdirSync(`${FIXTURE_WORKTREE}/.git`, { recursive: true });
 
 let pathMatch, registerHarnessTools, Database;
 try {
@@ -164,7 +179,7 @@ function pause(db, { seq = 4, answer = null, subtask } = {}) {
     `INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
        status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran,
        clarification_question, clarification_seq, clarification_answer, clarification_subtask)
-     VALUES (?, 'agent:x', '', 'U1', 'gh-u1', 'o/r', 'b', '/w', 'awaiting_clarification', ?, ?, ?, 10, 0, 1, ?, ?, ?, ?)`,
+     VALUES (?, 'agent:x', '', 'U1', 'gh-u1', 'o/r', 'b', '${FIXTURE_WORKTREE}', 'awaiting_clarification', ?, ?, ?, 10, 0, 1, ?, ?, ?, ?)`,
   ).run(
     id,
     JSON.stringify({ title: "t", acceptanceCriteria: ["a"], outOfScope: [], filesLikelyTouched: [] }),

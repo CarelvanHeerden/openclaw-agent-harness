@@ -129,18 +129,22 @@ async function checkSessionStorage(
 ): Promise<{ state: string; reason: string; missingCommits: string[] } | null> {
   try {
     const { reconcileSessionsToDisk } = await import("../state/storage-health.js");
-    const { execFileSync } = await import("node:child_process");
+    const { readFileSync } = await import("node:fs");
     const row = db
       .prepare(
-        `SELECT s.id, s.status, s.repo, s.branch, s.worktree_path,
+        `SELECT s.id, s.status, s.repo, s.branch, s.worktree_path, s.storage_state, s.storage_reason,
                 (SELECT group_concat(t.commit_sha) FROM sub_tasks t
                   WHERE t.session_id = s.id AND t.commit_sha IS NOT NULL AND t.commit_sha != '') AS commits
            FROM sessions s WHERE s.id = ?`,
       )
       .get(sessionId) as
-      | { id: string; status: string; repo: string; branch: string | null; worktree_path: string | null; commits: string | null }
+      | {
+          id: string; status: string; repo: string; branch: string | null; worktree_path: string | null;
+          storage_state: string | null; storage_reason: string | null; commits: string | null;
+        }
       | undefined;
     if (!row) return null;
+    const recordedCommits = (row.commits ?? "").split(",").map((c) => c.trim()).filter(Boolean);
 
     const findings = await reconcileSessionsToDisk(
       [{
@@ -151,23 +155,32 @@ async function checkSessionStorage(
         repo: row.repo,
         branch: row.branch,
         worktreePath: row.worktree_path,
-        recordedCommits: (row.commits ?? "").split(",").map((c) => c.trim()).filter(Boolean),
+        recordedCommits,
       }],
-      {
-        worktreesRoot,
-        unreachableCommits: async (wt, shas) =>
-          shas.filter((sha) => {
-            try {
-              execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: wt, stdio: "ignore" });
-              return false;
-            } catch {
-              return true;
-            }
-          }),
-      },
+      /*
+       * Structural checks only. Walking every recorded commit means one `git
+       * cat-file` process per commit, in a path an operator is waiting on, and
+       * the startup reconciliation has already done that work and written the
+       * answer down. So the deep result is read from the row below rather than
+       * recomputed here -- and the structural checks alone catch the incident,
+       * where the directory itself was gone.
+       */
+      { worktreesRoot, readText: (p) => readFileSync(p, "utf8") },
     );
     const f = findings[0];
-    return f ? { state: f.state, reason: f.reason, missingCommits: f.missingCommits } : null;
+    if (f && f.state !== "unknown") return { state: f.state, reason: f.reason, missingCommits: f.missingCommits };
+
+    // Nothing structural, but the last reconciliation may have found commits
+    // that git could not. That finding does not expire just because the
+    // directory is still standing.
+    if (row.storage_state === "missing_commits") {
+      return {
+        state: "missing_commits",
+        reason: row.storage_reason ?? "commits this session recorded could not be found at the last storage check",
+        missingCommits: recordedCommits,
+      };
+    }
+    return null;
   } catch {
     // A check that cannot run must not become a refusal to act -- that would
     // turn a diagnostic into an outage. Silence here means "no finding", and
@@ -176,8 +189,34 @@ async function checkSessionStorage(
   }
 }
 
-/** The states that mean continuing would drive a loop into storage that is gone. */
-const FATAL_STORAGE_STATES = new Set(["missing_worktree", "missing_objects", "missing_commits"]);
+/**
+ * Which findings should actually STOP an operator, as opposed to being worth
+ * knowing?
+ *
+ * Not every missing worktree is a disaster. A session that has committed
+ * nothing loses nothing when its checkout is reaped, and beta.101's
+ * resume-from-clarification path is built to allocate a fresh one and carry the
+ * branch's commits forward. Refusing those would turn a diagnostic into an
+ * outage, and a gate that cries wolf is a gate people learn to force past.
+ *
+ * What is unrecoverable is recorded work with nowhere left to live: a missing
+ * worktree for a session that HAS commits (the bare cache is nested inside the
+ * same root, so it went with it -- this is StitchGuard exactly), a checkout
+ * whose git directory is gone, or commits the database names and git cannot
+ * find.
+ *
+ * Deliberately narrower than what the startup reconciliation reports. Diagnosis
+ * can afford to be broad -- it writes an audit row and a log line. A refusal
+ * cannot: it stands between an operator and their own session, so it fires only
+ * on the case that admits no other reading.
+ */
+function storageIsUnrecoverable(storage: { state: string; missingCommits: string[] }): boolean {
+  const lost = storage.state === "missing_worktree" || storage.state === "missing_objects" || storage.state === "missing_commits";
+  // One rule, and it is the incident's: work the database RECORDS, with nowhere
+  // left to live. No recorded commits means nothing was lost, whatever the
+  // directory looks like.
+  return lost && storage.missingCommits.length > 0;
+}
 
 export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRuntime): () => void {
   const disposers: Array<() => void> = [];
@@ -1601,9 +1640,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
            * this path deletes nothing -- leaves every row intact for recovery.
            */
           {
-            const wtRoot = (liveConfig().storage.worktree_root ?? "").replace(/^~/, process.env.HOME ?? "");
+            const wtRoot = (liveConfig().storage?.worktree_root ?? "").replace(/^~/, process.env.HOME ?? "");
             const storage = await checkSessionStorage(liveDb(), wtRoot, sessionId);
-            if (storage && FATAL_STORAGE_STATES.has(storage.state)) {
+            if (storage && storageIsUnrecoverable(storage)) {
               liveState().audit(
                 "tool.resume_refused_storage",
                 { sessionId, state: storage.state, reason: storage.reason, missingCommits: storage.missingCommits.length },
@@ -1901,9 +1940,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
          * and they are answered by operators under time pressure.
          */
         if (!isTimeExtensionPause(row.clarification_subtask) && !isBudgetExtensionPause(row.clarification_subtask)) {
-          const wtRoot = (liveConfig().storage.worktree_root ?? "").replace(/^~/, process.env.HOME ?? "");
+          const wtRoot = (liveConfig().storage?.worktree_root ?? "").replace(/^~/, process.env.HOME ?? "");
           const storage = await checkSessionStorage(liveDb(), wtRoot, sessionId);
-          if (storage && FATAL_STORAGE_STATES.has(storage.state)) {
+          if (storage && storageIsUnrecoverable(storage)) {
             liveState().audit(
               "tool.answer_refused_storage",
               { sessionId, seq, state: storage.state, reason: storage.reason, missingCommits: storage.missingCommits.length },

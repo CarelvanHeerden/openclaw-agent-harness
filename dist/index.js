@@ -2535,6 +2535,7 @@ export async function bootstrapHarnessAsync(runtime, api) {
     try {
         const { reconcileSessionsToDisk } = await import("./state/storage-health.js");
         const { execFileSync } = await import("node:child_process");
+        const { readFileSync } = await import("node:fs");
         const worktreesRoot = config.storage.worktree_root.replace(/^~/, process.env.HOME ?? "");
         const rows = state.db
             .prepare(`SELECT s.id, s.status, s.repo, s.branch, s.worktree_path,
@@ -2552,6 +2553,7 @@ export async function bootstrapHarnessAsync(runtime, api) {
             recordedCommits: (r.commits ?? "").split(",").map((c) => c.trim()).filter(Boolean),
         })), {
             worktreesRoot,
+            readText: (p) => readFileSync(p, "utf8"),
             unreachableCommits: async (wt, shas) => shas.filter((sha) => {
                 try {
                     execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: wt, stdio: "ignore" });

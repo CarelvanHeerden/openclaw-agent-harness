@@ -382,9 +382,25 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     // beta.83 (#1): append a visible warning to the headline when the current
     // cycle degraded to raw findings, unless a clarification pause already owns
     // the headline.
-    const headlineWithWarnings = reviseSpecFellBack && !needsClarification
+    const baseHeadline = reviseSpecFellBack && !needsClarification
         ? `${headline}  ⚠️ cycle ${latestCycle} is running on RAW adversary findings (revise-spec turn fell back — reduced fidelity).`
         : headline;
+    /*
+     * rc.9: a headline must not read as reassurance about storage nobody checked.
+     *
+     * The StitchGuard status surface stayed perfectly composed while the session
+     * it described had no worktree, no object store and no commits -- because
+     * nothing in the status path had ever been asked to look, and a headline that
+     * omits a fact reads as that fact being fine.
+     *
+     * Only a POSITIVE finding is appended. `unknown` is not shouted on every poll
+     * of every healthy run; it is carried in `storage.state` for anyone who asks.
+     */
+    const storageState = row.storage_state ?? "unknown";
+    const storageReason = row.storage_reason ?? null;
+    const headlineWithWarnings = storageState !== "ok" && storageState !== "unknown"
+        ? `${baseHeadline}  ⛔ LOCAL STORAGE ${storageState.toUpperCase()}: ${storageReason ?? "the recorded work could not be found on disk"}.`
+        : baseHeadline;
     return {
         ok: true,
         found: true,

@@ -60,11 +60,20 @@ export interface ReconcilableSession {
     recordedCommits: string[];
 }
 export declare function claimsLocalStorage(status: string): boolean;
-/** The bare object cache the git adapter would use for a repo. */
+/**
+ * The bare object cache the git adapter would use for a repo.
+ *
+ * Diagnostic only -- it describes the adapter's layout, and the incident's
+ * fatal detail is that this path sits INSIDE the worktrees root and therefore
+ * shares its mount's fate. Reconciliation does not decide anything from it;
+ * see the `.git` link resolution below for why.
+ */
 export declare function bareCachePathFor(worktreesRoot: string, repoFullName: string): string;
 export interface ReconcileDeps {
     worktreesRoot: string;
     exists?: (p: string) => boolean;
+    /** Reads a `.git` link file. Without it, object-store checks are skipped rather than guessed. */
+    readText?: (p: string) => string;
     /**
      * Which of `shas` are NOT reachable in the repository at `worktreePath`.
      * Injected because it shells out to git. When absent, commit reachability is
