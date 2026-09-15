@@ -195,6 +195,7 @@ const DEFAULTS = {
         prune_terminal_sessions: false,
         prune_terminal_sessions_days: 365,
         min_free_disk_bytes: 1024 * 1024 * 1024,
+        checkpoint_root: "",
     },
     safety: {
         worker_permission_mode: "acceptEdits",

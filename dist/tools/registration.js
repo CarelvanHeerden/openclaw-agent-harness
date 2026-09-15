@@ -49,6 +49,67 @@ function classifyAnswerDecision(answerText) {
         return "accept";
     return "guidance";
 }
+/**
+ * rc.9: does this session still have the disk it thinks it has?
+ *
+ * Asked before we act on a session that has been sitting still. StitchGuard's
+ * pause survived a restart that took its worktree, its object store and nine
+ * commits; answering that clarification would have re-driven a loop into a
+ * directory that was not there, and the first thing the operator would have
+ * seen is some downstream git error with no connection to the cause.
+ *
+ * Checked LIVE rather than read from `sessions.storage_state`, because the
+ * cached column is only as fresh as the last startup, and the interesting case
+ * is precisely a session that has been waiting a long time.
+ *
+ * Returns null when there is nothing to say. It never mutates and never blocks
+ * on its own uncertainty -- an `unknown` result is reported, not enforced.
+ */
+async function checkSessionStorage(db, worktreesRoot, sessionId) {
+    try {
+        const { reconcileSessionsToDisk } = await import("../state/storage-health.js");
+        const { execFileSync } = await import("node:child_process");
+        const row = db
+            .prepare(`SELECT s.id, s.status, s.repo, s.branch, s.worktree_path,
+                (SELECT group_concat(t.commit_sha) FROM sub_tasks t
+                  WHERE t.session_id = s.id AND t.commit_sha IS NOT NULL AND t.commit_sha != '') AS commits
+           FROM sessions s WHERE s.id = ?`)
+            .get(sessionId);
+        if (!row)
+            return null;
+        const findings = await reconcileSessionsToDisk([{
+                id: row.id,
+                // Force the row into scope: a session someone is actively resuming
+                // claims live storage by definition, whatever its recorded status.
+                status: "executing",
+                repo: row.repo,
+                branch: row.branch,
+                worktreePath: row.worktree_path,
+                recordedCommits: (row.commits ?? "").split(",").map((c) => c.trim()).filter(Boolean),
+            }], {
+            worktreesRoot,
+            unreachableCommits: async (wt, shas) => shas.filter((sha) => {
+                try {
+                    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: wt, stdio: "ignore" });
+                    return false;
+                }
+                catch {
+                    return true;
+                }
+            }),
+        });
+        const f = findings[0];
+        return f ? { state: f.state, reason: f.reason, missingCommits: f.missingCommits } : null;
+    }
+    catch {
+        // A check that cannot run must not become a refusal to act -- that would
+        // turn a diagnostic into an outage. Silence here means "no finding", and
+        // the caller proceeds exactly as it did before rc.9.
+        return null;
+    }
+}
+/** The states that mean continuing would drive a loop into storage that is gone. */
+const FATAL_STORAGE_STATES = new Set(["missing_worktree", "missing_objects", "missing_commits"]);
 export function registerHarnessTools(api, runtime) {
     const disposers = [];
     /**
@@ -1291,6 +1352,32 @@ export function registerHarnessTools(api, runtime) {
             if (!row.crystallised_prompt) {
                 return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
             }
+            /*
+             * rc.9: refuse to resume into storage that is gone.
+             *
+             * The rc.8 shape: a paused session, a restart that emptied a tmpfs
+             * worktrees root, and a database still naming a worktree path and
+             * nine commits. Resuming would have started a loop against a missing
+             * directory and failed somewhere far from the cause. Refusing here
+             * puts the reason in the operator's hands instead, and -- because
+             * this path deletes nothing -- leaves every row intact for recovery.
+             */
+            {
+                const wtRoot = (liveConfig().storage.worktree_root ?? "").replace(/^~/, process.env.HOME ?? "");
+                const storage = await checkSessionStorage(liveDb(), wtRoot, sessionId);
+                if (storage && FATAL_STORAGE_STATES.has(storage.state)) {
+                    liveState().audit("tool.resume_refused_storage", { sessionId, state: storage.state, reason: storage.reason, missingCommits: storage.missingCommits.length }, sessionId);
+                    return {
+                        content: [{
+                                type: "text",
+                                text: `Cannot resume ${sessionId}: ${storage.reason}. Nothing has been deleted and the session row is ` +
+                                    `untouched. Check whether a durable checkpoint exists for it before starting anything new -- ` +
+                                    `see docs/persistence-runbook.md.`,
+                            }],
+                        details: { ok: false, storageMissing: true, storageState: storage.state, reason: storage.reason },
+                    };
+                }
+            }
             const brief = JSON.parse(row.crystallised_prompt);
             liveDb().prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
             liveState().audit("tool.resume", { sessionId, wasStatus: row.status, invokedBy: invokedBy ?? null }, sessionId);
@@ -1517,6 +1604,36 @@ export function registerHarnessTools(api, runtime) {
             //
             // rc.6: a budget pause is the same animal for the same reason, so it
             // takes the same exemption and the same live-loop handling below.
+            /*
+             * rc.9: the same check before an ANSWER re-drives the loop.
+             *
+             * A clarification pause is the longest thing the harness does and the
+             * one most likely to span a restart, which is exactly what happened to
+             * StitchGuard. Answering a question whose worktree no longer exists
+             * produces a confusing downstream failure and, worse, makes it look
+             * like the answer was the problem.
+             *
+             * Time and budget extension pauses are exempt: their loop never left
+             * the process, so its worktree cannot have been reaped underneath it,
+             * and they are answered by operators under time pressure.
+             */
+            if (!isTimeExtensionPause(row.clarification_subtask) && !isBudgetExtensionPause(row.clarification_subtask)) {
+                const wtRoot = (liveConfig().storage.worktree_root ?? "").replace(/^~/, process.env.HOME ?? "");
+                const storage = await checkSessionStorage(liveDb(), wtRoot, sessionId);
+                if (storage && FATAL_STORAGE_STATES.has(storage.state)) {
+                    liveState().audit("tool.answer_refused_storage", { sessionId, seq, state: storage.state, reason: storage.reason, missingCommits: storage.missingCommits.length }, sessionId);
+                    rejectAutomatic("storage_missing");
+                    return {
+                        content: [{
+                                type: "text",
+                                text: `Not answering ${sessionId}: ${storage.reason}. The pause is still open and nothing has been ` +
+                                    `deleted, but answering it would re-drive the loop into storage that is not there. Assess ` +
+                                    `recovery first -- see docs/persistence-runbook.md.`,
+                            }],
+                        details: { ok: false, storageMissing: true, storageState: storage.state, reason: storage.reason, seq },
+                    };
+                }
+            }
             if (isTimeExtensionPause(row.clarification_subtask) || isBudgetExtensionPause(row.clarification_subtask)) {
                 liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
             }

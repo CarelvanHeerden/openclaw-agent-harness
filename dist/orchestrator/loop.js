@@ -929,17 +929,98 @@ export class OrchestratorLoop {
             }, sessionId);
         }
     }
-    checkpoint(sessionId, cycle, lastSubTask, sdkSessionId) {
+    /**
+     * rc.9: `last_completed_sub_task` now means what it says.
+     *
+     * In the incident DB that column held sub-task 11. Sub-task 11 is
+     * `failed_verification` with `commit_sha: null` -- the documentation edit the
+     * guard blocked. It got there because this method was called from ONE place:
+     * immediately after the worker's result row was written, before verification
+     * had any opinion about whether the work was real. Every turn was "completed"
+     * by the time it reached this UPDATE.
+     *
+     * Renaming a column on a live database to fix a name is a bad trade, so the
+     * honest one is added beside it. `attempted` records the turn; `completed`
+     * additionally advances `last_completed_sub_task`, and is only passed from
+     * the single terminal-success path, after verification has passed.
+     */
+    checkpoint(sessionId, cycle, lastSubTask, sdkSessionId, subTaskState = "attempted") {
+        const completed = subTaskState === "completed" ? (lastSubTask ?? null) : null;
         this.deps.state.db
             .prepare(`UPDATE sessions
          SET current_cycle = ?,
+             last_attempted_sub_task = COALESCE(?, last_attempted_sub_task),
              last_completed_sub_task = COALESCE(?, last_completed_sub_task),
              last_worker_sdk_session = COALESCE(?, last_worker_sdk_session),
              last_checkpoint_at = ?,
              last_progress_at = ?,
              updated_at = ?
          WHERE id = ?`)
-            .run(cycle, lastSubTask ?? null, sdkSessionId ?? null, Date.now(), Date.now(), Date.now(), sessionId);
+            .run(cycle, lastSubTask ?? null, completed, sdkSessionId ?? null, Date.now(), Date.now(), Date.now(), sessionId);
+    }
+    /**
+     * rc.9: put the commits somewhere that outlives the worktree.
+     *
+     * `checkpoint()` above is a database write. It has never moved a git object.
+     * StitchGuard's nine commits existed in exactly one place -- a worktree on a
+     * tmpfs mount, with the bare cache nested inside the same mount -- and a
+     * restart took all of it while the DB survived to describe what was gone.
+     *
+     * Best-effort by design: a checkpoint that cannot be taken is AUDITED as not
+     * taken and the run continues. What it must never do is record a checkpoint
+     * that was not verified, so the durable flag comes from `createCheckpoint`,
+     * which only sets it after `git bundle verify` passes and the bytes on disk
+     * match their digest.
+     */
+    async durableCheckpoint(params) {
+        const { sessionId, cycle, subTaskId, trigger } = params;
+        const configuredRoot = (this.deps.config.storage?.checkpoint_root ?? "").trim();
+        if (!configuredRoot)
+            return; // disabled; startup already said so, loudly
+        if (!params.worktreePath || !params.branch)
+            return;
+        try {
+            const { createCheckpoint } = await import("../state/checkpoint-bundle.js");
+            const { checkpointRootIsSafe } = await import("../state/storage-health.js");
+            const root = configuredRoot.replace(/^~/, process.env.HOME ?? "");
+            const safe = checkpointRootIsSafe(root, this.deps.config.storage.worktree_root ?? "");
+            if (!safe.ok) {
+                this.deps.state.audit("loop.checkpoint_skipped", { sessionId, cycle, reason: safe.reason }, sessionId);
+                return;
+            }
+            const res = await createCheckpoint({
+                sessionId,
+                cycle,
+                subTaskId: subTaskId ?? null,
+                trigger,
+                worktreePath: params.worktreePath,
+                branch: params.branch,
+                checkpointRoot: root,
+            });
+            if (res.durable) {
+                this.deps.state.db
+                    .prepare(`UPDATE sessions SET last_checkpoint_bundle = ?, last_checkpoint_sha = ?, updated_at = ? WHERE id = ?`)
+                    .run(res.manifestPath, res.manifest.tip, Date.now(), sessionId);
+                this.deps.state.audit("loop.checkpoint_durable", {
+                    sessionId, cycle, subTaskId: subTaskId ?? null, trigger,
+                    tip: res.manifest.tip, commits: res.manifest.commitCount,
+                    bytes: res.manifest.bundleBytes, manifest: res.manifestPath,
+                }, sessionId);
+            }
+            else {
+                // Explicitly NOT durable -- including the honest metadata-only case,
+                // where there simply were no commits to protect yet. Requirement: a
+                // metadata checkpoint is never countable as recoverable code.
+                this.deps.state.audit("loop.checkpoint_not_durable", {
+                    sessionId, cycle, subTaskId: subTaskId ?? null, trigger,
+                    commits: res.manifest.commitCount,
+                    reason: res.manifest.error ?? (res.manifest.commitCount === 0 ? "no commits to checkpoint" : "unverified"),
+                }, sessionId);
+            }
+        }
+        catch (err) {
+            this.deps.state.audit("loop.checkpoint_failed", { sessionId, cycle, trigger, error: String(err) }, sessionId);
+        }
     }
     addCost(sessionId, amount) {
         this.deps.state.db
@@ -3025,7 +3106,12 @@ export class OrchestratorLoop {
                                         this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: retryVerification.ok, contract, summary: retryVerification.summary, results: retryVerification.results, retry: true }, sessionId);
                                         if (retryVerification.ok) {
                                             this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, cost_usd = cost_usd + ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run(retry.status, retry.costUsd, JSON.stringify(retry.filesChanged), retry.commitSha ?? null, retry.sdkSessionId ?? null, `env-wait retry succeeded: ${retryVerification.summary}`, Date.now(), Date.now(), subTaskId);
-                                            this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId);
+                                            // rc.9: verification passed, so this is a real completion.
+                                            this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId, "completed");
+                                            await this.durableCheckpoint({
+                                                sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+                                                worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                                            });
                                             this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
                                             done.add(st.seq);
                                             return;
@@ -3555,7 +3641,12 @@ export class OrchestratorLoop {
                                                 sessionId, seq: st.seq, cycle,
                                             });
                                             this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run("completed", JSON.stringify(result.filesChanged ?? []), result.commitSha ?? null, result.sdkSessionId ?? null, `basename-rescued contract path (${rescue.from} -> ${rescue.to}): ${reverified.summary}`, Date.now(), Date.now(), subTaskId);
-                                            this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                                            // rc.9: re-verified clean, so this is a real completion.
+                                            this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId, "completed");
+                                            await this.durableCheckpoint({
+                                                sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+                                                worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                                            });
                                             retractFailure(st.seq, `basename_rescue:${rescue.kind}`);
                                             done.add(st.seq);
                                             return;
@@ -3819,6 +3910,23 @@ export class OrchestratorLoop {
                     // on the single terminal-success path, so a probe that FAILED never
                     // hands its half-finished account downstream as if it were fact.
                     this.recordObserveReport(sessionId, st, result, observeReports);
+                    /*
+                     * rc.9: this -- and only this -- is where a sub-task is COMPLETED.
+                     *
+                     * Every other `checkpoint()` call records an attempt. Sub-task 11 in
+                     * the incident DB was named as the last completed one while sitting at
+                     * `failed_verification` with no commit, because attempts were the only
+                     * thing anything ever wrote.
+                     *
+                     * The durable checkpoint is taken here too, at the moment there is
+                     * verified work worth protecting, rather than at a "checkpoint" that
+                     * only ever touched the database.
+                     */
+                    this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId, "completed");
+                    await this.durableCheckpoint({
+                        sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+                        worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                    });
                     done.add(st.seq);
                 };
                 /**
@@ -3914,7 +4022,7 @@ export class OrchestratorLoop {
                     // if we captured a clarification request we pause instead of dying, so
                     // a human can unblock the exact sub-task rather than restart the run.
                     if (clarify.question) {
-                        return this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
+                        return await this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
                     }
                     // beta.64 (P0-3): best-effort verify already pushed a graceful reviewable
                     // PR (verify sub-task timed out but the prior probe was green + clean
@@ -9010,7 +9118,37 @@ export class OrchestratorLoop {
      * `awaiting_clarification` as resumable, so a stray re-register or restart
      * won't reap the worktree or auto-fail the pause.
      */
-    finaliseAwaitingClarification(sessionId, question, seq, cycles, totalCostUsd, subtask) {
+    async finaliseAwaitingClarification(sessionId, question, seq, cycles, totalCostUsd, subtask) {
+        /*
+         * rc.9: checkpoint BEFORE blocking on a human.
+         *
+         * This is the longest-lived state the harness has -- it is designed to
+         * wait, potentially overnight -- and it is exactly where StitchGuard was
+         * standing when the container restarted. Nine commits, one tmpfs worktree,
+         * and a pause with no expiry. If there is a durable copy to be made, the
+         * moment before we hand control to a person is when to make it.
+         *
+         * Awaited, not fired and forgotten: the point of the checkpoint is that it
+         * exists before the wait begins.
+         */
+        try {
+            const row = this.deps.state.db
+                .prepare(`SELECT worktree_path, branch, current_cycle FROM sessions WHERE id = ?`)
+                .get(sessionId);
+            if (row) {
+                await this.durableCheckpoint({
+                    sessionId,
+                    cycle: row.current_cycle ?? cycles,
+                    subTaskId: null,
+                    trigger: "human_gate",
+                    worktreePath: row.worktree_path,
+                    branch: (row.branch ?? "").trim() || null,
+                });
+            }
+        }
+        catch (err) {
+            this.deps.state.audit("loop.checkpoint_failed", { sessionId, trigger: "human_gate", error: String(err) }, sessionId);
+        }
         this.setStatus(sessionId, "awaiting_clarification");
         this.deps.state.db.prepare(`UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, clarification_subtask = ?, updated_at = ? WHERE id = ?`).run(question, seq, subtask ? JSON.stringify(subtask) : null, Date.now(), sessionId);
         this.deps.state.audit("loop.clarification_requested", { sessionId, seq, question: question.slice(0, 1000), cycle: cycles }, sessionId);

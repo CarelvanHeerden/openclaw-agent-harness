@@ -867,6 +867,11 @@
           "type": "integer",
           "minimum": 0,
           "default": 1073741824
+        },
+        "checkpoint_root": {
+          "type": "string",
+          "description": "rc.9: where durable checkpoints (git bundles) are written; MUST outlive the worktrees root, and must not be inside it. Empty disables durable checkpointing.",
+          "default": ""
         }
       }
     },

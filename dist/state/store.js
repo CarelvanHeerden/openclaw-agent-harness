@@ -132,6 +132,36 @@ export function openStateStoreSync(pathHint) {
         { table: "sessions", column: "published_sha", type: "TEXT" }, // commit observed at the remote branch tip
         { table: "sessions", column: "published_at", type: "INTEGER" }, // epoch ms of that observation
         { table: "sessions", column: "published_branch", type: "TEXT" }, // branch the SHA was observed on
+        /*
+         * rc.9: storage health, after StitchGuard f7c4e585.
+         *
+         * The worktrees root was a tmpfs mount, so a container restart took every
+         * worktree AND the bare object cache with it -- the adapter puts `.repos`
+         * INSIDE the worktrees root. The DB was on a host-backed mount and survived
+         * intact, still naming a paused session, a worktree path and nine commit
+         * SHAs that no longer existed anywhere. Startup reported success.
+         *
+         * `storage_state` is what a reverse reconciliation FOUND, so the answer
+         * survives the process that discovered it. NULL means never checked, which
+         * is deliberately different from `ok`.
+         */
+        { table: "sessions", column: "storage_state", type: "TEXT" }, // ok | missing_worktree | missing_objects | missing_commits | unknown
+        { table: "sessions", column: "storage_reason", type: "TEXT" }, // operator-facing detail for storage_state
+        { table: "sessions", column: "storage_checked_at", type: "INTEGER" }, // ms; when the reconciliation last ran
+        /*
+         * rc.9: `last_completed_sub_task` did NOT mean completed.
+         *
+         * It is written by `checkpoint()` immediately after a worker result is
+         * persisted, BEFORE harness-side verification decides whether the work is
+         * real. In the incident it names sub-task 11, which is `failed_verification`
+         * with `commit_sha: null`. Renaming the column would be a risky migration
+         * for a cosmetic gain, so the honest name is added beside it: the attempted
+         * one goes here, and `last_completed_sub_task` is now only written once
+         * verification has actually passed.
+         */
+        { table: "sessions", column: "last_attempted_sub_task", type: "TEXT" }, // last worker turn persisted, success or not
+        { table: "sessions", column: "last_checkpoint_bundle", type: "TEXT" }, // path of the last VERIFIED durable bundle
+        { table: "sessions", column: "last_checkpoint_sha", type: "TEXT" }, // tip the verified bundle contains
     ];
     for (const m of additiveMigrations) {
         try {

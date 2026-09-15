@@ -1525,6 +1525,19 @@ export interface StorageConfig {
    * test). Default 1073741824 (1 GiB). Set 0 to disable the preflight.
    */
   min_free_disk_bytes: number;
+  /**
+   * rc.9: where durable checkpoints (git bundles) are written.
+   *
+   * MUST be on storage that outlives the worktrees root. In the StitchGuard
+   * deployment the worktrees root was a tmpfs mount and the bare object cache
+   * lived INSIDE it, so a restart took every copy of nine commits at once while
+   * the state DB -- on a host-backed mount -- survived to describe them.
+   *
+   * Empty (the default) disables durable checkpointing, and the harness says so
+   * out loud at startup rather than implying work is being protected when it is
+   * not. Pointing this INSIDE the worktrees root is refused for the same reason.
+   */
+  checkpoint_root: string;
 }
 
 export interface SafetyConfig {
@@ -1867,6 +1880,7 @@ const DEFAULTS: HarnessConfig = {
     prune_terminal_sessions: false,
     prune_terminal_sessions_days: 365,
     min_free_disk_bytes: 1024 * 1024 * 1024,
+    checkpoint_root: "",
   },
   safety: {
     worker_permission_mode: "acceptEdits",

@@ -832,7 +832,37 @@ export declare class OrchestratorLoop {
      * these rows are read by event name across a whole session.
      */
     private auditDeniedToolCalls;
+    /**
+     * rc.9: `last_completed_sub_task` now means what it says.
+     *
+     * In the incident DB that column held sub-task 11. Sub-task 11 is
+     * `failed_verification` with `commit_sha: null` -- the documentation edit the
+     * guard blocked. It got there because this method was called from ONE place:
+     * immediately after the worker's result row was written, before verification
+     * had any opinion about whether the work was real. Every turn was "completed"
+     * by the time it reached this UPDATE.
+     *
+     * Renaming a column on a live database to fix a name is a bad trade, so the
+     * honest one is added beside it. `attempted` records the turn; `completed`
+     * additionally advances `last_completed_sub_task`, and is only passed from
+     * the single terminal-success path, after verification has passed.
+     */
     private checkpoint;
+    /**
+     * rc.9: put the commits somewhere that outlives the worktree.
+     *
+     * `checkpoint()` above is a database write. It has never moved a git object.
+     * StitchGuard's nine commits existed in exactly one place -- a worktree on a
+     * tmpfs mount, with the bare cache nested inside the same mount -- and a
+     * restart took all of it while the DB survived to describe what was gone.
+     *
+     * Best-effort by design: a checkpoint that cannot be taken is AUDITED as not
+     * taken and the run continues. What it must never do is record a checkpoint
+     * that was not verified, so the durable flag comes from `createCheckpoint`,
+     * which only sets it after `git bundle verify` passes and the bytes on disk
+     * match their digest.
+     */
+    private durableCheckpoint;
     private addCost;
     private saveReview;
     /** rc.3: every finding this session has ever established, with its state. */
