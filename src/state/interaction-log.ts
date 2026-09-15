@@ -146,6 +146,11 @@ export function redactTokenShapes(text: string): string {
     .replace(/gh[posru]_[A-Za-z0-9]{20,}/g, "gh_***")
     // GitLab PAT.
     .replace(/glpat-[A-Za-z0-9_\-]{16,}/g, "glpat-***")
+    // rc.9: Slack bot/user/app tokens. Added because the StitchGuard brief was
+    // a Slack integration -- the harness was handling `SLACK_BOT_TOKEN` lines
+    // all run and this list did not know the shape, so they were neither
+    // redacted here nor recognised by the template secret scan that reuses it.
+    .replace(/\bxox[abeprs]-[A-Za-z0-9-]{10,}/g, "xox-***")
     // OpenAI-style keys.
     .replace(/sk-[A-Za-z0-9]{20,}/g, "sk-***")
     // Bearer tokens in an Authorization header value.

@@ -900,6 +900,14 @@
             "type": "string"
           }
         },
+        "path_denylist_exceptions": {
+          "description": "rc.9: exact repo-relative paths the denylist covers but this deployment explicitly authorises (e.g. \".env.example\"). No globs, no directories. Does not permit writing real credentials into the file.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "allow_git_push": {
           "type": "boolean",
           "default": false

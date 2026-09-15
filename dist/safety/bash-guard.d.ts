@@ -14,6 +14,39 @@
  * is rejected. If a legitimate command is rejected, add it to the whitelist
  * or split the operation into simpler steps.
  */
+/**
+ * rc.9: WHY a call was denied, in a form something other than a human can read.
+ *
+ * The StitchGuard incident had the whole reason -- rule, path, tool -- at the
+ * moment of denial, recorded it in one audit row, and then threw the structure
+ * away. Twenty seconds later the retry classifier logged `reason: ""` and the
+ * clarification shown to the operator quoted the model's planning prose. A
+ * string is not enough: every consumer between the guard and the human needs to
+ * be able to ask "was this a policy denial?" without parsing English.
+ */
+export interface GuardDenial {
+    /** Stable machine code. Classification keys on this, never on the message. */
+    code: "path_denylisted" | "path_unresolvable" | "no_path_exposed" | "secret_material" | "command_denied" | "network_denied" | "unknown_kind";
+    /** The policy rule that fired, e.g. the denylist pattern `.env.*`. */
+    rule?: string;
+    /** Normalised paths the decision was about. Safe to show: paths, not contents. */
+    paths?: string[];
+    /** The ACP tool kind, e.g. `edit`. */
+    kind?: string;
+    /** One operator-facing sentence, including what to do about it. */
+    message: string;
+}
+export interface AcpGuardVerdict {
+    allow: boolean;
+    /** Back-compatible prose. Kept so existing callers and logs are unchanged. */
+    reason?: string;
+    /** Present on every denial rc.9 owns. Absent means "allowed". */
+    denial?: GuardDenial;
+    /** beta.x: the denylist could not be applied to this call at all. */
+    unenforced?: boolean;
+    /** Canonical paths actually checked, for audit. */
+    checkedPaths?: string[];
+}
 export interface GuardConfig {
     whitelist: string[];
     denylistTokens: string[];
@@ -101,6 +134,8 @@ export declare function acpCommandFromToolCall(call: AcpToolCallForGuard): strin
  *     affected paths are the keys of the changes object)
  */
 export declare function acpPathsFromToolCall(call: AcpToolCallForGuard): string[];
+/** The `apply_patch` body, when this call has one. Needed for the content check. */
+export declare function acpPatchTextFromToolCall(call: AcpToolCallForGuard): string | null;
 /**
  * Builds a permission handler for an ACP backend, to be wired to
  * `session/request_permission`.
@@ -130,15 +165,29 @@ export declare function buildAcpGuard(cfg: {
     path_denylist: string[];
     allow_git_push: boolean;
     allow_network_commands: boolean;
-}): (call: AcpToolCallForGuard) => Promise<{
-    allow: boolean;
-    reason?: string;
-    unenforced?: boolean;
-}>;
+    /**
+     * rc.9: exact repo-relative paths the denylist covers but this deployment has
+     * explicitly authorised, e.g. `.env.example`. Opt-in, no globs, and still
+     * subject to the secret-content check. See `docs/SECURITY.md`.
+     */
+    path_denylist_exceptions?: string[];
+    /** Absolute worktree root, so an absolute path can be judged repo-relative. */
+    repoRoot?: string;
+    /** Symlink resolver. Absent in the pure guard; wired in production. */
+    realpath?: (p: string) => string;
+}): (call: AcpToolCallForGuard) => Promise<AcpGuardVerdict>;
 /**
  * beta.57 (P2): shared path-denylist matcher (same semantics as the SDK
  * Read/Write guard in buildBashGuard).
  */
 export declare function pathMatchesDenylist(p: string, patterns: readonly string[]): boolean;
+/**
+ * Which denylist pattern blocks this path, or null. Same predicate as
+ * {@link pathMatchesDenylist}, but it NAMES the rule -- rc.9 needs that, because
+ * an operator told only "denylisted" cannot decide anything, and the
+ * StitchGuard clarification's whole failure was telling a human less than the
+ * harness knew.
+ */
+export declare function denylistRuleFor(p: string, patterns: readonly string[]): string | null;
 export declare function guardCommand(cmd: string, cfg?: GuardConfig): GuardResult;
 //# sourceMappingURL=bash-guard.d.ts.map

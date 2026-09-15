@@ -227,6 +227,7 @@ const DEFAULTS = {
             ".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519",
             "harness-vault/", "vault.key", "vault.db",
         ],
+        path_denylist_exceptions: [],
         allow_git_push: false,
         allow_network_commands: false,
     },

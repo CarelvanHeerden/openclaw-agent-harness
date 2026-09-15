@@ -1532,6 +1532,20 @@ export interface SafetyConfig {
   bash_whitelist: string[];
   bash_denylist_tokens: string[];
   path_denylist: string[];
+  /**
+   * rc.9: EXACT repo-relative paths the denylist covers but this deployment has
+   * explicitly authorised anyway -- the tracked template case, e.g.
+   * `.env.example`.
+   *
+   * Deliberately empty by default. A template exception is a decision about one
+   * named file in one repository, and inheriting it on upgrade would be exactly
+   * the blanket allow this is meant to avoid. No globs, no directories: a
+   * pattern here would re-create `.env.*` with the sign flipped.
+   *
+   * An entry does NOT permit writing a live credential into the file. The guard
+   * scans the patch's added lines and refuses secret material regardless.
+   */
+  path_denylist_exceptions: string[];
   allow_git_push: boolean;
   allow_network_commands: boolean;
 }
@@ -1885,6 +1899,7 @@ const DEFAULTS: HarnessConfig = {
       ".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519",
       "harness-vault/", "vault.key", "vault.db",
     ],
+    path_denylist_exceptions: [],
     allow_git_push: false,
     allow_network_commands: false,
   },

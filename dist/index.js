@@ -13,7 +13,7 @@
  * Shape mirrors memory-hybrid.
  */
 import { readFile, writeFile, rm } from "node:fs/promises";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedListenerFlag, declaresRemovedParallelKeys } from "./config.js";
@@ -677,8 +677,12 @@ export function bootstrapHarnessSync(api) {
                                         bash_whitelist: config.safety.bash_whitelist,
                                         bash_denylist_tokens: config.safety.bash_denylist_tokens,
                                         // The scout only reads. It gets the worker's path denylist
-                                        // and no write path at all.
+                                        // and no write path at all. rc.9: no template exception --
+                                        // that authorises an EDIT to a template, and the scout does
+                                        // not edit anything.
                                         path_denylist: config.safety.path_denylist,
+                                        repoRoot: scoutWorktree,
+                                        realpath: (p) => realpathSync(p),
                                         allow_git_push: false,
                                         allow_network_commands: false,
                                     }),
@@ -849,6 +853,13 @@ export function bootstrapHarnessSync(api) {
                         bash_whitelist: config.safety.bash_whitelist,
                         bash_denylist_tokens: config.safety.bash_denylist_tokens,
                         path_denylist: config.safety.path_denylist,
+                        // rc.9: the worktree root and a real symlink resolver, so an
+                        // absolute path and a symlink target are judged by the same rules
+                        // as a repo-relative one. Without these the guard can only reason
+                        // about the string it was handed.
+                        path_denylist_exceptions: config.safety.path_denylist_exceptions,
+                        repoRoot: params.worktreePath,
+                        realpath: (p) => realpathSync(p),
                         allow_git_push: config.safety.allow_git_push,
                         allow_network_commands: config.safety.allow_network_commands,
                     });
