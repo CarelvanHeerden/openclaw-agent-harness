@@ -32,7 +32,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { AcpToolCallForGuard } from "../safety/bash-guard.js";
+import type { AcpGuardVerdict, AcpToolCallForGuard, GuardDenial } from "../safety/bash-guard.js";
 import { redactSecrets } from "./git-worktree.js";
 import { buildAgentEnv } from "./shared/env.js";
 import { runStructuredLadder } from "./shared/structured.js";
@@ -179,7 +179,7 @@ export interface RunWorkerAcpParams {
    * today only a read whose path the agent withheld. Distinct from a plain
    * allow so the adapter can count and announce it; see SECURITY.md.
    */
-  acpGuard: (call: AcpToolCallForGuard) => Promise<{ allow: boolean; reason?: string; unenforced?: boolean }>;
+  acpGuard: (call: AcpToolCallForGuard) => Promise<AcpGuardVerdict>;
   /** Redacted from logs and error text when present. */
   secretToken?: string;
   logger?: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void };
@@ -229,7 +229,7 @@ export interface RunWorkerAcpResult {
    * makes a denial actionable; without it the count alone says a run was
    * blocked but not by what.
    */
-  deniedToolCalls: Array<{ kind?: string | null; title?: string; reason?: string }>;
+  deniedToolCalls: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }>;
   /**
    * Reads this turn that were allowed WITHOUT a `path_denylist` check, because
    * the agent's permission request named no file. See SECURITY.md. A non-zero
@@ -493,7 +493,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
 
   const startedAt = Date.now();
   const logs: string[] = [];
-  const denied: Array<{ kind?: string | null; title?: string; reason?: string }> = [];
+  const denied: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }> = [];
   /** Reads allowed without a denylist check, because the agent named no path. */
   let unguardedReads = 0;
   let finalMessage = "";
@@ -742,7 +742,10 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
           // refused its first two calls is indistinguishable, after the fact,
           // from a worker that simply did nothing.
           const title = typeof call.title === "string" ? call.title : undefined;
-          denied.push({ kind: call.kind, title, reason: verdict.reason });
+          // rc.9: the structured verdict rides along. Dropping it here is where the
+          // incident's actionable reason died: everything downstream then had
+          // only English to reason about, and none of it matched.
+          denied.push({ kind: call.kind, title, reason: verdict.reason, denial: verdict.denial });
           pushLog(`[guard] DENIED ${String(call.kind)}: ${verdict.reason ?? "no reason"}`);
           // Warn, not info: a denial is either the guard doing its job against
           // something real, or the guard being wrong. Both are worth reading.

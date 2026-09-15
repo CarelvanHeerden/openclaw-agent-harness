@@ -15,6 +15,7 @@
  */
 import type { HarnessConfig } from "../config.js";
 import type { LeadPlanSubTask } from "./lead.js";
+import type { GuardDenial } from "../safety/bash-guard.js";
 /**
  * rc.3: the five states a worker turn can leave git in, decided from HEAD on
  * either side of the turn plus `git status --porcelain` -- never from the
@@ -132,6 +133,7 @@ export interface WorkerResult {
         kind?: string | null;
         title?: string;
         reason?: string;
+        denial?: GuardDenial;
     }>;
     /**
      * ACP only. Reads allowed this turn without a path_denylist check, because
@@ -209,6 +211,7 @@ export interface WorkerDeps {
             kind?: string | null;
             title?: string;
             reason?: string;
+            denial?: GuardDenial;
         }>;
         unguardedReads?: number;
     }>;

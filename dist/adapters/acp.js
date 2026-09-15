@@ -524,7 +524,10 @@ export async function runWorkerAcp(params) {
                 // refused its first two calls is indistinguishable, after the fact,
                 // from a worker that simply did nothing.
                 const title = typeof call.title === "string" ? call.title : undefined;
-                denied.push({ kind: call.kind, title, reason: verdict.reason });
+                // rc.9: the structured verdict rides along. Dropping it here is where the
+                // incident's actionable reason died: everything downstream then had
+                // only English to reason about, and none of it matched.
+                denied.push({ kind: call.kind, title, reason: verdict.reason, denial: verdict.denial });
                 pushLog(`[guard] DENIED ${String(call.kind)}: ${verdict.reason ?? "no reason"}`);
                 // Warn, not info: a denial is either the guard doing its job against
                 // something real, or the guard being wrong. Both are worth reading.

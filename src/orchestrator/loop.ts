@@ -35,8 +35,11 @@ import type { LeadPlan, LeadPlanSubTask, SubTaskVerify } from "./lead.js";
 import { elideFinalScopeSubTask } from "./lead.js";
 import type { ReviewReport, ReviewFinding, AdversaryRevisionContext } from "./adversary.js";
 import type { WorkerResult } from "./worker.js";
+import type { GuardDenial } from "../safety/bash-guard.js";
 import {
+  buildPolicyDenialClarification,
   classifyWorkerOutcome,
+  correctFalseUserRejection,
   buildProtocolRetryHint,
   describeContractForRetry,
   observeReportIsNarration,
@@ -1504,6 +1507,48 @@ export class OrchestratorLoop {
       }
     } catch {
       /* best-effort: idle detection never disturbs the worker call by throwing */
+    }
+  }
+
+  /**
+   * rc.9: record every denial of every ATTEMPT.
+   *
+   * The rc.8 audit ran once, before the protocol-retry loop, so only the first
+   * turn's denials were ever written. StitchGuard's second `apply_patch` was
+   * refused identically at 19:35:36 and left no row at all: the durable record
+   * showed one denial where there had been two, which is also why "how many
+   * attempts did this cost" could not be answered from the database.
+   *
+   * `attempt` is part of the payload rather than implied by row order, because
+   * these rows are read by event name across a whole session.
+   */
+  private auditDeniedToolCalls(params: {
+    sessionId: string;
+    seq: number;
+    cycle: number;
+    attempt: number;
+    denied?: ReadonlyArray<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }>;
+  }): void {
+    const { sessionId, seq, cycle, attempt, denied } = params;
+    for (const d of denied ?? []) {
+      this.deps.state.audit(
+        "loop.worker_tool_denied",
+        {
+          sessionId,
+          seq,
+          cycle,
+          attempt,
+          kind: d.kind ?? null,
+          title: String(d.title ?? "").slice(0, 300),
+          reason: d.reason ?? "no reason given",
+          // The structured verdict, so this row can be classified without
+          // anyone parsing the sentence above it.
+          denialCode: d.denial?.code ?? null,
+          denialRule: d.denial?.rule ?? null,
+          denialPaths: d.denial?.paths ?? null,
+        },
+        sessionId,
+      );
     }
   }
 
@@ -3273,22 +3318,7 @@ export class OrchestratorLoop {
         // that should not require parsing a turn summary. A run whose worker
         // produced nothing is answerable now: either rows are here and the
         // guard stopped it, or they are not and the model simply did not act.
-        if (result.deniedToolCalls?.length) {
-          for (const d of result.deniedToolCalls) {
-            this.deps.state.audit(
-              "loop.worker_tool_denied",
-              {
-                sessionId,
-                seq: st.seq,
-                cycle,
-                kind: d.kind ?? null,
-                title: String(d.title ?? "").slice(0, 300),
-                reason: d.reason ?? "no reason given",
-              },
-              sessionId,
-            );
-          }
-        }
+        this.auditDeniedToolCalls({ sessionId, seq: st.seq, cycle, attempt: 1, denied: result.deniedToolCalls });
 
         // beta.48 (C1): always emit the worker's final message as a
         // breadcrumb, on EVERY sub-task (not just failures). This eliminates
@@ -3785,8 +3815,14 @@ export class OrchestratorLoop {
               // A refusal or a human-decidable blocker is never retried: trying
               // again cannot supply a credential or overrule a considered
               // decision, and burning two more billed turns to prove it is waste.
+              // rc.9: `policy_denial` joins these. A deterministic denial cannot
+              // be cleared by trying again -- the incident spent a second billed
+              // turn re-submitting the same patch to the same rule -- and it is
+              // emphatically not a refusal.
               const humanDecidableNow =
-                outcome.kind === "refusal" || outcome.kind === "genuine_blocker";
+                outcome.kind === "refusal" ||
+                outcome.kind === "genuine_blocker" ||
+                outcome.kind === "policy_denial";
               // b53 allowed exactly one retry. Keep that for the cases it was
               // written for; spend the larger budget only where rc.2 has
               // something new to say on each attempt.
@@ -3961,6 +3997,11 @@ export class OrchestratorLoop {
                   // first.
                   this.deps.logger.warn("[loop] protocol retry FAILED verification", {
                     sessionId, seq: st.seq, summary: retryVerification.summary, retry: protocolRetries,
+                  });
+                  // rc.9: this turn's denials are a separate fact from the
+                  // previous turn's. Before this, only attempt 1 was recorded.
+                  this.auditDeniedToolCalls({
+                    sessionId, seq: st.seq, cycle, attempt: protocolRetries + 1, denied: retry.deniedToolCalls,
                   });
                   result = retry;
                   verification = retryVerification;
@@ -4191,8 +4232,45 @@ export class OrchestratorLoop {
             // from that path are the ones where a human has nothing to add.
             const harnessCorrectedIt =
               terminalOutcome.kind === "recoverable_tool_denial" || terminalOutcome.kind === "progress_only";
+            /*
+             * rc.9: a policy denial is not a refusal, and must not be reported
+             * as one.
+             *
+             * At rc.8 `looksLikeRefusal` was true for any zero-change turn that
+             * said ANYTHING, so StitchGuard's denylist block -- a fact about
+             * harness configuration -- was recorded as `loop.worker_refusal`
+             * and put to the operator as "the worker's explanation", quoting
+             * planning prose truncated mid-sentence. The worker had refused
+             * nothing; it had been refused.
+             */
+            const policyDenied =
+              NO_CHANGE_ONLY && !result.commitSha && terminalOutcome.kind === "policy_denial";
             const looksLikeRefusal =
-              NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 && !harnessCorrectedIt;
+              NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 && !harnessCorrectedIt && !policyDenied;
+            if (policyDenied) {
+              const policy = terminalOutcome.policy!;
+              this.deps.interactionLog?.log(sessionId, {
+                event: "worker_policy_denied", phase: "worker", seq: st.seq, cycle,
+                reasonFirstLine: `${policy.code}${policy.rule ? `: ${policy.rule}` : ""}`,
+              });
+              this.deps.state.audit(
+                "loop.worker_policy_denied",
+                {
+                  sessionId, seq: st.seq, subTaskId, cycle,
+                  code: policy.code,
+                  rule: policy.rule ?? null,
+                  paths: policy.paths,
+                  tool: policy.tool ?? null,
+                  attempts: policy.attempts,
+                  retryCount: protocolRetries,
+                  failedKinds: failedResults.map((x) => x.kind),
+                },
+                sessionId,
+              );
+              this.deps.logger.warn("[loop] rc.9: a safety policy blocked this sub-task; the worker did not refuse it", {
+                sessionId, seq: st.seq, code: policy.code, rule: policy.rule ?? null, paths: policy.paths,
+              });
+            }
             if (NO_CHANGE_ONLY && !result.commitSha && terminalOutcome.kind === "genuine_blocker") {
               this.deps.interactionLog?.log(sessionId, {
                 event: "worker_genuine_blocker", phase: "worker", seq: st.seq, cycle,
@@ -4305,7 +4383,11 @@ export class OrchestratorLoop {
                     : "") +
                   `; unmet contract: ${describeContractForRetry(contract)}`
                 : null;
-            const failSummary = exhaustedSummary
+            const failSummary = policyDenied
+              ? `blocked by safety policy${terminalOutcome.policy!.rule ? ` rule \`${terminalOutcome.policy!.rule}\`` : ""}` +
+                ` on ${terminalOutcome.policy!.paths.join(", ") || "the requested path"}` +
+                ` (${terminalOutcome.policy!.attempts} attempt(s)); the worker did not refuse`
+              : exhaustedSummary
               ? exhaustedSummary
               : looksLikeProtocolAssumption
               ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
@@ -4330,6 +4412,19 @@ export class OrchestratorLoop {
             // worker's OWN explanation as a question and pause resumably. The
             // worktree is preserved (finaliseAwaitingClarification does NOT
             // release it) so harness_answer can re-drive from this seq in place.
+            if (policyDenied && this.deps.config.loop.clarification_escalation_enabled !== false) {
+              // rc.9: built from the structured denial. The worker's narrative
+              // appears last and clearly labelled, if at all -- at rc.8 it WAS
+              // the entire question.
+              clarify.question = buildPolicyDenialClarification({
+                seq: st.seq,
+                title: st.title,
+                policy: terminalOutcome.policy!,
+                workerNote: terminalOutcome.explanation?.slice(0, 300),
+              });
+              clarify.seq = st.seq;
+              clarify.subtask = { title: st.title, intent: st.intent };
+            }
             if (
               looksLikeRefusal &&
               this.deps.config.loop.clarification_escalation_enabled !== false
@@ -4341,7 +4436,11 @@ export class OrchestratorLoop {
               const firstLine = terminalOutcome.explanation
                 ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
               clarify.question =
-                `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ${firstLine.slice(0, 500)}. ` +
+                `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ` +
+                // rc.9: a backend reports a GUARD denial to the model as "the
+                // user rejected permission". Quoted verbatim at the operator,
+                // that sends them looking for a decision they never made.
+                `${correctFalseUserRejection(firstLine).slice(0, 500)}. ` +
                 `How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, or "abort".)`;
               clarify.seq = st.seq;
               // beta.58 (D1/D2): capture the paused sub-task's title+intent so a
@@ -4714,6 +4813,9 @@ export class OrchestratorLoop {
               await this.deps.budget.recordSpend(row.requester, retry.costUsd, sessionId);
               totalCost += retry.costUsd;
               if (retry.costUsd > 0) subTaskCosts.push(retry.costUsd);
+              this.auditDeniedToolCalls({
+                sessionId, seq: st.seq, cycle, attempt: protocolRetries + 1, denied: retry.deniedToolCalls,
+              });
               result = retry;
             } catch (err) {
               this.deps.logger.warn("[loop] observe retry threw; keeping the previous turn", {

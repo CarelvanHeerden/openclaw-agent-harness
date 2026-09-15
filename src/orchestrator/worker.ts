@@ -25,6 +25,7 @@ import {
 } from "./generated-artifacts.js";
 import { inferVerifyContract } from "./verify-contract.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
+import type { GuardDenial } from "../safety/bash-guard.js";
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 
 /**
@@ -148,7 +149,7 @@ export interface WorkerResult {
    * Only the ACP backend populates it; the SDK path guards through
    * `canUseTool` and is unaffected.
    */
-  deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string }>;
+  deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }>;
   /**
    * ACP only. Reads allowed this turn without a path_denylist check, because
    * the agent named no file. Zero on the SDK path. See SECURITY.md.
@@ -211,7 +212,7 @@ export interface WorkerDeps {
      * undefined there rather than being faked as an empty list -- absent and
      * "nothing was denied" are different claims.
      */
-    deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string }>;
+    deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }>;
     unguardedReads?: number;
   }>;
 

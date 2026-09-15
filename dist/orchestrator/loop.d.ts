@@ -819,6 +819,19 @@ export declare class OrchestratorLoop {
      * Never throws.
      */
     private handleWorkerIdleNoWork;
+    /**
+     * rc.9: record every denial of every ATTEMPT.
+     *
+     * The rc.8 audit ran once, before the protocol-retry loop, so only the first
+     * turn's denials were ever written. StitchGuard's second `apply_patch` was
+     * refused identically at 19:35:36 and left no row at all: the durable record
+     * showed one denial where there had been two, which is also why "how many
+     * attempts did this cost" could not be answered from the database.
+     *
+     * `attempt` is part of the payload rather than implied by row order, because
+     * these rows are read by event name across a whole session.
+     */
+    private auditDeniedToolCalls;
     private checkpoint;
     private addCost;
     private saveReview;
