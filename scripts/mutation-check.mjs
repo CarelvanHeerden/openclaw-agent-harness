@@ -54,8 +54,11 @@ const MUTATIONS = [
     // itself healthy. This mutation widens it by exactly one step.
     name: "v2 smoke: only READ degrades to allow on a missing path",
     file: "dist/safety/bash-guard.js",
-    find: "return { allow: false, reason: `${label} tool call exposed no path to check (failing closed)` };",
-    replace: "return { allow: true, unenforced: true, reason: `${label} exposed no path` };",
+    // rc.9 turned the bare return into a structured verdict carrying a denial
+    // code, so the one-line anchor no longer exists. The mutation is unchanged:
+    // widen the read relaxation by one step and require the tests to notice.
+    find: "return {\n                allow: false,\n                reason: `${label} tool call exposed no path to check (failing closed)`,",
+    replace: "return {\n                allow: true, unenforced: true,\n                reason: `${label} exposed no path`,",
     tests: ["tests/v2-smoke-findings.test.mjs"],
   },
   {
@@ -77,13 +80,100 @@ const MUTATIONS = [
     tests: ["tests/v2-acp-hardening.test.mjs"],
   },
   {
+    /*
+     * rc.9 -- the denylist hole the incident's read-only probe found.
+     *
+     * The wildcard branch anchored `.env.*` over the WHOLE path, so it matched
+     * a bare `.env.production` and let `/repo/.env.production` through. Judging
+     * suffixes at segment boundaries is the fix; reverting to a whole-string
+     * test reopens it exactly.
+     */
+    name: "rc.9: a denylist wildcard is judged against the path's TAIL, not only the whole of it",
+    file: "dist/safety/bash-guard.js",
+    find: "            if (suffixes.some((s) => re.test(s)))\n                return pat;",
+    replace: "            if (re.test(p))\n                return pat;",
+    tests: ["tests/rc9-path-policy.test.mjs"],
+  },
+  {
+    /*
+     * rc.9 -- the ambiguity refusal.
+     *
+     * `".env.example, README.md"` arrived as ONE string in the ACP locations
+     * array and was checked as one path, which matches no denylist entry. Treat
+     * a joined list as a single filename again and reversing the two names
+     * silently permits the patch.
+     */
+    name: "rc.9: a string that ambiguously encodes several paths is refused, not guessed at",
+    file: "dist/safety/path-policy.js",
+    find: "export function looksLikeMultiplePaths(raw) {\n    if (!raw.includes(\", \"))\n        return false;",
+    replace: "export function looksLikeMultiplePaths(raw) {\n    if (!raw.includes(\", \"))\n        return false;\n    return false;",
+    tests: ["tests/rc9-path-policy.test.mjs"],
+  },
+  {
+    /*
+     * rc.9 -- authorising a template is not authorising a credential in it.
+     *
+     * The exception is the one way past the denylist. Without the content scan
+     * it becomes a way to commit a live token to a tracked file, which is worse
+     * than not having the exception at all.
+     */
+    name: "rc.9: an authorised template still cannot receive secret material",
+    file: "dist/safety/bash-guard.js",
+    find: "                const scan = patchText ? scanPatchForSecrets(patchText) : { found: false };",
+    replace: "                const scan = { found: false };",
+    tests: ["tests/rc9-path-policy.test.mjs"],
+  },
+  {
+    /*
+     * rc.9 -- nothing is durable until it verifies.
+     *
+     * A bundle that does not verify is a bundle that fails at 3am during the one
+     * restore anybody ever needed. Accepting it here is the difference between a
+     * checkpoint and a rumour of one.
+     */
+    name: "rc.9: a bundle that fails verification is never recorded as durable",
+    file: "dist/state/checkpoint-bundle.js",
+    find: "    const verified = await git([\"bundle\", \"verify\", tmpPath], opts.worktreePath);\n    if (verified.code !== 0) {",
+    replace: "    const verified = await git([\"bundle\", \"verify\", tmpPath], opts.worktreePath);\n    if (false) {",
+    tests: ["tests/rc9-storage-durability.test.mjs"],
+  },
+  {
+    /*
+     * rc.9 -- the digest is what catches the corruption a size check cannot.
+     *
+     * A manifest whose bundle was swapped for same-size garbage is worse than no
+     * manifest, because it invites a restore that will not work.
+     */
+    name: "rc.9: a checkpoint whose bytes no longer match its digest does not load",
+    file: "dist/state/checkpoint-bundle.js",
+    find: "        if (sha256File(bundlePath) !== manifest.bundleSha256)\n            return null;",
+    replace: "        if (false)\n            return null;",
+    tests: ["tests/rc9-storage-durability.test.mjs"],
+  },
+  {
+    /*
+     * rc.9 -- the question the self-heal cannot ask.
+     *
+     * Walking disk-to-database reports `scanned:0` on an empty root and reads as
+     * health. Dropping the reverse walk's missing-worktree finding restores rc.8
+     * exactly: a paused session, nine recorded commits, and silence.
+     */
+    name: "rc.9: a session whose recorded worktree is gone is reported, not passed over",
+    file: "dist/state/storage-health.js",
+    find: "        if (!exists(wt)) {\n            out.push({",
+    replace: "        if (false) {\n            out.push({",
+    tests: ["tests/rc9-storage-durability.test.mjs"],
+  },
+  {
     // "denied: 2" with no way to learn which two is how a stalled OpenCode
     // worker stayed undiagnosable. The count is not the evidence; the command
     // or path is.
     name: "v2 smoke: a denial records what was refused",
     file: "dist/adapters/acp.js",
-    find: "denied.push({ kind: call.kind, title, reason: verdict.reason });",
-    replace: "denied.push({ kind: call.kind, reason: verdict.reason });",
+    // rc.9 appended the structured verdict to the same push. Dropping `title`
+    // is still the mutation -- the count was never the evidence.
+    find: "denied.push({ kind: call.kind, title, reason: verdict.reason, denial: verdict.denial });",
+    replace: "denied.push({ kind: call.kind, reason: verdict.reason, denial: verdict.denial });",
     tests: ["tests/v2-acp-hardening.test.mjs"],
   },
   {

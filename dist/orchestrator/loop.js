@@ -26,7 +26,7 @@
  * behaved differently, not a unit test that asserts the decision differed.
  */
 import { elideFinalScopeSubTask } from "./lead.js";
-import { classifyWorkerOutcome, buildProtocolRetryHint, describeContractForRetry, observeReportIsNarration, buildClarificationResumeHint, } from "./worker-outcome.js";
+import { buildPolicyDenialClarification, classifyWorkerOutcome, correctFalseUserRejection, buildProtocolRetryHint, describeContractForRetry, observeReportIsNarration, buildClarificationResumeHint, } from "./worker-outcome.js";
 import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -898,17 +898,129 @@ export class OrchestratorLoop {
             /* best-effort: idle detection never disturbs the worker call by throwing */
         }
     }
-    checkpoint(sessionId, cycle, lastSubTask, sdkSessionId) {
+    /**
+     * rc.9: record every denial of every ATTEMPT.
+     *
+     * The rc.8 audit ran once, before the protocol-retry loop, so only the first
+     * turn's denials were ever written. StitchGuard's second `apply_patch` was
+     * refused identically at 19:35:36 and left no row at all: the durable record
+     * showed one denial where there had been two, which is also why "how many
+     * attempts did this cost" could not be answered from the database.
+     *
+     * `attempt` is part of the payload rather than implied by row order, because
+     * these rows are read by event name across a whole session.
+     */
+    auditDeniedToolCalls(params) {
+        const { sessionId, seq, cycle, attempt, denied } = params;
+        for (const d of denied ?? []) {
+            this.deps.state.audit("loop.worker_tool_denied", {
+                sessionId,
+                seq,
+                cycle,
+                attempt,
+                kind: d.kind ?? null,
+                title: String(d.title ?? "").slice(0, 300),
+                reason: d.reason ?? "no reason given",
+                // The structured verdict, so this row can be classified without
+                // anyone parsing the sentence above it.
+                denialCode: d.denial?.code ?? null,
+                denialRule: d.denial?.rule ?? null,
+                denialPaths: d.denial?.paths ?? null,
+            }, sessionId);
+        }
+    }
+    /**
+     * rc.9: `last_completed_sub_task` now means what it says.
+     *
+     * In the incident DB that column held sub-task 11. Sub-task 11 is
+     * `failed_verification` with `commit_sha: null` -- the documentation edit the
+     * guard blocked. It got there because this method was called from ONE place:
+     * immediately after the worker's result row was written, before verification
+     * had any opinion about whether the work was real. Every turn was "completed"
+     * by the time it reached this UPDATE.
+     *
+     * Renaming a column on a live database to fix a name is a bad trade, so the
+     * honest one is added beside it. `attempted` records the turn; `completed`
+     * additionally advances `last_completed_sub_task`, and is only passed from
+     * the single terminal-success path, after verification has passed.
+     */
+    checkpoint(sessionId, cycle, lastSubTask, sdkSessionId, subTaskState = "attempted") {
+        const completed = subTaskState === "completed" ? (lastSubTask ?? null) : null;
         this.deps.state.db
             .prepare(`UPDATE sessions
          SET current_cycle = ?,
+             last_attempted_sub_task = COALESCE(?, last_attempted_sub_task),
              last_completed_sub_task = COALESCE(?, last_completed_sub_task),
              last_worker_sdk_session = COALESCE(?, last_worker_sdk_session),
              last_checkpoint_at = ?,
              last_progress_at = ?,
              updated_at = ?
          WHERE id = ?`)
-            .run(cycle, lastSubTask ?? null, sdkSessionId ?? null, Date.now(), Date.now(), Date.now(), sessionId);
+            .run(cycle, lastSubTask ?? null, completed, sdkSessionId ?? null, Date.now(), Date.now(), Date.now(), sessionId);
+    }
+    /**
+     * rc.9: put the commits somewhere that outlives the worktree.
+     *
+     * `checkpoint()` above is a database write. It has never moved a git object.
+     * StitchGuard's nine commits existed in exactly one place -- a worktree on a
+     * tmpfs mount, with the bare cache nested inside the same mount -- and a
+     * restart took all of it while the DB survived to describe what was gone.
+     *
+     * Best-effort by design: a checkpoint that cannot be taken is AUDITED as not
+     * taken and the run continues. What it must never do is record a checkpoint
+     * that was not verified, so the durable flag comes from `createCheckpoint`,
+     * which only sets it after `git bundle verify` passes and the bytes on disk
+     * match their digest.
+     */
+    async durableCheckpoint(params) {
+        const { sessionId, cycle, subTaskId, trigger } = params;
+        const configuredRoot = (this.deps.config.storage?.checkpoint_root ?? "").trim();
+        if (!configuredRoot)
+            return; // disabled; startup already said so, loudly
+        if (!params.worktreePath || !params.branch)
+            return;
+        try {
+            const { createCheckpoint } = await import("../state/checkpoint-bundle.js");
+            const { checkpointRootIsSafe } = await import("../state/storage-health.js");
+            const root = configuredRoot.replace(/^~/, process.env.HOME ?? "");
+            const safe = checkpointRootIsSafe(root, this.deps.config.storage.worktree_root ?? "");
+            if (!safe.ok) {
+                this.deps.state.audit("loop.checkpoint_skipped", { sessionId, cycle, reason: safe.reason }, sessionId);
+                return;
+            }
+            const res = await createCheckpoint({
+                sessionId,
+                cycle,
+                subTaskId: subTaskId ?? null,
+                trigger,
+                worktreePath: params.worktreePath,
+                branch: params.branch,
+                checkpointRoot: root,
+            });
+            if (res.durable) {
+                this.deps.state.db
+                    .prepare(`UPDATE sessions SET last_checkpoint_bundle = ?, last_checkpoint_sha = ?, updated_at = ? WHERE id = ?`)
+                    .run(res.manifestPath, res.manifest.tip, Date.now(), sessionId);
+                this.deps.state.audit("loop.checkpoint_durable", {
+                    sessionId, cycle, subTaskId: subTaskId ?? null, trigger,
+                    tip: res.manifest.tip, commits: res.manifest.commitCount,
+                    bytes: res.manifest.bundleBytes, manifest: res.manifestPath,
+                }, sessionId);
+            }
+            else {
+                // Explicitly NOT durable -- including the honest metadata-only case,
+                // where there simply were no commits to protect yet. Requirement: a
+                // metadata checkpoint is never countable as recoverable code.
+                this.deps.state.audit("loop.checkpoint_not_durable", {
+                    sessionId, cycle, subTaskId: subTaskId ?? null, trigger,
+                    commits: res.manifest.commitCount,
+                    reason: res.manifest.error ?? (res.manifest.commitCount === 0 ? "no commits to checkpoint" : "unverified"),
+                }, sessionId);
+            }
+        }
+        catch (err) {
+            this.deps.state.audit("loop.checkpoint_failed", { sessionId, cycle, trigger, error: String(err) }, sessionId);
+        }
     }
     addCost(sessionId, amount) {
         this.deps.state.db
@@ -2413,18 +2525,7 @@ export class OrchestratorLoop {
                     // that should not require parsing a turn summary. A run whose worker
                     // produced nothing is answerable now: either rows are here and the
                     // guard stopped it, or they are not and the model simply did not act.
-                    if (result.deniedToolCalls?.length) {
-                        for (const d of result.deniedToolCalls) {
-                            this.deps.state.audit("loop.worker_tool_denied", {
-                                sessionId,
-                                seq: st.seq,
-                                cycle,
-                                kind: d.kind ?? null,
-                                title: String(d.title ?? "").slice(0, 300),
-                                reason: d.reason ?? "no reason given",
-                            }, sessionId);
-                        }
-                    }
+                    this.auditDeniedToolCalls({ sessionId, seq: st.seq, cycle, attempt: 1, denied: result.deniedToolCalls });
                     // beta.48 (C1): always emit the worker's final message as a
                     // breadcrumb, on EVERY sub-task (not just failures). This eliminates
                     // the "opaque worker turn" blind spot (session dca2f3b5) where a
@@ -2542,6 +2643,21 @@ export class OrchestratorLoop {
                         if (!("path" in v) || !v.path || v.kind === "file_in_pr")
                             return v;
                         const rd = rederiveContractPath(v.path, [...discoveredRealPaths]);
+                        if (rd.suggestion) {
+                            // rc.9: a correction the evidence hinted at but the rules declined.
+                            // Recorded with its provenance and confidence so it is available to a
+                            // human, and NOT added to pathCorrections -- the contract and the
+                            // plan keep the path the brief asked for.
+                            this.deps.state.audit("loop.contract_path_correction_suggested", {
+                                sessionId, seq: st.seq, cycle, kind: v.kind,
+                                keeping: v.path,
+                                candidate: rd.suggestion.path,
+                                via: rd.suggestion.via,
+                                confidence: rd.suggestion.confidence,
+                                reason: rd.suggestion.reason,
+                            }, sessionId);
+                            this.deps.logger.warn("[loop] rc.9: declined to re-derive a contract path across artifact kinds; keeping the declared path", { sessionId, seq: st.seq, keeping: v.path, candidate: rd.suggestion.path });
+                        }
                         if (!rd.remapped)
                             return v;
                         pathCorrections.push({ from: v.path, to: rd.path });
@@ -2856,7 +2972,13 @@ export class OrchestratorLoop {
                                 // A refusal or a human-decidable blocker is never retried: trying
                                 // again cannot supply a credential or overrule a considered
                                 // decision, and burning two more billed turns to prove it is waste.
-                                const humanDecidableNow = outcome.kind === "refusal" || outcome.kind === "genuine_blocker";
+                                // rc.9: `policy_denial` joins these. A deterministic denial cannot
+                                // be cleared by trying again -- the incident spent a second billed
+                                // turn re-submitting the same patch to the same rule -- and it is
+                                // emphatically not a refusal.
+                                const humanDecidableNow = outcome.kind === "refusal" ||
+                                    outcome.kind === "genuine_blocker" ||
+                                    outcome.kind === "policy_denial";
                                 // b53 allowed exactly one retry. Keep that for the cases it was
                                 // written for; spend the larger budget only where rc.2 has
                                 // something new to say on each attempt.
@@ -2984,7 +3106,12 @@ export class OrchestratorLoop {
                                         this.deps.state.audit("loop.subtask_verification", { sessionId, seq: st.seq, ok: retryVerification.ok, contract, summary: retryVerification.summary, results: retryVerification.results, retry: true }, sessionId);
                                         if (retryVerification.ok) {
                                             this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, cost_usd = cost_usd + ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run(retry.status, retry.costUsd, JSON.stringify(retry.filesChanged), retry.commitSha ?? null, retry.sdkSessionId ?? null, `env-wait retry succeeded: ${retryVerification.summary}`, Date.now(), Date.now(), subTaskId);
-                                            this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId);
+                                            // rc.9: verification passed, so this is a real completion.
+                                            this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId, "completed");
+                                            await this.durableCheckpoint({
+                                                sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+                                                worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                                            });
                                             this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
                                             done.add(st.seq);
                                             return;
@@ -2995,6 +3122,11 @@ export class OrchestratorLoop {
                                         // first.
                                         this.deps.logger.warn("[loop] protocol retry FAILED verification", {
                                             sessionId, seq: st.seq, summary: retryVerification.summary, retry: protocolRetries,
+                                        });
+                                        // rc.9: this turn's denials are a separate fact from the
+                                        // previous turn's. Before this, only attempt 1 was recorded.
+                                        this.auditDeniedToolCalls({
+                                            sessionId, seq: st.seq, cycle, attempt: protocolRetries + 1, denied: retry.deniedToolCalls,
                                         });
                                         result = retry;
                                         verification = retryVerification;
@@ -3204,7 +3336,39 @@ export class OrchestratorLoop {
                             // pauses for a human the way b55 intended -- the only turns removed
                             // from that path are the ones where a human has nothing to add.
                             const harnessCorrectedIt = terminalOutcome.kind === "recoverable_tool_denial" || terminalOutcome.kind === "progress_only";
-                            const looksLikeRefusal = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 && !harnessCorrectedIt;
+                            /*
+                             * rc.9: a policy denial is not a refusal, and must not be reported
+                             * as one.
+                             *
+                             * At rc.8 `looksLikeRefusal` was true for any zero-change turn that
+                             * said ANYTHING, so StitchGuard's denylist block -- a fact about
+                             * harness configuration -- was recorded as `loop.worker_refusal`
+                             * and put to the operator as "the worker's explanation", quoting
+                             * planning prose truncated mid-sentence. The worker had refused
+                             * nothing; it had been refused.
+                             */
+                            const policyDenied = NO_CHANGE_ONLY && !result.commitSha && terminalOutcome.kind === "policy_denial";
+                            const looksLikeRefusal = NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 && !harnessCorrectedIt && !policyDenied;
+                            if (policyDenied) {
+                                const policy = terminalOutcome.policy;
+                                this.deps.interactionLog?.log(sessionId, {
+                                    event: "worker_policy_denied", phase: "worker", seq: st.seq, cycle,
+                                    reasonFirstLine: `${policy.code}${policy.rule ? `: ${policy.rule}` : ""}`,
+                                });
+                                this.deps.state.audit("loop.worker_policy_denied", {
+                                    sessionId, seq: st.seq, subTaskId, cycle,
+                                    code: policy.code,
+                                    rule: policy.rule ?? null,
+                                    paths: policy.paths,
+                                    tool: policy.tool ?? null,
+                                    attempts: policy.attempts,
+                                    retryCount: protocolRetries,
+                                    failedKinds: failedResults.map((x) => x.kind),
+                                }, sessionId);
+                                this.deps.logger.warn("[loop] rc.9: a safety policy blocked this sub-task; the worker did not refuse it", {
+                                    sessionId, seq: st.seq, code: policy.code, rule: policy.rule ?? null, paths: policy.paths,
+                                });
+                            }
                             if (NO_CHANGE_ONLY && !result.commitSha && terminalOutcome.kind === "genuine_blocker") {
                                 this.deps.interactionLog?.log(sessionId, {
                                     event: "worker_genuine_blocker", phase: "worker", seq: st.seq, cycle,
@@ -3299,13 +3463,17 @@ export class OrchestratorLoop {
                                         : "") +
                                     `; unmet contract: ${describeContractForRetry(contract)}`
                                 : null;
-                            const failSummary = exhaustedSummary
-                                ? exhaustedSummary
-                                : looksLikeProtocolAssumption
-                                    ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
-                                    : looksLikeRefusal
-                                        ? `worker refused (no changes made): ${(terminalOutcome.explanation ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
-                                        : `verification failed: ${verification.summary}`;
+                            const failSummary = policyDenied
+                                ? `blocked by safety policy${terminalOutcome.policy.rule ? ` rule \`${terminalOutcome.policy.rule}\`` : ""}` +
+                                    ` on ${terminalOutcome.policy.paths.join(", ") || "the requested path"}` +
+                                    ` (${terminalOutcome.policy.attempts} attempt(s)); the worker did not refuse`
+                                : exhaustedSummary
+                                    ? exhaustedSummary
+                                    : looksLikeProtocolAssumption
+                                        ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+                                        : looksLikeRefusal
+                                            ? `worker refused (no changes made): ${(terminalOutcome.explanation ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+                                            : `verification failed: ${verification.summary}`;
                             this.deps.state.db.prepare(`UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`).run(failSummary, Date.now(), subTaskId);
                             this.deps.logger.warn("[loop] harness-side verification FAILED (worker confabulated success)", {
                                 sessionId, seq: st.seq, costUsd: result.costUsd, summary: verification.summary,
@@ -3322,6 +3490,19 @@ export class OrchestratorLoop {
                             // worker's OWN explanation as a question and pause resumably. The
                             // worktree is preserved (finaliseAwaitingClarification does NOT
                             // release it) so harness_answer can re-drive from this seq in place.
+                            if (policyDenied && this.deps.config.loop.clarification_escalation_enabled !== false) {
+                                // rc.9: built from the structured denial. The worker's narrative
+                                // appears last and clearly labelled, if at all -- at rc.8 it WAS
+                                // the entire question.
+                                clarify.question = buildPolicyDenialClarification({
+                                    seq: st.seq,
+                                    title: st.title,
+                                    policy: terminalOutcome.policy,
+                                    workerNote: terminalOutcome.explanation?.slice(0, 300),
+                                });
+                                clarify.seq = st.seq;
+                                clarify.subtask = { title: st.title, intent: st.intent };
+                            }
                             if (looksLikeRefusal &&
                                 this.deps.config.loop.clarification_escalation_enabled !== false) {
                                 // rc.2: the narration-stripped explanation. The old first-line
@@ -3331,7 +3512,11 @@ export class OrchestratorLoop {
                                 const firstLine = terminalOutcome.explanation
                                     ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
                                 clarify.question =
-                                    `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ${firstLine.slice(0, 500)}. ` +
+                                    `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ` +
+                                        // rc.9: a backend reports a GUARD denial to the model as "the
+                                        // user rejected permission". Quoted verbatim at the operator,
+                                        // that sends them looking for a decision they never made.
+                                        `${correctFalseUserRejection(firstLine).slice(0, 500)}. ` +
                                         `How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, or "abort".)`;
                                 clarify.seq = st.seq;
                                 // beta.58 (D1/D2): capture the paused sub-task's title+intent so a
@@ -3456,7 +3641,12 @@ export class OrchestratorLoop {
                                                 sessionId, seq: st.seq, cycle,
                                             });
                                             this.deps.state.db.prepare(`UPDATE sub_tasks SET status = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`).run("completed", JSON.stringify(result.filesChanged ?? []), result.commitSha ?? null, result.sdkSessionId ?? null, `basename-rescued contract path (${rescue.from} -> ${rescue.to}): ${reverified.summary}`, Date.now(), Date.now(), subTaskId);
-                                            this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+                                            // rc.9: re-verified clean, so this is a real completion.
+                                            this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId, "completed");
+                                            await this.durableCheckpoint({
+                                                sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+                                                worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                                            });
                                             retractFailure(st.seq, `basename_rescue:${rescue.kind}`);
                                             done.add(st.seq);
                                             return;
@@ -3653,6 +3843,9 @@ export class OrchestratorLoop {
                                 totalCost += retry.costUsd;
                                 if (retry.costUsd > 0)
                                     subTaskCosts.push(retry.costUsd);
+                                this.auditDeniedToolCalls({
+                                    sessionId, seq: st.seq, cycle, attempt: protocolRetries + 1, denied: retry.deniedToolCalls,
+                                });
                                 result = retry;
                             }
                             catch (err) {
@@ -3717,6 +3910,23 @@ export class OrchestratorLoop {
                     // on the single terminal-success path, so a probe that FAILED never
                     // hands its half-finished account downstream as if it were fact.
                     this.recordObserveReport(sessionId, st, result, observeReports);
+                    /*
+                     * rc.9: this -- and only this -- is where a sub-task is COMPLETED.
+                     *
+                     * Every other `checkpoint()` call records an attempt. Sub-task 11 in
+                     * the incident DB was named as the last completed one while sitting at
+                     * `failed_verification` with no commit, because attempts were the only
+                     * thing anything ever wrote.
+                     *
+                     * The durable checkpoint is taken here too, at the moment there is
+                     * verified work worth protecting, rather than at a "checkpoint" that
+                     * only ever touched the database.
+                     */
+                    this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId, "completed");
+                    await this.durableCheckpoint({
+                        sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+                        worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                    });
                     done.add(st.seq);
                 };
                 /**
@@ -3812,7 +4022,7 @@ export class OrchestratorLoop {
                     // if we captured a clarification request we pause instead of dying, so
                     // a human can unblock the exact sub-task rather than restart the run.
                     if (clarify.question) {
-                        return this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
+                        return await this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
                     }
                     // beta.64 (P0-3): best-effort verify already pushed a graceful reviewable
                     // PR (verify sub-task timed out but the prior probe was green + clean
@@ -8908,7 +9118,37 @@ export class OrchestratorLoop {
      * `awaiting_clarification` as resumable, so a stray re-register or restart
      * won't reap the worktree or auto-fail the pause.
      */
-    finaliseAwaitingClarification(sessionId, question, seq, cycles, totalCostUsd, subtask) {
+    async finaliseAwaitingClarification(sessionId, question, seq, cycles, totalCostUsd, subtask) {
+        /*
+         * rc.9: checkpoint BEFORE blocking on a human.
+         *
+         * This is the longest-lived state the harness has -- it is designed to
+         * wait, potentially overnight -- and it is exactly where StitchGuard was
+         * standing when the container restarted. Nine commits, one tmpfs worktree,
+         * and a pause with no expiry. If there is a durable copy to be made, the
+         * moment before we hand control to a person is when to make it.
+         *
+         * Awaited, not fired and forgotten: the point of the checkpoint is that it
+         * exists before the wait begins.
+         */
+        try {
+            const row = this.deps.state.db
+                .prepare(`SELECT worktree_path, branch, current_cycle FROM sessions WHERE id = ?`)
+                .get(sessionId);
+            if (row) {
+                await this.durableCheckpoint({
+                    sessionId,
+                    cycle: row.current_cycle ?? cycles,
+                    subTaskId: null,
+                    trigger: "human_gate",
+                    worktreePath: row.worktree_path,
+                    branch: (row.branch ?? "").trim() || null,
+                });
+            }
+        }
+        catch (err) {
+            this.deps.state.audit("loop.checkpoint_failed", { sessionId, trigger: "human_gate", error: String(err) }, sessionId);
+        }
         this.setStatus(sessionId, "awaiting_clarification");
         this.deps.state.db.prepare(`UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, clarification_subtask = ?, updated_at = ? WHERE id = ?`).run(question, seq, subtask ? JSON.stringify(subtask) : null, Date.now(), sessionId);
         this.deps.state.audit("loop.clarification_requested", { sessionId, seq, question: question.slice(0, 1000), cycle: cycles }, sessionId);

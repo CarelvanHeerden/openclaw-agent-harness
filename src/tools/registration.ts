@@ -106,6 +106,118 @@ interface RunnableBrief {
   operatorGuidance?: string;
 }
 
+/**
+ * rc.9: does this session still have the disk it thinks it has?
+ *
+ * Asked before we act on a session that has been sitting still. StitchGuard's
+ * pause survived a restart that took its worktree, its object store and nine
+ * commits; answering that clarification would have re-driven a loop into a
+ * directory that was not there, and the first thing the operator would have
+ * seen is some downstream git error with no connection to the cause.
+ *
+ * Checked LIVE rather than read from `sessions.storage_state`, because the
+ * cached column is only as fresh as the last startup, and the interesting case
+ * is precisely a session that has been waiting a long time.
+ *
+ * Returns null when there is nothing to say. It never mutates and never blocks
+ * on its own uncertainty -- an `unknown` result is reported, not enforced.
+ */
+async function checkSessionStorage(
+  db: { prepare: (sql: string) => { get: (id: string) => unknown } },
+  worktreesRoot: string,
+  sessionId: string,
+): Promise<{ state: string; reason: string; missingCommits: string[] } | null> {
+  try {
+    const { reconcileSessionsToDisk } = await import("../state/storage-health.js");
+    const { readFileSync } = await import("node:fs");
+    const row = db
+      .prepare(
+        `SELECT s.id, s.status, s.repo, s.branch, s.worktree_path, s.storage_state, s.storage_reason,
+                (SELECT group_concat(t.commit_sha) FROM sub_tasks t
+                  WHERE t.session_id = s.id AND t.commit_sha IS NOT NULL AND t.commit_sha != '') AS commits
+           FROM sessions s WHERE s.id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          id: string; status: string; repo: string; branch: string | null; worktree_path: string | null;
+          storage_state: string | null; storage_reason: string | null; commits: string | null;
+        }
+      | undefined;
+    if (!row) return null;
+    const recordedCommits = (row.commits ?? "").split(",").map((c) => c.trim()).filter(Boolean);
+
+    const findings = await reconcileSessionsToDisk(
+      [{
+        id: row.id,
+        // Force the row into scope: a session someone is actively resuming
+        // claims live storage by definition, whatever its recorded status.
+        status: "executing",
+        repo: row.repo,
+        branch: row.branch,
+        worktreePath: row.worktree_path,
+        recordedCommits,
+      }],
+      /*
+       * Structural checks only. Walking every recorded commit means one `git
+       * cat-file` process per commit, in a path an operator is waiting on, and
+       * the startup reconciliation has already done that work and written the
+       * answer down. So the deep result is read from the row below rather than
+       * recomputed here -- and the structural checks alone catch the incident,
+       * where the directory itself was gone.
+       */
+      { worktreesRoot, readText: (p) => readFileSync(p, "utf8") },
+    );
+    const f = findings[0];
+    if (f && f.state !== "unknown") return { state: f.state, reason: f.reason, missingCommits: f.missingCommits };
+
+    // Nothing structural, but the last reconciliation may have found commits
+    // that git could not. That finding does not expire just because the
+    // directory is still standing.
+    if (row.storage_state === "missing_commits") {
+      return {
+        state: "missing_commits",
+        reason: row.storage_reason ?? "commits this session recorded could not be found at the last storage check",
+        missingCommits: recordedCommits,
+      };
+    }
+    return null;
+  } catch {
+    // A check that cannot run must not become a refusal to act -- that would
+    // turn a diagnostic into an outage. Silence here means "no finding", and
+    // the caller proceeds exactly as it did before rc.9.
+    return null;
+  }
+}
+
+/**
+ * Which findings should actually STOP an operator, as opposed to being worth
+ * knowing?
+ *
+ * Not every missing worktree is a disaster. A session that has committed
+ * nothing loses nothing when its checkout is reaped, and beta.101's
+ * resume-from-clarification path is built to allocate a fresh one and carry the
+ * branch's commits forward. Refusing those would turn a diagnostic into an
+ * outage, and a gate that cries wolf is a gate people learn to force past.
+ *
+ * What is unrecoverable is recorded work with nowhere left to live: a missing
+ * worktree for a session that HAS commits (the bare cache is nested inside the
+ * same root, so it went with it -- this is StitchGuard exactly), a checkout
+ * whose git directory is gone, or commits the database names and git cannot
+ * find.
+ *
+ * Deliberately narrower than what the startup reconciliation reports. Diagnosis
+ * can afford to be broad -- it writes an audit row and a log line. A refusal
+ * cannot: it stands between an operator and their own session, so it fires only
+ * on the case that admits no other reading.
+ */
+function storageIsUnrecoverable(storage: { state: string; missingCommits: string[] }): boolean {
+  const lost = storage.state === "missing_worktree" || storage.state === "missing_objects" || storage.state === "missing_commits";
+  // One rule, and it is the incident's: work the database RECORDS, with nowhere
+  // left to live. No recorded commits means nothing was lost, whatever the
+  // directory looks like.
+  return lost && storage.missingCommits.length > 0;
+}
+
 export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRuntime): () => void {
   const disposers: Array<() => void> = [];
 
@@ -1517,6 +1629,37 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (!row.crystallised_prompt) {
             return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
           }
+          /*
+           * rc.9: refuse to resume into storage that is gone.
+           *
+           * The rc.8 shape: a paused session, a restart that emptied a tmpfs
+           * worktrees root, and a database still naming a worktree path and
+           * nine commits. Resuming would have started a loop against a missing
+           * directory and failed somewhere far from the cause. Refusing here
+           * puts the reason in the operator's hands instead, and -- because
+           * this path deletes nothing -- leaves every row intact for recovery.
+           */
+          {
+            const wtRoot = (liveConfig().storage?.worktree_root ?? "").replace(/^~/, process.env.HOME ?? "");
+            const storage = await checkSessionStorage(liveDb(), wtRoot, sessionId);
+            if (storage && storageIsUnrecoverable(storage)) {
+              liveState().audit(
+                "tool.resume_refused_storage",
+                { sessionId, state: storage.state, reason: storage.reason, missingCommits: storage.missingCommits.length },
+                sessionId,
+              );
+              return {
+                content: [{
+                  type: "text",
+                  text:
+                    `Cannot resume ${sessionId}: ${storage.reason}. Nothing has been deleted and the session row is ` +
+                    `untouched. Check whether a durable checkpoint exists for it before starting anything new -- ` +
+                    `see docs/persistence-runbook.md.`,
+                }],
+                details: { ok: false, storageMissing: true, storageState: storage.state, reason: storage.reason },
+              };
+            }
+          }
           const brief = JSON.parse(row.crystallised_prompt);
           liveDb().prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
           liveState().audit("tool.resume", { sessionId, wasStatus: row.status, invokedBy: invokedBy ?? null }, sessionId);
@@ -1783,6 +1926,42 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         //
         // rc.6: a budget pause is the same animal for the same reason, so it
         // takes the same exemption and the same live-loop handling below.
+        /*
+         * rc.9: the same check before an ANSWER re-drives the loop.
+         *
+         * A clarification pause is the longest thing the harness does and the
+         * one most likely to span a restart, which is exactly what happened to
+         * StitchGuard. Answering a question whose worktree no longer exists
+         * produces a confusing downstream failure and, worse, makes it look
+         * like the answer was the problem.
+         *
+         * Time and budget extension pauses are exempt: their loop never left
+         * the process, so its worktree cannot have been reaped underneath it,
+         * and they are answered by operators under time pressure.
+         */
+        if (!isTimeExtensionPause(row.clarification_subtask) && !isBudgetExtensionPause(row.clarification_subtask)) {
+          const wtRoot = (liveConfig().storage?.worktree_root ?? "").replace(/^~/, process.env.HOME ?? "");
+          const storage = await checkSessionStorage(liveDb(), wtRoot, sessionId);
+          if (storage && storageIsUnrecoverable(storage)) {
+            liveState().audit(
+              "tool.answer_refused_storage",
+              { sessionId, seq, state: storage.state, reason: storage.reason, missingCommits: storage.missingCommits.length },
+              sessionId,
+            );
+            rejectAutomatic("storage_missing");
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `Not answering ${sessionId}: ${storage.reason}. The pause is still open and nothing has been ` +
+                  `deleted, but answering it would re-drive the loop into storage that is not there. Assess ` +
+                  `recovery first -- see docs/persistence-runbook.md.`,
+              }],
+              details: { ok: false, storageMissing: true, storageState: storage.state, reason: storage.reason, seq },
+            };
+          }
+        }
+
         if (isTimeExtensionPause(row.clarification_subtask) || isBudgetExtensionPause(row.clarification_subtask)) {
           liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
         } else {

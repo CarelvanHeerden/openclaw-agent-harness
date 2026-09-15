@@ -195,6 +195,7 @@ const DEFAULTS = {
         prune_terminal_sessions: false,
         prune_terminal_sessions_days: 365,
         min_free_disk_bytes: 1024 * 1024 * 1024,
+        checkpoint_root: "",
     },
     safety: {
         worker_permission_mode: "acceptEdits",
@@ -227,6 +228,7 @@ const DEFAULTS = {
             ".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519",
             "harness-vault/", "vault.key", "vault.db",
         ],
+        path_denylist_exceptions: [],
         allow_git_push: false,
         allow_network_commands: false,
     },

@@ -41,6 +41,20 @@ export interface VerifyProbeResult {
    * -- non-path kinds (commit_made, branch_pushed, ...) omit it.
    */
   path?: string;
+  /**
+   * rc.9: was this check actually PERFORMED?
+   *
+   * A verification failure and an inability to verify are different facts, and
+   * collapsing them is how the StitchGuard status surface stayed cheerful while
+   * the worktree it was checking no longer existed. `passed:false` answered
+   * both "the file is not there" and "I could not look", and only the free-text
+   * `detail` -- which several paths dropped -- told them apart.
+   *
+   * Absent means determinate, so every existing probe keeps its current
+   * meaning. Fail-closed is UNCHANGED: an indeterminate check still fails. What
+   * changes is that it says why it failed, in a field a reader can branch on.
+   */
+  indeterminate?: boolean;
 }
 
 export interface VerifyOutcome {
@@ -102,7 +116,7 @@ export interface VerifyProbes {
    * genuinely empty file must always fail. Optional, so older test doubles keep
    * working (absent = not stale = no fallback).
    */
-  fileExistsOnDisk?: (path: string, sinceMs?: number) => Promise<{ exists: boolean; nonEmpty: boolean; detail: string; stale?: boolean }>;
+  fileExistsOnDisk?: (path: string, sinceMs?: number) => Promise<{ exists: boolean; nonEmpty: boolean; detail: string; stale?: boolean; indeterminate?: boolean }>;
 
   /**
    * Does `path` appear in `git log <baseSha>..HEAD --name-only`?
@@ -170,7 +184,7 @@ export interface VerifyProbes {
    * Does `path` exist in remote `branch` contents (GET /contents/{path}?ref={branch})?
    * Used by `file_pushed`.
    */
-  remoteFileExists?: (path: string, branch: string) => Promise<{ exists: boolean; detail: string }>;
+  remoteFileExists?: (path: string, branch: string) => Promise<{ exists: boolean; detail: string; indeterminate?: boolean }>;
 
   /**
    * List open/closed PRs for `branch`. Returns count + per-PR metadata.
@@ -181,13 +195,15 @@ export interface VerifyProbes {
     /** beta.57: `merged` distinguishes merged from closed-without-merge (GitHub state is "closed" for both). Optional for back-compat. */
     prs: Array<{ number: number; state: string; draft: boolean; url: string; merged?: boolean }>;
     detail: string;
+    /** rc.9: the lookup itself failed (auth, 5xx, network). `count: 0` here is not evidence of no PR. */
+    indeterminate?: boolean;
   }>;
 
   /**
    * List files changed in PR `prNumber`.
    * Used by `file_in_pr`.
    */
-  prFiles?: (prNumber: number) => Promise<{ files: Array<{ filename: string }>; detail: string }>;
+  prFiles?: (prNumber: number) => Promise<{ files: Array<{ filename: string }>; detail: string; indeterminate?: boolean }>;
 
   /**
    * What is the current worktree HEAD sha?
@@ -206,11 +222,27 @@ export function evaluateVerification(results: VerifyProbeResult[]): VerifyOutcom
   }
   const failed = results.filter((r) => !r.passed);
   const ok = failed.length === 0;
-  const summary = ok
-    ? `all ${results.length} observable check(s) passed`
-    : `${failed.length}/${results.length} observable check(s) FAILED: ${failed
-        .map((f) => `${f.kind} (${f.detail})`)
-        .join("; ")}`;
+  // rc.9: name the checks that could not be run separately from the ones that
+  // ran and found nothing. Both still fail -- fail-closed is the point -- but
+  // "the documentation file is missing" and "I could not read the worktree"
+  // call for completely different responses from whoever is reading this.
+  const indeterminate = failed.filter((r) => r.indeterminate === true);
+  const genuinelyFailed = failed.filter((r) => r.indeterminate !== true);
+  const describe = (rs: VerifyProbeResult[]) => rs.map((f) => `${f.kind} (${f.detail})`).join("; ");
+  let summary: string;
+  if (ok) {
+    summary = `all ${results.length} observable check(s) passed`;
+  } else if (indeterminate.length === 0) {
+    summary = `${failed.length}/${results.length} observable check(s) FAILED: ${describe(failed)}`;
+  } else if (genuinelyFailed.length === 0) {
+    summary =
+      `${indeterminate.length}/${results.length} observable check(s) COULD NOT BE PERFORMED ` +
+      `(failing closed, this is not evidence the work is missing): ${describe(indeterminate)}`;
+  } else {
+    summary =
+      `${genuinelyFailed.length}/${results.length} observable check(s) FAILED: ${describe(genuinelyFailed)}; ` +
+      `a further ${indeterminate.length} COULD NOT BE PERFORMED: ${describe(indeterminate)}`;
+  }
   return { ok, results, summary };
 }
 
@@ -350,7 +382,14 @@ export async function verifySubTaskOutput(
           const r = await probes.prForBranch(ctx.defaultBranch);
           const passed = r.count >= 1;
           const url = r.prs[0]?.url;
-          results.push({ kind: v.kind, passed, detail: passed ? `PR ${url ?? r.prs[0]?.number}` : r.detail });
+          // rc.9: a PR lookup that FAILED reports `count: 0` just like a branch
+          // with no PR. Carry the probe's own uncertainty rather than reading
+          // an auth error as an absent artifact.
+          results.push({
+            kind: v.kind, passed,
+            detail: passed ? `PR ${url ?? r.prs[0]?.number}` : r.detail,
+            ...(r.indeterminate && !passed ? { indeterminate: true } : {}),
+          });
         } else {
           const r = await probes.prUrlPresent();
           results.push({ kind: v.kind, passed: r.present, detail: r.url ? `PR ${r.url}` : r.detail });
@@ -425,6 +464,11 @@ export async function verifySubTaskOutput(
             passed,
             detail: !passed && genOwner ? generatedFailure(v.path, genOwner, detail) : detail,
             path: v.path,
+            // rc.9: THE incident case. With the worktree gone the probe cannot
+            // look, and "no file matching contract path" was the sentence that
+            // came out -- an accusation about a worker, generated by a harness
+            // that had nowhere to search.
+            ...(r.indeterminate && !passed ? { indeterminate: true } : {}),
           });
         } else {
           // Backward compat: beta.8 behaviour (git diff, excludes untracked)
@@ -493,7 +537,7 @@ export async function verifySubTaskOutput(
           // beta.57 (P1): FAIL CLOSED. A missing probe used to skip-pass,
           // which meant a mis-wired caller silently green-lit every contract
           // of this kind. Production wires all probes; a missing one is a bug.
-          results.push({ kind: v.kind, passed: false, detail: "fileCommittedSince probe not provided; failing closed (cannot verify)" });
+          results.push({ kind: v.kind, passed: false, detail: "fileCommittedSince probe not provided; failing closed (cannot verify)", indeterminate: true });
         }
         break;
       }
@@ -514,10 +558,13 @@ export async function verifySubTaskOutput(
         const branch = v.branch ?? ctx.defaultBranch;
         if (probes.remoteFileExists) {
           const r = await probes.remoteFileExists(v.path, branch);
-          results.push({ kind: v.kind, passed: r.exists, detail: r.detail });
+          results.push({
+            kind: v.kind, passed: r.exists, detail: r.detail,
+            ...(r.indeterminate && !r.exists ? { indeterminate: true } : {}),
+          });
         } else {
           // beta.57 (P1): fail closed on a missing probe.
-          results.push({ kind: v.kind, passed: false, detail: "remoteFileExists probe not provided; failing closed (cannot verify)" });
+          results.push({ kind: v.kind, passed: false, detail: "remoteFileExists probe not provided; failing closed (cannot verify)", indeterminate: true });
         }
         break;
       }
@@ -525,7 +572,13 @@ export async function verifySubTaskOutput(
         if (probes.prForBranch) {
           const r = await probes.prForBranch(ctx.defaultBranch);
           if (r.count === 0) {
-            results.push({ kind: v.kind, passed: false, detail: `no PR found for branch; ${r.detail}` });
+            results.push({
+              kind: v.kind, passed: false,
+              detail: r.indeterminate
+                ? `could not determine whether a PR exists for the branch; ${r.detail}`
+                : `no PR found for branch; ${r.detail}`,
+              ...(r.indeterminate ? { indeterminate: true } : {}),
+            });
           } else {
             const pr = r.prs[0]!;
             // beta.57 (P1): "closed" is NOT "merged". GitHub reports state
@@ -544,7 +597,7 @@ export async function verifySubTaskOutput(
           }
         } else {
           // beta.57 (P1): fail closed on a missing probe.
-          results.push({ kind: v.kind, passed: false, detail: "prForBranch probe not provided; failing closed (cannot verify)" });
+          results.push({ kind: v.kind, passed: false, detail: "prForBranch probe not provided; failing closed (cannot verify)", indeterminate: true });
         }
         break;
       }
@@ -554,21 +607,46 @@ export async function verifySubTaskOutput(
           // beta.51: structural match so a route-semantics contract path finds
           // the real filesystem path in the PR file list (route group / prefix).
           const present = anyPathMatches(r.files.map((f) => f.filename), v.path);
-          results.push({ kind: v.kind, passed: present, detail: present ? `${v.path} in PR #${v.prNumber} files` : `${v.path} not found in PR #${v.prNumber} files; ${r.detail}` });
+          // rc.9: an API failure yields an empty file list, which is
+          // indistinguishable from a PR that does not touch the path unless the
+          // probe says which one it was.
+          results.push({
+            kind: v.kind, passed: present,
+            detail: present
+              ? `${v.path} in PR #${v.prNumber} files`
+              : r.indeterminate
+                ? `could not list the files in PR #${v.prNumber}; ${r.detail}`
+                : `${v.path} not found in PR #${v.prNumber} files; ${r.detail}`,
+            ...(r.indeterminate && !present ? { indeterminate: true } : {}),
+          });
         } else if (probes.prForBranch && probes.prFiles) {
           // Look up prNumber from branch if not specified.
           const pr = await probes.prForBranch(ctx.defaultBranch);
           const prNum = pr.prs[0]?.number;
           if (!prNum) {
-            results.push({ kind: v.kind, passed: false, detail: `no open PR found to check file in; ${pr.detail}` });
+            results.push({
+              kind: v.kind, passed: false,
+              detail: pr.indeterminate
+                ? `could not look up the PR to check the file in; ${pr.detail}`
+                : `no open PR found to check file in; ${pr.detail}`,
+              ...(pr.indeterminate ? { indeterminate: true } : {}),
+            });
           } else {
             const r = await probes.prFiles(prNum);
             const present = anyPathMatches(r.files.map((f) => f.filename), v.path);
-            results.push({ kind: v.kind, passed: present, detail: present ? `${v.path} in PR #${prNum} files` : `${v.path} not found in PR #${prNum}; ${r.detail}` });
+            results.push({
+              kind: v.kind, passed: present,
+              detail: present
+                ? `${v.path} in PR #${prNum} files`
+                : r.indeterminate
+                  ? `could not list the files in PR #${prNum}; ${r.detail}`
+                  : `${v.path} not found in PR #${prNum}; ${r.detail}`,
+              ...(r.indeterminate && !present ? { indeterminate: true } : {}),
+            });
           }
         } else {
           // beta.57 (P1): fail closed on a missing probe.
-          results.push({ kind: v.kind, passed: false, detail: "prFiles probe not provided; failing closed (cannot verify)" });
+          results.push({ kind: v.kind, passed: false, detail: "prFiles probe not provided; failing closed (cannot verify)", indeterminate: true });
         }
         break;
       }
@@ -584,7 +662,7 @@ export async function verifySubTaskOutput(
           }
         } else {
           // beta.57 (P1): fail closed on missing probes.
-          results.push({ kind: v.kind, passed: false, detail: "localHeadSha/remoteBranchSha probes not provided; failing closed (cannot verify)" });
+          results.push({ kind: v.kind, passed: false, detail: "localHeadSha/remoteBranchSha probes not provided; failing closed (cannot verify)", indeterminate: true });
         }
         break;
       }

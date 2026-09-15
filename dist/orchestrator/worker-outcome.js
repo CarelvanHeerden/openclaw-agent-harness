@@ -32,6 +32,21 @@
  */
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 /**
+ * rc.9: which structured denial codes are DETERMINISTIC -- the same call, made
+ * again, gets the same answer.
+ *
+ * The distinction is the whole point of the bucket. StitchGuard burned a second
+ * billed worker turn re-submitting a patch that touched `.env.example`, was
+ * denied identically, and then reported the conflict as a "refusal". A denial
+ * that cannot change is not a thing to retry; it is a thing to ask about.
+ *
+ * `secret_material` is deliberately ABSENT: the worker can fix that one itself
+ * by writing a placeholder instead of a credential, so it stays retryable.
+ * `path_unresolvable` and `no_path_exposed` are absent too -- they describe a
+ * malformed request, and a differently-shaped retry may well succeed.
+ */
+const DETERMINISTIC_DENIAL_CODES = new Set(["path_denylisted", "network_denied"]);
+/**
  * Denials that name their own remedy.
  *
  * Matched against the guard's real reason strings (`src/safety/bash-guard.ts`),
@@ -182,6 +197,33 @@ export function recoverableDenialFrom(denied) {
     return undefined;
 }
 /**
+ * rc.9: the deterministic policy denial in this turn, if there is one.
+ *
+ * Structured only. It deliberately does NOT fall back to reading `reason`,
+ * because a guess about English is exactly what put the incident's operator in
+ * front of the wrong question. A backend that supplies no structured verdict
+ * keeps its pre-rc.9 behaviour rather than getting a fabricated one.
+ *
+ * Counts every denial sharing the same code+rule+paths, so the operator can be
+ * told "this was refused twice" instead of being shown only the first attempt.
+ */
+export function policyDenialFrom(denied) {
+    const structured = (denied ?? []).filter((d) => d.denial && DETERMINISTIC_DENIAL_CODES.has(d.denial.code));
+    if (structured.length === 0)
+        return undefined;
+    const first = structured[0].denial;
+    const key = (g) => `${g.code}|${g.rule ?? ""}|${(g.paths ?? []).join(",")}`;
+    const firstKey = key(first);
+    return {
+        code: first.code,
+        rule: first.rule,
+        paths: [...(first.paths ?? [])],
+        tool: first.kind,
+        message: first.message,
+        attempts: structured.filter((d) => key(d.denial) === firstKey).length,
+    };
+}
+/**
  * The Claude SDK backend does not populate `deniedToolCalls` -- it hands the
  * denial to the model as text and keeps no structured copy. When the worker
  * quotes that text back at us, it is still evidence of a recoverable denial,
@@ -228,9 +270,88 @@ export function classifyWorkerOutcome(input) {
     const recoverable = recoverableDenialFrom(input.deniedToolCalls) ?? denialQuotedInMessage(text);
     if (recoverable)
         return { kind: "recoverable_tool_denial", recoverable, explanation };
+    /*
+     * rc.9: a deterministic policy denial, below the two human-decidable prose
+     * outcomes and below a denial the harness can fix by itself.
+     *
+     * It sits here rather than at the top deliberately. An explicit refusal is
+     * still a position a human must overrule, and a denial that named its own
+     * remedy is still something to retry rather than interrupt anybody about --
+     * both were rc.2 decisions and neither is what went wrong.
+     *
+     * What went wrong is everything BELOW this line. The incident's turn matched
+     * no refusal and no blocker, and no RECOVERIES entry matches "is denylisted",
+     * so at rc.8 the strongest available fact -- a policy said no, twice -- lost
+     * to `incomplete`, the bucket for "nothing happened and nothing was
+     * explained". That licensed a retry that could not succeed and a question
+     * built from planning prose.
+     */
+    const policy = policyDenialFrom(input.deniedToolCalls);
+    if (policy)
+        return { kind: "policy_denial", policy, explanation };
     if (text.length > 0 && !substantive)
         return { kind: "progress_only" };
     return { kind: "incomplete", explanation };
+}
+/**
+ * rc.9: never repeat the backend's claim that a human refused something.
+ *
+ * OpenCode reports a denied permission to the model as:
+ *
+ *   "The user rejected permission to use this specific tool call."
+ *
+ * No user was asked. The ACP adapter answered the permission request on the
+ * harness's behalf by selecting the `reject_once` option, which is the only
+ * vocabulary the protocol offers, and the backend describes that choice in the
+ * only terms it has. The model then repeats the sentence in its final message,
+ * and that message has a route to the operator's screen.
+ *
+ * Telling somebody they rejected a thing they were never shown is worse than
+ * saying nothing: it sends them looking for a decision they did not make. The
+ * text is corrected wherever it would be quoted.
+ */
+const FALSE_USER_REJECTION = /\b(?:the\s+)?user\s+(?:rejected|denied|refused)\s+(?:the\s+)?permission[^.]*\.?/gi;
+export function correctFalseUserRejection(text) {
+    return (text ?? "").replace(FALSE_USER_REJECTION, "the harness safety guard denied the tool call (no human was asked).");
+}
+/**
+ * rc.9: the question to put to a human when a policy blocked the work.
+ *
+ * The rc.8 clarification for this exact situation read, in full:
+ *
+ *   Sub-task 11 ("Document Safe Deployment And Review Artefacts") could not
+ *   proceed. The worker's explanation: I'll inspect the named documentation
+ *   sections, help companion conventions, [...] evidence requirements, and.
+ *   How should it proceed?
+ *
+ * Truncated mid-sentence, and not one word of it is true about why the work
+ * stopped. The harness had the real reason in an audit row written twenty
+ * seconds earlier. So this builder is not a nicer paraphrase of the same
+ * inputs -- it is built from the structured denial and does not consult the
+ * worker's narrative at all, except as clearly-labelled secondary context.
+ *
+ * It must state: the rule, the affected paths, the tool, how many attempts were
+ * spent, and what decision is actually being asked for.
+ */
+export function buildPolicyDenialClarification(params) {
+    const { policy } = params;
+    const paths = policy.paths.length > 0 ? policy.paths.map((p) => `\`${p}\``).join(", ") : "the requested path";
+    const lines = [
+        `Sub-task ${params.seq} ("${params.title}") was BLOCKED BY HARNESS SAFETY POLICY, not by the worker.`,
+        "",
+        `What was refused: ${policy.tool ?? "a tool call"} on ${paths}.`,
+    ];
+    if (policy.rule)
+        lines.push(`Which rule: \`${policy.rule}\` in the safety path denylist.`);
+    lines.push(`Attempts: ${policy.attempts}. The same call was refused each time -- this denial is deterministic, ` +
+        `so retrying cannot change it.`, "", policy.message, "", "Your options: authorise the specific path if it is genuinely a tracked template (see " +
+        "`safety.path_denylist_exceptions`), tell the worker to achieve the sub-task without touching that " +
+        'path, answer "skip" to drop this sub-task, or "abort".');
+    if (params.workerNote) {
+        // Last, and labelled. At rc.8 this text WAS the whole question.
+        lines.push("", `For context, the worker's own last words (not the reason it stopped): ${params.workerNote}`);
+    }
+    return lines.join("\n");
 }
 /**
  * The operator's answer, addressed to the sub-task that asked the question.

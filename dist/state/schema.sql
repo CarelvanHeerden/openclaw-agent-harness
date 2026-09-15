@@ -115,7 +115,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- NULL means publication was never verified. It never means verified-absent.
   published_sha            TEXT,              -- commit observed at the remote branch tip
   published_at             INTEGER,           -- epoch ms of that observation
-  published_branch         TEXT               -- branch the sha was observed on
+  published_branch         TEXT,              -- branch the sha was observed on
+  -- rc.9 storage health (see store.ts for why each exists)
+  storage_state            TEXT,              -- ok | missing_worktree | missing_objects | missing_commits | unknown
+  storage_reason           TEXT,
+  storage_checked_at       INTEGER,
+  last_attempted_sub_task  TEXT,              -- last worker turn persisted, success or not
+  last_checkpoint_bundle   TEXT,              -- path of the last VERIFIED durable bundle
+  last_checkpoint_sha      TEXT               -- tip the verified bundle contains
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);

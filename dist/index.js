@@ -13,7 +13,7 @@
  * Shape mirrors memory-hybrid.
  */
 import { readFile, writeFile, rm } from "node:fs/promises";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedListenerFlag, declaresRemovedParallelKeys } from "./config.js";
@@ -677,8 +677,12 @@ export function bootstrapHarnessSync(api) {
                                         bash_whitelist: config.safety.bash_whitelist,
                                         bash_denylist_tokens: config.safety.bash_denylist_tokens,
                                         // The scout only reads. It gets the worker's path denylist
-                                        // and no write path at all.
+                                        // and no write path at all. rc.9: no template exception --
+                                        // that authorises an EDIT to a template, and the scout does
+                                        // not edit anything.
                                         path_denylist: config.safety.path_denylist,
+                                        repoRoot: scoutWorktree,
+                                        realpath: (p) => realpathSync(p),
                                         allow_git_push: false,
                                         allow_network_commands: false,
                                     }),
@@ -849,6 +853,13 @@ export function bootstrapHarnessSync(api) {
                         bash_whitelist: config.safety.bash_whitelist,
                         bash_denylist_tokens: config.safety.bash_denylist_tokens,
                         path_denylist: config.safety.path_denylist,
+                        // rc.9: the worktree root and a real symlink resolver, so an
+                        // absolute path and a symlink target are judged by the same rules
+                        // as a repo-relative one. Without these the guard can only reason
+                        // about the string it was handed.
+                        path_denylist_exceptions: config.safety.path_denylist_exceptions,
+                        repoRoot: params.worktreePath,
+                        realpath: (p) => realpathSync(p),
                         allow_git_push: config.safety.allow_git_push,
                         allow_network_commands: config.safety.allow_network_commands,
                     });
@@ -2346,7 +2357,49 @@ export async function bootstrapHarnessAsync(runtime, api) {
             if (pf.created) {
                 api.logger.info("[harness] worktrees root created (node-owned)", { worktreesRoot: pf.worktreesRoot });
             }
-            state.audit("harness.worktrees_preflight", { ok: true, created: pf.created, worktreesRoot: pf.worktreesRoot });
+            /*
+             * rc.9: say what was actually checked, and what was NOT.
+             *
+             * The rc.8 event was `{ok:true, created:false}` on a tmpfs root that had
+             * just lost nine commits. It was not lying -- it means "I wrote a probe
+             * file here and it worked" -- but `ok` reads as a verdict on the storage,
+             * and an operator scanning startup evidence took it as one. So the field
+             * now says what it measured, and durability is reported separately, with
+             * `undefined` meaning UNKNOWN rather than fine.
+             */
+            const { probeStorage, checkpointRootIsSafe } = await import("./state/storage-health.js");
+            const probe = probeStorage(pf.worktreesRoot);
+            state.audit("harness.worktrees_preflight", {
+                writable: true,
+                ok: true, // retained: existing dashboards and tests key off it
+                created: pf.created,
+                worktreesRoot: pf.worktreesRoot,
+                fsType: probe.fsType ?? "unknown",
+                volatile: probe.volatile ?? null, // null = could not determine, NOT "durable"
+                separateMount: probe.separateMount ?? null,
+                note: probe.note ?? null,
+            });
+            if (probe.volatile) {
+                api.logger.warn(`[harness] worktrees root is on ${probe.fsType}, which does not survive a restart -- ` +
+                    `worktrees AND the bare object cache nested under it are lost on every container bounce`, { worktreesRoot: pf.worktreesRoot });
+                state.audit("harness.worktrees_root_volatile", {
+                    worktreesRoot: pf.worktreesRoot,
+                    fsType: probe.fsType,
+                    detail: probe.note,
+                });
+            }
+            const ckRoot = (config.storage.checkpoint_root ?? "").replace(/^~/, process.env.HOME ?? "");
+            const ckSafe = checkpointRootIsSafe(ckRoot, pf.worktreesRoot);
+            if (!ckSafe.ok) {
+                // Not fatal -- a deployment may legitimately choose to run without
+                // durable checkpoints -- but it is never silent, because "nobody
+                // configured it" and "it is working" looked identical in rc.8.
+                api.logger.warn(`[harness] durable checkpointing is NOT active: ${ckSafe.reason}`);
+                state.audit("harness.checkpoint_root_unusable", { checkpointRoot: ckRoot || null, reason: ckSafe.reason });
+            }
+            else {
+                state.audit("harness.checkpoint_root_ready", { checkpointRoot: ckRoot });
+            }
         }
         else {
             // BLOCKING diagnostic: a run WILL die with EACCES until this is fixed.
@@ -2464,6 +2517,94 @@ export async function bootstrapHarnessAsync(runtime, api) {
         }
         catch {
             // If audit itself is broken, log-only was already best-effort above.
+        }
+    }
+    /*
+     * rc.9: the OTHER direction.
+     *
+     * The self-heal above walks disk -> database and asks "should this directory
+     * be reaped?". On an empty tmpfs root after a restart it scans nothing,
+     * reports `{scanned:0, removed:0, errors:[]}`, and that reads as health.
+     *
+     * This walks database -> disk and asks the question that was never asked:
+     * every row that CLAIMS live local work, does that work still exist? In the
+     * incident the answer for f7c4e585 was no, for a paused session, a missing
+     * worktree, a missing object store and nine missing commits -- and startup
+     * finished without a word. It only ever diagnoses; it deletes nothing.
+     */
+    try {
+        const { reconcileSessionsToDisk } = await import("./state/storage-health.js");
+        const { execFileSync } = await import("node:child_process");
+        const { readFileSync } = await import("node:fs");
+        const worktreesRoot = config.storage.worktree_root.replace(/^~/, process.env.HOME ?? "");
+        const rows = state.db
+            .prepare(`SELECT s.id, s.status, s.repo, s.branch, s.worktree_path,
+                (SELECT group_concat(t.commit_sha) FROM sub_tasks t
+                  WHERE t.session_id = s.id AND t.commit_sha IS NOT NULL AND t.commit_sha != '') AS commits
+           FROM sessions s
+          WHERE s.status NOT IN ('done','failed','aborted','cancelled')`)
+            .all();
+        const findings = await reconcileSessionsToDisk(rows.map((r) => ({
+            id: r.id,
+            status: r.status,
+            repo: r.repo,
+            branch: r.branch,
+            worktreePath: r.worktree_path,
+            recordedCommits: (r.commits ?? "").split(",").map((c) => c.trim()).filter(Boolean),
+        })), {
+            worktreesRoot,
+            readText: (p) => readFileSync(p, "utf8"),
+            unreachableCommits: async (wt, shas) => shas.filter((sha) => {
+                try {
+                    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: wt, stdio: "ignore" });
+                    return false;
+                }
+                catch {
+                    return true;
+                }
+            }),
+        });
+        const checkedAt = Date.now();
+        const upd = state.db.prepare(`UPDATE sessions SET storage_state = ?, storage_reason = ?, storage_checked_at = ?, updated_at = ? WHERE id = ?`);
+        const byId = new Map(findings.map((f) => [f.sessionId, f]));
+        for (const r of rows) {
+            const f = byId.get(r.id);
+            // Rows with no finding that were in scope are `ok`; rows out of scope
+            // (terminal-ish statuses the reconciler skips) are left untouched rather
+            // than being stamped with a verdict nobody computed.
+            const { claimsLocalStorage } = await import("./state/storage-health.js");
+            if (!claimsLocalStorage(r.status))
+                continue;
+            upd.run(f ? f.state : "ok", f ? f.reason : null, checkedAt, checkedAt, r.id);
+        }
+        state.audit("harness.storage_reconcile", {
+            sessionsChecked: rows.filter((r) => r.worktree_path !== null).length,
+            findings: findings.length,
+            states: findings.reduce((acc, f) => {
+                acc[f.state] = (acc[f.state] ?? 0) + 1;
+                return acc;
+            }, {}),
+        });
+        for (const f of findings) {
+            api.logger.error(`[harness] session ${f.sessionId}: ${f.reason}`);
+            state.audit("harness.session_storage_missing", {
+                sessionId: f.sessionId,
+                state: f.state,
+                reason: f.reason,
+                missingCommits: f.missingCommits.slice(0, 20),
+                missingCommitCount: f.missingCommits.length,
+            }, f.sessionId);
+        }
+    }
+    catch (err) {
+        // A reconciliation that cannot run must not take the harness down with it,
+        // but it also must not pass as a clean result.
+        api.logger.warn("[harness] storage reconciliation failed (non-fatal)", { err: String(err) });
+        try {
+            state.audit("harness.storage_reconcile_failed", { error: String(err) });
+        }
+        catch {
+            /* audit itself broken; the log line above is the record */
         }
     }
     // Session recovery: mark stale non-terminal sessions as 'interrupted' and

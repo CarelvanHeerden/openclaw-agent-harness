@@ -1525,6 +1525,19 @@ export interface StorageConfig {
    * test). Default 1073741824 (1 GiB). Set 0 to disable the preflight.
    */
   min_free_disk_bytes: number;
+  /**
+   * rc.9: where durable checkpoints (git bundles) are written.
+   *
+   * MUST be on storage that outlives the worktrees root. In the StitchGuard
+   * deployment the worktrees root was a tmpfs mount and the bare object cache
+   * lived INSIDE it, so a restart took every copy of nine commits at once while
+   * the state DB -- on a host-backed mount -- survived to describe them.
+   *
+   * Empty (the default) disables durable checkpointing, and the harness says so
+   * out loud at startup rather than implying work is being protected when it is
+   * not. Pointing this INSIDE the worktrees root is refused for the same reason.
+   */
+  checkpoint_root: string;
 }
 
 export interface SafetyConfig {
@@ -1532,6 +1545,20 @@ export interface SafetyConfig {
   bash_whitelist: string[];
   bash_denylist_tokens: string[];
   path_denylist: string[];
+  /**
+   * rc.9: EXACT repo-relative paths the denylist covers but this deployment has
+   * explicitly authorised anyway -- the tracked template case, e.g.
+   * `.env.example`.
+   *
+   * Deliberately empty by default. A template exception is a decision about one
+   * named file in one repository, and inheriting it on upgrade would be exactly
+   * the blanket allow this is meant to avoid. No globs, no directories: a
+   * pattern here would re-create `.env.*` with the sign flipped.
+   *
+   * An entry does NOT permit writing a live credential into the file. The guard
+   * scans the patch's added lines and refuses secret material regardless.
+   */
+  path_denylist_exceptions: string[];
   allow_git_push: boolean;
   allow_network_commands: boolean;
 }
@@ -1853,6 +1880,7 @@ const DEFAULTS: HarnessConfig = {
     prune_terminal_sessions: false,
     prune_terminal_sessions_days: 365,
     min_free_disk_bytes: 1024 * 1024 * 1024,
+    checkpoint_root: "",
   },
   safety: {
     worker_permission_mode: "acceptEdits",
@@ -1885,6 +1913,7 @@ const DEFAULTS: HarnessConfig = {
       ".env", ".env.*", ".secrets/", "/etc/", "/root/", "~/.ssh/", "id_rsa", "id_ed25519",
       "harness-vault/", "vault.key", "vault.db",
     ],
+    path_denylist_exceptions: [],
     allow_git_push: false,
     allow_network_commands: false,
   },

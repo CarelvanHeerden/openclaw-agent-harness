@@ -30,15 +30,32 @@
  * worth interrupting only for something a human can decide. A command-format
  * mistake, a guard denial, or an unfinished sentence is not that.
  */
+import type { GuardDenial } from "../safety/bash-guard.js";
 /** One denial, as the ACP adapter records it. */
 export interface DeniedToolCall {
     kind?: string | null;
     title?: string;
     reason?: string;
+    /**
+     * rc.9: the guard's structured verdict, when the guard produced one.
+     *
+     * Everything below used to be inferred by matching English against `reason`.
+     * That is why StitchGuard's denylist denial classified as `incomplete`: no
+     * entry in RECOVERIES matched "is denylisted", so the strongest fact about
+     * the turn -- a policy said no -- was simply not in evidence by the time the
+     * outcome was decided.
+     */
+    denial?: GuardDenial;
 }
 export type WorkerOutcomeKind = 
 /** A guard denial whose reason names a permitted alternative. Retry it. */
 "recoverable_tool_denial"
+/**
+ * rc.9: a policy said no, and saying it again will not change the answer.
+ * Ask -- but ask the RIGHT question, quoting the rule rather than the
+ * worker's prose.
+ */
+ | "policy_denial"
 /** The turn ended describing what it was about to do. Retry it. */
  | "progress_only"
 /** Something only a human can settle. Ask. */
@@ -47,6 +64,16 @@ export type WorkerOutcomeKind =
  | "refusal"
 /** Nothing happened and the worker said nothing useful about why. Retry it. */
  | "incomplete";
+/** The structured policy denial a human has to settle, if this turn had one. */
+export interface PolicyDenialOutcome {
+    code: string;
+    rule?: string;
+    paths: string[];
+    tool?: string;
+    message: string;
+    /** How many times this exact denial was recorded across the sub-task. */
+    attempts: number;
+}
 export interface RecoveryGuidance {
     /** Coarse bucket for metrics: `inline_code`, `heredoc`, `git_push`, `guided`. */
     category: string;
@@ -61,6 +88,8 @@ export interface WorkerOutcome {
     kind: WorkerOutcomeKind;
     /** Present only for `recoverable_tool_denial`. */
     recoverable?: RecoveryGuidance;
+    /** rc.9: present only for `policy_denial`. The thing to tell the human. */
+    policy?: PolicyDenialOutcome;
     /**
      * The worker's message with progress narration removed. `undefined` when
      * nothing substantive was left -- which is precisely when there is nothing to
@@ -91,6 +120,18 @@ export declare function stripProgressNarration(text: string): string;
 /** The first denial that names a way forward, if any. */
 export declare function recoverableDenialFrom(denied: DeniedToolCall[] | undefined): RecoveryGuidance | undefined;
 /**
+ * rc.9: the deterministic policy denial in this turn, if there is one.
+ *
+ * Structured only. It deliberately does NOT fall back to reading `reason`,
+ * because a guess about English is exactly what put the incident's operator in
+ * front of the wrong question. A backend that supplies no structured verdict
+ * keeps its pre-rc.9 behaviour rather than getting a fabricated one.
+ *
+ * Counts every denial sharing the same code+rule+paths, so the operator can be
+ * told "this was refused twice" instead of being shown only the first attempt.
+ */
+export declare function policyDenialFrom(denied: DeniedToolCall[] | undefined): PolicyDenialOutcome | undefined;
+/**
  * Decide what a zero-commit turn actually was.
  *
  * Precedence, strongest claim first:
@@ -110,6 +151,33 @@ export declare function classifyWorkerOutcome(input: {
     commitSha?: string;
     deniedToolCalls?: DeniedToolCall[];
 }): WorkerOutcome;
+export declare function correctFalseUserRejection(text: string): string;
+/**
+ * rc.9: the question to put to a human when a policy blocked the work.
+ *
+ * The rc.8 clarification for this exact situation read, in full:
+ *
+ *   Sub-task 11 ("Document Safe Deployment And Review Artefacts") could not
+ *   proceed. The worker's explanation: I'll inspect the named documentation
+ *   sections, help companion conventions, [...] evidence requirements, and.
+ *   How should it proceed?
+ *
+ * Truncated mid-sentence, and not one word of it is true about why the work
+ * stopped. The harness had the real reason in an audit row written twenty
+ * seconds earlier. So this builder is not a nicer paraphrase of the same
+ * inputs -- it is built from the structured denial and does not consult the
+ * worker's narrative at all, except as clearly-labelled secondary context.
+ *
+ * It must state: the rule, the affected paths, the tool, how many attempts were
+ * spent, and what decision is actually being asked for.
+ */
+export declare function buildPolicyDenialClarification(params: {
+    seq: number;
+    title: string;
+    policy: PolicyDenialOutcome;
+    /** The worker's own words, if any survived narration-stripping. */
+    workerNote?: string;
+}): string;
 /**
  * The operator's answer, addressed to the sub-task that asked the question.
  *

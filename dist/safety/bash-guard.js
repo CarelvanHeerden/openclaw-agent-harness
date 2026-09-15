@@ -14,6 +14,7 @@
  * is rejected. If a legitimate command is rejected, add it to the whitelist
  * or split the operation into simpler steps.
  */
+import { pathsFromPatchText, resolvePathForPolicy, scanPatchForSecrets, templateExceptionApplies, } from "./path-policy.js";
 const NETWORK_COMMANDS = ["curl", "wget", "nc", "ncat", "ssh", "scp", "rsync"];
 const DENYLIST_TOKEN_DEFAULTS = [
     "sudo",
@@ -315,8 +316,37 @@ export function acpPathsFromToolCall(call) {
                     out.add(k);
             }
         }
+        /*
+         * rc.9: `apply_patch` names its targets ONLY inside the patch envelope --
+         * its whole input is a `patchText` blob of `*** Update File:` directives,
+         * and none of the fields above exist on it. So the only path the guard ever
+         * saw for an apply_patch was whatever display string the backend had put in
+         * `locations[]`, which in the StitchGuard incident was four paths joined
+         * with ", " and judged as one. Read the directives instead: they are
+         * structured, unambiguous, and authored by the caller rather than formatted
+         * for a human.
+         */
+        for (const k of ["patchText", "patch"]) {
+            const v = raw[k];
+            if (typeof v === "string" && v.length > 0) {
+                for (const p of pathsFromPatchText(v))
+                    out.add(p);
+            }
+        }
     }
     return [...out];
+}
+/** The `apply_patch` body, when this call has one. Needed for the content check. */
+export function acpPatchTextFromToolCall(call) {
+    const raw = call.rawInput;
+    if (!raw || typeof raw !== "object")
+        return null;
+    for (const k of ["patchText", "patch"]) {
+        const v = raw[k];
+        if (typeof v === "string" && v.length > 0)
+            return v;
+    }
+    return null;
 }
 /** Search-style calls expose a pattern rather than a path. */
 function acpPatternFromToolCall(call) {
@@ -361,17 +391,80 @@ export function buildAcpGuard(cfg) {
         allowNetworkCommands: cfg.allow_network_commands,
         pathDenylist: cfg.path_denylist,
     };
+    const exceptions = cfg.path_denylist_exceptions ?? [];
+    const resolveOpts = { repoRoot: cfg.repoRoot, realpath: cfg.realpath };
+    /**
+     * rc.9: EVERY target is checked, and one forbidden target rejects the whole
+     * call regardless of ordering. The incident's verdict depended on which file
+     * happened to come first in a joined string; it must not depend on order at
+     * all. Paths are collected and judged individually, and an unresolvable one
+     * is a denial rather than a skipped check.
+     */
     const denyIfBlockedPaths = (call, label) => {
         const paths = acpPathsFromToolCall(call);
         if (paths.length === 0) {
-            return { allow: false, reason: `${label} tool call exposed no path to check (failing closed)` };
+            return {
+                allow: false,
+                reason: `${label} tool call exposed no path to check (failing closed)`,
+                denial: { code: "no_path_exposed", kind: label, message: `${label} tool call exposed no path to check` },
+            };
         }
+        const patchText = acpPatchTextFromToolCall(call);
+        const checked = [];
         for (const p of paths) {
-            if (pathMatchesDenylist(p, cfg.path_denylist)) {
-                return { allow: false, reason: `${label} path '${p}' is denylisted` };
+            const resolution = resolvePathForPolicy(p, resolveOpts);
+            if (resolution.refuse) {
+                return {
+                    allow: false,
+                    reason: `${label} path could not be resolved: ${resolution.refuse}`,
+                    denial: {
+                        code: "path_unresolvable",
+                        kind: label,
+                        paths: [p],
+                        message: `${label} path could not be resolved to a single file: ${resolution.refuse}`,
+                    },
+                };
             }
+            checked.push(...resolution.candidates);
+            const rule = resolution.candidates
+                .map((c) => denylistRuleFor(c, cfg.path_denylist))
+                .find((r) => r !== null) ?? null;
+            if (rule === null)
+                continue;
+            // An authorised template is the ONE way past the denylist, and it does not
+            // carry permission to put a live credential into the template.
+            if (templateExceptionApplies(resolution, exceptions)) {
+                const scan = patchText ? scanPatchForSecrets(patchText) : { found: false };
+                if (!scan.found)
+                    continue;
+                return {
+                    allow: false,
+                    reason: `${label} path '${p}' is an authorised template but the patch adds secret material`,
+                    denial: {
+                        code: "secret_material",
+                        rule,
+                        kind: label,
+                        paths: [p],
+                        message: `'${p}' is an authorised template, but this edit would write a real credential into it ` +
+                            `(${scan.detail}). Authorising a template does not authorise putting a secret in it.`,
+                    },
+                };
+            }
+            return {
+                allow: false,
+                reason: `${label} path '${p}' is denylisted`,
+                denial: {
+                    code: "path_denylisted",
+                    rule,
+                    kind: label,
+                    paths: [p],
+                    message: `'${p}' is blocked by the safety path denylist rule '${rule}'. If this file is a tracked ` +
+                        `template that genuinely must be edited, add its exact path to ` +
+                        `\`safety.path_denylist_exceptions\`; live secret files must stay blocked.`,
+                },
+            };
         }
-        return { allow: true };
+        return { allow: true, checkedPaths: [...new Set(checked)] };
     };
     return async (call) => {
         const kind = typeof call.kind === "string" ? call.kind.toLowerCase() : "";
@@ -382,7 +475,17 @@ export function buildAcpGuard(cfg) {
                     return { allow: false, reason: "execute tool call carried no command string (failing closed)" };
                 }
                 const r = guardCommand(cmd, guard);
-                return { allow: r.allowed, reason: r.reason };
+                if (r.allowed)
+                    return { allow: true };
+                return {
+                    allow: false,
+                    reason: r.reason,
+                    denial: {
+                        code: "command_denied",
+                        kind: "execute",
+                        message: r.reason ?? "command denied by the bash guard",
+                    },
+                };
             }
             case "edit":
             case "delete":
@@ -413,9 +516,38 @@ export function buildAcpGuard(cfg) {
                         reason: "read tool call exposed no path; path_denylist cannot be applied to it on this backend",
                     };
                 }
+                // rc.9: a read goes through the same canonicalisation as a write. A
+                // symlink or an absolute path must not read a secret the edit path
+                // would have refused -- the two must agree.
                 for (const p of paths) {
-                    if (pathMatchesDenylist(p, cfg.path_denylist)) {
-                        return { allow: false, reason: `read path '${p}' is denylisted` };
+                    const resolution = resolvePathForPolicy(p, resolveOpts);
+                    if (resolution.refuse) {
+                        return {
+                            allow: false,
+                            reason: `read path could not be resolved: ${resolution.refuse}`,
+                            denial: {
+                                code: "path_unresolvable",
+                                kind: "read",
+                                paths: [p],
+                                message: `read path could not be resolved to a single file: ${resolution.refuse}`,
+                            },
+                        };
+                    }
+                    const rule = resolution.candidates
+                        .map((c) => denylistRuleFor(c, cfg.path_denylist))
+                        .find((r) => r !== null) ?? null;
+                    if (rule !== null) {
+                        return {
+                            allow: false,
+                            reason: `read path '${p}' is denylisted`,
+                            denial: {
+                                code: "path_denylisted",
+                                rule,
+                                kind: "read",
+                                paths: [p],
+                                message: `reading '${p}' is blocked by the safety path denylist rule '${rule}'.`,
+                            },
+                        };
                     }
                 }
                 return { allow: true };
@@ -433,19 +565,27 @@ export function buildAcpGuard(cfg) {
             }
             case "fetch":
                 if (!cfg.allow_network_commands) {
-                    return { allow: false, reason: "network fetch is not permitted (allow_network_commands=false)" };
+                    return {
+                        allow: false,
+                        reason: "network fetch is not permitted (allow_network_commands=false)",
+                        denial: {
+                            code: "network_denied",
+                            rule: "allow_network_commands=false",
+                            kind: "fetch",
+                            message: "network fetch is not permitted by this deployment's safety configuration.",
+                        },
+                    };
                 }
                 return { allow: true };
             // Pure reasoning, no side effect to guard.
             case "think":
                 return { allow: true };
-            default:
-                return {
-                    allow: false,
-                    reason: kind
-                        ? `unrecognised ACP tool kind '${kind}' (failing closed)`
-                        : "ACP tool call carried no kind (failing closed)",
-                };
+            default: {
+                const reason = kind
+                    ? `unrecognised ACP tool kind '${kind}' (failing closed)`
+                    : "ACP tool call carried no kind (failing closed)";
+                return { allow: false, reason, denial: { code: "unknown_kind", kind: kind || undefined, message: reason } };
+            }
         }
     };
 }
@@ -454,19 +594,45 @@ export function buildAcpGuard(cfg) {
  * Read/Write guard in buildBashGuard).
  */
 export function pathMatchesDenylist(p, patterns) {
+    return denylistRuleFor(p, patterns) !== null;
+}
+/**
+ * Which denylist pattern blocks this path, or null. Same predicate as
+ * {@link pathMatchesDenylist}, but it NAMES the rule -- rc.9 needs that, because
+ * an operator told only "denylisted" cannot decide anything, and the
+ * StitchGuard clarification's whole failure was telling a human less than the
+ * harness knew.
+ */
+export function denylistRuleFor(p, patterns) {
+    if (!p)
+        return null;
+    /*
+     * rc.9: every suffix of the path at a segment boundary -- for `a/b/c` that is
+     * `a/b/c`, `b/c`, `c`.
+     *
+     * A denylist entry names a file or a trailing shape, so it has to be judged
+     * against the TAIL of a path and not only the whole of it. The literal branch
+     * below always did that, via `p.endsWith("/" + pat)`. The wildcard branch did
+     * not: it anchored the compiled pattern over the entire string, so `.env.*`
+     * matched a bare `.env.production` and allowed `/repo/.env.production`. The
+     * incident's read-only probe found exactly that, and it is a real hole rather
+     * than a cosmetic one -- an absolute path is the ordinary form a worker uses.
+     */
+    const segs = p.split("/");
+    const suffixes = segs.map((_, i) => segs.slice(i).join("/")).filter(Boolean);
     for (const pat of patterns) {
         if (pat.endsWith("/") && p.includes(pat))
-            return true;
+            return pat;
         if (pat.includes("*")) {
             const re = new RegExp("^" + pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
-            if (re.test(p))
-                return true;
+            if (suffixes.some((s) => re.test(s)))
+                return pat;
         }
         else if (p === pat || p.endsWith("/" + pat)) {
-            return true;
+            return pat;
         }
     }
-    return false;
+    return null;
 }
 // beta.57 (P2): commands that print/transform file contents. Their
 // path-looking args are checked against the path denylist so `cat .env`

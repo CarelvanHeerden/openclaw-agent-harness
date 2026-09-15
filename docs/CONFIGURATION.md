@@ -539,6 +539,7 @@ beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness 
 - **`storage.prune_terminal_sessions`** — `boolean`, default `false`.
 - **`storage.prune_terminal_sessions_days`** — `integer`, default `365`.
 - **`storage.min_free_disk_bytes`** — `integer`, default `1073741824`.
+- **`storage.checkpoint_root`** — `string`, default `""` (empty). rc.9: where durable checkpoints (git bundles) are written; MUST outlive the worktrees root, and must not be inside it. Empty disables durable checkpointing.
 
 #### `safety`
 
@@ -546,6 +547,7 @@ beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness 
 - **`safety.bash_whitelist`** — `string[]`, default `["git","pnpm","npm","npx","yarn","node","tsc","tsx","deno","bun","python","python3","pip","pip3","pytest","go","cargo","make","just","ls","cat","grep","rg","head","tail","wc","jq","yq","sed","awk","find","which","echo","printf","test","true","false","pwd","diff","sort","uniq","cut","tr","env","date","basename","dirname","realpath","xargs","comm","mkdir","cd","cp","mv","touch"]`.
 - **`safety.bash_denylist_tokens`** — `string[]`, default `["sudo","su","rm","shred","mkfs","dd","chmod","chown","chgrp","umount","mount","iptables","reboot","shutdown","halt","poweroff","kill","killall","pkill","sh","bash","zsh","dash","ksh","fish"]`.
 - **`safety.path_denylist`** — `string[]`, default `[".env",".env.*",".secrets/","/etc/","/root/","~/.ssh/","id_rsa","id_ed25519","harness-vault/","vault.key","vault.db"]`.
+- **`safety.path_denylist_exceptions`** — `string[]`, default `[]` (empty). rc.9: exact repo-relative paths the denylist covers but this deployment explicitly authorises (e.g. ".env.example"). No globs, no directories. Does not permit writing real credentials into the file.
 - **`safety.allow_git_push`** — `boolean`, default `false`.
 - **`safety.allow_network_commands`** — `boolean`, default `false`.
 

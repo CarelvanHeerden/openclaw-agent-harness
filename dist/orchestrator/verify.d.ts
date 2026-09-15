@@ -37,6 +37,20 @@ export interface VerifyProbeResult {
      * -- non-path kinds (commit_made, branch_pushed, ...) omit it.
      */
     path?: string;
+    /**
+     * rc.9: was this check actually PERFORMED?
+     *
+     * A verification failure and an inability to verify are different facts, and
+     * collapsing them is how the StitchGuard status surface stayed cheerful while
+     * the worktree it was checking no longer existed. `passed:false` answered
+     * both "the file is not there" and "I could not look", and only the free-text
+     * `detail` -- which several paths dropped -- told them apart.
+     *
+     * Absent means determinate, so every existing probe keeps its current
+     * meaning. Fail-closed is UNCHANGED: an indeterminate check still fails. What
+     * changes is that it says why it failed, in a field a reader can branch on.
+     */
+    indeterminate?: boolean;
 }
 export interface VerifyOutcome {
     /** True only if every requested check passed. */
@@ -109,6 +123,7 @@ export interface VerifyProbes {
         nonEmpty: boolean;
         detail: string;
         stale?: boolean;
+        indeterminate?: boolean;
     }>;
     /**
      * Does `path` appear in `git log <baseSha>..HEAD --name-only`?
@@ -186,6 +201,7 @@ export interface VerifyProbes {
     remoteFileExists?: (path: string, branch: string) => Promise<{
         exists: boolean;
         detail: string;
+        indeterminate?: boolean;
     }>;
     /**
      * List open/closed PRs for `branch`. Returns count + per-PR metadata.
@@ -202,6 +218,8 @@ export interface VerifyProbes {
             merged?: boolean;
         }>;
         detail: string;
+        /** rc.9: the lookup itself failed (auth, 5xx, network). `count: 0` here is not evidence of no PR. */
+        indeterminate?: boolean;
     }>;
     /**
      * List files changed in PR `prNumber`.
@@ -212,6 +230,7 @@ export interface VerifyProbes {
             filename: string;
         }>;
         detail: string;
+        indeterminate?: boolean;
     }>;
     /**
      * What is the current worktree HEAD sha?

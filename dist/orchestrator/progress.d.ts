@@ -67,6 +67,28 @@ export interface ProgressSnapshot {
      * sub-tasks across three cycles is thirty notifications otherwise.
      */
     worklog: string[];
+    /**
+     * rc.9: does the work this snapshot describes still exist on disk?
+     *
+     * `state: "unknown"` is the default and is NOT a clean bill of health -- it
+     * means no reconciliation has run for this session yet. The incident's status
+     * surface reported cheerfully on a session whose worktree, object store and
+     * nine commits had all been gone for twenty minutes, because nothing in the
+     * status path had ever been asked to look.
+     *
+     * `durableCheckpoint` is null unless a bundle was verified. A checkpoint row
+     * in the database is not evidence of recoverable code, and this field will
+     * not pretend otherwise.
+     */
+    storage: {
+        state: string;
+        reason: string | null;
+        checkedAt: number | null;
+        durableCheckpoint: {
+            sha: string | null;
+            manifest: string;
+        } | null;
+    };
     /** High-level phase, mapped from the session status to human words. */
     phase: string;
     status: string;

@@ -75,6 +75,9 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         found,
         sessionId,
         phase: found ? "Unknown" : "Not found",
+        // rc.9: a session we cannot read is a session whose storage we have not
+        // checked. `unknown` says so instead of implying it is fine.
+        storage: { state: "unknown", reason: null, checkedAt: null, durableCheckpoint: null },
         status: "unknown",
         terminal: false,
         repo: "",
@@ -104,7 +107,9 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
               pr_number, final_pr_url, deploy_status,
               clarification_question, clarification_seq, last_progress_at,
               estimated_usd, merge_recommendation, merge_recommendation_reason,
-              lead_plan_json
+              lead_plan_json,
+              storage_state, storage_reason, storage_checked_at,
+              last_checkpoint_sha, last_checkpoint_bundle
          FROM sessions WHERE id = ?`)
         .get(sessionId);
     if (!row)
@@ -377,9 +382,25 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     // beta.83 (#1): append a visible warning to the headline when the current
     // cycle degraded to raw findings, unless a clarification pause already owns
     // the headline.
-    const headlineWithWarnings = reviseSpecFellBack && !needsClarification
+    const baseHeadline = reviseSpecFellBack && !needsClarification
         ? `${headline}  ⚠️ cycle ${latestCycle} is running on RAW adversary findings (revise-spec turn fell back — reduced fidelity).`
         : headline;
+    /*
+     * rc.9: a headline must not read as reassurance about storage nobody checked.
+     *
+     * The StitchGuard status surface stayed perfectly composed while the session
+     * it described had no worktree, no object store and no commits -- because
+     * nothing in the status path had ever been asked to look, and a headline that
+     * omits a fact reads as that fact being fine.
+     *
+     * Only a POSITIVE finding is appended. `unknown` is not shouted on every poll
+     * of every healthy run; it is carried in `storage.state` for anyone who asks.
+     */
+    const storageState = row.storage_state ?? "unknown";
+    const storageReason = row.storage_reason ?? null;
+    const headlineWithWarnings = storageState !== "ok" && storageState !== "unknown"
+        ? `${baseHeadline}  ⛔ LOCAL STORAGE ${storageState.toUpperCase()}: ${storageReason ?? "the recorded work could not be found on disk"}.`
+        : baseHeadline;
     return {
         ok: true,
         found: true,
@@ -415,6 +436,17 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         clarificationSeq,
         reviseSpecFellBack,
         worklog: renderWorklog(stRows, plannedOrStarted),
+        storage: {
+            state: row.storage_state ?? "unknown",
+            reason: row.storage_reason ?? null,
+            checkedAt: row.storage_checked_at ?? null,
+            durableCheckpoint: row.last_checkpoint_bundle
+                ? {
+                    sha: row.last_checkpoint_sha ?? null,
+                    manifest: row.last_checkpoint_bundle,
+                }
+                : null,
+        },
     };
 }
 function fmtUsd(n) {

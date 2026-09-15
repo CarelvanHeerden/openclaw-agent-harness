@@ -1,4 +1,4 @@
-import type { AcpToolCallForGuard } from "../safety/bash-guard.js";
+import type { AcpGuardVerdict, AcpToolCallForGuard, GuardDenial } from "../safety/bash-guard.js";
 import type { JsonValidationOptions } from "./shared/json.js";
 import type { BackendCapabilities } from "./backend.js";
 import { type VersionAssessment } from "./opencode-version.js";
@@ -98,11 +98,7 @@ export interface RunWorkerAcpParams {
      * today only a read whose path the agent withheld. Distinct from a plain
      * allow so the adapter can count and announce it; see SECURITY.md.
      */
-    acpGuard: (call: AcpToolCallForGuard) => Promise<{
-        allow: boolean;
-        reason?: string;
-        unenforced?: boolean;
-    }>;
+    acpGuard: (call: AcpToolCallForGuard) => Promise<AcpGuardVerdict>;
     /** Redacted from logs and error text when present. */
     secretToken?: string;
     logger?: {
@@ -158,6 +154,7 @@ export interface RunWorkerAcpResult {
         kind?: string | null;
         title?: string;
         reason?: string;
+        denial?: GuardDenial;
     }>;
     /**
      * Reads this turn that were allowed WITHOUT a `path_denylist` check, because
