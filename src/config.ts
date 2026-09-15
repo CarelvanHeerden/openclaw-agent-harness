@@ -1043,6 +1043,18 @@ export interface LoopConfig {
    */
   plan_path_validation_enabled?: boolean;
   /**
+   * rc.10 (F3): compare planned writes against the safety denylist at
+   * plan_ready, and gate the affected sub-task's dispatch on an operator
+   * decision instead of spending a worker turn on a write policy will refuse.
+   */
+  plan_policy_conflict_check_enabled?: boolean;
+  /**
+   * rc.10 (F4): require an observe sub-task to have actually read something
+   * before its report is accepted and handed to dependent sub-tasks. Uses the
+   * tool-call counters, not a judgement about the prose.
+   */
+  observe_evidence_check_enabled?: boolean;
+  /**
    * beta.103: after verification proves a contract path correction (b76 rederive
    * or b100 test reconcile), write it back into the sub-task's
    * `filesLikelyTouched` so later revise cycles scope against the real path.
@@ -1793,6 +1805,8 @@ const DEFAULTS: HarnessConfig = {
     contract_mismatch_escalation_enabled: true,
     ledger_reachability_guard_enabled: true,
     plan_path_validation_enabled: true,
+    plan_policy_conflict_check_enabled: true,
+    observe_evidence_check_enabled: true,
     plan_path_writeback_enabled: true,
     lead_repo_scout_enabled: true,
     lead_scout_timeout_seconds: 420,

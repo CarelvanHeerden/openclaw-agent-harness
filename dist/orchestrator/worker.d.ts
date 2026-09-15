@@ -140,6 +140,8 @@ export interface WorkerResult {
      * the agent named no file. Zero on the SDK path. See SECURITY.md.
      */
     unguardedReads?: number;
+    /** rc.10 (F4): allowed permission requests this turn, any kind. */
+    allowedToolCalls?: number;
     /**
      * beta.64 (P0-1): true once the SDK stream opened (system/init arrived).
      * Threaded up so the loop can emit `sdk_stream_opened` and distinguish a
@@ -214,6 +216,8 @@ export interface WorkerDeps {
             denial?: GuardDenial;
         }>;
         unguardedReads?: number;
+        /** rc.10 (F4): allowed permission requests this turn, any kind. */
+        allowedToolCalls?: number;
     }>;
     /**
      * Injected git operations. Wraps `git -C <worktree>` calls.

@@ -108,7 +108,13 @@ export function resolvePathForPolicy(raw, opts = {}) {
             raw,
             candidates: [],
             refuse: `path string appears to name ${n} files rather than one ` +
-                `(${JSON.stringify(trimmed.slice(0, 200))}); the harness will not guess which policy applies to which file`,
+                `(${JSON.stringify(trimmed.slice(0, 200))}); the harness will not guess which policy applies to which file. ` +
+                // rc.10 (audits 5583/5589): the refusal was correct and said nothing
+                // about what to do instead, so the worker had no reason to believe the
+                // batch was the problem. Naming the permitted shape costs nothing and
+                // is not a relaxation -- one call per file is exactly what lets each
+                // path be judged on its own.
+                `Issue one call per file, each naming a single path.`,
         };
     }
     // A NUL or newline in a path is never legitimate here and is a classic way to

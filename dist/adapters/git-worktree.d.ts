@@ -257,6 +257,46 @@ export declare class GitAdapter {
      * `askpassPath` to run() must also pass the token so the env var is set.
      */
     private makeAskpass;
+    /**
+     * rc.10 (F1, audits 5602 and 5628): an authenticated git runner with a
+     * tightly scoped lifetime, for callers outside this adapter that still have
+     * to reach the remote.
+     *
+     * The durable-checkpoint module shipped in rc.9 runs git itself, through its
+     * own `defaultGitRunner`, which is `execFile("git", ...)` with no `env`. That
+     * is fine for a full clone and wrong for the partial clones this harness
+     * allocates: worktrees are created `--filter=blob:none` with
+     * `remote.origin.promisor=true`, so `git bundle create` has to fetch the
+     * blobs it does not hold, and that fetch is a network operation. With no
+     * `OAH_GH_TOKEN` in the child environment the beta.34 credential helper
+     * answers with an empty password and GitHub replies:
+     *
+     *   remote: Invalid username or token. Password authentication is not
+     *   supported for Git operations.
+     *   fatal: could not fetch e704e95 from promisor remote
+     *
+     * Both checkpoint attempts of session aad3fc57 died there, which is why that
+     * run held a real commit (065063e) and still reported durability as unknown.
+     *
+     * This deliberately does NOT open a second credential path. It reuses the two
+     * channels every other authenticated operation here uses -- the env-reading
+     * askpass helper and the env-reading cred helper already installed on the
+     * bare repo -- so the token continues to live only in a child process's
+     * environment: never in argv, never in a persisted remote URL, never on disk,
+     * never in a log line. Errors are redacted with the same `redactSecrets` the
+     * rest of the adapter uses.
+     *
+     * `dispose()` removes the askpass directory. Callers must call it; the
+     * checkpoint path does so in a `finally`.
+     */
+    authenticatedRunner(ghToken?: string): Promise<{
+        run: (args: string[], cwd: string) => Promise<{
+            code: number;
+            stdout: string;
+            stderr: string;
+        }>;
+        dispose: () => Promise<void>;
+    }>;
     allocate(ctx: GitContext): Promise<string>;
     private allocateInner;
     /**
@@ -412,6 +452,19 @@ export declare class GitAdapter {
      * Used by the `file_committed` verify probe.
      */
     listCommittedFiles(worktreePath: string, base: string): Promise<string[]>;
+    /**
+     * rc.10: the files touched by EXACTLY these commits.
+     *
+     * A list of SHAs rather than a range, deliberately. The verification case
+     * this serves is "did an earlier attempt of this same sub-task commit this
+     * file", and a range between the attempts would also sweep in anything else
+     * that landed on the branch -- letting unrelated work satisfy a contract,
+     * which is the failure mode this is supposed to avoid rather than create.
+     *
+     * A SHA that no longer resolves is skipped, not fatal: the caller is asking
+     * whether evidence exists, and a missing commit is an absence of evidence.
+     */
+    listFilesInCommits(worktreePath: string, shas: readonly string[]): Promise<Map<string, string>>;
     /**
      * beta.105: was `path` ADDED (A) or RENAMED-TO (R) by a commit in
      * `base..HEAD`?

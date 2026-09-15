@@ -150,6 +150,45 @@ CREATE TABLE IF NOT EXISTS sub_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_sub_tasks_session ON sub_tasks (session_id, cycle, seq);
 
+/*
+ * rc.10: one row per WORKER TURN, append-only.
+ *
+ * `sub_tasks` carries one mutable row per (cycle, seq) and every retry
+ * overwrites it. In the 15 September smoke test that made the final task-3 row
+ * read $0.4262756 with `commit_sha` NULL, while Git and the earlier audit rows
+ * both show that an earlier attempt of the SAME sub-task committed 065063e for
+ * a separate charge. Anyone reading the ledger to answer "what did this cost"
+ * or "did it commit anything" got a confidently wrong answer from the row that
+ * happened to be written last; the truth was only recoverable by replaying the
+ * audit log.
+ *
+ * This table is never updated in place. Cost is the sum of its rows, and the
+ * commits a sub-task actually produced are the union of them -- which is also
+ * what lets a continuation get credit for work an earlier attempt committed
+ * (see verify.ts, priorAttemptCommits) instead of being told to edit a file
+ * that is already correct.
+ */
+CREATE TABLE IF NOT EXISTS sub_task_attempts (
+  id             TEXT PRIMARY KEY,
+  session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  sub_task_id    TEXT,               -- the sub_tasks row this attempt wrote to
+  cycle          INTEGER NOT NULL,
+  seq            INTEGER NOT NULL,
+  attempt        INTEGER NOT NULL,   -- 1-based, within (session, cycle, seq)
+  status         TEXT NOT NULL,      -- the outcome this turn ended on
+  cost_usd       REAL NOT NULL DEFAULT 0,
+  base_sha       TEXT,               -- worktree HEAD before the turn ran
+  commit_sha     TEXT,               -- last commit of the turn, if any
+  commit_shas    TEXT,               -- JSON array: every commit of the turn
+  files_touched  TEXT,               -- JSON array
+  summary        TEXT,
+  started_at     INTEGER,
+  ended_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sub_task_attempts_subtask
+  ON sub_task_attempts (session_id, cycle, seq, attempt);
+
 CREATE TABLE IF NOT EXISTS reviews (
   id           TEXT PRIMARY KEY,
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

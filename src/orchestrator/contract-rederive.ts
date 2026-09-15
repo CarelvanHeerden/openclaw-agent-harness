@@ -183,7 +183,27 @@ export interface RederiveResult {
   suggestion?: RederiveSuggestion;
 }
 
-export function rederiveContractPath(contract: string, realFiles: string[]): RederiveResult {
+export interface RederiveOptions {
+  /**
+   * rc.10: the repository's own file list, as ground truth about what exists.
+   *
+   * Guard (a) below only knows what THIS RUN touched, which is a sliver of the
+   * repository. A contract path that is absent from that sliver is not thereby
+   * wrong -- it may be a file that has been in the repo for a year. Supplying
+   * the tracked-file inventory lets a declared path that genuinely exists
+   * short-circuit re-derivation the same way a touched path does.
+   *
+   * Optional, and the module stays pure: the caller reads the repository, this
+   * function only compares strings.
+   */
+  repoFiles?: Iterable<string>;
+}
+
+export function rederiveContractPath(
+  contract: string,
+  realFiles: string[],
+  opts: RederiveOptions = {},
+): RederiveResult {
   const c = normalisePath(contract);
   if (!c || !c.includes("/")) return { path: contract, remapped: false };
 
@@ -197,13 +217,69 @@ export function rederiveContractPath(contract: string, realFiles: string[]): Red
     if (normalisePath(f) === c) return { path: contract, remapped: false };
   }
 
+  /*
+   * rc.10 GUARD (a2): a path that EXISTS is authoritative, whether or not this
+   * run happened to touch it.
+   *
+   * StitchGuard, audit 5591. The contract named
+   * `src/__tests__/lib/it/client-offboarding-orchestrator.test.ts`, which was a
+   * real file in the repository. Guard (a) did not fire because the run had not
+   * touched it -- the sub-task that was supposed to write it had just been
+   * denied -- and re-derivation went on to rewrite a path that existed into one
+   * that did not. Existence settles the question that guard (a) was only ever
+   * approximating: the plan is not stale if the plan is describing a real file.
+   */
+  if (opts.repoFiles) {
+    for (const f of opts.repoFiles) {
+      if (typeof f === "string" && normalisePath(f) === c) return { path: contract, remapped: false };
+    }
+  }
+
   const segs = c.split("/");
   const dir = segs.slice(0, -1);
   const base = segs[segs.length - 1]!;
   const staleDir = dir.join("/");
 
-  const remaps = learnRemapsForDir(staleDir, realFiles);
-  if (remaps.length === 0) return { path: contract, remapped: false };
+  /*
+   * rc.10: EVIDENCE MUST BE THE SAME KIND OF ARTIFACT AS THE CONTRACT.
+   *
+   * StitchGuard, audit 5591. The contract was a test:
+   *   src/__tests__/lib/it/client-offboarding-orchestrator.test.ts
+   * The whole evidence was one PRODUCTION file an earlier sub-task committed:
+   *   src/lib/it/client-offboarding-errors.ts
+   * They share the two-segment tail `lib/it`, so `src/__tests__ -> src` was
+   * learned and the test was rewritten to a path that does not exist and that
+   * the repository's Jest config would never have discovered.
+   *
+   * rc.9 put its kind check on the CORRECTED PATH and only in one direction
+   * (a non-test contract must not become a test path). Both halves of that were
+   * too narrow. The rewritten name here still ended in `.test.ts`, so it read as
+   * a test path and the check never fired -- and the direction that actually
+   * fired was test -> production, the one rc.9 had deliberately left open.
+   *
+   * The durable rule is upstream of both: a file is only evidence about where
+   * ITS OWN kind of artifact lives. Where the repository puts `errors.ts` says
+   * nothing about where it puts `*.test.ts`, because test layout is decided by
+   * a test runner's discovery config and source layout is not. Symmetrically, a
+   * test file says nothing about where documentation lives, which is the rc.9
+   * OKF case (audit 5408) arriving at the same refusal through a rule that no
+   * longer depends on which direction the rewrite happens to run in.
+   *
+   * Same-kind corrections -- every case beta.76, beta.93 and beta.100 were
+   * written for -- are untouched: they always had same-kind evidence.
+   */
+  const contractIsTest = isTestFilePath(c);
+  const sameKind: string[] = [];
+  const crossKind: string[] = [];
+  for (const f of realFiles) {
+    if (typeof f !== "string" || !f.trim()) continue;
+    (isTestFilePath(f) === contractIsTest ? sameKind : crossKind).push(f);
+  }
+
+  const remaps = learnRemapsForDir(staleDir, sameKind);
+  if (remaps.length === 0) {
+    return declineOrPass(contract, c, staleDir, base, contractIsTest, crossKind);
+  }
 
   // Apply the remap whose `from` prefix actually leads staleDir (defensive:
   // learnRemapsForDir already derived `from` from staleDir, but a path may have
@@ -233,29 +309,16 @@ export function rederiveContractPath(contract: string, realFiles: string[]): Red
     const corrected = normalisePath(`${newDir}/${base}`);
     if (corrected === c) return { path: contract, remapped: false };
     /*
-     * rc.9: a shared directory suffix does not authorise moving a requirement
-     * into a DIFFERENT KIND OF TREE.
+     * rc.9, retained as a BACKSTOP on the destination.
      *
-     * StitchGuard, audit 5408. The plan required a documentation artifact at
-     * `okf/api/webhooks/client-offboarding-slack.md`. An earlier sub-task had
-     * touched `src/__tests__/api/webhooks/linear-webhook-status-sync.test.ts`.
-     * The two directories share the two-segment tail `api/webhooks`, so the
-     * rule below learned `okf -> src/__tests__` and rewrote the documentation
-     * requirement into the test tree. One file was the entire evidence: no
-     * basename in common, no extension in common, not even the same kind of
-     * artifact. The plan was then written back, so the OKF path was gone, and
-     * the worker's next turn duly announced it would create "the
-     * harness-required help companion path src/__tests__/api/webhooks/...".
-     *
-     * The rc1 guard above (>= 2 segments) was written for exactly this shape
-     * after `src -> src/__tests__` via `components`. It draws the line at the
-     * WIDTH of the evidence; this draws it at the KIND, which is the part a
-     * wider tail can never establish. `.../foo.md` under `__tests__` is a test
-     * path by `isTestFilePath`, and an OKF document is not, so the crossing is
-     * detectable without knowing anything about either repository.
-     *
-     * Test-to-test and source-to-source corrections -- every case beta.76,
-     * beta.93 and beta.100 were written for -- are unaffected.
+     * The rc.10 evidence rule above now refuses the OKF case (audit 5408) and
+     * the test case (audit 5591) before either reaches here, because both rest
+     * on cross-kind evidence. One residual shape still needs this check: an
+     * evidence file that is same-kind by `isTestFilePath` yet sits under a test
+     * directory anyway -- an extensionless `src/__tests__/api/fixtures/README`
+     * is not a test path by the basename rule, so it can license `to =
+     * src/__tests__` for a non-test contract and land the correction in the
+     * test tree regardless. Cheap to keep, and it fails closed.
      */
     if (!isTestFilePath(c) && isTestFilePath(corrected)) {
       return {
@@ -273,6 +336,52 @@ export function rederiveContractPath(contract: string, realFiles: string[]): Red
       };
     }
     return { path: corrected, remapped: true, via: rm };
+  }
+  // Same-kind evidence existed but none of it survived the tail-width and
+  // prefix-shape checks. Cross-kind evidence may still describe a candidate
+  // worth putting to a human, so offer it as a suggestion rather than silence.
+  return declineOrPass(contract, c, staleDir, base, contractIsTest, crossKind);
+}
+
+/**
+ * rc.10: no same-kind remap applied. Report the best CROSS-KIND candidate as a
+ * suggestion, so the operator sees what the evidence hinted at and why it was
+ * refused, and return the declared path otherwise unchanged.
+ *
+ * This is the path both recorded incidents now take. It is deliberately a
+ * suggestion and never a rewrite: the plan keeps the path the brief asked for,
+ * the candidate reaches the audit, and a human decides.
+ */
+function declineOrPass(
+  contract: string,
+  c: string,
+  staleDir: string,
+  base: string,
+  contractIsTest: boolean,
+  crossKind: string[],
+): RederiveResult {
+  if (crossKind.length === 0) return { path: contract, remapped: false };
+
+  const candidates = learnRemapsForDir(staleDir, crossKind)
+    .filter((rm) => rm.tail.split("/").filter(Boolean).length >= 2)
+    .filter((rm) => normalisePath(rm.from ? `${rm.from}/${rm.tail}` : rm.tail) === staleDir)
+    .sort((a, b) => {
+      if (b.tail.length !== a.tail.length) return b.tail.length - a.tail.length;
+      return `${a.from}=>${a.to}`.localeCompare(`${b.from}=>${b.to}`);
+    });
+
+  for (const rm of candidates) {
+    const newDir = rm.to ? `${rm.to}/${rm.tail}` : rm.tail;
+    const corrected = normalisePath(`${newDir}/${base}`);
+    if (corrected === c) continue;
+    const reason = contractIsTest
+      ? `the only evidence is a shared '${rm.tail}' directory suffix on PRODUCTION files ` +
+        `('${rm.from || "<root>"}' -> '${rm.to}'). Where a repository keeps its source does not establish ` +
+        `where its test runner discovers tests, so this cannot relocate a test contract.`
+      : `the only evidence is a shared '${rm.tail}' directory suffix on TEST files ` +
+        `('${rm.from || "<root>"}' -> '${rm.to}'), and applying it would move a non-test requirement into a ` +
+        `test tree. A shared suffix does not establish that a documentation artifact belongs under tests.`;
+    return { path: contract, remapped: false, suggestion: { path: corrected, via: rm, confidence: "low", reason } };
   }
   return { path: contract, remapped: false };
 }

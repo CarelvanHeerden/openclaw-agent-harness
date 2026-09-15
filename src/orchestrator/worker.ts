@@ -155,6 +155,8 @@ export interface WorkerResult {
    * the agent named no file. Zero on the SDK path. See SECURITY.md.
    */
   unguardedReads?: number;
+  /** rc.10 (F4): allowed permission requests this turn, any kind. */
+  allowedToolCalls?: number;
   /**
    * beta.64 (P0-1): true once the SDK stream opened (system/init arrived).
    * Threaded up so the loop can emit `sdk_stream_opened` and distinguish a
@@ -214,6 +216,8 @@ export interface WorkerDeps {
      */
     deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }>;
     unguardedReads?: number;
+  /** rc.10 (F4): allowed permission requests this turn, any kind. */
+  allowedToolCalls?: number;
   }>;
 
   /**
@@ -399,7 +403,26 @@ export function buildWorkerSystemPrompt(
     `## Your sub-task`,
     `Title: ${subTask.title}`,
     `Intent: ${subTask.intent}`,
-    `Files likely touched: ${subTask.filesLikelyTouched.join(", ") || "(unspecified)"}`,
+    // rc.10: one path per line, not `a, b, c`.
+    //
+    // Audits 5583 and 5589 are both a permission request whose path was a
+    // single string naming two files -- "prisma/schema.prisma, prisma/
+    // migrations/.../migration.sql" and "src/lib/config/stitchguard-config.ts,
+    // src/lib/it/client-offboarding-slack.ts". The second is character-for-
+    // character the first two entries of that sub-task's filesLikelyTouched,
+    // joined the way this line used to join them. The worker read a prose list
+    // out of its own prompt and passed it as one argument.
+    //
+    // The guard refusing it is correct and stays: a path string naming two
+    // files is ambiguous, filenames may legitimately contain commas, and
+    // splitting on them would be guessing. But the harness wrote the sentence
+    // that invited the mistake, so the cheap fix is upstream -- a list that
+    // cannot be mistaken for one path. This does not make the guard's refusal
+    // unreachable (a backend can still batch edits however it likes), it just
+    // stops the harness supplying the bad shape ready-made.
+    ...(subTask.filesLikelyTouched.length > 0
+      ? [`Files likely touched:`, ...subTask.filesLikelyTouched.map((f) => `  - ${f}`)]
+      : [`Files likely touched: (unspecified)`]),
     `Success criteria for THIS sub-task:`,
     ...subTask.successCriteria.map((c) => `  - ${c}`),
   );
@@ -709,6 +732,7 @@ export async function runWorker(
     finalMessage: sdkResult.finalMessage,
     deniedToolCalls: sdkResult.deniedToolCalls,
     unguardedReads: sdkResult.unguardedReads,
+    allowedToolCalls: sdkResult.allowedToolCalls,
     uncommittedFiles,
     streamOpened: sdkResult.streamOpened,
     msToFirstToken: sdkResult.msToFirstToken,

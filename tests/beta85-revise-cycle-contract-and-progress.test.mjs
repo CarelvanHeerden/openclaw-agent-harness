@@ -169,11 +169,23 @@ test("beta.85: deps bootstrap hardened against ERESOLVE (legacy-peer-deps)", ski
 });
 
 test("beta.85: per-sub-task native progress fires at worker_end_turn", skip, () => {
-  const src = readSrc("src/orchestrator/loop.ts");
   // the deliverProgress call must appear right after the worker_end_turn audit,
   // guarded by try/catch so a post can never fail the run.
+  //
+  // rc.10: comments are stripped before the distance is measured. The window
+  // is meant to express "these two are adjacent in the code", and measuring it
+  // in raw characters measured the prose between them instead -- the gap here
+  // is mostly the beta.85 rationale itself, so explaining the rule harder was
+  // what would eventually break the rule's test. Stripping comments makes the
+  // check mean what its name says, and tightens it: 600 characters of actual
+  // code is a much smaller allowance than 2000 of anything -- and what is
+  // left in the gap is the audit payload itself, which is what belongs there.
+  const src = readSrc("src/orchestrator/loop.ts")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+    .replace(/\s+/g, " ");
   assert.ok(
-    /loop\.worker_end_turn[\s\S]{0,2000}deliverProgress\?\.\(sessionId,\s*"executing"\)/.test(src),
+    /loop\.worker_end_turn[\s\S]{0,500}deliverProgress\?\.\(sessionId, "executing"\)/.test(src),
     "deliverProgress must fire per worker_end_turn",
   );
 });

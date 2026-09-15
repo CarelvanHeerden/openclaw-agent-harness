@@ -1667,7 +1667,27 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     unreachableCommits: async (worktreePath: string, from: string, shas: string[]) =>
       git.unreachableCommits(worktreePath, from, shas).catch(() => [] as string[]),
     // beta.101: tracked-file listing for plan-time fictional-path detection.
+    // rc.10 also feeds this to contract re-derivation as the authoritative
+    // answer to "does the declared path exist?" (audit 5591).
     listRepoFiles: async (worktreePath: string) => git.listTrackedFiles(worktreePath).catch(() => [] as string[]),
+    /*
+     * rc.10 (F1, audits 5602/5628): credentials for the checkpoint's promisor
+     * fetch, routed exactly like a push or a remote read -- same `pat.resolve`,
+     * same `resolveGitToken`, no parallel vault and no global fallback.
+     *
+     * The token reaches git only through the child environment the adapter
+     * builds, and the runner is disposed by the loop as soon as the checkpoint
+     * finishes.
+     */
+    checkpointGitRunner: async ({ repo, requester }) => {
+      const resolution = pat.resolve({
+        slackUserId: requester || config.slack.authorised_users[0]!,
+        gitHubUser: repo.split("/")[0]!,
+        repoFullName: repo,
+      });
+      const gitToken = await resolveGitToken(resolution);
+      return git.authenticatedRunner(gitToken);
+    },
     // beta.64 (P0-3/P0-4): diff-stat + scripted tsc for the best-effort-verify
     // clean-diff gate and the scripted verifier fallback of a timed-out LLM
     // VERIFY sub-task. A "run tsc/diff/check-scripts" verify step needs no model.

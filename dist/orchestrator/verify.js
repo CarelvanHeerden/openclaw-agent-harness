@@ -278,6 +278,25 @@ export async function verifySubTaskOutput(verify, ctx, probes) {
                     // rc.5: when the path is generator-owned, say WHY it is absent. The
                     // probe's detail describes a path-resolution miss, which for a
                     // derived file is the symptom, not the cause.
+                    // rc.10: before reporting a miss, ask whether an earlier attempt of
+                    // THIS sub-task already committed it. Generated paths are excluded:
+                    // a derived file accepted from an earlier attempt is stale by
+                    // construction once its sources have moved, which is the same
+                    // reasoning that excludes them from the revise relaxations above.
+                    if (!r.committed && !genOwner && (ctx.priorAttemptCommits?.length ?? 0) > 0 && probes.fileCommittedInCommits) {
+                        const prior = await probes.fileCommittedInCommits(v.path, ctx.priorAttemptCommits);
+                        if (prior.committed) {
+                            results.push({
+                                kind: v.kind,
+                                passed: true,
+                                detail: `preserved from an earlier attempt of this sub-task` +
+                                    (prior.sha ? ` (${prior.sha.slice(0, 12)})` : "") +
+                                    `: ${prior.detail}. Not committed again in this attempt, and not required to be.`,
+                                path: v.path,
+                            });
+                            break;
+                        }
+                    }
                     results.push({
                         kind: v.kind,
                         passed: r.committed,

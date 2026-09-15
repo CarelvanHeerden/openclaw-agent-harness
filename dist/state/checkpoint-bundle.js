@@ -42,6 +42,23 @@ export const defaultGitRunner = (args, cwd) => new Promise((resolve) => {
 function sha256File(p) {
     return createHash("sha256").update(readFileSync(p)).digest("hex");
 }
+/**
+ * rc.10: serialise a manifest with redaction applied to the WHOLE document.
+ *
+ * rc.9 redacted only the `error` string, on the assumption that a secret could
+ * only arrive via a git failure message. That is one field's worth of a
+ * property that should hold for the file. A manifest also persists a branch
+ * name and a session id, and a checkpoint manifest is a diagnostic artefact
+ * that gets copied into tickets and pasted into chat during a recovery -- the
+ * moment anyone is reading one, something has already gone wrong.
+ *
+ * Redacting at the serialisation boundary makes "no manifest contains a
+ * credential" true by construction rather than by remembering to wrap each new
+ * field someone adds later.
+ */
+function serialiseManifest(manifest) {
+    return redactTokenShapes(JSON.stringify(manifest, null, 2));
+}
 export function checkpointDirFor(root, sessionId) {
     return join(root, "checkpoints", sessionId);
 }
@@ -78,7 +95,7 @@ export async function createCheckpoint(opts) {
         try {
             mkdirSync(dir, { recursive: true });
             manifestPath = join(dir, `${createdAt}-failed.json`);
-            writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+            writeFileSync(manifestPath, serialiseManifest(manifest));
         }
         catch {
             manifestPath = null; // if we cannot even record the failure, say so by omission
@@ -106,7 +123,7 @@ export async function createCheckpoint(opts) {
         try {
             mkdirSync(dir, { recursive: true });
             const p = join(dir, `${createdAt}-metadata.json`);
-            writeFileSync(p, JSON.stringify(manifest, null, 2));
+            writeFileSync(p, serialiseManifest(manifest));
             return { manifest, manifestPath: p, durable: false };
         }
         catch (err) {
@@ -186,7 +203,7 @@ export async function createCheckpoint(opts) {
     const manifestPath = join(dir, `${createdAt}-${tip.slice(0, 12)}.json`);
     try {
         const tmpManifest = `${manifestPath}.tmp`;
-        writeFileSync(tmpManifest, JSON.stringify(manifest, null, 2));
+        writeFileSync(tmpManifest, serialiseManifest(manifest));
         renameSync(tmpManifest, manifestPath);
     }
     catch (err) {

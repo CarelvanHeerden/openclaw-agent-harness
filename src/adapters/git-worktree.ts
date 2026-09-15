@@ -369,6 +369,73 @@ esac
     };
   }
 
+  /**
+   * rc.10 (F1, audits 5602 and 5628): an authenticated git runner with a
+   * tightly scoped lifetime, for callers outside this adapter that still have
+   * to reach the remote.
+   *
+   * The durable-checkpoint module shipped in rc.9 runs git itself, through its
+   * own `defaultGitRunner`, which is `execFile("git", ...)` with no `env`. That
+   * is fine for a full clone and wrong for the partial clones this harness
+   * allocates: worktrees are created `--filter=blob:none` with
+   * `remote.origin.promisor=true`, so `git bundle create` has to fetch the
+   * blobs it does not hold, and that fetch is a network operation. With no
+   * `OAH_GH_TOKEN` in the child environment the beta.34 credential helper
+   * answers with an empty password and GitHub replies:
+   *
+   *   remote: Invalid username or token. Password authentication is not
+   *   supported for Git operations.
+   *   fatal: could not fetch e704e95 from promisor remote
+   *
+   * Both checkpoint attempts of session aad3fc57 died there, which is why that
+   * run held a real commit (065063e) and still reported durability as unknown.
+   *
+   * This deliberately does NOT open a second credential path. It reuses the two
+   * channels every other authenticated operation here uses -- the env-reading
+   * askpass helper and the env-reading cred helper already installed on the
+   * bare repo -- so the token continues to live only in a child process's
+   * environment: never in argv, never in a persisted remote URL, never on disk,
+   * never in a log line. Errors are redacted with the same `redactSecrets` the
+   * rest of the adapter uses.
+   *
+   * `dispose()` removes the askpass directory. Callers must call it; the
+   * checkpoint path does so in a `finally`.
+   */
+  async authenticatedRunner(ghToken?: string): Promise<{
+    run: (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
+    dispose: () => Promise<void>;
+  }> {
+    const ask = ghToken ? await this.makeAskpass(ghToken) : undefined;
+    const run = (args: string[], cwd: string) =>
+      new Promise<{ code: number; stdout: string; stderr: string }>((resolveRun) => {
+        const env: NodeJS.ProcessEnv = { ...process.env };
+        if (ask) {
+          env.GIT_ASKPASS = ask.path;
+          env.GIT_TERMINAL_PROMPT = "0";
+          env.GCM_INTERACTIVE = "never";
+        }
+        if (ghToken) env.OAH_GH_TOKEN = ghToken;
+        const proc = spawn("git", args, { cwd, env });
+        let out = "";
+        let err = "";
+        proc.stdout.on("data", (c) => (out += c.toString()));
+        proc.stderr.on("data", (c) => (err += c.toString()));
+        // A spawn failure is a result, not a throw: the checkpoint path must be
+        // able to RECORD that it could not run git rather than crash the run.
+        proc.on("error", (e) =>
+          resolveRun({ code: 127, stdout: "", stderr: redactSecrets(String(e), ghToken) }),
+        );
+        proc.on("close", (code) =>
+          resolveRun({
+            code: code ?? 1,
+            stdout: redactSecrets(out, ghToken),
+            stderr: redactSecrets(err, ghToken),
+          }),
+        );
+      });
+    return { run, dispose: async () => { await ask?.cleanup(); } };
+  }
+
   async allocate(ctx: GitContext): Promise<string> {
     const bare = this.repoBarePath(ctx.repoFullName);
     const wt = this.sessionWorktreePath(ctx.sessionId);
@@ -1083,6 +1150,33 @@ esac
     // these two temp files instead of `prisma/schema.prisma` and false-failed.
     // They are verifier NOISE, never a declared contract path.
     return Array.from(new Set(out.split("\n").map((l) => l.trim()).filter(Boolean).filter((f) => !isCommitMsgNoise(f))));
+  }
+
+  /**
+   * rc.10: the files touched by EXACTLY these commits.
+   *
+   * A list of SHAs rather than a range, deliberately. The verification case
+   * this serves is "did an earlier attempt of this same sub-task commit this
+   * file", and a range between the attempts would also sweep in anything else
+   * that landed on the branch -- letting unrelated work satisfy a contract,
+   * which is the failure mode this is supposed to avoid rather than create.
+   *
+   * A SHA that no longer resolves is skipped, not fatal: the caller is asking
+   * whether evidence exists, and a missing commit is an absence of evidence.
+   */
+  async listFilesInCommits(worktreePath: string, shas: readonly string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    for (const sha of shas) {
+      if (!/^[0-9a-f]{7,40}$/i.test(sha)) continue;
+      const text = await this.run([
+        "-C", worktreePath, "show", "--name-only", "--pretty=format:", sha,
+      ]).catch(() => "");
+      for (const line of text.split("\n")) {
+        const f = line.trim();
+        if (f && !isCommitMsgNoise(f) && !out.has(f)) out.set(f, sha);
+      }
+    }
+    return out;
   }
 
   /**

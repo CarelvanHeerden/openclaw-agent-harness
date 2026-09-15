@@ -161,12 +161,27 @@ const HEREDOC_RE = /<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/;
 const PROGRESS_RE: RegExp[] = [
   /^(?:ok(?:ay)?|right|good|great|perfect)?[,\s]*(?:now|next|then|first(?:ly)?|second(?:ly)?|finally|also)?[,\s]*let(?:'s| us| me)\b/i,
   /^(?:ok(?:ay)?|right)?[,\s]*(?:now|next|then|first(?:ly)?|finally)?[,\s]*i(?:'m| am) (?:now )?going to\s+(?!not\b)/i,
-  // The bare "I will ..." form needs a leading adverb or an explicit "now".
-  // Without that guard it swallows "I will not do this", turning the clearest
-  // refusal the worker can write into an unfinished sentence -- the precise
-  // inversion of the bug being fixed.
   /^(?:ok(?:ay)?|right)?[,\s]*(?:now|next|then|first(?:ly)?|finally)[,\s]+i(?:'ll| will)\s+(?!not\b)/i,
   /^i(?:'ll| will)\s+now\s+(?!not\b)/i,
+  /*
+   * rc.10 (audit 5578): the BARE "I'll ..." form.
+   *
+   * The two rules above require a leading adverb or an explicit "now", on the
+   * reasoning that an unguarded "I will" would swallow "I will not do this" and
+   * turn the clearest refusal a worker can write into an unfinished sentence.
+   * The `(?!not\b)` lookahead already answers that, and the "I'm going to"
+   * rule above has made the adverb optional the whole time -- so "I'm going to
+   * inspect the contracts" was narration and "I'll inspect the contracts" was a
+   * finding, which is a difference in grammar and not in meaning.
+   *
+   * The observe prerequisite of session aad3fc57 reported, in full: "I'll split
+   * the read-only probe across repository conventions/specification, identity/
+   * audit contracts, SDK capabilities, and test fixtures, then consolidate
+   * exact paths, line ranges, excerpts, and blockers." It survived stripping,
+   * was recorded as the sub-task's findings, and was handed to two dependent
+   * workers under the heading "These are the VERBATIM reports".
+   */
+  /^i(?:'ll| will)\s+(?!not\b)/i,
   /^(?:now|next|then|first(?:ly)?|finally)\b[^.!?]*\bi(?:'ll| will|'m going to| am going to)\s+(?!not\b)/i,
   /^(?:time to|moving on to|proceeding to|continuing with|starting with)\b/i,
 ];
@@ -235,10 +250,31 @@ export function splitFragments(text: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * rc.10: fold typographic punctuation onto its ASCII equivalent before matching.
+ *
+ * Every pattern in this module spells the apostrophe `'`, and models routinely
+ * emit U+2019. The observe report of session aad3fc57 began "I’ll split the
+ * read-only probe ..." with a right single quotation mark, so it matched none
+ * of the `let's` / `I'll` / `I'm going to` rules -- not because the shape was
+ * unknown but because of one character. Audit 5578 stored the result as
+ * findings and two dependent workers planned against it.
+ *
+ * Normalising at the point of comparison only. Callers keep the original text,
+ * so an explanation quoted back to an operator keeps the worker's own
+ * typography.
+ */
+function normaliseTypography(text: string): string {
+  return (text ?? "")
+    .replace(/[\u2018\u2019\u02BC\u2032]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2010-\u2015]/g, "-");
+}
+
 /** Is this fragment an announcement rather than a result? */
 export function isProgressFragment(fragment: string): boolean {
   // Strip list bullets and numbering so "- Next, I'll check X" is seen.
-  const t = fragment.replace(/^[-*+\u2022]\s*/, "").replace(/^\d+[.)]\s*/, "").trim();
+  const t = normaliseTypography(fragment).replace(/^[-*+\u2022]\s*/, "").replace(/^\d+[.)]\s*/, "").trim();
   if (!t) return true;
   // A trailing colon introduces something. On the last fragment of a message
   // nothing follows it, so it introduced nothing.
@@ -354,13 +390,18 @@ export function classifyWorkerOutcome(input: {
   const text = (input.finalMessage ?? "").trim();
   const substantive = stripProgressNarration(text);
   const explanation = substantive.length > 0 ? substantive : undefined;
+  // rc.10: match against the typography-normalised form for the same reason
+  // isProgressFragment does -- "I won’t do this" is a refusal, and a right
+  // single quotation mark must not be the difference. The text handed back in
+  // `explanation` is the worker's own, unchanged.
+  const matchable = normaliseTypography(substantive);
 
-  if (substantive && REFUSAL_RE.some((re) => re.test(substantive))) {
+  if (substantive && REFUSAL_RE.some((re) => re.test(matchable))) {
     return { kind: "refusal", explanation };
   }
 
   if (substantive) {
-    const blocker = BLOCKERS.find((b) => b.match.test(substantive));
+    const blocker = BLOCKERS.find((b) => b.match.test(matchable));
     if (blocker) return { kind: "genuine_blocker", blockerKind: blocker.kind, explanation };
   }
 
@@ -443,6 +484,16 @@ export function buildPolicyDenialClarification(params: {
   policy: PolicyDenialOutcome;
   /** The worker's own words, if any survived narration-stripping. */
   workerNote?: string;
+  /**
+   * rc.10: work this turn DID land before the refusal.
+   *
+   * Audit 5601 asked the operator to treat a policy block as a possible path
+   * mistake, because a partial commit existed and the mismatch branch owned
+   * that case. Both things are true at once and the question has to say so:
+   * the commit is real and is being kept, and the missing part is missing
+   * because a rule refused it.
+   */
+  partialWork?: { commitSha: string | null; committed: string[]; unmet: string[] };
 }): string {
   const { policy } = params;
   const paths = policy.paths.length > 0 ? policy.paths.map((p) => `\`${p}\``).join(", ") : "the requested path";
@@ -451,6 +502,19 @@ export function buildPolicyDenialClarification(params: {
     "",
     `What was refused: ${policy.tool ?? "a tool call"} on ${paths}.`,
   ];
+  const partial = params.partialWork;
+  if (partial && (partial.committed.length > 0 || partial.commitSha)) {
+    lines.push(
+      "",
+      `Work already done is KEPT: commit ${partial.commitSha ?? "(recorded)"}` +
+        (partial.committed.length > 0 ? ` covering ${partial.committed.map((f) => `\`${f}\``).join(", ")}` : "") +
+        ".",
+      partial.unmet.length > 0
+        ? `Still unmet: ${partial.unmet.map((f) => `\`${f}\``).join(", ")}. This is NOT a wrong-path mistake -- ` +
+          `the write above was refused by the rule named below.`
+        : "The remainder of the sub-task is unmet for the same reason.",
+    );
+  }
   if (policy.rule) lines.push(`Which rule: \`${policy.rule}\` in the safety path denylist.`);
   lines.push(
     `Attempts: ${policy.attempts}. The same call was refused each time -- this denial is deterministic, ` +
@@ -517,6 +581,127 @@ export function observeReportIsNarration(finalMessage: string | undefined): bool
   const text = (finalMessage ?? "").trim();
   if (!text) return false;
   return stripProgressNarration(text).length === 0;
+}
+
+/** Why an observe turn has no findings to hand on. */
+export interface ObserveEvidenceVerdict {
+  /** True when the turn inspected nothing, whatever its message says. */
+  empty: boolean;
+  /** Machine-readable: `no_reads`, `denied_only`. */
+  code?: "no_reads" | "denied_only";
+  /** Operator- and worker-facing, one sentence. */
+  reason?: string;
+  /** The denial that stopped it reading, when there was one. */
+  deniedReason?: string;
+}
+
+/**
+ * rc.10 (F4) -- did this observe turn actually look at anything?
+ *
+ * Client Offboarding smoke test, session aad3fc57, sub-task 1. Audits 5572
+ * through 5575 record four denied `task` calls -- the worker tried to launch
+ * nested agents, which focused workers may not do. Audit 5576 records what it
+ * did instead: `unguardedReads: 0`, no files, no commit, and a 280-character
+ * promise about what it was going to read. 5577 marked the prerequisite
+ * completed with `verify_count: 0`, 5578 stored the promise as the report, and
+ * 5579 and 5587 handed it to the two sub-tasks that depended on it.
+ *
+ * WHY THIS IS NOT ANOTHER TEXT RULE. The narration detector is a judgement
+ * about English and will always have an edge: this message evaded it because a
+ * bare "I'll ..." was not in the table and "No files ... will be modified" is a
+ * scope disclaimer rather than an announcement. The tool-call counters are not
+ * a judgement about anything. A turn that made no tool call, wrote no file and
+ * made no commit inspected nothing, and a report of findings from a turn that
+ * inspected nothing is not a report of findings in any language.
+ *
+ * WHICH COUNTER. `allowedToolCalls`, not `unguardedReads`. The incident row
+ * showed `unguardedReads: 0` and that reads as "did nothing", but the field
+ * counts only the reads the path denylist could NOT be applied to -- on a
+ * backend that supplies read paths (Codex does) a turn that read a hundred
+ * files reports 0. Keying the gate on it would fail every observe sub-task on
+ * that backend, and would get quietly stricter as enforcement improved, which
+ * is the wrong direction for a counter to move. `allowedToolCalls` counts every
+ * permission request the guard let through, of any kind, so a probe that
+ * searched with `rg` or read with paths counts as having looked. A non-zero
+ * `unguardedReads` is still accepted as positive evidence on its own, because
+ * it can only be non-zero if a read happened.
+ *
+ * A read-only sub-task still needs no commit -- that is the point of observe
+ * mode and it is unaffected. What it cannot do is skip the reading.
+ *
+ * Neither counter being a number means the backend does not report them. That
+ * is not evidence of zero, so the check declines to fire and the turn keeps its
+ * pre-rc.10 treatment.
+ */
+export function observeEvidenceVerdict(result: {
+  allowedToolCalls?: number;
+  unguardedReads?: number;
+  filesChanged?: string[];
+  commitSha?: string | null;
+  deniedToolCalls?: DeniedToolCall[];
+}): ObserveEvidenceVerdict {
+  const allowed = typeof result.allowedToolCalls === "number" ? result.allowedToolCalls : undefined;
+  const unguarded = typeof result.unguardedReads === "number" ? result.unguardedReads : undefined;
+  if (allowed === undefined && unguarded === undefined) return { empty: false };
+  if ((allowed ?? 0) > 0) return { empty: false };
+  if ((unguarded ?? 0) > 0) return { empty: false };
+  if ((result.filesChanged ?? []).length > 0) return { empty: false };
+  if (result.commitSha) return { empty: false };
+
+  const denials = (result.deniedToolCalls ?? []).filter((d) => (d?.reason ?? d?.title ?? "").trim().length > 0);
+  if (denials.length > 0) {
+    const first = denials[0]!;
+    return {
+      empty: true,
+      code: "denied_only",
+      reason:
+        `every tool call this turn made was denied (${denials.length}) and none was allowed, ` +
+        `so the turn produced no findings`,
+      deniedReason: (first.reason ?? first.title ?? "").trim().slice(0, 300),
+    };
+  }
+  return {
+    empty: true,
+    code: "no_reads",
+    reason: "the turn made no tool call, read nothing, wrote nothing and committed nothing, so it produced no findings",
+  };
+}
+
+/**
+ * rc.10 (F4): the corrective hint for an observe turn that inspected nothing.
+ *
+ * When the turn was denied its way of working, the useful instruction is the
+ * permitted route -- which for audits 5572-5575 is "read the files yourself
+ * rather than delegating". Telling that worker to "stop narrating" would be
+ * describing a symptom at it.
+ */
+export function buildObserveEvidenceHint(params: {
+  verdict: ObserveEvidenceVerdict;
+  intent: string;
+  attempt: number;
+  maxAttempts: number;
+}): string {
+  const parts: string[] = [];
+  if (params.verdict.code === "denied_only") {
+    parts.push(
+      `Every tool call in your previous turn was DENIED and you read no files, so that turn produced nothing. ` +
+        (params.verdict.deniedReason ? `The guard said: "${params.verdict.deniedReason}". ` : "") +
+        `Do not delegate this to a sub-agent. Read the files yourself with the direct read and search tools.`,
+    );
+  } else {
+    parts.push(
+      "Your previous turn read no files, wrote nothing and committed nothing. Whatever it reported, it " +
+        "cannot have found anything, and the harness checks the tool calls rather than the prose.",
+    );
+  }
+  parts.push(
+    `THE DELIVERABLE IS THE REPORT, and it is handed verbatim to the sub-tasks that depend on this one. ` +
+      `Answer this probe -- ${params.intent} -- with what you FOUND: exact paths, identifiers, versions, ` +
+      `excerpts and, where something is missing, the fact that it is absent. Nothing is committed by this ` +
+      `sub-task, so reading is the whole job.`,
+    `Do not end your turn describing what you are about to look at. This is attempt ${params.attempt} of ${params.maxAttempts}.`,
+  );
+  return parts.join("\n\n");
 }
 
 /**
