@@ -500,6 +500,8 @@ CREATE TABLE audit_log (
 | Adversary times out | SDK client-side timer | Audit `loop.adversary_timeout` + `loop.review_failed`, then the review-crash path. With `loop.graceful_pr_on_review_crash` (default on) and work already committed, it still opens a PR marked `needs_human_review` rather than discarding the cycle |
 | Budget hit mid-cycle | Cost tracker on every `result` event | Freeze session, notify user in Slack thread, ask for override |
 | Container restart | Missing PID + no `result` event within grace period | Mark session `interrupted`, expose "resume" action |
+| Container restart took the worktrees with it | Startup reconciliation walks session rows to disk (`harness.session_storage_missing`); `harness_resume`/`harness_answer` refuse a session whose recorded commits have nowhere left to live | Report, refuse, delete nothing. Recovery from a durable checkpoint if one exists — see [persistence-runbook.md](persistence-runbook.md) |
+| An artifact check cannot be performed | The probe reports `indeterminate` rather than `passed:false` alone | Still fails closed, but the summary says COULD NOT BE PERFORMED and names the cause, so a missing worktree is not read as a worker who wrote no file |
 | Git push rejected (SAML) | `git push` returncode + stderr grep | Emit `git format-patch` to prompt file, ping user with fallback flow |
 | GitHub PAT invalid or missing scope | REST call 401/403 | Fail session at start with clear error listing required scopes |
 | Vercel logs unavailable | REST 4xx / no deployment for branch | Adversary runs without runtime input, notes gap in report |
@@ -535,6 +537,46 @@ carries the head sha the dry run saw and re-runs the whole verification, so a
 branch that moves between reading and confirming refuses. Operator procedure and
 the full blocker table are in [OPERATIONS.md](OPERATIONS.md#recovering-a-pr-whose-session-failed).
 
+### Storage durability
+
+Three stores, and only one of them is usually treated as precious:
+
+| Store | Holds |
+|---|---|
+| State database | What the harness knows *about* the work |
+| Worktrees root | The checkouts, **and** the bare object cache at `<root>/.repos/<owner>/<repo>.git` |
+| Checkpoint root | Verified `git bundle`s of completed work |
+
+The middle row is the architectural hazard. The bare cache is nested inside the
+worktrees root, so the checkouts and the only copy of every unpushed commit share
+one mount and one fate. A deployment that reasons "the worktrees are scratch, they
+can live on tmpfs" has, without noticing, made that decision about the commits too.
+In StitchGuard `f7c4e585` it cost nine of them while the database survived to
+describe what was gone.
+
+Two structural responses, both in `src/state/`:
+
+- **Reconciliation runs in both directions.** `worktree-heal.ts` walks disk to
+  database and decides what to reap. `storage-health.ts` walks database to disk
+  and asks whether the work a row claims still exists. The healer cannot see the
+  loss case by construction — an empty root means its loop body never runs, and
+  `scanned:0` reads as health. Reconciliation never deletes; deletion stays with
+  the healer and its existing protections.
+- **A checkpoint is a bundle, not a row.** `store.checkpoint()` is a database
+  write and always was. `checkpoint-bundle.ts` writes a verified `git bundle` to
+  a root that must be outside the worktrees root, after every verified sub-task
+  and before every human gate. Nothing is recorded as durable until
+  `git bundle verify` passes and the bytes match their digest; the manifest is
+  published by `rename()` afterwards, so its presence means the bundle beside it
+  is whole. A checkpoint with no commits is recorded as metadata, explicitly not
+  as recoverable code.
+
+`sessions.last_completed_sub_task` means what it says as of rc.9. It previously
+recorded the last *attempted* sub-task, because its only writer ran immediately
+after the worker's row was persisted and before verification had an opinion — in
+the incident database it named a sub-task sitting at `failed_verification` with
+no commit. The attempted value now goes to `last_attempted_sub_task`.
+
 ---
 
 ## 6. Security model
@@ -546,6 +588,10 @@ the full blocker table are in [OPERATIONS.md](OPERATIONS.md#recovering-a-pr-whos
 - Secrets are not placed in worker prompts; if a worker needs a secret, the lead resolves it via the vault and passes only the resolved value as a scoped variable. Note that `ANTHROPIC_API_KEY` *is* present in the worker's environment by design, so the worker can read that one.
 - Audit log is append-only, timestamped, and retained for 90 days minimum.
 - Every session's Claude Agent SDK transcript is preserved under `~/.claude/projects/<encoded-path>/*.jsonl`.
+- `safety.path_denylist_exceptions` authorises EXACT repo-relative paths the denylist would otherwise cover — the tracked-template case, `.env.example`. It takes no globs, applies to every resolved form of a path, and does not disable content scanning: an authorised template that would receive token-shaped or high-entropy material is still refused. Empty by default, so a deployment that has not thought about it has not weakened anything.
+- Paths are canonicalised before policy evaluation, not after. Traversal, absolute/relative forms and symlinks resolve to the same decision, `apply_patch` targets are read from the patch body rather than trusted from a `locations` array, and a string that ambiguously encodes several paths is refused rather than guessed at. A multi-file patch is denied whole if any one target is forbidden, whatever order the targets appear in.
+- A denial carries a machine-readable code from the guard to the human clarification, so the reason an operator is shown is the rule that fired and the path it fired on — not the worker's prose about it, and never "the user rejected permission" when no human was asked.
+- Diagnostics and checkpoint manifests are redacted before they are written. An error string is an artefact that outlives the run, and it is the last place a token should be preserved.
 - The plugin process can open the harness vault; worker subprocesses cannot. That gap is deliberate and enforced twice over — `safety.path_denylist` blocks `harness-vault/`, `vault.key` and `vault.db` on the file tools, and the vault key variables are stripped from the worker environment — because the harness sometimes needs to resolve a secret in order to hand a worker only its resolved value.
 
 ---

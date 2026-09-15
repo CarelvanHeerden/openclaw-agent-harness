@@ -42,6 +42,13 @@ Add to `openclaw.json`:
 
 The state DB is small (KB-MB range). Backup with `sqlite3 state.db .backup /path/to/backup.db` daily. If you use OpenClaw's memory backup cron, add this file to the manifest.
 
+Back up `storage.checkpoint_root` on the same schedule. Backing up only the
+database is the configuration that lost nine commits in StitchGuard `f7c4e585`:
+the database is what the harness knows *about* the work, and the checkpoints are
+the work. Mount requirements, the reason the bare object cache shares the
+worktrees root's fate, and the full recovery procedure are in
+[persistence-runbook.md](persistence-runbook.md).
+
 ## Session recovery
 
 If the container is restarted mid-session:
@@ -59,6 +66,14 @@ If the container is restarted mid-session:
    to continue the last worker via the SDK's `resume()`.
 5. If no per-worker session exists (interrupted during planning), the harness
    resumes from the crystallised prompt with the lead replay path.
+
+**Before any of that, check that the work is still there.** A restart that took
+the worktrees root with it leaves every row above intact and every commit gone.
+Startup reconciliation writes `harness.session_storage_missing` per affected
+session and sets `sessions.storage_state`; `harness_resume` and `harness_answer`
+refuse a session whose recorded commits have nowhere left to live, and neither
+refusal deletes anything. See
+[persistence-runbook.md](persistence-runbook.md#4-diagnosing-a-suspected-loss).
 
 ## Recovering a PR whose session failed
 

@@ -1,5 +1,145 @@
 # Changelog
 
+## 2.0.0-rc.9
+
+One smoke test, four defects, and a fifth thing that is not a defect so much as
+a habit: every one of these failures was the harness saying something true in a
+way that could only be read as something false.
+
+StitchGuard Client Offboarding, session `f7c4e585`, 14 September 2026. A
+documentation edit was blocked by the safety policy. The clarification the
+operator was shown did not mention the policy. A path-repair heuristic rewrote a
+documentation contract into a test directory. Then a container restart took nine
+commits, and startup reported success.
+
+Nothing below weakens a gate. The denylist is stricter than it was, the
+verification checks still fail closed, and the one new exception is empty by
+default, exact-match only, and scans content anyway.
+
+### The denylist had a hole, and the patch parser had another one
+
+Two failures compounding. A worker asked to edit `.env.example` — a tracked
+template, no credentials in it — and the guard denied the patch.
+
+`pathMatchesDenylist` tested `.env.*` against the basename, which is correct for
+`/repo/.env.example`, and also meant `/repo/.env.production` slipped through
+whenever it arrived in a form where the basename was not what got tested.
+Patterns are now tested against every suffix of a path at a segment boundary, so
+a pattern cannot be evaded by prefixing.
+
+Worse, `acpPathsFromToolCall` never read the patch. It took the adapter's
+`locations` array, and for this call that array held a single string —
+`".env.example, README.md"` — which matched nothing and was checked as one path.
+Reorder the two files and the whole patch is allowed, `.env.production` included.
+Targets are now parsed out of the patch body itself, every target is checked, one
+forbidden target rejects the operation whatever the order, and a string that
+ambiguously encodes several paths is refused rather than resolved to whichever
+reading happens to be permitted.
+
+Paths are canonicalised before the policy sees them, so traversal, absolute and
+relative spellings, and symlinks all reach the same verdict.
+
+`safety.path_denylist_exceptions` is the narrow answer to the legitimate case:
+EXACT repo-relative paths, no globs, applied to every resolved form, empty by
+default. Authorising a template to be edited is not authorising a credential to
+be put in it, so content scanning still runs on the added lines — and since the
+brief was a Slack integration, `xoxb-` shapes were added to the shared redaction
+set, which had never known them.
+
+### The clarification blamed a human who was never asked
+
+The guard's denial reached `loop.worker_tool_denied` as structured data, and
+then died there. The retry classifier threw it away, the clarification was built
+from truncated worker prose, and the worker's prose said the user had rejected
+the permission — a backend phrase for a callback the harness answered itself. No
+human saw a permission prompt. The operator was shown a question implying they
+had refused something.
+
+The second denial of the same patch, ninety seconds later, was never audited at
+all: the audit ran once, before the protocol-retry loop. The durable record
+showed one denial where there had been two.
+
+A `GuardDenial` now travels from the guard through the ACP adapter to the
+clarification, carrying a code, the rule that fired and the paths it fired on.
+Deterministic denials are classified as `policy_denial` — a new outcome kind for
+the case that previously fell into `incomplete` — are not retried, and produce a
+clarification that names the rule rather than quoting the worker. Every attempt's
+denials are audited with an attempt number. "The user rejected" is corrected to
+what actually happened.
+
+### A shared directory suffix changed what KIND of artifact was required
+
+Audit 5408 remapped `okf/api/webhooks/client-offboarding-slack.md` to
+`src/__tests__/api/webhooks/client-offboarding-slack.md`. The entire evidence was
+one file an earlier sub-task had touched whose directory ends in the same two
+segments. No shared basename, no shared extension, not the same kind of thing.
+Audit 5409 wrote it into the plan, and the worker's next turn announced it would
+create "the harness-required help companion path" under `src/__tests__`.
+
+The rc.1 guard drew its line at the WIDTH of the evidence — a tail must be at
+least two segments — and `api/webhooks` is exactly two. Width was never the right
+measure: a wider shared suffix cannot establish that documentation belongs under
+tests. The line is now drawn at KIND. A correction that would move a non-test
+requirement into a test tree is returned as a suggestion with its provenance and
+a `low` confidence, audited, and kept out of the plan writeback. Test-to-test and
+source-to-source corrections are untouched.
+
+### The database survived the restart; the nine commits did not
+
+The worktrees root was a tmpfs mount. The bare object cache lives *inside* the
+worktrees root. So one restart took the checkouts and the only copy of every
+unpushed commit, together, while the state database — on a host-backed mount —
+survived perfectly, still naming a paused session, a worktree path and nine SHAs.
+
+Startup said:
+
+```
+5431  harness.worktrees_preflight  {ok:true, created:false}
+5432  harness.worktree_heal        {scanned:0, removed:0, errors:[]}
+```
+
+`ok:true` means "I wrote a probe file here". `scanned:0` means "the directory I
+enumerate was empty". The self-heal only ever walks disk-to-database, so an empty
+root means its loop body never runs; `scanned:0` was not "nothing to check", it
+was "nothing left to check with".
+
+Reconciliation now runs in the other direction too, from rows that claim work to
+the disk that should hold it, at startup and before resume and answer. It deletes
+nothing — the healer keeps that job and all its protections. `checkpoint()` was
+always a database write and never moved a git object, so durable checkpoints are
+now verified `git bundle`s written to a `storage.checkpoint_root` that must sit
+outside the worktrees root, taken after every verified sub-task and before every
+human gate. Nothing counts as durable until the bundle verifies and its bytes
+match their digest.
+
+`last_completed_sub_task` did not mean completed. In the incident database it
+named sub-task 11, which is `failed_verification` with no commit. Its only writer
+ran before verification had an opinion. The attempted value moved to
+`last_attempted_sub_task` and the original column now means what its name says.
+
+New: [`docs/persistence-runbook.md`](docs/persistence-runbook.md), including the
+recovery assessment for this incident — nothing was recoverable, and the only
+reason that cost nothing is that it was a smoke test.
+
+### "The check failed" and "I could not run the check" are different facts
+
+With the worktree gone, `stat` throws, the committed-file listing throws and was
+swallowed to `[]`, and verification reports:
+
+```
+no file matching contract path (checked literal + 0 committed)
+```
+
+That sentence describes a worker who did not write a file. It was produced by a
+harness that could not look. The GitHub and GitLab lookups had the same shape: no
+`res.ok` check, so a 403 body parsed to `[]` and became "no PR found for branch".
+
+Verification results carry `indeterminate`. Fail-closed is unchanged — an
+unanswered check still fails — but the summary says COULD NOT BE PERFORMED and
+names the cause, and `harness_progress` reports `storage.state` with `unknown` as
+its default, because never-checked is not healthy. Polling stays read-only.
+
+
 ## 2.0.0-rc.8
 
 One defect, one line. The worktree bootstrap did not ask npm for
