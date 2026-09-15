@@ -363,6 +363,42 @@ and `audit_log` has no redaction of its own.
   from an existing config but are ignored.
 - Reports back a structured `WorkerResult` (`filesChanged`, commit SHAs, status, token
   and cost metrics).
+- A sub-task's declared files are listed in the worker prompt one per line. They
+  used to be joined with `", "`, and in session `aad3fc57` a worker copied that
+  rendered list back out as a single path argument — twice (audits 5583, 5589).
+  The guard refused both, correctly, because a string naming two files cannot be
+  judged against a per-path policy and commas are legal in filenames. The prompt
+  simply should not have supplied the shape.
+
+**An observe sub-task must have looked at something.** Read-only probes need no
+commit — that is the point of the mode — but their report is handed verbatim to
+the sub-tasks that depend on them, so an empty one propagates. In session
+`aad3fc57` the prerequisite observer had four nested-agent calls denied (5572–5575),
+performed no reads, and ended the turn with a promise about what it was going to
+read; that promise was stored as findings (5578) and given to two dependent
+workers (5579, 5587).
+
+The narration detector catches the obvious shapes and is not the gate, because
+it is a judgement about English: it missed this message both because the bare
+`I'll …` form was absent from its table and because the apostrophe was U+2019,
+which none of its patterns match. Both are fixed and the detector still has an
+edge — the message's last sentence is a truthful scope disclaimer, so it is
+*still* not classified as pure narration.
+
+The gate is `allowedToolCalls`: a turn where the guard allowed no tool call, no
+file changed and nothing was committed produced no findings, in any language.
+Such a turn is retried within `loop.worker_protocol_max_attempts` with guidance
+naming the route that is actually open — when every call was denied, the denial
+reason goes into the hint, since telling a blocked worker to try harder only
+buys more denials — and a prerequisite that still produces nothing fails rather
+than releasing its dependents. Disable with
+`loop.observe_evidence_check_enabled: false`.
+
+Note the counter. `unguardedReads` is *not* this, despite being the field that
+sat at 0 in the incident: it counts only the reads the path denylist could not
+be applied to, so on a backend that supplies read paths it is legitimately 0 for
+a turn that read a hundred files. A gate keyed on it would fail every observe
+sub-task there, and would tighten as enforcement improved.
 
 ### 3.7 Adversarial reviewer
 
@@ -577,6 +613,46 @@ after the worker's row was persisted and before verification had an opinion — 
 the incident database it named a sub-task sitting at `failed_verification` with
 no commit. The attempted value now goes to `last_attempted_sub_task`.
 
+**Checkpoints authenticate as the requester (rc.10).** A worktree is a
+`blob:none` partial clone, so `git bundle create` has to fetch the missing blobs
+from the promisor remote before it can pack anything, and that fetch is a
+network operation needing the same credential as any other. It was running on
+the process-default runner with no token: both checkpoint attempts in session
+`aad3fc57` failed with `Invalid username or token`, which meant the durability
+guarantee was never in force at either human gate. `GitAdapter.authenticatedRunner()`
+now hands the bundle path a runner bound to the requester's PAT through the
+existing askpass channel, and disposes of it afterwards. The manifest is
+redacted at the serialisation boundary rather than per-field, because the
+previous version scrubbed only the `error` string and a token can reach a
+manifest through a branch name.
+
+### The sub-task attempt ledger (rc.10)
+
+`sub_tasks` holds one mutable row per `(cycle, seq)` and each retry overwrites
+it, so its account of a retried sub-task is whatever the last attempt looked
+like. Task 3 of session `aad3fc57` ended reading `$0.4262756` with
+`commit_sha: NULL`. Both are true of its final attempt and false of the
+sub-task, which had spent more than that and had a commit in Git.
+
+`sub_task_attempts` is append-only, one row per worker turn, holding that turn's
+status, cost, base SHA, commits and files. Cost is the sum of its rows and the
+sub-task's commits are their union. Nothing depends on it to make progress —
+a failure to write a row is logged and swallowed — but two things read it:
+
+- Reporting, so "what did this sub-task cost" and "did it commit anything" have
+  answers that do not require replaying the audit log.
+- Verification, which uses the commits recorded by *earlier attempts of the same
+  sub-task* to credit a continuation with work it has already done. Audit 5621
+  checked all five of task 3's contract paths against the resumed worker-start
+  SHA — which was the commit the previous attempt of that sub-task had just
+  made. That attempt committed nothing new so failing was correct, but the next
+  case along is a continuation that adds only the missing test and template and
+  is then told the implementation it already wrote is uncommitted. Such a path
+  now passes with provenance naming the attempt and SHA. `commit_made` is
+  untouched, so an attempt that does nothing still fails, and the credit is
+  keyed on this sub-task's own recorded commits rather than a window of branch
+  history, so unrelated work cannot answer for a contract.
+
 ---
 
 ## 6. Security model
@@ -591,6 +667,9 @@ no commit. The attempted value now goes to `last_attempted_sub_task`.
 - `safety.path_denylist_exceptions` authorises EXACT repo-relative paths the denylist would otherwise cover — the tracked-template case, `.env.example`. It takes no globs, applies to every resolved form of a path, and does not disable content scanning: an authorised template that would receive token-shaped or high-entropy material is still refused. Empty by default, so a deployment that has not thought about it has not weakened anything.
 - Paths are canonicalised before policy evaluation, not after. Traversal, absolute/relative forms and symlinks resolve to the same decision, `apply_patch` targets are read from the patch body rather than trusted from a `locations` array, and a string that ambiguously encodes several paths is refused rather than guessed at. A multi-file patch is denied whole if any one target is forbidden, whatever order the targets appear in.
 - A denial carries a machine-readable code from the guard to the human clarification, so the reason an operator is shown is the rule that fired and the path it fired on — not the worker's prose about it, and never "the user rejected permission" when no human was asked.
+- A policy denial outranks every other explanation for the same turn, including a partial commit. Until rc.10 the classifier asked `policyDenied && !commitSha`, so a worker that committed some of its work and was refused the rest was reported as a contract-path mismatch: the operator was asked about a typo in a path that was correct, twice, and the denylist rule that actually blocked the turn appeared nowhere (audits 5598, 5601, 5619). The clarification now leads with the rule and names the preserved commit separately, and the committed work is never described as the reason.
+- Planned writes are compared against the effective denylist at `plan_ready`, before a worker is dispatched. A conflict gates that one sub-task on an operator decision stating the rule; the rest of the plan runs. This is a cost and honesty measure rather than a new control — the write was going to be refused either way — and because `filesLikelyTouched` is the lead's estimate, it gates a sub-task rather than failing a plan.
+- A refused ambiguous path says what shape *would* be accepted (one call per file). Guidance, not permission: each path still has to be judged on its own, which is precisely why the batch cannot be.
 - Diagnostics and checkpoint manifests are redacted before they are written. An error string is an artefact that outlives the run, and it is the last place a token should be preserved.
 - The plugin process can open the harness vault; worker subprocesses cannot. That gap is deliberate and enforced twice over — `safety.path_denylist` blocks `harness-vault/`, `vault.key` and `vault.db` on the file tools, and the vault key variables are stripped from the worker environment — because the harness sometimes needs to resolve a secret in order to hand a worker only its resolved value.
 

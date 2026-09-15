@@ -392,6 +392,65 @@ test("rc.10 (F1): the loop hands the authenticated runner to createCheckpoint", 
   assert.match(body, /resolveGitToken/);
 });
 
+test("rc.10 (F1): a real run routes its checkpoint through the authenticated runner", async () => {
+  // The two tests above this one read src/. That is worth something, but it is
+  // exactly the shape the scenario helper's header warns about: a grep for the
+  // call site passes while the feature is dead. The mutation check found it --
+  // disabling the wiring in dist/ left every F1 test green, because none of
+  // them ran the loop. This one does.
+  const { scenarioAvailable, runScenario, mutateSubTask, makeWorld } = await import("./helpers/scenario.mjs");
+  if (!(await scenarioAvailable())) return;
+
+  const base = mkdtempSync(join(tmpdir(), "rc10-cp-wiring-"));
+  const checkpointRoot = join(base, "checkpoints");
+  const world = await makeWorld();
+
+  // Records every call, and really runs git, so the bundle produced is real.
+  const calls = [];
+  const runs = [];
+  let disposed = 0;
+
+  const res = await runScenario({
+    world,
+    configOver: {
+      storage: {
+        state_db_path: ":memory:",
+        worktree_root: join(base, "wt"),
+        checkpoint_root: checkpointRoot,
+        audit_retention_days: 90,
+        prune_terminal_sessions: 365,
+      },
+    },
+    subTasks: [mutateSubTask({ seq: 1, title: "add a thing", path: "src/thing.ts" })],
+    deps: {
+      checkpointGitRunner: async ({ repo, requester }) => {
+        calls.push({ repo, requester });
+        return {
+          run: async (args, cwd) => {
+            runs.push(args[0]);
+            const { defaultGitRunner } = await import("../dist/state/checkpoint-bundle.js");
+            return defaultGitRunner(args, cwd);
+          },
+          dispose: async () => {
+            disposed += 1;
+          },
+        };
+      },
+    },
+  });
+
+  assert.ok(calls.length > 0, "the loop never asked for a credential for the checkpoint");
+  // It asks for the credential of the session's repo and requester, which is
+  // the whole point -- a checkpoint fetches from that repo's promisor remote.
+  assert.equal(calls[0].repo, "o/r");
+  assert.equal(calls[0].requester, "U1");
+  // And the runner it got back is the one git actually ran on.
+  assert.ok(runs.includes("bundle"), `the bundle must run on the authenticated runner, saw ${JSON.stringify(runs)}`);
+  assert.equal(disposed, calls.length, "every runner obtained is disposed");
+  assert.ok(res.out.status !== undefined);
+  rmSync(base, { recursive: true, force: true });
+});
+
 test("rc.10 (F1): credential resolution failing does not take the run down", async () => {
   const { readFileSync: rf } = await import("node:fs");
   const loop = rf(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
