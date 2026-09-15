@@ -100,7 +100,7 @@ export function looksLikeDiskExhaustion(text) {
  * exposed to the same failure.
  */
 export const HARNESS_EXCLUDE_PATTERNS = [
-    "__never_matches__/",
+    ".npm-cache-tmp/",
     ".npm-cache/",
     ".yarn-cache/",
     ".yarn/cache/",
