@@ -1,5 +1,144 @@
 # Changelog
 
+## 2.0.0-rc.10
+
+The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,
+against rc.9 at `0391a41`. It was cancelled after two human clarifications, and
+the thing worth noticing is that both of them asked the wrong question.
+
+rc.9's theme was the harness saying something true in a way that read as false.
+This one is narrower and sharper: four places where the harness had the right
+answer already recorded and used a different one.
+
+Nothing below weakens a gate. The denylist is unchanged, the template exception
+is still empty by default and exact-match only, content scanning still refuses
+secret material in an authorised template, and verification still fails closed.
+
+### A checkpoint that could not authenticate
+
+The worktree is a `blob:none` partial clone. `git bundle create` therefore has
+to fetch the missing blobs from the promisor remote before it can pack anything,
+and that fetch is a network operation needing a credential like any other. It
+was running on the process-default runner, which has no token. Both attempts
+failed identically with `Invalid username or token`, which means the durability
+guarantee was not in force at either human gate -- the two moments in a run when
+it matters most.
+
+`GitAdapter.authenticatedRunner()` now binds a runner to the requester's PAT
+through the existing askpass channel, resolved by the same `pat.resolve` and
+`resolveGitToken` route as a push rather than a second credential mechanism, and
+disposes of it afterwards. Manifest redaction moved to the serialisation
+boundary: the previous version scrubbed only the `error` field, and a token can
+reach a manifest through a branch name.
+
+The regression suite runs a real `git http-backend` over Basic auth against a
+real partial clone, so the promisor fetch and its failure both reproduce without
+a live token.
+
+### A correct test path rewritten to one that did not exist
+
+An unrelated production file relocated a test contract on a shared two-segment
+path tail. Two things were missing. Re-derivation never asked whether the path
+it was about to rewrite already existed -- it did -- and it learned the remap
+from evidence of a different kind entirely, using a source file's layout to
+decide where a test belongs.
+
+The repository inventory is now authoritative: a path that exists is never
+rewritten. Remaps are learned only from same-kind evidence, test from test and
+source from source. Cross-kind evidence still produces a suggestion, because it
+is sometimes right and never certain enough to apply silently.
+
+### A policy denial hidden behind a partial commit
+
+`.env.example` is covered by `.env.*`. On the retry the worker had committed
+some of its work before being refused the rest, and the classifier asked
+`policyDenied && !commitSha` -- so the partial commit won, and the operator was
+asked about a typo in a path that was correct. The rule that actually blocked
+the turn appeared nowhere in the question. The correction that came back changed
+the test path and left the policy untouched, which bought a second billed turn
+for a write unchanged policy could only refuse again.
+
+Policy denial is now independent of partial work and outranks every other
+explanation for the same turn. The clarification leads with the rule and the
+path, and names the preserved commit separately so that work is never presented
+as the reason for the block.
+
+Planned writes are also compared against the effective denylist at `plan_ready`.
+Both facts were knowable before anything was dispatched. The check gates the
+affected sub-task on an operator decision that states the rule; the rest of the
+plan runs, because `filesLikelyTouched` is the lead's estimate and a conflict is
+evidence a sub-task is heading for a wall rather than proof that it must.
+
+### An observe prerequisite that had looked at nothing
+
+Four attempts to delegate the reading to nested agents, all denied. Zero reads.
+No files, no commit. The turn ended with a 280-character promise about what the
+worker was *going* to read, and that promise was stored as the sub-task's
+findings and handed verbatim to two dependent workers whose prompts tell them
+not to re-explore the repository.
+
+The narration detector missed it twice over. The bare `I'll ...` form was not in
+its table, and the apostrophe was U+2019 -- one character that no pattern in
+`worker-outcome.ts` matched, including the refusal rules. Both are fixed, and
+the detector *still* does not classify that message as pure narration, because
+its final sentence is a truthful statement about scope. That is the lesson
+rather than a loose end: a rule that reads English will always have an edge, and
+fitting one to this sample would only move the edge.
+
+So the gate is not linguistic. An observe turn where the guard allowed no tool
+call, nothing changed and nothing was committed produced no findings, in any
+language. Such a turn is retried inside the existing protocol budget with
+guidance naming the route that is actually open -- when every call was denied,
+the denial reason goes into the hint, because telling a blocked worker to try
+harder only buys more denials -- and a prerequisite that still produces nothing
+fails instead of releasing the sub-tasks that depend on it. A read-only sub-task
+still needs no commit. It simply cannot skip the reading.
+
+One detail worth stating, because it nearly went the other way. The gate counts
+`allowedToolCalls`, not `unguardedReads`, even though `unguardedReads: 0` is the
+number sitting in the incident's own audit row. That field counts only the reads
+the path denylist could not be applied to, so on a backend that supplies read
+paths it is legitimately zero for a turn that read a hundred files. A gate keyed
+on it would have failed every observe sub-task there, and would have grown
+stricter as enforcement improved.
+
+### Three smaller things from the same run
+
+A permission request arrived twice naming two files in one string, and was
+refused as unresolvable. The refusal is right -- commas are legal in filenames
+and splitting on them is guessing -- but the string turned out to be the
+harness's own `Files likely touched: a, b` prompt line, echoed back. The worker
+copied a prose list out of its own instructions. The prompt now lists one path
+per line, the guard still fails closed, and the refusal now names the shape that
+works.
+
+Verification checked every contract path against the resumed worker-start SHA,
+which was the commit the previous attempt of that same sub-task had just made.
+That attempt committed nothing new so failing was correct, but the next case
+along is a continuation that adds only the missing pieces and is then told the
+implementation it already wrote is uncommitted. A contract path may now be
+satisfied by a commit from an earlier attempt of the same sub-task, reported
+with provenance. `commit_made` is untouched, so an attempt that does nothing
+still fails, and credit is keyed on that sub-task's own recorded commits so
+unrelated history cannot answer for a contract.
+
+Which required knowing what the earlier attempts did, and nothing did.
+`sub_tasks` holds one mutable row per sub-task and every retry overwrites it, so
+task 3 finished reading $0.4262756 with no commit -- true of its last attempt,
+false of the sub-task, which had spent more and did have a commit in Git.
+`sub_task_attempts` is append-only, one row per worker turn. Cost is the sum of
+its rows and the commits are their union.
+
+### On the tests
+
+Two of the seven new mutation anchors survived their first run, and both were
+real. The checkpoint's authenticated runner was asserted only by grepping
+`src/`: disabling the wiring in `dist/` left all fourteen of its tests green,
+because none of them ran the loop. And `allowedToolCalls` was never counted by
+any test, because the gate's own suite feeds the verdict synthetic numbers,
+which is right for testing the gate and useless for testing the adapter. Both
+now have behavioural coverage. All 379 mutations are caught.
+
 ## 2.0.0-rc.9
 
 One smoke test, four defects, and a fifth thing that is not a defect so much as

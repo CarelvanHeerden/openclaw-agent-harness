@@ -305,6 +305,36 @@ number — that was true of the clock and false of the money. If the write did n
 land, the answer fails with the controls it could not persist and the session
 stays resumable; it is never flipped to `planning` on limits nobody stored.
 
+## When the harness stops on its own safety policy
+
+A sub-task whose declared writes hit `safety.path_denylist` pauses before any
+worker runs, with a question naming the rule and the path — `.env.example is
+blocked by the denylist rule .env.*`. Your options are stated in the question,
+and each means something different:
+
+- **Authorise the exact path** via `safety.path_denylist_exceptions`. This is a
+  deployment configuration change and a separate approval; the harness will not
+  make it for you, and an implementation brief asking for a file is not consent
+  to weaken the policy. The exception takes exact repo-relative paths only, no
+  globs, and it does not disable content scanning: an authorised template that
+  would receive token-shaped or high-entropy material is still refused. That
+  last point is the one worth being clear about — authorising `.env.example`
+  authorises the *file*, never a real credential inside it.
+- **Restate the sub-task** so it reaches its goal without the blocked path.
+- **`skip`** to drop the sub-task, or **`abort`**.
+
+Nothing has been dispatched when you are asked, so the sub-task has cost
+nothing yet. Answering with a correction that changes something *other* than
+the policy — a different test path, say — leaves the block exactly where it was;
+in session `aad3fc57` that cost a second full worker turn for a write that
+unchanged policy could only refuse again.
+
+The same question is asked after the fact when a denial happens mid-turn, and
+it now leads with the rule even when the worker had already committed some of
+its work. Before rc.10 a partial commit outranked the denial and you were asked
+about a path mismatch instead. If you see a clarification naming both a rule and
+a preserved commit, the commit is safe on the branch and is not the problem.
+
 ## What the session budget means
 
 The approved figure is divided before anything spends it:
@@ -381,6 +411,29 @@ SELECT month, user, spent_usd FROM budgets_monthly ORDER BY month DESC, spent_us
 SELECT event, payload, datetime(created_at/1000, 'unixepoch') AS ts
 FROM audit_log WHERE session_id = ? ORDER BY id ASC;
 ```
+
+**Do not read a sub-task's cost off its `sub_tasks` row.** There is one row per
+`(cycle, seq)` and every retry overwrites it, so what you get is the last
+attempt, not the sub-task. In session `aad3fc57` that row read `$0.4262756` with
+`commit_sha: NULL` for a sub-task that had spent more and did have a commit.
+Use the attempt ledger, which is append-only:
+
+```sql
+-- Every attempt of every sub-task, with what each one actually did
+SELECT seq, attempt, status, cost_usd, commit_sha,
+       datetime(ended_at/1000, 'unixepoch') AS ended
+FROM sub_task_attempts WHERE session_id = ? ORDER BY cycle, seq, attempt;
+
+-- True per-sub-task cost, and whether it ever committed
+SELECT seq, COUNT(*) AS attempts, SUM(cost_usd) AS cost_usd,
+       GROUP_CONCAT(commit_sha) AS commits
+FROM sub_task_attempts WHERE session_id = ? GROUP BY cycle, seq ORDER BY seq;
+```
+
+A sub-task with several rows and a commit on a non-final one is the shape to
+look for when Git shows work the ledger seems not to know about. Sessions that
+ran before rc.10 have no rows here; the audit log's `loop.worker_end_turn`
+events are the fallback, one per turn.
 
 ## PAT cache lifecycle
 

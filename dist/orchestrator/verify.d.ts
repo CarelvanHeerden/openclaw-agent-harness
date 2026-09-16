@@ -143,6 +143,21 @@ export interface VerifyProbes {
         diffLines?: number;
     }>;
     /**
+     * rc.10: was `path` committed by one of THESE specific commits?
+     *
+     * Implemented as `git show --name-only <sha>` over the listed SHAs. The
+     * caller supplies the commits earlier attempts of this same sub-task
+     * produced, so a continuation is not asked to re-edit a file its own first
+     * attempt already got right. A commit range would be the wrong tool: the
+     * window between attempts also contains whatever else landed on the branch,
+     * and that must NOT be able to satisfy this contract.
+     */
+    fileCommittedInCommits?: (path: string, shas: readonly string[]) => Promise<{
+        committed: boolean;
+        sha?: string;
+        detail: string;
+    }>;
+    /**
      * beta.85: is `path` present on disk AND committed ANYWHERE in the branch
      * range `branchBaseSha..HEAD` (the whole branch, not just this sub-task)?
      * Used by the REVISE-RELAXED acceptance of `file_written`/`file_committed`
@@ -304,5 +319,24 @@ export declare function verifySubTaskOutput(verify: SubTaskVerify[] | undefined,
      */
     neverCommitPaths?: readonly string[];
     authorizedGeneratedPaths?: readonly string[];
+    /**
+     * rc.10: commits produced by EARLIER attempts of this same sub-task.
+     *
+     * Audit 5621 checked all five of task 3's contract paths against the
+     * resumed worker-start SHA 065063e -- which is the commit the previous
+     * attempt of that same sub-task had just made. That attempt committed
+     * nothing new, so failing was correct there. The case this exists for is
+     * the next one along: a continuation asked to add only the missing test
+     * and template would commit those, and then be told the two
+     * implementation files it had already written were not committed, because
+     * they are behind the new base. The worker's only way to satisfy that is
+     * to touch a correct file for the sake of touching it.
+     *
+     * A file found in one of these commits passes WITH PROVENANCE naming the
+     * attempt and sha, rather than silently. `commit_made` is untouched, so an
+     * attempt that produces no new commit still fails -- this relaxes which
+     * files count as done, never whether the turn did anything.
+     */
+    priorAttemptCommits?: readonly string[];
 }, probes: VerifyProbes): Promise<VerifyOutcome>;
 //# sourceMappingURL=verify.d.ts.map

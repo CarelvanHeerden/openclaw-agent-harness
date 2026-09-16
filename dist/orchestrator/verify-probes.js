@@ -319,6 +319,35 @@ export function createVerifyProbes(ctx) {
                 }
             },
             /**
+             * rc.10: did one of these exact commits carry this path? Used to credit
+             * a continuation with what an earlier attempt of the same sub-task
+             * already committed. Matching is on the full path or a trailing path
+             * segment boundary -- the same shape the contract is written in -- and
+             * never on basename alone, which would let `config.ts` anywhere in the
+             * tree answer for `src/lib/config/config.ts`.
+             */
+            fileCommittedInCommits: async (path, shas) => {
+                if (shas.length === 0)
+                    return { committed: false, detail: "no earlier attempt recorded a commit" };
+                let files;
+                try {
+                    files = await git.listFilesInCommits(worktreePath, shas);
+                }
+                catch (err) {
+                    return { committed: false, detail: `could not read the earlier attempt's commits: ${String(err)}` };
+                }
+                const want = path.replace(/^\.\//, "");
+                for (const [f, sha] of files) {
+                    if (f === want || f.endsWith(`/${want}`) || want.endsWith(`/${f}`)) {
+                        return { committed: true, sha, detail: `committed as ${f}` };
+                    }
+                }
+                return {
+                    committed: false,
+                    detail: `not in the ${files.size} file(s) committed by this sub-task's earlier attempt(s)`,
+                };
+            },
+            /**
              * rc.6: the window's committed files, verbatim. No contract-path
              * resolution -- generator inputs are operator-declared, so a fuzzy match
              * here would let an unrelated file be read as proof that a generator's

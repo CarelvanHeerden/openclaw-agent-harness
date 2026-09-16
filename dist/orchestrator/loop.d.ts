@@ -567,6 +567,35 @@ export interface OrchestratorDeps {
      */
     listRepoFiles?: (worktreePath: string) => Promise<string[]>;
     /**
+     * rc.10 (F1, audits 5602/5628): a git runner carrying the REQUESTER's
+     * credentials, for the checkpoint path.
+     *
+     * rc.9 shipped durable checkpoints running git through the bundle module's
+     * own default runner, which sets no environment. Every worktree this harness
+     * allocates is a `blob:none` partial clone, so `git bundle create` fetches
+     * the objects it lacks from origin -- a network read that needs the same
+     * per-request token every other remote operation is routed. Without it both
+     * checkpoints of session aad3fc57 failed on `could not fetch ... from
+     * promisor remote`, and the run reported durability as unknown while holding
+     * a real commit.
+     *
+     * Resolved through the existing PAT routing, scoped to one checkpoint, and
+     * disposed immediately after. Optional: when it is absent the checkpoint
+     * still runs unauthenticated, which is correct for a local or public repo and
+     * honestly recorded as a failure for a private one.
+     */
+    checkpointGitRunner?: (params: {
+        repo: string;
+        requester: string;
+    }) => Promise<{
+        run: (args: string[], cwd: string) => Promise<{
+            code: number;
+            stdout: string;
+            stderr: string;
+        }>;
+        dispose: () => Promise<void>;
+    }>;
+    /**
      * beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree, for the
      * best-effort-verify clean-diff check and the scripted-verifier fallback's
      * informational diff. Optional; when absent the clean-diff check treats the
@@ -831,6 +860,36 @@ export declare class OrchestratorLoop {
      * `attempt` is part of the payload rather than implied by row order, because
      * these rows are read by event name across a whole session.
      */
+    /**
+     * rc.10: append one immutable row per worker turn.
+     *
+     * `sub_tasks` holds one row per (cycle, seq) and each retry overwrites it, so
+     * the ledger's account of a retried sub-task is whatever the last attempt
+     * happened to look like. Task 3 of the smoke test ended showing $0.4262756
+     * and no commit, which is true of its final attempt and false of the
+     * sub-task: audits 5590 and 5620 are two separate turns, and Git holds a
+     * commit from the work in between.
+     *
+     * Append-only and additive. Nothing reads `sub_tasks` differently because of
+     * this table; it answers the questions that row cannot -- what the sub-task
+     * really cost, and which commits it really produced -- and gives a resumed
+     * attempt the provenance it needs to get credit for its own earlier work.
+     *
+     * Never allowed to break a run. A ledger that throws while recording history
+     * would turn a reporting gap into a failed session, which is a bad trade for
+     * a table nothing depends on to make progress.
+     */
+    private recordSubTaskAttempt;
+    /**
+     * rc.10: every commit recorded by EARLIER attempts of this same sub-task.
+     *
+     * Used by verification to give a continuation credit for work a previous
+     * attempt of the same sub-task already committed, rather than demanding a
+     * cosmetic re-edit of a file that is already correct. Scoped to this
+     * (session, cycle, seq) precisely so an unrelated older commit cannot
+     * satisfy a new contract.
+     */
+    private priorAttemptCommits;
     private auditDeniedToolCalls;
     /**
      * rc.9: `last_completed_sub_task` now means what it says.

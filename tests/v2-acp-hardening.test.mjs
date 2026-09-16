@@ -253,6 +253,59 @@ test("a pathless OpenCode read is allowed, counted, and announced once", async (
   assert.equal(r.unguardedReads, 1);
   const line = warned.find((w) => String(w.m).includes("path_denylist NOT enforced on read"));
   assert.ok(line, "the first unchecked read must warn");
+  // rc.10: an allowed call is also counted as an allowed call. The pathless
+  // read is both, which is the point -- see the two tests below.
+  assert.equal(r.allowedToolCalls, 1);
+});
+
+// ---------------------------------------------------------------------------
+// rc.10 (F4): allowedToolCalls, and why it is not unguardedReads
+// ---------------------------------------------------------------------------
+
+test("rc.10: an allowed tool call is counted", async () => {
+  // The counter the observe-evidence gate reads. Without it a turn that did
+  // real work is indistinguishable from the smoke test's prerequisite, which
+  // ended having had nothing allowed at all and reported a promise as findings.
+  const r = await runWorkerAcp({
+    agent: agent("allowed-command"),
+    worktreePath: scratch(),
+    systemPrompt: "s",
+    userMessage: "u",
+    model: "",
+    timeoutSeconds: 20,
+    acpGuard: buildAcpGuard({
+      bash_whitelist: ["git", "echo"],
+      bash_denylist_tokens: ["rm"],
+      path_denylist: [".env"],
+      allow_git_push: false,
+      allow_network_commands: false,
+    }),
+    logger: { info: () => {}, warn: () => {} },
+  });
+  assert.equal(r.deniedToolCalls.length, 0);
+  assert.equal(r.allowedToolCalls, 1, "the allowed `echo hi` must be counted");
+  // And it is NOT a read, so the read counter stays at zero. These two fields
+  // measure different things and a turn can move either one alone.
+  assert.equal(r.unguardedReads, 0);
+});
+
+test("rc.10: a turn where everything was denied counts zero allowed calls", async () => {
+  // The incident shape, at the adapter. `deniedToolCalls` was always recorded;
+  // what was missing is the statement that nothing got through, which is what
+  // makes "no findings" a fact rather than a reading of the worker's prose.
+  const r = await runWorkerAcp({
+    agent: agent("denied-command"),
+    worktreePath: scratch(),
+    systemPrompt: "s",
+    userMessage: "u",
+    model: "",
+    timeoutSeconds: 20,
+    acpGuard: async (call) =>
+      call.kind === "execute" ? { allow: false, reason: "not on the bash whitelist" } : { allow: true },
+    logger: { info: () => {}, warn: () => {} },
+  });
+  assert.equal(r.deniedToolCalls.length, 1);
+  assert.equal(r.allowedToolCalls, 0);
 });
 
 test("the LOGGED usage source is the one that was actually returned", async () => {

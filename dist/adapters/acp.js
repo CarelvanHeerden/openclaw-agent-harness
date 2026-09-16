@@ -276,6 +276,7 @@ export async function runWorkerAcp(params) {
     const denied = [];
     /** Reads allowed without a denylist check, because the agent named no path. */
     let unguardedReads = 0;
+    let allowedToolCalls = 0;
     let finalMessage = "";
     let streamOpened = false;
     let msToFirstToken;
@@ -557,6 +558,7 @@ export async function runWorkerAcp(params) {
                     });
                 }
             }
+            allowedToolCalls += 1;
             const allow = options.find((o) => o.kind === "allow_once") ?? options[0];
             return { outcome: { outcome: "selected", optionId: allow?.optionId } };
         }
@@ -738,6 +740,7 @@ export async function runWorkerAcp(params) {
         sessionId,
         denied: denied.length,
         unguardedReads,
+        allowedToolCalls,
         usageSource,
     });
     trace?.record("meta", {
@@ -747,6 +750,7 @@ export async function runWorkerAcp(params) {
         finalMessageChars: finalMessage.trim().length,
         denied: denied.length,
         unguardedReads,
+        allowedToolCalls,
         usageSource,
         tokensIn,
         tokensOut,
@@ -771,6 +775,7 @@ export async function runWorkerAcp(params) {
         contextSize,
         deniedToolCalls: denied,
         unguardedReads,
+        allowedToolCalls,
         // `null` when the turn ended on its own terms. A caller must be able to
         // tell "the model answered with nothing" from "we stopped waiting", and
         // `finalMessage: ""` looks identical in both cases.

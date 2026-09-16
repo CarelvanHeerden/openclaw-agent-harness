@@ -84,9 +84,14 @@ test("the loop passes the branch it already recorded, not the one being planned"
   assert.match(src, /pinnedSessionBranch: \(row\.branch \?\? ""\)\.trim\(\) \|\| undefined/);
   // The read has to come from the sessions row. Taking it from the new plan
   // would be circular -- the plan is the thing that renamed it.
+  // rc.10: the column list is matched loosely. The property this test exists
+  // to defend is that `branch` is read from the SESSIONS row rather than from
+  // the plan being written, and pinning the exact SELECT made an unrelated
+  // addition (`repo`, needed to authenticate the checkpoint bundle) look like
+  // a regression in branch identity. What must not change is the source.
   assert.match(
     src,
-    /SELECT id, requester, cost_usd, budget_usd, cycles_ran, status, branch FROM sessions/,
+    /SELECT id, requester, cost_usd, budget_usd, cycles_ran, status,[^`]*\bbranch\b[^`]*FROM sessions/,
     "the session row must actually select branch",
   );
 });

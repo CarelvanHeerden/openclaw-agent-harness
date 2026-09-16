@@ -134,7 +134,22 @@ export interface RederiveResult {
     via?: PrefixRemap;
     suggestion?: RederiveSuggestion;
 }
-export declare function rederiveContractPath(contract: string, realFiles: string[]): RederiveResult;
+export interface RederiveOptions {
+    /**
+     * rc.10: the repository's own file list, as ground truth about what exists.
+     *
+     * Guard (a) below only knows what THIS RUN touched, which is a sliver of the
+     * repository. A contract path that is absent from that sliver is not thereby
+     * wrong -- it may be a file that has been in the repo for a year. Supplying
+     * the tracked-file inventory lets a declared path that genuinely exists
+     * short-circuit re-derivation the same way a touched path does.
+     *
+     * Optional, and the module stays pure: the caller reads the repository, this
+     * function only compares strings.
+     */
+    repoFiles?: Iterable<string>;
+}
+export declare function rederiveContractPath(contract: string, realFiles: string[], opts?: RederiveOptions): RederiveResult;
 /** A 1:1 reconciliation of a stale TEST contract path onto the test file the sub-task really committed. */
 export interface TestContractReconcile {
     /** The stale (lead-authored) contract path. */

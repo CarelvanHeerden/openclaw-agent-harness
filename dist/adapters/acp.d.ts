@@ -163,6 +163,20 @@ export interface RunWorkerAcpResult {
      * is recorded so the gap stays visible in an audit rather than in a comment.
      */
     unguardedReads: number;
+    /**
+     * rc.10 (F4): permission requests this turn that the guard ALLOWED, of any
+     * kind -- reads, edits, shell.
+     *
+     * `unguardedReads` is not this. It counts only the reads the denylist could
+     * not be applied to, which on a backend that supplies read paths is
+     * legitimately 0 for a turn that read a hundred files. Anything asking "did
+     * this worker actually do something" has to use a counter that does not go
+     * down as enforcement improves.
+     *
+     * The harness's startup probe fails closed unless the backend asks before it
+     * acts, so within a real session every tool call passes through here.
+     */
+    allowedToolCalls: number;
 }
 /**
  * Thrown when the agent asks us to perform something we declined in

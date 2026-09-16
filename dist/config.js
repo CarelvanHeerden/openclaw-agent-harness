@@ -108,6 +108,8 @@ const DEFAULTS = {
         contract_mismatch_escalation_enabled: true,
         ledger_reachability_guard_enabled: true,
         plan_path_validation_enabled: true,
+        plan_policy_conflict_check_enabled: true,
+        observe_evidence_check_enabled: true,
         plan_path_writeback_enabled: true,
         lead_repo_scout_enabled: true,
         lead_scout_timeout_seconds: 420,

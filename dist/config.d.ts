@@ -1027,6 +1027,18 @@ export interface LoopConfig {
      */
     plan_path_validation_enabled?: boolean;
     /**
+     * rc.10 (F3): compare planned writes against the safety denylist at
+     * plan_ready, and gate the affected sub-task's dispatch on an operator
+     * decision instead of spending a worker turn on a write policy will refuse.
+     */
+    plan_policy_conflict_check_enabled?: boolean;
+    /**
+     * rc.10 (F4): require an observe sub-task to have actually read something
+     * before its report is accepted and handed to dependent sub-tasks. Uses the
+     * tool-call counters, not a judgement about the prose.
+     */
+    observe_evidence_check_enabled?: boolean;
+    /**
      * beta.103: after verification proves a contract path correction (b76 rederive
      * or b100 test reconcile), write it back into the sub-task's
      * `filesLikelyTouched` so later revise cycles scope against the real path.

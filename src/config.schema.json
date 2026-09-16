@@ -452,10 +452,20 @@
           "default": true,
           "description": "beta.101: before adversary review, check every sub-task commit_sha is reachable from HEAD and fail the run when any is not, rather than reviewing or shipping a branch that has lost work. Default true."
         },
+        "observe_evidence_check_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "rc.10 (F4): require an observe sub-task to have actually read something before its report is accepted and handed to dependent sub-tasks. Checks the tool-call counters (allowedToolCalls, files, commit), not the prose. Default true."
+        },
         "plan_path_validation_enabled": {
           "type": "boolean",
           "default": true,
           "description": "beta.101: at plan time, flag filesLikelyTouched entries naming a file in a directory that does not exist and warn the worker to treat them as guesses. Advisory; never blocks. Default true."
+        },
+        "plan_policy_conflict_check_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "rc.10 (F3): at plan_ready, compare every filesLikelyTouched entry against the effective safety.path_denylist (honouring path_denylist_exceptions) and record any planned write the policy will refuse; the affected sub-task then pauses for an operator decision INSTEAD of being dispatched. Default true."
         },
         "plan_path_writeback_enabled": {
           "type": "boolean",

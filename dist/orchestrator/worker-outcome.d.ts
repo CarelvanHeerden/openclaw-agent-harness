@@ -177,6 +177,20 @@ export declare function buildPolicyDenialClarification(params: {
     policy: PolicyDenialOutcome;
     /** The worker's own words, if any survived narration-stripping. */
     workerNote?: string;
+    /**
+     * rc.10: work this turn DID land before the refusal.
+     *
+     * Audit 5601 asked the operator to treat a policy block as a possible path
+     * mistake, because a partial commit existed and the mismatch branch owned
+     * that case. Both things are true at once and the question has to say so:
+     * the commit is real and is being kept, and the missing part is missing
+     * because a rule refused it.
+     */
+    partialWork?: {
+        commitSha: string | null;
+        committed: string[];
+        unmet: string[];
+    };
 }): string;
 /**
  * The operator's answer, addressed to the sub-task that asked the question.
@@ -207,6 +221,76 @@ export declare function buildClarificationResumeHint(params: {
  * travels is blocked.
  */
 export declare function observeReportIsNarration(finalMessage: string | undefined): boolean;
+/** Why an observe turn has no findings to hand on. */
+export interface ObserveEvidenceVerdict {
+    /** True when the turn inspected nothing, whatever its message says. */
+    empty: boolean;
+    /** Machine-readable: `no_reads`, `denied_only`. */
+    code?: "no_reads" | "denied_only";
+    /** Operator- and worker-facing, one sentence. */
+    reason?: string;
+    /** The denial that stopped it reading, when there was one. */
+    deniedReason?: string;
+}
+/**
+ * rc.10 (F4) -- did this observe turn actually look at anything?
+ *
+ * Client Offboarding smoke test, session aad3fc57, sub-task 1. Audits 5572
+ * through 5575 record four denied `task` calls -- the worker tried to launch
+ * nested agents, which focused workers may not do. Audit 5576 records what it
+ * did instead: `unguardedReads: 0`, no files, no commit, and a 280-character
+ * promise about what it was going to read. 5577 marked the prerequisite
+ * completed with `verify_count: 0`, 5578 stored the promise as the report, and
+ * 5579 and 5587 handed it to the two sub-tasks that depended on it.
+ *
+ * WHY THIS IS NOT ANOTHER TEXT RULE. The narration detector is a judgement
+ * about English and will always have an edge: this message evaded it because a
+ * bare "I'll ..." was not in the table and "No files ... will be modified" is a
+ * scope disclaimer rather than an announcement. The tool-call counters are not
+ * a judgement about anything. A turn that made no tool call, wrote no file and
+ * made no commit inspected nothing, and a report of findings from a turn that
+ * inspected nothing is not a report of findings in any language.
+ *
+ * WHICH COUNTER. `allowedToolCalls`, not `unguardedReads`. The incident row
+ * showed `unguardedReads: 0` and that reads as "did nothing", but the field
+ * counts only the reads the path denylist could NOT be applied to -- on a
+ * backend that supplies read paths (Codex does) a turn that read a hundred
+ * files reports 0. Keying the gate on it would fail every observe sub-task on
+ * that backend, and would get quietly stricter as enforcement improved, which
+ * is the wrong direction for a counter to move. `allowedToolCalls` counts every
+ * permission request the guard let through, of any kind, so a probe that
+ * searched with `rg` or read with paths counts as having looked. A non-zero
+ * `unguardedReads` is still accepted as positive evidence on its own, because
+ * it can only be non-zero if a read happened.
+ *
+ * A read-only sub-task still needs no commit -- that is the point of observe
+ * mode and it is unaffected. What it cannot do is skip the reading.
+ *
+ * Neither counter being a number means the backend does not report them. That
+ * is not evidence of zero, so the check declines to fire and the turn keeps its
+ * pre-rc.10 treatment.
+ */
+export declare function observeEvidenceVerdict(result: {
+    allowedToolCalls?: number;
+    unguardedReads?: number;
+    filesChanged?: string[];
+    commitSha?: string | null;
+    deniedToolCalls?: DeniedToolCall[];
+}): ObserveEvidenceVerdict;
+/**
+ * rc.10 (F4): the corrective hint for an observe turn that inspected nothing.
+ *
+ * When the turn was denied its way of working, the useful instruction is the
+ * permitted route -- which for audits 5572-5575 is "read the files yourself
+ * rather than delegating". Telling that worker to "stop narrating" would be
+ * describing a symptom at it.
+ */
+export declare function buildObserveEvidenceHint(params: {
+    verdict: ObserveEvidenceVerdict;
+    intent: string;
+    attempt: number;
+    maxAttempts: number;
+}): string;
 /**
  * The verification contract in plain sentences.
  *

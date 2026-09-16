@@ -165,6 +165,117 @@ const MUTATIONS = [
     tests: ["tests/rc9-storage-durability.test.mjs"],
   },
   {
+    /*
+     * rc.10 (F1) -- a checkpoint that cannot authenticate is not a checkpoint.
+     *
+     * The worktree is a blob:none partial clone, so `git bundle create` must
+     * fetch from the promisor remote before it can pack. Drop the authenticated
+     * runner and it fetches anonymously: exactly audits 5602 and 5628, where
+     * both gates recorded a durability guarantee that was never in force.
+     */
+    name: "rc.10: the checkpoint bundle runs on the requester's credential",
+    file: "dist/orchestrator/loop.js",
+    find: "            if (this.deps.checkpointGitRunner && repo && requester) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc10-checkpoint-auth.test.mjs"],
+  },
+  {
+    /*
+     * rc.10 (F2) -- a path that exists is never a stale path.
+     *
+     * The repository inventory is the authoritative answer to the question
+     * every other heuristic here is approximating. Without it, audit 5591
+     * returns: a valid test contract relocated onto a path that does not exist,
+     * on the evidence of an unrelated production file.
+     */
+    name: "rc.10: an existing contract path is not re-derived",
+    file: "dist/orchestrator/contract-rederive.js",
+    find: "    if (opts.repoFiles) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc10-contract-evidence-kind.test.mjs"],
+  },
+  {
+    /*
+     * rc.10 (F3) -- a partial commit must not outrank the rule that blocked the
+     * rest.
+     *
+     * `policyDenied` used to carry `&& !commitSha`, so a turn that committed
+     * some work and was refused the rest was explained as a path mismatch. The
+     * operator was asked about a typo in a correct path while the denylist rule
+     * went unmentioned (5598, 5601). Removing the partial-work branch restores
+     * that, and the clarification stops naming the rule.
+     */
+    name: "rc.10: a denial with partial work still asks about the RULE",
+    file: "dist/orchestrator/loop.js",
+    find: "const policyDeniedWithPartialWork = !policyDenied && !!deterministicDenial && failedResults.length > 0;",
+    replace: "const policyDeniedWithPartialWork = false;",
+    tests: ["tests/rc10-policy-conflict.test.mjs"],
+  },
+  {
+    /*
+     * rc.10 (F3) -- the conflict is knowable before the money is spent.
+     *
+     * `.env.example` against `.env.*` was decidable at plan_ready. Nothing
+     * compared them, so a worker was dispatched and billed, then billed again
+     * after a correction that changed a test path and left the policy alone.
+     * Dropping the gate spends the turn exactly as rc.9 did.
+     */
+    name: "rc.10: a planned write policy will refuse never reaches a worker",
+    file: "dist/orchestrator/loop.js",
+    find: "                    const myPolicyConflicts = planPolicyConflicts.filter((c) => c.seq === st.seq);",
+    replace: "                    const myPolicyConflicts = [];",
+    tests: ["tests/rc10-policy-conflict.test.mjs"],
+  },
+  {
+    /*
+     * rc.10 (F4) -- an observe turn that inspected nothing has no findings.
+     *
+     * The narration detector is a judgement about English and missed the
+     * incident message twice over. The counter beside it is not. Drop the
+     * evidence half of the gate and the empty report is accepted and handed to
+     * the sub-tasks that depend on it, which is audits 5577 through 5587.
+     */
+    name: "rc.10: an observe prerequisite must have actually read something",
+    file: "dist/orchestrator/loop.js",
+    find: "                        const observeHasNoEvidence = () => this.deps.config.loop.observe_evidence_check_enabled !== false &&",
+    replace: "                        const observeHasNoEvidence = () => false &&",
+    tests: ["tests/rc10-observe-evidence.test.mjs"],
+  },
+  {
+    /*
+     * rc.10 (F4) -- the counter has to be counted.
+     *
+     * `allowedToolCalls` is what distinguishes a worker that looked from one
+     * that only said it would. If the adapter never increments it, every turn
+     * looks like the incident and the gate either fires on everything or, as
+     * here, is fed a zero it cannot tell from the real thing.
+     */
+    name: "rc.10: the adapter counts the tool calls it allowed",
+    file: "dist/adapters/acp.js",
+    find: "            allowedToolCalls += 1;",
+    replace: "",
+    // The gate's own suite feeds the verdict synthetic counters on purpose, so
+    // it is the adapter suite that exercises the counting.
+    tests: ["tests/v2-acp-hardening.test.mjs"],
+  },
+  {
+    /*
+     * rc.10 -- a continuation gets credit for its own earlier attempt, and only
+     * for that.
+     *
+     * Audit 5621 verified every contract path against the resumed worker-start
+     * SHA, which was the previous attempt's own commit. Dropping the provenance
+     * check sends a continuation back to re-edit files that are already
+     * correct; the tests also hold the other side, that unrelated history
+     * cannot answer for a contract path.
+     */
+    name: "rc.10: work committed by an earlier attempt of this sub-task counts",
+    file: "dist/orchestrator/verify.js",
+    find: "                    if (!r.committed && !genOwner && (ctx.priorAttemptCommits?.length ?? 0) > 0 && probes.fileCommittedInCommits) {",
+    replace: "                    if (false) {",
+    tests: ["tests/rc10-attempt-history.test.mjs"],
+  },
+  {
     // "denied: 2" with no way to learn which two is how a stalled OpenCode
     // worker stayed undiagnosable. The count is not the evidence; the command
     // or path is.

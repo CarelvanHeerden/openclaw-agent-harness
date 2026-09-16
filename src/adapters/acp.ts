@@ -237,6 +237,20 @@ export interface RunWorkerAcpResult {
    * is recorded so the gap stays visible in an audit rather than in a comment.
    */
   unguardedReads: number;
+  /**
+   * rc.10 (F4): permission requests this turn that the guard ALLOWED, of any
+   * kind -- reads, edits, shell.
+   *
+   * `unguardedReads` is not this. It counts only the reads the denylist could
+   * not be applied to, which on a backend that supplies read paths is
+   * legitimately 0 for a turn that read a hundred files. Anything asking "did
+   * this worker actually do something" has to use a counter that does not go
+   * down as enforcement improves.
+   *
+   * The harness's startup probe fails closed unless the backend asks before it
+   * acts, so within a real session every tool call passes through here.
+   */
+  allowedToolCalls: number;
 }
 
 const LOG_EXCERPT_MAX = 20_000;
@@ -496,6 +510,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
   const denied: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }> = [];
   /** Reads allowed without a denylist check, because the agent named no path. */
   let unguardedReads = 0;
+  let allowedToolCalls = 0;
   let finalMessage = "";
   let streamOpened = false;
   let msToFirstToken: number | undefined;
@@ -775,6 +790,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
             });
           }
         }
+        allowedToolCalls += 1;
         const allow = options.find((o) => o.kind === "allow_once") ?? options[0];
         return { outcome: { outcome: "selected", optionId: allow?.optionId } };
       }
@@ -970,6 +986,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     sessionId,
     denied: denied.length,
     unguardedReads,
+    allowedToolCalls,
     usageSource,
   });
 
@@ -980,6 +997,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     finalMessageChars: finalMessage.trim().length,
     denied: denied.length,
     unguardedReads,
+    allowedToolCalls,
     usageSource,
     tokensIn,
     tokensOut,
@@ -1005,6 +1023,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     contextSize,
     deniedToolCalls: denied,
     unguardedReads,
+    allowedToolCalls,
     // `null` when the turn ended on its own terms. A caller must be able to
     // tell "the model answered with nothing" from "we stopped waiting", and
     // `finalMessage: ""` looks identical in both cases.

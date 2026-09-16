@@ -39,10 +39,13 @@ import type { GuardDenial } from "../safety/bash-guard.js";
 import {
   buildPolicyDenialClarification,
   classifyWorkerOutcome,
+  policyDenialFrom,
   correctFalseUserRejection,
   buildProtocolRetryHint,
   describeContractForRetry,
   observeReportIsNarration,
+  observeEvidenceVerdict,
+  buildObserveEvidenceHint,
   buildClarificationResumeHint,
   type WorkerOutcome,
 } from "./worker-outcome.js";
@@ -229,6 +232,9 @@ function parsePrNumber(prUrl: string): number | undefined {
 import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 import { inferVerifyContract } from "./verify-contract.js";
 import { rederiveContractPath, reconcileTestContractPaths } from "./contract-rederive.js";
+import { findPlanPolicyConflicts, describePlanPolicyConflicts, type PlanPolicyConflict } from "./plan-policy-conflict.js";
+import type { GitRunner } from "../state/checkpoint-bundle.js";
+import { redactTokenShapes } from "../state/interaction-log.js";
 import { pathMatches, resolveContractPath } from "./path-match.js";
 import { autoResolveContract, buildContractClarification } from "./contract-clarify.js";
 import { diagnosticsFrom, errorsInChangedFiles, buildTypecheckFinding } from "./typecheck-gate.js";
@@ -958,6 +964,29 @@ export interface OrchestratorDeps {
   listRepoFiles?: (worktreePath: string) => Promise<string[]>;
 
   /**
+   * rc.10 (F1, audits 5602/5628): a git runner carrying the REQUESTER's
+   * credentials, for the checkpoint path.
+   *
+   * rc.9 shipped durable checkpoints running git through the bundle module's
+   * own default runner, which sets no environment. Every worktree this harness
+   * allocates is a `blob:none` partial clone, so `git bundle create` fetches
+   * the objects it lacks from origin -- a network read that needs the same
+   * per-request token every other remote operation is routed. Without it both
+   * checkpoints of session aad3fc57 failed on `could not fetch ... from
+   * promisor remote`, and the run reported durability as unknown while holding
+   * a real commit.
+   *
+   * Resolved through the existing PAT routing, scoped to one checkpoint, and
+   * disposed immediately after. Optional: when it is absent the checkpoint
+   * still runs unauthenticated, which is correct for a local or public repo and
+   * honestly recorded as a failure for a private one.
+   */
+  checkpointGitRunner?: (params: { repo: string; requester: string }) => Promise<{
+    run: (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
+    dispose: () => Promise<void>;
+  }>;
+
+  /**
    * beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree, for the
    * best-effort-verify clean-diff check and the scripted-verifier fallback's
    * informational diff. Optional; when absent the clean-diff check treats the
@@ -1522,6 +1551,109 @@ export class OrchestratorLoop {
    * `attempt` is part of the payload rather than implied by row order, because
    * these rows are read by event name across a whole session.
    */
+  /**
+   * rc.10: append one immutable row per worker turn.
+   *
+   * `sub_tasks` holds one row per (cycle, seq) and each retry overwrites it, so
+   * the ledger's account of a retried sub-task is whatever the last attempt
+   * happened to look like. Task 3 of the smoke test ended showing $0.4262756
+   * and no commit, which is true of its final attempt and false of the
+   * sub-task: audits 5590 and 5620 are two separate turns, and Git holds a
+   * commit from the work in between.
+   *
+   * Append-only and additive. Nothing reads `sub_tasks` differently because of
+   * this table; it answers the questions that row cannot -- what the sub-task
+   * really cost, and which commits it really produced -- and gives a resumed
+   * attempt the provenance it needs to get credit for its own earlier work.
+   *
+   * Never allowed to break a run. A ledger that throws while recording history
+   * would turn a reporting gap into a failed session, which is a bad trade for
+   * a table nothing depends on to make progress.
+   */
+  private recordSubTaskAttempt(params: {
+    sessionId: string;
+    subTaskId: string | null;
+    seq: number;
+    cycle: number;
+    status: string;
+    costUsd?: number;
+    baseSha?: string;
+    commitSha?: string | null;
+    commitShas?: readonly string[];
+    filesTouched?: readonly string[];
+    summary?: string | null;
+    startedAtMs?: number;
+  }): void {
+    try {
+      const db = this.deps.state.db;
+      const prior = db
+        .prepare(`SELECT COUNT(*) AS n FROM sub_task_attempts WHERE session_id = ? AND cycle = ? AND seq = ?`)
+        .get(params.sessionId, params.cycle, params.seq) as { n: number } | undefined;
+      const attempt = (prior?.n ?? 0) + 1;
+      const shas = params.commitShas ?? (params.commitSha ? [params.commitSha] : []);
+      db.prepare(
+        `INSERT INTO sub_task_attempts
+           (id, session_id, sub_task_id, cycle, seq, attempt, status, cost_usd, base_sha,
+            commit_sha, commit_shas, files_touched, summary, started_at, ended_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        `${params.sessionId}:${params.cycle}:${params.seq}:${attempt}`,
+        params.sessionId,
+        params.subTaskId ?? null,
+        params.cycle,
+        params.seq,
+        attempt,
+        params.status,
+        params.costUsd ?? 0,
+        params.baseSha ?? null,
+        params.commitSha ?? null,
+        JSON.stringify([...shas]),
+        JSON.stringify([...(params.filesTouched ?? [])]),
+        (params.summary ?? "").slice(0, 2000) || null,
+        params.startedAtMs ?? null,
+        Date.now(),
+      );
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not record sub-task attempt history", {
+        sessionId: params.sessionId,
+        seq: params.seq,
+        err: String(err).slice(0, 300),
+      });
+    }
+  }
+
+  /**
+   * rc.10: every commit recorded by EARLIER attempts of this same sub-task.
+   *
+   * Used by verification to give a continuation credit for work a previous
+   * attempt of the same sub-task already committed, rather than demanding a
+   * cosmetic re-edit of a file that is already correct. Scoped to this
+   * (session, cycle, seq) precisely so an unrelated older commit cannot
+   * satisfy a new contract.
+   */
+  private priorAttemptCommits(sessionId: string, cycle: number, seq: number): string[] {
+    try {
+      const rows = this.deps.state.db
+        .prepare(
+          `SELECT commit_shas FROM sub_task_attempts WHERE session_id = ? AND cycle = ? AND seq = ? ORDER BY attempt`,
+        )
+        .all(sessionId, cycle, seq) as Array<{ commit_shas: string | null }>;
+      const out = new Set<string>();
+      for (const r of rows) {
+        try {
+          for (const s of JSON.parse(r.commit_shas ?? "[]") as string[]) {
+            if (typeof s === "string" && s.length > 0) out.add(s);
+          }
+        } catch {
+          /* a malformed row is skipped, never fatal */
+        }
+      }
+      return [...out];
+    } catch {
+      return [];
+    }
+  }
+
   private auditDeniedToolCalls(params: {
     sessionId: string;
     seq: number;
@@ -1611,12 +1743,16 @@ export class OrchestratorLoop {
     trigger: "sub_task_complete" | "human_gate";
     worktreePath: string | null | undefined;
     branch: string | null | undefined;
+    /** rc.10: needed to route the requester's credentials for the promisor fetch. */
+    repo?: string | null;
+    requester?: string | null;
   }): Promise<void> {
     const { sessionId, cycle, subTaskId, trigger } = params;
     const configuredRoot = (this.deps.config.storage?.checkpoint_root ?? "").trim();
     if (!configuredRoot) return; // disabled; startup already said so, loudly
     if (!params.worktreePath || !params.branch) return;
 
+    let auth: { run: GitRunner; dispose: () => Promise<void> } | null = null;
     try {
       const { createCheckpoint } = await import("../state/checkpoint-bundle.js");
       const { checkpointRootIsSafe } = await import("../state/storage-health.js");
@@ -1626,6 +1762,30 @@ export class OrchestratorLoop {
         this.deps.state.audit("loop.checkpoint_skipped", { sessionId, cycle, reason: safe.reason }, sessionId);
         return;
       }
+
+      /*
+       * rc.10 (F1): authenticate BEFORE bundling.
+       *
+       * A bundle of a partial clone reaches the network. Resolving credentials
+       * is itself allowed to fail -- a vault that will not open must produce an
+       * honest "checkpoint not durable" rather than take the run down -- so the
+       * resolution is audited and the checkpoint proceeds unauthenticated,
+       * which succeeds for a local or public repo and fails legibly otherwise.
+       */
+      const repo = (params.repo ?? "").trim();
+      const requester = (params.requester ?? "").trim();
+      if (this.deps.checkpointGitRunner && repo && requester) {
+        try {
+          auth = await this.deps.checkpointGitRunner({ repo, requester });
+        } catch (err) {
+          this.deps.state.audit(
+            "loop.checkpoint_auth_unavailable",
+            { sessionId, cycle, trigger, repo, error: redactTokenShapes(String(err)) },
+            sessionId,
+          );
+        }
+      }
+
       const res = await createCheckpoint({
         sessionId,
         cycle,
@@ -1634,6 +1794,7 @@ export class OrchestratorLoop {
         worktreePath: params.worktreePath,
         branch: params.branch,
         checkpointRoot: root,
+        git: auth?.run,
       });
       if (res.durable) {
         this.deps.state.db
@@ -1665,7 +1826,15 @@ export class OrchestratorLoop {
         );
       }
     } catch (err) {
-      this.deps.state.audit("loop.checkpoint_failed", { sessionId, cycle, trigger, error: String(err) }, sessionId);
+      this.deps.state.audit(
+        "loop.checkpoint_failed",
+        { sessionId, cycle, trigger, error: redactTokenShapes(String(err)) },
+        sessionId,
+      );
+    } finally {
+      // rc.10: the askpass helper's lifetime ends with the checkpoint, whatever
+      // happened to it.
+      if (auth) await auth.dispose().catch(() => { /* best effort */ });
     }
   }
 
@@ -1997,9 +2166,9 @@ export class OrchestratorLoop {
 
   private async runInner(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
     const row = this.deps.state.db
-      .prepare(`SELECT id, requester, cost_usd, budget_usd, cycles_ran, status, branch FROM sessions WHERE id = ?`)
+      .prepare(`SELECT id, requester, cost_usd, budget_usd, cycles_ran, status, branch, repo FROM sessions WHERE id = ?`)
       .get(sessionId) as
-      | { id: string; requester: string; cost_usd: number; budget_usd: number; cycles_ran: number; status: LoopStatus; branch: string | null }
+      | { id: string; requester: string; cost_usd: number; budget_usd: number; cycles_ran: number; status: LoopStatus; branch: string | null; repo: string | null }
       | undefined;
     if (!row) throw new Error(`session ${sessionId} not found`);
     if (["done", "failed", "aborted"].includes(row.status)) {
@@ -2036,6 +2205,8 @@ export class OrchestratorLoop {
     // plan_paths_suspect block below). Consulted at dispatch so each worker is
     // warned only about the paths in its OWN sub-task.
     let planPathSuspects: SuspectPlanPath[] = [];
+    // rc.10 (F3): planned writes the denylist will refuse, found before spend.
+    let planPolicyConflicts: PlanPolicyConflict[] = [];
     // 1. Planning
     this.setStatus(sessionId, "planning");
     await this.deps.reportProgress?.(sessionId, "planning");
@@ -2415,6 +2586,44 @@ export class OrchestratorLoop {
           }
         } catch (err) {
           this.deps.logger.warn("[loop] plan path validation failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
+      /*
+       * rc.10 (F3, audits 5598/5619): compare the plan against the safety
+       * policy NOW, while it is still free to do so.
+       *
+       * Sub-task 3 required `.env.example`, the denylist contains `.env.*`, and
+       * nothing put those two facts together until a worker had been dispatched
+       * and billed -- twice, the second time after an operator correction that
+       * changed the test path and left the policy untouched. Both were knowable
+       * here, before the plan was accepted.
+       *
+       * Recorded, not enforced. `filesLikelyTouched` is the lead's guess, so
+       * this is evidence that a sub-task is heading for a wall and not proof
+       * that it must hit one. The dispatch gate below acts on it per sub-task;
+       * this row is what makes the conflict visible from the first minute of
+       * the run rather than from the first denial.
+       */
+      if (this.deps.config.loop.plan_policy_conflict_check_enabled !== false) {
+        const conflicts = findPlanPolicyConflicts(
+          plan.subTasks,
+          this.deps.config.safety?.path_denylist ?? [],
+          this.deps.config.safety?.path_denylist_exceptions ?? [],
+        );
+        if (conflicts.length > 0) {
+          planPolicyConflicts = conflicts;
+          this.deps.state.audit(
+            "loop.plan_policy_conflict",
+            { sessionId, count: conflicts.length, conflicts: conflicts.map((c) => ({ seq: c.seq, path: c.path, rule: c.rule })) },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, {
+            event: "plan_policy_conflict", phase: "plan", count: conflicts.length,
+            paths: conflicts.map((c) => c.path),
+          });
+          this.deps.logger.warn("[loop] rc.10: the plan requires a write the safety denylist will refuse", {
+            sessionId, conflicts: conflicts.map((c) => `${c.path} (rule ${c.rule}, seq ${c.seq})`),
+          });
         }
       }
     } catch (err) {
@@ -3274,11 +3483,71 @@ export class OrchestratorLoop {
             return subTaskBaseSha;
           }
         })();
+        // rc.10: the commits earlier attempts of this same sub-task produced.
+        // Read once per turn, before the worker runs, so this attempt's own
+        // commits are not in it -- the point is what came BEFORE.
+        const priorCommitsForVerify = this.priorAttemptCommits(sessionId, cycle, st.seq);
         // beta.57 (P1): capture the sub-task start time so file_written can
         // reject a file that merely pre-existed (mtime/diff freshness check).
         // Previously hard-coded to 0, which disabled the freshness check and
         // let a stale file vacuously satisfy the contract.
         const subTaskStartedAtMs = Date.now();
+
+        /*
+         * rc.10 (F3): do not buy a turn that safety policy will refuse.
+         *
+         * Sub-task 3 of session aad3fc57 required `.env.example` against a
+         * denylist containing `.env.*`. It was dispatched anyway, denied
+         * (audit 5598), escalated as a path mismatch, corrected by an operator
+         * in a way that did not touch policy, dispatched AGAIN, and denied
+         * identically (audit 5619). The second dispatch cost $0.4262756 to
+         * re-learn a fact the harness held before the first one.
+         *
+         * Scoped to the one sub-task: the rest of the plan is unaffected and
+         * still runs. `isResumedSeq` is the release -- once an operator has
+         * answered for this seq, their decision governs and we do not re-ask,
+         * which is what stops this becoming a loop when the answer is "do it
+         * another way" rather than a config change. If the answer WAS a config
+         * change the conflict is simply gone by now, because the check reads
+         * live config.
+         */
+        const myPolicyConflicts = planPolicyConflicts.filter((c) => c.seq === st.seq);
+        if (
+          myPolicyConflicts.length > 0 &&
+          !isResumedSeq &&
+          !clarify.question &&
+          this.deps.config.loop.clarification_escalation_enabled !== false
+        ) {
+          const summary =
+            `blocked by safety policy before dispatch: ` +
+            myPolicyConflicts.map((c) => `\`${c.path}\` (rule \`${c.rule}\`)`).join(", ") +
+            `; no worker was run, so nothing was spent on it`;
+          this.deps.state.db
+            .prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`)
+            .run(summary, Date.now(), subTaskId);
+          this.deps.state.audit(
+            "loop.plan_policy_conflict_gate",
+            {
+              sessionId, seq: st.seq, subTaskId, cycle,
+              conflicts: myPolicyConflicts.map((c) => ({ path: c.path, rule: c.rule })),
+              dispatched: false,
+            },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, {
+            event: "plan_policy_conflict_gate", phase: "worker", seq: st.seq, cycle,
+            paths: myPolicyConflicts.map((c) => c.path),
+          });
+          this.deps.logger.warn("[loop] rc.10: refusing to dispatch a sub-task whose required write the denylist blocks", {
+            sessionId, seq: st.seq, conflicts: myPolicyConflicts.map((c) => `${c.path} (${c.rule})`),
+          });
+          clarify.question = describePlanPolicyConflicts(myPolicyConflicts);
+          clarify.seq = st.seq;
+          clarify.subtask = { title: st.title, intent: st.intent };
+          failed.err = `subtask_${st.seq}_blocked_by_policy: ${summary}`;
+          failed.seq = st.seq;
+          return;
+        }
 
         let result: WorkerResult;
         // beta.63 (Part B): worker SDK call boundary logging. seq + cycle carried
@@ -3449,6 +3718,7 @@ export class OrchestratorLoop {
               hasFinalMessage: fm.length > 0,
               finalMessage: fm.slice(0, 4000),
               unguardedReads: result.unguardedReads ?? 0,
+              allowedToolCalls: result.allowedToolCalls ?? null,
             },
             sessionId,
           );
@@ -3467,6 +3737,27 @@ export class OrchestratorLoop {
           try {
             this.deps.deliverProgress?.(sessionId, "executing");
           } catch { /* best-effort: a progress post must never fail the run */ }
+
+          // rc.10: the same turn, in a row that the next attempt cannot
+          // overwrite. This is the one point every worker turn passes through
+          // regardless of how it ended, which is what makes it the honest place
+          // to append. It sits AFTER the progress post deliberately: beta.85
+          // requires deliverProgress to follow the worker_end_turn audit
+          // closely, and history is the one thing here with no deadline.
+          this.recordSubTaskAttempt({
+            sessionId,
+            subTaskId,
+            seq: st.seq,
+            cycle,
+            status: result.status,
+            costUsd: result.costUsd,
+            baseSha: subTaskBaseSha,
+            commitSha: result.commitSha ?? null,
+            commitShas: result.commitShas ?? (result.commitSha ? [result.commitSha] : []),
+            filesTouched: result.filesChanged,
+            summary: fm.slice(0, 2000),
+            startedAtMs: subTaskStartedAtMs,
+          });
         }
 
         // If the worker itself failed/timed out, halt now.
@@ -3542,6 +3833,23 @@ export class OrchestratorLoop {
         // remap applies (returns the path unchanged), so this never makes
         // verification stricter. Skips file_in_pr (repo-wide, not scoped).
         const rederiveEnabled = this.deps.config.loop.contract_rederive_enabled !== false;
+        /*
+         * rc.10 (audit 5591): give re-derivation the repository's own file list.
+         *
+         * Without it the only ground truth re-derivation has is the handful of
+         * paths THIS RUN touched, so a contract naming a file that has existed
+         * in the repo for a year looks exactly like a contract naming a file
+         * that never existed. That is how a real test path was rewritten to a
+         * phantom one: the sub-task meant to touch it had been denied, so the
+         * declared path was absent from the touched set and read as stale.
+         *
+         * Best-effort by design. When the listing fails the guard simply does
+         * not fire and the rc.10 kind rule still stands on its own.
+         */
+        const repoInventory: string[] =
+          rederiveEnabled && this.deps.listRepoFiles
+            ? await this.deps.listRepoFiles(workerWorktree).catch(() => [] as string[])
+            : [];
         // beta.103: every evidence-backed correction made below is also folded
         // back into st.filesLikelyTouched after the contract is built, so a
         // later revise cycle scopes against the real path instead of the
@@ -3550,7 +3858,7 @@ export class OrchestratorLoop {
         const contract: SubTaskVerify[] = rawContract.map((v) => {
           if (!rederiveEnabled) return v;
           if (!("path" in v) || !v.path || v.kind === "file_in_pr") return v;
-        const rd = rederiveContractPath(v.path, [...discoveredRealPaths]);
+        const rd = rederiveContractPath(v.path, [...discoveredRealPaths], { repoFiles: repoInventory });
         if (rd.suggestion) {
           // rc.9: a correction the evidence hinted at but the rules declined.
           // Recorded with its provenance and confidence so it is available to a
@@ -3845,6 +4153,10 @@ export class OrchestratorLoop {
               {
                 defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
                 baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                      // rc.10: what earlier attempts of THIS sub-task committed,
+                      // so a continuation is not asked to re-edit a file it has
+                      // already written correctly. See verify.ts.
+                      priorAttemptCommits: priorCommitsForVerify,
                 // beta.95: revise-cycle TARGETED-file plan-base window.
                 cycle,
                 reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
@@ -4083,6 +4395,10 @@ export class OrchestratorLoop {
                         // reviseRelaxed/targeted file on a revise-cycle retry lost
                         // its plan-base window. Thread both through here too.
                         baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                      // rc.10: what earlier attempts of THIS sub-task committed,
+                      // so a continuation is not asked to re-edit a file it has
+                      // already written correctly. See verify.ts.
+                      priorAttemptCommits: priorCommitsForVerify,
                         cycle,
                         reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                         acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
@@ -4115,6 +4431,7 @@ export class OrchestratorLoop {
                     await this.durableCheckpoint({
                       sessionId, cycle, subTaskId, trigger: "sub_task_complete",
                       worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                      repo: row.repo, requester: row.requester,
                     });
                     this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
                     done.add(st.seq);
@@ -4374,6 +4691,32 @@ export class OrchestratorLoop {
              */
             const policyDenied =
               NO_CHANGE_ONLY && !result.commitSha && terminalOutcome.kind === "policy_denial";
+            /*
+             * rc.10 (F3, audits 5598/5601/5603): a deterministic denial is a
+             * fact about the turn, not a property of whether anything ELSE got
+             * committed.
+             *
+             * rc.9 predicated every policy-denial path on `!result.commitSha`,
+             * so the case that actually happened fell straight through it. The
+             * worker committed two implementation files AND was refused
+             * `.env.example`; because a commit existed, `policyDenied` was
+             * false, and the escalation took the contract-path-mismatch branch
+             * -- which asked the operator whether the missing template was a
+             * path mistake and offered "accept", "skip", or another path. The
+             * decisive fact, that a safety rule had refused the write, was not
+             * in the question at all.
+             *
+             * When the SAME denial recurred with no new commit (audit 5627) the
+             * classification was correct, which is the clearest possible
+             * evidence that the commit -- not the denial -- was deciding which
+             * question got asked.
+             *
+             * Read straight off the structured denials, independent of commit
+             * state and of NO_CHANGE_ONLY.
+             */
+            const deterministicDenial = policyDenialFrom(result.deniedToolCalls);
+            const policyDeniedWithPartialWork =
+              !policyDenied && !!deterministicDenial && failedResults.length > 0;
             const looksLikeRefusal =
               NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 && !harnessCorrectedIt && !policyDenied;
             if (policyDenied) {
@@ -4554,6 +4897,61 @@ export class OrchestratorLoop {
               clarify.seq = st.seq;
               clarify.subtask = { title: st.title, intent: st.intent };
             }
+            /*
+             * rc.10 (F3): the same question, for the case where the worker got
+             * some of the way there before being refused.
+             *
+             * Placed above the contract-path-mismatch escalation on purpose.
+             * That branch fires on `!!result.commitSha` and would otherwise
+             * claim this turn, which is precisely the substitution audit 5601
+             * made: a policy block reported as a possible path typo. Both facts
+             * belong in the question -- the work is real and must be preserved,
+             * AND the reason the rest is missing is a rule, not a mistake.
+             */
+            if (policyDeniedWithPartialWork && this.deps.config.loop.clarification_escalation_enabled !== false) {
+              const unmet = [...new Set(failedResults.map((x) => x.path).filter((p): p is string => !!p))];
+              const committedFiles = (result.filesChanged ?? []).filter(
+                (f): f is string => typeof f === "string" && !!f.trim(),
+              );
+              this.deps.state.audit(
+                "loop.worker_policy_denied",
+                {
+                  sessionId, seq: st.seq, subTaskId, cycle,
+                  code: deterministicDenial!.code,
+                  rule: deterministicDenial!.rule ?? null,
+                  paths: deterministicDenial!.paths,
+                  tool: deterministicDenial!.tool ?? null,
+                  attempts: deterministicDenial!.attempts,
+                  retryCount: protocolRetries,
+                  failedKinds: failedResults.map((x) => x.kind),
+                  // rc.10: what distinguishes this row from the rc.9 one.
+                  withPartialCommit: true,
+                  commitSha: result.commitSha ?? null,
+                  committedFiles: committedFiles.slice(0, 50),
+                  unmet,
+                },
+                sessionId,
+              );
+              this.deps.interactionLog?.log(sessionId, {
+                event: "worker_policy_denied", phase: "worker", seq: st.seq, cycle,
+                reasonFirstLine:
+                  `${deterministicDenial!.code}${deterministicDenial!.rule ? `: ${deterministicDenial!.rule}` : ""}` +
+                  ` (partial commit preserved)`,
+              });
+              this.deps.logger.warn(
+                "[loop] rc.10: safety policy blocked part of this sub-task; the committed work stands and the block is the reason for the rest",
+                { sessionId, seq: st.seq, rule: deterministicDenial!.rule ?? null, paths: deterministicDenial!.paths, unmet },
+              );
+              clarify.question = buildPolicyDenialClarification({
+                seq: st.seq,
+                title: st.title,
+                policy: deterministicDenial!,
+                workerNote: terminalOutcome.explanation?.slice(0, 300),
+                partialWork: { commitSha: result.commitSha ?? null, committed: committedFiles, unmet },
+              });
+              clarify.seq = st.seq;
+              clarify.subtask = { title: st.title, intent: st.intent };
+            }
             if (
               looksLikeRefusal &&
               this.deps.config.loop.clarification_escalation_enabled !== false
@@ -4670,6 +5068,10 @@ export class OrchestratorLoop {
                     {
                       defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
                       baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                      // rc.10: what earlier attempts of THIS sub-task committed,
+                      // so a continuation is not asked to re-edit a file it has
+                      // already written correctly. See verify.ts.
+                      priorAttemptCommits: priorCommitsForVerify,
                       cycle,
                       reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
                       acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
@@ -4726,6 +5128,7 @@ export class OrchestratorLoop {
                     await this.durableCheckpoint({
                       sessionId, cycle, subTaskId, trigger: "sub_task_complete",
                       worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                      repo: row.repo, requester: row.requester,
                     });
                     retractFailure(st.seq, `basename_rescue:${rescue.kind}`);
                     done.add(st.seq);
@@ -4878,8 +5281,23 @@ export class OrchestratorLoop {
           // it is the same failure: a turn that stopped mid-thought.
           const observeMaxAttempts = Math.min(5, Math.max(1, this.deps.config.loop.worker_protocol_max_attempts ?? 3));
           let observeRetries = 0;
+          /*
+           * rc.10 (F4, audits 5572-5578): an observe turn must have LOOKED at
+           * something, not merely said something.
+           *
+           * The rc.2 gate above asks whether the report is narration, which is
+           * a judgement about English and duly missed a bare "I'll inspect ..."
+           * followed by a scope disclaimer. The counter beside it in the same
+           * audit row -- `unguardedReads: 0` -- was not a judgement about
+           * anything, and the harness already had it. The prerequisite was
+           * completed on four denied nested-agent calls and zero reads, and its
+           * promise was handed to two dependent workers as findings.
+           */
+          const observeHasNoEvidence = () =>
+            this.deps.config.loop.observe_evidence_check_enabled !== false &&
+            observeEvidenceVerdict(result).empty;
           while (
-            observeReportIsNarration(result.finalMessage) &&
+            (observeReportIsNarration(result.finalMessage) || observeHasNoEvidence()) &&
             this.deps.config.loop.worker_protocol_retry_enabled !== false &&
             observeRetries < observeMaxAttempts - 1
           ) {
@@ -4899,7 +5317,7 @@ export class OrchestratorLoop {
             );
             this.deps.interactionLog?.log(sessionId, {
               event: "worker_protocol_retry", phase: "worker", seq: st.seq, cycle,
-              reasonFirstLine: "observe report was progress narration",
+              reasonFirstLine: observeEvidenceVerdict(result).reason ?? "observe report was progress narration",
             });
             this.deps.state.audit(
               "loop.worker_protocol_retry",
@@ -4919,15 +5337,26 @@ export class OrchestratorLoop {
             this.deps.logger.warn("[loop] observe sub-task ended on progress narration; retrying", {
               sessionId, seq: st.seq, retry: observeRetries,
             });
-            const observeHint = buildProtocolRetryHint({
-              outcome: { kind: "progress_only" },
-              contractSummary:
-                `a written report answering this probe's question -- ${st.intent || st.title}. ` +
-                `There is nothing to commit: the REPORT is the deliverable, and it is handed verbatim to the sub-tasks that depend on it. ` +
-                `State what you FOUND (paths, names, versions, conventions, and what is absent), not what you intend to look at.`,
-              attempt: observeRetries + 1,
-              maxAttempts: observeMaxAttempts,
-            });
+            // rc.10: when the turn was denied its way of working, say so and
+            // name the permitted route. "Stop narrating" describes a symptom
+            // at a worker whose four tool calls were all refused.
+            const evidenceVerdict = observeEvidenceVerdict(result);
+            const observeHint = evidenceVerdict.empty
+              ? buildObserveEvidenceHint({
+                  verdict: evidenceVerdict,
+                  intent: st.intent || st.title,
+                  attempt: observeRetries + 1,
+                  maxAttempts: observeMaxAttempts,
+                })
+              : buildProtocolRetryHint({
+                  outcome: { kind: "progress_only" },
+                  contractSummary:
+                    `a written report answering this probe's question -- ${st.intent || st.title}. ` +
+                    `There is nothing to commit: the REPORT is the deliverable, and it is handed verbatim to the sub-tasks that depend on it. ` +
+                    `State what you FOUND (paths, names, versions, conventions, and what is absent), not what you intend to look at.`,
+                  attempt: observeRetries + 1,
+                  maxAttempts: observeMaxAttempts,
+                });
             try {
               const retry = await withTimeout(
                 this.deps.runWorker({
@@ -4958,16 +5387,24 @@ export class OrchestratorLoop {
               break;
             }
           }
-          if (observeReportIsNarration(result.finalMessage)) {
+          if (observeReportIsNarration(result.finalMessage) || observeHasNoEvidence()) {
             // Out of attempts. Fail the sub-task with a record of why -- there
-            // is no question here for a human, only a worker that would not
-            // stop narrating.
+            // is no question here for a human, only a worker that never
+            // produced the findings its dependents need.
             // b100's rule: the worker's own prose never gets interpolated into
             // text an operator reads. The full message is on the audit event
             // below, where it belongs -- as a record, not as an explanation.
+            //
+            // rc.10: say which check refused it. "Ended describing what it
+            // intended to do" is the narration finding and would be simply
+            // untrue of a turn whose four tool calls were all denied.
+            const exhaustedVerdict = observeEvidenceVerdict(result);
+            const failReason = exhaustedVerdict.empty
+              ? exhaustedVerdict.reason!
+              : "every turn ended describing what it intended to do rather than what it found";
             const failSummary =
               `observe sub-task produced no findings after ${observeRetries} retr${observeRetries === 1 ? "y" : "ies"}: ` +
-              `every turn ended describing what it intended to do rather than what it found`;
+              failReason;
             this.deps.state.audit(
               "loop.worker_retry_exhausted",
               {
@@ -4980,16 +5417,22 @@ export class OrchestratorLoop {
                 hasFiles: (result.filesChanged ?? []).length > 0,
                 hasCommit: Boolean(result.commitSha),
                 failedKinds: [],
-                failedChecks: [{ kind: "observe_report", detail: "final message is progress narration, not findings" }],
+                failedChecks: [{ kind: "observe_report", detail: failReason }],
                 contract: "a written report answering the probe's question",
                 finalMessage: (result.finalMessage ?? "").slice(0, 1000),
                 finalOutcome: "failed_verification",
+                // rc.10: the non-linguistic evidence, so a reader can tell a
+                // narrating worker from a blocked one without re-reading prose.
+                evidenceCode: exhaustedVerdict.code ?? null,
+                allowedToolCalls: result.allowedToolCalls ?? null,
+                unguardedReads: result.unguardedReads ?? null,
+                deniedToolCalls: (result.deniedToolCalls ?? []).length,
               },
               sessionId,
             );
             this.deps.interactionLog?.log(sessionId, {
               event: "worker_retry_exhausted", phase: "worker", seq: st.seq, cycle,
-              reasonFirstLine: "observe report was progress narration",
+              reasonFirstLine: failReason.slice(0, 300),
             });
             this.deps.state.db.prepare(
               `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,
@@ -5043,6 +5486,7 @@ export class OrchestratorLoop {
         await this.durableCheckpoint({
           sessionId, cycle, subTaskId, trigger: "sub_task_complete",
           worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+          repo: row.repo, requester: row.requester,
         });
 
         done.add(st.seq);
@@ -11035,8 +11479,10 @@ export class OrchestratorLoop {
      */
     try {
       const row = this.deps.state.db
-        .prepare(`SELECT worktree_path, branch, current_cycle FROM sessions WHERE id = ?`)
-        .get(sessionId) as { worktree_path: string | null; branch: string | null; current_cycle: number } | undefined;
+        .prepare(`SELECT worktree_path, branch, current_cycle, repo, requester FROM sessions WHERE id = ?`)
+        .get(sessionId) as
+        | { worktree_path: string | null; branch: string | null; current_cycle: number; repo: string | null; requester: string | null }
+        | undefined;
       if (row) {
         await this.durableCheckpoint({
           sessionId,
@@ -11045,6 +11491,7 @@ export class OrchestratorLoop {
           trigger: "human_gate",
           worktreePath: row.worktree_path,
           branch: (row.branch ?? "").trim() || null,
+          repo: row.repo, requester: row.requester,
         });
       }
     } catch (err) {

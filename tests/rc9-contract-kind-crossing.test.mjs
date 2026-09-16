@@ -92,14 +92,23 @@ test("rc.9: a genuine SOURCE-to-SOURCE prefix correction still applies", () => {
   assert.equal(r.path, "src/components/layout/sidebar.tsx");
 });
 
-test("rc.9: moving OUT of a test tree is unaffected", () => {
-  // Only the non-test -> test direction is refused. A stale test-tree guess
-  // corrected onto real source is not the failure mode being fixed, and
-  // refusing it would be a second guess in the opposite direction.
+test("rc.9: this direction was left open, and rc.10 closed it -- see audit 5591", () => {
+  // As shipped, rc.9 refused only non-test -> test, on the reasoning that "a
+  // stale test-tree guess corrected onto real source is not the failure mode
+  // being fixed". Audit 5591 was exactly that direction: a real test contract
+  // rewritten into a phantom production path on the evidence of one production
+  // file. The asymmetry was the defect, not a deliberate allowance.
+  //
+  // This case yields nothing either way (the dirs share no trailing segment),
+  // so it never demonstrated the direction it claimed to. It is kept as the
+  // record of an assumption that did not survive contact with a live run; the
+  // direction it was meant to cover is asserted properly in
+  // tests/rc10-contract-evidence-kind.test.mjs.
   const r = rederiveContractPath("src/__tests__/api/webhooks/handler.ts", [
     "src/app/api/webhooks/linear/route.ts",
   ]);
-  assert.equal(r.suggestion, undefined);
+  assert.equal(r.remapped, false);
+  assert.equal(r.suggestion, undefined, "no shared trailing directory, so there was never a candidate");
 });
 
 test("rc.9: the existing guards are untouched", () => {
