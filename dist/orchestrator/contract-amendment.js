@@ -17,21 +17,52 @@ function canonicalArtifactLabel(path) {
     const stem = base.replace(/^\./, "").replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim();
     return stem || undefined;
 }
-function replaceArtifactText(text, oldPath, renderedNew) {
-    let value = text;
-    value = value.split(oldPath).join(renderedNew);
-    const label = canonicalArtifactLabel(oldPath);
-    if (label) {
-        value = value.replace(new RegExp(`\\b(?:the\\s+)?${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), renderedNew);
+function artifactMentioned(text, path) {
+    if (text.includes(path))
+        return true;
+    const label = canonicalArtifactLabel(path);
+    return !!label && new RegExp(`\\b(?:the\\s+)?${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text);
+}
+function directiveFragments(text) {
+    return text.split(/(?<=[.!?;])\s+/).filter(Boolean);
+}
+function directivePolarity(text, oldPath) {
+    if (!artifactMentioned(text, oldPath) && pathTokens(text).length === 0)
+        return "neutral";
+    if (/\b(?:previous|prior|historical|original)\b[^.!?;]{0,100}\b(?:plan|answer|proposal|instruction|contract|said|stated|quoted)\b/i.test(text)) {
+        return "provenance";
     }
+    if (/\b(?:do\s+not|don't|never|without|avoid|must\s+not|may\s+not|shall\s+not|no\s+(?:read|write|access|replacement))\b/i.test(text)) {
+        return "prohibition";
+    }
+    if (/\b(?:instead|replace|substitut|use|document|move)\b/i.test(text))
+        return "affirmative";
+    return "neutral";
+}
+function replaceArtifactText(text, oldPath, renderedNew) {
+    const label = canonicalArtifactLabel(oldPath);
+    const value = directiveFragments(text).map((fragment) => {
+        const polarity = directivePolarity(fragment, oldPath);
+        if (polarity === "prohibition" || polarity === "provenance")
+            return fragment;
+        let next = fragment.split(oldPath).join(renderedNew);
+        if (label) {
+            next = next.replace(new RegExp(`\\b(?:the\\s+)?${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), renderedNew);
+        }
+        return next;
+    }).join(" ");
     return { value, changed: value !== text };
 }
 function isProhibition(text, path) {
-    const at = text.indexOf(path);
-    if (at < 0)
-        return false;
-    const prefix = text.slice(Math.max(0, at - 80), at);
-    return /\b(?:do\s+not|don't|never|without|avoid|must\s+not|may\s+not|no\s+(?:read|write|access))\b/i.test(prefix);
+    return directiveFragments(text).some((fragment) => artifactMentioned(fragment, path) && directivePolarity(fragment, path) === "prohibition");
+}
+function hasPositiveObligationMention(text, path) {
+    return directiveFragments(text).some((fragment) => {
+        if (!artifactMentioned(fragment, path))
+            return false;
+        const polarity = directivePolarity(fragment, path);
+        return polarity !== "prohibition" && polarity !== "provenance";
+    });
 }
 function requiredMentions(task, path) {
     const out = [];
@@ -39,7 +70,7 @@ function requiredMentions(task, path) {
         out.push("filesLikelyTouched");
     for (let i = 0; i < task.successCriteria.length; i++) {
         const criterion = task.successCriteria[i];
-        if (criterion.includes(path) && !isProhibition(criterion, path))
+        if (criterion.includes(path) && hasPositiveObligationMention(criterion, path))
             out.push(`successCriteria[${i}]`);
     }
     for (let i = 0; i < (task.verify ?? []).length; i++) {
@@ -47,9 +78,9 @@ function requiredMentions(task, path) {
         if ("path" in probe && probe.path === path)
             out.push(`verify[${i}]`);
     }
-    if (task.intent.includes(path) && !isProhibition(task.intent, path))
+    if (task.intent.includes(path) && hasPositiveObligationMention(task.intent, path))
         out.push("intent");
-    if (task.workerContext?.changeSpec?.includes(path) && !isProhibition(task.workerContext.changeSpec, path)) {
+    if (task.workerContext?.changeSpec?.includes(path) && hasPositiveObligationMention(task.workerContext.changeSpec, path)) {
         out.push("workerContext.changeSpec");
     }
     return out;
@@ -85,10 +116,14 @@ export function buildArtifactSubstitutionAmendment(input) {
     if (!answer.includes(oldPath)) {
         return { ok: false, reason: `the answer does not name the blocked artifact ${oldPath}` };
     }
-    if (!/\b(?:instead|replace|substitut|use)\b/i.test(answer)) {
-        return { ok: false, reason: "the answer does not explicitly authorize an artifact substitution" };
+    const fragments = directiveFragments(answer);
+    const affirmative = fragments.filter((fragment) => directivePolarity(fragment, oldPath) === "affirmative");
+    const oldPathAuthorised = affirmative.some((fragment) => artifactMentioned(fragment, oldPath) &&
+        /\b(?:replace|substitut|instead\s+of|move)\b/i.test(fragment));
+    if (!oldPathAuthorised) {
+        return { ok: false, reason: "the answer does not affirmatively authorize replacing the blocked artifact" };
     }
-    const candidates = pathTokens(answer).filter((path) => path !== oldPath && !path.startsWith(".env") && !blocked.includes(path));
+    const candidates = pathTokens(affirmative.join(" ")).filter((path) => path !== oldPath && !path.startsWith(".env") && !blocked.includes(path));
     const newPaths = unique(candidates);
     if (newPaths.length === 0) {
         return { ok: false, reason: "the answer names no replacement artifact path" };

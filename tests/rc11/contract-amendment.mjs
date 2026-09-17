@@ -116,6 +116,70 @@ test("rc.11: the obsolete output disappears while its explicit prohibition remai
   assert.ok(!out.amendment.revisedTask.filesLikelyTouched.includes(".env.example"));
 });
 
+test("rc.11 installation hold: an existing prohibition is preserved byte-for-byte", () => {
+  const originalPlan = plan();
+  const restriction = "Do not read, create or modify .env.example.";
+  originalPlan.subTasks[0].successCriteria.push(restriction);
+  const out = buildArtifactSubstitutionAmendment({
+    plan: originalPlan,
+    task: originalPlan.subTasks[0],
+    answer:
+      "Replace .env.example with README.md and CLIENT-OFFBOARDING-AGENT.md instead. " +
+      "Preserve everything else. Do not read, create or modify .env.example.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, true, out.reason);
+  const activated = activateTaskAmendment(originalPlan, out.amendment);
+  assert.equal(activated.subTasks[0].successCriteria.at(-1), restriction);
+  assert.ok(activated.subTasks[0].filesLikelyTouched.includes("README.md"));
+});
+
+test("rc.11 installation hold: a negated substitution is not authorization", () => {
+  const p = plan();
+  const out = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer: "Do not replace .env.example with README.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /affirmatively authorize/);
+});
+
+test("rc.11: negative and historical path mentions cannot become replacement outputs", () => {
+  const p = plan();
+  const historical = "The previous plan said replace .env.example with README.md.";
+  p.subTasks[0].successCriteria.push(historical);
+  const out = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer:
+      "The previous proposal said replace .env.example with README.md. " +
+      "Do not use README.md. Replace .env.example with CLIENT-OFFBOARDING-AGENT.md instead.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, true, out.reason);
+  assert.deepEqual(out.amendment.substitution.newPaths, ["CLIENT-OFFBOARDING-AGENT.md"]);
+  assert.equal(out.amendment.revisedTask.successCriteria.at(-1), historical);
+});
+
+test("rc.11: mixed positive and negative clauses preserve the restriction and apply only the affirmative relation", () => {
+  const p = plan();
+  p.subTasks[0].workerContext.changeSpec +=
+    " Do not read .env.example; update .env.example with placeholders.";
+  const out = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer:
+      "Do not replace .env.example with README.md; replace .env.example with CLIENT-OFFBOARDING-AGENT.md instead.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, true, out.reason);
+  assert.deepEqual(out.amendment.substitution.newPaths, ["CLIENT-OFFBOARDING-AGENT.md"]);
+  assert.match(out.amendment.revisedTask.workerContext.changeSpec, /Do not read \.env\.example/);
+  assert.match(out.amendment.revisedTask.workerContext.changeSpec, /update CLIENT-OFFBOARDING-AGENT\.md/);
+});
+
 test("rc.11: ambiguous or broad guidance cannot activate", () => {
   const p = plan();
   for (const answer of ["Do something else.", "Use README.md.", "Replace .env.example somehow."]) {

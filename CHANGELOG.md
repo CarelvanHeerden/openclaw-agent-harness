@@ -50,6 +50,16 @@ SHA-256, installs and byte-compares that exact artifact, then uploads it for
 release. The downgrade and installed-artifact preflights are packaged CLI
 entries rather than documentation-only commands.
 
+The first tagged candidate was held before installation after independent tests
+found two polarity errors in artifact substitution: an existing “do not modify
+`.env.example`” criterion was rewritten onto the replacement documents, and “do
+not replace `.env.example` with README.md” was accepted as authorization.
+Directive fragments are now classified as affirmative, prohibition, provenance
+or neutral before paths are collected or rewritten. Only affirmative clauses
+authorize and contribute outputs; prohibitions and provenance remain
+byte-for-byte. The hold fixtures and dedicated mutations are included in the
+repository suite.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

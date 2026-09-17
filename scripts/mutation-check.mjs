@@ -3758,6 +3758,24 @@ const MUTATIONS = [
     replace: "          echo \"artifact comparison skipped\" \\",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
+  {
+    name: "rc.11 install hold: existing prohibition clauses are never rewritten onto replacement outputs",
+    file: "dist/orchestrator/contract-amendment.js",
+    find:
+      "        if (polarity === \"prohibition\" || polarity === \"provenance\")\n" +
+      "            return fragment;",
+    replace:
+      "        if (false)\n" +
+      "            return fragment;",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 install hold: negated replacement text cannot authorize its own opposite",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    const affirmative = fragments.filter((fragment) => directivePolarity(fragment, oldPath) === \"affirmative\");",
+    replace: "    const affirmative = fragments;",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
 ];
 
 /**
