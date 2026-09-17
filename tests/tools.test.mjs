@@ -260,6 +260,10 @@ test("harness_health: reports OK when config + schema are minimally valid",
     // model_auth check present and green (stub resolves a key).
     const authCheck = res.details.checks.find((c) => c.name === "model_auth_resolvable");
     assert.equal(authCheck.ok, true);
+    assert.equal(res.details.versionInfo.pluginVersion, "2.0.0-rc.11");
+    assert.equal(res.details.versionInfo.schemaVersion, 2);
+    assert.ok(res.details.schemaReceipt.requiredTables.includes("provider_calls"));
+    assert.ok(res.details.schemaReceipt.requiredTables.includes("task_contract_amendments"));
   });
 
 test("harness_health: DEGRADED when config missing repos",

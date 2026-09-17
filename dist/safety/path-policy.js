@@ -155,13 +155,35 @@ export function resolvePathForPolicy(raw, opts = {}) {
                 if (code !== "ENOENT" && code !== "ENOTDIR") {
                     return { raw, candidates: [], refuse: `cannot resolve '${c}' safely: ${String(err)}` };
                 }
+                // A new child beneath an existing symlink has no realpath yet. Resolve
+                // its nearest existing ancestor and append the missing suffix so a
+                // symlinked directory cannot turn an innocent lexical path into an
+                // out-of-repo write.
+                const suffix = [];
+                let ancestor = probe;
+                while (ancestor && ancestor !== "/") {
+                    const slash = ancestor.lastIndexOf("/");
+                    suffix.unshift(ancestor.slice(slash + 1));
+                    ancestor = slash <= 0 ? "/" : ancestor.slice(0, slash);
+                    try {
+                        const resolvedAncestor = opts.realpath(ancestor);
+                        add(`${resolvedAncestor.replace(/\/+$/, "")}/${suffix.join("/")}`);
+                        break;
+                    }
+                    catch (parentErr) {
+                        const parentCode = parentErr?.code;
+                        if (parentCode !== "ENOENT" && parentCode !== "ENOTDIR") {
+                            return { raw, candidates: [], refuse: `cannot resolve ancestor '${ancestor}' safely: ${String(parentErr)}` };
+                        }
+                    }
+                }
             }
         }
     }
     const candidates = [...canonical];
     if (candidates.length === 0)
         return { raw, candidates: [], refuse: "path normalised to nothing" };
-    return { raw, candidates };
+    return { raw, candidates, repoRoot: root || undefined };
 }
 /**
  * The paths an `apply_patch` will actually touch, read from its own directives.
@@ -331,6 +353,13 @@ export function templateExceptionApplies(resolution, exceptions) {
         .filter((e) => e.length > 0 && !e.includes("*") && !e.endsWith("/")));
     if (allowed.size === 0)
         return false;
-    return resolution.candidates.length > 0 && resolution.candidates.every((c) => allowed.has(c));
+    const root = resolution.repoRoot?.replace(/\/+$/, "");
+    return resolution.candidates.length > 0 && resolution.candidates.every((candidate) => {
+        if (allowed.has(candidate))
+            return true;
+        if (!root || !candidate.startsWith(`${root}/`))
+            return false;
+        return allowed.has(candidate.slice(root.length + 1));
+    });
 }
 //# sourceMappingURL=path-policy.js.map

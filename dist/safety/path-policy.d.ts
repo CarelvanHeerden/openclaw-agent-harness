@@ -55,6 +55,8 @@ export interface PathResolution {
      * caller MUST deny: this is the fail-closed channel, not a warning.
      */
     refuse?: string;
+    /** Canonical repo root used to derive relative/absolute identities. */
+    repoRoot?: string;
 }
 export interface ResolveOptions {
     /** Absolute repo root. Paths inside it are made repo-relative before matching. */
@@ -153,5 +155,5 @@ export declare function scanPatchForSecrets(patchText: string): SecretScan;
  *
  * Empty `exceptions` means the exception does not exist, which is the default.
  */
-export declare function templateExceptionApplies(resolution: Pick<PathResolution, "candidates">, exceptions: readonly string[]): boolean;
+export declare function templateExceptionApplies(resolution: Pick<PathResolution, "candidates" | "repoRoot">, exceptions: readonly string[]): boolean;
 //# sourceMappingURL=path-policy.d.ts.map

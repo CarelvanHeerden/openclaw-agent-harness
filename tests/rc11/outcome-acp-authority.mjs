@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const {
   buildAcpGuard,
@@ -10,7 +13,7 @@ const {
   recoverableDenialFrom,
 } = await import("../../dist/orchestrator/worker-outcome.js");
 
-const guard = () =>
+const guard = (over = {}) =>
   buildAcpGuard({
     bash_whitelist: ["git"],
     bash_denylist_tokens: [],
@@ -18,6 +21,7 @@ const guard = () =>
     path_denylist_exceptions: [],
     allow_git_push: false,
     allow_network_commands: false,
+    ...over,
   });
 
 const paths = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"];
@@ -111,6 +115,69 @@ test("rc.11: legitimate comma-containing filenames remain one target", async () 
     rawInput: {},
   });
   assert.equal(verdict.allow, true);
+});
+
+test("rc.11: repo-relative template exceptions still work with production repoRoot", async () => {
+  const g = guard({
+    path_denylist_exceptions: [".env.example"],
+    repoRoot: "/repo",
+    realpath: (path) => path,
+  });
+  const placeholder = await g({
+    kind: "edit",
+    locations: [],
+    rawInput: { filepath: ".env.example", diff: "+CLIENT_TOKEN=example-placeholder\n" },
+  });
+  assert.equal(placeholder.allow, true);
+
+  const secret = ["xoxb", "1234567890", "abcdefghijklmnop"].join("-");
+  const denied = await g({
+    kind: "edit",
+    locations: [],
+    rawInput: { filepath: ".env.example", diff: `+CLIENT_TOKEN=${secret}\n` },
+  });
+  assert.equal(denied.allow, false);
+  assert.equal(denied.denial.code, "secret_material");
+  assert.doesNotMatch(denied.reason, new RegExp(secret));
+});
+
+test("rc.11: Codex changes content is secret-scanned independently of target policy", async () => {
+  const secret = ["github", "pat", "abcdefghijABCDEFGHIJ1234567890"].join("_");
+  const verdict = await guard({ path_denylist_exceptions: [".env.example"] })({
+    kind: "edit",
+    locations: [],
+    rawInput: {
+      call_id: "call_1",
+      changes: {
+        ".env.example": { type: "add", content: `CLIENT_TOKEN=${secret}\n` },
+      },
+    },
+  });
+  assert.equal(verdict.allow, false);
+  assert.equal(verdict.denial.code, "secret_material");
+});
+
+test("rc.11: a missing child beneath a symlink is judged by its real parent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "rc11-symlink-root-"));
+  const outside = mkdtempSync(join(tmpdir(), "rc11-symlink-outside-"));
+  try {
+    mkdirSync(join(root, "docs"));
+    symlinkSync(outside, join(root, "docs", "linked"));
+    const verdict = await guard({
+      repoRoot: root,
+      realpath: realpathSync,
+      path_denylist: [`${outside}/`],
+    })({
+      kind: "edit",
+      locations: [{ path: "docs/linked/new-file.txt" }],
+      rawInput: {},
+    });
+    assert.equal(verdict.allow, false);
+    assert.equal(verdict.denial.code, "path_denylisted");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
 });
 
 test("rc.11: display-only multi-target ambiguity carries typed bounded recovery", async () => {

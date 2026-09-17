@@ -311,6 +311,8 @@ firstTokenTimeoutSecondsOverride) {
             tokensIn: 0,
             tokensOut: 0,
             reason: `sdk_error: ${String(err)}`,
+            usageMeasured: false,
+            usageSource: "unavailable",
         };
     }
     const reconciled = await reconcileWorkerCommit(worktreePath, subTask, commitIdentity, deps, baseSha, authorizedGeneratedPaths);
@@ -371,6 +373,8 @@ firstTokenTimeoutSecondsOverride) {
         uncommittedFiles,
         streamOpened: sdkResult.streamOpened,
         msToFirstToken: sdkResult.msToFirstToken,
+        usageMeasured: sdkResult.usageMeasured ?? true,
+        usageSource: sdkResult.usageSource,
     };
 }
 /**

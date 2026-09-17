@@ -95,6 +95,34 @@ export function pauseActiveDeadline(
   };
 }
 
+/** Close active accounting at a terminal boundary without inventing a human pause. */
+export function closeActiveDeadline(
+  db: DatabaseSync,
+  sessionId: string,
+  now = Date.now(),
+): ActiveDeadlineSnapshot {
+  const current = row(db, sessionId);
+  const limitMs =
+    current.active_limit_ms ??
+    Math.max(1, current.hard_timeout_seconds ?? 7200) * 1000;
+  const elapsedMs =
+    Math.max(0, current.active_elapsed_ms ?? 0) +
+    (current.active_segment_started_at === null ? 0 : Math.max(0, now - current.active_segment_started_at));
+  db.prepare(
+    `UPDATE sessions
+        SET active_limit_ms = ?, active_elapsed_ms = ?, active_segment_started_at = NULL,
+            human_pause_started_at = NULL, deadline_policy_version = ?, updated_at = ?
+      WHERE id = ?`,
+  ).run(limitMs, elapsedMs, DEADLINE_POLICY_VERSION, now, sessionId);
+  return {
+    limitMs,
+    elapsedMs,
+    remainingMs: Math.max(0, limitMs - elapsedMs),
+    segmentStartedAt: null,
+    pausedAt: null,
+  };
+}
+
 export function activeDeadlineSnapshot(
   db: DatabaseSync,
   sessionId: string,

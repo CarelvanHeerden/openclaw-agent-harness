@@ -574,6 +574,35 @@ export function acpPatchTextFromToolCall(call: AcpToolCallForGuard): string | nu
   return null;
 }
 
+/**
+ * Added content from every recognized edit schema, normalized to patch-style
+ * `+` lines for the independent secret scanner.
+ */
+export function acpEditContentFromToolCall(call: AcpToolCallForGuard): string | null {
+  const raw = call.rawInput as Record<string, unknown> | null | undefined;
+  if (!raw || typeof raw !== "object") return null;
+  const patch = acpPatchTextFromToolCall(call);
+  if (patch) return patch;
+  if (typeof raw.diff === "string" && raw.diff.length > 0) return raw.diff;
+  const changes = raw.changes;
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) return null;
+  const lines: string[] = [];
+  for (const change of Object.values(changes as Record<string, unknown>)) {
+    if (!change || typeof change !== "object" || Array.isArray(change)) continue;
+    const item = change as Record<string, unknown>;
+    const diff = typeof item.diff === "string" ? item.diff : undefined;
+    if (diff) {
+      lines.push(diff);
+      continue;
+    }
+    const content = ["content", "new_text", "text"]
+      .map((key) => item[key])
+      .find((value): value is string => typeof value === "string");
+    if (content !== undefined) lines.push(...content.split(/\r?\n/).map((line) => `+${line}`));
+  }
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
 /** Search-style calls expose a pattern rather than a path. */
 function acpPatternFromToolCall(call: AcpToolCallForGuard): string | null {
   const raw = call.rawInput as Record<string, unknown> | null | undefined;
@@ -677,7 +706,7 @@ export function buildAcpGuard(cfg: {
       };
     }
 
-    const patchText = acpPatchTextFromToolCall(call);
+    const patchText = acpEditContentFromToolCall(call);
     const checked: string[] = [];
 
     for (const p of paths) {

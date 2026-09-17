@@ -15,6 +15,8 @@ export interface ActiveDeadlineSnapshot {
  */
 export declare function resumeActiveDeadline(db: DatabaseSync, sessionId: string, configuredSeconds: number, now?: number): ActiveDeadlineSnapshot;
 export declare function pauseActiveDeadline(db: DatabaseSync, sessionId: string, now?: number): ActiveDeadlineSnapshot;
+/** Close active accounting at a terminal boundary without inventing a human pause. */
+export declare function closeActiveDeadline(db: DatabaseSync, sessionId: string, now?: number): ActiveDeadlineSnapshot;
 export declare function activeDeadlineSnapshot(db: DatabaseSync, sessionId: string, now?: number): ActiveDeadlineSnapshot;
 export declare function extendActiveDeadline(db: DatabaseSync, sessionId: string, seconds: number, now?: number): ActiveDeadlineSnapshot;
 //# sourceMappingURL=active-deadline.d.ts.map

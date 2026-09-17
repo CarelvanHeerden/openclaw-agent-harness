@@ -11,6 +11,7 @@ const {
 const {
   resumeActiveDeadline,
   pauseActiveDeadline,
+  closeActiveDeadline,
   activeDeadlineSnapshot,
 } = await import("../../dist/orchestrator/active-deadline.js");
 const { registerHarnessTools } = await import("../../dist/tools/registration.js");
@@ -136,6 +137,14 @@ test("rc.11: the lead is required to plan observe and behavioral contracts", () 
   assert.match(source, /proposed_output_path/);
 });
 
+test("rc.11: CI packs, installs, compares and uploads one exact release artifact", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.match(workflow, /Pack the tested release artifact/);
+  assert.match(workflow, /verify-installed-artifact\.mjs/);
+  assert.match(workflow, /actions\/upload-artifact@v4/);
+  assert.match(workflow, /shasum -a 256/);
+});
+
 test("rc.11: stale plan or task hashes prevent activation", () => {
   const p = plan();
   const out = buildArtifactSubstitutionAmendment({
@@ -181,6 +190,17 @@ test("rc.11: an open active segment is charged through restart", () => {
   const restarted = resumeActiveDeadline(db, "S", 18000, 70_000);
   assert.equal(restarted.elapsedMs, 60_000);
   assert.equal(restarted.remainingMs, 18_000_000 - 60_000);
+});
+
+test("rc.11: terminal clock closure does not invent a human pause", () => {
+  const db = deadlineDb();
+  resumeActiveDeadline(db, "S", 18000, 10_000);
+  const closed = closeActiveDeadline(db, "S", 20_000);
+  assert.equal(closed.elapsedMs, 10_000);
+  assert.equal(closed.pausedAt, null);
+  const row = db.prepare(`SELECT human_pause_started_at,active_segment_started_at FROM sessions WHERE id='S'`).get();
+  assert.equal(row.human_pause_started_at, null);
+  assert.equal(row.active_segment_started_at, null);
 });
 
 test("rc.11: harness_answer atomically persists and activates the revised task before resume", async () => {
@@ -268,6 +288,25 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
   assert.equal(amendment.status, "active");
   assert.equal(amendment.authorised_by, "U1");
   assert.ok(audits.some((entry) => entry.event === "tool.answer_contract_amendment_activated"));
+
+  const duplicate = await tools.get("harness_answer").execute({
+    sessionId: "S",
+    answer: ANSWER,
+    invokedBy: "U1",
+    clarificationSeq: 3,
+    clarificationId: "Q1",
+  });
+  assert.equal(duplicate.details.idempotent, true);
+  assert.equal(resumed, 1, "duplicate delivery must not start a second loop");
+
+  const conflict = await tools.get("harness_answer").execute({
+    sessionId: "S",
+    answer: `${ANSWER} Also remove the tests.`,
+    invokedBy: "U1",
+    clarificationSeq: 3,
+    clarificationId: "Q1",
+  });
+  assert.equal(conflict.details.amendmentAnswerConflict, true);
 });
 
 test("rc.11: a stale or missing clarification id cannot mutate the plan", async () => {

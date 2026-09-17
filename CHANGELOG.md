@@ -22,7 +22,10 @@ from display metadata. Complete patch targets can survive a matching joined
 display summary; a concrete omitted target, partial patch, malformed move, or
 unknown schema fails closed. `path_unresolvable` carries a typed one-target
 recovery through the adapter and bounded retry. Secret scanning remains
-independent.
+independent and now consumes added content from recognized `patchText`, OpenCode
+`diff`, and Codex `changes` payloads. Repo-root resolution no longer disables an
+exact template exception, and missing children beneath symlinked directories are
+judged through their nearest existing real ancestor.
 
 Load-bearing observe tasks declare structured findings and typed bindings.
 Existing source paths must exist; proposed output paths may be new when their
@@ -32,7 +35,8 @@ and persisted reports are keyed to their producer task and plan revision.
 
 Every provider call now requires a durable start row before dispatch and a
 durable result/cost row before another attempt. Unknown completion enters
-`accounting_incomplete` instead of buying a duplicate call. Artifact checks are
+`accounting_incomplete` instead of buying a duplicate call; an ACP/SDK result
+whose usage was not measured is unknown cost, never a free turn. Artifact checks are
 not behavioral acceptance: declared typecheck/security jobs must be green in CI
 on the candidate SHA before the run may finish successfully.
 
@@ -40,6 +44,11 @@ Terminal advice keys on typed causes, so the word `Preserve` in a failed-smoke
 cancellation cannot suggest a higher budget. Downgrade to rc.10 is blocked while
 any rc.11-only session is nonterminal; a version column is diagnostic, not a
 fence older code can enforce.
+
+Health reports the plugin/schema receipt. CI packs once, records the package
+SHA-256, installs and byte-compares that exact artifact, then uploads it for
+release. The downgrade and installed-artifact preflights are packaged CLI
+entries rather than documentation-only commands.
 
 ## 2.0.0-rc.10
 

@@ -189,6 +189,32 @@ test("rc.11: provider cost must reconcile into aggregate accounting before progr
   assert.match(result.out.reason, /aggregate cost unavailable/);
 });
 
+test("rc.11: an unmeasured provider result is unknown cost, never free", { skip: !available }, async () => {
+  let workerCalls = 0;
+  const result = await runScenario({
+    subTasks: [mutateSubTask({ path: "src/unmeasured.ts" })],
+    worker: async () => {
+      workerCalls += 1;
+      return {
+        status: "failed",
+        filesChanged: [],
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        reason: "sdk_error",
+        finalMessage: "",
+        usageMeasured: false,
+        usageSource: "unavailable",
+      };
+    },
+  });
+  assert.equal(workerCalls, 1);
+  assert.equal(result.session().status, "accounting_incomplete");
+  const call = result.db.prepare(`SELECT status,cost_usd FROM provider_calls WHERE session_id='S1'`).get();
+  assert.equal(call.status, "unknown");
+  assert.equal(call.cost_usd, null);
+});
+
 function headline(over = {}) {
   return buildHeadline({
     phase: "Aborted",
@@ -203,7 +229,7 @@ function headline(over = {}) {
     deployStatus: null,
     worktreePreserved: true,
     failureDetail:
-      "Operator requested cancellation and classification as FAILED SMOKE TEST (rc.10). Preserve completed work and forensic evidence.",
+      "Operator requested cancellation and classification as FAILED SMOKE TEST (rc.10). Preserve completed work and forensic evidence. Do not resume or start replacement; prepare Cursor plan-first remediation for DEVBOT review before implementation.",
     terminalCause: "user_cancel",
     terminalClassification: "failed_smoke_test",
     ...over,
@@ -214,7 +240,7 @@ test("rc.11: exact Preserve cancellation text cannot invent higher-budget or res
   const text = headline();
   assert.match(text, /FAILED SMOKE TEST/);
   assert.doesNotMatch(text, /higher cap/i);
-  assert.doesNotMatch(text, /harness_revise|resume/i);
+  assert.doesNotMatch(text, /run harness_revise|re-run at|to continue from it/i);
 });
 
 test("rc.11: only a typed budget cause gets higher-cap advice", () => {

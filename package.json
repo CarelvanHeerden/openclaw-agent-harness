@@ -20,13 +20,19 @@
       "openclawVersion": "2026.5.12"
     }
   },
+  "bin": {
+    "openclaw-agent-harness-downgrade-preflight": "./scripts/check-downgrade.mjs",
+    "openclaw-agent-harness-verify-artifact": "./scripts/verify-installed-artifact.mjs"
+  },
   "files": [
     "dist",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE",
     "docs",
-    "skills"
+    "skills",
+    "scripts/check-downgrade.mjs",
+    "scripts/verify-installed-artifact.mjs"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql",

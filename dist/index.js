@@ -890,7 +890,13 @@ export function bootstrapHarnessSync(api) {
                     // Priced through the router so a provider that reports tokens
                     // without a cost is billed off the catalogue rather than recorded
                     // as a free turn.
-                    return { ...r, costUsd: backendRouter.priceTurn("worker", r).costUsd ?? 0 };
+                    const priced = backendRouter.priceTurn("worker", r);
+                    return {
+                        ...r,
+                        costUsd: priced.costUsd ?? 0,
+                        usageMeasured: priced.costUsd !== undefined && r.usageSource !== "unavailable",
+                        usageSource: r.usageSource,
+                    };
                 },
                 gitBaseSha: (wt) => git.baseSha(wt),
                 gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),

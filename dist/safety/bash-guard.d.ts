@@ -163,6 +163,11 @@ export declare function acpTargetEvidenceFromToolCall(call: AcpToolCallForGuard)
 /** The `apply_patch` body, when this call has one. Needed for the content check. */
 export declare function acpPatchTextFromToolCall(call: AcpToolCallForGuard): string | null;
 /**
+ * Added content from every recognized edit schema, normalized to patch-style
+ * `+` lines for the independent secret scanner.
+ */
+export declare function acpEditContentFromToolCall(call: AcpToolCallForGuard): string | null;
+/**
  * Builds a permission handler for an ACP backend, to be wired to
  * `session/request_permission`.
  *

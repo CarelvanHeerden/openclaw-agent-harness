@@ -154,6 +154,9 @@ export interface WorkerResult {
      * Undefined when no first token ever arrived (the first_token_timeout hang).
      */
     msToFirstToken?: number;
+    /** False means a zero cost is unknown accounting, not a free call. */
+    usageMeasured?: boolean;
+    usageSource?: string;
 }
 export interface WorkerDeps {
     config: HarnessConfig;
@@ -220,6 +223,8 @@ export interface WorkerDeps {
         unguardedReads?: number;
         /** rc.10 (F4): allowed permission requests this turn, any kind. */
         allowedToolCalls?: number;
+        usageMeasured?: boolean;
+        usageSource?: string;
     }>;
     /**
      * Injected git operations. Wraps `git -C <worktree>` calls.

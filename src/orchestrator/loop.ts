@@ -57,6 +57,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   activeDeadlineSnapshot,
+  closeActiveDeadline,
   extendActiveDeadline,
   pauseActiveDeadline,
   resumeActiveDeadline,
@@ -1377,7 +1378,8 @@ export class OrchestratorLoop {
     const now = Date.now();
     if (status === "awaiting_clarification" || status === "done" || status === "failed" || status === "aborted") {
       try {
-        pauseActiveDeadline(this.deps.state.db, sessionId, now);
+        if (status === "awaiting_clarification") pauseActiveDeadline(this.deps.state.db, sessionId, now);
+        else closeActiveDeadline(this.deps.state.db, sessionId, now);
       } catch (err) {
         this.deps.logger?.warn?.("[loop] could not close active-time segment", { sessionId, status, err: String(err) });
       }
@@ -1791,8 +1793,53 @@ export class OrchestratorLoop {
       role: "worker",
       route: this.routeLog("worker", this.deps.config.models.worker, meta.model).backend,
     });
+    const route = this.routeLog("worker", this.deps.config.models.worker, meta.model);
+    const startedAt = Date.now();
+    this.deps.interactionLog?.logSdkRequest(meta.sessionId, {
+      role: "worker",
+      ...route,
+      phase: "worker",
+      seq: meta.seq,
+      cycle: meta.cycle,
+      prompt: `tracked physical worker invocation ${call.attempt}`,
+      callId: call.id,
+      attempt: call.attempt,
+    });
     try {
       const result = await invoke();
+      if (result.usageMeasured === false) {
+        this.finishProviderCall(meta.sessionId, call.id, {
+          status: "unknown",
+          costUsd: null,
+          providerResultId: result.sdkSessionId ?? null,
+          result: {
+            workerStatus: result.status,
+            reason: result.reason ?? null,
+            usageSource: result.usageSource ?? "unavailable",
+          },
+        });
+        try {
+          this.deps.state.db.prepare(
+            `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                                 worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+          ).run(Date.now(), meta.sessionId);
+        } catch { /* provider_calls row remains the durable evidence */ }
+        this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
+          role: "worker",
+          ...route,
+          phase: "worker",
+          seq: meta.seq,
+          cycle: meta.cycle,
+          finishReason: "usage_unmeasured",
+          durationMs: Date.now() - startedAt,
+          sdkSessionId: result.sdkSessionId,
+          callId: call.id,
+          attempt: call.attempt,
+        });
+        throw new AccountingPersistenceError(
+          `provider returned without measurable usage/cost (${result.usageSource ?? "unavailable"})`,
+        );
+      }
       this.finishProviderCall(meta.sessionId, call.id, {
         status: "completed",
         costUsd: result.costUsd,
@@ -1805,6 +1852,19 @@ export class OrchestratorLoop {
           filesChanged: result.filesChanged ?? [],
         },
       });
+      this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
+        role: "worker",
+        ...route,
+        phase: "worker",
+        seq: meta.seq,
+        cycle: meta.cycle,
+        finishReason: result.reason ?? result.status,
+        costUsd: result.costUsd,
+        durationMs: Date.now() - startedAt,
+        sdkSessionId: result.sdkSessionId,
+        callId: call.id,
+        attempt: call.attempt,
+      });
       return result;
     } catch (err) {
       if (err instanceof AccountingPersistenceError) throw err;
@@ -1812,6 +1872,17 @@ export class OrchestratorLoop {
         status: "failed",
         costUsd: null,
         result: { error: String(err).slice(0, 1000) },
+      });
+      this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
+        role: "worker",
+        ...route,
+        phase: "worker",
+        seq: meta.seq,
+        cycle: meta.cycle,
+        finishReason: "error",
+        durationMs: Date.now() - startedAt,
+        callId: call.id,
+        attempt: call.attempt,
       });
       throw err;
     }
@@ -2480,6 +2551,10 @@ export class OrchestratorLoop {
     sessionTimeoutSeconds = Math.max(1, Math.round(activeDeadline.limitMs / 1000));
     // beta.129: mutable, because an operator can still buy more of it.
     let hardDeadlineMs = startedAt + activeDeadline.remainingMs;
+    const rebaseHardDeadlineFromPersistedClock = () => {
+      const snapshot = activeDeadlineSnapshot(this.deps.state.db, sessionId);
+      hardDeadlineMs = Date.now() + snapshot.remainingMs;
+    };
     if (sessionTimeoutSeconds !== this.deps.config.loop.session_hard_timeout_seconds) {
       this.deps.state.audit(
         "loop.session_timeout_override",
@@ -3420,7 +3495,8 @@ export class OrchestratorLoop {
         ) {
           plan.approvedRevisionScopeFiles = nextApprovedRevisionScope;
           this.deps.state.db
-            .prepare(`UPDATE sessions SET lead_plan_json = ?, updated_at = ? WHERE id = ?`)
+            .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
+                                         minimum_runtime_version = '2.0.0-rc.11', updated_at = ? WHERE id = ?`)
             .run(JSON.stringify(plan), Date.now(), sessionId);
           this.deps.state.audit(
             "loop.revision_scope_approved",
@@ -3727,6 +3803,7 @@ export class OrchestratorLoop {
                   subTaskTitle: st.title,
                   resumeStatus: "executing",
                 });
+                rebaseHardDeadlineFromPersistedClock();
                 if (grantedUsd > 0) {
                   budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
                   budgetOverrideGranted = true;
@@ -5883,6 +5960,18 @@ export class OrchestratorLoop {
                   `observe bindings would create a policy conflict: ${conflicts.map((c) => `${c.path} (${c.rule})`).join(", ")}`,
                 );
               }
+              const workflowFiles = planTouchesWorkflows(changedTasks);
+              if (workflowFiles.length > 0 && this.deps.tokenScopes) {
+                const canPush = await this.deps.tokenScopes({
+                  repoFullName: plan.repo,
+                  requester: row.requester,
+                }).catch(() => null);
+                if (canPush === false) {
+                  throw new Error(
+                    `observe bindings introduced workflow files but the routed token lacks workflow scope: ${workflowFiles.join(", ")}`,
+                  );
+                }
+              }
               const resultRevision = sourceRevision + (bound.changedConsumers.length > 0 ? 1 : 0);
               const reportId =
                 `${sessionId}:${cycle}:${st.seq}:${sourceRevision}:${observeValidation.bindingsHash.slice(0, 16)}`;
@@ -6192,6 +6281,7 @@ export class OrchestratorLoop {
             dailyCapUsd: dailyMax,
             resumeStatus: "reviewing",
           });
+          rebaseHardDeadlineFromPersistedClock();
           if (grantedUsd > 0) {
             budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
             budgetOverrideGranted = true;
@@ -6920,6 +7010,7 @@ export class OrchestratorLoop {
             ...(dailyBlocked ? { dailyCapUsd: this.dailyMaxUsd() } : {}),
             resumeStatus: "reviewing",
           });
+          rebaseHardDeadlineFromPersistedClock();
           if (grantedUsd > 0) {
             budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
             budgetOverrideGranted = true;
@@ -6956,6 +7047,7 @@ export class OrchestratorLoop {
           remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
           observedCycleMs: maxCycleMs,
         });
+        rebaseHardDeadlineFromPersistedClock();
         if (grantedSeconds > 0) {
           hardDeadlineMs += grantedSeconds * 1000;
           sessionTimeoutSeconds += grantedSeconds;
@@ -7361,6 +7453,7 @@ export class OrchestratorLoop {
           // it was asked from is not a phase to be parked in.
           resumeStatus: "executing",
         });
+        rebaseHardDeadlineFromPersistedClock();
         if (grantedUsd > 0) {
           budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
           budgetOverrideGranted = true;
@@ -7393,6 +7486,7 @@ export class OrchestratorLoop {
           // it was asked from is not a phase to be parked in.
           resumeStatus: "executing",
         });
+        rebaseHardDeadlineFromPersistedClock();
         if (grantedSeconds > 0) {
           hardDeadlineMs += grantedSeconds * 1000;
           sessionTimeoutSeconds += grantedSeconds;
@@ -10335,12 +10429,20 @@ export class OrchestratorLoop {
     });
 
     try {
+      const now = Date.now();
+      const clarificationId = randomUUID();
+      this.deps.state.db.exec("BEGIN IMMEDIATE");
+      pauseActiveDeadline(this.deps.state.db, p.sessionId, now);
       this.deps.state.db
         .prepare(
-          `UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, clarification_subtask = ?, updated_at = ? WHERE id = ?`,
+          `UPDATE sessions SET status = 'awaiting_clarification', clarification_question = ?,
+                               clarification_seq = ?, clarification_id = ?, clarification_answer = NULL,
+                               clarification_subtask = ?, last_progress_at = ?, updated_at = ? WHERE id = ?`,
         )
-        .run(question, TIME_EXTENSION_SEQ, renderTimeExtensionMarker(waitUntilMs), Date.now(), p.sessionId);
+        .run(question, TIME_EXTENSION_SEQ, clarificationId, renderTimeExtensionMarker(waitUntilMs), now, now, p.sessionId);
+      this.deps.state.db.exec("COMMIT");
     } catch (err) {
+      try { this.deps.state.db.exec("ROLLBACK"); } catch { /* no transaction */ }
       this.deps.logger.warn("[loop] could not post the time-extension question; shipping instead", { sessionId: p.sessionId, err: String(err) });
       return 0;
     }
@@ -10358,12 +10460,13 @@ export class OrchestratorLoop {
     this.deps.interactionLog?.log(p.sessionId, { event: "time_extension_requested", phase: "review", question });
     // Drives the progress snapshot and the Slack post, which is how the
     // operator finds out there is a question at all.
-    this.setStatus(p.sessionId, "awaiting_clarification");
+    this.deps.interactionLog?.log(p.sessionId, { event: "state_transition", phase: "unknown", status: "awaiting_clarification" });
+    try { this.deps.deliverProgress?.(p.sessionId, "awaiting_clarification"); } catch { /* best effort */ }
 
     const clearPause = () => {
       try {
         this.deps.state.db
-          .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
+          .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_id = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
           .run(Date.now(), p.sessionId);
       } catch (err) {
         this.deps.logger.warn("[loop] could not clear the time-extension pause", { sessionId: p.sessionId, err: String(err) });
@@ -10485,12 +10588,20 @@ export class OrchestratorLoop {
     });
 
     try {
+      const now = Date.now();
+      const clarificationId = randomUUID();
+      this.deps.state.db.exec("BEGIN IMMEDIATE");
+      pauseActiveDeadline(this.deps.state.db, p.sessionId, now);
       this.deps.state.db
         .prepare(
-          `UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_answer = NULL, clarification_subtask = ?, updated_at = ? WHERE id = ?`,
+          `UPDATE sessions SET status = 'awaiting_clarification', clarification_question = ?,
+                               clarification_seq = ?, clarification_id = ?, clarification_answer = NULL,
+                               clarification_subtask = ?, last_progress_at = ?, updated_at = ? WHERE id = ?`,
         )
-        .run(question, BUDGET_EXTENSION_SEQ, renderBudgetExtensionMarker(waitUntilMs), Date.now(), p.sessionId);
+        .run(question, BUDGET_EXTENSION_SEQ, clarificationId, renderBudgetExtensionMarker(waitUntilMs), now, now, p.sessionId);
+      this.deps.state.db.exec("COMMIT");
     } catch (err) {
+      try { this.deps.state.db.exec("ROLLBACK"); } catch { /* no transaction */ }
       this.deps.logger.warn("[loop] could not post the budget question; proceeding as if unasked", {
         sessionId: p.sessionId,
         err: String(err),
@@ -10511,12 +10622,13 @@ export class OrchestratorLoop {
       p.sessionId,
     );
     this.deps.interactionLog?.log(p.sessionId, { event: "budget_extension_requested", phase: "review", question });
-    this.setStatus(p.sessionId, "awaiting_clarification");
+    this.deps.interactionLog?.log(p.sessionId, { event: "state_transition", phase: "unknown", status: "awaiting_clarification" });
+    try { this.deps.deliverProgress?.(p.sessionId, "awaiting_clarification"); } catch { /* best effort */ }
 
     const clearPause = () => {
       try {
         this.deps.state.db
-          .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
+          .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_id = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
           .run(Date.now(), p.sessionId);
       } catch (err) {
         this.deps.logger.warn("[loop] could not clear the budget pause", { sessionId: p.sessionId, err: String(err) });
@@ -10727,7 +10839,8 @@ export class OrchestratorLoop {
     // sub-task that exists only in memory is one nobody can see running.
     try {
       this.deps.state.db
-        .prepare(`UPDATE sessions SET lead_plan_json = ? WHERE id = ?`)
+        .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
+                                     minimum_runtime_version = '2.0.0-rc.11' WHERE id = ?`)
         .run(JSON.stringify(plan), sessionId);
     } catch (err) {
       this.deps.logger.warn("[loop] could not persist the CI repair sub-task", { sessionId, err: String(err) });
@@ -10830,7 +10943,8 @@ export class OrchestratorLoop {
     // The plan on the row is what the progress UI and the smoke report read.
     try {
       this.deps.state.db
-        .prepare(`UPDATE sessions SET lead_plan_json = ? WHERE id = ?`)
+        .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
+                                     minimum_runtime_version = '2.0.0-rc.11' WHERE id = ?`)
         .run(JSON.stringify(plan), sessionId);
     } catch (err) {
       this.deps.logger.warn("[loop] could not persist the finding repair sub-task(s)", { sessionId, err: String(err) });
@@ -12189,12 +12303,35 @@ export class OrchestratorLoop {
       this.deps.state.audit("loop.checkpoint_failed", { sessionId, trigger: "human_gate", error: String(err) }, sessionId);
     }
 
-    this.setStatus(sessionId, "awaiting_clarification");
     const clarificationId = randomUUID();
-    this.deps.state.db.prepare(
-      `UPDATE sessions SET clarification_question = ?, clarification_seq = ?, clarification_id = ?,
-                           clarification_answer = NULL, clarification_subtask = ?, updated_at = ? WHERE id = ?`,
-    ).run(question, seq, clarificationId, subtask ? JSON.stringify(subtask) : null, Date.now(), sessionId);
+    const pausedAt = Date.now();
+    this.deps.state.db.exec("BEGIN IMMEDIATE");
+    try {
+      pauseActiveDeadline(this.deps.state.db, sessionId, pausedAt);
+      this.deps.state.db.prepare(
+        `UPDATE sessions SET status = 'awaiting_clarification', clarification_question = ?,
+                             clarification_seq = ?, clarification_id = ?, clarification_answer = NULL,
+                             clarification_subtask = ?, last_progress_at = ?, updated_at = ? WHERE id = ?`,
+      ).run(
+        question,
+        seq,
+        clarificationId,
+        subtask ? JSON.stringify(subtask) : null,
+        pausedAt,
+        pausedAt,
+        sessionId,
+      );
+      this.deps.state.db.exec("COMMIT");
+    } catch (err) {
+      try { this.deps.state.db.exec("ROLLBACK"); } catch { /* no transaction */ }
+      throw err;
+    }
+    this.deps.interactionLog?.log(sessionId, {
+      event: "state_transition",
+      phase: "unknown",
+      status: "awaiting_clarification",
+    });
+    try { this.deps.deliverProgress?.(sessionId, "awaiting_clarification"); } catch { /* best effort */ }
     this.deps.state.audit(
       "loop.clarification_requested",
       { sessionId, seq, clarificationId, question: question.slice(0, 1000), cycle: cycles },

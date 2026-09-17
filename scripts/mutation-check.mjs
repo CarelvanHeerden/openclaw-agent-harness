@@ -3737,6 +3737,27 @@ const MUTATIONS = [
     replace: "",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
+  {
+    name: "rc.11: every recognized edit schema feeds independent secret scanning",
+    file: "dist/safety/bash-guard.js",
+    find: "        const patchText = acpEditContentFromToolCall(call);",
+    replace: "        const patchText = acpPatchTextFromToolCall(call);",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: an unmeasured provider result is unknown cost rather than free",
+    file: "dist/orchestrator/loop.js",
+    find: "            if (result.usageMeasured === false) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: CI installs and compares the exact packed release artifact",
+    file: ".github/workflows/ci.yml",
+    find: "          node \"$GITHUB_WORKSPACE/scripts/verify-installed-artifact.mjs\" \\",
+    replace: "          echo \"artifact comparison skipped\" \\",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
 ];
 
 /**
