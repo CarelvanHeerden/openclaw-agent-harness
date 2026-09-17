@@ -335,6 +335,25 @@ its work. Before rc.10 a partial commit outranked the denial and you were asked
 about a path mismatch instead. If you see a clarification naming both a rule and
 a preserved commit, the commit is safe on the branch and is not the problem.
 
+### Answering with replacement artifacts (rc.11)
+
+Use the current `clarificationId` from `harness_progress`; a sequence number is
+not enough because later questions can reuse it. An explicit answer such as
+“replace `old/path` with `docs/a.md` and `docs/b.md` instead” is applied as a
+scoped task amendment. Check the `tool.answer_contract_amendment_activated`
+audit: it names the amendment, removed/added artifacts and changed fields.
+
+The old path may remain in an explicit prohibition or historical record. It
+must not remain as requested scope, output, access or verification. If the
+answer changes broader semantics or cannot be mapped uniquely, the session
+stays paused and asks for an exact restatement; it never dispatches the stale
+contract.
+
+Human-wait time does not consume the session clock. Amendment generation and
+validation do, and the remaining active milliseconds survive restart. A crash
+inside an open active segment is charged through restart rather than granting a
+fresh allowance.
+
 ## What the session budget means
 
 The approved figure is divided before anything spends it:
@@ -434,6 +453,47 @@ A sub-task with several rows and a commit on a non-final one is the shape to
 look for when Git shows work the ledger seems not to know about. Sessions that
 ran before rc.10 have no rows here; the audit log's `loop.worker_end_turn`
 events are the fallback, one per turn.
+
+`provider_calls` is the required accounting spine. A `started` row must exist
+before every provider dispatch, and result/cost must be persisted before another
+attempt. `accounting_incomplete` means completion or cost is unknown: preserve
+the worktree and reconcile that row/provider session before any retry. Do not
+force-resume it.
+
+## Runtime downgrade safety (rc.11)
+
+Do not install rc.10 while any nonterminal session has
+`minimum_runtime_version = '2.0.0-rc.11'`. The column is diagnostic only; rc.10
+does not read it, and an unfamiliar status is not a fence because its
+`harness_resume(force:true)` path can accept nonterminal unknown states.
+
+The safe rollback sequence is:
+
+1. Stop admission of new sessions.
+2. Let every rc.11-only session reach `done`, `failed` or `aborted`, or cancel it
+   under rc.11 while preserving its worktree.
+3. Query for blockers:
+
+```sql
+SELECT id, status, minimum_runtime_version
+FROM sessions
+WHERE status NOT IN ('done','failed','aborted')
+  AND minimum_runtime_version IS NOT NULL;
+```
+
+4. Downgrade only when the query is empty. If it is not empty, rollback is
+   blocked; do not rely on a version marker or unknown status to protect state.
+
+Use `node scripts/check-downgrade.mjs <state.db> <target-version>` for the
+read-only preflight. Before a new smoke test, compare the installed package to
+the exact tested release checkout with:
+
+```
+node scripts/verify-installed-artifact.mjs <tested-release-checkout> <installed-package-root>
+```
+
+Keep the reported manifest SHA with the CI run. A matching version string alone
+is insufficient: two different builds can carry the same version.
 
 ## PAT cache lifecycle
 

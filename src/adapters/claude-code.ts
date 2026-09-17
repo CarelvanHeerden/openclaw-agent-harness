@@ -1385,7 +1385,7 @@ export async function runLeadSdk(params: {
     "    reviewChecklist: string[],",
     "    acknowledgedConventions?: string[] (exact source names of every repo convention whose frontmatter sets alwaysApply:true),",
     "    riskLevel: 'low'|'medium'|'high' }",
-    "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope: 'local', taskMode: 'observe'|'mutate'|'mixed', verify: VerifyCheck[], workerContext?: WorkerContext }",
+    "SubTask: { seq: number, title: string, intent: string, filesLikelyTouched: string[], successCriteria: string[], estimatedTokens: number, dependsOn?: number[], contractScope: 'local', taskMode: 'observe'|'mutate'|'mixed', verify: VerifyCheck[], workerContext?: WorkerContext, observeContract?: ObserveContract, requiredBehaviorChecks?: RequiredBehaviorCheck[] }",
     // beta.66 (warm-worker-context): the schema for the handover Fable gives the worker.
     "WorkerContext: { rationale: string, codeExcerpts?: {path: string, startLine?: number, snippet: string, note?: string}[], changeSpec?: string, gotchas?: string[], relatedSymbols?: string[] }",
     // beta.57 (P1): the verify contract is now an EXPLICIT, REQUIRED field.
@@ -1398,8 +1398,12 @@ export async function runLeadSdk(params: {
     "  { kind: 'file_written',   path: string }  -> the file exists in the worktree with fresh content",
     "  { kind: 'file_committed', path: string }  -> the file appears in a commit made during the sub-task",
     "  { kind: 'commit_made' }                   -> at least one new commit exists vs the sub-task's start",
+    "ObserveContract: { requiredFindings: string[], requireEvidence?: boolean, bindings: { name: string, type: 'existing_repo_path'|'proposed_output_path'|'existing_symbol'|'status'|'blocker'|'contract_patch', required?: boolean, applyTo?: { consumerSeq: number, fields: ('filesLikelyTouched'|'verify'|'intent'|'successCriteria'|'workerContext.changeSpec')[], placeholder?: string }[] }[] }",
+    "RequiredBehaviorCheck: { id: string, ciCheck: string, command?: string, required?: boolean } -- ciCheck names the GitHub check/job that must pass on the exact candidate SHA.",
     "- THIS IS AN IMPLEMENTATION PLAN: it MUST contain at least one taskMode:'mutate' or taskMode:'mixed' sub-task that writes and commits code. An all-observe plan is invalid and cannot open a PR.",
     "- EVERY sub-task MUST carry an explicit `verify` array AND an explicit `taskMode`. For taskMode 'observe' the correct contract is `verify: []`. For taskMode 'mutate' the contract MUST include `{ kind: 'commit_made' }` plus a `file_written`/`file_committed` entry per load-bearing file. Do NOT omit these fields.",
+    "- LOAD-BEARING OBSERVE CONTRACTS: if a later mutate task depends on an observe task for exact paths, symbols, status/blockers or contract additions, the observe task MUST declare observeContract. Give each required finding/binding a stable name and apply every binding to all dependent normative fields before dispatch. Use existing_repo_path only for files that already exist; use proposed_output_path for a new generated/migration path and cite an existing parent/naming convention. Tool activity is not a finding.",
+    "- BEHAVIORAL ACCEPTANCE: file/commit probes prove artifacts, not behavior. When success criteria require typecheck, tests, security tests, lint or build behavior, add requiredBehaviorChecks naming the repository's actual CI jobs discovered during investigation. Missing or failed named jobs block successful completion on the candidate SHA.",
     // beta.66 (warm-worker-context): THE FOUNDING GOAL of this harness. You are
     // the smart, expensive orchestrator. Your workers are CHEAPER models that
     // will NOT re-investigate the repo. Hand them your findings, not a bare

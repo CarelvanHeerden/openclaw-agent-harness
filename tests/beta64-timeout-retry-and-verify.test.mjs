@@ -109,8 +109,8 @@ function baseDeps(state, over = {}) {
   };
 }
 
-// ---- P0-2: retry-on-timeout re-invokes once, then terminal on the 2nd fail ----
-test("beta64/P0-2: a worker timeout RETRIES once on a fresh session then goes terminal on the 2nd failure",
+// ---- rc.11: an unknown in-flight provider call is not duplicated ----
+test("rc.11: a worker timeout with unknown completion is not blindly retried",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "R1");
@@ -129,14 +129,10 @@ test("beta64/P0-2: a worker timeout RETRIES once on a fresh session then goes te
       },
     }));
     const outcome = await loop.run("R1", brief);
-    assert.equal(outcome.status, "failed", "terminal after retry exhausted");
-    assert.equal(workerCalls, 2, "worker invoked exactly twice: original + ONE retry");
+    assert.equal(outcome.status, "failed");
+    assert.equal(workerCalls, 1, "unknown provider completion must not be duplicated");
     const retries = state.audits.filter((e) => e.event === "loop.worker_timeout_retry");
-    assert.equal(retries.length, 1, "exactly one retry audit");
-    assert.equal(retries[0].payload.attempt, 2);
-    assert.equal(retries[0].payload.seq, 1);
-    // worker_timeout audited for both attempts
-    assert.equal(state.audits.filter((e) => e.event === "loop.worker_timeout").length, 2);
+    assert.equal(retries.length, 0);
     state.close();
   });
 

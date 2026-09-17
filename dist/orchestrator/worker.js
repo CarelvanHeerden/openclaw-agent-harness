@@ -207,6 +207,9 @@ authorizedGenerators = []) {
     const generatorBlock = renderGeneratorInstruction(authorizedGenerators);
     if (generatorBlock)
         lines.push(generatorBlock);
+    if (subTask.taskMode === "observe" && subTask.observeContract) {
+        lines.push("", "## Structured observe deliverable (REQUIRED)", "Your final message must be JSON (or an OBSERVE_RESULT fenced JSON block) with:", '{"status":"ok|blocked","findings":[{"id":"...","summary":"...","evidence":[{"path":"...","line":1}]}],"bindings":[{"name":"...","type":"...","value":"...","evidence":[{"path":"..."}]}],"blockers":[]}', `Required finding ids: ${subTask.observeContract.requiredFindings.join(", ") || "(none)"}`, `Required bindings: ${subTask.observeContract.bindings.map((binding) => `${binding.name}:${binding.type}`).join(", ") || "(none)"}`, "A promise to inspect, a tool-call count, or prose without this contract is not a finding and will not release dependent work.");
+    }
     return lines.join("\n");
 }
 /**

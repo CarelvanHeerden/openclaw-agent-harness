@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.0.0-rc.11
+
+The 16 September Client Offboarding smoke test was cancelled after rc.10
+delivered an operator correction as prose but resumed the task's old structured
+contract. The worker correctly promised not to access `.env*`; a blanket
+negative-clause regex called that compliance a refusal. A recoverable four-file
+ACP display path lost its typed remedy, and a load-bearing observer was accepted
+after one allowed call despite returning none of its required findings.
+
+rc.11 makes clarification changes durable task amendments. The exact blocked
+artifact and replacement artifacts are transformed and validated
+deterministically, every other task field is preserved, the live denylist is
+rechecked, and the revised full task and original contract are activated in one
+transaction. Broader semantic changes stay paused. Clarifications have stable
+identities, active runtime is persisted across resumes, human-wait time is
+excluded, and amendment work consumes the original allowance.
+
+ACP target policy now distinguishes complete execution-authoritative schemas
+from display metadata. Complete patch targets can survive a matching joined
+display summary; a concrete omitted target, partial patch, malformed move, or
+unknown schema fails closed. `path_unresolvable` carries a typed one-target
+recovery through the adapter and bounded retry. Secret scanning remains
+independent.
+
+Load-bearing observe tasks declare structured findings and typed bindings.
+Existing source paths must exist; proposed output paths may be new when their
+parent convention is evidenced. Validated bindings atomically amend every
+dependent scope, criterion, change specification and verifier before dispatch,
+and persisted reports are keyed to their producer task and plan revision.
+
+Every provider call now requires a durable start row before dispatch and a
+durable result/cost row before another attempt. Unknown completion enters
+`accounting_incomplete` instead of buying a duplicate call. Artifact checks are
+not behavioral acceptance: declared typecheck/security jobs must be green in CI
+on the candidate SHA before the run may finish successfully.
+
+Terminal advice keys on typed causes, so the word `Preserve` in a failed-smoke
+cancellation cannot suggest a higher budget. Downgrade to rc.10 is blocked while
+any rc.11-only session is nonterminal; a version column is diagnostic, not a
+fence older code can enforce.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

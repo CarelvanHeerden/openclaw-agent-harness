@@ -321,7 +321,12 @@ test("harness_cancel: sets abort flag on non-terminal session",
     assert.match(row.reactions_json, /"abort":true/);
     // rc.2: the tool delegates, and passes on who asked and why, so the loop's
     // audit trail can name them.
-    assert.deepEqual(runtime.cancelCalls, [{ sessionId: "S1", reason: "test", requester: "U1" }]);
+    assert.deepEqual(runtime.cancelCalls, [{
+      sessionId: "S1",
+      reason: "test",
+      requester: "U1",
+      classification: "operator_cancelled",
+    }]);
     assert.ok(runtime.audits.some((a) => a.event === "tool.cancel"));
   });
 

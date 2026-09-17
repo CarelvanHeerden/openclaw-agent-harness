@@ -45,6 +45,14 @@ import { isBudgetExtensionPause, readBudgetExtensionWaitUntil } from "../orchest
 import { resolveBudgetPolicy } from "../orchestrator/budget-policy.js";
 import { CLARIFICATION_POLICY_VERSION } from "../version.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  activateTaskAmendment,
+  buildArtifactSubstitutionAmendment,
+} from "../orchestrator/contract-amendment.js";
+import { findPlanPolicyConflicts } from "../orchestrator/plan-policy-conflict.js";
+import { pauseActiveDeadline, resumeActiveDeadline } from "../orchestrator/active-deadline.js";
+import type { LeadPlan, LeadPlanSubTask } from "../orchestrator/lead.js";
 
 type ToolDisposer = (() => void) | { dispose?: () => void; unregister?: () => void };
 
@@ -758,20 +766,34 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           properties: {
             sessionId: { type: "string", minLength: 1 },
             reason: { type: "string", maxLength: 500 },
+            classification: {
+              type: "string",
+              enum: ["failed_smoke_test", "operator_cancelled"],
+              description: "Typed operator classification. It controls terminal advice; free-text reason is never parsed for budget causality.",
+            },
             invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. REQUIRED; must be in slack.authorised_users." },
           },
           required: ["sessionId", "invokedBy"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
-          const { sessionId, reason, invokedBy } = input as { sessionId: string; reason?: string; invokedBy?: string };
+          const { sessionId, reason, classification, invokedBy } = input as {
+            sessionId: string;
+            reason?: string;
+            classification?: "failed_smoke_test" | "operator_cancelled";
+            invokedBy?: string;
+          };
           // beta.57 (P2): invokedBy is REQUIRED. It used to be optional and
           // only checked when present, so omitting it skipped authorisation
           // entirely on a privileged (session-killing) tool.
           if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
             return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
           }
-          liveState().audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked", invokedBy: invokedBy ?? null }, sessionId);
+          liveState().audit(
+            "tool.cancel",
+            { sessionId, reason: reason ?? "tool-invoked", classification: classification ?? "operator_cancelled", invokedBy: invokedBy ?? null },
+            sessionId,
+          );
           // rc.2: the whole decision -- flag, terminate now, or no-op -- belongs
           // to the loop, which is the only thing that knows whether a loop is
           // actually running. This handler used to set the abort flag itself and
@@ -781,6 +803,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           const out = await liveRuntime().loop.cancelSession(sessionId, {
             reason: reason ?? "tool-invoked",
             requester: invokedBy,
+            classification: classification ?? "operator_cancelled",
           });
           if (out.notFound) {
             return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
@@ -1603,6 +1626,17 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           }
           const row = liveDb().prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId) as { status: string; crystallised_prompt?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+          if (row.status === "accounting_incomplete") {
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `Cannot resume ${sessionId}: a provider call has unknown or unpersisted cost/result state. ` +
+                  `Reconcile the provider_calls ledger before dispatching another paid attempt.`,
+              }],
+              details: { ok: false, accountingIncomplete: true, badStatus: row.status },
+            };
+          }
           const RESUMABLE = ["interrupted", "resumable"];
           // beta.60: force-unstick path. A session can end up `executing`/`planning`
           // with its sub-task row stuck `running` but NO live loop-runner (the b59
@@ -1710,6 +1744,12 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             description:
               "Optional but strongly recommended: the clarificationSeq you read from harness_progress. When supplied it must still be the open question, so an answer composed against one pause cannot land on a different one that opened while you were asking the human. REQUIRED PRACTICE for any answer a calling agent decided by itself.",
           },
+          clarificationId: {
+            type: "string",
+            minLength: 1,
+            description:
+              "Stable identity from harness_progress for the open mid-run clarification. Required for newly-created rc.11 clarifications; prevents an answer for an older question with the same seq from landing on a newer one.",
+          },
           answeredBy: {
             type: "string",
             enum: ["human", "automation"],
@@ -1726,9 +1766,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         additionalProperties: false,
       },
       execute: async (_callId: unknown, input: unknown) => {
-        const { sessionId, answer, invokedBy, clarificationSeq, answeredBy, evidence } = input as {
+        const { sessionId, answer, invokedBy, clarificationSeq, clarificationId, answeredBy, evidence } = input as {
           sessionId: string; answer: string; invokedBy?: string; clarificationSeq?: number;
-          answeredBy?: string; evidence?: string;
+          clarificationId?: string; answeredBy?: string; evidence?: string;
         };
         // beta.57 (P2): invokedBy is REQUIRED -- this tool injects human text
         // into the brief and re-drives spend, so it must be authorised.
@@ -1737,16 +1777,17 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         }
         const row = liveDb()
           .prepare(
-            `SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_subtask,
-                    clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd, requester_gh
+            `SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_id,
+                    clarification_subtask, clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd,
+                    requester_gh, plan_revision
                FROM sessions WHERE id = ?`,
           )
           .get(sessionId) as {
             status: string; crystallised_prompt?: string; lead_plan_json?: string; clarification_question?: string;
-            clarification_seq?: number; clarification_subtask?: string;
+            clarification_seq?: number; clarification_id?: string; clarification_subtask?: string;
             clarification_heartbeat_at?: number | null; final_pr_url?: string | null;
             pr_number?: number | null; branch?: string | null; cost_usd?: number | null;
-            requester_gh?: string | null;
+            requester_gh?: string | null; plan_revision?: number | null;
           } | undefined;
         if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
         if (row.status !== "awaiting_clarification") {
@@ -1805,6 +1846,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         const releaseClaim = () => {
           liveDb().prepare(`UPDATE sessions SET clarification_answer = NULL, updated_at = ? WHERE id = ?`)
             .run(Date.now(), sessionId);
+          try { pauseActiveDeadline(liveDb(), sessionId); } catch { /* legacy/unmigrated test row */ }
         };
 
         // rc.3: a STALE-ANSWER guard. Until now this tool took no notion of
@@ -1833,6 +1875,30 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             }],
             details: { ok: false, staleSeq: true, suppliedSeq: clarificationSeq, openSeq: seq },
           };
+        }
+        if (row.clarification_id) {
+          if (!clarificationId || clarificationId !== row.clarification_id) {
+            liveState().audit(
+              "tool.answer_stale_id",
+              { ...answerFacts, suppliedId: clarificationId ?? null, openId: row.clarification_id },
+              sessionId,
+            );
+            rejectAutomatic("stale_clarification_id");
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `Not answering: this rc.11 clarification requires its current clarificationId. ` +
+                  `Re-read harness_progress and answer the question carrying id ${row.clarification_id}.`,
+              }],
+              details: {
+                ok: false,
+                staleClarificationId: true,
+                suppliedId: clarificationId ?? null,
+                openId: row.clarification_id,
+              },
+            };
+          }
         }
 
         // rc.3: automation answers only under delegation, and delegation is a
@@ -2287,6 +2353,26 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           };
         }
 
+        // rc.11: answering a resting human pause re-opens the ACTIVE clock.
+        // Time spent waiting for this answer was closed by the loop; amendment
+        // validation and every other resume action count against what remains.
+        try {
+          resumeActiveDeadline(
+            liveDb(),
+            sessionId,
+            liveConfig().loop?.session_hard_timeout_seconds ?? 7200,
+          );
+        } catch (err) {
+          releaseClaim();
+          return {
+            content: [{ type: "text", text: `Could not resume the persisted active-time clock: ${String(err)}` }],
+            details: { ok: false, deadlineResumeFailed: true, sessionId },
+          };
+        }
+
+        let activatedPlan: LeadPlan | null = null;
+        let activatedAmendmentId: string | null = null;
+
         // Fold the decision into the brief so the re-plan honours it. For a
         // 'skip' answer we phrase it as an out-of-scope directive; otherwise as
         // an acceptance-criteria directive pinned to the blocked sub-task.
@@ -2480,6 +2566,163 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           brief.acceptanceCriteria.push(
             `OPERATOR CLARIFICATION (for the previously-blocked sub-task ${seq}): In response to "${q.slice(0, 300)}", the operator decided: ${trimmed}. Follow this decision exactly; do not re-raise the same question.`,
           );
+
+          /*
+           * rc.11: a policy clarification that changes an artifact is a TASK
+           * CONTRACT AMENDMENT, not a hint. Only the deterministic one-artifact
+           * substitution activates here. Broader prose stays paused.
+           */
+          if (row.lead_plan_json && row.clarification_subtask) {
+            let paused: {
+              task?: LeadPlanSubTask;
+              policyConflicts?: Array<{ path: string; rule: string }>;
+            } = {};
+            try { paused = JSON.parse(row.clarification_subtask) as typeof paused; } catch { /* validated below */ }
+            if (paused.task) {
+              const storedPlan = JSON.parse(row.lead_plan_json) as LeadPlan;
+              const liveConflicts = findPlanPolicyConflicts(
+                [paused.task],
+                liveConfig().safety?.path_denylist ?? [],
+                liveConfig().safety?.path_denylist_exceptions ?? [],
+              );
+              const blockedPaths = liveConflicts.map((conflict) => conflict.path);
+              if (blockedPaths.length > 0) {
+                const amendment = buildArtifactSubstitutionAmendment({
+                  plan: storedPlan,
+                  task: paused.task,
+                  answer: trimmed,
+                  blockedPaths,
+                });
+                if (!amendment.ok) {
+                  const replacementId = randomUUID();
+                  liveDb().prepare(
+                    `UPDATE sessions SET clarification_question = ?, clarification_id = ?,
+                                         clarification_answer = NULL, human_pause_started_at = ?,
+                                         active_segment_started_at = NULL, updated_at = ? WHERE id = ?`,
+                  ).run(
+                    `I could not safely turn that answer into a unique task-contract amendment: ${amendment.reason}. ` +
+                      `Please restate the exact old artifact and exact replacement path(s), or answer "abort".`,
+                    replacementId,
+                    Date.now(),
+                    Date.now(),
+                    sessionId,
+                  );
+                  liveState().audit(
+                    "tool.answer_contract_amendment_rejected",
+                    { sessionId, seq, clarificationId: row.clarification_id ?? null, reason: amendment.reason },
+                    sessionId,
+                  );
+                  return {
+                    content: [{ type: "text", text: `Answer not applied; the session remains paused. ${amendment.reason}` }],
+                    details: { ok: false, amendmentRejected: true, sessionId, clarificationId: replacementId },
+                  };
+                }
+
+                const revisedPlan = activateTaskAmendment(storedPlan, amendment.amendment);
+                const residual = findPlanPolicyConflicts(
+                  [amendment.amendment.revisedTask],
+                  liveConfig().safety?.path_denylist ?? [],
+                  liveConfig().safety?.path_denylist_exceptions ?? [],
+                );
+                if (residual.length > 0) {
+                  releaseClaim();
+                  liveState().audit(
+                    "tool.answer_contract_amendment_rejected",
+                    {
+                      sessionId,
+                      seq,
+                      clarificationId: row.clarification_id ?? null,
+                      reason: "revised contract still conflicts with safety policy",
+                      paths: residual.map((conflict) => conflict.path),
+                    },
+                    sessionId,
+                  );
+                  return {
+                    content: [{
+                      type: "text",
+                      text: `Answer not applied: the revised task still requests a path blocked by safety policy. The session remains paused.`,
+                    }],
+                    details: { ok: false, amendmentRejected: true, policyConflict: true, sessionId },
+                  };
+                }
+
+                const answerHash = createHash("sha256").update(trimmed).digest("hex");
+                const now = Date.now();
+                brief.resumeExistingPlan = true;
+                brief.resumeFromClarification = true;
+                try {
+                  liveDb().exec("BEGIN IMMEDIATE");
+                  const current = liveDb().prepare(
+                    `SELECT status, clarification_id, lead_plan_json FROM sessions WHERE id = ?`,
+                  ).get(sessionId) as { status: string; clarification_id: string | null; lead_plan_json: string | null } | undefined;
+                  if (
+                    !current ||
+                    current.status !== "awaiting_clarification" ||
+                    current.clarification_id !== row.clarification_id ||
+                    current.lead_plan_json !== row.lead_plan_json
+                  ) {
+                    throw new Error("clarification or stored plan changed before amendment activation");
+                  }
+                  liveDb().prepare(
+                    `INSERT INTO task_contract_amendments
+                       (id, session_id, clarification_id, cycle, seq, version, base_plan_hash, base_task_hash,
+                        answer_hash, authorised_by, original_task_json, revised_task_json, operation_json,
+                        changed_fields_json, policy_validation_json, status, created_at, activated_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                  ).run(
+                    amendment.amendment.id,
+                    sessionId,
+                    row.clarification_id,
+                    Number((paused.task as unknown as { cycle?: number }).cycle ?? 1),
+                    seq,
+                    amendment.amendment.version,
+                    amendment.amendment.basePlanHash,
+                    amendment.amendment.baseTaskHash,
+                    answerHash,
+                    invokedBy,
+                    JSON.stringify(amendment.amendment.originalTask),
+                    JSON.stringify(amendment.amendment.revisedTask),
+                    JSON.stringify(amendment.amendment.substitution),
+                    JSON.stringify(amendment.amendment.changedFields),
+                    JSON.stringify({ ok: true, conflicts: [] }),
+                    "active",
+                    now,
+                    now,
+                  );
+                  liveDb().prepare(
+                    `UPDATE sessions
+                        SET lead_plan_json = ?, crystallised_prompt = ?, status = 'planning',
+                            plan_revision = COALESCE(plan_revision, 0) + 1,
+                            minimum_runtime_version = '2.0.0-rc.11', updated_at = ?
+                      WHERE id = ?`,
+                  ).run(JSON.stringify(revisedPlan), JSON.stringify(brief), now, sessionId);
+                  liveDb().exec("COMMIT");
+                } catch (err) {
+                  try { liveDb().exec("ROLLBACK"); } catch { /* no transaction */ }
+                  releaseClaim();
+                  return {
+                    content: [{ type: "text", text: `Could not atomically activate the task-contract amendment: ${String(err)}` }],
+                    details: { ok: false, planUpdateFailed: true, sessionId },
+                  };
+                }
+                activatedPlan = revisedPlan;
+                activatedAmendmentId = amendment.amendment.id;
+                liveState().audit(
+                  "tool.answer_contract_amendment_activated",
+                  {
+                    sessionId,
+                    seq,
+                    clarificationId: row.clarification_id,
+                    amendmentId: amendment.amendment.id,
+                    removed: blockedPaths,
+                    added: amendment.amendment.substitution.newPaths,
+                    changedFields: amendment.amendment.changedFields,
+                  },
+                  sessionId,
+                );
+              }
+            }
+          }
         }
         // ---- rc.2: answering a question resumes a run, it does not restart one ----
         //
@@ -2533,15 +2776,17 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         brief.resumeFromClarification = true;
         // Persist the amended brief so a subsequent restart/recovery re-drives
         // WITH the clarification baked in.
-        liveDb().prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', updated_at = ? WHERE id = ?`)
-          .run(JSON.stringify(brief), Date.now(), sessionId);
+        if (!activatedPlan) {
+          liveDb().prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', updated_at = ? WHERE id = ?`)
+            .run(JSON.stringify(brief), Date.now(), sessionId);
+        }
         liveState().audit("tool.answer_resumed", { sessionId, seq, skip: /^skip\b/i.test(trimmed) }, sessionId);
         void liveRuntime().loop.run(sessionId, brief).catch((err) => {
           api.logger.error("[tool.answer] loop.run failed", { sessionId, err: String(err) });
         });
         return {
           content: [{ type: "text", text: `Answer recorded for session ${sessionId}; resuming. Poll harness_progress for status.` }],
-          details: { ok: true, sessionId, resumed: true, seq },
+          details: { ok: true, sessionId, resumed: true, seq, amendmentId: activatedAmendmentId },
         };
       },
       }),

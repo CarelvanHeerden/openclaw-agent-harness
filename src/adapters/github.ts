@@ -376,6 +376,8 @@ export interface CiSnapshot {
   checkFailed: number;
   /** Completed with a conclusion we affirmatively recognise as non-red. */
   checkPassed: number;
+  /** Names of check runs/workflows observed on this exact SHA. */
+  checkNames: string[];
   /** Which rule produced `state`, for the audit trail. */
   reason: string;
   /**
@@ -460,8 +462,8 @@ async function readWorkflowRuns(input: {
   sha: string;
   ghToken: string;
   base: string;
-}): Promise<{ ok: boolean; total: number; incomplete: number; failed: number; passed: number; reason: string }> {
-  const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, reason: "" };
+}): Promise<{ ok: boolean; total: number; incomplete: number; failed: number; passed: number; names: string[]; reason: string }> {
+  const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [] as string[], reason: "" };
   try {
     const res = await fetch(
       `${input.base}/repos/${input.repoFullName}/actions/runs?head_sha=${input.sha}&per_page=100`,
@@ -470,7 +472,7 @@ async function readWorkflowRuns(input: {
     if (!res.ok) return { ...miss, reason: `workflow-runs API HTTP ${res.status}` };
     const body = (await res.json()) as {
       total_count?: number;
-      workflow_runs?: Array<{ status: string; conclusion: string | null }>;
+      workflow_runs?: Array<{ name?: string; status: string; conclusion: string | null }>;
     };
     const runs = body.workflow_runs ?? [];
     // Same refusal as the check-runs path: a truncated list looks complete.
@@ -483,6 +485,7 @@ async function readWorkflowRuns(input: {
       incomplete: runs.filter((r) => r.status !== "completed").length,
       failed: runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length,
       passed: runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length,
+      names: runs.map((r) => r.name ?? "").filter(Boolean),
       reason: "",
     };
   } catch (err) {
@@ -521,7 +524,7 @@ export async function getCiSnapshot(input: {
   const base = input.apiBase ?? "https://api.github.com";
   const snap: CiSnapshot = {
     state: "unknown", statusReadable: false, checksReadable: false,
-    statusState: "", statusCount: 0, checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, reason: "",
+    statusState: "", statusCount: 0, checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, checkNames: [], reason: "",
     permanentDenial: "",
     checksSource: "",
   };
@@ -551,7 +554,7 @@ export async function getCiSnapshot(input: {
     if (cRes.ok) {
       const cj = (await cRes.json()) as {
         total_count?: number;
-        check_runs?: Array<{ status: string; conclusion: string | null }>;
+        check_runs?: Array<{ name?: string; status: string; conclusion: string | null }>;
       };
       const runs = cj.check_runs ?? [];
       snap.checksReadable = true;
@@ -560,6 +563,7 @@ export async function getCiSnapshot(input: {
       snap.checkIncomplete = runs.filter((r) => r.status !== "completed").length;
       snap.checkFailed = runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length;
       snap.checkPassed = runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length;
+      snap.checkNames = runs.map((r) => r.name ?? "").filter(Boolean);
       // The list is capped at 100 per page. A commit with more checks than that
       // would silently look complete, so refuse to judge it rather than guess.
       if ((cj.total_count ?? runs.length) > runs.length) {
@@ -588,6 +592,7 @@ export async function getCiSnapshot(input: {
       snap.checkIncomplete = wf.incomplete;
       snap.checkFailed = wf.failed;
       snap.checkPassed = wf.passed;
+      snap.checkNames = wf.names;
       snap.reason = `${snap.reason}; read ${wf.total} Actions workflow run(s) instead`;
     } else if (wf.reason) {
       snap.reason = `${snap.reason}; ${wf.reason}`;

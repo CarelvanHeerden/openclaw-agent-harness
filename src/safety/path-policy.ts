@@ -214,15 +214,66 @@ export function resolvePathForPolicy(raw: string, opts: ResolveOptions = {}): Pa
  * treat that as "no path exposed" and fail closed, exactly as before.
  */
 export function pathsFromPatchText(patchText: string): string[] {
-  if (typeof patchText !== "string" || !patchText.includes("***")) return [];
-  const out: string[] = [];
-  const re = /^\*\*\*\s+(Add File|Update File|Delete File|Move to):\s*(.+?)\s*$/gim;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(patchText)) !== null) {
-    const p = m[2]?.trim();
-    if (p) out.push(p);
+  const parsed = parsePatchTargets(patchText);
+  return parsed.complete ? parsed.paths : [];
+}
+
+export interface ParsedPatchTargets {
+  complete: boolean;
+  paths: string[];
+  reason?: string;
+}
+
+/**
+ * Recognise the complete apply_patch/v1 envelope. A partial parse is never
+ * authoritative: especially for moves, omitting the destination would judge
+ * only half of the operation.
+ */
+export function parsePatchTargets(patchText: string): ParsedPatchTargets {
+  if (typeof patchText !== "string" || !patchText.includes("***")) {
+    return { complete: false, paths: [], reason: "not an apply_patch envelope" };
   }
-  return [...new Set(out)];
+  const lines = patchText.split(/\r?\n/);
+  const first = lines.findIndex((line) => line.trim().length > 0);
+  let last = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.trim().length > 0) {
+      last = i;
+      break;
+    }
+  }
+  if (first < 0 || lines[first]!.trim() !== "*** Begin Patch") {
+    return { complete: false, paths: [], reason: "missing apply_patch begin marker" };
+  }
+  if (last < 0 || lines[last]!.trim() !== "*** End Patch") {
+    return { complete: false, paths: [], reason: "missing apply_patch end marker" };
+  }
+  const out: string[] = [];
+  let currentSource: string | null = null;
+  for (let i = first + 1; i < last; i++) {
+    const line = lines[i]!;
+    if (!line.startsWith("***")) continue;
+    if (line.trim() === "*** End of File") continue;
+    const m = /^\*\*\*\s+(Add File|Update File|Delete File|Move to):\s*(.+?)\s*$/.exec(line);
+    if (!m) {
+      return { complete: false, paths: [], reason: `unrecognized patch directive at line ${i + 1}` };
+    }
+    const operation = m[1]!;
+    const path = m[2]!.trim();
+    if (!path) return { complete: false, paths: [], reason: `empty patch target at line ${i + 1}` };
+    if (operation === "Move to") {
+      if (!currentSource) {
+        return { complete: false, paths: [], reason: `move destination has no source at line ${i + 1}` };
+      }
+      out.push(path);
+      currentSource = null;
+      continue;
+    }
+    out.push(path);
+    currentSource = path;
+  }
+  if (out.length === 0) return { complete: false, paths: [], reason: "patch contains no file directive" };
+  return { complete: true, paths: [...new Set(out)] };
 }
 
 /* ------------------------------------------------------------------ *

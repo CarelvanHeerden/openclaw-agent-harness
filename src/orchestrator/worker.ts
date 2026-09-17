@@ -25,7 +25,7 @@ import {
 } from "./generated-artifacts.js";
 import { inferVerifyContract } from "./verify-contract.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
-import type { GuardDenial } from "../safety/bash-guard.js";
+import type { AcpTargetEvidence, GuardDenial } from "../safety/bash-guard.js";
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 
 /**
@@ -149,7 +149,7 @@ export interface WorkerResult {
    * Only the ACP backend populates it; the SDK path guards through
    * `canUseTool` and is unaffected.
    */
-  deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }>;
+  deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial; targetEvidence?: AcpTargetEvidence }>;
   /**
    * ACP only. Reads allowed this turn without a path_denylist check, because
    * the agent named no file. Zero on the SDK path. See SECURITY.md.
@@ -214,7 +214,7 @@ export interface WorkerDeps {
      * undefined there rather than being faked as an empty list -- absent and
      * "nothing was denied" are different claims.
      */
-    deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }>;
+    deniedToolCalls?: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial; targetEvidence?: AcpTargetEvidence }>;
     unguardedReads?: number;
   /** rc.10 (F4): allowed permission requests this turn, any kind. */
   allowedToolCalls?: number;
@@ -556,6 +556,17 @@ export function buildWorkerSystemPrompt(
   // authorization, rather than a rule it has to remember an exception to.
   const generatorBlock = renderGeneratorInstruction(authorizedGenerators);
   if (generatorBlock) lines.push(generatorBlock);
+  if (subTask.taskMode === "observe" && subTask.observeContract) {
+    lines.push(
+      "",
+      "## Structured observe deliverable (REQUIRED)",
+      "Your final message must be JSON (or an OBSERVE_RESULT fenced JSON block) with:",
+      '{"status":"ok|blocked","findings":[{"id":"...","summary":"...","evidence":[{"path":"...","line":1}]}],"bindings":[{"name":"...","type":"...","value":"...","evidence":[{"path":"..."}]}],"blockers":[]}',
+      `Required finding ids: ${subTask.observeContract.requiredFindings.join(", ") || "(none)"}`,
+      `Required bindings: ${subTask.observeContract.bindings.map((binding) => `${binding.name}:${binding.type}`).join(", ") || "(none)"}`,
+      "A promise to inspect, a tool-call count, or prose without this contract is not a finding and will not release dependent work.",
+    );
+  }
   return lines.join("\n");
 }
 

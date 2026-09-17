@@ -652,6 +652,7 @@ export interface OrchestratorDeps {
         checksReadable: boolean;
         statusReadable: boolean;
         reason: string;
+        checkNames?: string[];
         /**
          * beta.124: non-empty when the read failed for a reason waiting will not
          * fix (401/403/404), carrying the remedy rather than the status code.
@@ -880,6 +881,11 @@ export declare class OrchestratorLoop {
      * a table nothing depends on to make progress.
      */
     private recordSubTaskAttempt;
+    private beginProviderCall;
+    private finishProviderCall;
+    private runAccountedWorker;
+    private attachProviderVerification;
+    private persistRequiredSpend;
     /**
      * rc.10: every commit recorded by EARLIER attempts of this same sub-task.
      *
@@ -1157,6 +1163,7 @@ export declare class OrchestratorLoop {
     }): Promise<{
         outcome: "success";
         degradedSource?: string;
+        checkNames?: string[];
     } | {
         outcome: "failure";
         logs: string;
@@ -1377,6 +1384,7 @@ export declare class OrchestratorLoop {
     cancelSession(sessionId: string, opts?: {
         reason?: string;
         requester?: string;
+        classification?: "failed_smoke_test" | "operator_cancelled";
     }): Promise<{
         ok: boolean;
         notFound?: boolean;
@@ -1385,6 +1393,8 @@ export declare class OrchestratorLoop {
         terminatedNow?: boolean;
         loopRunning?: boolean;
     }>;
+    private terminalCauseFor;
+    private persistTerminalCause;
     private finaliseAbort;
     /**
      * beta.120 (fix 1, CRITICAL): an abort must never destroy work.

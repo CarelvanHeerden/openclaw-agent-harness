@@ -14,7 +14,7 @@
  * is rejected. If a legitimate command is rejected, add it to the whitelist
  * or split the operation into simpler steps.
  */
-import { pathsFromPatchText, resolvePathForPolicy, scanPatchForSecrets, templateExceptionApplies, } from "./path-policy.js";
+import { parsePatchTargets, pathsFromPatchText, resolvePathForPolicy, scanPatchForSecrets, templateExceptionApplies, } from "./path-policy.js";
 const NETWORK_COMMANDS = ["curl", "wget", "nc", "ncat", "ssh", "scp", "rsync"];
 const DENYLIST_TOKEN_DEFAULTS = [
     "sudo",
@@ -336,6 +336,113 @@ export function acpPathsFromToolCall(call) {
     }
     return [...out];
 }
+function rawPathFields(raw) {
+    const out = [];
+    for (const key of ["filepath", "file_path", "path", "notebook_path", "abs_path"]) {
+        const value = raw[key];
+        if (typeof value === "string" && value.trim())
+            out.push(value.trim());
+    }
+    return [...new Set(out)];
+}
+/**
+ * Reconcile execution-authoritative targets with display metadata.
+ *
+ * Field names alone confer no authority. Patch and changes payloads must match
+ * a recognized, complete schema; otherwise the call fails closed.
+ */
+export function acpTargetEvidenceFromToolCall(call) {
+    const advisoryPaths = [...new Set((call.locations ?? [])
+            .map((location) => location?.path)
+            .filter((path) => typeof path === "string" && path.trim().length > 0)
+            .map((path) => path.trim()))];
+    const raw = call.rawInput;
+    let authoritativePaths = [];
+    let schema = "unknown";
+    let complete = false;
+    let conflict;
+    if (raw && typeof raw === "object") {
+        const patchValue = typeof raw.patchText === "string"
+            ? raw.patchText
+            : typeof raw.patch === "string"
+                ? raw.patch
+                : undefined;
+        if (patchValue !== undefined) {
+            const parsed = parsePatchTargets(patchValue);
+            schema = "apply_patch/v1";
+            authoritativePaths = parsed.paths;
+            complete = parsed.complete;
+            if (!parsed.complete)
+                conflict = parsed.reason ?? "incomplete apply_patch envelope";
+        }
+        else if (typeof raw.call_id === "string" &&
+            raw.changes &&
+            typeof raw.changes === "object" &&
+            !Array.isArray(raw.changes) &&
+            Object.values(raw.changes).every((value) => value !== null && typeof value === "object" && !Array.isArray(value))) {
+            schema = "codex_changes/v1";
+            authoritativePaths = Object.keys(raw.changes).filter(Boolean);
+            complete = authoritativePaths.length > 0;
+            if (!complete)
+                conflict = "recognized changes payload contains no target";
+        }
+        else {
+            const singular = rawPathFields(raw);
+            if ((call.kind === "edit" || call.kind === "delete" || call.kind === "read") && singular.length === 1) {
+                schema = "single_path/v1";
+                authoritativePaths = singular;
+                complete = true;
+            }
+            else if (singular.length > 0 || "changes" in raw) {
+                conflict = "raw target fields do not match a recognized complete tool schema";
+            }
+        }
+    }
+    if (complete && authoritativePaths.length > 0) {
+        for (const display of advisoryPaths) {
+            if (authoritativePaths.includes(display))
+                continue;
+            if (display === authoritativePaths.join(", "))
+                continue;
+            const resolution = resolvePathForPolicy(display);
+            if (resolution.refuse) {
+                conflict = `advisory target summary does not exactly match authoritative targets: ${display}`;
+            }
+            else {
+                conflict = `concrete advisory target is absent from authoritative targets: ${display}`;
+            }
+            break;
+        }
+        return {
+            authoritativePaths: [...new Set(authoritativePaths)],
+            advisoryPaths,
+            schema,
+            complete: !conflict,
+            conflict,
+            joinedDisplaySummary: advisoryPaths.some((path) => path === authoritativePaths.join(", ")),
+        };
+    }
+    if (!conflict && advisoryPaths.length > 0) {
+        const invalid = advisoryPaths.find((path) => resolvePathForPolicy(path).refuse);
+        if (invalid) {
+            const refusal = resolvePathForPolicy(invalid).refuse;
+            return {
+                authoritativePaths: [],
+                advisoryPaths,
+                schema: "locations/v1",
+                complete: false,
+                conflict: refusal,
+            };
+        }
+        return {
+            authoritativePaths: advisoryPaths,
+            advisoryPaths,
+            schema: "locations/v1",
+            complete: true,
+        };
+    }
+    return { authoritativePaths, advisoryPaths, schema, complete: false, conflict };
+}
 /** The `apply_patch` body, when this call has one. Needed for the content check. */
 export function acpPatchTextFromToolCall(call) {
     const raw = call.rawInput;
@@ -401,12 +508,35 @@ export function buildAcpGuard(cfg) {
      * is a denial rather than a skipped check.
      */
     const denyIfBlockedPaths = (call, label) => {
-        const paths = acpPathsFromToolCall(call);
+        const evidence = acpTargetEvidenceFromToolCall(call);
+        if (!evidence.complete) {
+            const joinedOnly = evidence.schema === "locations/v1" &&
+                evidence.advisoryPaths.some((path) => resolvePathForPolicy(path, resolveOpts).refuse?.includes("files rather than one"));
+            const instruction = "Issue one call per file, each naming a single path.";
+            const code = joinedOnly ? "path_unresolvable" : "target_metadata_conflict";
+            const reason = evidence.conflict ?? `${label} tool call exposed no path or complete authoritative target set (failing closed)`;
+            return {
+                allow: false,
+                reason: `${label} target metadata could not be reconciled: ${reason}${joinedOnly ? ` ${instruction}` : ""}`,
+                denial: {
+                    code,
+                    kind: label,
+                    paths: evidence.advisoryPaths,
+                    message: reason,
+                    ...(joinedOnly
+                        ? { recovery: { code: "one_target_per_call", retryable: true, instruction } }
+                        : {}),
+                },
+                targetEvidence: evidence,
+            };
+        }
+        const paths = evidence.authoritativePaths;
         if (paths.length === 0) {
             return {
                 allow: false,
                 reason: `${label} tool call exposed no path to check (failing closed)`,
                 denial: { code: "no_path_exposed", kind: label, message: `${label} tool call exposed no path to check` },
+                targetEvidence: evidence,
             };
         }
         const patchText = acpPatchTextFromToolCall(call);
@@ -422,7 +552,17 @@ export function buildAcpGuard(cfg) {
                         kind: label,
                         paths: [p],
                         message: `${label} path could not be resolved to a single file: ${resolution.refuse}`,
+                        ...(resolution.refuse.includes("files rather than one")
+                            ? {
+                                recovery: {
+                                    code: "one_target_per_call",
+                                    retryable: true,
+                                    instruction: "Issue one call per file, each naming a single path.",
+                                },
+                            }
+                            : {}),
                     },
+                    targetEvidence: evidence,
                 };
             }
             checked.push(...resolution.candidates);
@@ -448,6 +588,7 @@ export function buildAcpGuard(cfg) {
                         message: `'${p}' is an authorised template, but this edit would write a real credential into it ` +
                             `(${scan.detail}). Authorising a template does not authorise putting a secret in it.`,
                     },
+                    targetEvidence: evidence,
                 };
             }
             return {
@@ -462,9 +603,10 @@ export function buildAcpGuard(cfg) {
                         `template that genuinely must be edited, add its exact path to ` +
                         `\`safety.path_denylist_exceptions\`; live secret files must stay blocked.`,
                 },
+                targetEvidence: evidence,
             };
         }
-        return { allow: true, checkedPaths: [...new Set(checked)] };
+        return { allow: true, checkedPaths: [...new Set(checked)], targetEvidence: evidence };
     };
     return async (call) => {
         const kind = typeof call.kind === "string" ? call.kind.toLowerCase() : "";
@@ -508,7 +650,20 @@ export function buildAcpGuard(cfg) {
             // learns this happened, because a control that has silently stopped
             // applying is worse than one that was never claimed.
             case "read": {
-                const paths = acpPathsFromToolCall(call);
+                const evidence = acpTargetEvidenceFromToolCall(call);
+                if (evidence.conflict) {
+                    return {
+                        allow: false,
+                        reason: `read target metadata could not be reconciled: ${evidence.conflict}`,
+                        denial: {
+                            code: "target_metadata_conflict",
+                            kind: "read",
+                            paths: evidence.advisoryPaths,
+                            message: evidence.conflict,
+                        },
+                    };
+                }
+                const paths = evidence.authoritativePaths;
                 if (paths.length === 0) {
                     return {
                         allow: true,

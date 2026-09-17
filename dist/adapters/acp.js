@@ -528,7 +528,13 @@ export async function runWorkerAcp(params) {
                 // rc.9: the structured verdict rides along. Dropping it here is where the
                 // incident's actionable reason died: everything downstream then had
                 // only English to reason about, and none of it matched.
-                denied.push({ kind: call.kind, title, reason: verdict.reason, denial: verdict.denial });
+                denied.push({
+                    kind: call.kind,
+                    title,
+                    reason: verdict.reason,
+                    denial: verdict.denial,
+                    targetEvidence: verdict.targetEvidence,
+                });
                 pushLog(`[guard] DENIED ${String(call.kind)}: ${verdict.reason ?? "no reason"}`);
                 // Warn, not info: a denial is either the guard doing its job against
                 // something real, or the guard being wrong. Both are worth reading.

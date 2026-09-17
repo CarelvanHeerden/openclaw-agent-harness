@@ -105,6 +105,17 @@ export declare function resolvePathForPolicy(raw: string, opts?: ResolveOptions)
  * treat that as "no path exposed" and fail closed, exactly as before.
  */
 export declare function pathsFromPatchText(patchText: string): string[];
+export interface ParsedPatchTargets {
+    complete: boolean;
+    paths: string[];
+    reason?: string;
+}
+/**
+ * Recognise the complete apply_patch/v1 envelope. A partial parse is never
+ * authoritative: especially for moves, omitting the destination would judge
+ * only half of the operation.
+ */
+export declare function parsePatchTargets(patchText: string): ParsedPatchTargets;
 export interface SecretScan {
     /** True when the added lines contain something that must never be committed. */
     found: boolean;

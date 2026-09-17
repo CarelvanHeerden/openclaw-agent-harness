@@ -122,7 +122,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   storage_checked_at       INTEGER,
   last_attempted_sub_task  TEXT,              -- last worker turn persisted, success or not
   last_checkpoint_bundle   TEXT,              -- path of the last VERIFIED durable bundle
-  last_checkpoint_sha      TEXT               -- tip the verified bundle contains
+  last_checkpoint_sha      TEXT,              -- tip the verified bundle contains
+  -- rc.11: durable clarification amendments and active-time accounting.
+  clarification_id         TEXT,              -- stable identity; seq alone can be reused
+  plan_revision            INTEGER NOT NULL DEFAULT 0,
+  active_limit_ms          INTEGER,           -- authorized active runtime
+  active_elapsed_ms        INTEGER NOT NULL DEFAULT 0,
+  active_segment_started_at INTEGER,          -- NULL while waiting for a human
+  human_pause_started_at   INTEGER,
+  deadline_policy_version  TEXT,
+  minimum_runtime_version  TEXT,              -- diagnostic; older runtimes do not enforce it
+  terminal_cause           TEXT,              -- typed, never inferred from free-text reason
+  terminal_classification  TEXT,
+  accounting_state         TEXT               -- ok | incomplete
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_channel, slack_thread);
@@ -183,11 +195,89 @@ CREATE TABLE IF NOT EXISTS sub_task_attempts (
   files_touched  TEXT,               -- JSON array
   summary        TEXT,
   started_at     INTEGER,
-  ended_at       INTEGER NOT NULL
+  ended_at       INTEGER NOT NULL,
+  worker_status  TEXT,
+  verification_status TEXT,
+  verification_json TEXT,
+  task_outcome   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sub_task_attempts_subtask
   ON sub_task_attempts (session_id, cycle, seq, attempt);
+
+/*
+ * rc.11: a clarification that changes work changes the task contract.
+ * Original and revised tasks live together; activation and lead_plan_json
+ * replacement happen in one transaction.
+ */
+CREATE TABLE IF NOT EXISTS task_contract_amendments (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  clarification_id      TEXT NOT NULL,
+  cycle                  INTEGER NOT NULL,
+  seq                    INTEGER NOT NULL,
+  version                TEXT NOT NULL,
+  base_plan_hash         TEXT NOT NULL,
+  base_task_hash         TEXT NOT NULL,
+  answer_hash            TEXT NOT NULL,
+  authorised_by          TEXT NOT NULL,
+  original_task_json     TEXT NOT NULL,
+  revised_task_json      TEXT,
+  operation_json         TEXT,
+  changed_fields_json    TEXT,
+  policy_validation_json TEXT,
+  status                 TEXT NOT NULL, -- pending | active | rejected
+  rejection_reason       TEXT,
+  created_at             INTEGER NOT NULL,
+  activated_at           INTEGER,
+  UNIQUE(session_id, clarification_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_contract_amendments_session
+  ON task_contract_amendments (session_id, cycle, seq, created_at);
+
+/* rc.11: required provider accounting. One row per provider invocation. */
+CREATE TABLE IF NOT EXISTS provider_calls (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  sub_task_id           TEXT,
+  role                  TEXT NOT NULL,
+  cycle                 INTEGER,
+  seq                   INTEGER,
+  attempt               INTEGER,
+  model                 TEXT,
+  route                 TEXT,
+  base_sha              TEXT,
+  status                TEXT NOT NULL, -- started | completed | failed | unknown
+  cost_usd              REAL,
+  provider_result_id    TEXT,
+  result_json           TEXT,
+  verification_json     TEXT,
+  started_at            INTEGER NOT NULL,
+  ended_at              INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_calls_session
+  ON provider_calls (session_id, role, cycle, seq, attempt);
+
+/* rc.11: only validated observe reports are eligible for hydration/handoff. */
+CREATE TABLE IF NOT EXISTS observe_reports (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  producer_sub_task_id  TEXT NOT NULL,
+  cycle                 INTEGER NOT NULL,
+  seq                   INTEGER NOT NULL,
+  producer_task_hash    TEXT NOT NULL,
+  source_plan_revision  INTEGER NOT NULL,
+  result_plan_revision  INTEGER NOT NULL,
+  report_json           TEXT NOT NULL,
+  bindings_hash         TEXT NOT NULL,
+  validation_json       TEXT NOT NULL,
+  created_at            INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_observe_reports_session
+  ON observe_reports (session_id, cycle, seq, source_plan_revision, created_at);
 
 CREATE TABLE IF NOT EXISTS reviews (
   id           TEXT PRIMARY KEY,

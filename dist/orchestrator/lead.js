@@ -620,6 +620,33 @@ function validatePlan(plan, config) {
     const seqs = new Set(plan.subTasks.map((s) => s.seq));
     if (seqs.size !== plan.subTasks.length)
         throw new Error("duplicate sub-task seq numbers");
+    const dependedOn = new Set(plan.subTasks.flatMap((task) => task.dependsOn ?? []));
+    for (const task of plan.subTasks) {
+        if (task.taskMode === "observe" && dependedOn.has(task.seq)) {
+            const loadBearing = /structured[^\n]{0,160}(?:binding|contract)|contract\s+bind|contract\s+addition/i.test([task.title, task.intent, ...(task.successCriteria ?? [])].join("\n"));
+            if (loadBearing && !task.observeContract) {
+                throw new LeadPlanValidationError(`observe sub-task ${task.seq} is a load-bearing prerequisite but has no observeContract`);
+            }
+        }
+        if (task.observeContract) {
+            const names = task.observeContract.bindings.map((binding) => binding.name?.trim()).filter(Boolean);
+            if (names.length !== task.observeContract.bindings.length || new Set(names).size !== names.length) {
+                throw new LeadPlanValidationError(`observe sub-task ${task.seq} has blank or duplicate binding names`);
+            }
+            for (const binding of task.observeContract.bindings) {
+                for (const application of binding.applyTo ?? []) {
+                    if (!seqs.has(application.consumerSeq) || application.consumerSeq === task.seq) {
+                        throw new LeadPlanValidationError(`observe binding ${binding.name} targets invalid consumer ${application.consumerSeq}`);
+                    }
+                }
+            }
+        }
+        for (const check of task.requiredBehaviorChecks ?? []) {
+            if (!check.id?.trim() || !check.ciCheck?.trim()) {
+                throw new LeadPlanValidationError(`sub-task ${task.seq} has an invalid requiredBehaviorCheck`);
+            }
+        }
+    }
 }
 // beta.33: remote verify kinds a worker can never satisfy (the harness pushes
 // + opens the PR itself, after review). Any of these on a sub-task means the

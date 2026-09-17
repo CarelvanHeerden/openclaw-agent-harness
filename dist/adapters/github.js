@@ -311,7 +311,7 @@ function denialRemedy(api, status) {
  * where its answer came from.
  */
 async function readWorkflowRuns(input) {
-    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, reason: "" };
+    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], reason: "" };
     try {
         const res = await fetch(`${input.base}/repos/${input.repoFullName}/actions/runs?head_sha=${input.sha}&per_page=100`, { headers: GH_HEADERS(input.ghToken) });
         if (!res.ok)
@@ -328,6 +328,7 @@ async function readWorkflowRuns(input) {
             incomplete: runs.filter((r) => r.status !== "completed").length,
             failed: runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length,
             passed: runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length,
+            names: runs.map((r) => r.name ?? "").filter(Boolean),
             reason: "",
         };
     }
@@ -359,7 +360,7 @@ export async function getCiSnapshot(input) {
     const base = input.apiBase ?? "https://api.github.com";
     const snap = {
         state: "unknown", statusReadable: false, checksReadable: false,
-        statusState: "", statusCount: 0, checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, reason: "",
+        statusState: "", statusCount: 0, checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, checkNames: [], reason: "",
         permanentDenial: "",
         checksSource: "",
     };
@@ -396,6 +397,7 @@ export async function getCiSnapshot(input) {
             snap.checkIncomplete = runs.filter((r) => r.status !== "completed").length;
             snap.checkFailed = runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length;
             snap.checkPassed = runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length;
+            snap.checkNames = runs.map((r) => r.name ?? "").filter(Boolean);
             // The list is capped at 100 per page. A commit with more checks than that
             // would silently look complete, so refuse to judge it rather than guess.
             if ((cj.total_count ?? runs.length) > runs.length) {
@@ -426,6 +428,7 @@ export async function getCiSnapshot(input) {
             snap.checkIncomplete = wf.incomplete;
             snap.checkFailed = wf.failed;
             snap.checkPassed = wf.passed;
+            snap.checkNames = wf.names;
             snap.reason = `${snap.reason}; read ${wf.total} Actions workflow run(s) instead`;
         }
         else if (wf.reason) {

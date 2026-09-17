@@ -105,8 +105,8 @@ function baseDeps(state, over = {}) {
   };
 }
 
-// ---- C1: retry re-invokes runWorker, then terminal ----
-test("beta81/C1: a worker timeout RE-INVOKES runWorker (behavioural spy) then goes terminal on the 2nd failure",
+// ---- rc.11: unknown provider completion is reconciled before retry ----
+test("rc.11/C1: a worker timeout does not buy a duplicate unknown provider call",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "C1a");
@@ -115,15 +115,9 @@ test("beta81/C1: a worker timeout RE-INVOKES runWorker (behavioural spy) then go
       runWorker: async () => { workerCalls++; return HANG(); },
     }));
     const outcome = await loop.run("C1a", brief);
-    // beta.113 raised the default attempt count from 2 to 3, each with a wider
-    // first-token window. What C1 is actually about is unchanged: every retry
-    // must REACH runWorker rather than log-then-noop, and an exhausted retry
-    // budget must still go terminal rather than leaving a running row.
-    assert.equal(workerCalls, 3, "runWorker must be re-invoked for every attempt, never log-then-noop");
+    assert.equal(workerCalls, 1, "an in-flight provider call with unknown cost/result cannot be duplicated");
     assert.equal(outcome.status, "failed");
-    // the re-invocation is PROVEN in the audit trail.
-    assert.ok(state.audits.some((a) => a.event === "loop.worker_retry_reinvoked" && a.payload.attempt === 2),
-      "loop.worker_retry_reinvoked{attempt:2} must fire immediately before the SDK re-entry");
+    assert.equal(state.audits.some((a) => a.event === "loop.worker_retry_reinvoked"), false);
     state.close();
   });
 

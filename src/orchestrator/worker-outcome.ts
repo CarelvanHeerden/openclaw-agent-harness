@@ -32,7 +32,7 @@
  */
 
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
-import type { GuardDenial } from "../safety/bash-guard.js";
+import type { AcpTargetEvidence, GuardDenial } from "../safety/bash-guard.js";
 
 /** One denial, as the ACP adapter records it. */
 export interface DeniedToolCall {
@@ -49,6 +49,8 @@ export interface DeniedToolCall {
    * outcome was decided.
    */
   denial?: GuardDenial;
+  /** Sanitized source/authority reconciliation; never patch contents. */
+  targetEvidence?: AcpTargetEvidence;
 }
 
 export type WorkerOutcomeKind =
@@ -105,6 +107,8 @@ export interface RecoveryGuidance {
   title?: string;
   /** The permitted route to the same result, in the imperative. */
   remedy: string;
+  /** rc.11: stable guard-owned recovery code when available. */
+  code?: string;
 }
 
 export interface WorkerOutcome {
@@ -188,7 +192,9 @@ const PROGRESS_RE: RegExp[] = [
 
 /** The worker declined the work itself, as opposed to fumbling a command. */
 const REFUSAL_RE: RegExp[] = [
-  /\bi\s+(?:will|would|shall)\s+not\b/i,
+  /\bi\s+(?:will|would|shall)\s+not\s+(?:implement|complete|continue|proceed|perform|do|make)\b/i,
+  /\bi\s+won't\s+(?:implement|complete|continue|proceed|perform|do|make)\b/i,
+  /\bi\s+(?:will|would|shall)\s+not\b[^.!?]{0,120}\bthis\s+way\b/i,
   /\bi\s+refuse\b/i,
   /\brefus(?:e|es|ed|ing)\s+to\b/i,
   /\bi(?:'m| am)\s+not\s+(?:going\s+to|willing\s+to|able\s+to\s+justify)\b/i,
@@ -299,6 +305,16 @@ export function recoverableDenialFrom(denied: DeniedToolCall[] | undefined): Rec
     const title = (d.title ?? "").trim();
     if (!reason && !title) continue;
 
+    if (d.denial?.recovery?.retryable) {
+      return {
+        category: d.denial.recovery.code,
+        code: d.denial.recovery.code,
+        reason: reason || d.denial.message,
+        title: title || undefined,
+        remedy: d.denial.recovery.instruction,
+      };
+    }
+
     const known = RECOVERIES.find((r) => r.match.test(reason));
     if (known) return { category: known.category, reason, title: title || undefined, remedy: known.remedy };
 
@@ -386,6 +402,8 @@ export function classifyWorkerOutcome(input: {
   finalMessage?: string;
   commitSha?: string;
   deniedToolCalls?: DeniedToolCall[];
+  /** Active, amended task scope. Used only to interpret path-limited negation. */
+  taskContext?: { filesLikelyTouched?: string[]; intent?: string };
 }): WorkerOutcome {
   const text = (input.finalMessage ?? "").trim();
   const substantive = stripProgressNarration(text);
@@ -396,7 +414,13 @@ export function classifyWorkerOutcome(input: {
   // `explanation` is the worker's own, unchanged.
   const matchable = normaliseTypography(substantive);
 
-  if (substantive && REFUSAL_RE.some((re) => re.test(matchable))) {
+  const refusesRequiredPath = (input.taskContext?.filesLikelyTouched ?? []).some(
+    (path) =>
+      path.trim().length > 0 &&
+      matchable.includes(path) &&
+      /\bi\s+(?:will|would|shall)\s+not\s+(?:read|create|modify|edit|touch|write)\b/i.test(matchable),
+  );
+  if (substantive && (REFUSAL_RE.some((re) => re.test(matchable)) || refusesRequiredPath)) {
     return { kind: "refusal", explanation };
   }
 

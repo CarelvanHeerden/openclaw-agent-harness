@@ -1,6 +1,6 @@
 {
   "name": "openclaw-agent-harness",
-  "version": "2.0.0-rc.10",
+  "version": "2.0.0-rc.11",
   "description": "Multi-agent orchestration harness for OpenClaw. Lead planner + workers + adversarial reviewer, driven from Slack.",
   "type": "module",
   "main": "dist/index.js",
@@ -36,6 +36,8 @@
     "smoke": "npm run build && node scripts/smoke.mjs",
     "docs:config": "npm run build && node scripts/gen-config-reference.mjs",
     "lint": "eslint 'src/**/*.ts'",
+    "check:downgrade": "node scripts/check-downgrade.mjs",
+    "verify:installed-artifact": "node scripts/verify-installed-artifact.mjs",
     "prepublishOnly": "npm run typecheck && npm run build"
   },
   "dependencies": {

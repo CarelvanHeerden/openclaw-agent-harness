@@ -86,6 +86,7 @@ test("beta81/A2: a budget/reserve abort adds an actionable 're-run at a higher c
     phase: "Executing", status: "failed", terminal: true, total: 3, done: 2, current: null,
     spentUsd: 20, budgetUsd: 20, prNumber: null, deployStatus: null,
     failureDetail: "budget reserve projection would exceed cap",
+    terminalCause: "budget_exhausted",
   });
   assert.match(failed, /Re-run at a higher cap to finish\./);
   // a NON-budget failure does NOT get the hint.
@@ -93,6 +94,7 @@ test("beta81/A2: a budget/reserve abort adds an actionable 're-run at a higher c
     phase: "Executing", status: "failed", terminal: true, total: 3, done: 2, current: null,
     spentUsd: 3, budgetUsd: 20, prNumber: null, deployStatus: null,
     failureDetail: "verifier path check: file missing",
+    terminalCause: "failed",
   });
   assert.doesNotMatch(other, /Re-run at a higher cap/);
 });

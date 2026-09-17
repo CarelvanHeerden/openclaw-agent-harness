@@ -54,11 +54,16 @@ const MUTATIONS = [
     // itself healthy. This mutation widens it by exactly one step.
     name: "v2 smoke: only READ degrades to allow on a missing path",
     file: "dist/safety/bash-guard.js",
-    // rc.9 turned the bare return into a structured verdict carrying a denial
-    // code, so the one-line anchor no longer exists. The mutation is unchanged:
-    // widen the read relaxation by one step and require the tests to notice.
-    find: "return {\n                allow: false,\n                reason: `${label} tool call exposed no path to check (failing closed)`,",
-    replace: "return {\n                allow: true, unenforced: true,\n                reason: `${label} exposed no path`,",
+    // rc.11 reconciles target sources before this verdict. Widen exactly that
+    // fail-closed branch; an edit with no authority must never degrade like read.
+    find:
+      "            const reason = evidence.conflict ?? `${label} tool call exposed no path or complete authoritative target set (failing closed)`;\n" +
+      "            return {\n" +
+      "                allow: false,",
+    replace:
+      "            const reason = evidence.conflict ?? `${label} tool call exposed no path or complete authoritative target set (failing closed)`;\n" +
+      "            return {\n" +
+      "                allow: true, unenforced: true,",
     tests: ["tests/v2-smoke-findings.test.mjs"],
   },
   {
@@ -283,8 +288,21 @@ const MUTATIONS = [
     file: "dist/adapters/acp.js",
     // rc.9 appended the structured verdict to the same push. Dropping `title`
     // is still the mutation -- the count was never the evidence.
-    find: "denied.push({ kind: call.kind, title, reason: verdict.reason, denial: verdict.denial });",
-    replace: "denied.push({ kind: call.kind, reason: verdict.reason, denial: verdict.denial });",
+    find:
+      "                denied.push({\n" +
+      "                    kind: call.kind,\n" +
+      "                    title,\n" +
+      "                    reason: verdict.reason,\n" +
+      "                    denial: verdict.denial,\n" +
+      "                    targetEvidence: verdict.targetEvidence,\n" +
+      "                });",
+    replace:
+      "                denied.push({\n" +
+      "                    kind: call.kind,\n" +
+      "                    reason: verdict.reason,\n" +
+      "                    denial: verdict.denial,\n" +
+      "                    targetEvidence: verdict.targetEvidence,\n" +
+      "                });",
     tests: ["tests/v2-acp-hardening.test.mjs"],
   },
   {
@@ -3622,6 +3640,102 @@ const MUTATIONS = [
     find: 'const speed = ["--no-audit", "--no-fund", "--legacy-peer-deps"];',
     replace: 'const speed = ["--no-audit", "--no-fund"];',
     tests: ["tests/rc8-bootstrap-dev-deps.test.mjs"],
+  },
+  // --- rc.11: 16 September smoke remediation -------------------------------
+  {
+    name: "rc.11: artifact substitution removes the blocked path from positive task scope",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "revised.filesLikelyTouched = unique(revised.filesLikelyTouched.flatMap((path) => (path === oldPath ? newPaths : [path])));",
+    replace: "revised.filesLikelyTouched = unique(revised.filesLikelyTouched);",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: a resume charges the prior open active segment instead of granting fresh time",
+    file: "dist/orchestrator/active-deadline.js",
+    find: "    if (current.active_segment_started_at !== null) {\n        elapsedMs += Math.max(0, now - current.active_segment_started_at);\n    }",
+    replace: "    if (false) {\n        elapsedMs += Math.max(0, now - current.active_segment_started_at);\n    }",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: structured denial recovery does not depend on English wording",
+    file: "dist/orchestrator/worker-outcome.js",
+    find: "        if (d.denial?.recovery?.retryable) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: an exact joined display summary cannot obscure complete authoritative patch targets",
+    file: "dist/safety/bash-guard.js",
+    find: "            if (display === authoritativePaths.join(\", \"))\n                continue;",
+    replace: "            if (false)\n                continue;",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: required observe findings are deliverables, not tool-call activity",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "        if (!findings.has(id))\n            return { ok: false, reason: `required finding ${id} is missing` };",
+    replace: "        if (false)\n            return { ok: false, reason: `required finding ${id} is missing` };",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: provider dispatch requires a durable start row",
+    file: "dist/orchestrator/loop.js",
+    find: "            db.prepare(`INSERT INTO provider_calls",
+    replace: "            db.prepare(`INSERT INTO provider_calls_missing",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: arbitrary cancellation prose cannot trigger higher-cap advice",
+    file: "dist/orchestrator/progress.js",
+    find:
+      "    if (input.status === \"aborted\") {\n" +
+      "        const why = input.failureDetail ? ` — ${input.failureDetail}` : \"\";\n" +
+      "        const reserveHint = input.terminalCause === \"budget_exhausted\" ? ` Re-run at a higher cap to finish.` : \"\";",
+    replace:
+      "    if (input.status === \"aborted\") {\n" +
+      "        const why = input.failureDetail ? ` — ${input.failureDetail}` : \"\";\n" +
+      "        const reserveHint = /budget|reserve/i.test(input.failureDetail ?? \"\") ? ` Re-run at a higher cap to finish.` : \"\";",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: required behavioral checks gate success on the CI-polled candidate",
+    file: "dist/orchestrator/loop.js",
+    find: "                            behaviorVerificationPassed = false;",
+    replace: "                            behaviorVerificationPassed = true;",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: a provider result and cost are required before another attempt",
+    file: "dist/orchestrator/loop.js",
+    find:
+      "            this.finishProviderCall(meta.sessionId, call.id, {\n" +
+      "                status: \"completed\",\n" +
+      "                costUsd: result.costUsd,",
+    replace:
+      "            /* result persistence removed */ void ({\n" +
+      "                status: \"completed\",\n" +
+      "                costUsd: result.costUsd,",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: provider cost reconciles into session and user aggregates",
+    file: "dist/orchestrator/loop.js",
+    find:
+      "    async persistRequiredSpend(sessionId, requester, costUsd) {\n" +
+      "        try {\n" +
+      "            this.addCost(sessionId, costUsd);",
+    replace:
+      "    async persistRequiredSpend(sessionId, requester, costUsd) {\n" +
+      "        try {\n" +
+      "            /* aggregate cost removed */",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11: the lead is instructed to produce load-bearing observe contracts",
+    file: "src/adapters/claude-code.ts",
+    find: "    \"- LOAD-BEARING OBSERVE CONTRACTS: if a later mutate task depends on an observe task for exact paths, symbols, status/blockers or contract additions, the observe task MUST declare observeContract. Give each required finding/binding a stable name and apply every binding to all dependent normative fields before dispatch. Use existing_repo_path only for files that already exist; use proposed_output_path for a new generated/migration path and cite an existing parent/naming convention. Tool activity is not a finding.\",",
+    replace: "",
+    tests: ["tests/rc11-remediation.test.mjs"],
   },
 ];
 
