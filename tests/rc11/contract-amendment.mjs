@@ -235,8 +235,9 @@ test("rc.11 corrected-candidate review: excluding one destination preserves a di
 
 test("rc.11 whole-answer review: global approval and proposal-only gates veto automatic activation", () => {
   for (const answer of [
-    "Replace .env.example with README.md. Do not proceed until I approve. Preserve everything else.",
+    "Replace .env.example with README.md. Do not read credentials.json. Do not proceed until I approve. Preserve everything else.",
     "Replace .env.example with README.md. This is a proposal only; do not execute it. Preserve everything else.",
+    "Replace .env.example with README.md. Keep the session paused. Preserve everything else.",
     "Replace .env.example with README.md;\nwait for my confirmation before applying it.\nPreserve everything else.",
   ]) {
     const p = plan();
@@ -252,17 +253,23 @@ test("rc.11 whole-answer review: global approval and proposal-only gates veto au
 });
 
 test("rc.11 whole-answer review: unclassified instructions fail closed into exact-diff confirmation", () => {
-  const p = plan();
-  const out = buildArtifactSubstitutionAmendment({
-    plan: p,
-    task: p.subTasks[0],
-    answer:
-      "Replace .env.example with README.md. Ask the compliance committee what they think. Preserve everything else.",
-    blockedPaths: [".env.example"],
-  });
-  assert.equal(out.ok, false);
-  assert.match(out.reason, /outside the bounded/);
-  assert.ok(out.proposedDiff);
+  for (const instruction of [
+    "Ask the compliance committee what they think.",
+    "Keep the session paused.",
+    "Preserve the option to cancel later.",
+    "Finish only after another review.",
+  ]) {
+    const p = plan();
+    const out = buildArtifactSubstitutionAmendment({
+      plan: p,
+      task: p.subTasks[0],
+      answer: `Replace .env.example with README.md. ${instruction} Preserve everything else.`,
+      blockedPaths: [".env.example"],
+    });
+    assert.equal(out.ok, false, instruction);
+    assert.match(out.reason, /outside the bounded/, instruction);
+    assert.ok(out.proposedDiff, instruction);
+  }
 });
 
 test("rc.11: ambiguous or broad guidance cannot activate", () => {
@@ -507,8 +514,9 @@ test("rc.11: withdrawn, conditional, or contradictory answers remain paused with
     "Replace .env.example with README.md. Actually, do not replace .env.example. Preserve everything else.",
     "If I approve later, replace .env.example with README.md. Preserve everything else.",
     "Replace .env.example with README.md. Do not read or modify README.md. Preserve everything else.",
-    "Replace .env.example with README.md. Do not proceed until I approve. Preserve everything else.",
+    "Replace .env.example with README.md. Do not read credentials.json. Do not proceed until I approve. Preserve everything else.",
     "Replace .env.example with README.md. This is a proposal only; do not execute it. Preserve everything else.",
+    "Replace .env.example with README.md. Keep the session paused. Preserve everything else.",
   ];
   for (const [index, candidateAnswer] of answers.entries()) {
     const db = deadlineDb();
@@ -584,6 +592,13 @@ test("rc.11: withdrawn, conditional, or contradictory answers remain paused with
       assert.equal(confirmation.details.ok, true);
       assert.equal(dispatches, 1, "explicit confirmation of the displayed diff activates exactly once");
       assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM task_contract_amendments WHERE status='active'`).get().n, 1);
+      const revised = JSON.parse(db.prepare(`SELECT lead_plan_json FROM sessions WHERE id='S'`).get().lead_plan_json)
+        .subTasks[0];
+      assert.match(
+        revised.workerContext.gotchas.join("\n"),
+        /Do not read credentials\.json/,
+        "confirmation must activate the complete stored task, including independent restrictions",
+      );
     }
   }
 });

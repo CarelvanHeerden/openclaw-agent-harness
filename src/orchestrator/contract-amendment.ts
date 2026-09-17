@@ -92,8 +92,12 @@ function supportedAuthorizationFragment(text: string, oldPath: string): boolean 
   if (/^(?:yes|confirmed|approved|okay|ok)\b[.!]?$/i.test(trimmed)) return true;
   const polarity = directivePolarity(trimmed, oldPath);
   if (polarity === "provenance" || polarity === "prohibition" || polarity === "affirmative") return true;
-  if (/^(?:preserve|keep|retain)\b/i.test(trimmed)) return true;
-  if (/^(?:complete|continue|finish)\b/i.test(trimmed)) return true;
+  if (
+    /^(?:preserve|keep|retain)\s+(?:everything else|completed work and existing scope,\s*budget and time limits|all unrelated (?:requirements|work)|the existing (?:scope|branch|budget|time limits))[.!]?$/i.test(trimmed)
+  ) return true;
+  if (
+    /^(?:complete|finish)\s+(?:the\s+)?[\w-]+\s+implementation\s+and\s+(?:the\s+)?required tests[.!]?$/i.test(trimmed)
+  ) return true;
   return false;
 }
 
@@ -104,6 +108,30 @@ function proposedOperationPreview(oldPath: string, newPaths: readonly string[]):
       removePositiveObligation: oldPath,
       addRequiredOutputs: newPaths,
       preserve: ["all unrelated requirements", "all prohibitions", "all provenance"],
+    },
+    null,
+    2,
+  );
+}
+
+function completeProposalPreview(
+  amendment: ContractAmendment,
+  answer: string,
+  prohibitions: readonly string[],
+): string {
+  const proposalHash = hash(amendment.revisedTask);
+  return JSON.stringify(
+    {
+      proposalVersion: "complete-task-diff/v1",
+      proposalHash,
+      displayDiff: {
+        operation: amendment.substitution,
+        changedFields: amendment.changedFields,
+        restrictionsPreserved: prohibitions,
+        revisedTask: amendment.revisedTask,
+      },
+      sourceAnswerHash: hash(answer),
+      completeAmendment: amendment,
     },
     null,
     2,
@@ -234,14 +262,9 @@ export function buildArtifactSubstitutionAmendment(input: {
   if (newPaths.length === 0) {
     return { ok: false, reason: "the answer names no replacement artifact path" };
   }
-  if (globalGate) {
-    return {
-      ok: false,
-      reason: globalGate,
-      proposedDiff: proposedOperationPreview(oldPath, newPaths),
-    };
-  }
-  const unsupported = fragments.filter((fragment) => !supportedAuthorizationFragment(fragment, oldPath));
+  const unsupported = fragments.filter(
+    (fragment) => !globalAuthorizationGate(fragment) && !supportedAuthorizationFragment(fragment, oldPath),
+  );
   if (unsupported.length > 0) {
     return {
       ok: false,
@@ -339,19 +362,24 @@ export function buildArtifactSubstitutionAmendment(input: {
     return { ok: false, reason: "the amendment changed an immutable task field" };
   }
 
-  return {
-    ok: true,
-    amendment: {
-      id: input.id ?? randomUUID(),
-      version: CONTRACT_AMENDMENT_VERSION,
-      basePlanHash: hash(input.plan),
-      baseTaskHash: hash(original),
-      originalTask: original,
-      revisedTask: revised,
-      substitution: { oldPath, newPaths, prohibitionText: prohibitions.join(" ").trim() || undefined },
-      changedFields: [...changed],
-    },
+  const amendment: ContractAmendment = {
+    id: input.id ?? randomUUID(),
+    version: CONTRACT_AMENDMENT_VERSION,
+    basePlanHash: hash(input.plan),
+    baseTaskHash: hash(original),
+    originalTask: original,
+    revisedTask: revised,
+    substitution: { oldPath, newPaths, prohibitionText: prohibitions.join(" ").trim() || undefined },
+    changedFields: [...changed],
   };
+  if (globalGate) {
+    return {
+      ok: false,
+      reason: globalGate,
+      proposedDiff: completeProposalPreview(amendment, answer, prohibitions),
+    };
+  }
+  return { ok: true, amendment };
 }
 
 export function activateTaskAmendment(plan: LeadPlan, amendment: ContractAmendment): LeadPlan {

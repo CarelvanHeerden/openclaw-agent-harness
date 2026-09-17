@@ -78,6 +78,14 @@ entire answer, and any unclassified instruction stays paused. The re-ask display
 the exact proposed operation; only a subsequent explicit “confirm the proposed
 diff” activates it.
 
+That confirmation originally regenerated a fresh path-only answer and therefore
+dropped an independent restriction from the proposal it displayed. Confirmation
+now hashes and activates the complete stored amendment—original/revised task,
+restrictions, field changes and base identities—then rechecks staleness and
+policy. Legacy path-only proposal markers cannot auto-activate. The bounded
+grammar also validates complete preservation/continuation clauses; a prefix such
+as “keep” cannot authorize an arbitrary suffix like “the session paused”.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

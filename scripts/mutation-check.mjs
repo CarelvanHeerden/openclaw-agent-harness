@@ -3800,18 +3800,8 @@ const MUTATIONS = [
   {
     name: "rc.11 whole-answer review: a global wait or proposal gate vetoes activation",
     file: "dist/orchestrator/contract-amendment.js",
-    find:
-      "    if (globalGate) {\n" +
-      "        return {\n" +
-      "            ok: false,\n" +
-      "            reason: globalGate,\n" +
-      "            proposedDiff: proposedOperationPreview(oldPath, newPaths),\n" +
-      "        };\n" +
-      "    }\n" +
-      "    const unsupported = fragments.filter((fragment) => !supportedAuthorizationFragment(fragment, oldPath));",
-    replace:
-      "    const unsupported = fragments.filter((fragment) => " +
-      "!supportedAuthorizationFragment(fragment, oldPath) && !globalAuthorizationGate(fragment));",
+    find: "    if (globalGate) {\n        return {\n            ok: false,\n            reason: globalGate,\n            proposedDiff: completeProposalPreview(amendment, answer, prohibitions),\n        };\n    }",
+    replace: "    if (false) {\n        return {\n            ok: false,\n            reason: globalGate,\n            proposedDiff: completeProposalPreview(amendment, answer, prohibitions),\n        };\n    }",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
@@ -3819,6 +3809,22 @@ const MUTATIONS = [
     file: "dist/orchestrator/contract-amendment.js",
     find: "    if (unsupported.length > 0) {",
     replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 confirmation review: preservation grammar validates the complete clause, not its prefix",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (/^(?:preserve|keep|retain)\\s+(?:everything else|completed work and existing scope,\\s*budget and time limits|all unrelated (?:requirements|work)|the existing (?:scope|branch|budget|time limits))[.!]?$/i.test(trimmed))",
+    replace: "    if (/^(?:preserve|keep|retain)\\b/i.test(trimmed))",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 confirmation review: confirmation activates the complete stored task including restrictions",
+    file: "dist/tools/registration.js",
+    find: "                        confirmedStoredAmendment = structuredClone(proposal.completeAmendment);",
+    replace:
+      "                        confirmedStoredAmendment = structuredClone(proposal.completeAmendment);\n" +
+      "                        if (confirmedStoredAmendment.revisedTask.workerContext) confirmedStoredAmendment.revisedTask.workerContext.gotchas = [];",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
 ];

@@ -1532,15 +1532,33 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
             const trimmed = answer.trim();
             let amendmentAnswer = trimmed;
+            let confirmedStoredAmendment = null;
             try {
                 const paused = JSON.parse(row.clarification_subtask ?? "{}");
                 const proposal = paused.proposedAmendmentConfirmation;
-                if (proposal?.oldPath &&
-                    Array.isArray(proposal.newPaths) &&
-                    proposal.newPaths.length > 0 &&
+                if (proposal &&
                     /^(?:confirm|approve)(?:\s+(?:the\s+)?(?:proposed|exact))?\s+(?:diff|amendment|operation)$/i.test(trimmed)) {
-                    amendmentAnswer =
-                        `Replace ${proposal.oldPath} with ${proposal.newPaths.join(" and ")}. Preserve everything else.`;
+                    if (proposal.completeAmendment && proposal.proposalHash) {
+                        const observedHash = createHash("sha256")
+                            .update(JSON.stringify(proposal.completeAmendment.revisedTask))
+                            .digest("hex");
+                        if (observedHash !== proposal.proposalHash) {
+                            return {
+                                content: [{ type: "text", text: "Stored amendment proposal failed its integrity hash; nothing was activated." }],
+                                details: { ok: false, proposalIntegrityFailed: true, sessionId },
+                            };
+                        }
+                        confirmedStoredAmendment = structuredClone(proposal.completeAmendment);
+                    }
+                    else if (proposal.oldPath && Array.isArray(proposal.newPaths) && proposal.newPaths.length > 0) {
+                        // Backward-compatible marker created by the first rc.11 candidate.
+                        // It cannot preserve independent restrictions, so do not activate
+                        // it automatically; require a fresh full directive.
+                        return {
+                            content: [{ type: "text", text: "This stored proposal predates complete-task confirmation. Restate the full substitution and restrictions." }],
+                            details: { ok: false, incompleteProposal: true, sessionId },
+                        };
+                    }
                 }
             }
             catch {
@@ -1788,8 +1806,9 @@ export function registerHarnessTools(api, runtime) {
                     };
                 }
             }
-            let precomputedAmendment = null;
-            if (classifyAnswerDecision(trimmed) === "guidance" &&
+            let precomputedAmendment = confirmedStoredAmendment;
+            if (!precomputedAmendment &&
+                classifyAnswerDecision(trimmed) === "guidance" &&
                 row.lead_plan_json &&
                 row.clarification_subtask) {
                 try {
@@ -2323,8 +2342,10 @@ export function registerHarnessTools(api, runtime) {
                                         nextSubtask = JSON.stringify({
                                             ...pausedPayload,
                                             proposedAmendmentConfirmation: {
-                                                oldPath: operation.removePositiveObligation,
-                                                newPaths: operation.addRequiredOutputs,
+                                                oldPath: operation.displayDiff?.operation?.oldPath ?? operation.removePositiveObligation,
+                                                newPaths: operation.displayDiff?.operation?.newPaths ?? operation.addRequiredOutputs,
+                                                proposalHash: operation.proposalHash,
+                                                completeAmendment: operation.completeAmendment,
                                                 proposedDiff: amendment.proposedDiff,
                                             },
                                         });
