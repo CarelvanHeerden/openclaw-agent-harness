@@ -1811,6 +1811,24 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           } | undefined;
         if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
         const trimmed = answer.trim();
+        let amendmentAnswer = trimmed;
+        try {
+          const paused = JSON.parse(row.clarification_subtask ?? "{}") as {
+            proposedAmendmentConfirmation?: { oldPath?: string; newPaths?: string[] };
+          };
+          const proposal = paused.proposedAmendmentConfirmation;
+          if (
+            proposal?.oldPath &&
+            Array.isArray(proposal.newPaths) &&
+            proposal.newPaths.length > 0 &&
+            /^(?:confirm|approve)(?:\s+(?:the\s+)?(?:proposed|exact))?\s+(?:diff|amendment|operation)$/i.test(trimmed)
+          ) {
+            amendmentAnswer =
+              `Replace ${proposal.oldPath} with ${proposal.newPaths.join(" and ")}. Preserve everything else.`;
+          }
+        } catch {
+          /* ordinary clarification payload */
+        }
         let resumedPendingAmendmentId: string | null = null;
         if (clarificationId) {
           try {
@@ -2100,7 +2118,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                 const candidate = buildArtifactSubstitutionAmendment({
                   plan: storedPlan,
                   task: paused.task,
-                  answer: trimmed,
+                  answer: amendmentAnswer,
                   blockedPaths: conflicts.map((conflict) => conflict.path),
                   id: resumedPendingAmendmentId ?? undefined,
                 });
@@ -2719,21 +2737,45 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                   : buildArtifactSubstitutionAmendment({
                       plan: storedPlan,
                       task: paused.task,
-                      answer: trimmed,
+                      answer: amendmentAnswer,
                       blockedPaths,
                       id: resumedPendingAmendmentId ?? undefined,
                     });
                 if (!amendment.ok) {
                   const replacementId = randomUUID();
+                  let nextSubtask = row.clarification_subtask ?? null;
+                  if (amendment.proposedDiff) {
+                    try {
+                      const operation = JSON.parse(amendment.proposedDiff) as {
+                        removePositiveObligation?: string;
+                        addRequiredOutputs?: string[];
+                      };
+                      const pausedPayload = JSON.parse(row.clarification_subtask ?? "{}") as Record<string, unknown>;
+                      nextSubtask = JSON.stringify({
+                        ...pausedPayload,
+                        proposedAmendmentConfirmation: {
+                          oldPath: operation.removePositiveObligation,
+                          newPaths: operation.addRequiredOutputs,
+                          proposedDiff: amendment.proposedDiff,
+                        },
+                      });
+                    } catch {
+                      /* preview remains in the question even if marker construction fails */
+                    }
+                  }
                   liveDb().prepare(
                     `UPDATE sessions SET clarification_question = ?, clarification_id = ?,
                                          clarification_answer = NULL, human_pause_started_at = ?,
-                                         active_segment_started_at = NULL, updated_at = ? WHERE id = ?`,
+                                         active_segment_started_at = NULL, clarification_subtask = ?,
+                                         updated_at = ? WHERE id = ?`,
                   ).run(
-                    `I could not safely turn that answer into a unique task-contract amendment: ${amendment.reason}. ` +
-                      `Please restate the exact old artifact and exact replacement path(s), or answer "abort".`,
+                    `I could not safely activate that answer automatically: ${amendment.reason}. ` +
+                      (amendment.proposedDiff
+                        ? `No amendment was activated. If you intend this exact operation now, explicitly confirm this proposed diff:\n${amendment.proposedDiff.slice(0, 3000)}`
+                        : `Please restate the exact old artifact and exact replacement path(s), or answer "abort".`),
                     replacementId,
                     Date.now(),
+                    nextSubtask,
                     Date.now(),
                     sessionId,
                   );

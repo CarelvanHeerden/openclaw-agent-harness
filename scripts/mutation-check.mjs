@@ -3797,6 +3797,30 @@ const MUTATIONS = [
     replace: "    if (false) {",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
+  {
+    name: "rc.11 whole-answer review: a global wait or proposal gate vetoes activation",
+    file: "dist/orchestrator/contract-amendment.js",
+    find:
+      "    if (globalGate) {\n" +
+      "        return {\n" +
+      "            ok: false,\n" +
+      "            reason: globalGate,\n" +
+      "            proposedDiff: proposedOperationPreview(oldPath, newPaths),\n" +
+      "        };\n" +
+      "    }\n" +
+      "    const unsupported = fragments.filter((fragment) => !supportedAuthorizationFragment(fragment, oldPath));",
+    replace:
+      "    const unsupported = fragments.filter((fragment) => " +
+      "!supportedAuthorizationFragment(fragment, oldPath) && !globalAuthorizationGate(fragment));",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 whole-answer review: unclassified instructions require exact-diff confirmation",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (unsupported.length > 0) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
 ];
 
 /**

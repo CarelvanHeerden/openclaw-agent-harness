@@ -69,6 +69,15 @@ withdrawals veto automation, destination-specific exclusions are retained, and
 any required destination that is also prohibited forces exact-diff human
 confirmation. Rejected answers remain paused and dispatch nothing.
 
+The next review found that a stop/approval sentence without a filename still
+fell outside that envelope. Automatic amendment now uses a bounded whole-answer
+protocol: every fragment must be an explicit substitution, supported
+path-specific restriction, preservation/continuation clause, provenance, or
+simple confirmation. Global wait/approval/proposal/draft instructions veto the
+entire answer, and any unclassified instruction stays paused. The re-ask displays
+the exact proposed operation; only a subsequent explicit “confirm the proposed
+diff” activates it.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

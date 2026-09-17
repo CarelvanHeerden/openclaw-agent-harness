@@ -73,6 +73,43 @@ function isConditionalSubstitution(text: string, oldPath: string): boolean {
   return /\b(?:if|unless|when|pending|subject\s+to)\b|\b(?:once|after)\b[^.!?;]{0,80}\bapprov|\blater\b/i.test(text);
 }
 
+function globalAuthorizationGate(text: string): string | undefined {
+  if (
+    /\b(?:do\s+not|don't|must\s+not|may\s+not|shall\s+not)\s+(?:proceed|execute|apply|activate|implement|start|continue)\b/i.test(text) ||
+    /\b(?:wait|hold|pause)\b[^.!?;]{0,120}\b(?:approv|confirmation|confirm)\w*\b/i.test(text) ||
+    /\b(?:proposal|draft|suggestion|example)\s+only\b/i.test(text) ||
+    /\bnot\s+(?:an?\s+)?(?:authorization|approval|permission)\b/i.test(text) ||
+    /\buntil\b[^.!?;]{0,120}\b(?:approv|confirmation|confirm)\w*\b/i.test(text)
+  ) {
+    return "the answer globally withholds execution or requires separate approval/confirmation";
+  }
+  return undefined;
+}
+
+function supportedAuthorizationFragment(text: string, oldPath: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  if (/^(?:yes|confirmed|approved|okay|ok)\b[.!]?$/i.test(trimmed)) return true;
+  const polarity = directivePolarity(trimmed, oldPath);
+  if (polarity === "provenance" || polarity === "prohibition" || polarity === "affirmative") return true;
+  if (/^(?:preserve|keep|retain)\b/i.test(trimmed)) return true;
+  if (/^(?:complete|continue|finish)\b/i.test(trimmed)) return true;
+  return false;
+}
+
+function proposedOperationPreview(oldPath: string, newPaths: readonly string[]): string {
+  return JSON.stringify(
+    {
+      operation: "replace_artifact",
+      removePositiveObligation: oldPath,
+      addRequiredOutputs: newPaths,
+      preserve: ["all unrelated requirements", "all prohibitions", "all provenance"],
+    },
+    null,
+    2,
+  );
+}
+
 function replaceArtifactText(text: string, oldPath: string, renderedNew: string): { value: string; changed: boolean } {
   const label = canonicalArtifactLabel(oldPath);
   const value = directiveFragments(text).map((fragment) => {
@@ -159,6 +196,7 @@ export function buildArtifactSubstitutionAmendment(input: {
     return { ok: false, reason: `the answer does not name the blocked artifact ${oldPath}` };
   }
   const fragments = directiveFragments(answer);
+  const globalGate = globalAuthorizationGate(answer);
   const prohibitedDestinations = new Set<string>();
   let withdrewSubstitution = false;
   for (const fragment of fragments) {
@@ -195,6 +233,21 @@ export function buildArtifactSubstitutionAmendment(input: {
   const newPaths = unique(candidates);
   if (newPaths.length === 0) {
     return { ok: false, reason: "the answer names no replacement artifact path" };
+  }
+  if (globalGate) {
+    return {
+      ok: false,
+      reason: globalGate,
+      proposedDiff: proposedOperationPreview(oldPath, newPaths),
+    };
+  }
+  const unsupported = fragments.filter((fragment) => !supportedAuthorizationFragment(fragment, oldPath));
+  if (unsupported.length > 0) {
+    return {
+      ok: false,
+      reason: `the answer contains instruction(s) outside the bounded automatic-amendment grammar: ${unsupported.join(" ")}`,
+      proposedDiff: proposedOperationPreview(oldPath, newPaths),
+    };
   }
   const prohibitedRequired = newPaths.filter((path) => prohibitedDestinations.has(path));
   if (prohibitedRequired.length > 0) {
