@@ -3776,6 +3776,27 @@ const MUTATIONS = [
     replace: "    const affirmative = fragments;",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
+  {
+    name: "rc.11 candidate review: future or conditional approval is not current authorization",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "        if (isConditionalSubstitution(fragment, oldPath)) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 candidate review: a later withdrawal vetoes automatic activation",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (withdrewSubstitution) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 candidate review: a prohibited destination cannot become required output",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (prohibitedRequired.length > 0) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
 ];
 
 /**

@@ -39,6 +39,11 @@ function directivePolarity(text, oldPath) {
         return "affirmative";
     return "neutral";
 }
+function isConditionalSubstitution(text, oldPath) {
+    if (!artifactMentioned(text, oldPath) || !/\b(?:replace|substitut|instead\s+of|move)\b/i.test(text))
+        return false;
+    return /\b(?:if|unless|when|pending|subject\s+to)\b|\b(?:once|after)\b[^.!?;]{0,80}\bapprov|\blater\b/i.test(text);
+}
 function replaceArtifactText(text, oldPath, renderedNew) {
     const label = canonicalArtifactLabel(oldPath);
     const value = directiveFragments(text).map((fragment) => {
@@ -117,6 +122,30 @@ export function buildArtifactSubstitutionAmendment(input) {
         return { ok: false, reason: `the answer does not name the blocked artifact ${oldPath}` };
     }
     const fragments = directiveFragments(answer);
+    const prohibitedDestinations = new Set();
+    let withdrewSubstitution = false;
+    for (const fragment of fragments) {
+        if (isConditionalSubstitution(fragment, oldPath)) {
+            return { ok: false, reason: "the replacement is conditional on future approval or another unresolved condition" };
+        }
+        if (directivePolarity(fragment, oldPath) !== "prohibition")
+            continue;
+        const paths = pathTokens(fragment).filter((path) => path !== oldPath && !path.startsWith(".env") && !blocked.includes(path));
+        if (artifactMentioned(fragment, oldPath) && /\b(?:replace|substitut|instead\s+of|move)\b/i.test(fragment)) {
+            if (paths.length === 0)
+                withdrewSubstitution = true;
+            else
+                for (const path of paths)
+                    prohibitedDestinations.add(path);
+        }
+        else {
+            for (const path of paths)
+                prohibitedDestinations.add(path);
+        }
+    }
+    if (withdrewSubstitution) {
+        return { ok: false, reason: "the answer withdraws or prohibits permission to replace the blocked artifact" };
+    }
     const affirmative = fragments.filter((fragment) => directivePolarity(fragment, oldPath) === "affirmative");
     const oldPathAuthorised = affirmative.some((fragment) => artifactMentioned(fragment, oldPath) &&
         /\b(?:replace|substitut|instead\s+of|move)\b/i.test(fragment));
@@ -127,6 +156,13 @@ export function buildArtifactSubstitutionAmendment(input) {
     const newPaths = unique(candidates);
     if (newPaths.length === 0) {
         return { ok: false, reason: "the answer names no replacement artifact path" };
+    }
+    const prohibitedRequired = newPaths.filter((path) => prohibitedDestinations.has(path));
+    if (prohibitedRequired.length > 0) {
+        return {
+            ok: false,
+            reason: `the answer prohibits required access to replacement artifact(s): ${prohibitedRequired.join(", ")}`,
+        };
     }
     const original = structuredClone(input.task);
     const revised = structuredClone(input.task);
@@ -170,12 +206,10 @@ export function buildArtifactSubstitutionAmendment(input) {
             changed.add("workerContext.changeSpec");
         }
     }
-    const prohibition = answer
-        .split(/(?<=[.!?])\s+/)
-        .find((sentence) => sentence.includes(oldPath) && isProhibition(sentence, oldPath));
-    if (prohibition) {
+    const prohibitions = fragments.filter((fragment) => directivePolarity(fragment, oldPath) === "prohibition");
+    if (prohibitions.length > 0) {
         const context = revised.workerContext ?? { rationale: original.workerContext?.rationale ?? "Operator-scoped task amendment." };
-        context.gotchas = unique([...(context.gotchas ?? []), prohibition.trim()]);
+        context.gotchas = unique([...(context.gotchas ?? []), ...prohibitions.map((fragment) => fragment.trim())]);
         revised.workerContext = context;
         changed.add("workerContext.gotchas");
     }
@@ -213,7 +247,7 @@ export function buildArtifactSubstitutionAmendment(input) {
             baseTaskHash: hash(original),
             originalTask: original,
             revisedTask: revised,
-            substitution: { oldPath, newPaths, prohibitionText: prohibition?.trim() },
+            substitution: { oldPath, newPaths, prohibitionText: prohibitions.join(" ").trim() || undefined },
             changedFields: [...changed],
         },
     };

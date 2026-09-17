@@ -60,6 +60,15 @@ authorize and contribute outputs; prohibitions and provenance remain
 byte-for-byte. The hold fixtures and dedicated mutations are included in the
 repository suite.
 
+A second independent review widened that boundary before installation. A
+positive sentence followed by “actually, do not replace” still activated; “if I
+approve later” was treated as current permission; and a destination required by
+one sentence could be prohibited by the next. The authorization envelope now
+evaluates the complete ordered answer: unresolved/future conditions and global
+withdrawals veto automation, destination-specific exclusions are retained, and
+any required destination that is also prohibited forces exact-diff human
+confirmation. Rejected answers remain paused and dispatch nothing.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

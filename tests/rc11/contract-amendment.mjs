@@ -180,6 +180,59 @@ test("rc.11: mixed positive and negative clauses preserve the restriction and ap
   assert.match(out.amendment.revisedTask.workerContext.changeSpec, /update CLIENT-OFFBOARDING-AGENT\.md/);
 });
 
+test("rc.11 corrected-candidate review: later withdrawal prevents automatic amendment", () => {
+  const p = plan();
+  const out = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer:
+      "Replace .env.example with README.md. Actually, do not replace .env.example. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /withdraws|prohibits/);
+});
+
+test("rc.11 corrected-candidate review: future approval is not current authorization", () => {
+  const p = plan();
+  const out = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer: "If I approve later, replace .env.example with README.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /conditional|future approval/);
+});
+
+test("rc.11 corrected-candidate review: a prohibited replacement document cannot become required output", () => {
+  const p = plan();
+  const out = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer:
+      "Replace .env.example with README.md. Do not read or modify README.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /prohibits required access/);
+});
+
+test("rc.11 corrected-candidate review: excluding one destination preserves a different affirmative destination", () => {
+  const p = plan();
+  const out = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer:
+      "Do not replace .env.example with README.md. " +
+      "Replace .env.example with CLIENT-OFFBOARDING-AGENT.md instead. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, true, out.reason);
+  assert.deepEqual(out.amendment.substitution.newPaths, ["CLIENT-OFFBOARDING-AGENT.md"]);
+  assert.match(out.amendment.revisedTask.workerContext.gotchas.join("\n"), /Do not replace.*README\.md/);
+});
+
 test("rc.11: ambiguous or broad guidance cannot activate", () => {
   const p = plan();
   for (const answer of ["Do something else.", "Use README.md.", "Replace .env.example somehow."]) {
@@ -415,4 +468,75 @@ test("rc.11: a stale or missing clarification id cannot mutate the plan", async 
   }
   assert.equal(db.prepare(`SELECT plan_revision AS n FROM sessions WHERE id='S'`).get().n, 0);
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM task_contract_amendments`).get().n, 0);
+});
+
+test("rc.11: withdrawn, conditional, or contradictory answers remain paused with no activation or dispatch", async () => {
+  const answers = [
+    "Replace .env.example with README.md. Actually, do not replace .env.example. Preserve everything else.",
+    "If I approve later, replace .env.example with README.md. Preserve everything else.",
+    "Replace .env.example with README.md. Do not read or modify README.md. Preserve everything else.",
+  ];
+  for (const [index, candidateAnswer] of answers.entries()) {
+    const db = deadlineDb();
+    const p = plan();
+    db.prepare(
+      `UPDATE sessions
+          SET status='awaiting_clarification', crystallised_prompt=?, lead_plan_json=?,
+              clarification_question='blocked path', clarification_seq=3, clarification_id=?,
+              clarification_subtask=?, human_pause_started_at=1000, active_limit_ms=18000000
+        WHERE id='S'`,
+    ).run(
+      JSON.stringify({ title: "t", motivation: "m", acceptanceCriteria: [] }),
+      JSON.stringify(p),
+      `Q-${index}`,
+      JSON.stringify({
+        title: p.subTasks[0].title,
+        intent: p.subTasks[0].intent,
+        task: p.subTasks[0],
+        policyConflicts: [{ path: ".env.example", rule: ".env.*" }],
+      }),
+    );
+    const state = {
+      db,
+      isOpen: () => true,
+      audit(event, payload, sessionId) {
+        db.prepare(`INSERT INTO audit_log (session_id,event,payload,created_at) VALUES (?,?,?,?)`)
+          .run(sessionId ?? null, event, JSON.stringify(payload ?? {}), Date.now());
+      },
+    };
+    let dispatches = 0;
+    const tools = new Map();
+    registerHarnessTools(
+      {
+        logger: { info() {}, warn() {}, error() {}, debug() {} },
+        registerTool(def) {
+          tools.set(def.name, { execute: (input) => def.execute("call", input) });
+          return () => {};
+        },
+      },
+      {
+        state,
+        config: {
+          slack: { authorised_users: ["U1"] },
+          loop: { session_hard_timeout_seconds: 18000 },
+          safety: { path_denylist: [".env", ".env.*"], path_denylist_exceptions: [] },
+          budgets: {},
+          storage: { worktree_root: "/tmp/unused" },
+        },
+        loop: { run: async () => { dispatches += 1; return { status: "failed" }; } },
+      },
+    );
+    const result = await tools.get("harness_answer").execute({
+      sessionId: "S",
+      answer: candidateAnswer,
+      invokedBy: "U1",
+      clarificationSeq: 3,
+      clarificationId: `Q-${index}`,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(result.details.ok, false, candidateAnswer);
+    assert.equal(dispatches, 0, candidateAnswer);
+    assert.equal(db.prepare(`SELECT status FROM sessions WHERE id='S'`).get().status, "awaiting_clarification");
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM task_contract_amendments WHERE status='active'`).get().n, 0);
+  }
 });
