@@ -86,6 +86,14 @@ policy. Legacy path-only proposal markers cannot auto-activate. The bounded
 grammar also validates complete preservation/continuation clauses; a prefix such
 as “keep” cannot authorize an arbitrary suffix like “the session paused”.
 
+Clause validation now operates across sentence, newline, semicolon and
+adversative conjunction boundaries, so attaching “but keep the session paused”
+to a valid replacement cannot hide it inside an affirmative fragment.
+“Keep/leave the session paused” is modeled as a global execution gate and
+therefore produces a complete confirmable proposal. Truly unclassified text no
+longer offers a path-only confirmation that the next call must reject; it asks
+for a focused restatement instead.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

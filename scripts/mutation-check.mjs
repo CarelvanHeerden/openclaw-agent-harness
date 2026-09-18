@@ -3827,6 +3827,13 @@ const MUTATIONS = [
       "                        if (confirmedStoredAmendment.revisedTask.workerContext) confirmedStoredAmendment.revisedTask.workerContext.gotchas = [];",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
+  {
+    name: "rc.11 clause review: adversative joined clauses are validated independently",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "        .split(/(?<=[.!?;])\\s+|\\r?\\n+|,\\s*(?:but|however|yet)\\s+|\\s+(?:but|however|yet)\\s+/i)",
+    replace: "        .split(/(?<=[.!?;])\\s+/)",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
 ];
 
 /**

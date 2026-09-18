@@ -24,7 +24,10 @@ function artifactMentioned(text, path) {
     return !!label && new RegExp(`\\b(?:the\\s+)?${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text);
 }
 function directiveFragments(text) {
-    return text.split(/(?<=[.!?;])\s+/).filter(Boolean);
+    return text
+        .split(/(?<=[.!?;])\s+|\r?\n+|,\s*(?:but|however|yet)\s+|\s+(?:but|however|yet)\s+/i)
+        .map((fragment) => fragment.trim())
+        .filter(Boolean);
 }
 function directivePolarity(text, oldPath) {
     if (!artifactMentioned(text, oldPath) && pathTokens(text).length === 0)
@@ -49,7 +52,8 @@ function globalAuthorizationGate(text) {
         /\b(?:wait|hold|pause)\b[^.!?;]{0,120}\b(?:approv|confirmation|confirm)\w*\b/i.test(text) ||
         /\b(?:proposal|draft|suggestion|example)\s+only\b/i.test(text) ||
         /\bnot\s+(?:an?\s+)?(?:authorization|approval|permission)\b/i.test(text) ||
-        /\buntil\b[^.!?;]{0,120}\b(?:approv|confirmation|confirm)\w*\b/i.test(text)) {
+        /\buntil\b[^.!?;]{0,120}\b(?:approv|confirmation|confirm)\w*\b/i.test(text) ||
+        /\b(?:keep|leave)\s+(?:the\s+)?(?:session|run|task|work)\s+(?:paused|stopped|on\s+hold)\b/i.test(text)) {
         return "the answer globally withholds execution or requires separate approval/confirmation";
     }
     return undefined;
@@ -68,14 +72,6 @@ function supportedAuthorizationFragment(text, oldPath) {
     if (/^(?:complete|finish)\s+(?:the\s+)?[\w-]+\s+implementation\s+and\s+(?:the\s+)?required tests[.!]?$/i.test(trimmed))
         return true;
     return false;
-}
-function proposedOperationPreview(oldPath, newPaths) {
-    return JSON.stringify({
-        operation: "replace_artifact",
-        removePositiveObligation: oldPath,
-        addRequiredOutputs: newPaths,
-        preserve: ["all unrelated requirements", "all prohibitions", "all provenance"],
-    }, null, 2);
 }
 function completeProposalPreview(amendment, answer, prohibitions) {
     const proposalHash = hash(amendment.revisedTask);
@@ -211,7 +207,6 @@ export function buildArtifactSubstitutionAmendment(input) {
         return {
             ok: false,
             reason: `the answer contains instruction(s) outside the bounded automatic-amendment grammar: ${unsupported.join(" ")}`,
-            proposedDiff: proposedOperationPreview(oldPath, newPaths),
         };
     }
     const prohibitedRequired = newPaths.filter((path) => prohibitedDestinations.has(path));

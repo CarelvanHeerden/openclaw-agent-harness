@@ -238,6 +238,9 @@ test("rc.11 whole-answer review: global approval and proposal-only gates veto au
     "Replace .env.example with README.md. Do not read credentials.json. Do not proceed until I approve. Preserve everything else.",
     "Replace .env.example with README.md. This is a proposal only; do not execute it. Preserve everything else.",
     "Replace .env.example with README.md. Keep the session paused. Preserve everything else.",
+    "Replace .env.example with README.md, but keep the session paused. Preserve everything else.",
+    "Replace .env.example with README.md; however keep the session paused. Preserve everything else.",
+    "Replace .env.example with README.md.\nKeep the session paused.\nPreserve everything else.",
     "Replace .env.example with README.md;\nwait for my confirmation before applying it.\nPreserve everything else.",
   ]) {
     const p = plan();
@@ -252,10 +255,9 @@ test("rc.11 whole-answer review: global approval and proposal-only gates veto au
   }
 });
 
-test("rc.11 whole-answer review: unclassified instructions fail closed into exact-diff confirmation", () => {
+test("rc.11 whole-answer review: unclassified instructions request restatement and offer no unusable confirmation", () => {
   for (const instruction of [
     "Ask the compliance committee what they think.",
-    "Keep the session paused.",
     "Preserve the option to cancel later.",
     "Finish only after another review.",
   ]) {
@@ -268,8 +270,19 @@ test("rc.11 whole-answer review: unclassified instructions fail closed into exac
     });
     assert.equal(out.ok, false, instruction);
     assert.match(out.reason, /outside the bounded/, instruction);
-    assert.ok(out.proposedDiff, instruction);
+    assert.equal(out.proposedDiff, undefined, instruction);
   }
+  const p = plan();
+  const compound = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer:
+      "Replace .env.example with README.md, but ask the compliance committee what they think. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(compound.ok, false);
+  assert.match(compound.reason, /outside the bounded/);
+  assert.equal(compound.proposedDiff, undefined);
 });
 
 test("rc.11: ambiguous or broad guidance cannot activate", () => {
