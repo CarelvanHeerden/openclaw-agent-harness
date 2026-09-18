@@ -94,6 +94,16 @@ therefore produces a complete confirmable proposal. Truly unclassified text no
 longer offers a path-only confirmation that the next call must reject; it asks
 for a focused restatement instead.
 
+A further hold review showed that enumerating conjunction boundaries was still
+not whole-clause validation: “replace …, and await my approval” retained an
+affirmative prefix and silently consumed the attached hold. Automatic activation
+now requires each complete fragment to match an anchored substitution,
+restriction, provenance, preservation or continuation production. Artifact
+sources and destination lists must be fully consumed; any leftover qualifier or
+instruction stays paused. Period-separated and conjunction-joined hold or
+unsupported-instruction forms now have equivalent integration coverage, while
+supported multi-document artifact lists remain valid.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

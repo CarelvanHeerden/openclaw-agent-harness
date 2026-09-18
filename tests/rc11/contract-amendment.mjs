@@ -285,6 +285,56 @@ test("rc.11 whole-answer review: unclassified instructions request restatement a
   assert.equal(compound.proposedDiff, undefined);
 });
 
+test("rc.11 whole-clause review: affirmative syntax cannot consume an attached unsupported instruction", () => {
+  const cases = [
+    "Replace .env.example with README.md. Finish only after another review. Preserve everything else.",
+    "Replace .env.example with README.md, and finish only after another review. Preserve everything else.",
+    "Replace .env.example with README.md. Ask the compliance committee what they think. Preserve everything else.",
+    "Replace .env.example with README.md, and ask the compliance committee what they think. Preserve everything else.",
+    "Replace .env.example with README.md, and delete all tests. Preserve everything else.",
+    "Replace .env.example after another review with README.md. Preserve everything else.",
+  ];
+  for (const answer of cases) {
+    const p = plan();
+    const out = buildArtifactSubstitutionAmendment({
+      plan: p,
+      task: p.subTasks[0],
+      answer,
+      blockedPaths: [".env.example"],
+    });
+    assert.equal(out.ok, false, answer);
+    assert.match(out.reason, /outside the bounded/, answer);
+  }
+
+  const p = plan();
+  const positive = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer: "Replace .env.example with README.md and CLIENT-OFFBOARDING-AGENT.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(positive.ok, true, positive.reason);
+  assert.deepEqual(positive.amendment.substitution.newPaths, ["README.md", "CLIENT-OFFBOARDING-AGENT.md"]);
+});
+
+test("rc.11 whole-clause review: attached approval holds require complete-proposal confirmation", () => {
+  for (const answer of [
+    "Replace .env.example with README.md. Await my approval. Preserve everything else.",
+    "Replace .env.example with README.md, and await my approval. Preserve everything else.",
+  ]) {
+    const p = plan();
+    const out = buildArtifactSubstitutionAmendment({
+      plan: p,
+      task: p.subTasks[0],
+      answer,
+      blockedPaths: [".env.example"],
+    });
+    assert.equal(out.ok, false, answer);
+    assert.match(out.reason, /withholds execution|approval/);
+    assert.ok(out.proposedDiff, answer);
+  }
+});
+
 test("rc.11: ambiguous or broad guidance cannot activate", () => {
   const p = plan();
   for (const answer of ["Do something else.", "Use README.md.", "Replace .env.example somehow."]) {
@@ -530,6 +580,9 @@ test("rc.11: withdrawn, conditional, or contradictory answers remain paused with
     "Replace .env.example with README.md. Do not read credentials.json. Do not proceed until I approve. Preserve everything else.",
     "Replace .env.example with README.md. This is a proposal only; do not execute it. Preserve everything else.",
     "Replace .env.example with README.md. Keep the session paused. Preserve everything else.",
+    "Replace .env.example with README.md, and await my approval. Preserve everything else.",
+    "Replace .env.example with README.md, and finish only after another review. Preserve everything else.",
+    "Replace .env.example with README.md, and ask the compliance committee what they think. Preserve everything else.",
   ];
   for (const [index, candidateAnswer] of answers.entries()) {
     const db = deadlineDb();

@@ -52,7 +52,7 @@ function artifactMentioned(text: string, path: string): boolean {
 
 function directiveFragments(text: string): string[] {
   return text
-    .split(/(?<=[.!?;])\s+|\r?\n+|,\s*(?:but|however|yet)\s+|\s+(?:but|however|yet)\s+/i)
+    .split(/(?<=[.!?;])\s+|\r?\n+/)
     .map((fragment) => fragment.trim())
     .filter(Boolean);
 }
@@ -79,7 +79,7 @@ function isConditionalSubstitution(text: string, oldPath: string): boolean {
 function globalAuthorizationGate(text: string): string | undefined {
   if (
     /\b(?:do\s+not|don't|must\s+not|may\s+not|shall\s+not)\s+(?:proceed|execute|apply|activate|implement|start|continue)\b/i.test(text) ||
-    /\b(?:wait|hold|pause)\b[^.!?;]{0,120}\b(?:approv|confirmation|confirm)\w*\b/i.test(text) ||
+    /\b(?:await|wait|hold|pause)\b[^.!?;]{0,120}\b(?:approv|confirmation|confirm)\w*\b/i.test(text) ||
     /\b(?:proposal|draft|suggestion|example)\s+only\b/i.test(text) ||
     /\bnot\s+(?:an?\s+)?(?:authorization|approval|permission)\b/i.test(text) ||
     /\buntil\b[^.!?;]{0,120}\b(?:approv|confirmation|confirm)\w*\b/i.test(text) ||
@@ -90,12 +90,104 @@ function globalAuthorizationGate(text: string): string | undefined {
   return undefined;
 }
 
+function withoutTerminalPunctuation(text: string): string {
+  return text.trim().replace(/[.!?;]+$/, "").trim();
+}
+
+function pathListIsComplete(text: string): boolean {
+  let remainder = withoutTerminalPunctuation(text)
+    .replace(/^(?:the\s+following\s+)?/i, "")
+    .replace(/\s+instead$/i, "")
+    .replace(/[`'"]/g, "");
+  const paths = pathTokens(` ${remainder} `).sort((a, b) => b.length - a.length);
+  if (paths.length === 0) return false;
+  for (const path of paths) {
+    remainder = remainder.replace(new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), " ");
+  }
+  return /^(?:\s|,|\band\b)*$/i.test(remainder);
+}
+
+function artifactReferenceIsComplete(text: string, path: string): boolean {
+  const reference = withoutTerminalPunctuation(text).replace(/[`'"]/g, "").trim();
+  if (reference === path) return true;
+  const label = canonicalArtifactLabel(path);
+  return !!label && new RegExp(`^(?:the\\s+)?${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i").test(reference);
+}
+
+function supportedAffirmativeFragment(text: string, oldPath: string): boolean {
+  const clause = withoutTerminalPunctuation(text).replace(/^please\s+/i, "");
+  const escapedOldPath = oldPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  let match = clause.match(/^(?:actually,\s*)?(?:replace|substitute)\s+(.+?)\s+(?:with|using)\s+(.+)$/i);
+  if (match) {
+    return artifactReferenceIsComplete(match[1]!, oldPath) && pathListIsComplete(match[2]!);
+  }
+
+  match = clause.match(/^use\s+(.+?)\s+instead\s+of\s+(.+)$/i);
+  if (match) {
+    return pathListIsComplete(match[1]!) && artifactReferenceIsComplete(match[2]!, oldPath);
+  }
+
+  match = clause.match(/^move\s+(.+?)\s+to\s+(.+)$/i);
+  if (match) {
+    return artifactReferenceIsComplete(match[1]!, oldPath) && pathListIsComplete(match[2]!);
+  }
+
+  match = clause.match(/^document\s+.+\s+in\s+(.+?)(?:\s+instead)?$/i);
+  if (match) return pathListIsComplete(match[1]!);
+
+  const contractUpdate = new RegExp(
+    `^update\\s+the\\s+sub-task(?:['’]s)?\\s+expected\\s+paths\\s+and\\s+verification\\s+contract\\s+to\\s+replace\\s+${escapedOldPath}\\s+with\\s+those\\s+documentation\\s+files$`,
+    "i",
+  );
+  return contractUpdate.test(clause);
+}
+
+function restrictedArtifactObjectIsComplete(text: string, oldPath: string): boolean {
+  let remainder = withoutTerminalPunctuation(text).replace(/[`'"]/g, "");
+  const paths = pathTokens(` ${remainder} `).sort((a, b) => b.length - a.length);
+  for (const path of paths) {
+    remainder = remainder.replace(new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), " ");
+  }
+  remainder = remainder.replace(new RegExp(oldPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), " ");
+  remainder = remainder.replace(/\.env(?:\.example|\.\*)?/g, " ");
+  return /^(?:\s|,|\b(?:and|or|with|to|files?|including|the|all|any)\b)*$/i.test(remainder);
+}
+
+function supportedProhibitionFragment(text: string, oldPath: string): boolean {
+  const clause = withoutTerminalPunctuation(text);
+  const direct = clause.match(
+    /^(?:actually,\s*)?(?:do\s+not|don't|never|must\s+not|may\s+not|shall\s+not|avoid)\s+((?:(?:read|create|modify|write|access|use|replace|substitute|move)(?:\s*,\s*|\s+(?:and|or)\s+))*(?:read|create|modify|write|access|use|replace|substitute|move))\s+(.+)$/i,
+  );
+  if (direct) {
+    const object = direct[2]!;
+    if (!artifactMentioned(object, oldPath) && pathTokens(` ${object} `).length === 0) return false;
+    return restrictedArtifactObjectIsComplete(object, oldPath);
+  }
+  const continuation = clause.match(
+    /^continue\s+sub-task\s+\d+\s+without\s+(?:(?:reading|creating|modifying)(?:\s*,\s*|\s+(?:and|or)\s+))*(?:reading|creating|modifying)\s+(.+)$/i,
+  );
+  return (
+    !!continuation &&
+    artifactMentioned(continuation[1]!, oldPath) &&
+    restrictedArtifactObjectIsComplete(continuation[1]!, oldPath)
+  );
+}
+
+function supportedProvenanceFragment(text: string): boolean {
+  return /^(?:the\s+)?(?:previous|prior|historical|original)\s+(?:plan|answer|proposal|instruction|contract)\s+(?:said|stated|quoted)(?:\s+that)?\s+.+[.!?]?$/i.test(
+    text.trim(),
+  );
+}
+
 function supportedAuthorizationFragment(text: string, oldPath: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return true;
   if (/^(?:yes|confirmed|approved|okay|ok)\b[.!]?$/i.test(trimmed)) return true;
   const polarity = directivePolarity(trimmed, oldPath);
-  if (polarity === "provenance" || polarity === "prohibition" || polarity === "affirmative") return true;
+  if (polarity === "provenance") return supportedProvenanceFragment(trimmed);
+  if (polarity === "prohibition") return supportedProhibitionFragment(trimmed, oldPath);
+  if (polarity === "affirmative") return supportedAffirmativeFragment(trimmed, oldPath);
   if (
     /^(?:preserve|keep|retain)\s+(?:everything else|completed work and existing scope,\s*budget and time limits|all unrelated (?:requirements|work)|the existing (?:scope|branch|budget|time limits))[.!]?$/i.test(trimmed)
   ) return true;

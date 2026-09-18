@@ -3828,10 +3828,32 @@ const MUTATIONS = [
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
-    name: "rc.11 clause review: adversative joined clauses are validated independently",
+    name: "rc.11 clause review: polarity alone cannot authorize a whole fragment",
     file: "dist/orchestrator/contract-amendment.js",
-    find: "        .split(/(?<=[.!?;])\\s+|\\r?\\n+|,\\s*(?:but|however|yet)\\s+|\\s+(?:but|however|yet)\\s+/i)",
-    replace: "        .split(/(?<=[.!?;])\\s+/)",
+    find: "    if (polarity === \"affirmative\")\n        return supportedAffirmativeFragment(trimmed, oldPath);",
+    replace: "    if (polarity === \"affirmative\")\n        return true;",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 clause review: replacement destinations reject unconsumed suffix text",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    return /^(?:\\s|,|\\band\\b)*$/i.test(remainder);",
+    replace: "    return true;",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 clause review: replacement sources reject unconsumed qualifier text",
+    file: "dist/orchestrator/contract-amendment.js",
+    find:
+      "    let match = clause.match(/^(?:actually,\\s*)?(?:replace|substitute)\\s+(.+?)\\s+(?:with|using)\\s+(.+)$/i);\n" +
+      "    if (match) {\n" +
+      "        return artifactReferenceIsComplete(match[1], oldPath) && pathListIsComplete(match[2]);\n" +
+      "    }",
+    replace:
+      "    let match = clause.match(/^(?:actually,\\s*)?(?:replace|substitute)\\s+(.+?)\\s+(?:with|using)\\s+(.+)$/i);\n" +
+      "    if (match) {\n" +
+      "        return artifactMentioned(match[1], oldPath) && pathListIsComplete(match[2]);\n" +
+      "    }",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
 ];
