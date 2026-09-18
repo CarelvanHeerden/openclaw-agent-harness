@@ -61,18 +61,18 @@ function globalAuthorizationGate(text) {
 function withoutTerminalPunctuation(text) {
     return text.trim().replace(/[.!?;]+$/, "").trim();
 }
-function pathListIsComplete(text) {
+function parsePathList(text) {
     let remainder = withoutTerminalPunctuation(text)
         .replace(/^(?:the\s+following\s+)?/i, "")
         .replace(/\s+instead$/i, "")
         .replace(/[`'"]/g, "");
-    const paths = pathTokens(` ${remainder} `).sort((a, b) => b.length - a.length);
+    const paths = pathTokens(` ${remainder} `);
     if (paths.length === 0)
-        return false;
-    for (const path of paths) {
+        return undefined;
+    for (const path of [...paths].sort((a, b) => b.length - a.length)) {
         remainder = remainder.replace(new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), " ");
     }
-    return /^(?:\s|,|\band\b)*$/i.test(remainder);
+    return /^(?:\s|,|\band\b)*$/i.test(remainder) ? paths : undefined;
 }
 function artifactReferenceIsComplete(text, path) {
     const reference = withoutTerminalPunctuation(text).replace(/[`'"]/g, "").trim();
@@ -81,26 +81,42 @@ function artifactReferenceIsComplete(text, path) {
     const label = canonicalArtifactLabel(path);
     return !!label && new RegExp(`^(?:the\\s+)?${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i").test(reference);
 }
-function supportedAffirmativeFragment(text, oldPath) {
+function parseAffirmativeFragment(text, oldPath) {
     const clause = withoutTerminalPunctuation(text).replace(/^please\s+/i, "");
     const escapedOldPath = oldPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     let match = clause.match(/^(?:actually,\s*)?(?:replace|substitute)\s+(.+?)\s+(?:with|using)\s+(.+)$/i);
     if (match) {
-        return artifactReferenceIsComplete(match[1], oldPath) && pathListIsComplete(match[2]);
+        const destinationPaths = parsePathList(match[2]);
+        if (!artifactReferenceIsComplete(match[1], oldPath) || !destinationPaths)
+            return undefined;
+        return { kind: "substitution", sourcePath: oldPath, destinationPaths };
     }
     match = clause.match(/^use\s+(.+?)\s+instead\s+of\s+(.+)$/i);
     if (match) {
-        return pathListIsComplete(match[1]) && artifactReferenceIsComplete(match[2], oldPath);
+        const destinationPaths = parsePathList(match[1]);
+        if (!destinationPaths || !artifactReferenceIsComplete(match[2], oldPath))
+            return undefined;
+        return { kind: "substitution", sourcePath: oldPath, destinationPaths };
     }
     match = clause.match(/^move\s+(.+?)\s+to\s+(.+)$/i);
     if (match) {
-        return artifactReferenceIsComplete(match[1], oldPath) && pathListIsComplete(match[2]);
+        const destinationPaths = parsePathList(match[2]);
+        if (!artifactReferenceIsComplete(match[1], oldPath) || !destinationPaths)
+            return undefined;
+        return { kind: "substitution", sourcePath: oldPath, destinationPaths };
     }
-    match = clause.match(/^document\s+.+\s+in\s+(.+?)(?:\s+instead)?$/i);
-    if (match)
-        return pathListIsComplete(match[1]);
+    match = clause.match(/^document\s+(?:placeholders?|placeholder\s+examples|(?:all\s+)?(?:new|required)\s+variables\s+and\s+placeholder\s+examples)\s+in\s+(.+?)(?:\s+instead)?$/i);
+    if (match) {
+        const destinationPaths = parsePathList(match[1]);
+        if (!destinationPaths)
+            return undefined;
+        return { kind: "documentation", destinationPaths };
+    }
     const contractUpdate = new RegExp(`^update\\s+the\\s+sub-task(?:['’]s)?\\s+expected\\s+paths\\s+and\\s+verification\\s+contract\\s+to\\s+replace\\s+${escapedOldPath}\\s+with\\s+those\\s+documentation\\s+files$`, "i");
-    return contractUpdate.test(clause);
+    if (contractUpdate.test(clause)) {
+        return { kind: "contract_update", sourcePath: oldPath, destinationPaths: [] };
+    }
+    return undefined;
 }
 function restrictedArtifactObjectIsComplete(text, oldPath) {
     let remainder = withoutTerminalPunctuation(text).replace(/[`'"]/g, "");
@@ -129,24 +145,80 @@ function supportedProhibitionFragment(text, oldPath) {
 function supportedProvenanceFragment(text) {
     return /^(?:the\s+)?(?:previous|prior|historical|original)\s+(?:plan|answer|proposal|instruction|contract)\s+(?:said|stated|quoted)(?:\s+that)?\s+.+[.!?]?$/i.test(text.trim());
 }
-function supportedAuthorizationFragment(text, oldPath) {
+function supportedNeutralFragment(text) {
     const trimmed = text.trim();
     if (!trimmed)
         return true;
     if (/^(?:yes|confirmed|approved|okay|ok)\b[.!]?$/i.test(trimmed))
         return true;
-    const polarity = directivePolarity(trimmed, oldPath);
-    if (polarity === "provenance")
-        return supportedProvenanceFragment(trimmed);
-    if (polarity === "prohibition")
-        return supportedProhibitionFragment(trimmed, oldPath);
-    if (polarity === "affirmative")
-        return supportedAffirmativeFragment(trimmed, oldPath);
     if (/^(?:preserve|keep|retain)\s+(?:everything else|completed work and existing scope,\s*budget and time limits|all unrelated (?:requirements|work)|the existing (?:scope|branch|budget|time limits))[.!]?$/i.test(trimmed))
         return true;
     if (/^(?:complete|finish)\s+(?:the\s+)?[\w-]+\s+implementation\s+and\s+(?:the\s+)?required tests[.!]?$/i.test(trimmed))
         return true;
     return false;
+}
+function standaloneGlobalGateIsComplete(text) {
+    const clause = withoutTerminalPunctuation(text).replace(/^however\s+/i, "");
+    return (/^(?:keep|leave)\s+(?:the\s+)?(?:session|run|task|work)\s+(?:paused|stopped|on\s+hold)$/i.test(clause) ||
+        /^(?:await|wait\s+for)\s+my\s+(?:approval|confirmation)$/i.test(clause) ||
+        /^wait\s+for\s+my\s+confirmation\s+before\s+applying\s+it$/i.test(clause) ||
+        /^(?:do\s+not|don't|must\s+not|may\s+not|shall\s+not)\s+(?:proceed|execute|apply|activate|implement|start|continue)(?:\s+it)?(?:\s+until\s+I\s+(?:approve|confirm))?$/i.test(clause) ||
+        /^(?:this\s+is\s+)?(?:a\s+)?(?:proposal|draft|suggestion|example)\s+only$/i.test(clause) ||
+        /^not\s+(?:an?\s+)?(?:authorization|approval|permission)$/i.test(clause));
+}
+function affirmativePartBeforeAttachedGate(text) {
+    const clause = withoutTerminalPunctuation(text);
+    const match = clause.match(/^(.*?),\s*(?:and|but|however|yet)\s+(.+)$/i);
+    if (!match || !standaloneGlobalGateIsComplete(match[2]))
+        return undefined;
+    return match[1].trim();
+}
+function parseAuthorizationAnswer(fragments, oldPath) {
+    const sourcePaths = [];
+    const destinationPaths = [];
+    const restrictions = [];
+    const unresolved = [];
+    for (const fragment of fragments) {
+        const polarity = directivePolarity(fragment, oldPath);
+        if (polarity === "affirmative") {
+            const gate = globalAuthorizationGate(fragment);
+            const parseText = gate ? affirmativePartBeforeAttachedGate(fragment) : fragment;
+            const parsed = parseText ? parseAffirmativeFragment(parseText, oldPath) : undefined;
+            if (!parsed) {
+                unresolved.push(fragment);
+                continue;
+            }
+            if (parsed.sourcePath)
+                sourcePaths.push(parsed.sourcePath);
+            destinationPaths.push(...parsed.destinationPaths);
+            continue;
+        }
+        if (polarity === "prohibition") {
+            if (supportedProhibitionFragment(fragment, oldPath))
+                restrictions.push(fragment.trim());
+            else
+                unresolved.push(fragment);
+            continue;
+        }
+        if (polarity === "provenance") {
+            if (!supportedProvenanceFragment(fragment))
+                unresolved.push(fragment);
+            continue;
+        }
+        if (globalAuthorizationGate(fragment)) {
+            if (!standaloneGlobalGateIsComplete(fragment))
+                unresolved.push(fragment);
+            continue;
+        }
+        if (!supportedNeutralFragment(fragment))
+            unresolved.push(fragment);
+    }
+    return {
+        sourcePaths: unique(sourcePaths),
+        destinationPaths: unique(destinationPaths),
+        restrictions: unique(restrictions),
+        unresolved: unique(unresolved),
+    };
 }
 function completeProposalPreview(amendment, answer, prohibitions) {
     const proposalHash = hash(amendment.revisedTask);
@@ -248,8 +320,16 @@ export function buildArtifactSubstitutionAmendment(input) {
         if (isConditionalSubstitution(fragment, oldPath)) {
             return { ok: false, reason: "the replacement is conditional on future approval or another unresolved condition" };
         }
-        if (directivePolarity(fragment, oldPath) !== "prohibition")
-            continue;
+    }
+    const parsedAnswer = parseAuthorizationAnswer(fragments, oldPath);
+    if (parsedAnswer.unresolved.length > 0) {
+        return {
+            ok: false,
+            reason: `the answer contains instruction(s) outside the bounded automatic-amendment grammar: ${parsedAnswer.unresolved.join(" ")}`,
+        };
+    }
+    const prohibitions = parsedAnswer.restrictions;
+    for (const fragment of prohibitions) {
         const paths = pathTokens(fragment).filter((path) => path !== oldPath && !path.startsWith(".env") && !blocked.includes(path));
         if (artifactMentioned(fragment, oldPath) && /\b(?:replace|substitut|instead\s+of|move)\b/i.test(fragment)) {
             if (paths.length === 0)
@@ -266,23 +346,14 @@ export function buildArtifactSubstitutionAmendment(input) {
     if (withdrewSubstitution) {
         return { ok: false, reason: "the answer withdraws or prohibits permission to replace the blocked artifact" };
     }
-    const affirmative = fragments.filter((fragment) => directivePolarity(fragment, oldPath) === "affirmative");
-    const oldPathAuthorised = affirmative.some((fragment) => artifactMentioned(fragment, oldPath) &&
-        /\b(?:replace|substitut|instead\s+of|move)\b/i.test(fragment));
+    const oldPathAuthorised = parsedAnswer.sourcePaths.includes(oldPath);
     if (!oldPathAuthorised) {
         return { ok: false, reason: "the answer does not affirmatively authorize replacing the blocked artifact" };
     }
-    const candidates = pathTokens(affirmative.join(" ")).filter((path) => path !== oldPath && !path.startsWith(".env") && !blocked.includes(path));
+    const candidates = parsedAnswer.destinationPaths.filter((path) => path !== oldPath && !path.startsWith(".env") && !blocked.includes(path));
     const newPaths = unique(candidates);
     if (newPaths.length === 0) {
         return { ok: false, reason: "the answer names no replacement artifact path" };
-    }
-    const unsupported = fragments.filter((fragment) => !globalAuthorizationGate(fragment) && !supportedAuthorizationFragment(fragment, oldPath));
-    if (unsupported.length > 0) {
-        return {
-            ok: false,
-            reason: `the answer contains instruction(s) outside the bounded automatic-amendment grammar: ${unsupported.join(" ")}`,
-        };
     }
     const prohibitedRequired = newPaths.filter((path) => prohibitedDestinations.has(path));
     if (prohibitedRequired.length > 0) {
@@ -333,7 +404,6 @@ export function buildArtifactSubstitutionAmendment(input) {
             changed.add("workerContext.changeSpec");
         }
     }
-    const prohibitions = fragments.filter((fragment) => directivePolarity(fragment, oldPath) === "prohibition");
     if (prohibitions.length > 0) {
         const context = revised.workerContext ?? { rationale: original.workerContext?.rationale ?? "Operator-scoped task amendment." };
         context.gotchas = unique([...(context.gotchas ?? []), ...prohibitions.map((fragment) => fragment.trim())]);

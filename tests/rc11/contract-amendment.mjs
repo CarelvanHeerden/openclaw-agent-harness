@@ -335,6 +335,40 @@ test("rc.11 whole-clause review: attached approval holds require complete-propos
   }
 });
 
+test("rc.11 documentation review: only parsed destination operands become replacement outputs", () => {
+  const p = plan();
+  const valid = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer:
+      "Replace .env.example with README.md. Document placeholders in README.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(valid.ok, true, valid.reason);
+  assert.deepEqual(valid.amendment.substitution.newPaths, ["README.md"]);
+
+  for (const answer of [
+    "Replace .env.example with README.md. Document why private-notes.md is out of scope in README.md. Preserve everything else.",
+    "Replace .env.example with README.md. Document placeholders in README.md, and finish only after another review in REVIEW.md. Preserve everything else.",
+  ]) {
+    const out = buildArtifactSubstitutionAmendment({
+      plan: p,
+      task: p.subTasks[0],
+      answer,
+      blockedPaths: [".env.example"],
+    });
+    assert.equal(out.ok, false, answer);
+    assert.match(out.reason, /outside the bounded/, answer);
+  }
+
+  const builtSource = readFileSync(
+    new URL("../../dist/orchestrator/contract-amendment.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(builtSource, /const candidates = parsedAnswer\.destinationPaths\.filter/);
+  assert.doesNotMatch(builtSource, /pathTokens\(affirmative\.join/);
+});
+
 test("rc.11: ambiguous or broad guidance cannot activate", () => {
   const p = plan();
   for (const answer of ["Do something else.", "Use README.md.", "Replace .env.example somehow."]) {
@@ -583,6 +617,8 @@ test("rc.11: withdrawn, conditional, or contradictory answers remain paused with
     "Replace .env.example with README.md, and await my approval. Preserve everything else.",
     "Replace .env.example with README.md, and finish only after another review. Preserve everything else.",
     "Replace .env.example with README.md, and ask the compliance committee what they think. Preserve everything else.",
+    "Replace .env.example with README.md. Document why private-notes.md is out of scope in README.md. Preserve everything else.",
+    "Replace .env.example with README.md. Document placeholders in README.md, and finish only after another review in REVIEW.md. Preserve everything else.",
   ];
   for (const [index, candidateAnswer] of answers.entries()) {
     const db = deadlineDb();

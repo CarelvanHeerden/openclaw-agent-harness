@@ -104,6 +104,16 @@ instruction stays paused. Period-separated and conjunction-joined hold or
 unsupported-instruction forms now have equivalent integration coverage, while
 supported multi-document artifact lists remain valid.
 
+A documentation-clause review then exposed two remaining interpretation splits.
+The validator accepted a final documentation destination while amendment
+construction independently rescanned every filename in affirmative prose,
+promoting an explicitly out-of-scope documentation subject into required write
+scope. The documentation subject wildcard could also swallow an attached review
+hold. Answers are now parsed into structured source, destination, restriction
+and unresolved operands; only parsed destination operands construct the
+amendment. Documentation subjects use a narrow supported grammar, so contextual
+filenames and attached instructions fail closed instead of becoming outputs.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

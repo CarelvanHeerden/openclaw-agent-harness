@@ -3772,8 +3772,20 @@ const MUTATIONS = [
   {
     name: "rc.11 install hold: negated replacement text cannot authorize its own opposite",
     file: "dist/orchestrator/contract-amendment.js",
-    find: "    const affirmative = fragments.filter((fragment) => directivePolarity(fragment, oldPath) === \"affirmative\");",
-    replace: "    const affirmative = fragments;",
+    find:
+      "        if (polarity === \"prohibition\") {\n" +
+      "            if (supportedProhibitionFragment(fragment, oldPath))\n" +
+      "                restrictions.push(fragment.trim());\n" +
+      "            else\n" +
+      "                unresolved.push(fragment);\n" +
+      "            continue;\n" +
+      "        }",
+    replace:
+      "        if (polarity === \"prohibition\") {\n" +
+      "            sourcePaths.push(oldPath);\n" +
+      "            destinationPaths.push(...pathTokens(fragment).filter((path) => path !== oldPath));\n" +
+      "            continue;\n" +
+      "        }",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
@@ -3807,7 +3819,7 @@ const MUTATIONS = [
   {
     name: "rc.11 whole-answer review: unclassified instructions require exact-diff confirmation",
     file: "dist/orchestrator/contract-amendment.js",
-    find: "    if (unsupported.length > 0) {",
+    find: "    if (parsedAnswer.unresolved.length > 0) {",
     replace: "    if (false) {",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
@@ -3828,17 +3840,19 @@ const MUTATIONS = [
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
-    name: "rc.11 clause review: polarity alone cannot authorize a whole fragment",
+    name: "rc.11 clause review: a failed structured parse cannot authorize a whole fragment",
     file: "dist/orchestrator/contract-amendment.js",
-    find: "    if (polarity === \"affirmative\")\n        return supportedAffirmativeFragment(trimmed, oldPath);",
-    replace: "    if (polarity === \"affirmative\")\n        return true;",
+    find: "            const parsed = parseText ? parseAffirmativeFragment(parseText, oldPath) : undefined;",
+    replace:
+      "            const parsed = parseText ? (parseAffirmativeFragment(parseText, oldPath) ?? " +
+      "{ kind: \"substitution\", sourcePath: oldPath, destinationPaths: pathTokens(fragment).filter((path) => path !== oldPath) }) : undefined;",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
     name: "rc.11 clause review: replacement destinations reject unconsumed suffix text",
     file: "dist/orchestrator/contract-amendment.js",
-    find: "    return /^(?:\\s|,|\\band\\b)*$/i.test(remainder);",
-    replace: "    return true;",
+    find: "    return /^(?:\\s|,|\\band\\b)*$/i.test(remainder) ? paths : undefined;",
+    replace: "    return paths;",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
@@ -3847,13 +3861,33 @@ const MUTATIONS = [
     find:
       "    let match = clause.match(/^(?:actually,\\s*)?(?:replace|substitute)\\s+(.+?)\\s+(?:with|using)\\s+(.+)$/i);\n" +
       "    if (match) {\n" +
-      "        return artifactReferenceIsComplete(match[1], oldPath) && pathListIsComplete(match[2]);\n" +
+      "        const destinationPaths = parsePathList(match[2]);\n" +
+      "        if (!artifactReferenceIsComplete(match[1], oldPath) || !destinationPaths)\n" +
+      "            return undefined;\n" +
+      "        return { kind: \"substitution\", sourcePath: oldPath, destinationPaths };\n" +
       "    }",
     replace:
       "    let match = clause.match(/^(?:actually,\\s*)?(?:replace|substitute)\\s+(.+?)\\s+(?:with|using)\\s+(.+)$/i);\n" +
       "    if (match) {\n" +
-      "        return artifactMentioned(match[1], oldPath) && pathListIsComplete(match[2]);\n" +
+      "        const destinationPaths = parsePathList(match[2]);\n" +
+      "        if (!artifactMentioned(match[1], oldPath) || !destinationPaths)\n" +
+      "            return undefined;\n" +
+      "        return { kind: \"substitution\", sourcePath: oldPath, destinationPaths };\n" +
       "    }",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 documentation review: arbitrary documentation subjects cannot swallow instructions",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    match = clause.match(/^document\\s+(?:placeholders?|placeholder\\s+examples|(?:all\\s+)?(?:new|required)\\s+variables\\s+and\\s+placeholder\\s+examples)\\s+in\\s+(.+?)(?:\\s+instead)?$/i);",
+    replace: "    match = clause.match(/^document\\s+.+\\s+in\\s+(.+?)(?:\\s+instead)?$/i);",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 documentation review: only parsed destination operands become amendment outputs",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    const candidates = parsedAnswer.destinationPaths.filter((path) => path !== oldPath && !path.startsWith(\".env\") && !blocked.includes(path));",
+    replace: "    const candidates = pathTokens(fragments.filter((fragment) => directivePolarity(fragment, oldPath) === \"affirmative\").join(\" \")).filter((path) => path !== oldPath && !path.startsWith(\".env\") && !blocked.includes(path));",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
 ];
