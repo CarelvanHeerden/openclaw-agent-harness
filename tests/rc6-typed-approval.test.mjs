@@ -70,6 +70,20 @@ test("rc6: the shorthand is read in any order, case, or separator", { skip }, ()
   }
 });
 
+test("rc13 smoke: currency-first budget and bare time survive line breaks", { skip }, () => {
+  for (const reply of [
+    "Please continue\n$50 budget\n5 hours",
+    "Please continue $50 budget 5 hours",
+  ]) {
+    const r = confirm.parseConfirmationReply(reply);
+    assert.equal(r.budgetUsd, 50, `budget in: ${reply}`);
+    assert.equal(r.timeoutSeconds, 5 * 3600, `clock in: ${reply}`);
+    assert.equal(r.approves, true, `approval in: ${reply}`);
+    assert.deepEqual(r.ambiguities, [], `unambiguous: ${reply}`);
+    assert.doesNotMatch(r.remainder, /\$50|5 hours|budget/i);
+  }
+});
+
 test("rc6: the cue may follow the number as easily as precede it", { skip }, () => {
   // The report's "a 10 hour budget" case: b123 read cue-then-number only, so
   // the money landed and the hours were dropped from the same sentence.
@@ -286,6 +300,27 @@ test("rc6: correcting the reply then starts the run under the stated limits", { 
   assert.equal(row.budget_usd, 60, "the authorised $60 must be the number the loop enforces against");
   assert.equal(row.hard_timeout_seconds, 36000);
   assert.equal(row.status, "planning");
+});
+
+test("rc13 smoke: the exact multiline reply persists both authorised limits", { skip }, async () => {
+  const runtime = makeRuntime({ sessionDefaultUsd: 40 });
+  const { tools, sessionId } = await pausedSession(runtime);
+  const result = await tools.get("harness_answer").execute({
+    sessionId,
+    answer: "Please continue\n$50 budget\n5 hours",
+    invokedBy: "U1",
+  });
+  assert.equal(result.details.ok, true);
+  assert.equal(result.details.briefConfirmed, true);
+  assert.equal(runtime.loopCalls.length, 1);
+  const row = runtime.state.db.prepare(
+    "SELECT budget_usd, hard_timeout_seconds, status FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  assert.equal(row.budget_usd, 50);
+  assert.equal(row.hard_timeout_seconds, 5 * 3600);
+  assert.equal(row.status, "planning");
+  assert.equal(result.details.budgetUsd, 50);
+  assert.equal(result.details.hardTimeoutSeconds, 5 * 3600);
 });
 
 test("rc6: a retried confirmation cannot start a second run", { skip }, async () => {

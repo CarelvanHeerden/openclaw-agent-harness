@@ -3357,6 +3357,13 @@ const MUTATIONS = [
     tests: ["tests/rc6-typed-approval.test.mjs"],
   },
   {
+    name: "please continue is an explicit confirmation (rc.13 smoke)",
+    file: "dist/tools/brief-confirmation.js",
+    find: "    \"continue\",",
+    replace: "",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
     // ...and the gate that keeps it from eating the feature. Without the
     // affirmation-only condition, "the price threshold should be $60" caps the
     // run at $60 and deletes the words from the operator's correction.

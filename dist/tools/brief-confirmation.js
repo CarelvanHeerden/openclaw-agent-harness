@@ -150,6 +150,7 @@ const AFFIRMATIONS = new Set([
     "do it",
     "start",
     "run it",
+    "continue",
     "correct",
     "looks good",
     "looks right",
