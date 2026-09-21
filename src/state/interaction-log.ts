@@ -257,6 +257,8 @@ export class InteractionLog {
     cycle?: number;
     toolsAllowed?: string[];
     sdkSessionId?: string;
+    callId?: string;
+    attempt?: number;
   }): void {
     if (!this.cfg.enabled) return;
     const p = summarisePrompt(params.prompt, this.cfg.fullPrompts);
@@ -275,6 +277,8 @@ export class InteractionLog {
       ...(p.promptFull !== undefined ? { promptFull: p.promptFull } : {}),
       toolsAllowed: params.toolsAllowed,
       sdkSessionId: params.sdkSessionId,
+      callId: params.callId,
+      attempt: params.attempt,
     });
   }
 
@@ -295,6 +299,8 @@ export class InteractionLog {
     toolCalls?: string[];
     sdkSessionId?: string;
     finalMessageTail?: string;
+    callId?: string;
+    attempt?: number;
   }): void {
     if (!this.cfg.enabled) return;
     this.log(sessionId, {
@@ -314,6 +320,8 @@ export class InteractionLog {
       toolCalls: params.toolCalls,
       sdkSessionId: params.sdkSessionId,
       finalMessageTail: params.finalMessageTail,
+      callId: params.callId,
+      attempt: params.attempt,
     });
   }
 

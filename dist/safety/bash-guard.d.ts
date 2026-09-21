@@ -26,7 +26,7 @@
  */
 export interface GuardDenial {
     /** Stable machine code. Classification keys on this, never on the message. */
-    code: "path_denylisted" | "path_unresolvable" | "no_path_exposed" | "secret_material" | "command_denied" | "network_denied" | "unknown_kind";
+    code: "path_denylisted" | "path_unresolvable" | "target_metadata_conflict" | "no_path_exposed" | "secret_material" | "command_denied" | "network_denied" | "unknown_kind";
     /** The policy rule that fired, e.g. the denylist pattern `.env.*`. */
     rule?: string;
     /** Normalised paths the decision was about. Safe to show: paths, not contents. */
@@ -35,6 +35,12 @@ export interface GuardDenial {
     kind?: string;
     /** One operator-facing sentence, including what to do about it. */
     message: string;
+    /** Typed, bounded recovery. Present only when the guard knows a safe route. */
+    recovery?: {
+        code: "one_target_per_call";
+        retryable: true;
+        instruction: string;
+    };
 }
 export interface AcpGuardVerdict {
     allow: boolean;
@@ -46,6 +52,8 @@ export interface AcpGuardVerdict {
     unenforced?: boolean;
     /** Canonical paths actually checked, for audit. */
     checkedPaths?: string[];
+    /** Sanitized target-source reconciliation; never contains patch contents. */
+    targetEvidence?: AcpTargetEvidence;
 }
 export interface GuardConfig {
     whitelist: string[];
@@ -114,6 +122,17 @@ export interface AcpToolCallForGuard {
     } | null> | null;
     title?: string | null;
 }
+export interface AcpTargetEvidence {
+    /** Paths the recognized tool schema says the operation will really touch. */
+    authoritativePaths: string[];
+    /** Human-display metadata, retained for reconciliation/audit only. */
+    advisoryPaths: string[];
+    schema: "apply_patch/v1" | "codex_changes/v1" | "single_path/v1" | "locations/v1" | "unknown";
+    complete: boolean;
+    conflict?: string;
+    /** True only when a joined display string exactly renders authoritative targets. */
+    joinedDisplaySummary?: boolean;
+}
 /**
  * Pulls the shell command out of an ACP `execute` tool call.
  *
@@ -134,8 +153,20 @@ export declare function acpCommandFromToolCall(call: AcpToolCallForGuard): strin
  *     affected paths are the keys of the changes object)
  */
 export declare function acpPathsFromToolCall(call: AcpToolCallForGuard): string[];
+/**
+ * Reconcile execution-authoritative targets with display metadata.
+ *
+ * Field names alone confer no authority. Patch and changes payloads must match
+ * a recognized, complete schema; otherwise the call fails closed.
+ */
+export declare function acpTargetEvidenceFromToolCall(call: AcpToolCallForGuard): AcpTargetEvidence;
 /** The `apply_patch` body, when this call has one. Needed for the content check. */
 export declare function acpPatchTextFromToolCall(call: AcpToolCallForGuard): string | null;
+/**
+ * Added content from every recognized edit schema, normalized to patch-style
+ * `+` lines for the independent secret scanner.
+ */
+export declare function acpEditContentFromToolCall(call: AcpToolCallForGuard): string | null;
 /**
  * Builds a permission handler for an ACP backend, to be wired to
  * `session/request_permission`.

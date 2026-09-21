@@ -334,13 +334,13 @@ test("an exhausted ceiling is reported as the CEILING, even when the clock is sh
   let reviews = 0;
   const r = await scenario.runScenario({
     configOver: {
-      loop: { max_cycles: 1, session_hard_timeout_seconds: 6, time_extension_wait_seconds: 0 },
+      loop: { max_cycles: 1, session_hard_timeout_seconds: 12, time_extension_wait_seconds: 0 },
       ci: { max_repair_cycles: 1, poll_interval_seconds: 1 },
     },
     worker: countingWorker(),
     runAdversary: async () => {
       reviews += 1;
-      await new Promise((res) => setTimeout(res, reviews === 1 ? 50 : 3200));
+      await new Promise((res) => setTimeout(res, reviews === 1 ? 50 : 6000));
       return { verdict: "pass", findings: [], summary: "ok", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
     },
     pushBranchAndOpenPr: async () => "https://github.com/o/r/pull/1068",

@@ -118,6 +118,31 @@ export type ContractScope = "local" | "remote" | "mixed";
  *   contractScope=remote, taskMode=mutate   → push + PR + create commit.
  */
 export type TaskMode = "observe" | "mutate" | "mixed";
+export type ObserveBindingType = "existing_repo_path" | "proposed_output_path" | "existing_symbol" | "status" | "blocker" | "contract_patch";
+export interface ObserveBindingApplication {
+    consumerSeq: number;
+    fields: Array<"filesLikelyTouched" | "verify" | "intent" | "successCriteria" | "workerContext.changeSpec">;
+    /** Optional exact token to replace in textual fields; otherwise a binding line is appended. */
+    placeholder?: string;
+}
+export interface ObserveBindingSpec {
+    name: string;
+    type: ObserveBindingType;
+    required?: boolean;
+    applyTo?: ObserveBindingApplication[];
+}
+export interface ObserveContract {
+    requiredFindings: string[];
+    bindings: ObserveBindingSpec[];
+    requireEvidence?: boolean;
+}
+export interface RequiredBehaviorCheck {
+    id: string;
+    /** CI check/job whose green conclusion proves this behavior on candidateSha. */
+    ciCheck: string;
+    command?: string;
+    required?: boolean;
+}
 /**
  * beta.66 (warm-worker-context): Fable's investigation handed forward to the
  * dev worker. THIS is the harness's founding goal (the ClaudeDevs
@@ -190,6 +215,10 @@ export interface LeadPlanSubTask {
      * or advisory sub-tasks with no observable output).
      */
     verify?: SubTaskVerify[];
+    /** rc.11: structured deliverables for load-bearing read-only prerequisites. */
+    observeContract?: ObserveContract;
+    /** rc.11: behavior is accepted only from CI on the exact candidate SHA. */
+    requiredBehaviorChecks?: RequiredBehaviorCheck[];
     /**
      * beta.14: authoritative scope declaration. When present, filters the
      * inferred contract kinds to matching scope. `local` blocks all remote

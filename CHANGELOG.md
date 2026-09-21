@@ -1,5 +1,167 @@
 # Changelog
 
+## 2.0.0-rc.12
+
+rc.11 remains an immutable rejected tag and was never installed for a new
+smoke. rc.12 rolls the reviewed post-tag corrections into a new release
+identity and closes the final pre-smoke audit findings.
+
+- Clarification answers now bind authorization to OpenClaw's trusted tool
+  factory context (`requesterSenderId` and owner status), rather than trusting a
+  caller-supplied user id or an omitted provenance marker.
+- Amendment parsing is fully consumptive across substitutions, documentation,
+  restrictions, preservation clauses and bounded historical quotes.
+  Contradictory substitutions, blocked operands, unrelated documentation
+  outputs, inherited destination prohibitions and stale worker-visible
+  instructions all fail closed.
+- Exact-diff confirmation displays the complete stored proposal and hashes the
+  complete amendment, not only the revised task.
+- Blocked observe results never release dependents. Required evidence must
+  resolve to repository paths, proposed-output conventions need real source
+  evidence, and symbol bindings must exist in the cited file.
+- Lead, worker and adversary calls share the durable provider-call ledger.
+  Provider completion plus session/daily/monthly spend is one SQLite
+  transaction; unknown completion/cost enters `accounting_incomplete` without a
+  blind retry.
+- Amendment rejection and direct terminal answers use the canonical active-time
+  clock transitions, and amendment provenance records the actual cycle.
+- The advertised smoke command now loads the OpenClaw SDK stub, CI audits
+  production dependencies, the vulnerable transitive lock was refreshed, and
+  installed-artifact verification compares every packaged file.
+- The machine-readable OpenClaw floor now matches the documented `2026.6.1`
+  minimum. Runtime startup checks for sessions requiring a newer harness, while
+  downgrade to older builds still requires the packaged preflight.
+
+## 2.0.0-rc.11
+
+The 16 September Client Offboarding smoke test was cancelled after rc.10
+delivered an operator correction as prose but resumed the task's old structured
+contract. The worker correctly promised not to access `.env*`; a blanket
+negative-clause regex called that compliance a refusal. A recoverable four-file
+ACP display path lost its typed remedy, and a load-bearing observer was accepted
+after one allowed call despite returning none of its required findings.
+
+rc.11 makes clarification changes durable task amendments. The exact blocked
+artifact and replacement artifacts are transformed and validated
+deterministically, every other task field is preserved, the live denylist is
+rechecked, and the revised full task and original contract are activated in one
+transaction. Broader semantic changes stay paused. Clarifications have stable
+identities, active runtime is persisted across resumes, human-wait time is
+excluded, and amendment work consumes the original allowance.
+
+ACP target policy now distinguishes complete execution-authoritative schemas
+from display metadata. Complete patch targets can survive a matching joined
+display summary; a concrete omitted target, partial patch, malformed move, or
+unknown schema fails closed. `path_unresolvable` carries a typed one-target
+recovery through the adapter and bounded retry. Secret scanning remains
+independent and now consumes added content from recognized `patchText`, OpenCode
+`diff`, and Codex `changes` payloads. Repo-root resolution no longer disables an
+exact template exception, and missing children beneath symlinked directories are
+judged through their nearest existing real ancestor.
+
+Load-bearing observe tasks declare structured findings and typed bindings.
+Existing source paths must exist; proposed output paths may be new when their
+parent convention is evidenced. Validated bindings atomically amend every
+dependent scope, criterion, change specification and verifier before dispatch,
+and persisted reports are keyed to their producer task and plan revision.
+
+Every provider call now requires a durable start row before dispatch and a
+durable result/cost row before another attempt. Unknown completion enters
+`accounting_incomplete` instead of buying a duplicate call; an ACP/SDK result
+whose usage was not measured is unknown cost, never a free turn. Artifact checks are
+not behavioral acceptance: declared typecheck/security jobs must be green in CI
+on the candidate SHA before the run may finish successfully.
+
+Terminal advice keys on typed causes, so the word `Preserve` in a failed-smoke
+cancellation cannot suggest a higher budget. Downgrade to rc.10 is blocked while
+any rc.11-only session is nonterminal; a version column is diagnostic, not a
+fence older code can enforce.
+
+Health reports the plugin/schema receipt. CI packs once, records the package
+SHA-256, installs and byte-compares that exact artifact, then uploads it for
+release. The downgrade and installed-artifact preflights are packaged CLI
+entries rather than documentation-only commands.
+
+The first tagged candidate was held before installation after independent tests
+found two polarity errors in artifact substitution: an existing “do not modify
+`.env.example`” criterion was rewritten onto the replacement documents, and “do
+not replace `.env.example` with README.md” was accepted as authorization.
+Directive fragments are now classified as affirmative, prohibition, provenance
+or neutral before paths are collected or rewritten. Only affirmative clauses
+authorize and contribute outputs; prohibitions and provenance remain
+byte-for-byte. The hold fixtures and dedicated mutations are included in the
+repository suite.
+
+A second independent review widened that boundary before installation. A
+positive sentence followed by “actually, do not replace” still activated; “if I
+approve later” was treated as current permission; and a destination required by
+one sentence could be prohibited by the next. The authorization envelope now
+evaluates the complete ordered answer: unresolved/future conditions and global
+withdrawals veto automation, destination-specific exclusions are retained, and
+any required destination that is also prohibited forces exact-diff human
+confirmation. Rejected answers remain paused and dispatch nothing.
+
+The next review found that a stop/approval sentence without a filename still
+fell outside that envelope. Automatic amendment now uses a bounded whole-answer
+protocol: every fragment must be an explicit substitution, supported
+path-specific restriction, preservation/continuation clause, provenance, or
+simple confirmation. Global wait/approval/proposal/draft instructions veto the
+entire answer, and any unclassified instruction stays paused. The re-ask displays
+the exact proposed operation; only a subsequent explicit “confirm the proposed
+diff” activates it.
+
+That confirmation originally regenerated a fresh path-only answer and therefore
+dropped an independent restriction from the proposal it displayed. Confirmation
+now hashes and activates the complete stored amendment—original/revised task,
+restrictions, field changes and base identities—then rechecks staleness and
+policy. Legacy path-only proposal markers cannot auto-activate. The bounded
+grammar also validates complete preservation/continuation clauses; a prefix such
+as “keep” cannot authorize an arbitrary suffix like “the session paused”.
+
+Clause validation now operates across sentence, newline, semicolon and
+adversative conjunction boundaries, so attaching “but keep the session paused”
+to a valid replacement cannot hide it inside an affirmative fragment.
+“Keep/leave the session paused” is modeled as a global execution gate and
+therefore produces a complete confirmable proposal. Truly unclassified text no
+longer offers a path-only confirmation that the next call must reject; it asks
+for a focused restatement instead.
+
+A further hold review showed that enumerating conjunction boundaries was still
+not whole-clause validation: “replace …, and await my approval” retained an
+affirmative prefix and silently consumed the attached hold. Automatic activation
+now requires each complete fragment to match an anchored substitution,
+restriction, provenance, preservation or continuation production. Artifact
+sources and destination lists must be fully consumed; any leftover qualifier or
+instruction stays paused. Period-separated and conjunction-joined hold or
+unsupported-instruction forms now have equivalent integration coverage, while
+supported multi-document artifact lists remain valid.
+
+A documentation-clause review then exposed two remaining interpretation splits.
+The validator accepted a final documentation destination while amendment
+construction independently rescanned every filename in affirmative prose,
+promoting an explicitly out-of-scope documentation subject into required write
+scope. The documentation subject wildcard could also swallow an attached review
+hold. Answers are now parsed into structured source, destination, restriction
+and unresolved operands; only parsed destination operands construct the
+amendment. Documentation subjects use a narrow supported grammar, so contextual
+filenames and attached instructions fail closed instead of becoming outputs.
+
+A provenance-boundary review found the same full-consumption invariant was not
+yet applied to historical context. A provenance prefix previously classified
+the entire fragment as non-authoritative, even when a current hold or
+prohibition followed a closed quote. Fragmentation is now quote-aware;
+double-quoted history has an explicit closing boundary, and any conjunction
+after it is returned to the current-instruction parser. Unquoted history is
+accepted only when its complete body matches the narrow artifact-operation
+grammar; ambiguous or unterminated history stays paused.
+
+The accepted-branch inventory is now closed: substitution/documentation
+captures feed exact operand parsers, restriction captures feed the restricted
+artifact-object parser, provenance allows arbitrary text only inside a bounded
+non-authoritative quote, attached gate captures must match a complete gate, and
+neutral preservation/continuation clauses are anchored. No arbitrary capture is
+accepted as an instruction without a downstream full-consumption check.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

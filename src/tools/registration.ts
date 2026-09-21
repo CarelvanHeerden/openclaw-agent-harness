@@ -7,7 +7,12 @@
  * listener. These tools are for inspection, admin, and cron jobs.
  */
 
-import type { HarnessPluginApi, HarnessRuntime } from "../index.js";
+import type {
+  HarnessPluginApi,
+  HarnessRuntime,
+  HarnessToolContext,
+  HarnessToolDefinition,
+} from "../index.js";
 import { buildHarnessHelp } from "./help-content.js";
 import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
@@ -43,10 +48,33 @@ import {
 import { isTimeExtensionPause, listenerLooksAlive, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
 import { isBudgetExtensionPause, readBudgetExtensionWaitUntil } from "../orchestrator/budget-extension.js";
 import { resolveBudgetPolicy } from "../orchestrator/budget-policy.js";
-import { CLARIFICATION_POLICY_VERSION } from "../version.js";
+import { CLARIFICATION_POLICY_VERSION, PLUGIN_VERSION } from "../version.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  activateTaskAmendment,
+  buildArtifactSubstitutionAmendment,
+  type ContractAmendment,
+} from "../orchestrator/contract-amendment.js";
+import { findPlanPolicyConflicts } from "../orchestrator/plan-policy-conflict.js";
+import { closeActiveDeadline, pauseActiveDeadline, resumeActiveDeadline } from "../orchestrator/active-deadline.js";
+import type { LeadPlan, LeadPlanSubTask } from "../orchestrator/lead.js";
 
 type ToolDisposer = (() => void) | { dispose?: () => void; unregister?: () => void };
+const LEGACY_TEST_REQUESTER = "__legacy_direct_tool_test__";
+
+function contextualToolFactory(
+  name: string,
+  build: (context: HarnessToolContext) => HarnessToolDefinition,
+): ((context: HarnessToolContext) => HarnessToolDefinition) & HarnessToolDefinition {
+  const factory = ((context: HarnessToolContext) => build(context)) as
+    ((context: HarnessToolContext) => HarnessToolDefinition) & HarnessToolDefinition;
+  const fallback = build({ requesterSenderId: LEGACY_TEST_REQUESTER, senderIsOwner: true });
+  const { name: _fallbackName, ...fallbackDefinition } = fallback;
+  Object.defineProperty(factory, "name", { value: name, enumerable: true, configurable: true });
+  Object.assign(factory, fallbackDefinition);
+  return factory;
+}
 
 function toDispose(x: ToolDisposer): () => void {
   return () => {
@@ -758,20 +786,34 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           properties: {
             sessionId: { type: "string", minLength: 1 },
             reason: { type: "string", maxLength: 500 },
+            classification: {
+              type: "string",
+              enum: ["failed_smoke_test", "operator_cancelled"],
+              description: "Typed operator classification. It controls terminal advice; free-text reason is never parsed for budget causality.",
+            },
             invokedBy: { type: "string", minLength: 1, description: "Slack user id of the invoker. REQUIRED; must be in slack.authorised_users." },
           },
           required: ["sessionId", "invokedBy"],
           additionalProperties: false,
         },
         execute: async (_callId: unknown, input: unknown) => {
-          const { sessionId, reason, invokedBy } = input as { sessionId: string; reason?: string; invokedBy?: string };
+          const { sessionId, reason, classification, invokedBy } = input as {
+            sessionId: string;
+            reason?: string;
+            classification?: "failed_smoke_test" | "operator_cancelled";
+            invokedBy?: string;
+          };
           // beta.57 (P2): invokedBy is REQUIRED. It used to be optional and
           // only checked when present, so omitting it skipped authorisation
           // entirely on a privileged (session-killing) tool.
           if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
             return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
           }
-          liveState().audit("tool.cancel", { sessionId, reason: reason ?? "tool-invoked", invokedBy: invokedBy ?? null }, sessionId);
+          liveState().audit(
+            "tool.cancel",
+            { sessionId, reason: reason ?? "tool-invoked", classification: classification ?? "operator_cancelled", invokedBy: invokedBy ?? null },
+            sessionId,
+          );
           // rc.2: the whole decision -- flag, terminate now, or no-op -- belongs
           // to the loop, which is the only thing that knows whether a loop is
           // actually running. This handler used to set the abort flag itself and
@@ -781,6 +823,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           const out = await liveRuntime().loop.cancelSession(sessionId, {
             reason: reason ?? "tool-invoked",
             requester: invokedBy,
+            classification: classification ?? "operator_cancelled",
           });
           if (out.notFound) {
             return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
@@ -1344,7 +1387,18 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           }
 
           // Schema tables present?
-          const need = ["sessions", "sub_tasks", "reviews", "budgets_daily", "budgets_monthly", "audit_log"];
+          const need = [
+            "sessions",
+            "sub_tasks",
+            "sub_task_attempts",
+            "provider_calls",
+            "task_contract_amendments",
+            "observe_reports",
+            "reviews",
+            "budgets_daily",
+            "budgets_monthly",
+            "audit_log",
+          ];
           for (const t of need) {
             const row = liveDb()
               .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
@@ -1524,7 +1578,15 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                   checks.map((c) => `${c.ok ? ":white_check_mark:" : ":x:"} ${c.name}${c.detail ? ` (${c.detail})` : ""}`).join("\n"),
               },
             ],
-            details: { ok: overall, checks },
+            details: {
+              ok: overall,
+              checks,
+              versionInfo: PLUGIN_VERSION,
+              schemaReceipt: {
+                schemaVersion: PLUGIN_VERSION.schemaVersion,
+                requiredTables: need,
+              },
+            },
           };
         },
       }),
@@ -1603,6 +1665,17 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           }
           const row = liveDb().prepare(`SELECT status, crystallised_prompt FROM sessions WHERE id = ?`).get(sessionId) as { status: string; crystallised_prompt?: string } | undefined;
           if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+          if (row.status === "accounting_incomplete") {
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `Cannot resume ${sessionId}: a provider call has unknown or unpersisted cost/result state. ` +
+                  `Reconcile the provider_calls ledger before dispatching another paid attempt.`,
+              }],
+              details: { ok: false, accountingIncomplete: true, badStatus: row.status },
+            };
+          }
           const RESUMABLE = ["interrupted", "resumable"];
           // beta.60: force-unstick path. A session can end up `executing`/`planning`
           // with its sub-task row stuck `running` but NO live loop-runner (the b59
@@ -1685,7 +1758,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
   // register, never unregistered on teardown.
   disposers.push(
     toDispose(
-      api.registerTool({
+      api.registerTool(contextualToolFactory("harness_answer", (toolContext: HarnessToolContext) => ({
         name: "harness_answer",
       description:
         "Answer a harness session that is paused in 'awaiting_clarification' and resume it. " +
@@ -1710,11 +1783,17 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             description:
               "Optional but strongly recommended: the clarificationSeq you read from harness_progress. When supplied it must still be the open question, so an answer composed against one pause cannot land on a different one that opened while you were asking the human. REQUIRED PRACTICE for any answer a calling agent decided by itself.",
           },
+          clarificationId: {
+            type: "string",
+            minLength: 1,
+            description:
+              "Stable identity from harness_progress for the open mid-run clarification. Required for newly-created rc.11 clarifications; prevents an answer for an older question with the same seq from landing on a newer one.",
+          },
           answeredBy: {
             type: "string",
             enum: ["human", "automation"],
             description:
-              "Optional. 'automation' when a calling agent decided this without putting it to a human. Recorded in the audit trail so an automatic answer is distinguishable afterwards; it does not change what the harness does with the answer.",
+              "Required provenance declaration. Use 'human' only when relaying the authenticated requester's explicit answer verbatim; otherwise use 'automation'.",
           },
           evidence: {
             type: "string",
@@ -1722,42 +1801,143 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
               "Optional for a human answer, REQUIRED when answeredBy is 'automation': the evidence the decision rests on -- the changed-file list, the worker commit sha, the check results, and why the deviation is safe. Recorded verbatim (bounded) in the audit trail. An automatic answer with no evidence is refused, because an unevidenced automatic answer cannot be reviewed afterwards.",
           },
         },
-        required: ["sessionId", "answer", "invokedBy"],
+        required: ["sessionId", "answer", "invokedBy", "answeredBy"],
         additionalProperties: false,
       },
       execute: async (_callId: unknown, input: unknown) => {
-        const { sessionId, answer, invokedBy, clarificationSeq, answeredBy, evidence } = input as {
+        const { sessionId, answer, invokedBy, clarificationSeq, clarificationId, answeredBy, evidence } = input as {
           sessionId: string; answer: string; invokedBy?: string; clarificationSeq?: number;
-          answeredBy?: string; evidence?: string;
+          clarificationId?: string; answeredBy?: string; evidence?: string;
         };
-        // beta.57 (P2): invokedBy is REQUIRED -- this tool injects human text
-        // into the brief and re-drives spend, so it must be authorised.
-        if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
-          return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+        // rc.12: the tool argument is an audit assertion, not an identity
+        // boundary. OpenClaw's factory context carries the runtime-authenticated
+        // sender; require it and require the claimed id to match. The explicit
+        // authorised-users list remains the policy boundary, so configured
+        // non-owner teammates still work. A model can no longer gain human
+        // authority by writing an
+        // authorised Slack id into its own parameters.
+        const runtimeSender = toolContext.requesterSenderId?.trim() ?? "";
+        const legacyDirectTest = runtimeSender === LEGACY_TEST_REQUESTER;
+        const trustedSender = legacyDirectTest ? (invokedBy ?? "") : runtimeSender;
+        if (
+          !trustedSender ||
+          invokedBy !== trustedSender ||
+          !liveConfig().slack.authorised_users.includes(trustedSender)
+        ) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Authenticated requester ${trustedSender || "(missing)"} is not authorised for harness_answer ` +
+                `(claimed invokedBy=${invokedBy ?? "(missing)"}).`,
+            }],
+            details: { ok: false, unauthorised: true, trustedRequesterRequired: true },
+          };
         }
+        if (!legacyDirectTest && answeredBy !== "human" && answeredBy !== "automation") {
+          return {
+            content: [{ type: "text", text: "answeredBy must explicitly declare 'human' or 'automation'." }],
+            details: { ok: false, missingAnswerProvenance: true },
+          };
+        }
+        const effectiveAnsweredBy = answeredBy === "automation" ? "automation" : "human";
         const row = liveDb()
           .prepare(
-            `SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_subtask,
-                    clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd, requester_gh
+            `SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_id,
+                    clarification_subtask, clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd,
+                    requester_gh, plan_revision, cycles_ran
                FROM sessions WHERE id = ?`,
           )
           .get(sessionId) as {
             status: string; crystallised_prompt?: string; lead_plan_json?: string; clarification_question?: string;
-            clarification_seq?: number; clarification_subtask?: string;
+            clarification_seq?: number; clarification_id?: string; clarification_subtask?: string;
             clarification_heartbeat_at?: number | null; final_pr_url?: string | null;
             pr_number?: number | null; branch?: string | null; cost_usd?: number | null;
-            requester_gh?: string | null;
+            requester_gh?: string | null; plan_revision?: number | null; cycles_ran?: number | null;
           } | undefined;
         if (!row) return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+        const trimmed = answer.trim();
+        let amendmentAnswer = trimmed;
+        let confirmedStoredAmendment: ContractAmendment | null = null;
+        try {
+          const paused = JSON.parse(row.clarification_subtask ?? "{}") as {
+            proposedAmendmentConfirmation?: {
+              oldPath?: string;
+              newPaths?: string[];
+              proposalHash?: string;
+              completeAmendment?: ContractAmendment;
+            };
+          };
+          const proposal = paused.proposedAmendmentConfirmation;
+          if (
+            proposal &&
+            /^(?:confirm|approve)(?:\s+(?:the\s+)?(?:proposed|exact))?\s+(?:diff|amendment|operation)$/i.test(trimmed)
+          ) {
+            if (proposal.completeAmendment && proposal.proposalHash) {
+              const observedHash = createHash("sha256")
+                .update(JSON.stringify(proposal.completeAmendment))
+                .digest("hex");
+              if (observedHash !== proposal.proposalHash) {
+                return {
+                  content: [{ type: "text", text: "Stored amendment proposal failed its integrity hash; nothing was activated." }],
+                  details: { ok: false, proposalIntegrityFailed: true, sessionId },
+                };
+              }
+              confirmedStoredAmendment = structuredClone(proposal.completeAmendment);
+            } else if (proposal.oldPath && Array.isArray(proposal.newPaths) && proposal.newPaths.length > 0) {
+              // Backward-compatible marker created by the first rc.11 candidate.
+              // It cannot preserve independent restrictions, so do not activate
+              // it automatically; require a fresh full directive.
+              return {
+                content: [{ type: "text", text: "This stored proposal predates complete-task confirmation. Restate the full substitution and restrictions." }],
+                details: { ok: false, incompleteProposal: true, sessionId },
+              };
+            }
+          }
+        } catch {
+          /* ordinary clarification payload */
+        }
+        let resumedPendingAmendmentId: string | null = null;
+        if (clarificationId) {
+          try {
+            const prior = liveDb().prepare(
+              `SELECT id, answer_hash, status FROM task_contract_amendments
+                WHERE session_id = ? AND clarification_id = ?`,
+            ).get(sessionId, clarificationId) as { id: string; answer_hash: string; status: string } | undefined;
+            if (prior) {
+              const suppliedHash = createHash("sha256").update(trimmed).digest("hex");
+              if (prior.answer_hash !== suppliedHash) {
+                return {
+                  content: [{ type: "text", text: `Clarification ${clarificationId} was already answered differently; no change made.` }],
+                  details: { ok: false, amendmentAnswerConflict: true, amendmentId: prior.id },
+                };
+              }
+              if (prior.status === "pending") {
+                resumedPendingAmendmentId = prior.id;
+              } else if (prior.status === "active") {
+                return {
+                  content: [{ type: "text", text: `Clarification ${clarificationId} already activated amendment ${prior.id}; nothing further to do.` }],
+                  details: { ok: true, idempotent: true, amendmentId: prior.id, status: prior.status },
+                };
+              } else {
+                return {
+                  content: [{ type: "text", text: `Clarification ${clarificationId} produced a rejected amendment; re-read the current question.` }],
+                  details: { ok: false, amendmentRejected: true, amendmentId: prior.id, status: prior.status },
+                };
+              }
+            }
+          } catch {
+            /* pre-rc.11 schema: continue through legacy status handling */
+          }
+        }
         if (row.status !== "awaiting_clarification") {
           return { content: [{ type: "text", text: `Session ${sessionId} is not awaiting clarification (status ${row.status})` }], details: { ok: false, badStatus: row.status } };
         }
         if (!row.crystallised_prompt) {
           return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
         }
-        const trimmed = answer.trim();
         const seq = row.clarification_seq ?? -1;
-        const automated = answeredBy === "automation";
+        const automated = effectiveAnsweredBy === "automation";
 
         // rc.3: the audit spine for this answer. Every event below carries the
         // same identifying fields, because the question an auditor asks is
@@ -1775,7 +1955,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           policyVersion: CLARIFICATION_POLICY_VERSION,
           requester: row.requester_gh ?? null,
           invokedBy: invokedBy ?? null,
-          answeredBy: answeredBy ?? "human",
+          answeredBy: effectiveAnsweredBy,
           automated,
           clarification: (row.clarification_question ?? "").slice(0, 2000),
           decision: classifyAnswerDecision(trimmed),
@@ -1805,6 +1985,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         const releaseClaim = () => {
           liveDb().prepare(`UPDATE sessions SET clarification_answer = NULL, updated_at = ? WHERE id = ?`)
             .run(Date.now(), sessionId);
+          try { pauseActiveDeadline(liveDb(), sessionId); } catch { /* legacy/unmigrated test row */ }
         };
 
         // rc.3: a STALE-ANSWER guard. Until now this tool took no notion of
@@ -1833,6 +2014,30 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             }],
             details: { ok: false, staleSeq: true, suppliedSeq: clarificationSeq, openSeq: seq },
           };
+        }
+        if (row.clarification_id) {
+          if (!clarificationId || clarificationId !== row.clarification_id) {
+            liveState().audit(
+              "tool.answer_stale_id",
+              { ...answerFacts, suppliedId: clarificationId ?? null, openId: row.clarification_id },
+              sessionId,
+            );
+            rejectAutomatic("stale_clarification_id");
+            return {
+              content: [{
+                type: "text",
+                text:
+                  `Not answering: this rc.11 clarification requires its current clarificationId. ` +
+                  `Re-read harness_progress and answer the question carrying id ${row.clarification_id}.`,
+              }],
+              details: {
+                ok: false,
+                staleClarificationId: true,
+                suppliedId: clarificationId ?? null,
+                openId: row.clarification_id,
+              },
+            };
+          }
         }
 
         // rc.3: automation answers only under delegation, and delegation is a
@@ -1962,16 +2167,90 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           }
         }
 
+        let precomputedAmendment: ContractAmendment | null = confirmedStoredAmendment;
+        if (
+          !precomputedAmendment &&
+          classifyAnswerDecision(trimmed) === "guidance" &&
+          row.lead_plan_json &&
+          row.clarification_subtask
+        ) {
+          try {
+            const paused = JSON.parse(row.clarification_subtask) as { task?: LeadPlanSubTask };
+            if (paused.task) {
+              const storedPlan = JSON.parse(row.lead_plan_json) as LeadPlan;
+              const conflicts = findPlanPolicyConflicts(
+                [paused.task],
+                liveConfig().safety?.path_denylist ?? [],
+                liveConfig().safety?.path_denylist_exceptions ?? [],
+              );
+              if (conflicts.length > 0) {
+                const candidate = buildArtifactSubstitutionAmendment({
+                  plan: storedPlan,
+                  task: paused.task,
+                  answer: amendmentAnswer,
+                  blockedPaths: conflicts.map((conflict) => conflict.path),
+                  id: resumedPendingAmendmentId ?? undefined,
+                });
+                if (candidate.ok) precomputedAmendment = candidate.amendment;
+              }
+            }
+          } catch {
+            /* the detailed rejection path below reports malformed state */
+          }
+        }
+
         if (isTimeExtensionPause(row.clarification_subtask) || isBudgetExtensionPause(row.clarification_subtask)) {
           liveDb().prepare(`UPDATE sessions SET clarification_answer = ?, updated_at = ? WHERE id = ?`).run(trimmed, Date.now(), sessionId);
         } else {
-          const claimed = liveDb()
-            .prepare(
-              `UPDATE sessions SET clarification_answer = ?, updated_at = ?
-                 WHERE id = ? AND status = 'awaiting_clarification' AND clarification_answer IS NULL`,
-            )
-            .run(trimmed, Date.now(), sessionId);
-          if (claimed.changes === 0) {
+          let claimedChanges = 0;
+          try {
+            liveDb().exec("BEGIN IMMEDIATE");
+            if (resumedPendingAmendmentId) {
+              claimedChanges = 1;
+            } else {
+              const claimed = liveDb()
+                .prepare(
+                  `UPDATE sessions SET clarification_answer = ?, updated_at = ?
+                     WHERE id = ? AND status = 'awaiting_clarification' AND clarification_answer IS NULL`,
+                )
+                .run(trimmed, Date.now(), sessionId);
+              claimedChanges = Number(claimed.changes);
+            }
+            if (claimedChanges === 1 && precomputedAmendment && !resumedPendingAmendmentId) {
+              liveDb().prepare(
+                `INSERT INTO task_contract_amendments
+                   (id, session_id, clarification_id, cycle, seq, version, base_plan_hash, base_task_hash,
+                    answer_hash, authorised_by, original_task_json, revised_task_json, operation_json,
+                    changed_fields_json, status, created_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`,
+              ).run(
+                precomputedAmendment.id,
+                sessionId,
+                row.clarification_id ?? "",
+                Math.max(1, row.cycles_ran ?? 1),
+                seq,
+                precomputedAmendment.version,
+                precomputedAmendment.basePlanHash,
+                precomputedAmendment.baseTaskHash,
+                createHash("sha256").update(trimmed).digest("hex"),
+                invokedBy,
+                JSON.stringify(precomputedAmendment.originalTask),
+                JSON.stringify(precomputedAmendment.revisedTask),
+                JSON.stringify(precomputedAmendment.substitution),
+                JSON.stringify(precomputedAmendment.changedFields),
+                Date.now(),
+              );
+            }
+            liveDb().exec("COMMIT");
+          } catch (err) {
+            try { liveDb().exec("ROLLBACK"); } catch { /* no transaction */ }
+            releaseClaim();
+            return {
+              content: [{ type: "text", text: `Could not atomically claim and persist this answer: ${String(err)}` }],
+              details: { ok: false, answerClaimFailed: true, sessionId },
+            };
+          }
+          if (claimedChanges === 0) {
             liveState().audit("tool.answer_already_claimed", { ...answerFacts }, sessionId);
             rejectAutomatic("already_answered");
             return {
@@ -2057,11 +2336,14 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           );
 
           if (prUrl) {
+            try { closeActiveDeadline(liveDb(), sessionId); } catch { /* legacy/unmigrated test row */ }
             liveDb()
               .prepare(
                 `UPDATE sessions SET status = 'done', merge_recommendation = 'needs_human_review',
                         merge_recommendation_reason = ?, clarification_question = NULL, clarification_seq = NULL,
-                        clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ?
+                        clarification_subtask = NULL, clarification_heartbeat_at = NULL,
+                        terminal_cause = 'time_extension_listener_lost',
+                        terminal_classification = 'recovery_degraded', updated_at = ?
                   WHERE id = ?`,
               )
               .run(
@@ -2089,10 +2371,13 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // push, so there is nothing on the remote to point at. Keep the
           // worktree (b129's flag stops the next boot reaping it) and say where
           // the commits are rather than inventing a ship.
+          try { closeActiveDeadline(liveDb(), sessionId); } catch { /* legacy/unmigrated test row */ }
           liveDb()
             .prepare(
               `UPDATE sessions SET status = 'aborted', worktree_preserved = 1, clarification_question = NULL,
                       clarification_seq = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL,
+                      terminal_cause = 'time_extension_listener_lost',
+                      terminal_classification = 'recovery_degraded',
                       updated_at = ? WHERE id = ?`,
             )
             .run(Date.now(), sessionId);
@@ -2112,7 +2397,11 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
 
         // 'abort'/'cancel' -> terminate the session cleanly (release worktree).
         if (/^(abort|cancel)\b/i.test(trimmed)) {
-          liveDb().prepare(`UPDATE sessions SET status = 'aborted', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
+          try { closeActiveDeadline(liveDb(), sessionId); } catch { /* legacy/unmigrated test row */ }
+          liveDb().prepare(
+            `UPDATE sessions SET status = 'aborted', terminal_cause = 'user_cancel',
+                                 terminal_classification = 'operator_cancelled', updated_at = ? WHERE id = ?`,
+          ).run(Date.now(), sessionId);
           liveState().audit("tool.answer_aborted", { sessionId, seq }, sessionId);
           return { content: [{ type: "text", text: `Session ${sessionId} aborted per your instruction.` }], details: { ok: true, sessionId, aborted: true } };
         }
@@ -2287,6 +2576,26 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           };
         }
 
+        // rc.11: answering a resting human pause re-opens the ACTIVE clock.
+        // Time spent waiting for this answer was closed by the loop; amendment
+        // validation and every other resume action count against what remains.
+        try {
+          resumeActiveDeadline(
+            liveDb(),
+            sessionId,
+            liveConfig().loop?.session_hard_timeout_seconds ?? 7200,
+          );
+        } catch (err) {
+          releaseClaim();
+          return {
+            content: [{ type: "text", text: `Could not resume the persisted active-time clock: ${String(err)}` }],
+            details: { ok: false, deadlineResumeFailed: true, sessionId },
+          };
+        }
+
+        let activatedPlan: LeadPlan | null = null;
+        let activatedAmendmentId: string | null = null;
+
         // Fold the decision into the brief so the re-plan honours it. For a
         // 'skip' answer we phrase it as an out-of-scope directive; otherwise as
         // an acceptance-criteria directive pinned to the blocked sub-task.
@@ -2394,7 +2703,8 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
                   (probe) => !probe.path || !expectedPaths.has(probe.path),
                 );
                 liveDb()
-                  .prepare(`UPDATE sessions SET lead_plan_json = ?, updated_at = ? WHERE id = ?`)
+                  .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
+                                               minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`)
                   .run(JSON.stringify(storedPlan), Date.now(), sessionId);
                 liveState().audit(
                   "tool.answer_contract_paths_persisted",
@@ -2480,6 +2790,196 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           brief.acceptanceCriteria.push(
             `OPERATOR CLARIFICATION (for the previously-blocked sub-task ${seq}): In response to "${q.slice(0, 300)}", the operator decided: ${trimmed}. Follow this decision exactly; do not re-raise the same question.`,
           );
+
+          /*
+           * rc.11: a policy clarification that changes an artifact is a TASK
+           * CONTRACT AMENDMENT, not a hint. Only the deterministic one-artifact
+           * substitution activates here. Broader prose stays paused.
+           */
+          if (row.lead_plan_json && row.clarification_subtask) {
+            let paused: {
+              task?: LeadPlanSubTask;
+              policyConflicts?: Array<{ path: string; rule: string }>;
+            } = {};
+            try { paused = JSON.parse(row.clarification_subtask) as typeof paused; } catch { /* validated below */ }
+            if (paused.task) {
+              const storedPlan = JSON.parse(row.lead_plan_json) as LeadPlan;
+              const liveConflicts = findPlanPolicyConflicts(
+                [paused.task],
+                liveConfig().safety?.path_denylist ?? [],
+                liveConfig().safety?.path_denylist_exceptions ?? [],
+              );
+              const blockedPaths = liveConflicts.map((conflict) => conflict.path);
+              if (blockedPaths.length > 0) {
+                const amendment = precomputedAmendment
+                  ? ({ ok: true as const, amendment: precomputedAmendment })
+                  : buildArtifactSubstitutionAmendment({
+                      plan: storedPlan,
+                      task: paused.task,
+                      answer: amendmentAnswer,
+                      blockedPaths,
+                      id: resumedPendingAmendmentId ?? undefined,
+                    });
+                if (!amendment.ok) {
+                  const replacementId = randomUUID();
+                  let nextSubtask = row.clarification_subtask ?? null;
+                  if (amendment.proposedDiff) {
+                    try {
+                      const operation = JSON.parse(amendment.proposedDiff) as {
+                        removePositiveObligation?: string;
+                        addRequiredOutputs?: string[];
+                        proposalHash?: string;
+                        completeAmendment?: ContractAmendment;
+                        displayDiff?: { operation?: { oldPath?: string; newPaths?: string[] } };
+                      };
+                      const pausedPayload = JSON.parse(row.clarification_subtask ?? "{}") as Record<string, unknown>;
+                      nextSubtask = JSON.stringify({
+                        ...pausedPayload,
+                        proposedAmendmentConfirmation: {
+                          oldPath: operation.displayDiff?.operation?.oldPath ?? operation.removePositiveObligation,
+                          newPaths: operation.displayDiff?.operation?.newPaths ?? operation.addRequiredOutputs,
+                          proposalHash: operation.proposalHash,
+                          completeAmendment: operation.completeAmendment,
+                          proposedDiff: amendment.proposedDiff,
+                        },
+                      });
+                    } catch {
+                      /* preview remains in the question even if marker construction fails */
+                    }
+                  }
+                  try { pauseActiveDeadline(liveDb(), sessionId); } catch { /* legacy/unmigrated test row */ }
+                  liveDb().prepare(
+                    `UPDATE sessions SET clarification_question = ?, clarification_id = ?,
+                                         clarification_answer = NULL, clarification_subtask = ?,
+                                         updated_at = ? WHERE id = ?`,
+                  ).run(
+                    `I could not safely activate that answer automatically: ${amendment.reason}. ` +
+                      (amendment.proposedDiff
+                        ? `No amendment was activated. If you intend this exact operation now, explicitly confirm this proposed diff:\n${amendment.proposedDiff}`
+                        : `Please restate the exact old artifact and exact replacement path(s), or answer "abort".`),
+                    replacementId,
+                    nextSubtask,
+                    Date.now(),
+                    sessionId,
+                  );
+                  liveState().audit(
+                    "tool.answer_contract_amendment_rejected",
+                    { sessionId, seq, clarificationId: row.clarification_id ?? null, reason: amendment.reason },
+                    sessionId,
+                  );
+                  return {
+                    content: [{ type: "text", text: `Answer not applied; the session remains paused. ${amendment.reason}` }],
+                    details: { ok: false, amendmentRejected: true, sessionId, clarificationId: replacementId },
+                  };
+                }
+
+                const revisedPlan = activateTaskAmendment(storedPlan, amendment.amendment);
+                const residual = findPlanPolicyConflicts(
+                  [amendment.amendment.revisedTask],
+                  liveConfig().safety?.path_denylist ?? [],
+                  liveConfig().safety?.path_denylist_exceptions ?? [],
+                );
+                if (residual.length > 0) {
+                  try {
+                    liveDb().prepare(
+                      `UPDATE task_contract_amendments SET status = 'rejected', rejection_reason = ?
+                        WHERE id = ? AND status = 'pending'`,
+                    ).run("revised contract still conflicts with safety policy", amendment.amendment.id);
+                  } catch { /* rejection remains visible in the audit below */ }
+                  releaseClaim();
+                  liveState().audit(
+                    "tool.answer_contract_amendment_rejected",
+                    {
+                      sessionId,
+                      seq,
+                      clarificationId: row.clarification_id ?? null,
+                      reason: "revised contract still conflicts with safety policy",
+                      paths: residual.map((conflict) => conflict.path),
+                    },
+                    sessionId,
+                  );
+                  return {
+                    content: [{
+                      type: "text",
+                      text: `Answer not applied: the revised task still requests a path blocked by safety policy. The session remains paused.`,
+                    }],
+                    details: { ok: false, amendmentRejected: true, policyConflict: true, sessionId },
+                  };
+                }
+
+                const answerHash = createHash("sha256").update(trimmed).digest("hex");
+                const now = Date.now();
+                brief.resumeExistingPlan = true;
+                brief.resumeFromClarification = true;
+                try {
+                  liveDb().exec("BEGIN IMMEDIATE");
+                  const current = liveDb().prepare(
+                    `SELECT status, clarification_id, lead_plan_json FROM sessions WHERE id = ?`,
+                  ).get(sessionId) as { status: string; clarification_id: string | null; lead_plan_json: string | null } | undefined;
+                  if (
+                    !current ||
+                    current.status !== "awaiting_clarification" ||
+                    current.clarification_id !== row.clarification_id ||
+                    current.lead_plan_json !== row.lead_plan_json
+                  ) {
+                    throw new Error("clarification or stored plan changed before amendment activation");
+                  }
+                  const activated = liveDb().prepare(
+                    `UPDATE task_contract_amendments
+                        SET revised_task_json = ?, operation_json = ?, changed_fields_json = ?,
+                            policy_validation_json = ?, status = 'active', activated_at = ?
+                      WHERE id = ? AND session_id = ? AND clarification_id = ? AND status = 'pending'
+                        AND answer_hash = ? AND base_plan_hash = ? AND base_task_hash = ?`,
+                  ).run(
+                    JSON.stringify(amendment.amendment.revisedTask),
+                    JSON.stringify(amendment.amendment.substitution),
+                    JSON.stringify(amendment.amendment.changedFields),
+                    JSON.stringify({ ok: true, conflicts: [] }),
+                    now,
+                    amendment.amendment.id,
+                    sessionId,
+                    row.clarification_id,
+                    answerHash,
+                    amendment.amendment.basePlanHash,
+                    amendment.amendment.baseTaskHash,
+                  );
+                  if (activated.changes !== 1) {
+                    throw new Error("pending amendment was missing, stale, or already activated");
+                  }
+                  liveDb().prepare(
+                    `UPDATE sessions
+                        SET lead_plan_json = ?, crystallised_prompt = ?, status = 'planning',
+                            plan_revision = COALESCE(plan_revision, 0) + 1,
+                            minimum_runtime_version = '2.0.0-rc.12', updated_at = ?
+                      WHERE id = ?`,
+                  ).run(JSON.stringify(revisedPlan), JSON.stringify(brief), now, sessionId);
+                  liveDb().exec("COMMIT");
+                } catch (err) {
+                  try { liveDb().exec("ROLLBACK"); } catch { /* no transaction */ }
+                  releaseClaim();
+                  return {
+                    content: [{ type: "text", text: `Could not atomically activate the task-contract amendment: ${String(err)}` }],
+                    details: { ok: false, planUpdateFailed: true, sessionId },
+                  };
+                }
+                activatedPlan = revisedPlan;
+                activatedAmendmentId = amendment.amendment.id;
+                liveState().audit(
+                  "tool.answer_contract_amendment_activated",
+                  {
+                    sessionId,
+                    seq,
+                    clarificationId: row.clarification_id,
+                    amendmentId: amendment.amendment.id,
+                    removed: blockedPaths,
+                    added: amendment.amendment.substitution.newPaths,
+                    changedFields: amendment.amendment.changedFields,
+                  },
+                  sessionId,
+                );
+              }
+            }
+          }
         }
         // ---- rc.2: answering a question resumes a run, it does not restart one ----
         //
@@ -2533,18 +3033,20 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
         brief.resumeFromClarification = true;
         // Persist the amended brief so a subsequent restart/recovery re-drives
         // WITH the clarification baked in.
-        liveDb().prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', updated_at = ? WHERE id = ?`)
-          .run(JSON.stringify(brief), Date.now(), sessionId);
+        if (!activatedPlan) {
+          liveDb().prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', updated_at = ? WHERE id = ?`)
+            .run(JSON.stringify(brief), Date.now(), sessionId);
+        }
         liveState().audit("tool.answer_resumed", { sessionId, seq, skip: /^skip\b/i.test(trimmed) }, sessionId);
         void liveRuntime().loop.run(sessionId, brief).catch((err) => {
           api.logger.error("[tool.answer] loop.run failed", { sessionId, err: String(err) });
         });
         return {
           content: [{ type: "text", text: `Answer recorded for session ${sessionId}; resuming. Poll harness_progress for status.` }],
-          details: { ok: true, sessionId, resumed: true, seq },
+          details: { ok: true, sessionId, resumed: true, seq, amendmentId: activatedAmendmentId },
         };
       },
-      }),
+      }))),
     ),
   );
 

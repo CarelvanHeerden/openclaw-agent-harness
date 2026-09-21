@@ -279,12 +279,12 @@ test("rc3: a human is never asked for evidence", { skip }, async () => {
   assert.equal(out.details.ok, true);
 });
 
-test("rc3: evidence is optional in the schema and the required list is unchanged", { skip }, () => {
+test("rc12: answer provenance is required while evidence remains conditional", { skip }, () => {
   const { tools } = makeRuntime();
   const spec = tools.get("harness_answer");
   assert.equal(spec.parameters.properties.evidence.type, "string");
   assert.match(spec.parameters.properties.evidence.description, /REQUIRED when answeredBy is 'automation'/);
-  assert.deepEqual(spec.parameters.required, ["sessionId", "answer", "invokedBy"]);
+  assert.deepEqual(spec.parameters.required, ["sessionId", "answer", "invokedBy", "answeredBy"]);
 });
 
 test("rc3: the policy version is a real, separate version", { skip }, () => {

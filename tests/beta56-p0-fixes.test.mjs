@@ -170,8 +170,9 @@ test("P0-2: index.ts passes the full brief (not just the title) to the adversary
 
 test("P0-3: registration.ts pushes a disposer for EVERY registerTool call", () => {
   const src = S("src/tools/registration.ts");
-  // `({` distinguishes an actual call from prose mentions in comments.
-  const registered = (src.match(/api\.registerTool\(\{/g) ?? []).length;
+  // Object registrations and the authenticated contextual factory are both
+  // real registrations; prose mentions match neither shape.
+  const registered = (src.match(/api\.registerTool\((?:\{|contextualToolFactory)/g) ?? []).length;
   const pushed = (src.match(/disposers\.push\(/g) ?? []).length;
   assert.equal(pushed, registered, `every registerTool must be wrapped in disposers.push (${pushed}/${registered})`);
 });

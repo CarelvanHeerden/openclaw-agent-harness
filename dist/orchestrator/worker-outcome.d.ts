@@ -30,7 +30,7 @@
  * worth interrupting only for something a human can decide. A command-format
  * mistake, a guard denial, or an unfinished sentence is not that.
  */
-import type { GuardDenial } from "../safety/bash-guard.js";
+import type { AcpTargetEvidence, GuardDenial } from "../safety/bash-guard.js";
 /** One denial, as the ACP adapter records it. */
 export interface DeniedToolCall {
     kind?: string | null;
@@ -46,6 +46,8 @@ export interface DeniedToolCall {
      * outcome was decided.
      */
     denial?: GuardDenial;
+    /** Sanitized source/authority reconciliation; never patch contents. */
+    targetEvidence?: AcpTargetEvidence;
 }
 export type WorkerOutcomeKind = 
 /** A guard denial whose reason names a permitted alternative. Retry it. */
@@ -83,6 +85,8 @@ export interface RecoveryGuidance {
     title?: string;
     /** The permitted route to the same result, in the imperative. */
     remedy: string;
+    /** rc.11: stable guard-owned recovery code when available. */
+    code?: string;
 }
 export interface WorkerOutcome {
     kind: WorkerOutcomeKind;
@@ -150,6 +154,11 @@ export declare function classifyWorkerOutcome(input: {
     finalMessage?: string;
     commitSha?: string;
     deniedToolCalls?: DeniedToolCall[];
+    /** Active, amended task scope. Used only to interpret path-limited negation. */
+    taskContext?: {
+        filesLikelyTouched?: string[];
+        intent?: string;
+    };
 }): WorkerOutcome;
 export declare function correctFalseUserRejection(text: string): string;
 /**

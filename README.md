@@ -2,8 +2,8 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a lead plans, workers write code in isolated git worktrees, and an adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: release candidate.* Version `2.0.0-rc.10`. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for model-provider credentials and the verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
-> Documentation snapshot reviewed as of `2.0.0-rc.10`.
+> *Status: release candidate.* Version `2.0.0-rc.12`. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for model-provider credentials and the verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> Documentation snapshot reviewed as of `2.0.0-rc.12`.
 >
 > **beta.136:** the two settings that default to off are now documented where you would look for them: `repos.never_commit_paths` keeps a regenerated tree out of the commit, and without `brief.request_file_roots` a `harness_run({ requestPath })` is refused. Both are in [CONFIGURATION.md](docs/CONFIGURATION.md).
 > **beta.135:** onboarding asks which org, so one person can hold a separate token per org and per provider instead of one token standing for everything.
@@ -334,20 +334,22 @@ CI on every push and PR: `.github/workflows/ci.yml`.
 
 ### Verifying an installed copy
 
-`npm test` builds first, so it needs `typescript` from `devDependencies`. A
-gateway host that installed this plugin with `--omit=dev` does not have it, and
-`npm test` there dies at `tsc: not found`.
+Release packages intentionally exclude the repository test sources and
+development toolchain. Therefore `npm test` cannot run in an `--omit=dev`
+installation, and `npm run test:no-build` from an installed package is **not**
+a verification command (there are no packaged `tests/*.mjs` files to execute).
 
-Use `npm run test:no-build` instead. `dist/` is committed, so the suite runs
-against exactly the code the gateway loads -- which is the thing you want to
-verify anyway -- with no toolchain beyond Node:
+To compare an installed package byte-for-byte with the checkout that was tested,
+run the packaged verifier with both roots:
 
 ```bash
-npm run test:no-build   # 2484 tests, no devDependencies required
+openclaw-agent-harness-verify-artifact \
+  /path/to/tested/openclaw-agent-harness \
+  /path/to/node_modules/openclaw-agent-harness
 ```
 
-This is the supported way to check a release for yourself rather than taking the
-release notes' word for it.
+It compares every packaged file, including `dist`, docs, skills and packaged
+scripts. Run `npm test` and `npm run smoke` in the tested checkout itself.
 
 ## License
 

@@ -167,6 +167,8 @@ export interface ProgressSnapshot {
     needsClarification: boolean;
     clarificationQuestion: string | null;
     clarificationSeq: number | null;
+    /** rc.11: stable identity; seq numbers may be reused by later questions. */
+    clarificationId: string | null;
     /**
      * beta.83 (#1): true when the Fable revise-spec turn FELL BACK to the raw
      * findings hint for the current (latest) cycle -- i.e. cycle N>1 workers got
@@ -193,6 +195,9 @@ export declare function buildHeadline(input: {
     prNumber: number | null;
     deployStatus: string | null;
     failureDetail?: string;
+    /** rc.11: typed cause; free-text reason never controls recovery advice. */
+    terminalCause?: string | null;
+    terminalClassification?: string | null;
     /** beta.120: an aborted run whose commits are still on disk. */
     worktreePreserved?: boolean;
     /** beta.81 (Track A / A2): up-front session estimate, for the terminal line. */

@@ -99,19 +99,38 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         needsClarification: false,
         clarificationQuestion: null,
         clarificationSeq: null,
+        clarificationId: null,
         reviseSpecFellBack: false,
         worklog: [],
     });
-    const row = db
-        .prepare(`SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
-              pr_number, final_pr_url, deploy_status,
-              clarification_question, clarification_seq, last_progress_at,
-              estimated_usd, merge_recommendation, merge_recommendation_reason,
-              lead_plan_json,
-              storage_state, storage_reason, storage_checked_at,
-              last_checkpoint_sha, last_checkpoint_bundle
-         FROM sessions WHERE id = ?`)
-        .get(sessionId);
+    let row;
+    try {
+        row = db
+            .prepare(`SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
+                pr_number, final_pr_url, deploy_status,
+                clarification_question, clarification_seq, clarification_id, terminal_cause,
+                terminal_classification, last_progress_at,
+                estimated_usd, merge_recommendation, merge_recommendation_reason,
+                lead_plan_json,
+                storage_state, storage_reason, storage_checked_at,
+                last_checkpoint_sha, last_checkpoint_bundle
+           FROM sessions WHERE id = ?`)
+            .get(sessionId);
+    }
+    catch {
+        // Read-only compatibility for snapshots built over an unmigrated rc.10
+        // fixture. Production opens through store.ts and has these columns.
+        row = db
+            .prepare(`SELECT id, status, repo, branch, cycles_ran, cost_usd, budget_usd,
+                pr_number, final_pr_url, deploy_status,
+                clarification_question, clarification_seq, NULL AS clarification_id,
+                NULL AS terminal_cause, NULL AS terminal_classification, last_progress_at,
+                estimated_usd, merge_recommendation, merge_recommendation_reason,
+                lead_plan_json, storage_state, storage_reason, storage_checked_at,
+                last_checkpoint_sha, last_checkpoint_bundle
+           FROM sessions WHERE id = ?`)
+            .get(sessionId);
+    }
     if (!row)
         return empty(false);
     const status = row.status;
@@ -359,8 +378,10 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     const needsClarification = status === "awaiting_clarification";
     const clarificationQuestion = needsClarification ? (row.clarification_question ?? null) : null;
     const clarificationSeq = needsClarification ? (row.clarification_seq ?? null) : null;
+    const clarificationId = needsClarification ? (row.clarification_id ?? null) : null;
     const headline = needsClarification && clarificationQuestion
-        ? `Awaiting clarification: ${clarificationQuestion.slice(0, 400)} (answer via harness_answer sessionId=${sessionId})`
+        ? `Awaiting clarification: ${clarificationQuestion.slice(0, 400)} ` +
+            `(answer via harness_answer sessionId=${sessionId}${clarificationId ? ` clarificationId=${clarificationId}` : ""})`
         : buildHeadline({
             phase,
             status,
@@ -373,6 +394,8 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
             prNumber: row.pr_number ?? null,
             deployStatus: row.deploy_status ?? null,
             failureDetail,
+            terminalCause: row.terminal_cause,
+            terminalClassification: row.terminal_classification,
             worktreePreserved,
             estimatedUsd: typeof row.estimated_usd === "number" ? row.estimated_usd : null,
             // beta.108: so the terminal headline can say whether to merge.
@@ -434,6 +457,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
         needsClarification,
         clarificationQuestion,
         clarificationSeq,
+        clarificationId,
         reviseSpecFellBack,
         worklog: renderWorklog(stRows, plannedOrStarted),
         storage: {
@@ -478,22 +502,19 @@ export function buildHeadline(input) {
         const why = input.failureDetail ? ` — ${input.failureDetail}` : "";
         // beta.81 (A2): when the beta.61 budget reserve/abort fired, the terminal
         // message must be ACTIONABLE -- say used/cap and offer a higher-cap re-run.
-        const reserveHint = input.failureDetail && /budget|reserve|would exceed|projection|daily_max|exhaust/i.test(input.failureDetail)
-            ? ` Re-run at a higher cap to finish.`
-            : "";
+        const reserveHint = input.terminalCause === "budget_exhausted" ? ` Re-run at a higher cap to finish.` : "";
         return `Failed during ${input.phase.toLowerCase()}${why}${cost}.${reserveHint}`;
     }
     if (input.status === "aborted") {
         const why = input.failureDetail ? ` — ${input.failureDetail}` : "";
-        const reserveHint = input.failureDetail && /budget|reserve|would exceed|projection|daily_max|exhaust/i.test(input.failureDetail)
-            ? ` Re-run at a higher cap to finish.`
-            : "";
+        const reserveHint = input.terminalCause === "budget_exhausted" ? ` Re-run at a higher cap to finish.` : "";
         // beta.120: the whole point of preserving the branch is that a person
         // learns it exists. Say it in the one line they actually read.
-        const preserved = input.worktreePreserved
+        const preserved = input.worktreePreserved && input.terminalClassification !== "failed_smoke_test"
             ? ` Your commits are NOT lost — the branch is preserved on disk; run harness_revise to continue from it rather than starting again.`
             : "";
-        return `Aborted${cost}${why}.${preserved}${reserveHint}`;
+        const classification = input.terminalClassification === "failed_smoke_test" ? ` FAILED SMOKE TEST.` : "";
+        return `Aborted${cost}${why}.${classification}${preserved}${reserveHint}`;
     }
     if (input.status === "executing" && input.total > 0) {
         const n = Math.min(input.done + 1, input.total);

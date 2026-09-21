@@ -55,6 +55,8 @@ export interface PathResolution {
      * caller MUST deny: this is the fail-closed channel, not a warning.
      */
     refuse?: string;
+    /** Canonical repo root used to derive relative/absolute identities. */
+    repoRoot?: string;
 }
 export interface ResolveOptions {
     /** Absolute repo root. Paths inside it are made repo-relative before matching. */
@@ -105,6 +107,17 @@ export declare function resolvePathForPolicy(raw: string, opts?: ResolveOptions)
  * treat that as "no path exposed" and fail closed, exactly as before.
  */
 export declare function pathsFromPatchText(patchText: string): string[];
+export interface ParsedPatchTargets {
+    complete: boolean;
+    paths: string[];
+    reason?: string;
+}
+/**
+ * Recognise the complete apply_patch/v1 envelope. A partial parse is never
+ * authoritative: especially for moves, omitting the destination would judge
+ * only half of the operation.
+ */
+export declare function parsePatchTargets(patchText: string): ParsedPatchTargets;
 export interface SecretScan {
     /** True when the added lines contain something that must never be committed. */
     found: boolean;
@@ -142,5 +155,5 @@ export declare function scanPatchForSecrets(patchText: string): SecretScan;
  *
  * Empty `exceptions` means the exception does not exist, which is the default.
  */
-export declare function templateExceptionApplies(resolution: Pick<PathResolution, "candidates">, exceptions: readonly string[]): boolean;
+export declare function templateExceptionApplies(resolution: Pick<PathResolution, "candidates" | "repoRoot">, exceptions: readonly string[]): boolean;
 //# sourceMappingURL=path-policy.d.ts.map

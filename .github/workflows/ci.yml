@@ -49,6 +49,9 @@ jobs:
         env:
           npm_config_build_from_source: "true"
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -73,6 +76,39 @@ jobs:
 
       - name: Test
         run: node --test tests/*.mjs
+
+      - name: Pack the tested release artifact
+        if: matrix.node-version == '24'
+        id: package
+        run: |
+          mkdir -p "$RUNNER_TEMP/oah-package"
+          filename="$(npm pack --silent --pack-destination "$RUNNER_TEMP/oah-package")"
+          artifact="$RUNNER_TEMP/oah-package/$filename"
+          shasum -a 256 "$artifact" | tee "$artifact.sha256"
+          echo "path=$artifact" >> "$GITHUB_OUTPUT"
+          echo "sha_path=$artifact.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install and compare the exact packed artifact
+        if: matrix.node-version == '24'
+        run: |
+          install_root="$RUNNER_TEMP/oah-install"
+          mkdir -p "$install_root"
+          cd "$install_root"
+          npm init -y >/dev/null
+          npm install --ignore-scripts --omit=dev "${{ steps.package.outputs.path }}"
+          node "$GITHUB_WORKSPACE/scripts/verify-installed-artifact.mjs" \
+            "$GITHUB_WORKSPACE" \
+            "$install_root/node_modules/openclaw-agent-harness"
+
+      - name: Upload the exact tested package
+        if: matrix.node-version == '24'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-agent-harness-${{ github.sha }}
+          path: |
+            ${{ steps.package.outputs.path }}
+            ${{ steps.package.outputs.sha_path }}
+          if-no-files-found: error
 
       - name: Mutation check (are the safety tests vacuous?)
         # Breaks each b101/b102 safety mechanism in the BUILT output and requires

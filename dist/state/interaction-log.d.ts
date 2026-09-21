@@ -126,6 +126,8 @@ export declare class InteractionLog {
         cycle?: number;
         toolsAllowed?: string[];
         sdkSessionId?: string;
+        callId?: string;
+        attempt?: number;
     }): void;
     /** Convenience: log an `sdk_response`. */
     logSdkResponse(sessionId: string, params: {
@@ -144,6 +146,8 @@ export declare class InteractionLog {
         toolCalls?: string[];
         sdkSessionId?: string;
         finalMessageTail?: string;
+        callId?: string;
+        attempt?: number;
     }): void;
     /**
      * beta.64 (P0-1): log `sdk_stream_opened` -- the SDK stream OPENED (system/init

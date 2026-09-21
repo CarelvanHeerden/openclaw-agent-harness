@@ -220,7 +220,7 @@ test("rc.9: adds, deletes and renames are targets too", () => {
 test("rc.9: a patch with no directives exposes no path and fails closed", async () => {
   const v = await guard()({ kind: "edit", locations: [], rawInput: { patchText: "not a patch" } });
   assert.equal(v.allow, false);
-  assert.equal(v.denial.code, "no_path_exposed");
+  assert.equal(v.denial.code, "target_metadata_conflict");
 });
 
 test("rc.9: a comma is still a legal filename character", async () => {

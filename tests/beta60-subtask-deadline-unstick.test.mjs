@@ -70,7 +70,7 @@ test("beta60: the sub-task walk wraps runOneInner in withTimeout(subtask_deadlin
   assert.match(src, /UPDATE sub_tasks SET status = 'failed'.*WHERE session_id = \? AND cycle = \? AND seq = \?/s);
   assert.match(src, /subtask_deadline_exceeded \(seq \$\{st\.seq\}\)/);
   // the pre-existing worker bound must still be there (defense in depth)
-  assert.match(src, /withTimeout\(\s*this\.deps\.runWorker/s);
+  assert.match(src, /withTimeout\([\s\S]*?this\.runAccountedWorker\([\s\S]*?this\.deps\.runWorker/s);
 });
 
 test("beta60: withTimeout bounds a hanging runOne (behavioral) -> the exact seq-7 hang is now catchable", async () => {

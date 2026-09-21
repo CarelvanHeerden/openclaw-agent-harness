@@ -176,6 +176,23 @@ export function openStateStoreSync(pathHint: string): StateStore {
     { table: "sessions", column: "last_attempted_sub_task",      type: "TEXT" },    // last worker turn persisted, success or not
     { table: "sessions", column: "last_checkpoint_bundle",       type: "TEXT" },    // path of the last VERIFIED durable bundle
     { table: "sessions", column: "last_checkpoint_sha",          type: "TEXT" },    // tip the verified bundle contains
+    // rc.11: scoped task amendments and an active-time clock. Human pause time
+    // is represented explicitly instead of being reconstructed on resume.
+    { table: "sessions", column: "clarification_id",              type: "TEXT" },
+    { table: "sessions", column: "plan_revision",                 type: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "sessions", column: "active_limit_ms",               type: "INTEGER" },
+    { table: "sessions", column: "active_elapsed_ms",             type: "INTEGER NOT NULL DEFAULT 0" },
+    { table: "sessions", column: "active_segment_started_at",     type: "INTEGER" },
+    { table: "sessions", column: "human_pause_started_at",        type: "INTEGER" },
+    { table: "sessions", column: "deadline_policy_version",       type: "TEXT" },
+    { table: "sessions", column: "minimum_runtime_version",       type: "TEXT" },
+    { table: "sessions", column: "terminal_cause",                type: "TEXT" },
+    { table: "sessions", column: "terminal_classification",       type: "TEXT" },
+    { table: "sessions", column: "accounting_state",              type: "TEXT" },
+    { table: "sub_task_attempts", column: "worker_status",        type: "TEXT" },
+    { table: "sub_task_attempts", column: "verification_status",  type: "TEXT" },
+    { table: "sub_task_attempts", column: "verification_json",    type: "TEXT" },
+    { table: "sub_task_attempts", column: "task_outcome",         type: "TEXT" },
   ];
   for (const m of additiveMigrations) {
     try {

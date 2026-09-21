@@ -735,7 +735,7 @@ test("a granted extension buys a cycle, but no progress with blocking findings d
           // `elapsed < total < 2.67 x elapsed`, and the slow adversary below
           // keeps elapsed comfortably inside it.
           max_cycles: 1,
-          session_hard_timeout_seconds: 5,
+          session_hard_timeout_seconds: 10,
           time_extension_wait_seconds: 5,
           time_extension_default_seconds: 1800,
         },
@@ -743,7 +743,7 @@ test("a granted extension buys a cycle, but no progress with blocking findings d
       // Slow enough that the first cycle provably eats past the reserve, so
       // the guard fires on measurement rather than on a stopwatch race.
       runAdversary: async () => {
-        await new Promise((res) => setTimeout(res, 2000));
+        await new Promise((res) => setTimeout(res, 4500));
         return {
           verdict: "revise",
           findings: [{ severity: "high", kind: "spec", file: "src/thing.ts", detail: "not finished" }],

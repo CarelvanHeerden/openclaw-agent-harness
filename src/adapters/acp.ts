@@ -32,7 +32,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { AcpGuardVerdict, AcpToolCallForGuard, GuardDenial } from "../safety/bash-guard.js";
+import type { AcpGuardVerdict, AcpTargetEvidence, AcpToolCallForGuard, GuardDenial } from "../safety/bash-guard.js";
 import { redactSecrets } from "./git-worktree.js";
 import { buildAgentEnv } from "./shared/env.js";
 import { runStructuredLadder } from "./shared/structured.js";
@@ -229,7 +229,7 @@ export interface RunWorkerAcpResult {
    * makes a denial actionable; without it the count alone says a run was
    * blocked but not by what.
    */
-  deniedToolCalls: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }>;
+  deniedToolCalls: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial; targetEvidence?: AcpTargetEvidence }>;
   /**
    * Reads this turn that were allowed WITHOUT a `path_denylist` check, because
    * the agent's permission request named no file. See SECURITY.md. A non-zero
@@ -507,7 +507,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
 
   const startedAt = Date.now();
   const logs: string[] = [];
-  const denied: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial }> = [];
+  const denied: Array<{ kind?: string | null; title?: string; reason?: string; denial?: GuardDenial; targetEvidence?: AcpTargetEvidence }> = [];
   /** Reads allowed without a denylist check, because the agent named no path. */
   let unguardedReads = 0;
   let allowedToolCalls = 0;
@@ -760,7 +760,13 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
           // rc.9: the structured verdict rides along. Dropping it here is where the
           // incident's actionable reason died: everything downstream then had
           // only English to reason about, and none of it matched.
-          denied.push({ kind: call.kind, title, reason: verdict.reason, denial: verdict.denial });
+          denied.push({
+            kind: call.kind,
+            title,
+            reason: verdict.reason,
+            denial: verdict.denial,
+            targetEvidence: verdict.targetEvidence,
+          });
           pushLog(`[guard] DENIED ${String(call.kind)}: ${verdict.reason ?? "no reason"}`);
           // Warn, not info: a denial is either the guard doing its job against
           // something real, or the guard being wrong. Both are worth reading.

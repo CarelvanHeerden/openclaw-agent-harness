@@ -153,6 +153,8 @@ export interface CiSnapshot {
     checkFailed: number;
     /** Completed with a conclusion we affirmatively recognise as non-red. */
     checkPassed: number;
+    /** Names of check runs/workflows observed on this exact SHA. */
+    checkNames: string[];
     /** Which rule produced `state`, for the audit trail. */
     reason: string;
     /**

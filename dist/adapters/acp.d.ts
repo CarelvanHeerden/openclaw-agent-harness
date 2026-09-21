@@ -1,4 +1,4 @@
-import type { AcpGuardVerdict, AcpToolCallForGuard, GuardDenial } from "../safety/bash-guard.js";
+import type { AcpGuardVerdict, AcpTargetEvidence, AcpToolCallForGuard, GuardDenial } from "../safety/bash-guard.js";
 import type { JsonValidationOptions } from "./shared/json.js";
 import type { BackendCapabilities } from "./backend.js";
 import { type VersionAssessment } from "./opencode-version.js";
@@ -155,6 +155,7 @@ export interface RunWorkerAcpResult {
         title?: string;
         reason?: string;
         denial?: GuardDenial;
+        targetEvidence?: AcpTargetEvidence;
     }>;
     /**
      * Reads this turn that were allowed WITHOUT a `path_denylist` check, because

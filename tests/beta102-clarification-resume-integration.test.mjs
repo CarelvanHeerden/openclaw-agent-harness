@@ -283,7 +283,14 @@ async function runScenario(opts = {}) {
 
   return { w, state, loop, first, allocations, preCommits, tools, leadCalls: () => leadCalls,
     answer: async (text) => {
-      const res = await tools.get("harness_answer").execute({ sessionId: "S1", answer: text, invokedBy: "U1" });
+      const pause = state.db.prepare(`SELECT clarification_seq, clarification_id FROM sessions WHERE id='S1'`).get();
+      const res = await tools.get("harness_answer").execute({
+        sessionId: "S1",
+        answer: text,
+        invokedBy: "U1",
+        clarificationSeq: pause.clarification_seq,
+        clarificationId: pause.clarification_id,
+      });
       if (resumePromise) await resumePromise;
       return res;
     } };

@@ -212,6 +212,8 @@ export class InteractionLog {
             ...(p.promptFull !== undefined ? { promptFull: p.promptFull } : {}),
             toolsAllowed: params.toolsAllowed,
             sdkSessionId: params.sdkSessionId,
+            callId: params.callId,
+            attempt: params.attempt,
         });
     }
     /** Convenience: log an `sdk_response`. */
@@ -235,6 +237,8 @@ export class InteractionLog {
             toolCalls: params.toolCalls,
             sdkSessionId: params.sdkSessionId,
             finalMessageTail: params.finalMessageTail,
+            callId: params.callId,
+            attempt: params.attempt,
         });
     }
     /**

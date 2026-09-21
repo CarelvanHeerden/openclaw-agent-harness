@@ -112,7 +112,7 @@ test("beta.58 D1/D2 wiring: harness_answer skip is content-keyed + strips findin
 
 test("beta.58 D1/D2 wiring: loop captures paused sub-task title+intent at pause", () => {
   const src = S("src/orchestrator/loop.ts");
-  assert.match(src, /clarify\.subtask = \{ title: st\.title, intent: st\.intent \}/);
+  assert.match(src, /clarify\.subtask = \{\s*title: st\.title,\s*intent: st\.intent,/);
   assert.match(src, /clarification_subtask = \?/, "persists it in finaliseAwaitingClarification");
 });
 

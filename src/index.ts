@@ -99,8 +99,25 @@ import { foldGeneratedFiles } from "./adapters/shared/diff.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
+import { assertDowngradeSafe } from "./state/runtime-compat.js";
 
 /** Minimal shape of the OpenClaw plugin API surface that we use. */
+export interface HarnessToolContext {
+  requesterSenderId?: string;
+  senderIsOwner?: boolean;
+  sessionKey?: string;
+  sessionId?: string;
+  messageChannel?: string;
+}
+
+export interface HarnessToolDefinition {
+  name: string;
+  description: string;
+  parameters?: unknown;
+  inputSchema?: unknown;
+  execute: (callIdOrInput: unknown, paramsOrCtx?: unknown, context?: unknown) => Promise<unknown> | unknown;
+}
+
 export interface HarnessPluginApi {
   registrationMode?: "cli-metadata" | "runtime";
   logger: {
@@ -110,17 +127,7 @@ export interface HarnessPluginApi {
     debug?: (msg: string, meta?: unknown) => void;
   };
   registerTool: (
-    definition: {
-      name: string;
-      description: string;
-      // OpenClaw plugin SDK uses `parameters` (JSON Schema). We also accept
-      // the legacy `inputSchema` alias to keep older mock harnesses working.
-      parameters?: unknown;
-      inputSchema?: unknown;
-      // OpenClaw SDK signature: (callId, params, context?). Older mocks used
-      // (input, ctx?); we type broadly so both call shapes typecheck.
-      execute: (callIdOrInput: unknown, paramsOrCtx?: unknown, context?: unknown) => Promise<unknown> | unknown;
-    },
+    definition: HarnessToolDefinition | ((context: HarnessToolContext) => HarnessToolDefinition),
     options?: unknown,
   ) => (() => void) | { dispose?: () => void; unregister?: () => void };
   /**
@@ -503,6 +510,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
   mkdirSync(dirname(dbPath), { recursive: true });
   const state = openStateStoreSync(dbPath);
+  assertDowngradeSafe(state.db, PLUGIN_VERSION.pluginVersion);
 
   // beta.63 (Part B): the harness data dir is the directory holding the state
   // DB. The interaction log lives in `<dataDir>/logs` by default -- crucially
@@ -1262,7 +1270,13 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             // Priced through the router so a provider that reports tokens
             // without a cost is billed off the catalogue rather than recorded
             // as a free turn.
-            return { ...r, costUsd: backendRouter.priceTurn("worker", r).costUsd ?? 0 };
+            const priced = backendRouter.priceTurn("worker", r);
+            return {
+              ...r,
+              costUsd: priced.costUsd ?? 0,
+              usageMeasured: priced.costUsd !== undefined && r.usageSource !== "unavailable",
+              usageSource: r.usageSource,
+            };
           },
           gitBaseSha: (wt) => git.baseSha(wt),
           gitListChangedFiles: (wt, base) => git.listChangedFiles(wt, base),

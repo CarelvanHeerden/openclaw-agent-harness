@@ -406,12 +406,11 @@ test("rc3: an unauthorised invoker is still refused before anything is claimed",
   assert.equal(db.prepare(`SELECT clarification_answer FROM sessions WHERE id = ?`).get(id).clarification_answer, null);
 });
 
-test("rc3: the tool advertises both new fields", { skip }, () => {
+test("rc12: the tool requires explicit answer provenance", { skip }, () => {
   const { tools } = makeRuntime();
   const props = tools.get("harness_answer").parameters.properties;
   assert.equal(props.clarificationSeq.type, "number");
   assert.deepEqual(props.answeredBy.enum, ["human", "automation"]);
-  // Neither may become required: every existing caller passes neither.
   const required = tools.get("harness_answer").parameters.required;
-  assert.deepEqual(required, ["sessionId", "answer", "invokedBy"]);
+  assert.deepEqual(required, ["sessionId", "answer", "invokedBy", "answeredBy"]);
 });

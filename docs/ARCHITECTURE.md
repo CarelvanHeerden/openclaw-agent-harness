@@ -653,6 +653,48 @@ a failure to write a row is logged and swallowed — but two things read it:
   keyed on this sub-task's own recorded commits rather than a window of branch
   history, so unrelated work cannot answer for a contract.
 
+### Scoped clarification amendments (rc.11)
+
+A mid-run answer is not merely appended to the worker prompt. Policy-gate
+artifact substitutions are stored in `task_contract_amendments` with the
+original and revised complete sub-task, stable clarification identity,
+plan/task hashes, authorized actor, operation and validation record.
+
+Only an explicit one-artifact substitution can activate without a second
+confirmation. The harness independently extracts the blocked and replacement
+paths, mechanically updates positive scope, criteria, change specification and
+verification, preserves unrelated requirements and explicit prohibitions, then
+re-runs policy. Broader semantic changes remain paused. Activation and
+`lead_plan_json` replacement are one transaction.
+
+The session clock is active-time based. Human clarification wait is excluded;
+amendment work counts; an open segment across a crash is conservatively charged
+through restart. A resume never grants a fresh timeout allowance.
+
+### Structured observe contracts (rc.11)
+
+An observe prerequisite may declare required finding IDs and typed bindings.
+Existing paths/symbols must resolve; a proposed output may be absent when an
+existing parent convention and evidence support it. Tool counts are activity
+telemetry, never deliverables.
+
+Validated bindings update each named dependent's persisted scope, criteria,
+change specification and verifier before dispatch. `observe_reports` bind the
+result to producer task hash and source/result plan revisions, so restart cannot
+hydrate an incompatible report.
+
+### Required accounting and behavioral verification (rc.11)
+
+Every provider invocation needs a durable `provider_calls` start row before
+dispatch and a durable result/cost record before another attempt. Unknown
+completion enters `accounting_incomplete`; it is not blindly duplicated.
+Diagnostic JSONL/progress is best-effort, but accounting, contract and
+verification state are control-plane writes and fail closed.
+
+File/commit probes prove artifacts, not behavior. `requiredBehaviorChecks`
+identify CI jobs that must be green on the exact candidate SHA. Missing, stale
+or failed required checks prevent successful completion.
+
 ---
 
 ## 6. Security model
@@ -665,7 +707,7 @@ a failure to write a row is logged and swallowed — but two things read it:
 - Audit log is append-only, timestamped, and retained for 90 days minimum.
 - Every session's Claude Agent SDK transcript is preserved under `~/.claude/projects/<encoded-path>/*.jsonl`.
 - `safety.path_denylist_exceptions` authorises EXACT repo-relative paths the denylist would otherwise cover — the tracked-template case, `.env.example`. It takes no globs, applies to every resolved form of a path, and does not disable content scanning: an authorised template that would receive token-shaped or high-entropy material is still refused. Empty by default, so a deployment that has not thought about it has not weakened anything.
-- Paths are canonicalised before policy evaluation, not after. Traversal, absolute/relative forms and symlinks resolve to the same decision, `apply_patch` targets are read from the patch body rather than trusted from a `locations` array, and a string that ambiguously encodes several paths is refused rather than guessed at. A multi-file patch is denied whole if any one target is forbidden, whatever order the targets appear in.
+- Paths are canonicalised before policy evaluation, not after. Traversal, absolute/relative forms and symlinks resolve to the same decision. rc.11 trusts targets only from a recognized, completely parsed execution schema: a matching joined display string is advisory, while an additional concrete location or partial/malformed move fails closed. Comma strings are never split. A multi-file patch is denied whole if any actual target is forbidden, whatever order the targets appear in, and secret-content scanning remains independent.
 - A denial carries a machine-readable code from the guard to the human clarification, so the reason an operator is shown is the rule that fired and the path it fired on — not the worker's prose about it, and never "the user rejected permission" when no human was asked.
 - A policy denial outranks every other explanation for the same turn, including a partial commit. Until rc.10 the classifier asked `policyDenied && !commitSha`, so a worker that committed some of its work and was refused the rest was reported as a contract-path mismatch: the operator was asked about a typo in a path that was correct, twice, and the denylist rule that actually blocked the turn appeared nowhere (audits 5598, 5601, 5619). The clarification now leads with the rule and names the preserved commit separately, and the committed work is never described as the reason.
 - Planned writes are compared against the effective denylist at `plan_ready`, before a worker is dispatched. A conflict gates that one sub-task on an operator decision stating the rule; the rest of the plan runs. This is a cost and honesty measure rather than a new control — the write was going to be refused either way — and because `filesLikelyTouched` is the lead's estimate, it gates a sub-task rather than failing a plan.

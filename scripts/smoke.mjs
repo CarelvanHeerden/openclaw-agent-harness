@@ -86,6 +86,16 @@ if (typeof plugin.register !== "function") {
   console.error(`FAIL: plugin default export has no register(). Got: ${JSON.stringify(Object.keys(plugin ?? {}))}`);
   process.exit(1);
 }
+if (plugin.versionInfo?.pluginVersion !== pkg.version) {
+  console.error(
+    `FAIL: plugin version ${plugin.versionInfo?.pluginVersion ?? "(missing)"} does not match package ${pkg.version}`,
+  );
+  process.exit(1);
+}
+if (plugin.versionInfo?.schemaVersion !== 2) {
+  console.error(`FAIL: expected schemaVersion 2, got ${plugin.versionInfo?.schemaVersion ?? "(missing)"}`);
+  process.exit(1);
+}
 
 // CRITICAL: OpenClaw plugin loader requires register() to be SYNCHRONOUS.
 // If register() returns a Promise, the gateway rejects the plugin with:

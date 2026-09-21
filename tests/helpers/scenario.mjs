@@ -39,11 +39,23 @@ export const root = join(here, "..", "..");
 export const QUIET = { info() {}, warn() {}, error() {}, debug() {} };
 export const IDENT = { name: "Harness Test", email: "harness@test.local" };
 
-export const git = (args, cwd) =>
-  execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...args], {
-    cwd,
-    encoding: "utf8",
-  }).trim();
+export const git = (args, cwd) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...args], {
+        cwd,
+        encoding: "utf8",
+      }).trim();
+    } catch (err) {
+      // The full suite runs scenario files in parallel and macOS can briefly
+      // refuse a spawn at the process/file-descriptor ceiling. Retry only that
+      // resource symptom; a real git failure still throws immediately.
+      const code = err?.code ?? err?.cause?.code;
+      if (attempt >= 12 || (code !== "ENOENT" && code !== "EAGAIN" && code !== "EMFILE")) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(500, attempt * 50));
+    }
+  }
+};
 
 const worlds = [];
 test.after(() => {
