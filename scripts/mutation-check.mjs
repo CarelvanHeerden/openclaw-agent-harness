@@ -1831,8 +1831,8 @@ const MUTATIONS = [
     // that reads sessions.cost_usd still billed the lead at zero.
     name: "the lead's cost reaches the session ROW (b128 / #157): the half b127 missed",
     file: "dist/orchestrator/loop.js",
-    find: "this.addCost(sessionId, leadPlanningCostUsd);",
-    replace: "void leadPlanningCostUsd;",
+    find: "            this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, measured);",
+    replace: "            this.finishProviderCall(meta.sessionId, call.id, { status: \"completed\", costUsd: measured.costUsd });",
     tests: ["tests/beta128-failed-plan-cost.test.mjs"],
   },
   {
@@ -3708,26 +3708,18 @@ const MUTATIONS = [
     name: "rc.11: a provider result and cost are required before another attempt",
     file: "dist/orchestrator/loop.js",
     find:
-      "            this.finishProviderCall(meta.sessionId, call.id, {\n" +
-      "                status: \"completed\",\n" +
+      "            this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {\n" +
       "                costUsd: result.costUsd,",
     replace:
       "            /* result persistence removed */ void ({\n" +
-      "                status: \"completed\",\n" +
       "                costUsd: result.costUsd,",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
     name: "rc.11: provider cost reconciles into session and user aggregates",
     file: "dist/orchestrator/loop.js",
-    find:
-      "    async persistRequiredSpend(sessionId, requester, costUsd) {\n" +
-      "        try {\n" +
-      "            this.addCost(sessionId, costUsd);",
-    replace:
-      "    async persistRequiredSpend(sessionId, requester, costUsd) {\n" +
-      "        try {\n" +
-      "            /* aggregate cost removed */",
+    find: "            db.prepare(`UPDATE sessions SET cost_usd = cost_usd + ?, accounting_state = 'ok', updated_at = ? WHERE id = ?`).run(data.costUsd, now, sessionId);",
+    replace: "            /* aggregate cost removed */",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
@@ -3756,6 +3748,20 @@ const MUTATIONS = [
     file: ".github/workflows/ci.yml",
     find: "          node \"$GITHUB_WORKSPACE/scripts/verify-installed-artifact.mjs\" \\",
     replace: "          echo \"artifact comparison skipped\" \\",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: CI rejects vulnerable production dependency locks",
+    file: ".github/workflows/ci.yml",
+    find: "        run: npm audit --omit=dev --audit-level=high",
+    replace: "        run: echo 'production dependency audit skipped'",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: the advertised smoke command loads the OpenClaw SDK stub",
+    file: "package.json",
+    find: "\"smoke\": \"npm run build && node --import ./scripts/register-smoke-loader.mjs scripts/smoke.mjs\"",
+    replace: "\"smoke\": \"npm run build && node scripts/smoke.mjs\"",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
@@ -3886,7 +3892,7 @@ const MUTATIONS = [
   {
     name: "rc.11 documentation review: only parsed destination operands become amendment outputs",
     file: "dist/orchestrator/contract-amendment.js",
-    find: "    const candidates = parsedAnswer.destinationPaths.filter((path) => path !== oldPath && !path.startsWith(\".env\") && !blocked.includes(path));",
+    find: "    const candidates = parsedAnswer.destinationPaths;",
     replace: "    const candidates = pathTokens(fragments.filter((fragment) => directivePolarity(fragment, oldPath) === \"affirmative\").join(\" \")).filter((path) => path !== oldPath && !path.startsWith(\".env\") && !blocked.includes(path));",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
@@ -3922,6 +3928,138 @@ const MUTATIONS = [
     replace:
       "        if (false)\n" +
       "            continue;",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: the exact blocked artifact path must be named",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (!answer.includes(oldPath)) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: contradictory affirmative substitutions fail closed",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (distinctSubstitutions.length > 1) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: unrelated documentation cannot widen replacement outputs",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "        if (extraDocumentation.length > 0) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: blocked replacement operands are rejected rather than dropped",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (rejectedOperands.length > 0) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: inherited destination prohibitions veto amendments",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (inheritedProhibitions.length > 0) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: obsolete instructions cannot survive in worker-visible fields",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    if (remaining.length > 0) {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: confirmation integrity covers the complete amendment",
+    file: "dist/orchestrator/contract-amendment.js",
+    find: "    const proposalHash = hash(amendment);",
+    replace: "    const proposalHash = hash(amendment.revisedTask);",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: the displayed exact proposal is never truncated",
+    file: "dist/tools/registration.js",
+    find: "${amendment.proposedDiff}`",
+    replace: "${amendment.proposedDiff.slice(0, 3000)}`",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: clarification authority comes from runtime context",
+    file: "dist/tools/registration.js",
+    find: "            const trustedSender = legacyDirectTest ? (invokedBy ?? \"\") : runtimeSender;",
+    replace: "            const trustedSender = invokedBy ?? \"\";",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: blocked observe results cannot release dependents",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "    if (result.status === \"blocked\") {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: observe evidence must be repository-backed",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "        if (input.contract.requireEvidence !== false && !finding.evidence.some(validEvidencePath)) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: observe symbols resolve in actual source content",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "                if (typeof contents !== \"string\" || !new RegExp(`\\\\b${escaped}\\\\b`).test(contents)) {",
+    replace: "                if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: lead and adversary costs use durable atomic accounting",
+    file: "dist/orchestrator/loop.js",
+    find: "            this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, measured);",
+    replace: "            this.finishProviderCall(meta.sessionId, call.id, { status: \"completed\", costUsd: measured.costUsd });",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: installed-artifact verification covers every packaged file",
+    file: "scripts/verify-installed-artifact.mjs",
+    find: "const installedFiles = filesUnder(installedRoot, \".\");",
+    replace: "const installedFiles = filesUnder(installedRoot, \"dist\");",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: machine-readable gateway floor matches documentation",
+    file: "package.json",
+    find: "\"minGatewayVersion\": \"2026.6.1\"",
+    replace: "\"minGatewayVersion\": \"2026.3.24-beta.2\"",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: rejected amendments close active time through the canonical clock",
+    file: "dist/tools/registration.js",
+    find:
+      "                                try {\n" +
+      "                                    pauseActiveDeadline(liveDb(), sessionId);\n" +
+      "                                }\n" +
+      "                                catch { /* legacy/unmigrated test row */ }\n" +
+      "                                liveDb().prepare(`UPDATE sessions SET clarification_question = ?, clarification_id = ?,",
+    replace:
+      "                                liveDb().prepare(`UPDATE sessions SET clarification_question = ?, clarification_id = ?,",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: amendment provenance records the actual repair cycle",
+    file: "dist/tools/registration.js",
+    find: "Math.max(1, row.cycles_ran ?? 1), seq, precomputedAmendment.version",
+    replace: "1, seq, precomputedAmendment.version",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.12 pre-smoke: runtime startup refuses state requiring a newer harness",
+    file: "dist/index.js",
+    find: "    assertDowngradeSafe(state.db, PLUGIN_VERSION.pluginVersion);",
+    replace: "    /* runtime compatibility check skipped */",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
 ];

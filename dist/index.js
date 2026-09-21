@@ -69,6 +69,7 @@ import { foldGeneratedFiles } from "./adapters/shared/diff.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
+import { assertDowngradeSafe } from "./state/runtime-compat.js";
 /**
  * beta.110: stand-in for a vault that would not open. Every operation reports
  * the ORIGINAL failure, so an operator sees "the key does not match" rather
@@ -158,6 +159,7 @@ export function bootstrapHarnessSync(api) {
     const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
     mkdirSync(dirname(dbPath), { recursive: true });
     const state = openStateStoreSync(dbPath);
+    assertDowngradeSafe(state.db, PLUGIN_VERSION.pluginVersion);
     // beta.63 (Part B): the harness data dir is the directory holding the state
     // DB. The interaction log lives in `<dataDir>/logs` by default -- crucially
     // OUTSIDE the ephemeral git worktree so it survives teardown + restart.

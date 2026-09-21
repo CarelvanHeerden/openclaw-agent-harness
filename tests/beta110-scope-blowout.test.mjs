@@ -383,7 +383,7 @@ test("beta110: a failed review still emits phase_timing", () => {
   const loop = D("orchestrator/loop.js");
   const i = loop.indexOf("adversary review crashed");
   assert.ok(i > 0);
-  const after = loop.slice(i, i + 1500);
+  const after = loop.slice(i, i + 2500);
   assert.match(after, /emitPhaseTiming\(sessionId, "review", cycle, reviewStart/);
   assert.match(after, /isTimeout/);
   assert.match(after, /verdict: null/);

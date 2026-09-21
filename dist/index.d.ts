@@ -29,6 +29,20 @@ import { GitAdapter } from "./adapters/git-worktree.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import { type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
 /** Minimal shape of the OpenClaw plugin API surface that we use. */
+export interface HarnessToolContext {
+    requesterSenderId?: string;
+    senderIsOwner?: boolean;
+    sessionKey?: string;
+    sessionId?: string;
+    messageChannel?: string;
+}
+export interface HarnessToolDefinition {
+    name: string;
+    description: string;
+    parameters?: unknown;
+    inputSchema?: unknown;
+    execute: (callIdOrInput: unknown, paramsOrCtx?: unknown, context?: unknown) => Promise<unknown> | unknown;
+}
 export interface HarnessPluginApi {
     registrationMode?: "cli-metadata" | "runtime";
     logger: {
@@ -37,13 +51,7 @@ export interface HarnessPluginApi {
         error: (msg: string, meta?: unknown) => void;
         debug?: (msg: string, meta?: unknown) => void;
     };
-    registerTool: (definition: {
-        name: string;
-        description: string;
-        parameters?: unknown;
-        inputSchema?: unknown;
-        execute: (callIdOrInput: unknown, paramsOrCtx?: unknown, context?: unknown) => Promise<unknown> | unknown;
-    }, options?: unknown) => (() => void) | {
+    registerTool: (definition: HarnessToolDefinition | ((context: HarnessToolContext) => HarnessToolDefinition), options?: unknown) => (() => void) | {
         dispose?: () => void;
         unregister?: () => void;
     };

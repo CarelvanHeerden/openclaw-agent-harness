@@ -86,8 +86,12 @@ function directivePolarity(text: string, oldPath: string): DirectivePolarity {
   if (/\b(?:previous|prior|historical|original)\b[^.!?;]{0,100}\b(?:plan|answer|proposal|instruction|contract|said|stated|quoted)\b/i.test(text)) {
     return "provenance";
   }
-  if (/\b(?:do\s+not|don't|never|without|avoid|must\s+not|may\s+not|shall\s+not|no\s+(?:read|write|access|replacement))\b/i.test(text)) {
-    return "prohibition";
+  const prohibition = /\b(?:do\s+not|don't|never|without|avoid|must\s+not|may\s+not|shall\s+not|no\s+(?:read|write|access|replacement))\b/i.exec(text);
+  if (prohibition) {
+    const literalAt = text.indexOf(oldPath);
+    if (!/^without$/i.test(prohibition[0]) || literalAt < 0 || prohibition.index < literalAt) {
+      return "prohibition";
+    }
   }
   if (/\b(?:instead|replace|substitut|use|document|move)\b/i.test(text)) return "affirmative";
   return "neutral";
@@ -310,12 +314,14 @@ interface ParsedAuthorizationAnswer {
 
 function parseAuthorizationAnswer(fragments: readonly string[], oldPath: string): ParsedAuthorizationAnswer {
   const sourcePaths: string[] = [];
-  const destinationPaths: string[] = [];
+  const substitutionSets: string[][] = [];
+  const documentationSets: string[][] = [];
   const restrictions: string[] = [];
   const unresolved: string[] = [];
   const queue = [...fragments];
   let globalGate: string | undefined;
   let conditionalSubstitution = false;
+  let contractUpdateReferencesDocumentation = false;
 
   while (queue.length > 0) {
     const fragment = queue.shift()!;
@@ -342,7 +348,9 @@ function parseAuthorizationAnswer(fragments: readonly string[], oldPath: string)
         continue;
       }
       if (parsed.sourcePath) sourcePaths.push(parsed.sourcePath);
-      destinationPaths.push(...parsed.destinationPaths);
+      if (parsed.kind === "substitution") substitutionSets.push(parsed.destinationPaths);
+      if (parsed.kind === "documentation") documentationSets.push(parsed.destinationPaths);
+      if (parsed.kind === "contract_update") contractUpdateReferencesDocumentation = true;
       if (gate) globalGate ??= gate;
       continue;
     }
@@ -360,6 +368,26 @@ function parseAuthorizationAnswer(fragments: readonly string[], oldPath: string)
     if (!supportedNeutralFragment(fragment)) unresolved.push(fragment);
   }
 
+  const canonicalSet = (paths: readonly string[]) => JSON.stringify([...new Set(paths)].sort());
+  const distinctSubstitutions = [...new Set(substitutionSets.map(canonicalSet))];
+  if (distinctSubstitutions.length > 1) {
+    unresolved.push("multiple affirmative substitutions name different replacement artifact sets");
+  }
+  const directDestinations = substitutionSets[0] ?? [];
+  const documentationDestinations = unique(documentationSets.flat());
+  let destinationPaths = unique(directDestinations);
+  if (destinationPaths.length > 0) {
+    const direct = new Set(destinationPaths);
+    const extraDocumentation = documentationDestinations.filter((path) => !direct.has(path));
+    if (extraDocumentation.length > 0) {
+      unresolved.push(
+        `documentation destinations are not authorized replacement outputs: ${extraDocumentation.join(", ")}`,
+      );
+    }
+  } else if (contractUpdateReferencesDocumentation) {
+    destinationPaths = documentationDestinations;
+  }
+
   return {
     sourcePaths: unique(sourcePaths),
     destinationPaths: unique(destinationPaths),
@@ -375,7 +403,7 @@ function completeProposalPreview(
   answer: string,
   prohibitions: readonly string[],
 ): string {
-  const proposalHash = hash(amendment.revisedTask);
+  const proposalHash = hash(amendment);
   return JSON.stringify(
     {
       proposalVersion: "complete-task-diff/v1",
@@ -414,29 +442,52 @@ function isProhibition(text: string, path: string): boolean {
   );
 }
 
-function hasPositiveObligationMention(text: string, path: string): boolean {
-  return directiveFragments(text).some((fragment) => {
-    if (!artifactMentioned(fragment, path)) return false;
-    const polarity = directivePolarity(fragment, path);
-    return polarity !== "prohibition" && polarity !== "provenance";
-  });
+function taskProhibitionFields(task: LeadPlanSubTask, path: string): string[] {
+  const fields: string[] = [];
+  const visit = (value: unknown, field: string): void => {
+    if (typeof value === "string") {
+      if (isProhibition(value, path)) fields.push(field);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => visit(entry, `${field}[${index}]`));
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      visit(entry, field ? `${field}.${key}` : key);
+    }
+  };
+  visit(task, "");
+  return fields;
 }
 
 function requiredMentions(task: LeadPlanSubTask, path: string): string[] {
   const out: string[] = [];
-  if (task.filesLikelyTouched.includes(path)) out.push("filesLikelyTouched");
-  for (let i = 0; i < task.successCriteria.length; i++) {
-    const criterion = task.successCriteria[i]!;
-    if (criterion.includes(path) && hasPositiveObligationMention(criterion, path)) out.push(`successCriteria[${i}]`);
-  }
-  for (let i = 0; i < (task.verify ?? []).length; i++) {
-    const probe = task.verify![i]!;
-    if ("path" in probe && probe.path === path) out.push(`verify[${i}]`);
-  }
-  if (task.intent.includes(path) && hasPositiveObligationMention(task.intent, path)) out.push("intent");
-  if (task.workerContext?.changeSpec?.includes(path) && hasPositiveObligationMention(task.workerContext.changeSpec, path)) {
-    out.push("workerContext.changeSpec");
-  }
+  const visit = (value: unknown, field: string): void => {
+    if (typeof value === "string") {
+      if (!artifactMentioned(value, path)) return;
+      const mentioned = directiveFragments(value).filter((fragment) => artifactMentioned(fragment, path));
+      if (
+        mentioned.length > 0 &&
+        mentioned.every((fragment) => {
+          const polarity = directivePolarity(fragment, path);
+          return polarity === "prohibition" || polarity === "provenance";
+        })
+      ) return;
+      out.push(field);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => visit(entry, `${field}[${index}]`));
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      visit(entry, field ? `${field}.${key}` : key);
+    }
+  };
+  visit(task, "");
   return out;
 }
 
@@ -513,9 +564,16 @@ export function buildArtifactSubstitutionAmendment(input: {
     return { ok: false, reason: "the answer does not affirmatively authorize replacing the blocked artifact" };
   }
 
-  const candidates = parsedAnswer.destinationPaths.filter(
-    (path) => path !== oldPath && !path.startsWith(".env") && !blocked.includes(path),
+  const rejectedOperands = parsedAnswer.destinationPaths.filter(
+    (path) => path === oldPath || path.startsWith(".env") || blocked.includes(path),
   );
+  if (rejectedOperands.length > 0) {
+    return {
+      ok: false,
+      reason: `replacement operand(s) are blocked or alias the obsolete artifact: ${unique(rejectedOperands).join(", ")}`,
+    };
+  }
+  const candidates = parsedAnswer.destinationPaths;
   const newPaths = unique(candidates);
   if (newPaths.length === 0) {
     return { ok: false, reason: "the answer names no replacement artifact path" };
@@ -527,12 +585,26 @@ export function buildArtifactSubstitutionAmendment(input: {
       reason: `the answer prohibits required access to replacement artifact(s): ${prohibitedRequired.join(", ")}`,
     };
   }
+  const inheritedProhibitions = newPaths.flatMap((path) =>
+    taskProhibitionFields(input.task, path).map((field) => `${path} (${field})`)
+  );
+  if (inheritedProhibitions.length > 0) {
+    return {
+      ok: false,
+      reason: `the stored task already prohibits required replacement artifact access: ${inheritedProhibitions.join(", ")}`,
+    };
+  }
 
   const original = structuredClone(input.task);
   const revised = structuredClone(input.task);
   const renderedNew = newPaths.join(" and ");
   const changed = new Set<string>();
 
+  const title = replaceArtifactText(revised.title, oldPath, renderedNew);
+  if (title.changed) {
+    revised.title = title.value;
+    changed.add("title");
+  }
   revised.filesLikelyTouched = unique(
     revised.filesLikelyTouched.flatMap((path) => (path === oldPath ? newPaths : [path])),
   );
@@ -572,6 +644,30 @@ export function buildArtifactSubstitutionAmendment(input: {
       changed.add("workerContext.changeSpec");
     }
   }
+  if (revised.workerContext) {
+    const rationale = replaceArtifactText(revised.workerContext.rationale, oldPath, renderedNew);
+    if (rationale.changed) {
+      revised.workerContext.rationale = rationale.value;
+      changed.add("workerContext.rationale");
+    }
+    revised.workerContext.gotchas = revised.workerContext.gotchas?.map((gotcha, index) => {
+      const next = replaceArtifactText(gotcha, oldPath, renderedNew);
+      if (next.changed) changed.add(`workerContext.gotchas[${index}]`);
+      return next.value;
+    });
+    revised.workerContext.relatedSymbols = revised.workerContext.relatedSymbols?.map((symbol, index) => {
+      const next = replaceArtifactText(symbol, oldPath, renderedNew);
+      if (next.changed) changed.add(`workerContext.relatedSymbols[${index}]`);
+      return next.value;
+    });
+    revised.workerContext.codeExcerpts = revised.workerContext.codeExcerpts?.map((excerpt, index) => {
+      if (!excerpt.note) return excerpt;
+      const next = replaceArtifactText(excerpt.note, oldPath, renderedNew);
+      if (!next.changed) return excerpt;
+      changed.add(`workerContext.codeExcerpts[${index}].note`);
+      return { ...excerpt, note: next.value };
+    });
+  }
 
   if (prohibitions.length > 0) {
     const context = revised.workerContext ?? { rationale: original.workerContext?.rationale ?? "Operator-scoped task amendment." };
@@ -599,7 +695,6 @@ export function buildArtifactSubstitutionAmendment(input: {
 
   if (
     revised.seq !== original.seq ||
-    revised.title !== original.title ||
     revised.estimatedTokens !== original.estimatedTokens ||
     JSON.stringify(revised.dependsOn ?? []) !== JSON.stringify(original.dependsOn ?? []) ||
     revised.taskMode !== original.taskMode ||

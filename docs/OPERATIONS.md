@@ -460,18 +460,19 @@ attempt. `accounting_incomplete` means completion or cost is unknown: preserve
 the worktree and reconcile that row/provider session before any retry. Do not
 force-resume it.
 
-## Runtime downgrade safety (rc.11)
+## Runtime downgrade safety (rc.12)
 
-Do not install rc.10 while any nonterminal session has
-`minimum_runtime_version = '2.0.0-rc.11'`. The column is diagnostic only; rc.10
-does not read it, and an unfamiliar status is not a fence because its
+Do not install rc.11 or older while any nonterminal session has
+`minimum_runtime_version = '2.0.0-rc.12'`. The current runtime refuses startup
+when a session requires a newer version, but older builds do not contain that
+check; an unfamiliar status is not a fence because their
 `harness_resume(force:true)` path can accept nonterminal unknown states.
 
 The safe rollback sequence is:
 
 1. Stop admission of new sessions.
-2. Let every rc.11-only session reach `done`, `failed` or `aborted`, or cancel it
-   under rc.11 while preserving its worktree.
+2. Let every rc.12-only session reach `done`, `failed` or `aborted`, or cancel it
+   under rc.12 while preserving its worktree.
 3. Query for blockers:
 
 ```sql

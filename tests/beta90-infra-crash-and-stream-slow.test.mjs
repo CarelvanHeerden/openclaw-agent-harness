@@ -163,6 +163,7 @@ const greenProbes = () => ({
 });
 const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
 const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/tmp/wt/s", subTasks: [commitSubTask(1)], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
+const measuredCrash = (message, costUsd = 0) => Object.assign(new Error(message), { costUsd });
 
 // Feature 1a, as REVISED in rc.3.
 //
@@ -193,7 +194,7 @@ test("rc3: a cycle-1 INFRA crash with NO prior review preserves the worktree ins
       runLead: async () => plan,
       runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "sha1", costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
       // CYCLE-1 adversary crashes with an INFRASTRUCTURE error.
-      runAdversary: async () => { throw new Error("ENOSPC: no space left on device, write"); },
+      runAdversary: async () => { throw measuredCrash("ENOSPC: no space left on device, write"); },
       pushBranchAndOpenPr: async () => { prCalls++; return "https://github.com/o/r/pull/90"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
       buildVerifyProbes: greenProbes,
@@ -243,7 +244,7 @@ test("beta90 F1: cycle-1 QUALITY crash (non-infra) with green self-verify is NOT
       logger: { info() {}, warn() {}, error() {} },
       runLead: async () => plan,
       runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "sha1", costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
-      runAdversary: async () => { throw new Error("verdict JSON invalid: no JSON in output"); },
+      runAdversary: async () => { throw measuredCrash("verdict JSON invalid: no JSON in output"); },
       pushBranchAndOpenPr: async () => { prCalls++; return "unused"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
       buildVerifyProbes: greenProbes,
@@ -285,7 +286,7 @@ test("beta90 F1: INFRA crash with self-verify FAILED is NOT eligible (green gate
       runLead: async () => plan,
       // Worker "completes" but the verify probes are all red -> self-verify not green.
       runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
-      runAdversary: async () => { throw new Error("read ECONNRESET"); },
+      runAdversary: async () => { throw measuredCrash("read ECONNRESET"); },
       pushBranchAndOpenPr: async () => { prCalls++; return "unused"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
       buildVerifyProbes: redProbes,
@@ -328,7 +329,7 @@ test("beta90 F1: cycle-2 crash with prior review + green (non-infra) still eligi
         // loop (ship_when_no_blocking_findings), so a fixture that needs a SECOND
         // cycle has to carry something genuinely blocking.
         if (advCall === 1) return { verdict: "revise", findings: [{ dimension: "quality", severity: "medium", title: "f", detail: "d" }], summary: "revise", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
-        throw new Error("simulated cycle-2 adversary SDK crash"); // NON-infra
+        throw measuredCrash("simulated cycle-2 adversary SDK crash"); // NON-infra
       },
       pushBranchAndOpenPr: async () => { prCalls++; return "https://github.com/o/r/pull/62"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),

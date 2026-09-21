@@ -34,21 +34,19 @@ if (expectedPackage.version !== installedPackage.version) {
   throw new Error(`version mismatch: tested ${expectedPackage.version}, installed ${installedPackage.version}`);
 }
 
-const expectedFiles = [
-  ...filesUnder(expectedRoot, "dist"),
-  "package.json",
-  "openclaw.plugin.json",
-].sort();
-const installedFiles = [
-  ...filesUnder(installedRoot, "dist"),
-  "package.json",
-  "openclaw.plugin.json",
-].sort();
-if (JSON.stringify(expectedFiles) !== JSON.stringify(installedFiles)) {
-  throw new Error("packaged file list differs from the tested checkout");
+const installedFiles = filesUnder(installedRoot, ".");
+const requiredRoots = ["dist/", "docs/", "skills/", "scripts/"];
+for (const root of requiredRoots) {
+  if (!installedFiles.some((file) => file.startsWith(root))) {
+    throw new Error(`packaged file list is missing required root ${root}`);
+  }
+}
+for (const file of ["package.json", "openclaw.plugin.json", "README.md", "LICENSE"]) {
+  if (!installedFiles.includes(file)) throw new Error(`packaged file list is missing ${file}`);
 }
 
-const entries = expectedFiles.map((file) => {
+const entries = installedFiles.map((file) => {
+  if (!existsSync(resolve(expectedRoot, file))) throw new Error(`packaged file has no tested-checkout source: ${file}`);
   const expected = sha(resolve(expectedRoot, file));
   const installed = sha(resolve(installedRoot, file));
   if (expected !== installed) throw new Error(`artifact mismatch: ${file}`);

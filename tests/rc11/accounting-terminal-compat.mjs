@@ -54,6 +54,14 @@ test("rc.11: every protocol retry has required provider and attempt accounting",
   assert.ok(provider.every((row) => row.status === "completed"));
   assert.ok(provider.every((row) => row.verification_json));
   assert.ok(Math.abs(provider.reduce((sum, row) => sum + row.cost_usd, 0) - 0.46) < 1e-9);
+  const allCalls = result.db.prepare(
+    `SELECT role,status,cost_usd FROM provider_calls WHERE session_id='S1' ORDER BY started_at`,
+  ).all();
+  assert.ok(allCalls.some((row) => row.role === "lead"), "lead provider calls are durably accounted");
+  assert.ok(allCalls.some((row) => row.role === "adversary"), "adversary provider calls are durably accounted");
+  assert.ok(allCalls.every((row) => row.status === "completed"));
+  const providerTotal = allCalls.reduce((sum, row) => sum + row.cost_usd, 0);
+  assert.ok(Math.abs(result.session().cost_usd - providerTotal) < 1e-9, "provider and session totals reconcile atomically");
   const attempts = result.db.prepare(
     `SELECT attempt,worker_status,verification_status,task_outcome
        FROM sub_task_attempts WHERE session_id='S1' AND seq=1 ORDER BY attempt`,
@@ -115,6 +123,7 @@ test("rc.11: provider dispatch is refused when the required start row cannot per
     seedSession({ db }) {
       db.exec(
         `CREATE TRIGGER deny_provider_start BEFORE INSERT ON provider_calls
+         WHEN NEW.role = 'worker'
          BEGIN SELECT RAISE(ABORT, 'accounting unavailable'); END`,
       );
     },
@@ -136,7 +145,7 @@ test("rc.11: a provider response that cannot persist stops without blind retry",
     seedSession({ db }) {
       db.exec(
         `CREATE TRIGGER deny_provider_finish BEFORE UPDATE OF status ON provider_calls
-         WHEN NEW.status != 'started'
+         WHEN NEW.status != 'started' AND OLD.role = 'worker'
          BEGIN SELECT RAISE(ABORT, 'result persistence unavailable'); END`,
       );
     },
@@ -210,7 +219,9 @@ test("rc.11: an unmeasured provider result is unknown cost, never free", { skip:
   });
   assert.equal(workerCalls, 1);
   assert.equal(result.session().status, "accounting_incomplete");
-  const call = result.db.prepare(`SELECT status,cost_usd FROM provider_calls WHERE session_id='S1'`).get();
+  const call = result.db.prepare(
+    `SELECT status,cost_usd FROM provider_calls WHERE session_id='S1' AND role='worker'`,
+  ).get();
   assert.equal(call.status, "unknown");
   assert.equal(call.cost_usd, null);
 });
@@ -272,6 +283,11 @@ test("rc.11: downgrade is blocked while any incompatible session is nonterminal"
   assert.throws(() => assertDowngradeSafe(db, "2.0.0-rc.10"), /downgrade.*refused/i);
   db.prepare(`UPDATE sessions SET status='aborted' WHERE status != 'aborted'`).run();
   assert.doesNotThrow(() => assertDowngradeSafe(db, "2.0.0-rc.10"));
+});
+
+test("rc.12 pre-smoke: runtime startup enforces its own compatibility floor", () => {
+  const built = readFileSync(new URL("../../dist/index.js", import.meta.url), "utf8");
+  assert.match(built, /assertDowngradeSafe\(state\.db,\s*PLUGIN_VERSION\.pluginVersion\)/);
 });
 
 test("rc.11: an unknown status is not a downgrade fence because force resume can pass it", async () => {

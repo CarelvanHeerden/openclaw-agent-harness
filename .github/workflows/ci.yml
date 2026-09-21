@@ -49,6 +49,9 @@ jobs:
         env:
           npm_config_build_from_source: "true"
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Typecheck
         run: npm run typecheck
 

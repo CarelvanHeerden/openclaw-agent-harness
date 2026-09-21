@@ -128,6 +128,66 @@ test("rc.11: one allowed tool does not satisfy missing findings or bindings", ()
   assert.match(out.reason, /required finding/);
 });
 
+test("rc.12 pre-smoke: blocked observe results and note-only evidence never release dependents", () => {
+  const blocked = validateObserveResult({
+    finalMessage: JSON.stringify({ ...structuredResult, status: "blocked", blockers: ["missing repository access"] }),
+    contract: observeContract,
+    repoFiles: existingFiles,
+  });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.reason, /blocked/);
+
+  const notesOnly = structuredClone(structuredResult);
+  notesOnly.findings[0].evidence = [{ note: "I inspected the convention." }];
+  notesOnly.bindings[0].evidence = [{ note: "A timestamp directory should work." }];
+  const unsupported = validateObserveResult({
+    finalMessage: JSON.stringify(notesOnly),
+    contract: observeContract,
+    repoFiles: existingFiles,
+  });
+  assert.equal(unsupported.ok, false);
+  assert.match(unsupported.reason, /repository-backed evidence/);
+});
+
+test("rc.12 pre-smoke: existing symbols must resolve in repository content", () => {
+  const contract = {
+    requiredFindings: ["symbol"],
+    requireEvidence: true,
+    bindings: [{ name: "factory", type: "existing_symbol" }],
+  };
+  const result = {
+    status: "ok",
+    findings: [{
+      id: "symbol",
+      summary: "Factory location",
+      evidence: [{ path: "src/lib/config.ts", line: 1 }],
+    }],
+    bindings: [{
+      name: "factory",
+      type: "existing_symbol",
+      value: { path: "src/lib/config.ts", symbol: "missingFactory" },
+      evidence: [{ path: "src/lib/config.ts", line: 1 }],
+    }],
+  };
+  const missing = validateObserveResult({
+    finalMessage: JSON.stringify(result),
+    contract,
+    repoFiles: existingFiles,
+    readRepoFile: () => "export function actualFactory() {}",
+  });
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /does not resolve/);
+
+  result.bindings[0].value.symbol = "actualFactory";
+  const valid = validateObserveResult({
+    finalMessage: JSON.stringify(result),
+    contract,
+    repoFiles: existingFiles,
+    readRepoFile: () => "export function actualFactory() {}",
+  });
+  assert.equal(valid.ok, true, valid.reason);
+});
+
 test("rc.11: validated bindings amend every declared dependent contract field", () => {
   const p = {
     repo: "o/r",

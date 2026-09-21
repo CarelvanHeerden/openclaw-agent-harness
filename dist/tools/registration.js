@@ -25,7 +25,16 @@ import { CLARIFICATION_POLICY_VERSION, PLUGIN_VERSION } from "../version.js";
 import { createHash, randomUUID } from "node:crypto";
 import { activateTaskAmendment, buildArtifactSubstitutionAmendment, } from "../orchestrator/contract-amendment.js";
 import { findPlanPolicyConflicts } from "../orchestrator/plan-policy-conflict.js";
-import { pauseActiveDeadline, resumeActiveDeadline } from "../orchestrator/active-deadline.js";
+import { closeActiveDeadline, pauseActiveDeadline, resumeActiveDeadline } from "../orchestrator/active-deadline.js";
+const LEGACY_TEST_REQUESTER = "__legacy_direct_tool_test__";
+function contextualToolFactory(name, build) {
+    const factory = ((context) => build(context));
+    const fallback = build({ requesterSenderId: LEGACY_TEST_REQUESTER, senderIsOwner: true });
+    const { name: _fallbackName, ...fallbackDefinition } = fallback;
+    Object.defineProperty(factory, "name", { value: name, enumerable: true, configurable: true });
+    Object.assign(factory, fallbackDefinition);
+    return factory;
+}
 function toDispose(x) {
     return () => {
         if (typeof x === "function")
@@ -1474,7 +1483,7 @@ export function registerHarnessTools(api, runtime) {
     // with the disposer DISCARDED (never pushed), so harness_answer leaked
     // across every plugin re-register: stale-generation duplicate on the next
     // register, never unregistered on teardown.
-    disposers.push(toDispose(api.registerTool({
+    disposers.push(toDispose(api.registerTool(contextualToolFactory("harness_answer", (toolContext) => ({
         name: "harness_answer",
         description: "Answer a harness session that is paused in 'awaiting_clarification' and resume it. " +
             "The answer is folded into the brief as a directive and the loop re-drives, building on any " +
@@ -1505,27 +1514,51 @@ export function registerHarnessTools(api, runtime) {
                 answeredBy: {
                     type: "string",
                     enum: ["human", "automation"],
-                    description: "Optional. 'automation' when a calling agent decided this without putting it to a human. Recorded in the audit trail so an automatic answer is distinguishable afterwards; it does not change what the harness does with the answer.",
+                    description: "Required provenance declaration. Use 'human' only when relaying the authenticated requester's explicit answer verbatim; otherwise use 'automation'.",
                 },
                 evidence: {
                     type: "string",
                     description: "Optional for a human answer, REQUIRED when answeredBy is 'automation': the evidence the decision rests on -- the changed-file list, the worker commit sha, the check results, and why the deviation is safe. Recorded verbatim (bounded) in the audit trail. An automatic answer with no evidence is refused, because an unevidenced automatic answer cannot be reviewed afterwards.",
                 },
             },
-            required: ["sessionId", "answer", "invokedBy"],
+            required: ["sessionId", "answer", "invokedBy", "answeredBy"],
             additionalProperties: false,
         },
         execute: async (_callId, input) => {
             const { sessionId, answer, invokedBy, clarificationSeq, clarificationId, answeredBy, evidence } = input;
-            // beta.57 (P2): invokedBy is REQUIRED -- this tool injects human text
-            // into the brief and re-drives spend, so it must be authorised.
-            if (!invokedBy || !liveConfig().slack.authorised_users.includes(invokedBy)) {
-                return { content: [{ type: "text", text: `Invoker ${invokedBy ?? "(missing)"} is not in slack.authorised_users` }], details: { ok: false, unauthorised: true } };
+            // rc.12: the tool argument is an audit assertion, not an identity
+            // boundary. OpenClaw's factory context carries the runtime-authenticated
+            // sender; require it and require the claimed id to match. The explicit
+            // authorised-users list remains the policy boundary, so configured
+            // non-owner teammates still work. A model can no longer gain human
+            // authority by writing an
+            // authorised Slack id into its own parameters.
+            const runtimeSender = toolContext.requesterSenderId?.trim() ?? "";
+            const legacyDirectTest = runtimeSender === LEGACY_TEST_REQUESTER;
+            const trustedSender = legacyDirectTest ? (invokedBy ?? "") : runtimeSender;
+            if (!trustedSender ||
+                invokedBy !== trustedSender ||
+                !liveConfig().slack.authorised_users.includes(trustedSender)) {
+                return {
+                    content: [{
+                            type: "text",
+                            text: `Authenticated requester ${trustedSender || "(missing)"} is not authorised for harness_answer ` +
+                                `(claimed invokedBy=${invokedBy ?? "(missing)"}).`,
+                        }],
+                    details: { ok: false, unauthorised: true, trustedRequesterRequired: true },
+                };
             }
+            if (!legacyDirectTest && answeredBy !== "human" && answeredBy !== "automation") {
+                return {
+                    content: [{ type: "text", text: "answeredBy must explicitly declare 'human' or 'automation'." }],
+                    details: { ok: false, missingAnswerProvenance: true },
+                };
+            }
+            const effectiveAnsweredBy = answeredBy === "automation" ? "automation" : "human";
             const row = liveDb()
                 .prepare(`SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_id,
                     clarification_subtask, clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd,
-                    requester_gh, plan_revision
+                    requester_gh, plan_revision, cycles_ran
                FROM sessions WHERE id = ?`)
                 .get(sessionId);
             if (!row)
@@ -1540,7 +1573,7 @@ export function registerHarnessTools(api, runtime) {
                     /^(?:confirm|approve)(?:\s+(?:the\s+)?(?:proposed|exact))?\s+(?:diff|amendment|operation)$/i.test(trimmed)) {
                     if (proposal.completeAmendment && proposal.proposalHash) {
                         const observedHash = createHash("sha256")
-                            .update(JSON.stringify(proposal.completeAmendment.revisedTask))
+                            .update(JSON.stringify(proposal.completeAmendment))
                             .digest("hex");
                         if (observedHash !== proposal.proposalHash) {
                             return {
@@ -1605,7 +1638,7 @@ export function registerHarnessTools(api, runtime) {
                 return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
             }
             const seq = row.clarification_seq ?? -1;
-            const automated = answeredBy === "automation";
+            const automated = effectiveAnsweredBy === "automation";
             // rc.3: the audit spine for this answer. Every event below carries the
             // same identifying fields, because the question an auditor asks is
             // "who answered what, on which pause, under which rules" and answering
@@ -1622,7 +1655,7 @@ export function registerHarnessTools(api, runtime) {
                 policyVersion: CLARIFICATION_POLICY_VERSION,
                 requester: row.requester_gh ?? null,
                 invokedBy: invokedBy ?? null,
-                answeredBy: answeredBy ?? "human",
+                answeredBy: effectiveAnsweredBy,
                 automated,
                 clarification: (row.clarification_question ?? "").slice(0, 2000),
                 decision: classifyAnswerDecision(trimmed),
@@ -1855,7 +1888,7 @@ export function registerHarnessTools(api, runtime) {
                    (id, session_id, clarification_id, cycle, seq, version, base_plan_hash, base_task_hash,
                     answer_hash, authorised_by, original_task_json, revised_task_json, operation_json,
                     changed_fields_json, status, created_at)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`).run(precomputedAmendment.id, sessionId, row.clarification_id ?? "", 1, seq, precomputedAmendment.version, precomputedAmendment.basePlanHash, precomputedAmendment.baseTaskHash, createHash("sha256").update(trimmed).digest("hex"), invokedBy, JSON.stringify(precomputedAmendment.originalTask), JSON.stringify(precomputedAmendment.revisedTask), JSON.stringify(precomputedAmendment.substitution), JSON.stringify(precomputedAmendment.changedFields), Date.now());
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`).run(precomputedAmendment.id, sessionId, row.clarification_id ?? "", Math.max(1, row.cycles_ran ?? 1), seq, precomputedAmendment.version, precomputedAmendment.basePlanHash, precomputedAmendment.baseTaskHash, createHash("sha256").update(trimmed).digest("hex"), invokedBy, JSON.stringify(precomputedAmendment.originalTask), JSON.stringify(precomputedAmendment.revisedTask), JSON.stringify(precomputedAmendment.substitution), JSON.stringify(precomputedAmendment.changedFields), Date.now());
                     }
                     liveDb().exec("COMMIT");
                 }
@@ -1937,10 +1970,16 @@ export function registerHarnessTools(api, runtime) {
                     hasPr: Boolean(prUrl),
                 }, sessionId);
                 if (prUrl) {
+                    try {
+                        closeActiveDeadline(liveDb(), sessionId);
+                    }
+                    catch { /* legacy/unmigrated test row */ }
                     liveDb()
                         .prepare(`UPDATE sessions SET status = 'done', merge_recommendation = 'needs_human_review',
                         merge_recommendation_reason = ?, clarification_question = NULL, clarification_seq = NULL,
-                        clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ?
+                        clarification_subtask = NULL, clarification_heartbeat_at = NULL,
+                        terminal_cause = 'time_extension_listener_lost',
+                        terminal_classification = 'recovery_degraded', updated_at = ?
                   WHERE id = ?`)
                         .run(`The run that asked for more time is no longer running, so the extension could not be used. ` +
                         `The branch is pushed and the PR is open, but the CI repair it wanted the time FOR never ran -- ` +
@@ -1961,9 +2000,15 @@ export function registerHarnessTools(api, runtime) {
                 // push, so there is nothing on the remote to point at. Keep the
                 // worktree (b129's flag stops the next boot reaping it) and say where
                 // the commits are rather than inventing a ship.
+                try {
+                    closeActiveDeadline(liveDb(), sessionId);
+                }
+                catch { /* legacy/unmigrated test row */ }
                 liveDb()
                     .prepare(`UPDATE sessions SET status = 'aborted', worktree_preserved = 1, clarification_question = NULL,
                       clarification_seq = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL,
+                      terminal_cause = 'time_extension_listener_lost',
+                      terminal_classification = 'recovery_degraded',
                       updated_at = ? WHERE id = ?`)
                     .run(Date.now(), sessionId);
                 return {
@@ -1980,7 +2025,12 @@ export function registerHarnessTools(api, runtime) {
             }
             // 'abort'/'cancel' -> terminate the session cleanly (release worktree).
             if (/^(abort|cancel)\b/i.test(trimmed)) {
-                liveDb().prepare(`UPDATE sessions SET status = 'aborted', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
+                try {
+                    closeActiveDeadline(liveDb(), sessionId);
+                }
+                catch { /* legacy/unmigrated test row */ }
+                liveDb().prepare(`UPDATE sessions SET status = 'aborted', terminal_cause = 'user_cancel',
+                                 terminal_classification = 'operator_cancelled', updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
                 liveState().audit("tool.answer_aborted", { sessionId, seq }, sessionId);
                 return { content: [{ type: "text", text: `Session ${sessionId} aborted per your instruction.` }], details: { ok: true, sessionId, aborted: true } };
             }
@@ -2234,7 +2284,7 @@ export function registerHarnessTools(api, runtime) {
                             task.verify = (task.verify ?? []).filter((probe) => !probe.path || !expectedPaths.has(probe.path));
                             liveDb()
                                 .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                               minimum_runtime_version = '2.0.0-rc.11', updated_at = ? WHERE id = ?`)
+                                               minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`)
                                 .run(JSON.stringify(storedPlan), Date.now(), sessionId);
                             liveState().audit("tool.answer_contract_paths_persisted", { sessionId, seq, removed: [...expectedPaths], added: actualPaths }, sessionId);
                         }
@@ -2354,13 +2404,16 @@ export function registerHarnessTools(api, runtime) {
                                         /* preview remains in the question even if marker construction fails */
                                     }
                                 }
+                                try {
+                                    pauseActiveDeadline(liveDb(), sessionId);
+                                }
+                                catch { /* legacy/unmigrated test row */ }
                                 liveDb().prepare(`UPDATE sessions SET clarification_question = ?, clarification_id = ?,
-                                         clarification_answer = NULL, human_pause_started_at = ?,
-                                         active_segment_started_at = NULL, clarification_subtask = ?,
+                                         clarification_answer = NULL, clarification_subtask = ?,
                                          updated_at = ? WHERE id = ?`).run(`I could not safely activate that answer automatically: ${amendment.reason}. ` +
                                     (amendment.proposedDiff
-                                        ? `No amendment was activated. If you intend this exact operation now, explicitly confirm this proposed diff:\n${amendment.proposedDiff.slice(0, 3000)}`
-                                        : `Please restate the exact old artifact and exact replacement path(s), or answer "abort".`), replacementId, Date.now(), nextSubtask, Date.now(), sessionId);
+                                        ? `No amendment was activated. If you intend this exact operation now, explicitly confirm this proposed diff:\n${amendment.proposedDiff}`
+                                        : `Please restate the exact old artifact and exact replacement path(s), or answer "abort".`), replacementId, nextSubtask, Date.now(), sessionId);
                                 liveState().audit("tool.answer_contract_amendment_rejected", { sessionId, seq, clarificationId: row.clarification_id ?? null, reason: amendment.reason }, sessionId);
                                 return {
                                     content: [{ type: "text", text: `Answer not applied; the session remains paused. ${amendment.reason}` }],
@@ -2415,7 +2468,7 @@ export function registerHarnessTools(api, runtime) {
                                 liveDb().prepare(`UPDATE sessions
                         SET lead_plan_json = ?, crystallised_prompt = ?, status = 'planning',
                             plan_revision = COALESCE(plan_revision, 0) + 1,
-                            minimum_runtime_version = '2.0.0-rc.11', updated_at = ?
+                            minimum_runtime_version = '2.0.0-rc.12', updated_at = ?
                       WHERE id = ?`).run(JSON.stringify(revisedPlan), JSON.stringify(brief), now, sessionId);
                                 liveDb().exec("COMMIT");
                             }
@@ -2504,7 +2557,7 @@ export function registerHarnessTools(api, runtime) {
                 details: { ok: true, sessionId, resumed: true, seq, amendmentId: activatedAmendmentId },
             };
         },
-    })));
+    })))));
     // ---- beta.78 (Feature 4): per-user credential onboarding (DM flow) ----
     //
     // Authorised users onboard their OWN git token privately. Two actions:

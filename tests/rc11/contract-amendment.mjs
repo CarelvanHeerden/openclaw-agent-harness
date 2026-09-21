@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const { DatabaseSync } = await import("node:sqlite");
@@ -252,6 +253,12 @@ test("rc.11 whole-answer review: global approval and proposal-only gates veto au
     });
     assert.equal(out.ok, false, answer);
     assert.ok(out.proposedDiff, "global gate must route to exact-diff confirmation");
+    const proposal = JSON.parse(out.proposedDiff);
+    assert.equal(
+      proposal.proposalHash,
+      createHash("sha256").update(JSON.stringify(proposal.completeAmendment)).digest("hex"),
+      "confirmation integrity covers the complete amendment, not only the revised task",
+    );
   }
 });
 
@@ -365,8 +372,85 @@ test("rc.11 documentation review: only parsed destination operands become replac
     new URL("../../dist/orchestrator/contract-amendment.js", import.meta.url),
     "utf8",
   );
-  assert.match(builtSource, /const candidates = parsedAnswer\.destinationPaths\.filter/);
+  assert.match(builtSource, /const candidates = parsedAnswer\.destinationPaths;/);
   assert.doesNotMatch(builtSource, /pathTokens\(affirmative\.join/);
+});
+
+test("rc.12 pre-smoke: contradictory substitutions and unrelated documentation fail closed", () => {
+  const p = plan();
+  for (const answer of [
+    "Replace .env.example with README.md. Actually, replace .env.example with NOTES.md. Preserve everything else.",
+    "Replace .env.example with README.md. Document placeholders in NOTES.md. Preserve everything else.",
+    "Replace .env.example with README.md and .environment.md. Preserve everything else.",
+    "Replace .env.example with README.md and .env-notes.md. Preserve everything else.",
+  ]) {
+    const out = buildArtifactSubstitutionAmendment({
+      plan: p,
+      task: p.subTasks[0],
+      answer,
+      blockedPaths: [".env.example"],
+    });
+    assert.equal(out.ok, false, answer);
+  }
+
+  const inherited = plan();
+  inherited.subTasks[0].successCriteria.push("Do not read or modify README.md.");
+  const prohibited = buildArtifactSubstitutionAmendment({
+    plan: inherited,
+    task: inherited.subTasks[0],
+    answer: "Replace .env.example with README.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(prohibited.ok, false);
+  assert.match(prohibited.reason, /stored task already prohibits/);
+
+  const labelOnly = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer: "Replace the environment example with README.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(labelOnly.ok, false);
+  assert.match(labelOnly.reason, /does not name the blocked artifact/);
+});
+
+test("rc.12 pre-smoke: every worker-visible task field is rewritten or rejected", () => {
+  const p = plan();
+  p.subTasks[0].title = "Update .env.example safely";
+  p.subTasks[0].workerContext.rationale = "We must modify .env.example without exposing secrets.";
+  p.subTasks[0].workerContext.gotchas = [
+    "Write .env.example last.",
+    "Do not read .env.example.",
+  ];
+  p.subTasks[0].workerContext.relatedSymbols = ["Environment template: .env.example"];
+  const out = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer: "Replace .env.example with README.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(out.ok, true, out.reason);
+  const revised = out.amendment.revisedTask;
+  assert.match(revised.title, /README\.md/);
+  assert.match(revised.workerContext.rationale, /README\.md/);
+  assert.match(revised.workerContext.gotchas[0], /README\.md/);
+  assert.match(revised.workerContext.gotchas[1], /Do not read \.env\.example/);
+  assert.match(revised.workerContext.relatedSymbols[0], /README\.md/);
+
+  const unsafeEvidence = plan();
+  unsafeEvidence.subTasks[0].workerContext.codeExcerpts = [{
+    path: ".env.example",
+    startLine: 1,
+    snippet: "SECRET_PLACEHOLDER=",
+  }];
+  const rejected = buildArtifactSubstitutionAmendment({
+    plan: unsafeEvidence,
+    task: unsafeEvidence.subTasks[0],
+    answer: "Replace .env.example with README.md. Preserve everything else.",
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.reason, /obsolete artifact remains/);
 });
 
 test("rc.11 provenance review: quoted history ends before current instructions", () => {
@@ -435,10 +519,20 @@ test("rc.11: the lead is required to plan observe and behavioral contracts", () 
 
 test("rc.11: CI packs, installs, compares and uploads one exact release artifact", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+  const verifier = readFileSync(new URL("../../scripts/verify-installed-artifact.mjs", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
   assert.match(workflow, /Pack the tested release artifact/);
   assert.match(workflow, /verify-installed-artifact\.mjs/);
   assert.match(workflow, /actions\/upload-artifact@v4/);
   assert.match(workflow, /shasum -a 256/);
+  assert.match(workflow, /npm audit --omit=dev --audit-level=high/);
+  assert.match(packageJson.scripts.smoke, /--import \.\/scripts\/register-smoke-loader\.mjs/);
+  assert.equal(packageJson.openclaw.compat.minGatewayVersion, "2026.6.1");
+  assert.equal(packageJson.openclaw.build.openclawVersion, "2026.6.1");
+  assert.match(verifier, /filesUnder\(installedRoot, "\."\)/);
+  assert.match(readme, /test:no-build.*is \*\*not\*\*/s);
+  assert.match(readme, /openclaw-agent-harness-verify-artifact/);
 });
 
 test("rc.11: stale plan or task hashes prevent activation", () => {
@@ -514,7 +608,7 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
     `UPDATE sessions
         SET status='awaiting_clarification', crystallised_prompt=?, lead_plan_json=?,
             clarification_question='blocked path', clarification_seq=3, clarification_id='Q1',
-            clarification_subtask=?, human_pause_started_at=1000, active_limit_ms=18000000
+            clarification_subtask=?, human_pause_started_at=1000, active_limit_ms=18000000, cycles_ran=4
       WHERE id='S'`,
   ).run(
     JSON.stringify(brief),
@@ -551,16 +645,37 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
     loop: { run: async () => { resumed += 1; return { status: "failed" }; } },
   };
   const tools = new Map();
+  let answerFactory;
   registerHarnessTools(
     {
       logger: { info() {}, warn() {}, error() {}, debug() {} },
       registerTool(def) {
+        if (def.name === "harness_answer") answerFactory = def;
         tools.set(def.name, { ...def, execute: (input) => def.execute("call", input) });
         return () => {};
       },
     },
     runtime,
   );
+
+  assert.equal(typeof answerFactory, "function", "harness_answer is registered as a contextual tool factory");
+  const spoofed = await answerFactory({ requesterSenderId: "U2", senderIsOwner: true }).execute("call", {
+    sessionId: "S",
+    answer: ANSWER,
+    invokedBy: "U1",
+    answeredBy: "human",
+    clarificationSeq: 3,
+    clarificationId: "Q1",
+  });
+  assert.equal(spoofed.details.trustedRequesterRequired, true);
+  const missingProvenance = await answerFactory({ requesterSenderId: "U1", senderIsOwner: false }).execute("call", {
+    sessionId: "S",
+    answer: ANSWER,
+    invokedBy: "U1",
+    clarificationSeq: 3,
+    clarificationId: "Q1",
+  });
+  assert.equal(missingProvenance.details.missingAnswerProvenance, true);
 
   const result = await tools.get("harness_answer").execute({
     sessionId: "S",
@@ -580,9 +695,12 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
   assert.equal(session.status, "planning");
   assert.ok(revised.filesLikelyTouched.includes("README.md"));
   assert.ok(!revised.filesLikelyTouched.includes(".env.example"));
-  const amendment = db.prepare(`SELECT status,authorised_by FROM task_contract_amendments WHERE session_id='S'`).get();
+  const amendment = db.prepare(
+    `SELECT status,authorised_by,cycle FROM task_contract_amendments WHERE session_id='S'`,
+  ).get();
   assert.equal(amendment.status, "active");
   assert.equal(amendment.authorised_by, "U1");
+  assert.equal(amendment.cycle, 4);
   assert.ok(audits.some((entry) => entry.event === "tool.answer_contract_amendment_activated"));
 
   const duplicate = await tools.get("harness_answer").execute({
@@ -663,6 +781,7 @@ test("rc.11: withdrawn, conditional, or contradictory answers remain paused with
     "Replace .env.example with README.md. Document why private-notes.md is out of scope in README.md. Preserve everything else.",
     "Replace .env.example with README.md. Document placeholders in README.md, and finish only after another review in REVIEW.md. Preserve everything else.",
     'Replace .env.example with README.md. The previous plan said "update .env.example", but finish only after another review. Preserve everything else.',
+    "Replace the environment example with README.md. Preserve everything else.",
   ];
   for (const [index, candidateAnswer] of answers.entries()) {
     const db = deadlineDb();
@@ -726,7 +845,21 @@ test("rc.11: withdrawn, conditional, or contradictory answers remain paused with
     assert.equal(dispatches, 0, candidateAnswer);
     assert.equal(db.prepare(`SELECT status FROM sessions WHERE id='S'`).get().status, "awaiting_clarification");
     assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM task_contract_amendments WHERE status='active'`).get().n, 0);
+    const clock = db.prepare(
+      `SELECT active_segment_started_at,human_pause_started_at FROM sessions WHERE id='S'`,
+    ).get();
+    assert.equal(clock.active_segment_started_at, null, "rejected amendment closes its active-time segment");
+    assert.ok(clock.human_pause_started_at !== null, "rejected amendment re-enters an explicit human pause");
     if (candidateAnswer.includes("Do not proceed until I approve")) {
+      const question = db.prepare(`SELECT clarification_question FROM sessions WHERE id='S'`).get().clarification_question;
+      const jsonAt = question.indexOf("\n{");
+      assert.ok(jsonAt > 0, "the complete proposal is displayed as JSON");
+      const displayed = JSON.parse(question.slice(jsonAt + 1));
+      assert.ok(displayed.completeAmendment, "the displayed proposal includes the complete stored amendment");
+      assert.equal(
+        displayed.proposalHash,
+        createHash("sha256").update(JSON.stringify(displayed.completeAmendment)).digest("hex"),
+      );
       const confirmation = await tools.get("harness_answer").execute({
         sessionId: "S",
         answer: "Confirm the proposed diff",

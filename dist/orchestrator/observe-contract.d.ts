@@ -33,6 +33,7 @@ export declare function validateObserveResult(input: {
     finalMessage?: string;
     contract: ObserveContract;
     repoFiles: readonly string[];
+    readRepoFile?: (path: string) => string | undefined;
 }): ObserveValidation;
 export declare function applyObserveBindings(input: {
     plan: LeadPlan;

@@ -57,10 +57,28 @@ export function validateObserveResult(input) {
     if (result.status !== "ok" && result.status !== "blocked") {
         return { ok: false, reason: "observe result status must be ok or blocked" };
     }
+    if (result.status === "blocked") {
+        const blockers = Array.isArray(result.blockers)
+            ? result.blockers.filter((blocker) => typeof blocker === "string" && blocker.trim().length > 0)
+            : [];
+        return {
+            ok: false,
+            reason: `observe result is blocked and cannot release dependents${blockers.length > 0 ? `: ${blockers.join("; ")}` : ""}`,
+        };
+    }
     if (!Array.isArray(result.findings) || !Array.isArray(result.bindings)) {
         return { ok: false, reason: "observe result must contain findings and bindings arrays" };
     }
     const findings = new Map();
+    const repoFiles = new Set(input.repoFiles.map((path) => path.replace(/^\.\//, "")));
+    const validEvidencePath = (ref) => {
+        if (typeof ref.path !== "string")
+            return false;
+        const path = ref.path.replace(/^\.\//, "");
+        if (!pathExists(repoFiles, path))
+            return false;
+        return ref.line === undefined || (Number.isInteger(ref.line) && ref.line > 0);
+    };
     for (const finding of result.findings) {
         if (!finding || typeof finding.id !== "string" || typeof finding.summary !== "string" || !finding.summary.trim()) {
             return { ok: false, reason: "every observe finding needs a stable id and non-empty summary" };
@@ -71,13 +89,18 @@ export function validateObserveResult(input) {
         if (input.contract.requireEvidence !== false && finding.evidence.length === 0) {
             return { ok: false, reason: `finding ${finding.id} has no evidence` };
         }
+        if (input.contract.requireEvidence !== false && !finding.evidence.some(validEvidencePath)) {
+            return { ok: false, reason: `finding ${finding.id} has no repository-backed evidence` };
+        }
+        if (finding.evidence.some((ref) => ref.path !== undefined && !validEvidencePath(ref))) {
+            return { ok: false, reason: `finding ${finding.id} references missing or invalid repository evidence` };
+        }
         findings.set(finding.id, finding);
     }
     for (const id of input.contract.requiredFindings) {
         if (!findings.has(id))
             return { ok: false, reason: `required finding ${id} is missing` };
     }
-    const repoFiles = new Set(input.repoFiles.map((path) => path.replace(/^\.\//, "")));
     const supplied = new Map(result.bindings.map((binding) => [binding.name, binding]));
     for (const spec of input.contract.bindings) {
         const binding = supplied.get(spec.name);
@@ -91,6 +114,9 @@ export function validateObserveResult(input) {
         }
         if (!Array.isArray(binding.evidence) || !binding.evidence.every(isEvidenceRef)) {
             return { ok: false, reason: `binding ${spec.name} has invalid evidence` };
+        }
+        if (binding.evidence.some((ref) => ref.path !== undefined && !validEvidencePath(ref))) {
+            return { ok: false, reason: `binding ${spec.name} references missing or invalid repository evidence` };
         }
         const path = bindingPath(binding);
         switch (spec.type) {
@@ -109,7 +135,7 @@ export function validateObserveResult(input) {
                 if (!parentExists(repoFiles, path)) {
                     return { ok: false, reason: `proposed path binding ${spec.name} has no evidenced parent convention` };
                 }
-                if (binding.evidence.length === 0) {
+                if (!binding.evidence.some(validEvidencePath)) {
                     return { ok: false, reason: `proposed path binding ${spec.name} has no convention evidence` };
                 }
                 break;
@@ -122,6 +148,11 @@ export function validateObserveResult(input) {
                     : undefined;
                 if (typeof symbol !== "string" || !symbol.trim()) {
                     return { ok: false, reason: `symbol binding ${spec.name} has no symbol name` };
+                }
+                const contents = input.readRepoFile?.(path);
+                const escaped = symbol.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                if (typeof contents !== "string" || !new RegExp(`\\b${escaped}\\b`).test(contents)) {
+                    return { ok: false, reason: `symbol binding ${spec.name} does not resolve in ${path}` };
                 }
                 break;
             }

@@ -19,9 +19,9 @@ export const PLUGIN_DESCRIPTION = "Multi-agent development harness: crystallise 
  * answer audited under rc.3 could have raised a ceiling; one audited under
  * rc.6 could not.
  */
-export const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.7";
+export const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.8";
 export const PLUGIN_VERSION = {
-    pluginVersion: "2.0.0-rc.11",
+    pluginVersion: "2.0.0-rc.12",
     schemaVersion: 2,
     claudeSdkVersion: "0.3.207",
 };

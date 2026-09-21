@@ -26,7 +26,7 @@ export function resumeActiveDeadline(db, sessionId, configuredSeconds, now = Dat
     db.prepare(`UPDATE sessions
         SET active_limit_ms = ?, active_elapsed_ms = ?, active_segment_started_at = ?,
             human_pause_started_at = NULL, deadline_policy_version = ?,
-            minimum_runtime_version = COALESCE(minimum_runtime_version, '2.0.0-rc.11'),
+            minimum_runtime_version = COALESCE(minimum_runtime_version, '2.0.0-rc.12'),
             updated_at = ?
       WHERE id = ?`).run(limitMs, elapsedMs, now, DEADLINE_POLICY_VERSION, now, sessionId);
     return {

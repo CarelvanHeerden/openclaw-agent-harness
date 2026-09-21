@@ -92,6 +92,7 @@ const greenProbes = () => ({
 
 const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
 const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/tmp/wt/s", subTasks: [commitSubTask(1)], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
+const measuredCrash = (message, costUsd = 0) => Object.assign(new Error(message), { costUsd });
 
 // ---- Behavioral: cycle-2 review crash -> GRACEFUL PR (needs_human_review) ----
 test("beta62: cycle-2 review crash with green self-verify opens PR flagged needs_human_review (not discarded)",
@@ -113,7 +114,7 @@ test("beta62: cycle-2 review crash with green self-verify opens PR flagged needs
         // loop (ship_when_no_blocking_findings), so a fixture that needs a SECOND
         // cycle has to carry something genuinely blocking.
         if (advCall === 1) return { verdict: "revise", findings: [{ dimension: "quality", severity: "medium", title: "f", detail: "d" }], summary: "revise", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
-        throw new Error("simulated cycle-2 adversary SDK crash");
+        throw measuredCrash("simulated cycle-2 adversary SDK crash");
       },
       pushBranchAndOpenPr: async () => { prCalls++; return "https://github.com/o/r/pull/42"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
@@ -165,7 +166,7 @@ test("beta62: cycle-1 review crash (no prior review) fails but PRESERVES the wor
       logger: { info() {}, warn() {}, error() {} },
       runLead: async () => plan,
       runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "sha1", costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
-      runAdversary: async () => { throw new Error("cycle-1 adversary crash"); },
+      runAdversary: async () => { throw measuredCrash("cycle-1 adversary crash"); },
       pushBranchAndOpenPr: async () => { prCalls++; return "unused"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
       buildVerifyProbes: greenProbes,
@@ -206,7 +207,7 @@ test("beta62: graceful_pr_on_review_crash=false keeps hard-fail behaviour",
       runAdversary: async () => {
         advCall++;
         if (advCall === 1) return { verdict: "revise", findings: [{ dimension: "quality", severity: "medium", title: "f", detail: "d" }], summary: "revise", costUsd: 0.02, tokensIn: 1, tokensOut: 1 };
-        throw new Error("cycle-2 crash");
+        throw measuredCrash("cycle-2 crash");
       },
       pushBranchAndOpenPr: async () => { prCalls++; return "unused"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
@@ -275,7 +276,8 @@ test("beta62: loop wires review_failed telemetry + folds post-review persist int
   // deliberately saved only after deterministic findings produce the final
   // effective verdict.
   const tryBlock = src.slice(src.indexOf("let report: ReviewReport;"), src.indexOf('this.deps.state.audit("loop.review"'));
-  assert.match(tryBlock, /await this\.deps\.budget\.recordSpend\(row\.requester, report\.costUsd, sessionId\);/);
+  assert.match(tryBlock, /report = await this\.runAccountedProvider\(/);
+  assert.doesNotMatch(tryBlock, /budget\.recordSpend/);
   assert.ok(
     tryBlock.indexOf("conventionFindings.length > 0") < tryBlock.indexOf("this.saveReview(sessionId, cycle, report)"),
     "the effective post-gate review must be the persisted review",

@@ -883,9 +883,10 @@ export declare class OrchestratorLoop {
     private recordSubTaskAttempt;
     private beginProviderCall;
     private finishProviderCall;
+    private finishProviderCallWithSpend;
     private runAccountedWorker;
+    private runAccountedProvider;
     private attachProviderVerification;
-    private persistRequiredSpend;
     /**
      * rc.10: every commit recorded by EARLIER attempts of this same sub-task.
      *

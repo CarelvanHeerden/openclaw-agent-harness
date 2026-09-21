@@ -52,8 +52,8 @@ import {
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   activeDeadlineSnapshot,
@@ -71,8 +71,8 @@ import {
 } from "./observe-contract.js";
 
 class AccountingPersistenceError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
     this.name = "AccountingPersistenceError";
   }
 }
@@ -1720,7 +1720,7 @@ export class OrchestratorLoop {
       );
       db.prepare(
         `UPDATE sessions SET accounting_state = 'ok',
-                             minimum_runtime_version = '2.0.0-rc.11', updated_at = ? WHERE id = ?`,
+                             minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`,
       ).run(Date.now(), params.sessionId);
       db.exec("COMMIT");
       return { id, attempt };
@@ -1777,6 +1777,68 @@ export class OrchestratorLoop {
     }
   }
 
+  private finishProviderCallWithSpend(
+    sessionId: string,
+    id: string,
+    requester: string,
+    data: {
+      costUsd: number;
+      providerResultId?: string | null;
+      result?: unknown;
+      verification?: unknown;
+    },
+  ): void {
+    if (id.startsWith("untracked-test-double:")) return;
+    const db = this.deps.state.db;
+    const now = Date.now();
+    const day = new Date(now).toISOString().slice(0, 10);
+    const month = day.slice(0, 7);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      const changed = db.prepare(
+        `UPDATE provider_calls
+            SET status = 'completed', cost_usd = ?, provider_result_id = ?, result_json = ?,
+                verification_json = ?, ended_at = ?
+          WHERE id = ? AND session_id = ? AND status = 'started'`,
+      ).run(
+        data.costUsd,
+        data.providerResultId ?? null,
+        data.result === undefined ? null : JSON.stringify(data.result),
+        data.verification === undefined ? null : JSON.stringify(data.verification),
+        now,
+        id,
+        sessionId,
+      );
+      if (changed.changes !== 1) throw new Error(`provider call ${id} was not in started state`);
+      db.prepare(
+        `UPDATE sessions SET cost_usd = cost_usd + ?, accounting_state = 'ok', updated_at = ? WHERE id = ?`,
+      ).run(data.costUsd, now, sessionId);
+      db.prepare(
+        `INSERT INTO budgets_daily (day, user, spent_usd) VALUES (?, ?, ?)
+         ON CONFLICT (day, user) DO UPDATE SET spent_usd = spent_usd + excluded.spent_usd`,
+      ).run(day, requester, data.costUsd);
+      db.prepare(
+        `INSERT INTO budgets_monthly (month, user, spent_usd) VALUES (?, ?, ?)
+         ON CONFLICT (month, user) DO UPDATE SET spent_usd = spent_usd + excluded.spent_usd`,
+      ).run(month, requester, data.costUsd);
+      this.deps.state.audit(
+        "budget.spend",
+        { user: requester, amountUsd: data.costUsd, sessionId, providerCallId: id },
+        sessionId,
+      );
+      db.exec("COMMIT");
+    } catch (err) {
+      try { db.exec("ROLLBACK"); } catch { /* no transaction */ }
+      try {
+        db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), sessionId);
+      } catch { /* original write remains decisive */ }
+      throw new AccountingPersistenceError(`provider result/cost reconciliation was not atomic: ${String(err)}`);
+    }
+  }
+
   private async runAccountedWorker(
     meta: {
       sessionId: string;
@@ -1784,6 +1846,7 @@ export class OrchestratorLoop {
       cycle: number;
       seq: number;
       model: string;
+      requester: string;
       baseSha?: string;
     },
     invoke: () => Promise<WorkerResult>,
@@ -1840,8 +1903,7 @@ export class OrchestratorLoop {
           `provider returned without measurable usage/cost (${result.usageSource ?? "unavailable"})`,
         );
       }
-      this.finishProviderCall(meta.sessionId, call.id, {
-        status: "completed",
+      this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
         costUsd: result.costUsd,
         providerResultId: result.sdkSessionId ?? null,
         result: {
@@ -1868,11 +1930,25 @@ export class OrchestratorLoop {
       return result;
     } catch (err) {
       if (err instanceof AccountingPersistenceError) throw err;
+      const measuredErrorCost = (err as { costUsd?: unknown } | null)?.costUsd;
+      if (typeof measuredErrorCost === "number" && Number.isFinite(measuredErrorCost) && measuredErrorCost >= 0) {
+        this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
+          costUsd: measuredErrorCost,
+          result: { error: String(err).slice(0, 1000) },
+        });
+        throw err;
+      }
       this.finishProviderCall(meta.sessionId, call.id, {
-        status: "failed",
+        status: "unknown",
         costUsd: null,
         result: { error: String(err).slice(0, 1000) },
       });
+      try {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), meta.sessionId);
+      } catch { /* provider_calls row remains durable evidence */ }
       this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
         role: "worker",
         ...route,
@@ -1884,7 +1960,64 @@ export class OrchestratorLoop {
         callId: call.id,
         attempt: call.attempt,
       });
-      throw err;
+      throw new AccountingPersistenceError(`provider call ended without measurable cost: ${String(err)}`, err);
+    }
+  }
+
+  private async runAccountedProvider<T>(
+    meta: {
+      sessionId: string;
+      requester: string;
+      role: "lead" | "adversary";
+      cycle?: number;
+      model?: string;
+      route?: string;
+      baseSha?: string;
+    },
+    invoke: () => Promise<T>,
+    describe: (result: T) => {
+      costUsd: number;
+      providerResultId?: string | null;
+      result?: unknown;
+    },
+  ): Promise<T> {
+    const call = this.beginProviderCall(meta);
+    try {
+      const result = await invoke();
+      const measured = describe(result);
+      if (!Number.isFinite(measured.costUsd) || measured.costUsd < 0) {
+        this.finishProviderCall(meta.sessionId, call.id, {
+          status: "unknown",
+          costUsd: null,
+          providerResultId: measured.providerResultId ?? null,
+          result: measured.result,
+        });
+        throw new AccountingPersistenceError(`${meta.role} provider returned without a valid measured cost`);
+      }
+      this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, measured);
+      return result;
+    } catch (err) {
+      if (err instanceof AccountingPersistenceError) throw err;
+      const measuredErrorCost = (err as { costUsd?: unknown } | null)?.costUsd;
+      if (typeof measuredErrorCost === "number" && Number.isFinite(measuredErrorCost) && measuredErrorCost >= 0) {
+        this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
+          costUsd: measuredErrorCost,
+          result: { error: String(err).slice(0, 1000) },
+        });
+        throw err;
+      }
+      this.finishProviderCall(meta.sessionId, call.id, {
+        status: "unknown",
+        costUsd: null,
+        result: { error: String(err).slice(0, 1000) },
+      });
+      try {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), meta.sessionId);
+      } catch { /* provider_calls row remains durable evidence */ }
+      throw new AccountingPersistenceError(`${meta.role} provider completion/cost is unknown: ${String(err)}`, err);
     }
   }
 
@@ -1933,25 +2066,6 @@ export class OrchestratorLoop {
         ).run(Date.now(), sessionId);
       } catch { /* keep original */ }
       throw new AccountingPersistenceError(`provider verification was not durably recorded: ${String(err)}`);
-    }
-  }
-
-  private async persistRequiredSpend(
-    sessionId: string,
-    requester: string,
-    costUsd: number,
-  ): Promise<void> {
-    try {
-      this.addCost(sessionId, costUsd);
-      await this.deps.budget.recordSpend(requester, costUsd, sessionId);
-    } catch (err) {
-      try {
-        this.deps.state.db.prepare(
-          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
-                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
-        ).run(Date.now(), sessionId);
-      } catch { /* original write remains decisive */ }
-      throw new AccountingPersistenceError(`provider cost could not be reconciled to session/user totals: ${String(err)}`);
     }
   }
 
@@ -2644,8 +2758,16 @@ export class OrchestratorLoop {
       // Adding the scout's own ceiling keeps `lead_timeout_seconds` meaning what
       // its name and docs say -- the time the PLANNER gets -- however the scout
       // knob is set.
-      plan = acceptedContinuation?.plan ?? await withTimeout(
-        this.deps.runLead(brief, {
+      plan = acceptedContinuation?.plan ?? await this.runAccountedProvider(
+        {
+          sessionId,
+          requester: row.requester,
+          role: "lead",
+          cycle: 0,
+          model: this.deps.config.models.lead,
+          route: this.routeLog("lead", this.deps.config.models.lead).backend,
+        },
+        () => withTimeout(this.deps.runLead(brief, {
           requester: row.requester,
           sessionId,
           // beta.122 (CRITICAL): a re-plan may not RENAME the session's branch.
@@ -2676,8 +2798,17 @@ export class OrchestratorLoop {
             } catch { /* an audit write must never fail an allocation */ }
           },
         }),
-        this.deps.config.loop.lead_timeout_seconds + scoutBudget,
-        "lead_timeout_seconds",
+          this.deps.config.loop.lead_timeout_seconds + scoutBudget,
+          "lead_timeout_seconds",
+        ),
+        (leadPlan) => ({
+          costUsd: leadPlan.actualCostUsd ?? 0,
+          result: {
+            subTasks: leadPlan.subTasks.length,
+            riskLevel: leadPlan.riskLevel,
+            branch: leadPlan.branch,
+          },
+        }),
       );
       if (!acceptedContinuation) {
         this.deps.interactionLog?.logSdkResponse(sessionId, {
@@ -2744,10 +2875,6 @@ export class OrchestratorLoop {
       // reviews. Every report that reads the row (the smoke script, `harness
       // status`, the monthly rollup) therefore billed Opus at zero. Recorded
       // against the requester's ledger too, the same way a worker's spend is.
-      if (leadPlanningCostUsd > 0) {
-        this.addCost(sessionId, leadPlanningCostUsd);
-        await this.deps.budget.recordSpend(row.requester, leadPlanningCostUsd, sessionId);
-      }
       if (acceptedContinuation) {
         this.deps.state.audit(
           "loop.plan_resumed_after_contract_accept",
@@ -2999,6 +3126,20 @@ export class OrchestratorLoop {
         throw new Error(observeContractErrors.join("; "));
       }
     } catch (err) {
+      if (err instanceof AccountingPersistenceError) {
+        this.deps.state.audit(
+          "loop.plan_accounting_incomplete",
+          { sessionId, error: err.message },
+          sessionId,
+        );
+        return {
+          status: "failed",
+          sessionId,
+          reason: `accounting_incomplete: ${err.message}`,
+          cycles: 0,
+          totalCostUsd: row.cost_usd,
+        };
+      }
       if (err instanceof WorkerTimeoutError) {
         this.deps.state.audit("loop.lead_timeout", { sessionId, lead_timeout_seconds: this.deps.config.loop.lead_timeout_seconds }, sessionId);
       }
@@ -3044,8 +3185,6 @@ export class OrchestratorLoop {
       // spent to the error, including the scout, so bank it before finalising.
       const failedPlanCostUsd = e?.costUsd ?? 0;
       if (failedPlanCostUsd > 0) {
-        this.addCost(sessionId, failedPlanCostUsd);
-        await this.deps.budget.recordSpend(row.requester, failedPlanCostUsd, sessionId);
         this.deps.state.audit(
           "loop.plan_failed_cost",
           { sessionId, costUsd: Number(failedPlanCostUsd.toFixed(4)) },
@@ -3496,7 +3635,7 @@ export class OrchestratorLoop {
           plan.approvedRevisionScopeFiles = nextApprovedRevisionScope;
           this.deps.state.db
             .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                         minimum_runtime_version = '2.0.0-rc.11', updated_at = ? WHERE id = ?`)
+                                         minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`)
             .run(JSON.stringify(plan), Date.now(), sessionId);
           this.deps.state.audit(
             "loop.revision_scope_approved",
@@ -4004,13 +4143,6 @@ export class OrchestratorLoop {
 
         totalCost += result.costUsd;
         if (result.costUsd > 0) subTaskCosts.push(result.costUsd);
-        try {
-          await this.persistRequiredSpend(sessionId, row.requester, result.costUsd);
-        } catch (err) {
-          failed.err = `accounting_incomplete: ${String(err)}`;
-          failed.seq = st.seq;
-          return;
-        }
         this.deps.state.db.prepare(
           `UPDATE sub_tasks
            SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
@@ -4758,6 +4890,7 @@ export class OrchestratorLoop {
                         cycle,
                         seq: st.seq,
                         model: selectWorkerModel(st, this.deps.config.models),
+                        requester: row.requester,
                         baseSha: subTaskBaseSha,
                       },
                       () => this.deps.runWorker({
@@ -4781,7 +4914,6 @@ export class OrchestratorLoop {
                     ),
                     this.deps.config.loop.worker_timeout_seconds,
                   );
-                  await this.persistRequiredSpend(sessionId, row.requester, retry.costUsd);
                   totalCost += retry.costUsd;
                   if (retry.costUsd > 0) subTaskCosts.push(retry.costUsd);
                   let retryVerification: VerifyOutcome;
@@ -5733,6 +5865,17 @@ export class OrchestratorLoop {
               finalMessage: result.finalMessage,
               contract: st.observeContract,
               repoFiles,
+              readRepoFile: (path) => {
+                try {
+                  const root = realpathSync(resolve(workerWorktree));
+                  const target = realpathSync(resolve(root, path.replace(/^\.\//, "")));
+                  const rel = relative(root, target);
+                  if (rel.startsWith("..") || rel === "") return undefined;
+                  return readFileSync(target, "utf8");
+                } catch {
+                  return undefined;
+                }
+              },
             });
           };
           let observeValidation = await validateStructuredObserve();
@@ -5821,6 +5964,7 @@ export class OrchestratorLoop {
                     cycle,
                     seq: st.seq,
                     model: selectWorkerModel(st, this.deps.config.models),
+                    requester: row.requester,
                     baseSha: subTaskBaseSha,
                   },
                   () => this.deps.runWorker({
@@ -5837,7 +5981,6 @@ export class OrchestratorLoop {
                 ),
                 this.deps.config.loop.worker_timeout_seconds,
               );
-              await this.persistRequiredSpend(sessionId, row.requester, retry.costUsd);
               totalCost += retry.costUsd;
               if (retry.costUsd > 0) subTaskCosts.push(retry.costUsd);
               this.auditDeniedToolCalls({
@@ -5985,7 +6128,7 @@ export class OrchestratorLoop {
               if (bound.changedConsumers.length > 0) {
                 this.deps.state.db.prepare(
                   `UPDATE sessions SET lead_plan_json = ?, plan_revision = ?,
-                                       minimum_runtime_version = '2.0.0-rc.11', updated_at = ? WHERE id = ?`,
+                                       minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`,
                 ).run(JSON.stringify(bound.plan), resultRevision, Date.now(), sessionId);
               }
               this.deps.state.db.prepare(
@@ -6571,10 +6714,26 @@ export class OrchestratorLoop {
             sessionId,
           );
         }
-        report = await withTimeout(
-          this.deps.runAdversary({ brief, plan, sessionId, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings, revision: revisionContext }),
-          this.deps.config.loop.adversary_timeout_seconds,
-          "adversary_timeout_seconds",
+        report = await this.runAccountedProvider(
+          {
+            sessionId,
+            requester: row.requester,
+            role: "adversary",
+            cycle,
+            model: this.deps.config.models.adversary,
+            route: this.routeLog("adversary", this.deps.config.models.adversary).backend,
+            baseSha: adversaryBaseSha,
+          },
+          () => withTimeout(
+            this.deps.runAdversary({ brief, plan, sessionId, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings, revision: revisionContext }),
+            this.deps.config.loop.adversary_timeout_seconds,
+            "adversary_timeout_seconds",
+          ),
+          (review) => ({
+            costUsd: review.costUsd,
+            providerResultId: review.sdkSessionId ?? null,
+            result: { verdict: review.verdict, findings: review.findings.length },
+          }),
         );
         rawReview = {
           ...report,
@@ -6607,8 +6766,6 @@ export class OrchestratorLoop {
         // minute gap -- indistinguishable from a stall. Fold them into the
         // same try so any failure surfaces as `loop.review_failed`.
         totalCost += report.costUsd;
-        this.addCost(sessionId, report.costUsd);
-        await this.deps.budget.recordSpend(row.requester, report.costUsd, sessionId);
         // beta.83 (#2): the session-budget SOFT warn also fires here, after the
         // adversary review's cost lands. Pre-beta.83 the ONLY soft-warn check
         // was inside runOne (the sub-task loop), so a run that crossed its
@@ -6639,7 +6796,9 @@ export class OrchestratorLoop {
         }
       } catch (err) {
         // beta.43: a hung reviewer is a distinct, already-audited class.
-        const isTimeout = err instanceof WorkerTimeoutError;
+        const accountingError = err instanceof AccountingPersistenceError;
+        const accountingCause = accountingError ? (err as Error & { cause?: unknown }).cause : undefined;
+        const isTimeout = err instanceof WorkerTimeoutError || accountingCause instanceof WorkerTimeoutError;
         if (isTimeout) {
           this.deps.state.audit("loop.adversary_timeout", { sessionId, cycle, adversary_timeout_seconds: this.deps.config.loop.adversary_timeout_seconds }, sessionId);
         }
@@ -6671,6 +6830,15 @@ export class OrchestratorLoop {
           isTimeout,
           error: String((err as Error)?.message ?? err).slice(0, 200),
         });
+        if (accountingError) {
+          return {
+            status: "failed",
+            sessionId,
+            reason: `accounting_incomplete: ${err.message}`,
+            cycles: cycle,
+            totalCostUsd: totalCost,
+          };
+        }
         // beta.62 (fix #2/#3): try to salvage the run rather than discard the
         // completed, self-verified work. Returns a terminal outcome either way.
         return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
@@ -6813,19 +6981,35 @@ export class OrchestratorLoop {
           prompt: `runtime-enriched adversary review cycle ${cycle} for ${brief.title}; preview status: ${previewRuntime?.status ?? "unavailable"}`,
         });
         try {
-          const runtimeReport = await withTimeout(
-            this.deps.runAdversary({
-              brief,
-              plan,
+          const runtimeReport = await this.runAccountedProvider(
+            {
               sessionId,
-              runtime: previewRuntime,
               requester: row.requester,
+              role: "adversary",
+              cycle,
+              model: this.deps.config.models.adversary,
+              route: this.routeLog("adversary", this.deps.config.models.adversary).backend,
               baseSha: adversaryBaseSha,
-              priorFindings: report.findings,
-              revision: revisionContext,
+            },
+            () => withTimeout(
+              this.deps.runAdversary({
+                brief,
+                plan,
+                sessionId,
+                runtime: previewRuntime,
+                requester: row.requester,
+                baseSha: adversaryBaseSha,
+                priorFindings: report.findings,
+                revision: revisionContext,
+              }),
+              this.deps.config.loop.adversary_timeout_seconds,
+              "adversary_timeout_seconds",
+            ),
+            (review) => ({
+              costUsd: review.costUsd,
+              providerResultId: review.sdkSessionId ?? null,
+              result: { verdict: review.verdict, findings: review.findings.length, stage: "runtime" },
             }),
-            this.deps.config.loop.adversary_timeout_seconds,
-            "adversary_timeout_seconds",
           );
           rawReview = { ...runtimeReport, findings: [...(runtimeReport.findings ?? [])] };
           this.deps.state.audit(
@@ -6834,8 +7018,6 @@ export class OrchestratorLoop {
             sessionId,
           );
           totalCost += runtimeReport.costUsd;
-          this.addCost(sessionId, runtimeReport.costUsd);
-          await this.deps.budget.recordSpend(row.requester, runtimeReport.costUsd, sessionId);
           const blockingConvention = conventionFindings.filter((finding) =>
             isBlockingFinding(finding, classifyFinding(finding, this.classifyCtx)),
           );
@@ -8317,6 +8499,7 @@ export class OrchestratorLoop {
                 cycle,
                 seq: st.seq,
                 model: selectedWorkerModel,
+                requester,
                 baseSha: idleSubTaskBase,
               },
               () => this.deps.runWorker({
@@ -8346,10 +8529,22 @@ export class OrchestratorLoop {
           // The provider may still be running after the local timeout. Do not
           // buy a duplicate attempt until that started call is reconciled.
           try {
+            const now = Date.now();
+            this.deps.state.db.prepare(
+              `UPDATE provider_calls
+                  SET status = 'unknown', result_json = ?, ended_at = ?
+                WHERE session_id = ? AND role = 'worker' AND cycle = ? AND seq = ? AND status = 'started'`,
+            ).run(
+              JSON.stringify({ error: "local worker timeout; provider completion and cost unknown" }),
+              now,
+              sessionId,
+              cycle,
+              st.seq,
+            );
             this.deps.state.db.prepare(
               `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
                                    worktree_preserved = 1, updated_at = ? WHERE id = ?`,
-            ).run(Date.now(), sessionId);
+            ).run(now, sessionId);
           } catch { /* terminal path below still preserves the worktree */ }
           return {
             outcome: "timeout",
@@ -10840,7 +11035,7 @@ export class OrchestratorLoop {
     try {
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                     minimum_runtime_version = '2.0.0-rc.11' WHERE id = ?`)
+                                     minimum_runtime_version = '2.0.0-rc.12' WHERE id = ?`)
         .run(JSON.stringify(plan), sessionId);
     } catch (err) {
       this.deps.logger.warn("[loop] could not persist the CI repair sub-task", { sessionId, err: String(err) });
@@ -10944,7 +11139,7 @@ export class OrchestratorLoop {
     try {
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                     minimum_runtime_version = '2.0.0-rc.11' WHERE id = ?`)
+                                     minimum_runtime_version = '2.0.0-rc.12' WHERE id = ?`)
         .run(JSON.stringify(plan), sessionId);
     } catch (err) {
       this.deps.logger.warn("[loop] could not persist the finding repair sub-task(s)", { sessionId, err: String(err) });

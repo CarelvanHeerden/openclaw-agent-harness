@@ -245,7 +245,7 @@ test(
     const releaseCalls = [];
 
     const deps = baseDeps(state, plan(), releaseCalls);
-    deps.runLead = async () => { throw new Error("planner exploded"); };
+    deps.runLead = async () => { throw Object.assign(new Error("planner exploded"), { costUsd: 0 }); };
 
     const loop = new OrchestratorLoop(deps);
     const outcome = await loop.run("S_FAIL", brief);

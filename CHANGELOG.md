@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.0.0-rc.12
+
+rc.11 remains an immutable rejected tag and was never installed for a new
+smoke. rc.12 rolls the reviewed post-tag corrections into a new release
+identity and closes the final pre-smoke audit findings.
+
+- Clarification answers now bind authorization to OpenClaw's trusted tool
+  factory context (`requesterSenderId` and owner status), rather than trusting a
+  caller-supplied user id or an omitted provenance marker.
+- Amendment parsing is fully consumptive across substitutions, documentation,
+  restrictions, preservation clauses and bounded historical quotes.
+  Contradictory substitutions, blocked operands, unrelated documentation
+  outputs, inherited destination prohibitions and stale worker-visible
+  instructions all fail closed.
+- Exact-diff confirmation displays the complete stored proposal and hashes the
+  complete amendment, not only the revised task.
+- Blocked observe results never release dependents. Required evidence must
+  resolve to repository paths, proposed-output conventions need real source
+  evidence, and symbol bindings must exist in the cited file.
+- Lead, worker and adversary calls share the durable provider-call ledger.
+  Provider completion plus session/daily/monthly spend is one SQLite
+  transaction; unknown completion/cost enters `accounting_incomplete` without a
+  blind retry.
+- Amendment rejection and direct terminal answers use the canonical active-time
+  clock transitions, and amendment provenance records the actual cycle.
+- The advertised smoke command now loads the OpenClaw SDK stub, CI audits
+  production dependencies, the vulnerable transitive lock was refreshed, and
+  installed-artifact verification compares every packaged file.
+- The machine-readable OpenClaw floor now matches the documented `2026.6.1`
+  minimum. Runtime startup checks for sessions requiring a newer harness, while
+  downgrade to older builds still requires the packaged preflight.
+
 ## 2.0.0-rc.11
 
 The 16 September Client Offboarding smoke test was cancelled after rc.10
