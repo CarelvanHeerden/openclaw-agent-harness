@@ -3890,6 +3890,40 @@ const MUTATIONS = [
     replace: "    const candidates = pathTokens(fragments.filter((fragment) => directivePolarity(fragment, oldPath) === \"affirmative\").join(\" \")).filter((path) => path !== oldPath && !path.startsWith(\".env\") && !blocked.includes(path));",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
+  {
+    name: "rc.11 provenance review: current text after a closed quote is parsed independently",
+    file: "dist/orchestrator/contract-amendment.js",
+    find:
+      "            else if (provenance.remainder) {\n" +
+      "                queue.unshift(provenance.remainder);\n" +
+      "            }",
+    replace:
+      "            else if (provenance.remainder) {\n" +
+      "                void provenance.remainder;\n" +
+      "            }",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 provenance review: ambiguous unquoted history is not accepted as arbitrary text",
+    file: "dist/orchestrator/contract-amendment.js",
+    find:
+      "    return unquotedHistoricalStatementIsComplete(body, oldPath)\n" +
+      "        ? { historicalText: withoutTerminalPunctuation(body) }\n" +
+      "        : undefined;",
+    replace: "    return { historicalText: withoutTerminalPunctuation(body) };",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.11 provenance review: sentence punctuation inside quotes does not split current grammar",
+    file: "dist/orchestrator/contract-amendment.js",
+    find:
+      "        if (closingQuote)\n" +
+      "            continue;",
+    replace:
+      "        if (false)\n" +
+      "            continue;",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
 ];
 
 /**

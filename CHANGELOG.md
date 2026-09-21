@@ -114,6 +114,22 @@ and unresolved operands; only parsed destination operands construct the
 amendment. Documentation subjects use a narrow supported grammar, so contextual
 filenames and attached instructions fail closed instead of becoming outputs.
 
+A provenance-boundary review found the same full-consumption invariant was not
+yet applied to historical context. A provenance prefix previously classified
+the entire fragment as non-authoritative, even when a current hold or
+prohibition followed a closed quote. Fragmentation is now quote-aware;
+double-quoted history has an explicit closing boundary, and any conjunction
+after it is returned to the current-instruction parser. Unquoted history is
+accepted only when its complete body matches the narrow artifact-operation
+grammar; ambiguous or unterminated history stays paused.
+
+The accepted-branch inventory is now closed: substitution/documentation
+captures feed exact operand parsers, restriction captures feed the restricted
+artifact-object parser, provenance allows arbitrary text only inside a bounded
+non-authoritative quote, attached gate captures must match a complete gate, and
+neutral preservation/continuation clauses are anchored. No arbitrary capture is
+accepted as an instruction without a downstream full-consumption check.
+
 ## 2.0.0-rc.10
 
 The second Client Offboarding smoke test, session `aad3fc57`, 15 September 2026,

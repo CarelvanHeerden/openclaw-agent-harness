@@ -369,6 +369,49 @@ test("rc.11 documentation review: only parsed destination operands become replac
   assert.doesNotMatch(builtSource, /pathTokens\(affirmative\.join/);
 });
 
+test("rc.11 provenance review: quoted history ends before current instructions", () => {
+  const p = plan();
+  for (const answer of [
+    'Replace .env.example with README.md. The previous plan said "update .env.example", but finish only after another review. Preserve everything else.',
+    "Replace .env.example with README.md. The previous plan said update .env.example, but finish only after another review. Preserve everything else.",
+    'Replace .env.example with README.md. The previous plan said "update .env.example, but finish only after another review. Preserve everything else.',
+  ]) {
+    const out = buildArtifactSubstitutionAmendment({
+      plan: p,
+      task: p.subTasks[0],
+      answer,
+      blockedPaths: [".env.example"],
+    });
+    assert.equal(out.ok, false, answer);
+    assert.match(out.reason, /outside the bounded/, answer);
+  }
+
+  const restricted = buildArtifactSubstitutionAmendment({
+    plan: p,
+    task: p.subTasks[0],
+    answer:
+      'Replace .env.example with README.md. The previous plan said "update .env.example", but never read secrets.txt. Preserve everything else.',
+    blockedPaths: [".env.example"],
+  });
+  assert.equal(restricted.ok, true, restricted.reason);
+  assert.match(restricted.amendment.revisedTask.workerContext.gotchas.join("\n"), /never read secrets\.txt/i);
+
+  for (const answer of [
+    'Replace .env.example with README.md. The previous plan said "do not proceed until I approve". Preserve everything else.',
+    'Replace .env.example with README.md. The previous plan said "if approved later, replace .env.example with README.md". Preserve everything else.',
+    'Replace .env.example with README.md. The previous plan said "update .env.example. Then wait for review". Preserve everything else.',
+    "Replace .env.example with README.md. The previous proposal said replace .env.example with README.md. Preserve everything else.",
+  ]) {
+    const out = buildArtifactSubstitutionAmendment({
+      plan: p,
+      task: p.subTasks[0],
+      answer,
+      blockedPaths: [".env.example"],
+    });
+    assert.equal(out.ok, true, answer);
+  }
+});
+
 test("rc.11: ambiguous or broad guidance cannot activate", () => {
   const p = plan();
   for (const answer of ["Do something else.", "Use README.md.", "Replace .env.example somehow."]) {
@@ -619,6 +662,7 @@ test("rc.11: withdrawn, conditional, or contradictory answers remain paused with
     "Replace .env.example with README.md, and ask the compliance committee what they think. Preserve everything else.",
     "Replace .env.example with README.md. Document why private-notes.md is out of scope in README.md. Preserve everything else.",
     "Replace .env.example with README.md. Document placeholders in README.md, and finish only after another review in REVIEW.md. Preserve everything else.",
+    'Replace .env.example with README.md. The previous plan said "update .env.example", but finish only after another review. Preserve everything else.',
   ];
   for (const [index, candidateAnswer] of answers.entries()) {
     const db = deadlineDb();

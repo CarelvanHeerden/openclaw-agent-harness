@@ -51,10 +51,32 @@ function artifactMentioned(text: string, path: string): boolean {
 }
 
 function directiveFragments(text: string): string[] {
-  return text
-    .split(/(?<=[.!?;])\s+|\r?\n+/)
-    .map((fragment) => fragment.trim())
-    .filter(Boolean);
+  const fragments: string[] = [];
+  let start = 0;
+  let closingQuote: string | undefined;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]!;
+    if (!closingQuote && (char === '"' || char === "“")) {
+      closingQuote = char === "“" ? "”" : '"';
+      continue;
+    }
+    if (closingQuote && char === closingQuote && text[i - 1] !== "\\") {
+      closingQuote = undefined;
+      continue;
+    }
+    if (closingQuote) continue;
+    const newline = char === "\n" || char === "\r";
+    const sentenceEnd = /[.!?;]/.test(char) && (i === text.length - 1 || /\s/.test(text[i + 1]!));
+    if (!newline && !sentenceEnd) continue;
+    const end = newline ? i : i + 1;
+    const fragment = text.slice(start, end).trim();
+    if (fragment) fragments.push(fragment);
+    while (i + 1 < text.length && /\s/.test(text[i + 1]!)) i++;
+    start = i + 1;
+  }
+  const tail = text.slice(start).trim();
+  if (tail) fragments.push(tail);
+  return fragments;
 }
 
 type DirectivePolarity = "affirmative" | "prohibition" | "provenance" | "neutral";
@@ -195,10 +217,52 @@ function supportedProhibitionFragment(text: string, oldPath: string): boolean {
   );
 }
 
-function supportedProvenanceFragment(text: string): boolean {
-  return /^(?:the\s+)?(?:previous|prior|historical|original)\s+(?:plan|answer|proposal|instruction|contract)\s+(?:said|stated|quoted)(?:\s+that)?\s+.+[.!?]?$/i.test(
+function provenancePrefixMatches(text: string): boolean {
+  return /^(?:the\s+)?(?:previous|prior|historical|original)\s+(?:plan|answer|proposal|instruction|contract)\s+(?:said|stated|quoted)(?:\s+that)?\s+/i.test(
     text.trim(),
   );
+}
+
+interface ParsedProvenance {
+  historicalText: string;
+  remainder?: string;
+}
+
+function unquotedHistoricalStatementIsComplete(text: string, oldPath: string): boolean {
+  const clause = withoutTerminalPunctuation(text);
+  if (parseAffirmativeFragment(clause, oldPath)) return true;
+  const update = clause.match(/^update\s+(.+)$/i);
+  return !!update && artifactReferenceIsComplete(update[1]!, oldPath);
+}
+
+function parseProvenanceFragment(text: string, oldPath: string): ParsedProvenance | undefined {
+  const clause = text.trim();
+  const prefix = clause.match(
+    /^(?:the\s+)?(?:previous|prior|historical|original)\s+(?:plan|answer|proposal|instruction|contract)\s+(?:said|stated|quoted)(?:\s+that)?\s+/i,
+  );
+  if (!prefix) return undefined;
+  const body = clause.slice(prefix[0].length).trim();
+  const opening = body[0];
+  if (opening === '"' || opening === "“") {
+    const closing = opening === "“" ? "”" : '"';
+    let closeAt = -1;
+    for (let i = 1; i < body.length; i++) {
+      if (body[i] === closing && body[i - 1] !== "\\") {
+        closeAt = i;
+        break;
+      }
+    }
+    if (closeAt < 1) return undefined;
+    const historicalText = body.slice(1, closeAt).trim();
+    if (!historicalText) return undefined;
+    const trailing = body.slice(closeAt + 1).trim();
+    if (!trailing || /^[.!?;]+$/.test(trailing)) return { historicalText };
+    const remainder = trailing.match(/^,\s*(?:and|but|however|yet)\s+(.+)$/i)?.[1]?.trim();
+    return remainder ? { historicalText, remainder } : undefined;
+  }
+  return unquotedHistoricalStatementIsComplete(body, oldPath)
+    ? { historicalText: withoutTerminalPunctuation(body) }
+    : undefined;
 }
 
 function supportedNeutralFragment(text: string): boolean {
@@ -240,6 +304,8 @@ interface ParsedAuthorizationAnswer {
   destinationPaths: string[];
   restrictions: string[];
   unresolved: string[];
+  globalGate?: string;
+  conditionalSubstitution: boolean;
 }
 
 function parseAuthorizationAnswer(fragments: readonly string[], oldPath: string): ParsedAuthorizationAnswer {
@@ -247,8 +313,25 @@ function parseAuthorizationAnswer(fragments: readonly string[], oldPath: string)
   const destinationPaths: string[] = [];
   const restrictions: string[] = [];
   const unresolved: string[] = [];
+  const queue = [...fragments];
+  let globalGate: string | undefined;
+  let conditionalSubstitution = false;
 
-  for (const fragment of fragments) {
+  while (queue.length > 0) {
+    const fragment = queue.shift()!;
+    if (provenancePrefixMatches(fragment)) {
+      const provenance = parseProvenanceFragment(fragment, oldPath);
+      if (!provenance) {
+        unresolved.push(fragment);
+      } else if (provenance.remainder) {
+        queue.unshift(provenance.remainder);
+      }
+      continue;
+    }
+    if (isConditionalSubstitution(fragment, oldPath)) {
+      conditionalSubstitution = true;
+      continue;
+    }
     const polarity = directivePolarity(fragment, oldPath);
     if (polarity === "affirmative") {
       const gate = globalAuthorizationGate(fragment);
@@ -260,6 +343,7 @@ function parseAuthorizationAnswer(fragments: readonly string[], oldPath: string)
       }
       if (parsed.sourcePath) sourcePaths.push(parsed.sourcePath);
       destinationPaths.push(...parsed.destinationPaths);
+      if (gate) globalGate ??= gate;
       continue;
     }
     if (polarity === "prohibition") {
@@ -267,12 +351,10 @@ function parseAuthorizationAnswer(fragments: readonly string[], oldPath: string)
       else unresolved.push(fragment);
       continue;
     }
-    if (polarity === "provenance") {
-      if (!supportedProvenanceFragment(fragment)) unresolved.push(fragment);
-      continue;
-    }
-    if (globalAuthorizationGate(fragment)) {
+    const gate = globalAuthorizationGate(fragment);
+    if (gate) {
       if (!standaloneGlobalGateIsComplete(fragment)) unresolved.push(fragment);
+      else globalGate ??= gate;
       continue;
     }
     if (!supportedNeutralFragment(fragment)) unresolved.push(fragment);
@@ -283,6 +365,8 @@ function parseAuthorizationAnswer(fragments: readonly string[], oldPath: string)
     destinationPaths: unique(destinationPaths),
     restrictions: unique(restrictions),
     unresolved: unique(unresolved),
+    globalGate,
+    conditionalSubstitution,
   };
 }
 
@@ -396,21 +480,19 @@ export function buildArtifactSubstitutionAmendment(input: {
     return { ok: false, reason: `the answer does not name the blocked artifact ${oldPath}` };
   }
   const fragments = directiveFragments(answer);
-  const globalGate = globalAuthorizationGate(answer);
   const prohibitedDestinations = new Set<string>();
   let withdrewSubstitution = false;
-  for (const fragment of fragments) {
-    if (isConditionalSubstitution(fragment, oldPath)) {
-      return { ok: false, reason: "the replacement is conditional on future approval or another unresolved condition" };
-    }
-  }
   const parsedAnswer = parseAuthorizationAnswer(fragments, oldPath);
+  if (parsedAnswer.conditionalSubstitution) {
+    return { ok: false, reason: "the replacement is conditional on future approval or another unresolved condition" };
+  }
   if (parsedAnswer.unresolved.length > 0) {
     return {
       ok: false,
       reason: `the answer contains instruction(s) outside the bounded automatic-amendment grammar: ${parsedAnswer.unresolved.join(" ")}`,
     };
   }
+  const globalGate = parsedAnswer.globalGate;
   const prohibitions = parsedAnswer.restrictions;
   for (const fragment of prohibitions) {
     const paths = pathTokens(fragment).filter(
