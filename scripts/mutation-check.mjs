@@ -4361,6 +4361,33 @@ const MUTATIONS = [
   ]
 },
   {
+  "name": "rc.13 human provenance: final answer requires every review page",
+  "file": "dist/tools/registration.js",
+  "find": "            AND reviewed_through >= review_page_count",
+  "replace": "            AND 1 = 1",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: review pages cannot be requested out of order",
+  "file": "dist/tools/registration.js",
+  "find": "                    if (page > receipt.reviewed_through + 1) {",
+  "replace": "                    if (false) {",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: review-page advancement is compare-and-swap",
+  "file": "dist/tools/registration.js",
+  "find": "AND reviewed_through = ? AND consumed_at IS NULL AND expires_at > ?",
+  "replace": "AND ? >= 0 AND consumed_at IS NULL AND expires_at > ?",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
   "name": "rc.13 human provenance: command channel must match",
   "file": "dist/tools/registration.js",
   "find": "ctx.channel !== \"slack\" ||",

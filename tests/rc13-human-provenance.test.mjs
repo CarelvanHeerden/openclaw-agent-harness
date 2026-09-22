@@ -78,6 +78,20 @@ async function fixture(t, {commands = true, delegated = true, dbPath} = {}) {
  const tool=(answer,extra={},context={requesterSenderId:'U1'})=>factories.get('harness_answer')(context).execute('agent',{sessionId:id,answer,invokedBy:'U1',answeredBy:'human',clarificationSeq:-2,...extra});
  return {runtime,id,row,invoke,challenge,human,tool,dispose,factories,registerAgain:()=>registerHarnessTools(api,runtime)};
 }
+function beforeNextStatementRun(db,match,before) {
+ const prepare=db.prepare.bind(db);let armed=true;
+ db.prepare=(sql)=>{
+  const statement=prepare(sql);
+  if(!armed||!match.test(sql))return statement;
+  return new Proxy(statement,{get(target,property){
+   if(property==='run')return(...args)=>{
+    armed=false;db.prepare=prepare;before();return target.run(...args);
+   };
+   const value=Reflect.get(target,property,target);
+   return typeof value==='function'?value.bind(target):value;
+  }});
+ };
+}
 for(const delegated of [false,true]) for(const text of ['confirm', 'confirm, budget $50, 5 hours', 'revise brief: Use performedAt'])
  test(`human provenance: spoofed human tool blocked (delegated=${delegated}, ${text})`,async t=>{
   const g=await fixture(t,{delegated});const before=g.row();const r=await g.tool(text);
@@ -195,6 +209,33 @@ test('human provenance: large decision review is paginated and every page is req
  const accepted=await g.invoke(`${g.id} ${challenge} confirm`);
  assert.equal(accepted.details.ok,true);
  assert.equal(g.runtime.loopCalls.length,1);
+});
+
+test('human provenance: final claim atomically rechecks that every page was reviewed',async t=>{
+ const g=await fixture(t);
+ g.runtime.state.db.prepare('UPDATE sessions SET clarification_question=? WHERE id=?').run(
+  `Review this complete constraint set:\n${'constraint '.repeat(4200)}`,g.id);
+ const first=await g.invoke(g.id);const pageCount=Number(first.text.match(/page 1\/(\d+)/)?.[1]);
+ assert.ok(pageCount>1,first.text);
+ const challenge=first.text.match(/\/harness-answer \S+ ([a-f0-9]{48})/)[1];
+ for(let page=2;page<=pageCount;page++)await g.invoke(`${g.id} ${challenge} review ${page}`);
+ beforeNextStatementRun(g.runtime.state.db,/UPDATE human_answer_challenges SET consumed_at/,
+  ()=>g.runtime.state.db.prepare('UPDATE human_answer_challenges SET reviewed_through=? WHERE id=?').run(pageCount-1,challenge));
+ assert.match((await g.invoke(`${g.id} ${challenge} confirm`)).text,/stale|changed/);
+ assert.equal(g.runtime.loopCalls.length,0);
+});
+
+test('human provenance: review-page advancement compare-and-swaps the prior page',async t=>{
+ const g=await fixture(t);
+ g.runtime.state.db.prepare('UPDATE sessions SET clarification_question=? WHERE id=?').run(
+  `Review this complete constraint set:\n${'constraint '.repeat(4200)}`,g.id);
+ const first=await g.invoke(g.id);const pageCount=Number(first.text.match(/page 1\/(\d+)/)?.[1]);
+ assert.ok(pageCount>1,first.text);
+ const challenge=first.text.match(/\/harness-answer \S+ ([a-f0-9]{48})/)[1];
+ beforeNextStatementRun(g.runtime.state.db,/UPDATE human_answer_challenges SET reviewed_through/,
+  ()=>g.runtime.state.db.prepare('UPDATE human_answer_challenges SET reviewed_through=2 WHERE id=?').run(challenge));
+ assert.match((await g.invoke(`${g.id} ${challenge} review 2`)).text,/changed while reviewing/);
+ assert.equal(g.runtime.loopCalls.length,0);
 });
 
 test('human provenance: existing receipt tables migrate without losing rows',async t=>{

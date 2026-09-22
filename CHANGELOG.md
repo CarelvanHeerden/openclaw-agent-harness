@@ -26,6 +26,9 @@
 - Repair the three provenance mutation anchors after pagination introduced
   duplicate SQL fragments, and run the focused provenance mutation gate on
   exact branch-push CI commits instead of waiting for the PR-only full gate.
+- Add pagination-specific mutations for final-page consumption, ordered page
+  review, and compare-and-swap page advancement, with race regressions that
+  prove the atomic SQL guards rather than only the happy-path behavior.
 
 # Changelog
 
