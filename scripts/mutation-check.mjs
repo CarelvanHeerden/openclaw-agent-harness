@@ -242,7 +242,7 @@ const MUTATIONS = [
      */
     name: "rc.10: an observe prerequisite must have actually read something",
     file: "dist/orchestrator/loop.js",
-    find: "                        const observeHasNoEvidence = () => this.deps.config.loop.observe_evidence_check_enabled !== false &&",
+    find: "                        const observeHasNoEvidence = () => !st.observeContract &&",
     replace: "                        const observeHasNoEvidence = () => false &&",
     tests: ["tests/rc10-observe-evidence.test.mjs"],
   },
@@ -1458,8 +1458,8 @@ const MUTATIONS = [
     file: "dist/tools/brief-confirmation.js",
     // beta.123: the anchor moved from `raw` to `working` when the time clause
     // started being cut out before money is matched.
-    find: "    const m = BUDGET_CLAUSE.exec(working);",
-    replace: "    const m = null;",
+    find: "    const budgetUsd = uniqueBudgets.length === 1 ? uniqueBudgets[0] : undefined;",
+    replace: "    const budgetUsd = undefined;",
     tests: ["tests/beta122-branch-identity-and-clarify.test.mjs", "tests/beta123-confirmation-clauses.test.mjs"],
   },
   {
@@ -1467,8 +1467,8 @@ const MUTATIONS = [
     // approve corrections it should have surfaced.
     name: "a budget plus a correction is still a correction (b122): approving on a stripped clause would start the wrong build",
     file: "dist/tools/brief-confirmation.js",
-    find: "        approves: remainder.length === 0 || isBriefConfirmation(remainder),",
-    replace: "        approves: true,",
+    find: "            featureRemainder.length === 0 &&",
+    replace: "            true &&",
     tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
   },
   {
@@ -1544,8 +1544,12 @@ const MUTATIONS = [
     // the bug: recognising the duration is not enough, because if the words stay
     // in the string the money regex reads "budget of 3 hours" as a $3 cap. This
     // anchor reproduces exactly that.
-    find: "        working = tidyRemainder(working.replace(t[0], \" \"));",
-    replace: "        working = working;",
+    find:
+      "            addControlValue(timeoutValues, seconds, \"timeout\", match[0].trim(), ambiguities);\n" +
+      "            working = tidyRemainder(working.replace(match[0], \" \"));",
+    replace:
+      "            addControlValue(timeoutValues, seconds, \"timeout\", match[0].trim(), ambiguities);\n" +
+      "            void match;",
     tests: ["tests/beta123-confirmation-clauses.test.mjs"],
   },
 
@@ -3352,7 +3356,7 @@ const MUTATIONS = [
     // Reading the shorthand at all.
     name: "bare shorthand is read as limits (rc.6): '$60, 10 hours' goes back to meaning nothing",
     file: "dist/tools/brief-confirmation.js",
-    find: "        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {",
+    find: "            if ((duration || money) && (!trial || isBriefConfirmation(trial))) {",
     replace: "        if (false) {",
     tests: ["tests/rc6-typed-approval.test.mjs"],
   },
@@ -3369,8 +3373,8 @@ const MUTATIONS = [
     // run at $60 and deletes the words from the operator's correction.
     name: "shorthand needs an affirmation-only reply (rc.6): a price in a correction becomes the budget",
     file: "dist/tools/brief-confirmation.js",
-    find: "        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {",
-    replace: "        if (bd || bm) {",
+    find: "            if ((duration || money) && (!trial || isBriefConfirmation(trial))) {",
+    replace: "            if (duration || money) {",
     tests: ["tests/rc6-typed-approval.test.mjs"],
   },
   {
@@ -4072,8 +4076,8 @@ const MUTATIONS = [
   {
     name: "rc.13 smoke: preservation qualifiers stay outside feature scope",
     file: "dist/tools/brief-confirmation.js",
-    find: "    let working = raw.replace(PRESERVATION_CLAUSE, (_whole, clause) => {",
-    replace: "    let working = raw.replace(/$a/, (_whole, clause) => {",
+    find: "        if (PRESERVATION_WHOLE.test(clause)) {",
+    replace: "        if (false) {",
     tests: ["tests/rc6-typed-approval.test.mjs"],
   },
   {
