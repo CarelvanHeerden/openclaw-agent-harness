@@ -400,7 +400,7 @@ test("beta120: approving the brief runs it unchanged", { skip }, async () => {
   assert.equal(row.status, "planning");
 });
 
-test("beta120: correcting the brief folds the correction in BEFORE any work", { skip }, async () => {
+test("rc13: an unstructured brief correction does not authorise work", { skip }, async () => {
   const runtime = makeRuntime({ riskLevel: "high" });
   const { api, tools } = collectTools();
   registerHarnessTools(api, runtime);
@@ -411,14 +411,9 @@ test("beta120: correcting the brief folds the correction in BEFORE any work", { 
     invokedBy: "U1",
   });
 
-  assert.equal(a.details.briefCorrected, true);
-  assert.equal(runtime.loopCalls.length, 1);
-  const criteria = runtime.loopCalls[0].brief.acceptanceCriteria;
-  assert.equal(criteria.length, 2);
-  assert.match(criteria[1], /performedAt, not scheduledAt/);
-  assert.match(criteria[1], /OPERATOR CORRECTION/);
-  // Nothing ran, so there is no branch to preserve.
-  assert.notEqual(runtime.loopCalls[0].brief.resumeFromClarification, true);
+  assert.equal(a.details.started, false);
+  assert.equal(runtime.loopCalls.length, 0);
+  assert.match(a.content[0].text, /revise brief:/);
 });
 
 test("v2: a low-risk harness_run pauses by default before the loop starts", { skip }, async () => {

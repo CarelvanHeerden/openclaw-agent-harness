@@ -105,7 +105,8 @@ export function renderBriefConfirmation(input) {
         ? `Source: read verbatim from ${input.sourcePath}.`
         : `Source: the request text as the calling agent supplied it — if you gave it a spec file, check nothing was paraphrased away.`);
     lines.push("");
-    lines.push(`Reply "confirm" to start, or tell me what to change (your reply is folded into the brief and the corrected version runs).`);
+    lines.push(`Reply "confirm" to start. To propose a correction, reply "revise brief: <what to change>". ` +
+        `A revision stays paused until you review and explicitly confirm its complete stored proposal. Other replies do not start work.`);
     // beta.122: the cap is the one number an operator most often wants to change
     // at this moment, and until now saying so did nothing -- "Confirm, Budget
     // $40" was filed as a correction to the SPEC and the run started at $10.
@@ -128,9 +129,8 @@ export function renderBriefConfirmation(input) {
  *
  * The asymmetry matters: reading "confirm, but use performedAt not scheduledAt"
  * as approval would start a run that ignores the correction -- exactly the
- * failure this whole gate exists to prevent. Reading a bare "confirm" as a
- * correction merely appends a no-op acceptance criterion. So this matches the
- * WHOLE answer or nothing, and every qualified reply is treated as a change.
+ * failure this whole gate exists to prevent. This matches the WHOLE answer
+ * or nothing; a correction is proposed separately and cannot start work.
  */
 const AFFIRMATIONS = new Set([
     "confirm",
@@ -492,7 +492,7 @@ export function parseConfirmationReply(answer) {
         // entire qualification -- so this IS an approval.
         approves: ambiguities.length === 0 &&
             featureRemainder.length === 0 &&
-            (sawApproval || budgetUsd !== undefined || timeoutSeconds !== undefined),
+            sawApproval,
     };
 }
 /**

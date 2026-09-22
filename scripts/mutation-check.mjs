@@ -4259,6 +4259,62 @@ const MUTATIONS = [
     replace: "           SET status = 'completed', cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = NULL, updated_at = ?",
     tests: ["tests/beta37-progress-poll.test.mjs", "tests/rc11-remediation.test.mjs"],
   },
+  {
+    name: "rc.13 brief approval: rejection cannot dispatch as correction",
+    file: "dist/tools/registration.js",
+    find: "                if (!approved) {",
+    replace: "                if (false) {",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: staged proposal blocks plain confirmation",
+    file: "dist/tools/registration.js",
+    find: "                if (pause.briefProposal !== undefined || proposalConfirmation) {",
+    replace: "                if (proposalConfirmation) {",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: exact payload hash binds confirmation",
+    file: "dist/tools/brief-proposal.js",
+    find: "        suppliedHash === briefStateHash(proposal) &&",
+    replace: "        true &&",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: changed base invalidates proposal",
+    file: "dist/tools/brief-proposal.js",
+    find: "        proposal.baseHash === briefStateHash(base) &&",
+    replace: "        true &&",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: pre-spend authorisation cannot be delegated",
+    file: "dist/tools/registration.js",
+    find: "            if (automated && isBriefConfirmationPause(row.clarification_subtask)) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: limits alone are not authorisation",
+    file: "dist/tools/brief-confirmation.js",
+    find: "            featureRemainder.length === 0 &&\n            sawApproval,",
+    replace: "            featureRemainder.length === 0 &&\n            true,",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: ignored activation must not dispatch",
+    file: "dist/tools/registration.js",
+    find: "                    if (activated.changes !== 1)\n                        throw new Error(\"Brief changed before activation\");",
+    replace: "                    if (false)\n                        throw new Error(\"Brief changed before activation\");",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: ignored proposal write is not reported as staged",
+    file: "dist/tools/registration.js",
+    find: "                        if (staged.changes !== 1)",
+    replace: "                        if (false)",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
 ];
 
 /**

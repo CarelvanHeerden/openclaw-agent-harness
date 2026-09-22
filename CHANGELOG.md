@@ -2,6 +2,13 @@
 
 ## 2.0.0-rc.13
 
+- Pre-spend brief corrections no longer authorise execution. Unrecognised
+  replies, rejections, holds and control-only replies leave the live brief and
+  limits unchanged. `revise brief: ...` stages a complete bounded proposal;
+  only `confirm brief <sha256>` for its exact payload/current base activates
+  it atomically. Replaced, tampered, stale or mismatched proposals fail closed.
+  This gate is human-only, regardless of mid-run clarification delegation.
+
 The first rc.12 real-request smoke failed before implementation on its initial
 load-bearing observe task. rc.13 repairs the complete handoff rather than
 accepting the misleading “no findings” summary.

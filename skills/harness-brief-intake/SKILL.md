@@ -167,11 +167,17 @@ When that happens:
 harness_answer({ sessionId, answer: "<the user's reply, exactly>", invokedBy })
 ```
 
-An unqualified approval ("confirm", "yes", "go ahead") starts the run unchanged.
-**Anything else** — including "confirm, but use `performedAt`" — is folded into
-the brief as an authoritative correction first. That is deliberate: passing a
-qualified reply through as an approval would start a run that ignores the
-correction.
+An unqualified approval ("confirm", "yes", "go ahead") starts the current brief.
+Other replies, including rejections, holds and ordinary corrections, stay paused
+without changing the active brief or limits. To propose a correction the human
+sends `revise brief: <correction>`, optionally with budget/time controls. Relay
+the complete stored proposal verbatim and wait for the human's exact
+`confirm brief <sha256>` reply. A plain `confirm` cannot activate a pending
+revision. Never manufacture that confirmation or its hash on the user's behalf.
+Replacing a proposal invalidates its old confirmation and starts from the
+original brief, not from an unapproved revision. Brief approvals and revisions
+are never delegated to automation, even when mid-run clarification delegation
+is enabled.
 
 A budget named in the reply is the one exception, and it is handled for you:
 "confirm, budget $40" both approves the brief and raises the cap to $40. You do

@@ -19,7 +19,7 @@ export declare const PLUGIN_DESCRIPTION = "Multi-agent development harness: crys
  * answer audited under rc.3 could have raised a ceiling; one audited under
  * rc.6 could not.
  */
-export declare const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.9";
+export declare const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.13";
 export declare const PLUGIN_VERSION: {
     readonly pluginVersion: "2.0.0-rc.13";
     readonly schemaVersion: 2;

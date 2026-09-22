@@ -401,7 +401,7 @@ test("rc13 post-audit: limit and brief writes roll back together", { skip }, asy
   );
   const result = await tools.get("harness_answer").execute({
     sessionId,
-    answer: "Please continue\n$50 budget\n5 hours\nUse performedAt",
+    answer: "Please continue\n$50 budget\n5 hours",
     invokedBy: "U1",
   });
   const after = runtime.state.db.prepare(

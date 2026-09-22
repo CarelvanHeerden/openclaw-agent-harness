@@ -19,6 +19,7 @@ import { RouteOverlay, normaliseOrg } from "../auth/route-overlay.js";
 import { measureParaphraseDrift, readRequestFile } from "./brief-source.js";
 import { BRIEF_CONFIRMATION_KIND, BRIEF_CONFIRMATION_SEQ, decideBriefConfirmation, describeControlAmbiguities, isBriefConfirmationPause, parseConfirmationReply, renderBriefConfirmation, renderLimitsReceipt, } from "./brief-confirmation.js";
 import { isTimeExtensionPause, listenerLooksAlive, readTimeExtensionWaitUntil } from "../orchestrator/time-extension.js";
+import { makeBriefProposal, renderBriefProposal, verifyBriefProposal } from "./brief-proposal.js";
 import { isBudgetExtensionPause, readBudgetExtensionWaitUntil } from "../orchestrator/budget-extension.js";
 import { resolveBudgetPolicy } from "../orchestrator/budget-policy.js";
 import { CLARIFICATION_POLICY_VERSION, PLUGIN_VERSION } from "../version.js";
@@ -1747,6 +1748,13 @@ export function registerHarnessTools(api, runtime) {
             // but the session budget is the operator's own number and only the
             // operator moves it. Refused before the pause is claimed, so the
             // question stays open for the human it was asked of.
+            if (automated && isBriefConfirmationPause(row.clarification_subtask)) {
+                rejectAutomatic("brief_approval_not_delegable");
+                return {
+                    content: [{ type: "text", text: "Brief approval and revision require a human answer. Relay the current question verbatim; nothing was changed or started." }],
+                    details: { ok: false, briefApprovalNotDelegable: true, started: false, seq },
+                };
+            }
             if (automated && isBudgetExtensionPause(row.clarification_subtask)) {
                 liveState().audit("tool.answer_budget_extension_refused_automation", { ...answerFacts }, sessionId);
                 rejectAutomatic("budget_grant_not_delegable");
@@ -2034,17 +2042,72 @@ export function registerHarnessTools(api, runtime) {
                 liveState().audit("tool.answer_aborted", { sessionId, seq }, sessionId);
                 return { content: [{ type: "text", text: `Session ${sessionId} aborted per your instruction.` }], details: { ok: true, sessionId, aborted: true } };
             }
-            const brief = JSON.parse(row.crystallised_prompt);
+            let brief = JSON.parse(row.crystallised_prompt);
             const q = row.clarification_question ?? `sub-task ${seq}`;
             // beta.120 (brief fidelity): this pause happened BEFORE any planning or
             // worker spend, so there is no blocked sub-task to phrase around and no
-            // worktree to preserve. An approval starts the run untouched; anything
-            // else is a correction to the brief itself.
+            // worktree to preserve. Only approval starts work; explicit corrections
+            // produce a stored proposal for a separate, content-bound confirmation.
             if (isBriefConfirmationPause(row.clarification_subtask)) {
+                const stateLimits = liveDb().prepare("SELECT budget_usd, hard_timeout_seconds FROM sessions WHERE id = ?").get(sessionId);
+                const base = {
+                    sessionId,
+                    brief,
+                    budgetUsd: stateLimits.budget_usd,
+                    hardTimeoutSeconds: stateLimits.hard_timeout_seconds ?? liveConfig().loop?.session_hard_timeout_seconds ?? 7200,
+                };
+                const pause = JSON.parse(row.clarification_subtask);
+                const revision = /^revise brief:\s*([\s\S]*)$/i.exec(trimmed);
+                const proposalConfirmation = /^confirm brief ([a-f0-9]{64})$/i.exec(trimmed);
+                const keepPaused = (text, details = {}) => {
+                    liveDb().prepare("UPDATE sessions SET clarification_answer = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+                    return { content: [{ type: "text", text }], details: { ok: true, sessionId, started: false, awaitingConfirmation: true, ...details } };
+                };
+                if (revision) {
+                    const edit = parseConfirmationReply(revision[1]);
+                    if (edit.ambiguities.length > 0 || edit.approves || !edit.remainder.trim()) {
+                        return keepPaused("No changes applied. Send revise brief: followed by the feature correction, optionally with unambiguous budget/time controls. This never starts work.");
+                    }
+                    const proposalDb = liveDb();
+                    let staging = false;
+                    try {
+                        const ceiling = liveConfig().budgets?.session_hard_ceiling_usd;
+                        const proposedBudget = edit.budgetUsd ?? base.budgetUsd;
+                        const proposal = makeBriefProposal(base, edit.remainder, {
+                            budgetUsd: typeof ceiling === "number" && ceiling > 0 ? Math.min(proposedBudget, ceiling) : proposedBudget,
+                            hardTimeoutSeconds: edit.timeoutSeconds ?? base.hardTimeoutSeconds,
+                        });
+                        const question = renderBriefProposal(proposal);
+                        // Only the pending proposal changes: live brief/limits remain untouched.
+                        proposalDb.exec("SAVEPOINT brief_proposal_stage");
+                        staging = true;
+                        const staged = proposalDb.prepare("UPDATE sessions SET clarification_subtask = ?, clarification_question = ?, clarification_answer = NULL, minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ? AND status = 'awaiting_clarification' AND clarification_subtask = ? AND crystallised_prompt = ? AND budget_usd = ? AND COALESCE(hard_timeout_seconds, ?) = ?").run(JSON.stringify({ kind: BRIEF_CONFIRMATION_KIND, briefProposal: proposal }), question, Date.now(), sessionId, row.clarification_subtask ?? null, row.crystallised_prompt, base.budgetUsd, base.hardTimeoutSeconds, base.hardTimeoutSeconds);
+                        if (staged.changes !== 1)
+                            throw new Error("Brief changed while staging proposal");
+                        liveState().audit("tool.answer_brief_proposed", { sessionId, invokedBy, answerLen: trimmed.length }, sessionId);
+                        proposalDb.exec("RELEASE SAVEPOINT brief_proposal_stage");
+                        staging = false;
+                        return { content: [{ type: "text", text: question }], details: { ok: true, sessionId, started: false, awaitingConfirmation: true, briefProposed: true } };
+                    }
+                    catch {
+                        if (staging) {
+                            proposalDb.exec("ROLLBACK TO SAVEPOINT brief_proposal_stage");
+                            proposalDb.exec("RELEASE SAVEPOINT brief_proposal_stage");
+                        }
+                        return keepPaused("No changes applied. The complete proposal could not be stored or displayed safely. Shorten the correction or resolve the storage fault, then retry.", { proposalFailed: true });
+                    }
+                }
                 // beta.122: a budget named in the reply is an instruction to the
                 // SESSION, not a change to the spec. b121 filed "Confirm, Budget $40"
                 // as an authoritative acceptance criterion and ran at $10 regardless.
-                const parsed = parseConfirmationReply(trimmed);
+                let parsed = parseConfirmationReply(trimmed);
+                if (pause.briefProposal !== undefined || proposalConfirmation) {
+                    if (!pause.briefProposal || !proposalConfirmation || !verifyBriefProposal(pause.briefProposal, proposalConfirmation[1].toLowerCase(), base, liveConfig().budgets?.session_hard_ceiling_usd)) {
+                        return keepPaused("No work started: revised briefs require the exact current proposal confirmation, and its brief/limits must still match. Re-read the stored proposal with harness_progress, or replace it with revise brief: <correction>.", { proposalConfirmationRequired: true });
+                    }
+                    brief = structuredClone(pause.briefProposal.brief);
+                    parsed = { ...parseConfirmationReply("confirm"), budgetUsd: pause.briefProposal.budgetUsd, timeoutSeconds: pause.briefProposal.hardTimeoutSeconds };
+                }
                 // rc.6 (#1184): a control we could see and could not read stops here.
                 //
                 // The old shape had two outcomes -- approval, or a correction folded
@@ -2083,12 +2146,24 @@ export function registerHarnessTools(api, runtime) {
                     };
                 }
                 const approved = parsed.approves;
+                if (!approved) {
+                    liveState().audit("tool.answer_brief_not_approved", { sessionId, invokedBy, answerLen: trimmed.length }, sessionId);
+                    return keepPaused("No work started and no brief or limits changed. Reply confirm to approve the current brief, or revise brief: <correction> to propose a change for separate review. A correction, rejection or qualified hold is not execution approval.");
+                }
                 const confirmationDb = liveDb();
                 confirmationDb.exec("SAVEPOINT brief_confirmation_apply");
                 let budgetApplied;
                 let timeoutApplied;
                 let effectiveLimits;
                 try {
+                    const current = confirmationDb.prepare("SELECT status,clarification_subtask,crystallised_prompt,budget_usd,hard_timeout_seconds FROM sessions WHERE id = ?").get(sessionId);
+                    if (!current || current.status !== "awaiting_clarification" ||
+                        current.clarification_subtask !== row.clarification_subtask ||
+                        current.crystallised_prompt !== row.crystallised_prompt ||
+                        current.budget_usd !== base.budgetUsd ||
+                        (current.hard_timeout_seconds ?? base.hardTimeoutSeconds) !== base.hardTimeoutSeconds) {
+                        throw new Error("Brief or limits changed after the answer was read");
+                    }
                     if (typeof parsed.budgetUsd === "number") {
                         // The advertised ceiling still binds -- this is the operator asking
                         // for more room, not an escape from the operator's own cap.
@@ -2108,12 +2183,6 @@ export function registerHarnessTools(api, runtime) {
                             .run(parsed.timeoutSeconds, Date.now(), sessionId);
                         timeoutApplied = parsed.timeoutSeconds;
                         liveState().audit("tool.answer_brief_timeout_set", { sessionId, seconds: parsed.timeoutSeconds, configured: liveConfig().loop?.session_hard_timeout_seconds }, sessionId);
-                    }
-                    if (!approved) {
-                        brief.acceptanceCriteria = Array.isArray(brief.acceptanceCriteria) ? brief.acceptanceCriteria : [];
-                        brief.acceptanceCriteria.push(
-                        // Only the non-budget part is a statement about the work.
-                        `OPERATOR CORRECTION TO THIS BRIEF (given before any work began, after reviewing the crystallised version): ${parsed.remainder || trimmed}. This supersedes anything above that contradicts it -- the operator is describing what they actually asked for, so treat it as the authoritative reading.`);
                     }
                     // rc.6: read the limits back out of the row before anything is
                     // dispatched, and report those. Writing a budget and then announcing
@@ -2149,9 +2218,11 @@ export function registerHarnessTools(api, runtime) {
                     if (unpersisted.length > 0) {
                         throw new Error(`brief limits did not persist: ${unpersisted.join(", ")}`);
                     }
-                    liveDb()
-                        .prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', clarification_question = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ?`)
-                        .run(JSON.stringify(brief), Date.now(), sessionId);
+                    const activated = confirmationDb
+                        .prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', clarification_question = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ? AND status = 'awaiting_clarification' AND clarification_subtask = ? AND crystallised_prompt = ?`)
+                        .run(JSON.stringify(brief), Date.now(), sessionId, row.clarification_subtask ?? null, row.crystallised_prompt);
+                    if (activated.changes !== 1)
+                        throw new Error("Brief changed before activation");
                     confirmationDb.exec("RELEASE SAVEPOINT brief_confirmation_apply");
                 }
                 catch (err) {
@@ -2176,16 +2247,14 @@ export function registerHarnessTools(api, runtime) {
                         details: { ok: false, sessionId, started: false, atomicApplyFailed: true },
                     };
                 }
-                liveState().audit(approved ? "tool.answer_brief_confirmed" : "tool.answer_brief_corrected", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, budgetApplied: budgetApplied ?? null, timeoutApplied: timeoutApplied ?? null, effectiveLimits }, sessionId);
+                liveState().audit("tool.answer_brief_confirmed", { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, proposalHash: proposalConfirmation?.[1] ?? null, budgetApplied: budgetApplied ?? null, timeoutApplied: timeoutApplied ?? null, effectiveLimits }, sessionId);
                 void liveRuntime().loop.run(sessionId, brief).catch((err) => {
                     api.logger.error("[tool.answer] loop.run failed", { sessionId, err: String(err) });
                 });
                 return {
                     content: [{
                             type: "text",
-                            text: `${approved
-                                ? `Brief confirmed; session ${sessionId} is running.`
-                                : `Correction folded into the brief; session ${sessionId} is running with it.`} ${
+                            text: `Brief confirmed; session ${sessionId} is running. ${
                             // rc.6: the limits are stated unconditionally and come from the
                             // row, not from what this handler tried to write. An operator
                             // who names no cap needs to see the one they are getting just
@@ -2193,7 +2262,7 @@ export function registerHarnessTools(api, runtime) {
                             renderLimitsReceipt(effectiveLimits)} Poll harness_progress every ~45s and relay \`headline\` until terminal.`,
                         }],
                     details: {
-                        ok: true, sessionId, resumed: true, briefConfirmed: approved, briefCorrected: !approved,
+                        ok: true, sessionId, resumed: true, briefConfirmed: true, briefCorrected: !!proposalConfirmation,
                         budgetUsd: effectiveLimits.budgetUsd, hardTimeoutSeconds: effectiveLimits.hardTimeoutSeconds,
                     },
                 };
