@@ -4327,8 +4327,8 @@ const MUTATIONS = [
   {
   "name": "rc.13 human provenance: receipt cannot be consumed twice",
   "file": "dist/tools/registration.js",
-  "find": "AND consumed_at IS NULL AND expires_at > ?",
-  "replace": "AND expires_at > ?",
+  "find": "            AND consumed_at IS NULL AND expires_at > ?\n            AND reviewed_through >= review_page_count",
+  "replace": "            AND expires_at > ?\n            AND reviewed_through >= review_page_count",
   "tests": [
     "tests/rc13-human-provenance.test.mjs"
   ]
@@ -4345,17 +4345,17 @@ const MUTATIONS = [
   {
   "name": "rc.13 human provenance: expired receipt cannot authorize",
   "file": "dist/tools/registration.js",
-  "find": "AND expires_at > ?",
-  "replace": "AND ? >= 0",
+  "find": "            AND consumed_at IS NULL AND expires_at > ?\n            AND reviewed_through >= review_page_count",
+  "replace": "            AND consumed_at IS NULL AND ? >= 0\n            AND reviewed_through >= review_page_count",
   "tests": [
     "tests/rc13-human-provenance.test.mjs"
   ]
 },
   {
   "name": "rc.13 human provenance: receipt binds pending state",
-  "file": "dist/tools/registration.js",
-  "find": "AND state_hash = ?",
-  "replace": "AND ? IS NOT NULL",
+  "file": "dist/tools/human-answer-command.js",
+  "find": "export function answerStateHash(value) {\n    return createHash(\"sha256\").update(JSON.stringify(value)).digest(\"hex\");\n}",
+  "replace": "export function answerStateHash(value) {\n    return \"0\".repeat(64);\n}",
   "tests": [
     "tests/rc13-human-provenance.test.mjs"
   ]

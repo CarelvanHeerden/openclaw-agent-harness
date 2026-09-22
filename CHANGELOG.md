@@ -23,6 +23,9 @@
 - Bind PR/branch/cost and normalized listener-liveness recovery outcomes into
   that receipt, and remove the separate 24,000-character revised-brief ceiling.
   Complete proposals remain stored once and use the same ordered review path.
+- Repair the three provenance mutation anchors after pagination introduced
+  duplicate SQL fragments, and run the focused provenance mutation gate on
+  exact branch-push CI commits instead of waiting for the PR-only full gate.
 
 # Changelog
 

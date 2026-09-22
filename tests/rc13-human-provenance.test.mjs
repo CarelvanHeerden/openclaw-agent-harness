@@ -8,6 +8,13 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const here=resolve(root,'tests');
 const {registerHarnessTools}=await import(pathToFileURL(resolve(root,'dist/tools/registration.js')));
 const {openStateStoreSync}=await import(pathToFileURL(resolve(root,'dist/state/store.js')));
+
+test('human provenance: branch-push CI runs the focused provenance mutation gate',()=>{
+ const ci=readFileSync(resolve(root,'.github','workflows','ci.yml'),'utf8');
+ assert.match(ci,/name: Provenance mutation check \(branch push\)/);
+ assert.match(ci,/github\.event_name == 'push'/);
+ assert.match(ci,/node scripts\/mutation-check\.mjs 'rc\.13 human provenance:'/, 'the exact-commit branch run must exercise all provenance mutations');
+});
 function makeRuntime({ riskLevel = "high", sessionDefaultUsd = 50, hardCeilingUsd, dbPath = ":memory:" } = {}) {
   const db = new Database(dbPath);
   db.exec(readFileSync(resolve(here, "..", "dist", "state", "schema.sql"), "utf8"));
