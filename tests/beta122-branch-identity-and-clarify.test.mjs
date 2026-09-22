@@ -312,9 +312,10 @@ test("the applied budget is written to the session and clamped by the ceiling", 
   assert.match(window, /UPDATE sessions SET budget_usd = \?/, "it must reach the column the loop enforces against");
   assert.match(window, /session_hard_ceiling_usd/, "the advertised ceiling still binds");
   assert.match(window, /tool\.answer_brief_budget_set/);
-  // The correction that gets filed is the REMAINDER, never the raw reply --
-  // otherwise "Confirm, Budget $40" lands in the acceptance criteria again.
-  assert.match(window, /\$\{parsed\.remainder \|\| trimmed\}/);
+  // rc.13: corrections no longer enter this activation path. Handler-level
+  // staging, exact confirmation and unchanged-limit checks live in
+  // rc13-brief-proposal.test.mjs.
+  assert.doesNotMatch(window, /OPERATOR CORRECTION TO THIS BRIEF/);
 });
 
 // ---------------------------------------------------------------------------

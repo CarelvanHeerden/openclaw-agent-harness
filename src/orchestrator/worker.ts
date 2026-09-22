@@ -15,6 +15,7 @@
  */
 
 import type { HarnessConfig } from "../config.js";
+import { createHash } from "node:crypto";
 import type { LeadPlanSubTask } from "./lead.js";
 import { renderConventionsForPrompt } from "./repo-conventions.js";
 import {
@@ -25,6 +26,7 @@ import {
 } from "./generated-artifacts.js";
 import { inferVerifyContract } from "./verify-contract.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
+import { renderObserveContractInstructions } from "./observe-contract.js";
 import type { AcpTargetEvidence, GuardDenial } from "../safety/bash-guard.js";
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 
@@ -98,6 +100,14 @@ export interface WorkerResult {
    */
   commitShas?: string[];
   sdkSessionId?: string;
+  /** Durable physical provider-call row associated with this turn. */
+  providerCallId?: string;
+  /** Provider-reported cumulative backend-session cost after this turn. */
+  providerCumulativeCostUsd?: number;
+  providerCostBaselineUsd?: number;
+  providerCostCurrency?: string;
+  actualPromptChars?: number;
+  actualPromptSha256?: string;
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
@@ -198,6 +208,7 @@ export interface WorkerDeps {
     streamOpenTimeoutSeconds?: number;
     /** beta.90 (Feature 2): stream-slow liveness callback; threaded to runWorkerSdk. Observability only. */
     onStreamSlow?: (info: { idleMs: number; elapsedMs: number; tokensOut: number; label: string }) => void;
+    onActivity?: (info: { kind: string; at: number }) => void;
     /** beta.90 (Feature 2): stream-slow idle-warn threshold (seconds); threaded to runWorkerSdk. */
     streamIdleWarnSeconds?: number;
     canUseTool: (toolName: string, toolInput: unknown) => Promise<{ allow: boolean; reason?: string }>;
@@ -223,6 +234,9 @@ export interface WorkerDeps {
   allowedToolCalls?: number;
   usageMeasured?: boolean;
   usageSource?: string;
+  providerCumulativeCostUsd?: number;
+  providerCostBaselineUsd?: number;
+  providerCostCurrency?: string;
   }>;
 
   /**
@@ -562,15 +576,7 @@ export function buildWorkerSystemPrompt(
   const generatorBlock = renderGeneratorInstruction(authorizedGenerators);
   if (generatorBlock) lines.push(generatorBlock);
   if (subTask.taskMode === "observe" && subTask.observeContract) {
-    lines.push(
-      "",
-      "## Structured observe deliverable (REQUIRED)",
-      "Your final message must be JSON (or an OBSERVE_RESULT fenced JSON block) with:",
-      '{"status":"ok|blocked","findings":[{"id":"...","summary":"...","evidence":[{"path":"...","line":1}]}],"bindings":[{"name":"...","type":"...","value":"...","evidence":[{"path":"..."}]}],"blockers":[]}',
-      `Required finding ids: ${subTask.observeContract.requiredFindings.join(", ") || "(none)"}`,
-      `Required bindings: ${subTask.observeContract.bindings.map((binding) => `${binding.name}:${binding.type}`).join(", ") || "(none)"}`,
-      "A promise to inspect, a tool-call count, or prose without this contract is not a finding and will not release dependent work.",
-    );
+    lines.push("", renderObserveContractInstructions(subTask.observeContract));
   }
   return lines.join("\n");
 }
@@ -625,6 +631,7 @@ export async function runWorker(
    * start against an identical deadline just fails identically.
    */
   firstTokenTimeoutSecondsOverride?: number,
+  onActivity?: (info: { kind: string; at: number }) => void,
 ): Promise<WorkerResult> {
   // rc.5: authorize generators for exactly the paths this sub-task owes. The
   // contract is derived with the SAME inference the verifier uses, so the set
@@ -649,6 +656,7 @@ export async function runWorker(
   const userMessage =
     `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
     (dispatchHint ? `\n\n${dispatchHint}` : "");
+  const actualPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
 
   const baseSha = await deps.gitBaseSha(worktreePath);
   const canUseTool = deps.buildCanUseTool();
@@ -674,6 +682,7 @@ export async function runWorker(
       // callback (when supplied by the loop) surfaces loop.worker_stream_slow +
       // bumps the session heartbeat. Never aborts.
       onStreamSlow,
+      onActivity,
       streamIdleWarnSeconds: deps.config.loop.worker_stream_idle_warn_seconds ?? 90,
       canUseTool,
     });
@@ -756,6 +765,11 @@ export async function runWorker(
     msToFirstToken: sdkResult.msToFirstToken,
     usageMeasured: sdkResult.usageMeasured ?? true,
     usageSource: sdkResult.usageSource,
+    providerCumulativeCostUsd: sdkResult.providerCumulativeCostUsd,
+    providerCostBaselineUsd: sdkResult.providerCostBaselineUsd,
+    providerCostCurrency: sdkResult.providerCostCurrency,
+    actualPromptChars: actualPrompt.length,
+    actualPromptSha256: createHash("sha256").update(actualPrompt).digest("hex"),
   };
 }
 

@@ -121,7 +121,7 @@ export type TaskMode = "observe" | "mutate" | "mixed";
 export type ObserveBindingType = "existing_repo_path" | "proposed_output_path" | "existing_symbol" | "status" | "blocker" | "contract_patch";
 export interface ObserveBindingApplication {
     consumerSeq: number;
-    fields: Array<"filesLikelyTouched" | "verify" | "intent" | "successCriteria" | "workerContext.changeSpec">;
+    fields: Array<"filesLikelyTouched" | "verify" | "intent" | "successCriteria" | "workerContext.changeSpec" | "requiredBehaviorChecks">;
     /** Optional exact token to replace in textual fields; otherwise a binding line is appended. */
     placeholder?: string;
 }
@@ -142,6 +142,14 @@ export interface RequiredBehaviorCheck {
     ciCheck: string;
     command?: string;
     required?: boolean;
+}
+export interface ObserveContractPatch {
+    filesLikelyTouched?: string[];
+    verify?: SubTaskVerify[];
+    intent?: string;
+    successCriteria?: string[];
+    workerContextChangeSpec?: string;
+    requiredBehaviorChecks?: RequiredBehaviorCheck[];
 }
 /**
  * beta.66 (warm-worker-context): Fable's investigation handed forward to the
@@ -295,6 +303,8 @@ export interface LeadPlan {
      * revise paths that synthesise a plan without calling a model).
      */
     actualCostUsd?: number;
+    /** False when any physical planning/scout turn lacked measurable usage. */
+    usageMeasured?: boolean;
     /**
      * beta.104: what the pre-planning repo scout did. Carried on the plan so the
      * loop can audit it, because the question "did the lead actually see the
@@ -310,6 +320,7 @@ export interface LeadScoutOutcome {
     ran: boolean;
     reportChars: number;
     costUsd?: number;
+    usageMeasured?: boolean;
     durationMs?: number;
     /**
      * Why the lead planned blind: `disabled`, `unwired`, `no_repo_hint`,
@@ -407,6 +418,7 @@ export interface LeadDeps {
      */
     callLeadModel: (brief: CrystallisedBrief, repos: string[], correctiveNote?: string) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
         costUsd?: number;
+        usageMeasured?: boolean;
         tokensIn?: number;
         tokensOut?: number;
     }>;
@@ -439,6 +451,7 @@ export interface LeadDeps {
         report: string;
         conventions?: RepoConvention[];
         costUsd?: number;
+        usageMeasured?: boolean;
         tokensIn?: number;
         tokensOut?: number;
         timedOut?: boolean;
@@ -476,6 +489,7 @@ export interface LeadDeps {
             workerContext: WorkerContext;
         }>;
         costUsd?: number;
+        usageMeasured?: boolean;
         tokensIn?: number;
         tokensOut?: number;
     }>;
@@ -549,4 +563,5 @@ export declare function runLeadPlanner(brief: CrystallisedBrief, deps: LeadDeps)
  */
 export declare function isRepoAllowed(repoFullName: string, allowed: string[]): boolean;
 export declare function mandatoryConventionSources(conventions: RepoConvention[] | undefined): string[];
+export declare function validatePlan(plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">, config: HarnessConfig): void;
 //# sourceMappingURL=lead.d.ts.map

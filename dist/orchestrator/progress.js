@@ -62,6 +62,7 @@ function round(n, dp = 4) {
 const SDK_ACTIVITY_EVENTS = new Set([
     "loop.progress",
     "loop.worker_end_turn",
+    "loop.worker_activity",
     "loop.subtask_verification",
     "loop.subtask_observe_completed",
     "loop.worker_timeout_retry",
@@ -201,10 +202,11 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     const plannedOrStarted = Math.max(all.length, plannedTotal);
     const DONE_STATES = new Set(["done", "completed", "completed_no_change"]);
     const FAIL_STATES = new Set(["failed", "failed_verification"]);
+    const ACTIVE_TASK_STATES = new Set(["running", "verifying", "retrying"]);
     const done = all.filter((s) => DONE_STATES.has(s.status)).length;
-    const running = all.filter((s) => s.status === "running").length;
+    const running = all.filter((s) => ACTIVE_TASK_STATES.has(s.status)).length;
     const failed = all.filter((s) => FAIL_STATES.has(s.status)).length;
-    const current = all.find((s) => s.status === "running") ??
+    const current = all.find((s) => ACTIVE_TASK_STATES.has(s.status)) ??
         all.find((s) => s.status === "pending") ??
         (all.length > 0 ? all[all.length - 1] : null);
     // Recent audit tail.
@@ -254,7 +256,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     const activityWindowMs = Math.max(30, sdkActivityStallSeconds) * 1000;
     const costZeroStallSuspected = status === "executing" &&
         !!current &&
-        current.status === "running" &&
+        ACTIVE_TASK_STATES.has(current.status) &&
         (current.costUsd ?? 0) === 0 &&
         current.startedAt != null &&
         Date.now() - current.startedAt > activityWindowMs;
@@ -381,7 +383,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     const clarificationId = needsClarification ? (row.clarification_id ?? null) : null;
     const headline = needsClarification && clarificationQuestion
         ? `Awaiting clarification: ${clarificationQuestion.slice(0, 400)} ` +
-            `(answer via harness_answer sessionId=${sessionId}${clarificationId ? ` clarificationId=${clarificationId}` : ""})`
+            `(human: /harness-answer ${sessionId}; delegated automation: harness_answer sessionId=${sessionId}${clarificationId ? ` clarificationId=${clarificationId}` : ""})`
         : buildHeadline({
             phase,
             status,
@@ -421,7 +423,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
      */
     const storageState = row.storage_state ?? "unknown";
     const storageReason = row.storage_reason ?? null;
-    const headlineWithWarnings = storageState !== "ok" && storageState !== "unknown"
+    const headlineWithWarnings = storageState !== "ok" && storageState !== "unknown" && storageState !== "released"
         ? `${baseHeadline}  ⛔ LOCAL STORAGE ${storageState.toUpperCase()}: ${storageReason ?? "the recorded work could not be found on disk"}.`
         : baseHeadline;
     return {

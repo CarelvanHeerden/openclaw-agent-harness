@@ -502,7 +502,7 @@ test("beta94 F1: source wiring — lead exports the elision, loop imports + audi
   assert.match(lead, /export function elideFinalScopeSubTask/);
   assert.match(lead, /scope\|boundar\|final/);
   const loop = S("src/orchestrator/loop.ts");
-  assert.match(loop, /import \{ elideFinalScopeSubTask \} from ".\/lead.js"/);
+  assert.match(loop, /import \{[^}]*elideFinalScopeSubTask[^}]*\} from ".\/lead.js"/);
   assert.match(loop, /loop\.final_verify_subtask_elided/);
   assert.match(loop, /runFinalScopeCheck/);
   assert.match(loop, /loop\.final_scope_check_ran/);

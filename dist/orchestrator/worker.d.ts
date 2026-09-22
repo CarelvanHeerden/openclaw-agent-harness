@@ -78,6 +78,14 @@ export interface WorkerResult {
      */
     commitShas?: string[];
     sdkSessionId?: string;
+    /** Durable physical provider-call row associated with this turn. */
+    providerCallId?: string;
+    /** Provider-reported cumulative backend-session cost after this turn. */
+    providerCumulativeCostUsd?: number;
+    providerCostBaselineUsd?: number;
+    providerCostCurrency?: string;
+    actualPromptChars?: number;
+    actualPromptSha256?: string;
     costUsd: number;
     tokensIn: number;
     tokensOut: number;
@@ -191,6 +199,10 @@ export interface WorkerDeps {
             tokensOut: number;
             label: string;
         }) => void;
+        onActivity?: (info: {
+            kind: string;
+            at: number;
+        }) => void;
         /** beta.90 (Feature 2): stream-slow idle-warn threshold (seconds); threaded to runWorkerSdk. */
         streamIdleWarnSeconds?: number;
         canUseTool: (toolName: string, toolInput: unknown) => Promise<{
@@ -225,6 +237,9 @@ export interface WorkerDeps {
         allowedToolCalls?: number;
         usageMeasured?: boolean;
         usageSource?: string;
+        providerCumulativeCostUsd?: number;
+        providerCostBaselineUsd?: number;
+        providerCostCurrency?: string;
     }>;
     /**
      * Injected git operations. Wraps `git -C <worktree>` calls.
@@ -352,6 +367,9 @@ modelOverride?: string,
  * call only. The loop escalates it per retry attempt, because retrying a slow
  * start against an identical deadline just fails identically.
  */
-firstTokenTimeoutSecondsOverride?: number): Promise<WorkerResult>;
+firstTokenTimeoutSecondsOverride?: number, onActivity?: (info: {
+    kind: string;
+    at: number;
+}) => void): Promise<WorkerResult>;
 export {};
 //# sourceMappingURL=worker.d.ts.map

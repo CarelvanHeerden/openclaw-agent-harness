@@ -29,6 +29,13 @@ reason `harness-pr-steward` lives here rather than in harness code.
 decides.** Answering on their behalf is a narrow, opt-in exception, described
 under "Acting automatically" and forbidden everywhere else.
 
+The human may answer in ordinary language. Translate that language into a clear
+proposal or recommendation, preserving limits and restrictions, and show the
+material interpretation before asking them to authorise it. Interpretation is
+agent work; authorisation is not. Your structured proposal never proves that
+the human approved it, and the human should not have to learn internal parser
+grammar to be understood.
+
 ## Rule 1 — read the live session, never a description of it
 
 Before you advise or act, call:
@@ -87,12 +94,20 @@ commit and the paths, not a paragraph of reasoning. Then give the exact reply
 the human can paste:
 
 ```
-harness_answer({ sessionId: "<id>", answer: "accept", clarificationSeq: <seq>, invokedBy: "<their slack id>" })
+/harness-answer <sessionId>
 ```
 
-Include `clarificationSeq` in the paste-ready call. If the pause moves on while
-the human is reading, the harness will refuse the answer and say which question
-is actually open, instead of applying it to the wrong one.
+The direct command returns a one-use receipt bound to the complete current
+question, identity, plan and limits. If the pause changes while the human reads,
+the answer is refused; obtain a fresh review command. Treat this command as the
+secure provenance fallback, not as permission to hand the interpretation work
+back to the human.
+
+When the decision-specific review spans several pages, relay the emitted
+`review <page>` command exactly and let the human send each page request
+directly. Do not summarise unseen pages, skip ahead, or suggest shortening an
+already-persisted brief/plan. The receipt remains unusable until every page has
+been served and remains bound to the hash of the complete stored state.
 
 ## Rule 3 — when "accept" is the right recommendation
 
@@ -269,3 +284,13 @@ as `evidence`.
 - [ ] Is the answer the single word `accept`?
 
 Any unchecked box means relay it and let the human decide.
+
+## Trusted human provenance (rc.13)
+
+Human answers are no longer relayed through the agent tool. Ask the requester
+to send `/harness-answer <sessionId>` directly and then use its one-use command.
+The host-authenticated sender and full pending state are bound to the receipt;
+`answeredBy: "human"` in a tool call grants no authority. Delegated automation
+continues to use `harness_answer` with `answeredBy: "automation"` and evidence.
+Brief approval/revision and budget increases remain non-delegable. If direct
+commands are unavailable, stay paused; never emulate the command with a tool.

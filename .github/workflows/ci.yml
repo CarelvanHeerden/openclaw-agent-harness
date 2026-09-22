@@ -146,6 +146,17 @@ jobs:
         timeout-minutes: 45
         run: node scripts/mutation-check.mjs
 
+      - name: Provenance mutation check (branch push)
+        # Branch pushes intentionally skip the full ~17-minute mutation suite,
+        # but authenticated approval is too load-bearing to wait for a PR run.
+        # Keep this focused gate on the exact pushed commit; PR/main still run
+        # the complete mutation set above.
+        if: >-
+          matrix.node-version == '24' &&
+          github.event_name == 'push' &&
+          github.ref != 'refs/heads/main'
+        run: node scripts/mutation-check.mjs 'rc.13 human provenance:'
+
       - name: Smoke
         # Use a Node ESM loader hook to stub `openclaw/plugin-sdk/plugin-entry`
         # since the real package only exists inside the OpenClaw runtime, not

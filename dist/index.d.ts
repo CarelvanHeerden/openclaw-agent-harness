@@ -44,6 +44,8 @@ export interface HarnessToolDefinition {
     execute: (callIdOrInput: unknown, paramsOrCtx?: unknown, context?: unknown) => Promise<unknown> | unknown;
 }
 export interface HarnessPluginApi {
+    /** Durable installed plugin root supplied by OpenClaw. */
+    rootDir?: string;
     registrationMode?: "cli-metadata" | "runtime";
     logger: {
         info: (msg: string, meta?: unknown) => void;
@@ -82,6 +84,25 @@ export interface HarnessPluginApi {
     }) => (() => void) | {
         dispose?: () => void;
     };
+    /** Host-dispatched commands bypass the model/tool path. */
+    registerCommand?: (command: {
+        name: string;
+        description: string;
+        acceptsArgs: boolean;
+        requireAuth: boolean;
+        channels?: string[];
+        handler: (context: {
+            senderId?: string;
+            channel?: string;
+            isAuthorizedSender?: boolean;
+            args?: string;
+            commandBody?: string;
+        }) => Promise<{
+            text: string;
+        }> | {
+            text: string;
+        };
+    }) => unknown;
     registerService?: (svc: {
         id: string;
         start?: () => Promise<void> | void;

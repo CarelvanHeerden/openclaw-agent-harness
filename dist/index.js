@@ -262,6 +262,7 @@ export function bootstrapHarnessSync(api) {
                 }
             },
             scratchDir: dataDir,
+            pluginRoot: api.rootDir,
             // The same overrides the v1 paths use. Omitting them here made
             // `models.price_overrides` a no-op on OpenCode -- see `priceOverrides`.
             priceOverrides: config.models.price_overrides,
@@ -691,10 +692,12 @@ export function bootstrapHarnessSync(api) {
                                     secretToken: ghToken,
                                     logger: api.logger,
                                 });
+                                const pricedScout = backendRouter.priceTurn("scout", s);
                                 return {
                                     report: s.finalMessage,
                                     conventions,
-                                    costUsd: backendRouter.priceTurn("scout", s).costUsd ?? 0,
+                                    costUsd: pricedScout.costUsd ?? 0,
+                                    usageMeasured: pricedScout.costUsd !== undefined,
                                     tokensIn: s.tokensIn,
                                     tokensOut: s.tokensOut,
                                     timedOut: s.stopReason === "timeout",
@@ -713,7 +716,15 @@ export function bootstrapHarnessSync(api) {
                                 deniedTools: SCOUT_DENIED_TOOLS,
                                 logger: api.logger,
                             });
-                            return { report: r.report, conventions, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut, timedOut: r.timedOut };
+                            return {
+                                report: r.report,
+                                conventions,
+                                costUsd: r.costUsd,
+                                usageMeasured: r.usageMeasured,
+                                tokensIn: r.tokensIn,
+                                tokensOut: r.tokensOut,
+                                timedOut: r.timedOut,
+                            };
                         }
                         catch (err) {
                             api.logger.warn("[lead] model scout failed after conventions were loaded; planning retains convention context", { repo: repoFullName, err: String(err) });
@@ -820,7 +831,7 @@ export function bootstrapHarnessSync(api) {
                 return plannedModel;
             return `opencode:${route.model ?? plannedModel}`;
         },
-        runWorker: async ({ brief, subTask, plan, worktreePath, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, firstTokenTimeoutSecondsOverride }) => {
+        runWorker: async ({ brief, subTask, plan, worktreePath, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, onActivity, firstTokenTimeoutSecondsOverride }) => {
             const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
             const canUseTool = buildBashGuard(config.safety);
             const resolution = pat.resolve({
@@ -873,11 +884,16 @@ export function bootstrapHarnessSync(api) {
                         model: backendRouter.backendFor("worker").model ?? params.model,
                         effort: backendRouter.backendFor("worker").effort,
                         resumeSessionId: params.resumeSessionId,
+                        resumeCumulativeCostUsd: params.resumeSessionId
+                            ? state.db.prepare(`SELECT cumulative_cost_usd FROM provider_session_usage
+                      WHERE backend = 'opencode' AND provider_session_id = ?`).get(params.resumeSessionId)?.cumulative_cost_usd
+                            : undefined,
                         timeoutSeconds: params.timeoutSeconds,
                         streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
                         firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
                         streamIdleWarnSeconds: params.streamIdleWarnSeconds,
                         onStreamSlow: params.onStreamSlow,
+                        onActivity: params.onActivity,
                         // NOT params.canUseTool: that guard keys on Claude Code tool
                         // names and would fall through to allow on every ACP call.
                         acpGuard: focusedWorkerAcpGuard(workerGuard),
@@ -898,6 +914,9 @@ export function bootstrapHarnessSync(api) {
                         costUsd: priced.costUsd ?? 0,
                         usageMeasured: priced.costUsd !== undefined && r.usageSource !== "unavailable",
                         usageSource: r.usageSource,
+                        providerCumulativeCostUsd: r.cumulativeCostUsd,
+                        providerCostBaselineUsd: r.costBaselineUsd,
+                        providerCostCurrency: r.costCurrency,
                     };
                 },
                 gitBaseSha: (wt) => git.baseSha(wt),
@@ -909,7 +928,7 @@ export function bootstrapHarnessSync(api) {
                 // beta.53 (P2): capture uncommitted working-tree changes for the audit
                 // + retry logic (wrote-but-didn't-commit vs zero-work).
                 gitStatusPorcelain: (wt) => git.statusPorcelain(wt),
-            }, resumeSessionId, dispatchHint, onStreamSlow, modelOverride, firstTokenTimeoutSecondsOverride);
+            }, resumeSessionId, dispatchHint, onStreamSlow, modelOverride, firstTokenTimeoutSecondsOverride, onActivity);
         },
         runAdversary: async ({ brief, plan, sessionId, runtime, requester, baseSha, priorFindings, revision }) => {
             // beta.67 (Bug B): diff against the branch's persisted FORK-POINT sha
@@ -1057,6 +1076,7 @@ export function bootstrapHarnessSync(api) {
                             },
                             sdkSessionId: r.sdkSessionId,
                             costUsd: r.costUsd,
+                            usageMeasured: r.usageMeasured,
                             tokensIn: r.tokensIn,
                             tokensOut: r.tokensOut,
                         };

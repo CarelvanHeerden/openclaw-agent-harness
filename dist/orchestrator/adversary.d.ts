@@ -162,6 +162,7 @@ export interface ReviewReport {
     summary: string;
     sdkSessionId?: string;
     costUsd: number;
+    usageMeasured?: boolean;
     tokensIn: number;
     tokensOut: number;
     /**
@@ -208,6 +209,7 @@ export interface AdversaryDeps {
         };
         sdkSessionId: string;
         costUsd: number;
+        usageMeasured?: boolean;
         tokensIn: number;
         tokensOut: number;
     }>;

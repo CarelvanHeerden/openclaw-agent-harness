@@ -270,7 +270,7 @@ class AcpConnection {
  * enforced here by aborting the child.
  */
 export async function runWorkerAcp(params) {
-    const { agent, worktreePath, systemPrompt, userMessage, model, effort, resumeSessionId, timeoutSeconds, streamOpenTimeoutSeconds = 120, firstTokenTimeoutSeconds = 30, streamIdleWarnSeconds = 90, onStreamSlow, acpGuard, secretToken, logger, traceLabel, } = params;
+    const { agent, worktreePath, systemPrompt, userMessage, model, effort, resumeSessionId, resumeCumulativeCostUsd, timeoutSeconds, streamOpenTimeoutSeconds = 120, firstTokenTimeoutSeconds = 30, streamIdleWarnSeconds = 90, onStreamSlow, onActivity, acpGuard, secretToken, logger, traceLabel, } = params;
     const startedAt = Date.now();
     const logs = [];
     const denied = [];
@@ -282,13 +282,19 @@ export async function runWorkerAcp(params) {
     let msToFirstToken;
     let lastActivityAt = Date.now();
     let sessionId = "";
-    let costBaseline = null;
+    let costBaseline = resumeSessionId
+        ? (typeof resumeCumulativeCostUsd === "number" && Number.isFinite(resumeCumulativeCostUsd)
+            ? resumeCumulativeCostUsd
+            : null)
+        : 0;
     let costLatest = null;
     /** Divides a resumed session's prior spend from this turn's own. See `usage_update`. */
     let promptSent = false;
     let contextUsed;
     let contextSize;
-    let sawAnyCost = false;
+    let sawCurrentTurnCost = false;
+    let baselineMismatch = false;
+    let costCurrency;
     let tokensIn = 0;
     let tokensOut = 0;
     let tokensCached = 0;
@@ -397,15 +403,18 @@ export async function runWorkerAcp(params) {
         t.unref?.();
         timers.push(t);
     };
-    // Phase 1: launched but never produced a single session/update.
-    arm(streamOpenTimeoutSeconds * 1000, () => {
-        if (!streamOpened) {
-            abortReason = "first_token_timeout";
-            timeoutInfo = { kind: "stream_open", deadlineSeconds: streamOpenTimeoutSeconds, elapsedMs: Date.now() - startedAt };
-            pushLog(`[acp] stream-open watchdog fired after ${streamOpenTimeoutSeconds}s`);
-            reap();
-        }
-    });
+    // Phase 1 starts when the current prompt is sent. Session/load may replay
+    // historical frames; those are not evidence that this turn's stream opened.
+    const armStreamOpenWatchdog = () => {
+        arm(streamOpenTimeoutSeconds * 1000, () => {
+            if (!streamOpened) {
+                abortReason = "first_token_timeout";
+                timeoutInfo = { kind: "stream_open", deadlineSeconds: streamOpenTimeoutSeconds, elapsedMs: Date.now() - startedAt };
+                pushLog(`[acp] stream-open watchdog fired after ${streamOpenTimeoutSeconds}s`);
+                reap();
+            }
+        });
+    };
     // Overall turn budget. The hard limit: it is armed unconditionally at turn
     // start and is never rearmed, extended or disarmed by either phase timer, so
     // no combination of the other two can outlast it.
@@ -433,6 +442,8 @@ export async function runWorkerAcp(params) {
     // Liveness only; never aborts, matching the SDK path's stream-slow semantics.
     if (onStreamSlow) {
         const iv = setInterval(() => {
+            if (!promptSent || !streamOpened)
+                return;
             const idleMs = Date.now() - lastActivityAt;
             if (idleMs >= streamIdleWarnSeconds * 1000) {
                 onStreamSlow({ idleMs, elapsedMs: Date.now() - startedAt, tokensOut: 0, label: "acp" });
@@ -443,7 +454,14 @@ export async function runWorkerAcp(params) {
     }
     const handleUpdate = (update) => {
         const kind = update["sessionUpdate"];
-        markActivity();
+        if (!promptSent && kind !== "usage_update") {
+            trace?.record("meta", { event: "resume_replay_ignored", sessionUpdate: kind ?? null });
+            return;
+        }
+        if (promptSent) {
+            markActivity();
+            onActivity?.({ kind: kind ?? "unknown", at: lastActivityAt });
+        }
         switch (kind) {
             case "agent_message_chunk":
             case "agent_message": {
@@ -469,7 +487,12 @@ export async function runWorkerAcp(params) {
                     contextSize = size;
                 const cost = update["cost"];
                 if (cost && typeof cost.amount === "number") {
-                    sawAnyCost = true;
+                    const currency = (cost.currency ?? "USD").toUpperCase();
+                    if (costCurrency && costCurrency !== currency)
+                        baselineMismatch = true;
+                    costCurrency = currency;
+                    if (currency !== "USD" || !Number.isFinite(cost.amount) || cost.amount < 0)
+                        baselineMismatch = true;
                     // Cumulative per SESSION -- and this call creates the session it
                     // prompts, so the cumulative figure and this turn's cost are the same
                     // number.
@@ -487,11 +510,16 @@ export async function runWorkerAcp(params) {
                     // A figure arriving BEFORE the prompt is genuinely a baseline: that
                     // is a resumed session carrying earlier spend, and it must still be
                     // subtracted.
-                    if (!promptSent)
+                    if (!promptSent) {
+                        if (costBaseline !== null && Math.abs(costBaseline - cost.amount) > 1e-9) {
+                            baselineMismatch = true;
+                        }
                         costBaseline = cost.amount;
-                    else if (costBaseline === null)
-                        costBaseline = 0;
-                    costLatest = cost.amount;
+                    }
+                    else {
+                        sawCurrentTurnCost = true;
+                        costLatest = cost.amount;
+                    }
                 }
                 break;
             }
@@ -594,6 +622,15 @@ export async function runWorkerAcp(params) {
         if (method !== "session/update")
             return;
         const p = notifyParams;
+        const expectedSessionId = sessionId || resumeSessionId;
+        if (expectedSessionId && p.sessionId && p.sessionId !== expectedSessionId) {
+            trace?.record("meta", {
+                event: "foreign_session_update_ignored",
+                expectedSessionId,
+                receivedSessionId: p.sessionId,
+            });
+            return;
+        }
         if (p?.update)
             handleUpdate(p.update);
     }, trace);
@@ -697,6 +734,8 @@ export async function runWorkerAcp(params) {
         // is in flight, and it is this flag that tells that figure apart from a
         // resumed session's opening balance.
         promptSent = true;
+        lastActivityAt = Date.now();
+        armStreamOpenWatchdog();
         const res = await conn.request("session/prompt", {
             sessionId,
             prompt: [{ type: "text", text: `${systemPrompt}\n\n---\n\n${userMessage}` }],
@@ -733,14 +772,21 @@ export async function runWorkerAcp(params) {
         stopReason = abortReason;
     if (stderrParts.length > 0)
         pushLog(`[acp stderr] ${scrub(stderrParts.join("").slice(-2000))}`);
-    const costUsd = costBaseline !== null && costLatest !== null ? Math.max(0, costLatest - costBaseline) : 0;
+    const costDeltaMeasured = sawCurrentTurnCost &&
+        !baselineMismatch &&
+        costBaseline !== null &&
+        costLatest !== null &&
+        costLatest >= costBaseline;
+    const costUsd = costDeltaMeasured ? costLatest - costBaseline : 0;
     // Computed once and shared with the return below. These were two separate
     // expressions, and the logged one ignored `sawTokenSplit` -- so an agent that
     // reported tokens but no cost (OpenCode against a custom provider does
     // exactly this) was priced correctly off the catalogue while the log claimed
     // `unavailable`. The operator-visible signal said the cost path was broken at
     // the moment it was working, which is the most expensive kind of wrong.
-    const usageSource = acpUsageSource(sawAnyCost, sawTokenSplit);
+    const usageSource = sawCurrentTurnCost && !costDeltaMeasured
+        ? "unavailable"
+        : acpUsageSource(sawCurrentTurnCost, sawTokenSplit);
     logger?.info("[acp] worker turn finished", {
         stopReason,
         sessionId,
@@ -748,6 +794,9 @@ export async function runWorkerAcp(params) {
         unguardedReads,
         allowedToolCalls,
         usageSource,
+        costBaseline,
+        costLatest,
+        baselineMismatch,
     });
     trace?.record("meta", {
         event: "turn_end",
@@ -758,6 +807,9 @@ export async function runWorkerAcp(params) {
         unguardedReads,
         allowedToolCalls,
         usageSource,
+        cumulativeCostUsd: costDeltaMeasured ? costLatest ?? undefined : undefined,
+        costBaselineUsd: costDeltaMeasured ? costBaseline ?? undefined : undefined,
+        costCurrency: costDeltaMeasured ? costCurrency ?? "USD" : undefined,
         tokensIn,
         tokensOut,
         stderr: scrub(stderrParts.join("").slice(-4000)),
@@ -777,6 +829,9 @@ export async function runWorkerAcp(params) {
         streamOpened,
         msToFirstToken,
         usageSource,
+        cumulativeCostUsd: costDeltaMeasured ? costLatest ?? undefined : undefined,
+        costBaselineUsd: costDeltaMeasured ? costBaseline ?? undefined : undefined,
+        costCurrency: costDeltaMeasured ? costCurrency ?? "USD" : undefined,
         contextUsed,
         contextSize,
         deniedToolCalls: denied,

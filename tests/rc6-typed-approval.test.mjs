@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 let confirm, registerHarnessTools, Database;
 try {
   confirm = await import("../dist/tools/brief-confirmation.js");
-  ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   confirm = null;
@@ -67,6 +67,57 @@ test("rc6: the shorthand is read in any order, case, or separator", { skip }, ()
     assert.equal(r.timeoutSeconds, 36000, `clock in: ${reply}`);
     assert.equal(r.approves, true, `approval in: ${reply}`);
     assert.deepEqual(r.ambiguities, [], `unambiguous: ${reply}`);
+  }
+});
+
+test("rc13 smoke: currency-first budget and bare time survive line breaks", { skip }, () => {
+  for (const reply of [
+    "Please continue\n$50 budget\n5 hours",
+    "Please continue $50 budget 5 hours",
+    "Please continue\n$50 budget\n5 hours\nPreserve all restrictions.",
+  ]) {
+    const r = confirm.parseConfirmationReply(reply);
+    assert.equal(r.budgetUsd, 50, `budget in: ${reply}`);
+    assert.equal(r.timeoutSeconds, 5 * 3600, `clock in: ${reply}`);
+    assert.equal(r.approves, true, `approval in: ${reply}`);
+    assert.deepEqual(r.ambiguities, [], `unambiguous: ${reply}`);
+    assert.doesNotMatch(r.remainder, /\$50|5 hours|budget/i);
+    assert.doesNotMatch(r.remainder, /preserve all restrictions/i);
+  }
+});
+
+test("rc13 post-audit: preservation aliases stay metadata and real corrections stay feature text", { skip }, () => {
+  for (const preservation of [
+    "Honor all restrictions",
+    "Keep current budget and time limits",
+    "Retain existing scope",
+  ]) {
+    const r = confirm.parseConfirmationReply(`Please continue\n$50 budget\n5 hours\n${preservation}`);
+    assert.equal(r.budgetUsd, 50, preservation);
+    assert.equal(r.timeoutSeconds, 18000, preservation);
+    assert.equal(r.approves, true, preservation);
+    assert.deepEqual(r.ambiguities, [], preservation);
+    assert.equal(r.remainder, "confirm", preservation);
+  }
+  const corrected = confirm.parseConfirmationReply("Please continue\n$50 budget\n5 hours\nUse performedAt");
+  assert.equal(corrected.budgetUsd, 50);
+  assert.equal(corrected.timeoutSeconds, 18000);
+  assert.equal(corrected.approves, false);
+  assert.equal(corrected.remainder, "Use performedAt");
+});
+
+test("rc13 post-audit: holds, provenance, alternatives, and partial numbers fail closed", { skip }, () => {
+  for (const reply of [
+    "Please continue\n$50 budget\n5 hours\nDo not start yet",
+    "The prior message said budget $50",
+    "If approved, budget $50",
+    "confirm, budget $40 or $50",
+    "confirm, budget $50.123",
+    "confirm\n5 hours\n10 hours",
+  ]) {
+    const r = confirm.parseConfirmationReply(reply);
+    assert.equal(r.approves, false, reply);
+    assert.ok(r.ambiguities.length > 0, reply);
   }
 });
 
@@ -288,6 +339,83 @@ test("rc6: correcting the reply then starts the run under the stated limits", { 
   assert.equal(row.status, "planning");
 });
 
+test("rc13 smoke: the exact multiline reply persists both authorised limits", { skip }, async () => {
+  const runtime = makeRuntime({ sessionDefaultUsd: 40 });
+  const { tools, sessionId } = await pausedSession(runtime);
+  const result = await tools.get("harness_answer").execute({
+    sessionId,
+    answer: "Please continue\n$50 budget\n5 hours\nPreserve all restrictions.",
+    invokedBy: "U1",
+  });
+  assert.equal(result.details.ok, true);
+  assert.equal(result.details.briefConfirmed, true);
+  assert.equal(runtime.loopCalls.length, 1);
+  const row = runtime.state.db.prepare(
+    "SELECT budget_usd, hard_timeout_seconds, status FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  assert.equal(row.budget_usd, 50);
+  assert.equal(row.hard_timeout_seconds, 5 * 3600);
+  assert.equal(row.status, "planning");
+  assert.equal(result.details.budgetUsd, 50);
+  assert.equal(result.details.hardTimeoutSeconds, 5 * 3600);
+  const brief = JSON.parse(runtime.state.db.prepare(
+    "SELECT crystallised_prompt FROM sessions WHERE id = ?",
+  ).get(sessionId).crystallised_prompt);
+  assert.equal(brief.acceptanceCriteria.length, 1, "preservation metadata never becomes feature scope");
+  assert.doesNotMatch(JSON.stringify(brief), /\$50|Preserve all restrictions/);
+});
+
+test("rc13 post-audit: a hold causes zero writes and zero dispatches", { skip }, async () => {
+  const runtime = makeRuntime({ sessionDefaultUsd: 40 });
+  const { tools, sessionId } = await pausedSession(runtime);
+  const before = runtime.state.db.prepare(
+    "SELECT budget_usd,hard_timeout_seconds,crystallised_prompt FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  const result = await tools.get("harness_answer").execute({
+    sessionId,
+    answer: "Please continue\n$50 budget\n5 hours\nDo not start yet",
+    invokedBy: "U1",
+  });
+  const after = runtime.state.db.prepare(
+    "SELECT budget_usd,hard_timeout_seconds,crystallised_prompt,status,clarification_answer FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  assert.equal(result.details.started, false);
+  assert.equal(runtime.loopCalls.length, 0);
+  assert.equal(after.budget_usd, before.budget_usd);
+  assert.equal(after.hard_timeout_seconds, before.hard_timeout_seconds);
+  assert.equal(after.crystallised_prompt, before.crystallised_prompt);
+  assert.equal(after.status, "awaiting_clarification");
+  assert.equal(after.clarification_answer, null);
+});
+
+test("rc13 post-audit: limit and brief writes roll back together", { skip }, async () => {
+  const runtime = makeRuntime({ sessionDefaultUsd: 40 });
+  const { tools, sessionId } = await pausedSession(runtime);
+  const before = runtime.state.db.prepare(
+    "SELECT budget_usd,hard_timeout_seconds,crystallised_prompt FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  runtime.state.db.exec(
+    `CREATE TRIGGER deny_confirmation_timeout
+       BEFORE UPDATE OF hard_timeout_seconds ON sessions
+       BEGIN SELECT RAISE(ABORT, 'timeout write denied'); END`,
+  );
+  const result = await tools.get("harness_answer").execute({
+    sessionId,
+    answer: "Please continue\n$50 budget\n5 hours",
+    invokedBy: "U1",
+  });
+  const after = runtime.state.db.prepare(
+    "SELECT budget_usd,hard_timeout_seconds,crystallised_prompt,status,clarification_answer FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  assert.equal(result.details.atomicApplyFailed, true);
+  assert.equal(runtime.loopCalls.length, 0);
+  assert.equal(after.budget_usd, before.budget_usd);
+  assert.equal(after.hard_timeout_seconds, before.hard_timeout_seconds);
+  assert.equal(after.crystallised_prompt, before.crystallised_prompt);
+  assert.equal(after.status, "awaiting_clarification");
+  assert.equal(after.clarification_answer, null);
+});
+
 test("rc6: a retried confirmation cannot start a second run", { skip }, async () => {
   const runtime = makeRuntime();
   const { tools, sessionId } = await pausedSession(runtime);
@@ -295,7 +423,8 @@ test("rc6: a retried confirmation cannot start a second run", { skip }, async ()
   const again = await tools.get("harness_answer").execute({ sessionId, answer: "Confirm, $60, 10 hours", invokedBy: "U1" });
 
   assert.equal(again.details.ok, false);
-  assert.equal(again.details.badStatus, "planning");
+  assert.match(again.content[0].text, /No pending question/);
+  assert.equal(runtime.state.db.prepare("SELECT status FROM sessions WHERE id=?").get(sessionId).status, "planning");
   assert.equal(runtime.loopCalls.length, 1, "a relayed duplicate must not buy a second session");
 });
 

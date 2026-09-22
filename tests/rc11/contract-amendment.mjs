@@ -15,7 +15,7 @@ const {
   closeActiveDeadline,
   activeDeadlineSnapshot,
 } = await import("../../dist/orchestrator/active-deadline.js");
-const { registerHarnessTools } = await import("../../dist/tools/registration.js");
+const { registerHarnessTools } = await import("../fixtures/direct-answer-registration.mjs");
 
 const ANSWER =
   "Continue sub-task 3 without reading, creating or modifying .env or .env.* files, including .env.example. " +
@@ -531,6 +531,8 @@ test("rc.11: CI packs, installs, compares and uploads one exact release artifact
   assert.equal(packageJson.openclaw.compat.minGatewayVersion, "2026.6.1");
   assert.equal(packageJson.openclaw.build.openclawVersion, "2026.6.1");
   assert.match(verifier, /filesUnder\(installedRoot, "\."\)/);
+  assert.match(verifier, /resolveOpenCodeBinary/);
+  assert.match(verifier, /spawnSync\(openCode\.command, \["--version"\]/);
   assert.match(readme, /test:no-build.*is \*\*not\*\*/s);
   assert.match(readme, /openclaw-agent-harness-verify-artifact/);
 });
@@ -556,7 +558,7 @@ function deadlineDb() {
     `INSERT INTO sessions
        (id,slack_thread,slack_channel,requester,requester_gh,repo,branch,worktree_path,status,
         created_at,updated_at,budget_usd,cost_usd,cycles_ran,hard_timeout_seconds)
-     VALUES ('S','T','C','U','u','o/r','b','/w','planning',0,0,50,0,0,18000)`,
+     VALUES ('S','T','C','U1','u','o/r','b','/w','planning',0,0,50,0,0,18000)`,
   ).run();
   return db;
 }
@@ -658,6 +660,12 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
     runtime,
   );
 
+  // Provenance checks exercise production tool registration, not the adapter
+  // that simulates direct human commands for historical business-logic tests.
+  const { registerHarnessTools: registerProduction } = await import("../../dist/tools/registration.js");
+  registerProduction({ logger: {info(){},warn(){},error(){}}, registerTool(def) {
+    if(def.name === "harness_answer") answerFactory=def; return ()=>{};
+  }}, runtime);
   assert.equal(typeof answerFactory, "function", "harness_answer is registered as a contextual tool factory");
   const spoofed = await answerFactory({ requesterSenderId: "U2", senderIsOwner: true }).execute("call", {
     sessionId: "S",
@@ -710,7 +718,8 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
     clarificationSeq: 3,
     clarificationId: "Q1",
   });
-  assert.equal(duplicate.details.idempotent, true);
+  assert.equal(duplicate.details.ok, false);
+  assert.match(duplicate.content[0].text, /No pending question/);
   assert.equal(resumed, 1, "duplicate delivery must not start a second loop");
 
   const conflict = await tools.get("harness_answer").execute({
@@ -720,7 +729,8 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
     clarificationSeq: 3,
     clarificationId: "Q1",
   });
-  assert.equal(conflict.details.amendmentAnswerConflict, true);
+  assert.equal(conflict.details.ok, false);
+  assert.match(conflict.content[0].text, /No pending question/);
 });
 
 test("rc.11: a stale or missing clarification id cannot mutate the plan", async () => {
@@ -760,6 +770,7 @@ test("rc.11: a stale or missing clarification id cannot mutate the plan", async 
       invokedBy: "U1",
       clarificationSeq: 3,
       clarificationId,
+      answeredBy: "automation", evidence: "Reject stale identity before any amendment.",
     });
     assert.equal(result.details.staleClarificationId, true);
   }

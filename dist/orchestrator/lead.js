@@ -260,6 +260,7 @@ export async function runLeadPlanner(brief, deps) {
     // best-effort: any failure leaves `brief.repoScoutReport` unset, and the
     // planning prompt is then byte-identical to b103's.
     let scoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
+    let planningUsageMeasured = true;
     const scoutEnabled = deps.config.loop?.lead_repo_scout_enabled !== false;
     const conventionsNeeded = deps.config.brief?.ingest_repo_conventions !== false &&
         !(brief.repoConventions?.length);
@@ -303,6 +304,8 @@ export async function runLeadPlanner(brief, deps) {
             const startedAt = Date.now();
             try {
                 const result = await deps.scoutRepo({ brief, repoFullName: repoForScout, runModel: scoutEnabled });
+                if (result?.usageMeasured === false)
+                    planningUsageMeasured = false;
                 if (Array.isArray(result?.conventions)) {
                     brief.repoConventions = result.conventions;
                 }
@@ -317,6 +320,7 @@ export async function runLeadPlanner(brief, deps) {
                         ran: true,
                         reportChars: report.length,
                         costUsd: result?.costUsd,
+                        usageMeasured: result?.usageMeasured,
                         durationMs: Date.now() - startedAt,
                         timedOut: result?.timedOut === true ? true : undefined,
                         truncated: bounds.truncated ? true : undefined,
@@ -346,6 +350,7 @@ export async function runLeadPlanner(brief, deps) {
                     scoutOutcome = {
                         ran: false, reportChars: 0, skippedReason: "empty_report",
                         costUsd: result?.costUsd,
+                        usageMeasured: result?.usageMeasured,
                         durationMs: Date.now() - startedAt,
                         timedOut: result?.timedOut === true ? true : undefined,
                     };
@@ -360,6 +365,8 @@ export async function runLeadPlanner(brief, deps) {
                 }
             }
             catch (err) {
+                if (scoutEnabled)
+                    planningUsageMeasured = false;
                 if (conventionsRequired)
                     throw err;
                 // Cost is genuinely unknown here: the callable threw rather than
@@ -397,6 +404,8 @@ export async function runLeadPlanner(brief, deps) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             raw = await deps.callLeadModel(brief, deps.config.repos.allowed, correctiveNote);
+            if (raw.usageMeasured === false)
+                planningUsageMeasured = false;
             leadCallCostUsd += raw.costUsd ?? 0;
             // beta.44: revise flow. Override the lead branch/repo BEFORE validation.
             if (brief.pinnedBranch) {
@@ -473,6 +482,8 @@ export async function runLeadPlanner(brief, deps) {
             if (deps.callWorkerContextModel) {
                 try {
                     const topUp = await deps.callWorkerContextModel(brief, raw, missing);
+                    if (topUp.usageMeasured === false)
+                        planningUsageMeasured = false;
                     // v2.0.0-beta.1: bill the top-up. It joins `leadCallCostUsd`, which
                     // is what `actualCostUsd` is built from, so before this the call was
                     // free in the ledger and paid for in reality.
@@ -548,7 +559,14 @@ export async function runLeadPlanner(brief, deps) {
     // scout's cost was already recorded on the outcome and also never reached the
     // ledger, so it joins the same total.
     const actualCostUsd = Number((leadCallCostUsd + (scoutOutcome?.costUsd ?? 0)).toFixed(6));
-    const plan = { ...raw, worktreePath, approxCostUsd, actualCostUsd, scout: scoutOutcome };
+    const plan = {
+        ...raw,
+        worktreePath,
+        approxCostUsd,
+        actualCostUsd,
+        usageMeasured: planningUsageMeasured,
+        scout: scoutOutcome,
+    };
     deps.logger.info("[lead] plan", {
         subTaskCount: plan.subTasks.length,
         risk: plan.riskLevel,
@@ -590,7 +608,7 @@ function validateMandatoryConventionAcknowledgement(plan, conventions) {
         throw new LeadPlanValidationError(`lead plan did not acknowledge mandatory repository conventions: ${missing.join(", ")}`);
     }
 }
-function validatePlan(plan, config) {
+export function validatePlan(plan, config) {
     if (!plan.repo || !plan.repo.includes("/")) {
         throw new Error(`lead plan repo "${plan.repo}" is not owner/repo`);
     }

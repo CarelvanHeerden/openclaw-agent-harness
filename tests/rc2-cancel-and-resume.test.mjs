@@ -35,7 +35,7 @@ const skip = (await scenarioAvailable()) ? false : "dist/ not built";
 const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
 const { BudgetEnforcer } = await import("../dist/budgets/enforcer.js");
 const { PatRouter } = await import("../dist/auth/pat-router.js");
-const { registerHarnessTools } = await import("../dist/tools/registration.js");
+const { registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs");
 const { HARNESS_SCRATCH_DIR, HARNESS_EXCLUDE_PATTERNS, isHarnessScratch } =
   await import("../dist/adapters/git-worktree.js");
 const { observeReportIsNarration, buildClarificationResumeHint } =

@@ -37,7 +37,7 @@ let timeExtension, recoveryGuard, registerHarnessTools, Database;
 try {
   timeExtension = await import("../dist/orchestrator/time-extension.js");
   recoveryGuard = await import("../dist/state/recovery-guard.js");
-  ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   timeExtension = null;

@@ -185,7 +185,7 @@ test("beta.85: per-sub-task native progress fires at worker_end_turn", skip, () 
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
     .replace(/\s+/g, " ");
   assert.ok(
-    /loop\.worker_end_turn[\s\S]{0,500}deliverProgress\?\.\(sessionId, "executing"\)/.test(src),
+    /loop\.worker_end_turn[\s\S]{0,800}deliverProgress\?\.\(sessionId, "executing"\)/.test(src),
     "deliverProgress must fire per worker_end_turn",
   );
 });

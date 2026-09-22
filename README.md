@@ -2,8 +2,8 @@
 
 *Multi-agent code-writing harness for OpenClaw.* Hand it a dev request and a lead plans, workers write code in isolated git worktrees, and an adversary reviews the diff (with optional runtime logs, see below) before a PR opens under the requester's GitHub identity.
 
-> *Status: release candidate.* Version `2.0.0-rc.12`. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for model-provider credentials and the verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
-> Documentation snapshot reviewed as of `2.0.0-rc.12`.
+> *Status: release candidate.* Version `2.0.0-rc.13`. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for model-provider credentials and the verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
+> Documentation snapshot reviewed as of `2.0.0-rc.13`.
 >
 > **beta.136:** the two settings that default to off are now documented where you would look for them: `repos.never_commit_paths` keeps a regenerated tree out of the commit, and without `brief.request_file_roots` a `harness_run({ requestPath })` is refused. Both are in [CONFIGURATION.md](docs/CONFIGURATION.md).
 > **beta.135:** onboarding asks which org, so one person can hold a separate token per org and per provider instead of one token standing for everything.
@@ -354,3 +354,22 @@ scripts. Run `npm test` and `npm run smoke` in the tested checkout itself.
 ## License
 
 MIT. See `LICENSE`.
+
+### Human approval transport (rc.13)
+
+Human approval must arrive through OpenClaw's authenticated, non-agent command
+path: send `/harness-answer <sessionId>` in Slack. This displays the complete
+pending state and a one-use, ten-minute answer command. The receipt binds the
+requester, session, brief/proposal, limits and clarification identity. Send the
+resulting command yourself; do not ask the model to relay it. A revised brief
+still requires `confirm brief <sha256>` as the answer. Failed attempts consume
+the receipt; inspect the current pause and obtain a new command before retrying.
+
+`harness_answer` is now an **automation-only tool**: a caller's `answeredBy:
+"human"` assertion cannot establish provenance. Existing delegated clarification
+policy still applies; brief approvals and budget grants cannot be automated.
+The host must expose `registerCommand`, deliver an authenticated sender and the
+original command body, and dispatch outside the model. Otherwise human approval
+fails closed. No fallback to tool parameters, transcript text or a caller-supplied
+message ID is permitted. This assumes a trusted host/plugin process; it does not
+sandbox an operator with arbitrary host code/database access.

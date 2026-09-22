@@ -1,4 +1,100 @@
+## Unreleased — authenticated human command boundary
+
+- Reject agent-tool `answeredBy: "human"` claims; requester identity is not proof
+  of a human's explicit approval.
+- Add non-agent `/harness-answer` with full-state review and durable single-use,
+  ten-minute receipts bound to requester/session/pending state. Consume before
+  dispatch; reject stale/replayed/cross-session and altered/truncated commands.
+- Block force-resume while an unanswered clarification/approval remains pending.
+- No command API means no human approval. Delegated automation remains explicit.
+- Teach the calling-agent skills to translate natural-language intent into a
+  visible structured proposal while keeping host-authenticated authorisation a
+  separate boundary; the direct command is a secure fallback, not an excuse to
+  make operators learn parser grammar.
+- Add an old-to-new package upgrade regression that installs both versions into
+  the same prefix and proves every registered skill is replaced with the current
+  release bytes. The existing installed-artifact verifier remains the post-update
+  byte-for-byte check for the complete `skills/` tree.
+- Remove the 24,000-character `/harness-answer` deadlock. Receipts still hash
+  the complete persisted authority state, including the full lead plan, while
+  the human reviews a complete decision-specific payload in ordered pages.
+  Every page must be served before the receipt can be consumed; plan changes,
+  replay, expiry and skipped pages fail closed.
+- Bind PR/branch/cost and normalized listener-liveness recovery outcomes into
+  that receipt, and remove the separate 24,000-character revised-brief ceiling.
+  Complete proposals remain stored once and use the same ordered review path.
+- Repair the three provenance mutation anchors after pagination introduced
+  duplicate SQL fragments, and run the focused provenance mutation gate on
+  exact branch-push CI commits instead of waiting for the PR-only full gate.
+- Add pagination-specific mutations for final-page consumption, ordered page
+  review, and compare-and-swap page advancement, with race regressions that
+  prove the atomic SQL guards rather than only the happy-path behavior.
+
 # Changelog
+
+## 2.0.0-rc.13
+
+- Pre-spend brief corrections no longer authorise execution. Unrecognised
+  replies, rejections, holds and control-only replies leave the live brief and
+  limits unchanged. `revise brief: ...` stages a complete bounded proposal;
+  only `confirm brief <sha256>` for its exact payload/current base activates
+  it atomically. Replaced, tampered, stale or mismatched proposals fail closed.
+  This gate is human-only, regardless of mid-run clarification delegation.
+
+The first rc.12 real-request smoke failed before implementation on its initial
+load-bearing observe task. rc.13 repairs the complete handoff rather than
+accepting the misleading “no findings” summary.
+
+- The worker prompt, retry hint and validator now share one canonical
+  `OBSERVE_RESULT:` contract. Bare JSON and the two unambiguous wrappers emitted
+  during the incident are accepted only as whole-message envelopes; trailing
+  prose, multiple envelopes and arbitrary JSON extraction remain rejected.
+- Observe validation has typed satisfied, blocked, invalid-format,
+  invalid-schema and invalid-evidence outcomes. Valid blocked reports are fully
+  persisted, never release dependants, never trigger a blind format retry, and
+  pause with their evidenced decisions and the exact required findings/bindings
+  still missing. Structured evidence no longer depends on legacy tool-call
+  counters; identical invalid replies stop instead of consuming every retry.
+- Object-valued observe contract patches use a bounded typed schema and the
+  resulting complete plan is revalidated before atomic activation. Objects can
+  no longer be stringified into output paths or instructions.
+- Every observe attempt stores a bounded redacted candidate report linked to
+  its physical provider call. Retry start times and task-level cumulative
+  cost/summary are truthful, and a task remains `verifying` until verification
+  actually completes.
+- ACP session-load replay is excluded from current-turn output, first-token
+  timing and activity, and notifications for another backend session are
+  ignored. Resumed cumulative cost uses either the load-time
+  baseline or a durable backend-session checkpoint; a missing or conflicting
+  baseline is accounting-indeterminate rather than charged from zero.
+- Provider completion, cumulative checkpoint advancement and aggregate spend
+  commit atomically with baseline compare-and-swap. Repeated identical
+  completion is idempotent, conflicting completion fails closed, and an
+  unresolved started/unknown provider call fences later dispatch.
+- Structured OpenCode roles preserve unavailable usage through their retry
+  ladders. Lead/adversary calls with unknown cost now enter
+  `accounting_incomplete` with `cost_usd=NULL`, never as a free `$0` call.
+- Current ACP activity advances the durable heartbeat. Provider rows record the
+  effective routed model, and storage health is refreshed on worktree allocation
+  and intentional release.
+- Qualified multiline confirmation controls are parsed separately from bounded
+  preservation directives. The smoke reply applies the full `$50` and five-hour
+  limits without writing either controls or “Preserve all restrictions” into
+  feature scope.
+- Confirmation parsing is clause-bounded and fail-closed for preservation
+  aliases, holds, conditional/historical wording, alternatives, conflicting
+  values and partial amounts. Limits, corrected brief and the transition to
+  planning commit atomically; a failed write leaves the gate paused unchanged.
+- Known plan-policy conflicts now pause before the first worker dispatch, so a
+  later `.env.example` obligation cannot spend an earlier observe turn before
+  the safety conflict is surfaced.
+- OpenCode resolves the installed platform package from OpenClaw's durable
+  active plugin root, bypassing skipped-postinstall launcher stubs and installer
+  staging. Installed-artifact verification executes that exact binary.
+
+The failed rc.12 session remains terminal and its historical ledger is
+unchanged. No production configuration, live Slack app or governed document is
+modified by this release.
 
 ## 2.0.0-rc.12
 

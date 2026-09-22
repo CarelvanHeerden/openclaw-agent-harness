@@ -330,6 +330,7 @@ export declare function runLeadScoutSdk(params: {
     report: string;
     sdkSessionId: string;
     costUsd: number;
+    usageMeasured?: boolean;
     tokensIn: number;
     tokensOut: number;
     stopReason: string;
@@ -384,6 +385,9 @@ export interface StructuredExecResult<T> {
     parsed: T;
     sdkSessionId: string;
     costUsd: number;
+    /** False means the numeric zero is a placeholder, not evidence of a free call. */
+    usageMeasured?: boolean;
+    usageSource?: string;
     tokensIn: number;
     tokensOut: number;
     raw: string;
@@ -594,6 +598,7 @@ export declare function runLeadWorkerContextSdk(params: {
         workerContext: WorkerContext;
     }>;
     costUsd: number;
+    usageMeasured?: boolean;
     tokensIn: number;
     tokensOut: number;
 }>;
@@ -626,6 +631,7 @@ export declare function runAdversarySdk(params: {
     };
     sdkSessionId: string;
     costUsd: number;
+    usageMeasured?: boolean;
     tokensIn: number;
     tokensOut: number;
     chunkedReview?: {

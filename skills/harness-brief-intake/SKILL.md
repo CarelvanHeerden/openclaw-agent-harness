@@ -140,7 +140,36 @@ Guidance for the echo:
 If the user's request is genuinely ambiguous, ask **before** calling
 `harness_run` rather than guessing and echoing a guess.
 
-## Rule 3 — relay the harness's own confirmation, do not answer it
+## Rule 3 — interpret intent; never manufacture authorisation
+
+The requester should not have to learn the harness's parser grammar. When they
+say something natural such as "continue, $50 budget, five hours", translate it
+into a short structured proposal that preserves every restriction and makes the
+meaningful changes visible. If a clause is ambiguous, ask about that clause;
+do not silently drop it or make the human restate the whole request in a
+machine-oriented form.
+
+Keep the two responsibilities separate:
+
+- **Interpretation is the agent's job.** Explain what action, limits,
+  restrictions and corrections you understood, in ordinary language.
+- **Authorisation is the host's job.** A proposal you wrote is not evidence that
+  the human approved it. Only the host-authenticated answer path may bind the
+  requester's actual response to the exact pending state.
+
+The intended interaction is: the human speaks naturally; you show the complete
+proposal and highlight material changes; the human confirms or corrects it; the
+host binds that response to the proposal; deterministic harness code enforces
+the agreed instructions. Never claim that your interpretation is itself the
+approval. Never make the requester reverse-engineer the parser merely because
+the secure transport is strict.
+
+The direct `/harness-answer` command below is the secure fallback when the host
+cannot bind an ordinary authenticated reply. It closes the provenance gap, but
+it is not a reason to stop interpreting natural language or to offload proposal
+construction onto the requester.
+
+## Rule 4 — relay the harness's own confirmation, do not answer it
 
 Since beta.120 the harness runs its own gate. When a brief is high-risk it
 crystallises (cents), then **pauses before any planning or worker spend** and
@@ -161,17 +190,25 @@ When that happens:
    right. The entire value of the gate is that a human's eyes cross it.
 3. **Do not** start polling `harness_progress` yet, and do not fire another
    run — nothing is executing.
-4. When the user replies, pass their reply **verbatim** to `harness_answer`:
+4. Ask the requester to send `/harness-answer <sessionId>` **directly**. The host
+   executes this command without the model, displays the complete paused state,
+   and issues a ten-minute, single-use command bound to that sender and state.
+   The human must send the resulting command themselves. Never relay a human
+   answer through `harness_answer`, even with `answeredBy: "human"`; that is a
+   model-controlled claim and is rejected. If the command API is unavailable,
+   approval stays blocked. Do not emulate it through shell or another tool.
 
-```
-harness_answer({ sessionId, answer: "<the user's reply, exactly>", invokedBy })
-```
-
-An unqualified approval ("confirm", "yes", "go ahead") starts the run unchanged.
-**Anything else** — including "confirm, but use `performedAt`" — is folded into
-the brief as an authoritative correction first. That is deliberate: passing a
-qualified reply through as an approval would start a run that ignores the
-correction.
+An unqualified approval ("confirm", "yes", "go ahead") starts the current brief.
+Other replies, including rejections, holds and ordinary corrections, stay paused
+without changing the active brief or limits. To propose a correction the human
+sends `revise brief: <correction>`, optionally with budget/time controls. Relay
+the complete stored proposal verbatim and wait for the human's exact
+`confirm brief <sha256>` reply. A plain `confirm` cannot activate a pending
+revision. Never manufacture that confirmation or its hash on the user's behalf.
+Replacing a proposal invalidates its old confirmation and starts from the
+original brief, not from an unapproved revision. Brief approvals and revisions
+are never delegated to automation, even when mid-run clarification delegation
+is enabled.
 
 A budget named in the reply is the one exception, and it is handled for you:
 "confirm, budget $40" both approves the brief and raises the cap to $40. You do

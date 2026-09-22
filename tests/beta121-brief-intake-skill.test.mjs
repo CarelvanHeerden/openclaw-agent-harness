@@ -71,6 +71,18 @@ test("the skill still carries the three rules that stop a wasted run", () => {
   assert.match(src, /Do not confirm on the user's behalf/i);
 });
 
+test("rc13: the skill separates natural-language interpretation from human authorisation", () => {
+  const src = readFileSync(SKILL_PATH, "utf8");
+
+  assert.match(src, /requester should not have to learn the harness's parser grammar/i);
+  assert.match(src, /Interpretation is the agent's job/i);
+  assert.match(src, /Authorisation is the host's job/i);
+  assert.match(src, /proposal you wrote is not evidence that\s+the human approved it/i);
+  assert.match(src, /host binds that response to the proposal/i);
+  assert.match(src, /direct `\/harness-answer` command.*secure fallback/is);
+  assert.match(src, /not a reason to stop interpreting natural language/i);
+});
+
 test("the skill names the concrete failure, not just the rule", () => {
   const src = readFileSync(SKILL_PATH, "utf8");
   // A rule with no story attached is one an agent talks itself out of.

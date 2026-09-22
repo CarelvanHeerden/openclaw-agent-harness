@@ -183,7 +183,7 @@ test("beta38: independent sessions run concurrently (guard is per-session, not g
 // that in-flight session's DB progress stale (or fresh) and fire a second,
 // re-entrant run() to exercise the stale-vs-fresh branch of the guard.
 
-test("beta40: a STALE guard entry (no progress past stuck_loop_seconds) is reclaimed, not skipped",
+test("rc13: a stale loop is reclaimed but its unresolved provider call fences redispatch",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "Z1", "executing");
@@ -211,8 +211,9 @@ test("beta40: a STALE guard entry (no progress past stuck_loop_seconds) is recla
       runLead: async () => { secondLead++; return plan; },
     });
     const out = await loop2.run("Z1", brief);
-    assert.equal(out.status, "shipped", "a stuck/zombie loop must be reclaimed and re-driven to completion");
-    assert.equal(secondLead, 1, "the reclaimed run must actually execute (runLead called)");
+    assert.equal(out.status, "failed");
+    assert.match(out.reason, /accounting_incomplete.*reconcile it before dispatch/);
+    assert.equal(secondLead, 0, "an unresolved physical call must be reconciled before another dispatch");
     assert.ok(state.audits.some((a) => a.event === "loop.run_reclaimed_stuck"), "must audit loop.run_reclaimed_stuck");
 
     // Let the original (zombie) first run finish so we don't leak a pending

@@ -589,6 +589,7 @@ export async function runLeadScoutSdk(params) {
             report: (r.allText ?? r.finalMessage ?? "").trim(),
             sdkSessionId: r.sdkSessionId,
             costUsd: r.costUsd,
+            usageMeasured: true,
             tokensIn: r.tokensIn,
             tokensOut: r.tokensOut,
             stopReason: r.stopReason,
@@ -790,7 +791,7 @@ async function structuredCall(params) {
         const json = extractJson(raw);
         parsed = JSON.parse(json);
     }
-    return { parsed, sdkSessionId, costUsd, tokensIn, tokensOut, raw, stopReason, timeout: null };
+    return { parsed, sdkSessionId, costUsd, usageMeasured: true, tokensIn, tokensOut, raw, stopReason, timeout: null };
 }
 export async function runClassifierSdk(params) {
     const groundingBlock = params.grounding ? renderGroundingBlock(params.grounding) : "";
@@ -1140,7 +1141,7 @@ export async function runLeadSdk(params) {
     try {
         const r = await call(userMessage);
         report({ attempt: 1, outcome: "ok", costUsd: r.costUsd, outputChars: r.raw?.length ?? 0 });
-        return { ...r.parsed, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+        return { ...r.parsed, costUsd: r.costUsd, usageMeasured: r.usageMeasured, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
     }
     catch (err) {
         report({
@@ -1216,6 +1217,7 @@ export async function runLeadSdk(params) {
             return {
                 ...r2.parsed,
                 costUsd: spentSoFar + r2.costUsd,
+                usageMeasured: r2.usageMeasured,
                 tokensIn: r2.tokensIn,
                 tokensOut: r2.tokensOut,
             };
@@ -1264,6 +1266,7 @@ export async function runLeadSdk(params) {
                     return {
                         ...r3.parsed,
                         costUsd: spentBeforeRepair + r3.costUsd,
+                        usageMeasured: r3.usageMeasured,
                         tokensIn: r3.tokensIn,
                         tokensOut: r3.tokensOut,
                     };
@@ -1448,6 +1451,7 @@ export async function runLeadWorkerContextSdk(params) {
     return {
         contexts: Array.isArray(r.parsed.contexts) ? r.parsed.contexts : [],
         costUsd: r.costUsd,
+        usageMeasured: r.usageMeasured,
         tokensIn: r.tokensIn,
         tokensOut: r.tokensOut,
     };
@@ -1514,6 +1518,7 @@ async function reviewOnce(params, systemPrompt, userMessage, label) {
             return {
                 raw: r.raw,
                 costUsd: r.costUsd,
+                usageMeasured: r.usageMeasured,
                 tokensIn: r.tokensIn,
                 tokensOut: r.tokensOut,
                 sessionId: r.sdkSessionId,
@@ -1531,7 +1536,7 @@ export async function runAdversarySdk(params) {
     // Fast path: single call.
     if (diffBytes <= DIFF_SINGLE_CHUNK_BYTES) {
         const r = await reviewOnce(params, params.systemPrompt, `Here is the diff to review:\n\n${params.diffText}`, "adversary");
-        return { parsed: r.parsed, sdkSessionId: r.sessionId, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
+        return { parsed: r.parsed, sdkSessionId: r.sessionId, costUsd: r.costUsd, usageMeasured: r.usageMeasured, tokensIn: r.tokensIn, tokensOut: r.tokensOut };
     }
     // Slow path: chunked.
     const chunks = splitDiffOnFileBoundaries(params.diffText);
@@ -1544,6 +1549,7 @@ export async function runAdversarySdk(params) {
     const summaries = [];
     let sdkSessionId = "";
     let costUsd = 0;
+    let usageMeasured = true;
     let tokensIn = 0;
     let tokensOut = 0;
     for (let i = 0; i < chunks.length; i++) {
@@ -1562,6 +1568,8 @@ export async function runAdversarySdk(params) {
         if (!sdkSessionId)
             sdkSessionId = r.sessionId;
         costUsd += r.costUsd;
+        if (r.usageMeasured === false)
+            usageMeasured = false;
         tokensIn += r.tokensIn;
         tokensOut += r.tokensOut;
     }
@@ -1592,6 +1600,7 @@ export async function runAdversarySdk(params) {
         },
         sdkSessionId,
         costUsd,
+        usageMeasured,
         tokensIn,
         tokensOut,
         chunkedReview: { chunkCount: chunks.length, totalBytes: diffBytes },

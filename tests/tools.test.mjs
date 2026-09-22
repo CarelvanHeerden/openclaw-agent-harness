@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 
 let registerHarnessTools, Database, setCurrentRuntime, getCurrentRuntime;
 try {
-  ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs"));
   ({ setCurrentRuntime, getCurrentRuntime } = await import("../dist/runtime-registry.js"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
@@ -260,7 +260,7 @@ test("harness_health: reports OK when config + schema are minimally valid",
     // model_auth check present and green (stub resolves a key).
     const authCheck = res.details.checks.find((c) => c.name === "model_auth_resolvable");
     assert.equal(authCheck.ok, true);
-    assert.equal(res.details.versionInfo.pluginVersion, "2.0.0-rc.12");
+    assert.equal(res.details.versionInfo.pluginVersion, "2.0.0-rc.13");
     assert.equal(res.details.versionInfo.schemaVersion, 2);
     assert.ok(res.details.schemaReceipt.requiredTables.includes("provider_calls"));
     assert.ok(res.details.schemaReceipt.requiredTables.includes("task_contract_amendments"));

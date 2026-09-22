@@ -259,6 +259,7 @@ export async function runAdversary(input, deps) {
     const systemPrompt = buildAdversarySystemPrompt(input);
     const diffText = await deps.readDiff(input.diffPath);
     let result;
+    let usageMeasured = true;
     try {
         result = await deps.callAdversaryModel({
             systemPrompt,
@@ -266,6 +267,8 @@ export async function runAdversary(input, deps) {
             model: input.model,
             timeoutSeconds: input.timeoutSeconds,
         });
+        if (result.usageMeasured === false)
+            usageMeasured = false;
     }
     catch (err) {
         // beta.70 (F3): retry ONCE on a format error with a hardened nudge. Any
@@ -282,6 +285,8 @@ export async function runAdversary(input, deps) {
             model: input.model,
             timeoutSeconds: input.timeoutSeconds,
         });
+        if (result.usageMeasured === false)
+            usageMeasured = false;
         deps.logger.info("[adversary] format-retry succeeded", { verdict: result.parsed.verdict });
     }
     // beta.91 (F1 companion): require `file` on diff-addressable findings so F1
@@ -302,6 +307,8 @@ export async function runAdversary(input, deps) {
                     model: input.model,
                     timeoutSeconds: input.timeoutSeconds,
                 });
+                if (retry.usageMeasured === false)
+                    usageMeasured = false;
                 const stillMissing = findingsMissingFile(retry.parsed.findings);
                 // Accept the retry result only if it is not WORSE (fewer or equal
                 // unfiled diff-addressable findings). Keeps the better of the two.
@@ -395,6 +402,7 @@ export async function runAdversary(input, deps) {
         summary: result.parsed.summary,
         sdkSessionId: result.sdkSessionId,
         costUsd: result.costUsd,
+        usageMeasured,
         tokensIn: result.tokensIn,
         tokensOut: result.tokensOut,
     };

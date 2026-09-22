@@ -32,7 +32,7 @@ import type { PatRouter } from "../auth/pat-router.js";
 import type { StateStore } from "../state/store.js";
 import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 import type { LeadPlan, LeadPlanSubTask, SubTaskVerify } from "./lead.js";
-import { elideFinalScopeSubTask } from "./lead.js";
+import { elideFinalScopeSubTask, validatePlan } from "./lead.js";
 import type { ReviewReport, ReviewFinding, AdversaryRevisionContext } from "./adversary.js";
 import type { WorkerResult } from "./worker.js";
 import type { AcpTargetEvidence, GuardDenial } from "../safety/bash-guard.js";
@@ -54,7 +54,7 @@ import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   activeDeadlineSnapshot,
   closeActiveDeadline,
@@ -65,6 +65,7 @@ import {
 import {
   applyObserveBindings,
   loadBearingObserveContractErrors,
+  renderObserveContractInstructions,
   taskHash as observeTaskHash,
   validateObserveResult,
   type ObserveValidation,
@@ -808,6 +809,7 @@ export interface OrchestratorDeps {
      * the configured threshold. OBSERVABILITY ONLY -- never aborts.
      */
     onStreamSlow?: (info: { idleMs: number; elapsedMs: number; tokensOut: number; label: string }) => void;
+    onActivity?: (info: { kind: string; at: number }) => void;
     /** beta.113: per-attempt phase-2 watchdog widening; see runWorkerCallWithRetry. */
     firstTokenTimeoutSecondsOverride?: number;
   }) => Promise<WorkerResult>;
@@ -1518,6 +1520,37 @@ export class OrchestratorLoop {
     };
   }
 
+  private makeWorkerActivityCallback(
+    sessionId: string,
+    seq: number,
+    cycle: number,
+  ): (info: { kind: string; at: number }) => void {
+    let lastPersistedAt = 0;
+    return (info) => {
+      if (info.at - lastPersistedAt < 15_000) return;
+      lastPersistedAt = info.at;
+      try {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET last_progress_at = ?, updated_at = ? WHERE id = ?`,
+        ).run(info.at, info.at, sessionId);
+        this.deps.state.audit(
+          "loop.worker_activity",
+          { sessionId, seq, cycle, kind: info.kind },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, {
+          event: "worker_activity",
+          phase: "worker",
+          seq,
+          cycle,
+          kind: info.kind,
+        });
+      } catch {
+        /* activity telemetry must never disturb the provider turn */
+      }
+    };
+  }
+
   /**
    * beta.94 (Feature 2): the idle-no-work conjunction handler. Confirms the
    * sub-task produced NO worktree writes (committed OR working-tree changes)
@@ -1676,6 +1709,50 @@ export class OrchestratorLoop {
     }
   }
 
+  private recordObserveAttemptReport(params: {
+    sessionId: string;
+    subTaskId: string;
+    cycle: number;
+    seq: number;
+    attempt: number;
+    providerCallId?: string | null;
+    finalMessage?: string;
+    validation: ObserveValidation | null;
+  }): void {
+    try {
+      const parsed =
+        params.validation && "result" in params.validation
+          ? params.validation.result
+          : undefined;
+      this.deps.state.db.prepare(
+        `INSERT OR REPLACE INTO observe_attempt_reports
+           (id,session_id,sub_task_id,provider_call_id,cycle,seq,attempt,outcome,
+            raw_report_text,parsed_result_json,validation_json,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        `${params.sessionId}:${params.cycle}:${params.seq}:${params.attempt}`,
+        params.sessionId,
+        params.subTaskId,
+        params.providerCallId ?? null,
+        params.cycle,
+        params.seq,
+        params.attempt,
+        params.validation?.kind ?? "unstructured",
+        params.finalMessage ? redactTokenShapes(params.finalMessage).slice(0, 262144) : null,
+        parsed === undefined ? null : JSON.stringify(parsed),
+        JSON.stringify(params.validation ?? { ok: false, kind: "unstructured", reason: "no observe contract" }),
+        Date.now(),
+      );
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not persist observe attempt report", {
+        sessionId: params.sessionId,
+        seq: params.seq,
+        attempt: params.attempt,
+        err: String(err).slice(0, 300),
+      });
+    }
+  }
+
   private beginProviderCall(params: {
     sessionId: string;
     subTaskId?: string | null;
@@ -1695,6 +1772,16 @@ export class OrchestratorLoop {
     const id = randomUUID();
     try {
       db.exec("BEGIN IMMEDIATE");
+      const unresolved = db.prepare(
+        `SELECT id,status,role FROM provider_calls
+          WHERE session_id = ? AND status IN ('started','unknown')
+          ORDER BY started_at LIMIT 1`,
+      ).get(params.sessionId) as { id: string; status: string; role: string } | undefined;
+      if (unresolved) {
+        throw new Error(
+          `provider call ${unresolved.id} (${unresolved.role}) remains ${unresolved.status}; reconcile it before dispatch`,
+        );
+      }
       const row = db.prepare(
         `SELECT COUNT(*) AS n FROM provider_calls
           WHERE session_id = ? AND role = ? AND COALESCE(cycle,-1) = COALESCE(?,-1)
@@ -1720,7 +1807,7 @@ export class OrchestratorLoop {
       );
       db.prepare(
         `UPDATE sessions SET accounting_state = 'ok',
-                             minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`,
+                             minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`,
       ).run(Date.now(), params.sessionId);
       db.exec("COMMIT");
       return { id, attempt };
@@ -1784,6 +1871,9 @@ export class OrchestratorLoop {
     data: {
       costUsd: number;
       providerResultId?: string | null;
+      providerCumulativeCostUsd?: number;
+      providerCostBaselineUsd?: number;
+      providerCostCurrency?: string;
       result?: unknown;
       verification?: unknown;
     },
@@ -1793,23 +1883,51 @@ export class OrchestratorLoop {
     const now = Date.now();
     const day = new Date(now).toISOString().slice(0, 10);
     const month = day.slice(0, 7);
+    const completionFingerprint = createHash("sha256").update(JSON.stringify({
+      costUsd: data.costUsd,
+      providerResultId: data.providerResultId ?? null,
+      providerCumulativeCostUsd: data.providerCumulativeCostUsd ?? null,
+      providerCostBaselineUsd: data.providerCostBaselineUsd ?? null,
+      providerCostCurrency: data.providerCostCurrency ?? null,
+      result: data.result ?? null,
+      verification: data.verification ?? null,
+    })).digest("hex");
     try {
       db.exec("BEGIN IMMEDIATE");
+      if (!Number.isFinite(data.costUsd) || data.costUsd < 0) {
+        throw new Error(`provider cost is not a finite non-negative amount: ${String(data.costUsd)}`);
+      }
+      if (
+        data.providerCumulativeCostUsd !== undefined &&
+        (!Number.isFinite(data.providerCumulativeCostUsd) || data.providerCumulativeCostUsd < 0)
+      ) {
+        throw new Error(`provider cumulative cost is invalid: ${String(data.providerCumulativeCostUsd)}`);
+      }
       const changed = db.prepare(
         `UPDATE provider_calls
             SET status = 'completed', cost_usd = ?, provider_result_id = ?, result_json = ?,
-                verification_json = ?, ended_at = ?
+                verification_json = ?, completion_fingerprint = ?, ended_at = ?
           WHERE id = ? AND session_id = ? AND status = 'started'`,
       ).run(
         data.costUsd,
         data.providerResultId ?? null,
         data.result === undefined ? null : JSON.stringify(data.result),
         data.verification === undefined ? null : JSON.stringify(data.verification),
+        completionFingerprint,
         now,
         id,
         sessionId,
       );
-      if (changed.changes !== 1) throw new Error(`provider call ${id} was not in started state`);
+      if (changed.changes !== 1) {
+        const existing = db.prepare(
+          `SELECT status,completion_fingerprint FROM provider_calls WHERE id = ? AND session_id = ?`,
+        ).get(id, sessionId) as { status: string; completion_fingerprint: string | null } | undefined;
+        if (existing?.status === "completed" && existing.completion_fingerprint === completionFingerprint) {
+          db.exec("COMMIT");
+          return;
+        }
+        throw new Error(`provider call ${id} was not in started state or completion conflicted`);
+      }
       db.prepare(
         `UPDATE sessions SET cost_usd = cost_usd + ?, accounting_state = 'ok', updated_at = ? WHERE id = ?`,
       ).run(data.costUsd, now, sessionId);
@@ -1821,6 +1939,55 @@ export class OrchestratorLoop {
         `INSERT INTO budgets_monthly (month, user, spent_usd) VALUES (?, ?, ?)
          ON CONFLICT (month, user) DO UPDATE SET spent_usd = spent_usd + excluded.spent_usd`,
       ).run(month, requester, data.costUsd);
+      if (
+        data.providerResultId &&
+        typeof data.providerCumulativeCostUsd === "number" &&
+        Number.isFinite(data.providerCumulativeCostUsd)
+      ) {
+        if (
+          typeof data.providerCostBaselineUsd !== "number" ||
+          !Number.isFinite(data.providerCostBaselineUsd) ||
+          data.providerCostCurrency !== "USD"
+        ) {
+          throw new Error("provider cumulative checkpoint is missing a valid USD baseline");
+        }
+        const checkpoint = db.prepare(
+          `SELECT cumulative_cost_usd,currency,checkpoint_version
+             FROM provider_session_usage
+            WHERE backend = 'opencode' AND provider_session_id = ?`,
+        ).get(data.providerResultId) as {
+          cumulative_cost_usd: number;
+          currency: string;
+          checkpoint_version: number;
+        } | undefined;
+        if (
+          checkpoint &&
+          (checkpoint.currency !== "USD" ||
+            Math.abs(checkpoint.cumulative_cost_usd - data.providerCostBaselineUsd) > 1e-9)
+        ) {
+          throw new Error(
+            `provider cumulative checkpoint moved: stored ${checkpoint.cumulative_cost_usd} ${checkpoint.currency}, ` +
+            `turn baseline ${data.providerCostBaselineUsd} ${data.providerCostCurrency}`,
+          );
+        }
+        db.prepare(
+          `INSERT INTO provider_session_usage
+             (backend,provider_session_id,currency,cumulative_cost_usd,checkpoint_version,last_provider_call_id,updated_at)
+           VALUES ('opencode',?,'USD',?,?,?,?)
+           ON CONFLICT (backend,provider_session_id) DO UPDATE SET
+             currency = excluded.currency,
+             cumulative_cost_usd = excluded.cumulative_cost_usd,
+             checkpoint_version = provider_session_usage.checkpoint_version + 1,
+             last_provider_call_id = excluded.last_provider_call_id,
+             updated_at = excluded.updated_at`,
+        ).run(
+          data.providerResultId,
+          data.providerCumulativeCostUsd,
+          checkpoint?.checkpoint_version ?? 1,
+          id,
+          now,
+        );
+      }
       this.deps.state.audit(
         "budget.spend",
         { user: requester, amountUsd: data.costUsd, sessionId, providerCallId: id },
@@ -1851,12 +2018,13 @@ export class OrchestratorLoop {
     },
     invoke: () => Promise<WorkerResult>,
   ): Promise<WorkerResult> {
+    const route = this.routeLog("worker", this.deps.config.models.worker, meta.model);
     const call = this.beginProviderCall({
       ...meta,
+      model: route.model,
       role: "worker",
-      route: this.routeLog("worker", this.deps.config.models.worker, meta.model).backend,
+      route: route.backend,
     });
-    const route = this.routeLog("worker", this.deps.config.models.worker, meta.model);
     const startedAt = Date.now();
     this.deps.interactionLog?.logSdkRequest(meta.sessionId, {
       role: "worker",
@@ -1864,7 +2032,7 @@ export class OrchestratorLoop {
       phase: "worker",
       seq: meta.seq,
       cycle: meta.cycle,
-      prompt: `tracked physical worker invocation ${call.attempt}`,
+      prompt: `[accounting marker only; actual prompt receipt is recorded on worker_end_turn] physical worker invocation ${call.attempt}`,
       callId: call.id,
       attempt: call.attempt,
     });
@@ -1906,14 +2074,20 @@ export class OrchestratorLoop {
       this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
         costUsd: result.costUsd,
         providerResultId: result.sdkSessionId ?? null,
+        providerCumulativeCostUsd: result.providerCumulativeCostUsd,
+        providerCostBaselineUsd: result.providerCostBaselineUsd,
+        providerCostCurrency: result.providerCostCurrency,
         result: {
           workerStatus: result.status,
           reason: result.reason ?? null,
           commitSha: result.commitSha ?? null,
           commitShas: result.commitShas ?? [],
           filesChanged: result.filesChanged ?? [],
+          actualPromptChars: result.actualPromptChars ?? null,
+          actualPromptSha256: result.actualPromptSha256 ?? null,
         },
       });
+      result.providerCallId = call.id;
       this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
         role: "worker",
         ...route,
@@ -1977,6 +2151,7 @@ export class OrchestratorLoop {
     invoke: () => Promise<T>,
     describe: (result: T) => {
       costUsd: number;
+      usageMeasured?: boolean;
       providerResultId?: string | null;
       result?: unknown;
     },
@@ -1985,13 +2160,17 @@ export class OrchestratorLoop {
     try {
       const result = await invoke();
       const measured = describe(result);
-      if (!Number.isFinite(measured.costUsd) || measured.costUsd < 0) {
+      if (measured.usageMeasured === false || !Number.isFinite(measured.costUsd) || measured.costUsd < 0) {
         this.finishProviderCall(meta.sessionId, call.id, {
           status: "unknown",
           costUsd: null,
           providerResultId: measured.providerResultId ?? null,
           result: measured.result,
         });
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), meta.sessionId);
         throw new AccountingPersistenceError(`${meta.role} provider returned without a valid measured cost`);
       }
       this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, measured);
@@ -2764,7 +2943,7 @@ export class OrchestratorLoop {
           requester: row.requester,
           role: "lead",
           cycle: 0,
-          model: this.deps.config.models.lead,
+          model: this.routeLog("lead", this.deps.config.models.lead).model,
           route: this.routeLog("lead", this.deps.config.models.lead).backend,
         },
         () => withTimeout(this.deps.runLead(brief, {
@@ -2803,6 +2982,7 @@ export class OrchestratorLoop {
         ),
         (leadPlan) => ({
           costUsd: leadPlan.actualCostUsd ?? 0,
+          usageMeasured: leadPlan.usageMeasured,
           result: {
             subTasks: leadPlan.subTasks.length,
             riskLevel: leadPlan.riskLevel,
@@ -2850,8 +3030,12 @@ export class OrchestratorLoop {
         }
       }
       this.deps.state.db
-        .prepare(`UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ? WHERE id = ?`)
-        .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, sessionId);
+        .prepare(
+          `UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ?,
+                               storage_state = 'ok', storage_reason = NULL, storage_checked_at = ?
+            WHERE id = ?`,
+        )
+        .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, Date.now(), sessionId);
       // beta.127 (#157): CREDIT THE PLANNER'S SPEND TO THE SESSION.
       //
       // Every other role's cost was added to `totalCost` -- worker, worker
@@ -3229,6 +3413,38 @@ export class OrchestratorLoop {
           );
         }
       }
+    }
+
+    if (
+      planPolicyConflicts.length > 0 &&
+      this.deps.config.loop.clarification_escalation_enabled !== false
+    ) {
+      const firstSeq = Math.min(...planPolicyConflicts.map((conflict) => conflict.seq));
+      const task = plan.subTasks.find((candidate) => candidate.seq === firstSeq);
+      const conflicts = planPolicyConflicts.filter((conflict) => conflict.seq === firstSeq);
+      this.deps.state.audit(
+        "loop.plan_policy_conflict_pre_dispatch",
+        {
+          sessionId,
+          seq: firstSeq,
+          conflicts: conflicts.map((conflict) => ({ path: conflict.path, rule: conflict.rule })),
+          dispatchedWorkers: 0,
+        },
+        sessionId,
+      );
+      return await this.finaliseAwaitingClarification(
+        sessionId,
+        describePlanPolicyConflicts(conflicts),
+        firstSeq,
+        0,
+        row.cost_usd + leadPlanningCostUsd,
+        {
+          title: task?.title ?? `sub-task ${firstSeq}`,
+          intent: task?.intent ?? "",
+          task: task ? structuredClone(task) : undefined,
+          policyConflicts: conflicts.map((conflict) => ({ path: conflict.path, rule: conflict.rule })),
+        },
+      );
     }
 
     let cycle = 0;
@@ -3635,7 +3851,7 @@ export class OrchestratorLoop {
           plan.approvedRevisionScopeFiles = nextApprovedRevisionScope;
           this.deps.state.db
             .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                         minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`)
+                                         minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`)
             .run(JSON.stringify(plan), Date.now(), sessionId);
           this.deps.state.audit(
             "loop.revision_scope_approved",
@@ -3767,6 +3983,11 @@ export class OrchestratorLoop {
           expectedOriginalPaths?: string[];
           task?: LeadPlanSubTask;
           policyConflicts?: Array<{ path: string; rule: string }>;
+          observeBlockedReport?: {
+            blockers: string[];
+            findingIds: string[];
+            providerCallId?: string | null;
+          };
         } | null,
       };
 
@@ -4145,16 +4366,14 @@ export class OrchestratorLoop {
         if (result.costUsd > 0) subTaskCosts.push(result.costUsd);
         this.deps.state.db.prepare(
           `UPDATE sub_tasks
-           SET status = ?, cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ?
+           SET status = 'verifying', cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = NULL, updated_at = ?
            WHERE id = ?`,
         ).run(
-          result.status,
           result.costUsd,
           JSON.stringify(result.filesChanged),
           result.commitSha ?? null,
           result.sdkSessionId ?? null,
           result.reason ?? null,
-          Date.now(),
           Date.now(),
           subTaskId,
         );
@@ -4242,6 +4461,8 @@ export class OrchestratorLoop {
               finalMessage: fm.slice(0, 4000),
               unguardedReads: result.unguardedReads ?? 0,
               allowedToolCalls: result.allowedToolCalls ?? null,
+              actualPromptChars: result.actualPromptChars ?? null,
+              actualPromptSha256: result.actualPromptSha256 ?? null,
             },
             sessionId,
           );
@@ -4879,6 +5100,7 @@ export class OrchestratorLoop {
                 this.deps.logger.warn("[loop] zero-change completion failed Git verification; retrying in the same worker session", {
                   sessionId, seq: st.seq, partialWork: wrote.length > 0, outcome: outcome.kind, retry: protocolRetries,
                 });
+                const protocolRetryStartedAt = Date.now();
                 try {
                   // beta.90 (Feature 2): stream-slow liveness on the retry too.
                   const onRetryStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
@@ -4910,6 +5132,7 @@ export class OrchestratorLoop {
                         // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
                         modelOverride: selectWorkerModel(st, this.deps.config.models),
                         onStreamSlow: onRetryStreamSlow,
+                        onActivity: this.makeWorkerActivityCallback(sessionId, st.seq, cycle),
                       }),
                     ),
                     this.deps.config.loop.worker_timeout_seconds,
@@ -4955,11 +5178,23 @@ export class OrchestratorLoop {
                     commitShas: retry.commitShas ?? (retry.commitSha ? [retry.commitSha] : []),
                     filesTouched: retry.filesChanged,
                     summary: `${retry.reason ?? retry.status}; ${retryVerification.summary}`,
+                    startedAtMs: protocolRetryStartedAt,
                     workerStatus: retry.status,
                     verificationStatus: retryVerification.ok ? "passed" : "failed",
                     verification: retryVerification,
                     taskOutcome: retryVerification.ok ? "completed" : "retrying",
                   });
+                  this.deps.state.db.prepare(
+                    `UPDATE sub_tasks
+                        SET cost_usd = cost_usd + ?, sdk_session_id = ?, summary = ?, updated_at = ?
+                      WHERE id = ?`,
+                  ).run(
+                    retry.costUsd,
+                    retry.sdkSessionId ?? null,
+                    `${retry.reason ?? retry.status}; ${retryVerification.summary}`.slice(0, 2000),
+                    Date.now(),
+                    subTaskId,
+                  );
                   this.attachProviderVerification(sessionId, cycle, st.seq, retryVerification);
                   this.deps.state.audit(
                     "loop.subtask_verification",
@@ -5854,6 +6089,7 @@ export class OrchestratorLoop {
            * promise was handed to two dependent workers as findings.
            */
           const observeHasNoEvidence = () =>
+            !st.observeContract &&
             this.deps.config.loop.observe_evidence_check_enabled !== false &&
             observeEvidenceVerdict(result).empty;
           const validateStructuredObserve = async (): Promise<ObserveValidation | null> => {
@@ -5880,11 +6116,89 @@ export class OrchestratorLoop {
           };
           let observeValidation = await validateStructuredObserve();
           let structuredObserveOk = observeValidation === null || observeValidation.ok;
+          let priorObserveFailureFingerprint: string | undefined;
+          this.recordObserveAttemptReport({
+            sessionId,
+            subTaskId,
+            cycle,
+            seq: st.seq,
+            attempt: 1,
+            providerCallId: result.providerCallId,
+            finalMessage: result.finalMessage,
+            validation: observeValidation,
+          });
+          if (observeValidation?.kind === "blocked") {
+            const blockers = observeValidation.result.blockers?.filter((value): value is string =>
+              typeof value === "string" && value.trim().length > 0
+            ) ?? [];
+            const findingIds = observeValidation.result.findings.map((finding) => finding.id);
+            const blockerLines = blockers.slice(0, 12).map((blocker) => `- ${blocker.slice(0, 800)}`).join("\n");
+            const question =
+              `Sub-task ${st.seq} ("${st.title}") returned a validated BLOCKED observation. ` +
+              `No dependent mutation task was dispatched, and the full evidence report was preserved. ` +
+              `Review these worker-reported unresolved decisions; answer only the genuine authority or business-policy gaps, ` +
+              `and identify any item that is implementation work already authorised by the brief:\n${blockerLines}`;
+            this.attachProviderVerification(sessionId, cycle, st.seq, {
+              ok: false,
+              kind: "observe_blocked",
+              detail: observeValidation.reason,
+              findings: findingIds,
+            });
+            this.deps.state.db.prepare(
+              `UPDATE sub_tasks SET status = 'blocked', summary = ?, updated_at = ? WHERE id = ?`,
+            ).run(observeValidation.reason.slice(0, 2000), Date.now(), subTaskId);
+            this.deps.state.audit(
+              "loop.observe_contract_blocked",
+              {
+                sessionId,
+                seq: st.seq,
+                cycle,
+                providerCallId: result.providerCallId ?? null,
+                findingIds,
+                blockerCount: blockers.length,
+                missingRequired: observeValidation.missingRequired,
+              },
+              sessionId,
+            );
+            clarify.question = question;
+            clarify.seq = st.seq;
+            clarify.subtask = {
+              title: st.title,
+              intent: st.intent,
+              task: structuredClone(st),
+              observeBlockedReport: {
+                blockers,
+                findingIds,
+                providerCallId: result.providerCallId ?? null,
+              },
+            };
+            failed.err = `subtask_${st.seq}_observe_blocked`;
+            failed.seq = st.seq;
+            return;
+          }
           while (
-            (observeReportIsNarration(result.finalMessage) || observeHasNoEvidence() || !structuredObserveOk) &&
+            ((!st.observeContract && observeReportIsNarration(result.finalMessage)) || observeHasNoEvidence() || !structuredObserveOk) &&
             this.deps.config.loop.worker_protocol_retry_enabled !== false &&
             observeRetries < observeMaxAttempts - 1
           ) {
+            const observeFailureFingerprint = createHash("sha256")
+              .update(JSON.stringify({
+                kind: observeValidation?.kind ?? "legacy",
+                reason: observeValidation && !observeValidation.ok
+                  ? observeValidation.reason
+                  : observeEvidenceVerdict(result).reason ?? "narration",
+                finalMessage: result.finalMessage ?? "",
+              }))
+              .digest("hex");
+            if (priorObserveFailureFingerprint === observeFailureFingerprint) {
+              this.deps.state.audit(
+                "loop.observe_retry_repeated",
+                { sessionId, seq: st.seq, cycle, fingerprint: observeFailureFingerprint, retryCount: observeRetries },
+                sessionId,
+              );
+              break;
+            }
+            priorObserveFailureFingerprint = observeFailureFingerprint;
             const currentStructuredReason =
               observeValidation && !observeValidation.ok ? observeValidation.reason : undefined;
             this.attachProviderVerification(sessionId, cycle, st.seq, {
@@ -5917,7 +6231,7 @@ export class OrchestratorLoop {
               "loop.worker_protocol_retry",
               {
                 sessionId, seq: st.seq, subTaskId, cycle,
-                outcome: "progress_only",
+                outcome: observeValidation?.kind ?? "progress_only",
                 taskMode: "observe",
                 category: null,
                 retryCount: observeRetries,
@@ -5937,8 +6251,8 @@ export class OrchestratorLoop {
             const evidenceVerdict = observeEvidenceVerdict(result);
             const structuredReason = observeValidation && !observeValidation.ok ? observeValidation.reason : "";
             const observeHint = structuredReason
-              ? `OBSERVE CONTRACT NOT SATISFIED (attempt ${observeRetries + 1}/${observeMaxAttempts}): ${structuredReason}. ` +
-                `Return the required OBSERVE_RESULT JSON with every finding, binding and evidence reference.`
+              ? `OBSERVE CONTRACT ${observeValidation?.kind ?? "invalid"} (attempt ${observeRetries + 1}/${observeMaxAttempts}): ${structuredReason}.\n` +
+                renderObserveContractInstructions(st.observeContract!)
               : evidenceVerdict.empty
               ? buildObserveEvidenceHint({
                   verdict: evidenceVerdict,
@@ -5955,6 +6269,7 @@ export class OrchestratorLoop {
                   attempt: observeRetries + 1,
                   maxAttempts: observeMaxAttempts,
                 });
+            const observeRetryStartedAt = Date.now();
             try {
               const retry = await withTimeout(
                 this.runAccountedWorker(
@@ -5977,6 +6292,7 @@ export class OrchestratorLoop {
                     dispatchHint: reviseHint ? `${reviseHint}\n\n${observeHint}` : observeHint,
                     modelOverride: selectWorkerModel(st, this.deps.config.models),
                     onStreamSlow: this.makeStreamSlowCallback(sessionId, st.seq, cycle),
+                    onActivity: this.makeWorkerActivityCallback(sessionId, st.seq, cycle),
                   }),
                 ),
                 this.deps.config.loop.worker_timeout_seconds,
@@ -5987,6 +6303,17 @@ export class OrchestratorLoop {
                 sessionId, seq: st.seq, cycle, attempt: protocolRetries + 1, denied: retry.deniedToolCalls,
               });
               result = retry;
+              this.deps.state.db.prepare(
+                `UPDATE sub_tasks
+                    SET status = 'verifying', cost_usd = cost_usd + ?, sdk_session_id = ?,
+                        summary = ?, updated_at = ? WHERE id = ?`,
+              ).run(
+                retry.costUsd,
+                retry.sdkSessionId ?? null,
+                (retry.reason ?? retry.status).slice(0, 2000),
+                Date.now(),
+                subTaskId,
+              );
               this.recordSubTaskAttempt({
                 sessionId,
                 subTaskId,
@@ -5999,12 +6326,64 @@ export class OrchestratorLoop {
                 commitShas: retry.commitShas ?? (retry.commitSha ? [retry.commitSha] : []),
                 filesTouched: retry.filesChanged,
                 summary: retry.finalMessage ?? retry.reason ?? retry.status,
+                startedAtMs: observeRetryStartedAt,
                 workerStatus: retry.status,
                 verificationStatus: "pending_observe_contract",
                 taskOutcome: "retrying",
               });
               observeValidation = await validateStructuredObserve();
               structuredObserveOk = observeValidation === null || observeValidation.ok;
+              this.recordObserveAttemptReport({
+                sessionId,
+                subTaskId,
+                cycle,
+                seq: st.seq,
+                attempt: observeRetries + 1,
+                providerCallId: retry.providerCallId,
+                finalMessage: retry.finalMessage,
+                validation: observeValidation,
+              });
+              if (observeValidation?.kind === "blocked") {
+                const blockers = observeValidation.result.blockers?.filter((value): value is string =>
+                  typeof value === "string" && value.trim().length > 0
+                ) ?? [];
+                const findingIds = observeValidation.result.findings.map((finding) => finding.id);
+                clarify.question =
+                  `Sub-task ${st.seq} ("${st.title}") returned a validated BLOCKED observation. ` +
+                  `No dependent mutation task was dispatched, and the full evidence report was preserved. ` +
+                  `Review these worker-reported unresolved decisions; answer only genuine authority or business-policy gaps:\n` +
+                  blockers.slice(0, 12).map((blocker) => `- ${blocker.slice(0, 800)}`).join("\n");
+                clarify.seq = st.seq;
+                clarify.subtask = {
+                  title: st.title,
+                  intent: st.intent,
+                  task: structuredClone(st),
+                  observeBlockedReport: {
+                    blockers,
+                    findingIds,
+                    providerCallId: retry.providerCallId ?? null,
+                  },
+                };
+                this.deps.state.db.prepare(
+                  `UPDATE sub_tasks SET status = 'blocked', summary = ?, updated_at = ? WHERE id = ?`,
+                ).run(observeValidation.reason.slice(0, 2000), Date.now(), subTaskId);
+                this.deps.state.audit(
+                  "loop.observe_contract_blocked",
+                  {
+                    sessionId,
+                    seq: st.seq,
+                    cycle,
+                    providerCallId: retry.providerCallId ?? null,
+                    findingIds,
+                    blockerCount: blockers.length,
+                    missingRequired: observeValidation.missingRequired,
+                  },
+                  sessionId,
+                );
+                failed.err = `subtask_${st.seq}_observe_blocked`;
+                failed.seq = st.seq;
+                return;
+              }
             } catch (err) {
               if (err instanceof AccountingPersistenceError) {
                 failed.err = `accounting_incomplete: ${err.message}`;
@@ -6017,7 +6396,7 @@ export class OrchestratorLoop {
               break;
             }
           }
-          if (observeReportIsNarration(result.finalMessage) || observeHasNoEvidence() || !structuredObserveOk) {
+          if ((!st.observeContract && observeReportIsNarration(result.finalMessage)) || observeHasNoEvidence() || !structuredObserveOk) {
             // Out of attempts. Fail the sub-task with a record of why -- there
             // is no question here for a human, only a worker that never
             // produced the findings its dependents need.
@@ -6092,6 +6471,7 @@ export class OrchestratorLoop {
                 producer: st,
                 result: observeValidation.result,
               });
+              validatePlan(bound.plan, this.deps.config);
               const changedTasks = bound.plan.subTasks.filter((task) => bound.changedConsumers.includes(task.seq));
               const conflicts = findPlanPolicyConflicts(
                 changedTasks,
@@ -6128,7 +6508,7 @@ export class OrchestratorLoop {
               if (bound.changedConsumers.length > 0) {
                 this.deps.state.db.prepare(
                   `UPDATE sessions SET lead_plan_json = ?, plan_revision = ?,
-                                       minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`,
+                                       minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`,
                 ).run(JSON.stringify(bound.plan), resultRevision, Date.now(), sessionId);
               }
               this.deps.state.db.prepare(
@@ -6236,6 +6616,9 @@ export class OrchestratorLoop {
          * verified work worth protecting, rather than at a "checkpoint" that
          * only ever touched the database.
          */
+        this.deps.state.db.prepare(
+          `UPDATE sub_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), Date.now(), subTaskId);
         this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId, "completed");
         await this.durableCheckpoint({
           sessionId, cycle, subTaskId, trigger: "sub_task_complete",
@@ -6720,7 +7103,7 @@ export class OrchestratorLoop {
             requester: row.requester,
             role: "adversary",
             cycle,
-            model: this.deps.config.models.adversary,
+            model: this.routeLog("adversary", this.deps.config.models.adversary).model,
             route: this.routeLog("adversary", this.deps.config.models.adversary).backend,
             baseSha: adversaryBaseSha,
           },
@@ -6731,6 +7114,7 @@ export class OrchestratorLoop {
           ),
           (review) => ({
             costUsd: review.costUsd,
+            usageMeasured: review.usageMeasured,
             providerResultId: review.sdkSessionId ?? null,
             result: { verdict: review.verdict, findings: review.findings.length },
           }),
@@ -6987,7 +7371,7 @@ export class OrchestratorLoop {
               requester: row.requester,
               role: "adversary",
               cycle,
-              model: this.deps.config.models.adversary,
+              model: this.routeLog("adversary", this.deps.config.models.adversary).model,
               route: this.routeLog("adversary", this.deps.config.models.adversary).backend,
               baseSha: adversaryBaseSha,
             },
@@ -7007,6 +7391,7 @@ export class OrchestratorLoop {
             ),
             (review) => ({
               costUsd: review.costUsd,
+              usageMeasured: review.usageMeasured,
               providerResultId: review.sdkSessionId ?? null,
               result: { verdict: review.verdict, findings: review.findings.length, stage: "runtime" },
             }),
@@ -8247,6 +8632,10 @@ export class OrchestratorLoop {
     try {
       const outcome = await this.deps.releaseWorktree({ sessionId, repoFullName, worktreePath, reason });
       if (outcome.ok) {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET storage_state = 'released', storage_reason = ?,
+                               storage_checked_at = ?, updated_at = ? WHERE id = ?`,
+        ).run(`worktree intentionally released after terminal ${reason}`, Date.now(), Date.now(), sessionId);
         this.deps.state.audit(
           "loop.worktree_released",
           { sessionId, reason, ok: true, path: outcome.path ?? worktreePath, ...(outcome.error ? { note: outcome.error } : {}) },
@@ -8509,6 +8898,7 @@ export class OrchestratorLoop {
                 worktreePath: workerWorktree,
                 modelOverride: selectedWorkerModel,
                 onStreamSlow,
+                onActivity: this.makeWorkerActivityCallback(sessionId, st.seq, cycle),
                 firstTokenTimeoutSecondsOverride: firstTokenFor(attempt),
               }),
             ),
@@ -11035,7 +11425,7 @@ export class OrchestratorLoop {
     try {
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                     minimum_runtime_version = '2.0.0-rc.12' WHERE id = ?`)
+                                     minimum_runtime_version = '2.0.0-rc.13' WHERE id = ?`)
         .run(JSON.stringify(plan), sessionId);
     } catch (err) {
       this.deps.logger.warn("[loop] could not persist the CI repair sub-task", { sessionId, err: String(err) });
@@ -11139,7 +11529,7 @@ export class OrchestratorLoop {
     try {
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                     minimum_runtime_version = '2.0.0-rc.12' WHERE id = ?`)
+                                     minimum_runtime_version = '2.0.0-rc.13' WHERE id = ?`)
         .run(JSON.stringify(plan), sessionId);
     } catch (err) {
       this.deps.logger.warn("[loop] could not persist the finding repair sub-task(s)", { sessionId, err: String(err) });

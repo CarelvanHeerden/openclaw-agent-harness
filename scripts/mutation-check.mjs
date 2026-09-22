@@ -227,8 +227,8 @@ const MUTATIONS = [
      */
     name: "rc.10: a planned write policy will refuse never reaches a worker",
     file: "dist/orchestrator/loop.js",
-    find: "                    const myPolicyConflicts = planPolicyConflicts.filter((c) => c.seq === st.seq);",
-    replace: "                    const myPolicyConflicts = [];",
+    find: "        if (planPolicyConflicts.length > 0 &&",
+    replace: "        if (false &&",
     tests: ["tests/rc10-policy-conflict.test.mjs"],
   },
   {
@@ -242,7 +242,7 @@ const MUTATIONS = [
      */
     name: "rc.10: an observe prerequisite must have actually read something",
     file: "dist/orchestrator/loop.js",
-    find: "                        const observeHasNoEvidence = () => this.deps.config.loop.observe_evidence_check_enabled !== false &&",
+    find: "                        const observeHasNoEvidence = () => !st.observeContract &&",
     replace: "                        const observeHasNoEvidence = () => false &&",
     tests: ["tests/rc10-observe-evidence.test.mjs"],
   },
@@ -311,8 +311,8 @@ const MUTATIONS = [
     // turn announced itself as unmeasured.
     name: "v2 smoke: the logged usage source is the returned one",
     file: "dist/adapters/acp.js",
-    find: "const usageSource = acpUsageSource(sawAnyCost, sawTokenSplit);",
-    replace: "const usageSource = sawAnyCost ? \"acp-delta\" : \"unavailable\";",
+    find: "        : acpUsageSource(sawCurrentTurnCost, sawTokenSplit);",
+    replace: "        : acpUsageSource(sawCurrentTurnCost, false);",
     tests: ["tests/v2-acp-hardening.test.mjs"],
   },
   {
@@ -1458,8 +1458,8 @@ const MUTATIONS = [
     file: "dist/tools/brief-confirmation.js",
     // beta.123: the anchor moved from `raw` to `working` when the time clause
     // started being cut out before money is matched.
-    find: "    const m = BUDGET_CLAUSE.exec(working);",
-    replace: "    const m = null;",
+    find: "    const budgetUsd = uniqueBudgets.length === 1 ? uniqueBudgets[0] : undefined;",
+    replace: "    const budgetUsd = undefined;",
     tests: ["tests/beta122-branch-identity-and-clarify.test.mjs", "tests/beta123-confirmation-clauses.test.mjs"],
   },
   {
@@ -1467,9 +1467,13 @@ const MUTATIONS = [
     // approve corrections it should have surfaced.
     name: "a budget plus a correction is still a correction (b122): approving on a stripped clause would start the wrong build",
     file: "dist/tools/brief-confirmation.js",
-    find: "        approves: remainder.length === 0 || isBriefConfirmation(remainder),",
-    replace: "        approves: true,",
-    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+    find: "            featureRemainder.length === 0 &&",
+    replace: "            true &&",
+    tests: [
+      "tests/beta122-branch-identity-and-clarify.test.mjs",
+      "tests/rc6-typed-approval.test.mjs",
+      "tests/rc13-brief-proposal.test.mjs",
+    ],
   },
   {
     name: "the sub-task counter counts the plan (b122): 'Executing sub-task 1/1' described a ten-part plan",
@@ -1544,8 +1548,12 @@ const MUTATIONS = [
     // the bug: recognising the duration is not enough, because if the words stay
     // in the string the money regex reads "budget of 3 hours" as a $3 cap. This
     // anchor reproduces exactly that.
-    find: "        working = tidyRemainder(working.replace(t[0], \" \"));",
-    replace: "        working = working;",
+    find:
+      "            addControlValue(timeoutValues, seconds, \"timeout\", match[0].trim(), ambiguities);\n" +
+      "            working = tidyRemainder(working.replace(match[0], \" \"));",
+    replace:
+      "            addControlValue(timeoutValues, seconds, \"timeout\", match[0].trim(), ambiguities);\n" +
+      "            void match;",
     tests: ["tests/beta123-confirmation-clauses.test.mjs"],
   },
 
@@ -3352,8 +3360,15 @@ const MUTATIONS = [
     // Reading the shorthand at all.
     name: "bare shorthand is read as limits (rc.6): '$60, 10 hours' goes back to meaning nothing",
     file: "dist/tools/brief-confirmation.js",
-    find: "        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {",
+    find: "            if ((duration || money) && (!trial || isBriefConfirmation(trial))) {",
     replace: "        if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    name: "please continue is an explicit confirmation (rc.13 smoke)",
+    file: "dist/tools/brief-confirmation.js",
+    find: "    \"continue\",",
+    replace: "",
     tests: ["tests/rc6-typed-approval.test.mjs"],
   },
   {
@@ -3362,8 +3377,8 @@ const MUTATIONS = [
     // run at $60 and deletes the words from the operator's correction.
     name: "shorthand needs an affirmation-only reply (rc.6): a price in a correction becomes the budget",
     file: "dist/tools/brief-confirmation.js",
-    find: "        if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {",
-    replace: "        if (bd || bm) {",
+    find: "            if ((duration || money) && (!trial || isBriefConfirmation(trial))) {",
+    replace: "            if (duration || money) {",
     tests: ["tests/rc6-typed-approval.test.mjs"],
   },
   {
@@ -3673,8 +3688,8 @@ const MUTATIONS = [
   {
     name: "rc.11: required observe findings are deliverables, not tool-call activity",
     file: "dist/orchestrator/observe-contract.js",
-    find: "        if (!findings.has(id))\n            return { ok: false, reason: `required finding ${id} is missing` };",
-    replace: "        if (false)\n            return { ok: false, reason: `required finding ${id} is missing` };",
+    find: "        if (!findings.has(id))\n            return { ok: false, kind: \"invalid_schema\", reason: `required finding ${id} is missing` };",
+    replace: "        if (false)\n            return { ok: false, kind: \"invalid_schema\", reason: `required finding ${id} is missing` };",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
@@ -3989,7 +4004,7 @@ const MUTATIONS = [
   {
     name: "rc.12 pre-smoke: clarification authority comes from runtime context",
     file: "dist/tools/registration.js",
-    find: "            const trustedSender = legacyDirectTest ? (invokedBy ?? \"\") : runtimeSender;",
+    find: "            const trustedSender = runtimeSender;",
     replace: "            const trustedSender = invokedBy ?? \"\";",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
@@ -4062,6 +4077,347 @@ const MUTATIONS = [
     replace: "    /* runtime compatibility check skipped */",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
+  {
+    name: "rc.13 smoke: preservation qualifiers stay outside feature scope",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        if (PRESERVATION_WHOLE.test(clause)) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: labelled OBSERVE_RESULT fences are parsed",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "    if (labelledFence)\n        return JSON.parse(labelledFence[1]);",
+    replace: "    if (false)\n        return JSON.parse(labelledFence[1]);",
+    tests: ["tests/rc11-remediation.test.mjs", "tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: OBSERVE_RESULT colon is optional only for the bounded wrapper",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "const canonical = /^OBSERVE_RESULT\\s*:?\\s*```(?:json)?\\s*([\\s\\S]*?)```\\s*$/i.exec(trimmed);",
+    replace: "const canonical = /^OBSERVE_RESULT\\s*:\\s*```(?:json)?\\s*([\\s\\S]*?)```\\s*$/i.exec(trimmed);",
+    tests: ["tests/rc11-remediation.test.mjs", "tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: semantically blocked observations never release dependents",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "    if (result.status === \"blocked\") {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: load-time ACP replay is excluded from current output",
+    file: "dist/adapters/acp.js",
+    find: "        if (!promptSent && kind !== \"usage_update\") {",
+    replace: "        if (false) {",
+    tests: ["tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: resumed ACP cost never assumes a zero baseline",
+    file: "dist/adapters/acp.js",
+    find:
+      "    let costBaseline = resumeSessionId\n" +
+      "        ? (typeof resumeCumulativeCostUsd === \"number\" && Number.isFinite(resumeCumulativeCostUsd)\n" +
+      "            ? resumeCumulativeCostUsd\n" +
+      "            : null)\n" +
+      "        : 0;",
+    replace: "    let costBaseline = 0;",
+    tests: ["tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: cumulative ACP checkpoints persist atomically",
+    file: "dist/orchestrator/loop.js",
+    find: "                db.prepare(`INSERT INTO provider_session_usage",
+    replace: "                db.prepare(`INSERT INTO provider_session_usage_missing",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: every observe candidate is preserved before disposition",
+    file: "dist/orchestrator/loop.js",
+    find: "            this.deps.state.db.prepare(`INSERT OR REPLACE INTO observe_attempt_reports",
+    replace: "            this.deps.state.db.prepare(`INSERT OR REPLACE INTO observe_attempt_reports_missing",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: known plan policy conflicts pause before any worker",
+    file: "dist/orchestrator/loop.js",
+    find: "        if (planPolicyConflicts.length > 0 &&",
+    replace: "        if (false &&",
+    tests: ["tests/rc10-policy-conflict.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: OpenCode resolves from the durable active plugin root",
+    file: "dist/adapters/backend-router.js",
+    find:
+      "    const resolveDependency = pluginRoot\n" +
+      "        ? createRequire(resolvePath(pluginRoot, \"package.json\")).resolve\n" +
+      "        : requireFn;",
+    replace: "    const resolveDependency = requireFn;",
+    tests: ["tests/v2-opencode-packaging.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: contract patches are never coerced into file paths",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "                if (!contractPatch(binding)) {",
+    replace: "                if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: structured evidence outranks legacy tool counters",
+    file: "dist/orchestrator/loop.js",
+    find: "                        const observeHasNoEvidence = () => !st.observeContract &&",
+    replace: "                        const observeHasNoEvidence = () =>",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: identical invalid observe output is not bought a third time",
+    file: "dist/orchestrator/loop.js",
+    find: "                            if (priorObserveFailureFingerprint === observeFailureFingerprint) {",
+    replace: "                            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: foreign ACP session updates never enter the current turn",
+    file: "dist/adapters/acp.js",
+    find: "        if (expectedSessionId && p.sessionId && p.sessionId !== expectedSessionId) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: cumulative cost mismatch and currency changes fail indeterminate",
+    file: "dist/adapters/acp.js",
+    find: "        !baselineMismatch &&",
+    replace: "        true &&",
+    tests: ["tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: unresolved provider calls block new dispatch",
+    file: "dist/orchestrator/loop.js",
+    find: "            if (unresolved) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: cumulative checkpoint compare-and-swap prevents double charge",
+    file: "dist/orchestrator/loop.js",
+    find:
+      "            if (checkpoint &&\n" +
+      "                (checkpoint.currency !== \"USD\" ||\n" +
+      "                    Math.abs(checkpoint.cumulative_cost_usd - data.providerCostBaselineUsd) > 1e-9)) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: invalid provider costs fail closed before ledger updates",
+    file: "dist/orchestrator/loop.js",
+    find: "            if (!Number.isFinite(data.costUsd) || data.costUsd < 0) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 post-audit: preservation aliases never enter feature scope",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        if (PRESERVATION_WHOLE.test(clause)) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    name: "rc.13 post-audit: attached holds prevent all writes and dispatch",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        if (HOLD_CLAUSE.test(clause)) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    name: "rc.13 post-audit: historical control text is not authorization",
+    file: "dist/tools/brief-confirmation.js",
+    find: "        if (CONTROL_REFERENCE.test(clause) && CONDITIONAL_OR_HISTORICAL.test(clause)) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    name: "rc.13 post-audit: confirmation writes roll back as one transaction",
+    file: "dist/tools/registration.js",
+    find: "                    confirmationDb.exec(\"ROLLBACK TO SAVEPOINT brief_confirmation_apply\");",
+    replace: "                    void confirmationDb;",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    name: "rc.13 post-audit: structured ACP preserves unavailable usage",
+    file: "dist/adapters/backend-router.js",
+    find: "                usageMeasured: priced.costUsd !== undefined,",
+    replace: "                usageMeasured: true,",
+    tests: ["tests/v2-backend-wiring.test.mjs"],
+  },
+  {
+    name: "rc.13 post-audit: structured unknown usage cannot become free spend",
+    file: "dist/orchestrator/loop.js",
+    find: "            if (measured.usageMeasured === false || !Number.isFinite(measured.costUsd) || measured.costUsd < 0) {",
+    replace: "            if (!Number.isFinite(measured.costUsd) || measured.costUsd < 0) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: task completion is written only after verification",
+    file: "dist/orchestrator/loop.js",
+    find: "           SET status = 'verifying', cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = NULL, updated_at = ?",
+    replace: "           SET status = 'completed', cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = NULL, updated_at = ?",
+    tests: ["tests/beta37-progress-poll.test.mjs", "tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: rejection cannot dispatch as correction",
+    file: "dist/tools/registration.js",
+    find: "                if (!approved) {",
+    replace: "                if (false) {",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: staged proposal blocks plain confirmation",
+    file: "dist/tools/registration.js",
+    find: "                if (pause.briefProposal !== undefined || proposalConfirmation) {",
+    replace: "                if (proposalConfirmation) {",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: exact payload hash binds confirmation",
+    file: "dist/tools/brief-proposal.js",
+    find: "        suppliedHash === briefStateHash(proposal) &&",
+    replace: "        true &&",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: changed base invalidates proposal",
+    file: "dist/tools/brief-proposal.js",
+    find: "        proposal.baseHash === briefStateHash(base) &&",
+    replace: "        true &&",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: pre-spend authorisation cannot be delegated",
+    file: "dist/tools/registration.js",
+    find: "            if (automated && isBriefConfirmationPause(row.clarification_subtask)) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: limits alone are not authorisation",
+    file: "dist/tools/brief-confirmation.js",
+    find: "            featureRemainder.length === 0 &&\n            sawApproval,",
+    replace: "            featureRemainder.length === 0 &&\n            true,",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: ignored activation must not dispatch",
+    file: "dist/tools/registration.js",
+    find: "                    if (activated.changes !== 1)\n                        throw new Error(\"Brief changed before activation\");",
+    replace: "                    if (false)\n                        throw new Error(\"Brief changed before activation\");",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+    name: "rc.13 brief approval: ignored proposal write is not reported as staged",
+    file: "dist/tools/registration.js",
+    find: "                        if (staged.changes !== 1)",
+    replace: "                        if (false)",
+    tests: ["tests/rc13-brief-proposal.test.mjs"],
+  },
+  {
+  "name": "rc.13 human provenance: agent cannot mint human capability",
+  "file": "dist/tools/registration.js",
+  "find": "const direct = directAnswers.get(toolContext);",
+  "replace": "const direct = directAnswers.get(toolContext) ?? { input, stateHash: answerStateHash(pendingAnswerState(liveDb(), sessionId)) };",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: receipt cannot be consumed twice",
+  "file": "dist/tools/registration.js",
+  "find": "            AND consumed_at IS NULL AND expires_at > ?\n            AND reviewed_through >= review_page_count",
+  "replace": "            AND expires_at > ?\n            AND reviewed_through >= review_page_count",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: host sender must be authorized",
+  "file": "dist/tools/registration.js",
+  "find": "ctx.isAuthorizedSender !== true ||",
+  "replace": "false ||",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: expired receipt cannot authorize",
+  "file": "dist/tools/registration.js",
+  "find": "            AND consumed_at IS NULL AND expires_at > ?\n            AND reviewed_through >= review_page_count",
+  "replace": "            AND consumed_at IS NULL AND ? >= 0\n            AND reviewed_through >= review_page_count",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: receipt binds pending state",
+  "file": "dist/tools/human-answer-command.js",
+  "find": "export function answerStateHash(value) {\n    return createHash(\"sha256\").update(JSON.stringify(value)).digest(\"hex\");\n}",
+  "replace": "export function answerStateHash(value) {\n    return \"0\".repeat(64);\n}",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: final answer requires every review page",
+  "file": "dist/tools/registration.js",
+  "find": "            AND reviewed_through >= review_page_count",
+  "replace": "            AND 1 = 1",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: review pages cannot be requested out of order",
+  "file": "dist/tools/registration.js",
+  "find": "                    if (page > receipt.reviewed_through + 1) {",
+  "replace": "                    if (false) {",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: review-page advancement is compare-and-swap",
+  "file": "dist/tools/registration.js",
+  "find": "AND reviewed_through = ? AND consumed_at IS NULL AND expires_at > ?",
+  "replace": "AND ? >= 0 AND consumed_at IS NULL AND expires_at > ?",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: command channel must match",
+  "file": "dist/tools/registration.js",
+  "find": "ctx.channel !== \"slack\" ||",
+  "replace": "false ||",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: pending state rechecked after await",
+  "file": "dist/tools/registration.js",
+  "find": "if (trustedHuman && direct?.stateHash !== answerStateHash(pendingAnswerState(liveDb(), sessionId))) {\n                return { content: [{ type: \"text\", text: \"Pending state changed during validation.",
+  "replace": "if (false) {\n                return { content: [{ type: \"text\", text: \"Pending state changed during validation.",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: force resume cannot bypass pending approval",
+  "file": "dist/tools/registration.js",
+  "find": "if (row.status === \"awaiting_clarification\" || (row.clarification_question && row.clarification_answer == null)) {",
+  "replace": "if (false) {",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
 ];
 
 /**

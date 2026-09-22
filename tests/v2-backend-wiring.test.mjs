@@ -283,6 +283,12 @@ test("an unmeasured turn reports no cost rather than a measured zero", () => {
   assert.equal(priced.priceSource, "unmeasured");
 });
 
+test("rc13 post-audit: structured executors preserve the unmeasured state", () => {
+  const source = readFileSync(join(root, "dist", "adapters", "backend-router.js"), "utf8");
+  assert.match(source, /usageMeasured:\s*priced\.costUsd !== undefined/);
+  assert.match(source, /usageSource:\s*out\.usageSource/);
+});
+
 test("an agent that priced its own turn is believed", () => {
   const router = buildBackendRouter({
     ...baseInput(),

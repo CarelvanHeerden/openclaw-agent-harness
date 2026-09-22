@@ -145,7 +145,7 @@ export function openStateStoreSync(pathHint) {
          * survives the process that discovered it. NULL means never checked, which
          * is deliberately different from `ok`.
          */
-        { table: "sessions", column: "storage_state", type: "TEXT" }, // ok | missing_worktree | missing_objects | missing_commits | unknown
+        { table: "sessions", column: "storage_state", type: "TEXT" }, // ok | released | missing_worktree | missing_objects | missing_commits | unknown
         { table: "sessions", column: "storage_reason", type: "TEXT" }, // operator-facing detail for storage_state
         { table: "sessions", column: "storage_checked_at", type: "INTEGER" }, // ms; when the reconciliation last ran
         /*
@@ -179,6 +179,13 @@ export function openStateStoreSync(pathHint) {
         { table: "sub_task_attempts", column: "verification_status", type: "TEXT" },
         { table: "sub_task_attempts", column: "verification_json", type: "TEXT" },
         { table: "sub_task_attempts", column: "task_outcome", type: "TEXT" },
+        { table: "provider_calls", column: "completion_fingerprint", type: "TEXT" },
+        { table: "provider_session_usage", column: "currency", type: "TEXT NOT NULL DEFAULT 'USD'" },
+        { table: "provider_session_usage", column: "checkpoint_version", type: "INTEGER NOT NULL DEFAULT 1" },
+        // rc.13: large human approval reviews are paginated. A receipt cannot be
+        // consumed until every page bound to its full-state hash has been served.
+        { table: "human_answer_challenges", column: "review_page_count", type: "INTEGER NOT NULL DEFAULT 1" },
+        { table: "human_answer_challenges", column: "reviewed_through", type: "INTEGER NOT NULL DEFAULT 1" },
     ];
     for (const m of additiveMigrations) {
         try {
