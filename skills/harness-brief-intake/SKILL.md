@@ -161,11 +161,13 @@ When that happens:
    right. The entire value of the gate is that a human's eyes cross it.
 3. **Do not** start polling `harness_progress` yet, and do not fire another
    run — nothing is executing.
-4. When the user replies, pass their reply **verbatim** to `harness_answer`:
-
-```
-harness_answer({ sessionId, answer: "<the user's reply, exactly>", invokedBy })
-```
+4. Ask the requester to send `/harness-answer <sessionId>` **directly**. The host
+   executes this command without the model, displays the complete paused state,
+   and issues a ten-minute, single-use command bound to that sender and state.
+   The human must send the resulting command themselves. Never relay a human
+   answer through `harness_answer`, even with `answeredBy: "human"`; that is a
+   model-controlled claim and is rejected. If the command API is unavailable,
+   approval stays blocked. Do not emulate it through shell or another tool.
 
 An unqualified approval ("confirm", "yes", "go ahead") starts the current brief.
 Other replies, including rejections, holds and ordinary corrections, stay paused

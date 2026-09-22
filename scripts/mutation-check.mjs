@@ -4000,7 +4000,7 @@ const MUTATIONS = [
   {
     name: "rc.12 pre-smoke: clarification authority comes from runtime context",
     file: "dist/tools/registration.js",
-    find: "            const trustedSender = legacyDirectTest ? (invokedBy ?? \"\") : runtimeSender;",
+    find: "            const trustedSender = runtimeSender;",
     replace: "            const trustedSender = invokedBy ?? \"\";",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
@@ -4315,6 +4315,78 @@ const MUTATIONS = [
     replace: "                        if (false)",
     tests: ["tests/rc13-brief-proposal.test.mjs"],
   },
+  {
+  "name": "rc.13 human provenance: agent cannot mint human capability",
+  "file": "dist/tools/registration.js",
+  "find": "const direct = directAnswers.get(toolContext);",
+  "replace": "const direct = directAnswers.get(toolContext) ?? { input, stateHash: answerStateHash(pendingAnswerState(liveDb(), sessionId)) };",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: receipt cannot be consumed twice",
+  "file": "dist/tools/registration.js",
+  "find": "AND consumed_at IS NULL AND expires_at > ?",
+  "replace": "AND expires_at > ?",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: host sender must be authorized",
+  "file": "dist/tools/registration.js",
+  "find": "ctx.isAuthorizedSender !== true ||",
+  "replace": "false ||",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: expired receipt cannot authorize",
+  "file": "dist/tools/registration.js",
+  "find": "AND expires_at > ?",
+  "replace": "AND ? >= 0",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: receipt binds pending state",
+  "file": "dist/tools/registration.js",
+  "find": "AND state_hash = ?",
+  "replace": "AND ? IS NOT NULL",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: command channel must match",
+  "file": "dist/tools/registration.js",
+  "find": "ctx.channel !== \"slack\" ||",
+  "replace": "false ||",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: pending state rechecked after await",
+  "file": "dist/tools/registration.js",
+  "find": "if (trustedHuman && direct?.stateHash !== answerStateHash(pendingAnswerState(liveDb(), sessionId))) {\n                return { content: [{ type: \"text\", text: \"Pending state changed during validation.",
+  "replace": "if (false) {\n                return { content: [{ type: \"text\", text: \"Pending state changed during validation.",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
+  {
+  "name": "rc.13 human provenance: force resume cannot bypass pending approval",
+  "file": "dist/tools/registration.js",
+  "find": "if (row.status === \"awaiting_clarification\" || (row.clarification_question && row.clarification_answer == null)) {",
+  "replace": "if (false) {",
+  "tests": [
+    "tests/rc13-human-provenance.test.mjs"
+  ]
+},
 ];
 
 /**

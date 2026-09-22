@@ -37,7 +37,7 @@ const CAPABILITIES = {
             tools: ["harness_progress"],
         },
         {
-            what: "Answer a question the harness got stuck on. It pauses and asks rather than guessing when a plan and the repository disagree.",
+            what: "Answer a paused question directly with /harness-answer <sessionId>. Human replies must bypass the agent; harness_answer is only for explicitly delegated automation.",
             say: ["use the (portal) route group, not (app)"],
             tools: ["harness_answer"],
         },

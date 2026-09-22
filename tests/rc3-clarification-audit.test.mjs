@@ -37,7 +37,7 @@ mkdirSync(`${FIXTURE_WORKTREE}/.git`, { recursive: true });
 
 let registerHarnessTools, Database, CLARIFICATION_POLICY_VERSION, pathMatch, BUDGET_EXTENSION_KIND;
 try {
-  ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs"));
   ({ CLARIFICATION_POLICY_VERSION } = await import("../dist/version.js"));
   ({ BUDGET_EXTENSION_KIND } = await import("../dist/orchestrator/budget-extension.js"));
   pathMatch = await import("../dist/orchestrator/path-match.js");

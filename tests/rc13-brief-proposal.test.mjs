@@ -6,7 +6,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {DatabaseSync as Database} from 'node:sqlite';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const here=resolve(root,'tests');
-const {registerHarnessTools}=await import(pathToFileURL(resolve(root,'dist/tools/registration.js')));
+const {registerHarnessTools}=await import('./fixtures/direct-answer-registration.mjs');
 function makeRuntime({ riskLevel = "high", sessionDefaultUsd = 50, hardCeilingUsd } = {}) {
   const db = new Database(":memory:");
   db.exec(readFileSync(resolve(here, "..", "dist", "state", "schema.sql"), "utf8"));
@@ -179,7 +179,8 @@ test('rc13 brief proposal: delegated automation cannot approve or stage',async t
 
 test('rc13 brief proposal: oversized proposals and failed staging never mutate the active brief',async t=>{
  const g=await gate(t);const before=g.snapshot();
- assert.equal((await g.answer('revise brief: '+'x'.repeat(8001))).details.proposalFailed,true);
+ const oversized=await g.answer('revise brief: '+'x'.repeat(8001));
+ assert.equal(oversized.details.ok,false);assert.match(oversized.content[0].text,/too long/);
  assert.deepEqual(g.snapshot(),before);assert.equal(g.runtime.loopCalls.length,0);
  g.runtime.state.db.exec("CREATE TRIGGER deny_staging BEFORE UPDATE OF clarification_subtask ON sessions BEGIN SELECT RAISE(ABORT,'test fault'); END");
  assert.equal((await g.answer('revise brief: Use performedAt')).details.proposalFailed,true);

@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 let confirm, registerHarnessTools, Database;
 try {
   confirm = await import("../dist/tools/brief-confirmation.js");
-  ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   confirm = null;
@@ -423,7 +423,8 @@ test("rc6: a retried confirmation cannot start a second run", { skip }, async ()
   const again = await tools.get("harness_answer").execute({ sessionId, answer: "Confirm, $60, 10 hours", invokedBy: "U1" });
 
   assert.equal(again.details.ok, false);
-  assert.equal(again.details.badStatus, "planning");
+  assert.match(again.content[0].text, /No pending question/);
+  assert.equal(runtime.state.db.prepare("SELECT status FROM sessions WHERE id=?").get(sessionId).status, "planning");
   assert.equal(runtime.loopCalls.length, 1, "a relayed duplicate must not buy a second session");
 });
 

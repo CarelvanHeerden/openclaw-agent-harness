@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 
 let registerHarnessTools, Database, setCurrentRuntime, getCurrentRuntime;
 try {
-  ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs"));
   ({ setCurrentRuntime, getCurrentRuntime } = await import("../dist/runtime-registry.js"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {

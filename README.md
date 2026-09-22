@@ -354,3 +354,22 @@ scripts. Run `npm test` and `npm run smoke` in the tested checkout itself.
 ## License
 
 MIT. See `LICENSE`.
+
+### Human approval transport (rc.13)
+
+Human approval must arrive through OpenClaw's authenticated, non-agent command
+path: send `/harness-answer <sessionId>` in Slack. This displays the complete
+pending state and a one-use, ten-minute answer command. The receipt binds the
+requester, session, brief/proposal, limits and clarification identity. Send the
+resulting command yourself; do not ask the model to relay it. A revised brief
+still requires `confirm brief <sha256>` as the answer. Failed attempts consume
+the receipt; inspect the current pause and obtain a new command before retrying.
+
+`harness_answer` is now an **automation-only tool**: a caller's `answeredBy:
+"human"` assertion cannot establish provenance. Existing delegated clarification
+policy still applies; brief approvals and budget grants cannot be automated.
+The host must expose `registerCommand`, deliver an authenticated sender and the
+original command body, and dispatch outside the model. Otherwise human approval
+fails closed. No fallback to tool parameters, transcript text or a caller-supplied
+message ID is permitted. This assumes a trusted host/plugin process; it does not
+sandbox an operator with arbitrary host code/database access.

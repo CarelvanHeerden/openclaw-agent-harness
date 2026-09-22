@@ -173,7 +173,7 @@ test("P0-3: registration.ts pushes a disposer for EVERY registerTool call", () =
   // Object registrations and the authenticated contextual factory are both
   // real registrations; prose mentions match neither shape.
   const registered = (src.match(/api\.registerTool\((?:\{|contextualToolFactory)/g) ?? []).length;
-  const pushed = (src.match(/disposers\.push\(/g) ?? []).length;
+  const pushed = (src.match(/disposers\.push\(\s*toDispose\(/g) ?? []).length;
   assert.equal(pushed, registered, `every registerTool must be wrapped in disposers.push (${pushed}/${registered})`);
 });
 

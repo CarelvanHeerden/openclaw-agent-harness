@@ -36,7 +36,7 @@ const { GitAdapter } = await import("../dist/adapters/git-worktree.js");
 const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
 const { BudgetEnforcer } = await import("../dist/budgets/enforcer.js");
 const { PatRouter } = await import("../dist/auth/pat-router.js");
-const { registerHarnessTools } = await import("../dist/tools/registration.js");
+const { registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs");
 const { DatabaseSync } = await import("node:sqlite");
 
 const QUIET = { info() {}, warn() {}, error() {}, debug() {} };

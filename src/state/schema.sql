@@ -443,3 +443,14 @@ CREATE TABLE IF NOT EXISTS model_prices (
   fetched_at  INTEGER NOT NULL,                    -- epoch ms
   payload     TEXT NOT NULL                        -- JSON: the parsed Catalogue
 );
+
+-- Non-agent command approvals: opaque, state-bound, durable single-use receipts.
+CREATE TABLE IF NOT EXISTS human_answer_challenges (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  sender TEXT NOT NULL,
+  state_hash TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_human_answer_session ON human_answer_challenges(session_id);

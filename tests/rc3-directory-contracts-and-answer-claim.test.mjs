@@ -45,7 +45,7 @@ mkdirSync(`${FIXTURE_WORKTREE}/.git`, { recursive: true });
 let pathMatch, registerHarnessTools, Database;
 try {
   pathMatch = await import("../dist/orchestrator/path-match.js");
-  ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   pathMatch = null;
@@ -194,7 +194,7 @@ test("rc3: an answer addressed to a question that has since moved on is refused"
   const { db, audits, tools } = makeRuntime();
   const id = pause(db, { seq: 7 });
   const out = await tools.get("harness_answer").execute(null, {
-    sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4,
+    sessionId: id, answer: "accept", invokedBy: "U1", clarificationSeq: 4, answeredBy: "automation", evidence: "Stale sequence rejection must precede any permission to mutate.",
   });
   assert.equal(out.details.ok, false);
   assert.equal(out.details.staleSeq, true);

@@ -28,7 +28,7 @@ export function renderBriefProposal(proposal) {
     return [
         "No work has started. Review this complete stored proposal (budget is a warning target, timeout is active-work seconds):",
         JSON.stringify(proposal, null, 2),
-        `To start exactly this proposal, reply: confirm brief ${briefStateHash(proposal)}`,
+        `To start exactly this proposal, use this answer in your direct /harness-answer command: confirm brief ${briefStateHash(proposal)}`,
         "A plain confirm will not activate a revised proposal. To replace it, send revise brief: <correction, optionally with budget/time controls>. Revisions are based on the original brief, not an unapproved proposal.",
     ].join("\n\n");
 }

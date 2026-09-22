@@ -1,3 +1,13 @@
+## Unreleased — authenticated human command boundary
+
+- Reject agent-tool `answeredBy: "human"` claims; requester identity is not proof
+  of a human's explicit approval.
+- Add non-agent `/harness-answer` with full-state review and durable single-use,
+  ten-minute receipts bound to requester/session/pending state. Consume before
+  dispatch; reject stale/replayed/cross-session and altered/truncated commands.
+- Block force-resume while an unanswered clarification/approval remains pending.
+- No command API means no human approval. Delegated automation remains explicit.
+
 # Changelog
 
 ## 2.0.0-rc.13

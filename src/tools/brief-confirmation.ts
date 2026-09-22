@@ -185,7 +185,7 @@ export function renderBriefConfirmation(input: RenderConfirmationInput): string 
   );
   lines.push("");
   lines.push(
-    `Reply "confirm" to start. To propose a correction, reply "revise brief: <what to change>". ` +
+    `In the direct answer command, use "confirm" to start. To propose a correction, use "revise brief: <what to change>". ` +
       `A revision stays paused until you review and explicitly confirm its complete stored proposal. Other replies do not start work.`,
   );
   // beta.122: the cap is the one number an operator most often wants to change
@@ -204,6 +204,7 @@ export function renderBriefConfirmation(input: RenderConfirmationInput): string 
   if (input.sessionId) {
     lines.push("");
     lines.push(`Session \`${input.sessionId}\`.`);
+    lines.push(`Human approval requires a direct command: /harness-answer ${input.sessionId}. Review its complete state and send the one-use command yourself. Agent-tool relays cannot approve.`);
   }
   return lines.join("\n");
 }

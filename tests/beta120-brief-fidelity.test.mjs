@@ -26,7 +26,7 @@ let briefSource, briefConfirmation, registerHarnessTools, Database;
 try {
   briefSource = await import("../dist/tools/brief-source.js");
   briefConfirmation = await import("../dist/tools/brief-confirmation.js");
-  ({ registerHarnessTools } = await import("../dist/tools/registration.js"));
+  ({ registerHarnessTools } = await import("./fixtures/direct-answer-registration.mjs"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));
 } catch {
   briefSource = null;

@@ -586,7 +586,7 @@ export function buildProgressSnapshot(db: DatabaseSync, sessionId: string, limit
 
   const headline = needsClarification && clarificationQuestion
     ? `Awaiting clarification: ${clarificationQuestion.slice(0, 400)} ` +
-      `(answer via harness_answer sessionId=${sessionId}${clarificationId ? ` clarificationId=${clarificationId}` : ""})`
+      `(human: /harness-answer ${sessionId}; delegated automation: harness_answer sessionId=${sessionId}${clarificationId ? ` clarificationId=${clarificationId}` : ""})`
     : buildHeadline({
         phase,
         status,
