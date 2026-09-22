@@ -51,6 +51,7 @@ export interface StructuredTimeout {
 export type StructuredAttempt = (correction: string | null) => Promise<{
   raw: string;
   costUsd: number;
+  usageMeasured?: boolean;
   tokensIn: number;
   tokensOut: number;
   sessionId: string;
@@ -77,6 +78,7 @@ export interface LadderResult<T> {
   parsed: T;
   raw: string;
   costUsd: number;
+  usageMeasured: boolean;
   tokensIn: number;
   tokensOut: number;
   sessionId: string;
@@ -136,6 +138,7 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
   const maxAttempts = opts.maxAttempts ?? 3;
   const attempts: LadderAttempt[] = [];
   let costUsd = 0;
+  let usageMeasured = true;
   let tokensIn = 0;
   let tokensOut = 0;
   let sessionId = "";
@@ -170,6 +173,7 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
     }
 
     costUsd += call.costUsd;
+    if (call.usageMeasured === false) usageMeasured = false;
     tokensIn += call.tokensIn;
     tokensOut += call.tokensOut;
     if (!sessionId) sessionId = call.sessionId;
@@ -215,7 +219,7 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
     try {
       const parsed = extractAndValidateJson<T>(call.raw, { ...opts.validation, logger: opts.logger ?? opts.validation.logger });
       attempts.push({ outcome: "ok", costUsd: call.costUsd });
-      return { parsed, raw: call.raw, costUsd, tokensIn, tokensOut, sessionId, attempts, repaired: false };
+      return { parsed, raw: call.raw, costUsd, usageMeasured, tokensIn, tokensOut, sessionId, attempts, repaired: false };
     } catch (err) {
       // beta.126: the stop_reason is authoritative when it arrives, but when
       // the backend does not know the model it never does. An unbalanced
@@ -234,7 +238,7 @@ export async function runStructuredLadder<T>(opts: LadderOptions<T>): Promise<La
               `[${opts.role}] recovered a TRUNCATED reply by repair; the document is incomplete but valid`,
               { role: opts.role, rawLen: call.raw.length, repairedLen: repairedText.length },
             );
-            return { parsed, raw: call.raw, costUsd, tokensIn, tokensOut, sessionId, attempts, repaired: true };
+            return { parsed, raw: call.raw, costUsd, usageMeasured, tokensIn, tokensOut, sessionId, attempts, repaired: true };
           } catch {
             // The repair produced valid JSON that still fails the contract:
             // the part that was cut off was a part we require. Fall through.

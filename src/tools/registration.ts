@@ -2460,8 +2460,18 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
             };
           }
           const approved = parsed.approves;
+          const confirmationDb = liveDb();
+          confirmationDb.exec("SAVEPOINT brief_confirmation_apply");
           let budgetApplied: number | undefined;
-          if (typeof parsed.budgetUsd === "number") {
+          let timeoutApplied: number | undefined;
+          let effectiveLimits: {
+            budgetUsd: number;
+            hardTimeoutSeconds: number;
+            repairReserveUsd: number;
+            requestedBudgetUsd?: number;
+          };
+          try {
+            if (typeof parsed.budgetUsd === "number") {
             // The advertised ceiling still binds -- this is the operator asking
             // for more room, not an escape from the operator's own cap.
             const ceiling = liveConfig().budgets?.session_hard_ceiling_usd;
@@ -2478,8 +2488,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           // out of "confirm, budget $40 with a time budget of 3 hours" and left
           // the hours in the remainder, which both lost the instruction and
           // demoted a plain approval to a correction.
-          let timeoutApplied: number | undefined;
-          if (typeof parsed.timeoutSeconds === "number") {
+            if (typeof parsed.timeoutSeconds === "number") {
             liveDb()
               .prepare(`UPDATE sessions SET hard_timeout_seconds = ?, updated_at = ? WHERE id = ?`)
               .run(parsed.timeoutSeconds, Date.now(), sessionId);
@@ -2507,7 +2516,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           const persisted = liveDb()
             .prepare(`SELECT budget_usd, hard_timeout_seconds FROM sessions WHERE id = ?`)
             .get(sessionId) as { budget_usd?: number | null; hard_timeout_seconds?: number | null } | undefined;
-          const effectiveLimits = {
+            effectiveLimits = {
             budgetUsd: Number(persisted?.budget_usd ?? 0),
             hardTimeoutSeconds: Number(
               persisted?.hard_timeout_seconds ?? liveConfig().loop?.session_hard_timeout_seconds ?? 7200,
@@ -2529,25 +2538,36 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: HarnessRunt
           if (budgetApplied !== undefined && effectiveLimits.budgetUsd !== budgetApplied) unpersisted.push("budget");
           if (timeoutApplied !== undefined && effectiveLimits.hardTimeoutSeconds !== timeoutApplied) unpersisted.push("wall clock");
           if (unpersisted.length > 0) {
+            throw new Error(`brief limits did not persist: ${unpersisted.join(", ")}`);
+          }
+            liveDb()
+            .prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', clarification_question = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ?`)
+            .run(JSON.stringify(brief), Date.now(), sessionId);
+            confirmationDb.exec("RELEASE SAVEPOINT brief_confirmation_apply");
+          } catch (err) {
+            try {
+              confirmationDb.exec("ROLLBACK TO SAVEPOINT brief_confirmation_apply");
+              confirmationDb.exec("RELEASE SAVEPOINT brief_confirmation_apply");
+            } catch { /* preserve the original atomic-apply failure */ }
+            try {
+              confirmationDb
+                .prepare(`UPDATE sessions SET clarification_answer = NULL, updated_at = ? WHERE id = ?`)
+                .run(Date.now(), sessionId);
+            } catch { /* leave the original database failure visible */ }
             liveState().audit(
-              "tool.answer_brief_limits_not_persisted",
-              { sessionId, unpersisted, budgetApplied: budgetApplied ?? null, timeoutApplied: timeoutApplied ?? null, observed: effectiveLimits },
+              "tool.answer_brief_apply_failed",
+              { sessionId, error: String(err).slice(0, 1000), answerLen: trimmed.length },
               sessionId,
             );
             return {
               content: [{
                 type: "text",
-                text:
-                  `I did not start the run. You set the ${unpersisted.join(" and ")}, but reading the session back ` +
-                  `shows ${renderLimitsReceipt(effectiveLimits)} — so the limit you gave did not stick, and starting ` +
-                  `would run under numbers you did not choose. This is a harness fault, not a problem with your reply.`,
+                text: `I did not start the run because its limits and corrected brief could not be stored atomically. ` +
+                  `The session remains paused; retry after the storage fault is resolved.`,
               }],
-              details: { ok: false, sessionId, started: false, limitsNotPersisted: unpersisted },
+              details: { ok: false, sessionId, started: false, atomicApplyFailed: true },
             };
           }
-          liveDb()
-            .prepare(`UPDATE sessions SET crystallised_prompt = ?, status = 'planning', clarification_question = NULL, clarification_subtask = NULL, updated_at = ? WHERE id = ?`)
-            .run(JSON.stringify(brief), Date.now(), sessionId);
           liveState().audit(
             approved ? "tool.answer_brief_confirmed" : "tool.answer_brief_corrected",
             { sessionId, answerLen: trimmed.length, invokedBy: invokedBy ?? null, budgetApplied: budgetApplied ?? null, timeoutApplied: timeoutApplied ?? null, effectiveLimits },

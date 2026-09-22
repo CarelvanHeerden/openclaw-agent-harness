@@ -32,6 +32,9 @@ accepting the misleading “no findings” summary.
   commit atomically with baseline compare-and-swap. Repeated identical
   completion is idempotent, conflicting completion fails closed, and an
   unresolved started/unknown provider call fences later dispatch.
+- Structured OpenCode roles preserve unavailable usage through their retry
+  ladders. Lead/adversary calls with unknown cost now enter
+  `accounting_incomplete` with `cost_usd=NULL`, never as a free `$0` call.
 - Current ACP activity advances the durable heartbeat. Provider rows record the
   effective routed model, and storage health is refreshed on worktree allocation
   and intentional release.
@@ -39,6 +42,10 @@ accepting the misleading “no findings” summary.
   preservation directives. The smoke reply applies the full `$50` and five-hour
   limits without writing either controls or “Preserve all restrictions” into
   feature scope.
+- Confirmation parsing is clause-bounded and fail-closed for preservation
+  aliases, holds, conditional/historical wording, alternatives, conflicting
+  values and partial amounts. Limits, corrected brief and the transition to
+  planning commit atomically; a failed write leaves the gate paused unchanged.
 - Known plan-policy conflicts now pause before the first worker dispatch, so a
   later `.env.example` obligation cannot spend an earlier observe turn before
   the safety conflict is surfaced.

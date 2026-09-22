@@ -39,6 +39,7 @@ export async function runStructuredLadder(opts) {
     const maxAttempts = opts.maxAttempts ?? 3;
     const attempts = [];
     let costUsd = 0;
+    let usageMeasured = true;
     let tokensIn = 0;
     let tokensOut = 0;
     let sessionId = "";
@@ -74,6 +75,8 @@ export async function runStructuredLadder(opts) {
             continue;
         }
         costUsd += call.costUsd;
+        if (call.usageMeasured === false)
+            usageMeasured = false;
         tokensIn += call.tokensIn;
         tokensOut += call.tokensOut;
         if (!sessionId)
@@ -119,7 +122,7 @@ export async function runStructuredLadder(opts) {
         try {
             const parsed = extractAndValidateJson(call.raw, { ...opts.validation, logger: opts.logger ?? opts.validation.logger });
             attempts.push({ outcome: "ok", costUsd: call.costUsd });
-            return { parsed, raw: call.raw, costUsd, tokensIn, tokensOut, sessionId, attempts, repaired: false };
+            return { parsed, raw: call.raw, costUsd, usageMeasured, tokensIn, tokensOut, sessionId, attempts, repaired: false };
         }
         catch (err) {
             // beta.126: the stop_reason is authoritative when it arrives, but when
@@ -135,7 +138,7 @@ export async function runStructuredLadder(opts) {
                         const parsed = extractAndValidateJson(repairedText, { ...opts.validation, logger: opts.logger });
                         attempts.push({ outcome: "repaired", detail: "document was cut off; closed and re-validated", costUsd: call.costUsd });
                         opts.logger?.warn(`[${opts.role}] recovered a TRUNCATED reply by repair; the document is incomplete but valid`, { role: opts.role, rawLen: call.raw.length, repairedLen: repairedText.length });
-                        return { parsed, raw: call.raw, costUsd, tokensIn, tokensOut, sessionId, attempts, repaired: true };
+                        return { parsed, raw: call.raw, costUsd, usageMeasured, tokensIn, tokensOut, sessionId, attempts, repaired: true };
                     }
                     catch {
                         // The repair produced valid JSON that still fails the contract:

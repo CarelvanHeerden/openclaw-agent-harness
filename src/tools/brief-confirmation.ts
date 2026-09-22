@@ -415,7 +415,7 @@ const CURRENCY_CUE_RESIDUE = /\b(?:cap|ceiling|limit)\b[^.,;]{0,16}?(?:\$|\busd\
 const TIME_CUE_RESIDUE = /\b(?:time\s*(?:budget|limit|cap|box|out)|timebox|wall[-\s]?clock|deadline|timeout)\b[^.,;]{0,16}?\d/i;
 
 /** Which operational control a reply failed to express usably. */
-export type ControlName = "budget" | "timeout";
+export type ControlName = "budget" | "timeout" | "approval";
 
 export type ControlAmbiguityKind =
   /** A number was read but is not a limit anyone could run under. */
@@ -423,7 +423,11 @@ export type ControlAmbiguityKind =
   /** A control was named; nothing usable followed it. */
   | "unreadable_amount"
   /** The same control was given two different values. */
-  | "conflicting_values";
+  | "conflicting_values"
+  | "hold"
+  | "conditional_or_historical"
+  | "ambiguous_alternative"
+  | "partial_amount";
 
 /**
  * A control the operator clearly tried to set and the harness could not read.
@@ -452,6 +456,39 @@ function tidyRemainder(text: string): string {
     .replace(/\s+([,.;])/g, "$1")
     .replace(/\s{2,}/g, " ")
     .trim();
+}
+
+const HOLD_CLAUSE =
+  /\b(?:do\s+not|don't|dont|must\s+not|cannot|can't)\s+(?:start|begin|run|proceed|continue)\b|\b(?:wait|hold|pause|not\s+yet)\b|\b(?:start|begin|run|proceed|continue)\s+only\s+after\b|\buntil\s+(?:i|we)\s+(?:approve|confirm|review)\b/i;
+const CONTROL_CUE = /\b(?:budget|cap|ceiling|time\s*(?:budget|limit|cap|box|out)|timebox|wall[- ]?clock|deadline|timeout)\b/i;
+const CONTROL_REFERENCE = /\b(?:budget|cap|ceiling|time\s*(?:budget|limit|cap|box|out)|timebox|wall[- ]?clock|deadline|timeout)\b|\$\s*\d/i;
+const CONDITIONAL_OR_HISTORICAL =
+  /\b(?:if|unless|provided|assuming|when)\b|\b(?:previous|prior|earlier|last)\s+(?:message|reply|plan|answer)\b|\b(?:said|quoted|mentioned|referred to)\b/i;
+const ALTERNATIVE_OR_RANGE =
+  /(?:\$\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:usd|dollars?|hours?|hrs?|minutes?|mins?))\s*(?:or|to|through|-)\s*(?:\$\s*)?\d/i;
+const PARTIAL_CONTROL_NUMBER = /\$\s*\d+\.\d{3,}|\bbudget\b[^;\n]*\d+\.\d{3,}/i;
+const PRESERVATION_WHOLE =
+  /^(?:please\s+)?(?:preserve|keep|retain|honou?r|respect|maintain)\s+(?:(?:all|the|existing|current)\s+)?(?:restrictions|requirements|scope|boundaries|controls|limits|budget\s+and\s+time\s+limits|time\s+and\s+budget\s+limits|everything(?:\s+else)?)(?:\s+unchanged)?[.!]?$/i;
+const AFFIRMATION_PREFIX =
+  /^(?:please\s+)?(?:confirm(?:ed)?|yes|y|go(?:\s+ahead)?|proceed|approved?|lgtm|ok(?:ay)?|do\s+it|start|run\s+it|continue|correct|looks\s+(?:good|right)|that'?s\s+right)\s*[,.:—–-]\s*/i;
+const BARE_BUDGET_WHOLE =
+  /^(?:budget\s*(?:to|of|is|=|:)?\s*)?(?:\$\s*(\d+(?:\.\d{1,2})?)|(\d+(?:\.\d{1,2})?)\s*(?:usd|dollars?))(?:\s*(?:budget|cap|limit))?[.!]?$/i;
+const BARE_TIME_WHOLE =
+  /^(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)(?:\s*(?:time\s*)?(?:budget|limit|cap|box))?[.!]?$/i;
+
+function addControlValue(
+  values: number[],
+  value: number,
+  control: "budget" | "timeout",
+  text: string,
+  ambiguities: ControlAmbiguity[],
+): void {
+  const valid = Number.isFinite(value) && value > 0 && (control !== "timeout" || value <= MAX_TIMEOUT_SECONDS);
+  if (!valid) {
+    ambiguities.push({ control, kind: "out_of_range", text });
+    return;
+  }
+  values.push(value);
 }
 
 /**
@@ -494,116 +531,149 @@ export function parseConfirmationReply(answer: string): ParsedConfirmationReply 
   const raw = (answer ?? "").trim();
   const ambiguities: ControlAmbiguity[] = [];
   const preservationClauses: string[] = [];
+  const budgetValues: number[] = [];
+  const timeoutValues: number[] = [];
+  const corrections: string[] = [];
+  let sawApproval = false;
 
-  let working = raw.replace(PRESERVATION_CLAUSE, (_whole, clause: string) => {
-    preservationClauses.push(clause.trim());
-    return "\n";
-  });
-  working = tidyRemainder(working);
-
-  // Currency-first controls are unambiguously money. Consume them before time
-  // so "$50 budget\n5 hours" cannot be stolen as the phrase "budget 5 hours".
-  let budgetUsd: number | undefined;
-  const currencyFirst = CURRENCY_FIRST_BUDGET.exec(working);
-  if (currencyFirst) {
-    const amount = Number(currencyFirst[1]);
-    if (Number.isFinite(amount) && amount > 0) {
-      budgetUsd = amount;
-    } else {
-      ambiguities.push({ control: "budget", kind: "out_of_range", text: currencyFirst[0].trim() });
+  for (const originalClause of raw.split(/[\n;,]+/)) {
+    const clause = originalClause.trim();
+    if (!clause) continue;
+    if (/^(?:please|thanks|thank you|ta)[.!]?$/i.test(clause)) continue;
+    if (HOLD_CLAUSE.test(clause)) {
+      ambiguities.push({ control: "approval", kind: "hold", text: clause });
+      continue;
     }
-    working = tidyRemainder(working.replace(currencyFirst[0], " "));
-  }
-
-  // Time first, and cut it out before other money forms are looked for: "a time budget of 3
-  // hours" is `budget`-followed-by-a-number, and would otherwise be read as $3.
-  let timeoutSeconds: number | undefined;
-  for (const re of [TIME_CLAUSE, BUDGET_OF_DURATION, TIME_CLAUSE_TRAILING]) {
-    const t = re.exec(working);
-    if (!t) continue;
-    const qty = Number(t[1]);
-    const unit = (t[2] ?? "").toLowerCase();
-    const seconds = Math.round(qty * (unit.startsWith("h") ? 3600 : 60));
-    if (Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_TIMEOUT_SECONDS) {
-      timeoutSeconds = seconds;
-    } else {
-      // rc.6: a duration that is zero, negative or absurd is an instruction we
-      // cannot carry out. Before rc.6 the words were left in the correction and
-      // the run started on the default clock; now it stops and asks.
-      ambiguities.push({ control: "timeout", kind: "out_of_range", text: t[0].trim() });
+    if (PRESERVATION_WHOLE.test(clause)) {
+      preservationClauses.push(clause);
+      continue;
     }
-    // Cut it out either way. If it stays, the money regex reads "time budget of
-    // 0 hours" as a $0 cap and reports the wrong control back to the operator.
-    working = tidyRemainder(working.replace(t[0], " "));
-    break;
-  }
-
-  const m = BUDGET_CLAUSE.exec(working);
-  const captured = m ? m.slice(1).find((g) => typeof g === "string" && g.length > 0) : undefined;
-  const value = Number(captured);
-  if (m && Number.isFinite(value) && value > 0) {
-    if (budgetUsd !== undefined && budgetUsd !== value) {
-      ambiguities.push({ control: "budget", kind: "conflicting_values", text: m[0].trim() });
-    } else {
-      budgetUsd = value;
+    if (/\b(?:preserve|keep|retain|honou?r|respect|maintain)\b/i.test(clause) && /\b(?:except|unless|but)\b/i.test(clause)) {
+      ambiguities.push({ control: "approval", kind: "ambiguous_alternative", text: clause });
+      continue;
     }
-    working = tidyRemainder(working.replace(m[0], " "));
-  } else if (m) {
-    ambiguities.push({ control: "budget", kind: "out_of_range", text: m[0].trim() });
-    working = tidyRemainder(working.replace(m[0], " "));
-  }
-
-  // rc.6: the shorthand pass, on trial. Bare numbers are only limits when
-  // nothing but an affirmation survives their removal, so everything here is
-  // computed against a copy and thrown away unless that holds.
-  {
-    let trial = working;
-    const trialAmbiguities: ControlAmbiguity[] = [];
-    let trialBudget = budgetUsd;
-    let trialTimeout = timeoutSeconds;
-
-    const bd = BARE_DURATION.exec(trial);
-    if (bd) {
-      const qty = Number(bd[1]);
-      const unit = (bd[2] ?? "").toLowerCase();
-      const seconds = Math.round(qty * (unit.startsWith("h") ? 3600 : 60));
-      const usable = Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_TIMEOUT_SECONDS;
-      if (!usable) trialAmbiguities.push({ control: "timeout", kind: "out_of_range", text: bd[0].trim() });
-      else if (trialTimeout !== undefined && trialTimeout !== seconds) {
-        trialAmbiguities.push({ control: "timeout", kind: "conflicting_values", text: bd[0].trim() });
-      } else trialTimeout = seconds;
-      trial = tidyRemainder(trial.replace(bd[0], " "));
+    if (isBriefConfirmation(clause)) {
+      sawApproval = true;
+      continue;
+    }
+    if (CONTROL_REFERENCE.test(clause) && CONDITIONAL_OR_HISTORICAL.test(clause)) {
+      ambiguities.push({ control: "approval", kind: "conditional_or_historical", text: clause });
+      continue;
+    }
+    if (/^(?:if|unless|provided|assuming|when)\b/i.test(clause)) {
+      ambiguities.push({ control: "approval", kind: "conditional_or_historical", text: clause });
+      continue;
+    }
+    if (ALTERNATIVE_OR_RANGE.test(clause)) {
+      ambiguities.push({ control: CONTROL_CUE.test(clause) || /\$/.test(clause) ? "budget" : "timeout", kind: "ambiguous_alternative", text: clause });
+      continue;
+    }
+    if (PARTIAL_CONTROL_NUMBER.test(clause)) {
+      ambiguities.push({ control: "budget", kind: "partial_amount", text: clause });
+      continue;
     }
 
-    const bm = BARE_MONEY.exec(trial);
-    if (bm) {
-      const amount = Number(bm.slice(1).find((g) => typeof g === "string" && g.length > 0));
-      if (!Number.isFinite(amount) || amount <= 0) {
-        trialAmbiguities.push({ control: "budget", kind: "out_of_range", text: bm[0].trim() });
-      } else if (trialBudget !== undefined && trialBudget !== amount) {
-        trialAmbiguities.push({ control: "budget", kind: "conflicting_values", text: bm[0].trim() });
-      } else trialBudget = amount;
-      trial = tidyRemainder(trial.replace(bm[0], " "));
+    const correctionAfterApproval =
+      /^(?:please\s+)?(?:confirm(?:ed)?|yes|y|go(?:\s+ahead)?|proceed|approved?|lgtm|ok(?:ay)?|do\s+it|start|run\s+it|continue)\s*,\s*but\b/i.test(clause);
+    let working = correctionAfterApproval
+      ? clause
+      : clause.replace(AFFIRMATION_PREFIX, () => {
+          sawApproval = true;
+          return "";
+        });
+    working = tidyRemainder(working);
+
+    const bareBudget = BARE_BUDGET_WHOLE.exec(working);
+    if (bareBudget) {
+      const value = Number(bareBudget[1] ?? bareBudget[2]);
+      addControlValue(budgetValues, value, "budget", clause, ambiguities);
+      continue;
+    }
+    const bareTime = BARE_TIME_WHOLE.exec(working);
+    if (bareTime) {
+      const qty = Number(bareTime[1]);
+      const seconds = Math.round(qty * ((bareTime[2] ?? "").toLowerCase().startsWith("h") ? 3600 : 60));
+      addControlValue(timeoutValues, seconds, "timeout", clause, ambiguities);
+      continue;
     }
 
-    if ((bd || bm) && (trial.length === 0 || isBriefConfirmation(trial))) {
-      working = trial;
-      budgetUsd = trialBudget;
-      timeoutSeconds = trialTimeout;
-      ambiguities.push(...trialAmbiguities);
+    for (const re of [TIME_CLAUSE, BUDGET_OF_DURATION, TIME_CLAUSE_TRAILING]) {
+      const match = re.exec(working);
+      if (!match) continue;
+      const qty = Number(match[1]);
+      const seconds = Math.round(qty * ((match[2] ?? "").toLowerCase().startsWith("h") ? 3600 : 60));
+      addControlValue(timeoutValues, seconds, "timeout", match[0].trim(), ambiguities);
+      working = tidyRemainder(working.replace(match[0], " "));
+      break;
     }
+    for (const re of [CURRENCY_FIRST_BUDGET, BUDGET_CLAUSE]) {
+      const match = re.exec(working);
+      if (!match) continue;
+      const captured = match.slice(1).find((part) => typeof part === "string" && part.length > 0);
+      addControlValue(budgetValues, Number(captured), "budget", match[0].trim(), ambiguities);
+      working = tidyRemainder(working.replace(match[0], " "));
+      break;
+    }
+
+    // Comma-separated shorthand is actionable only when every remaining token
+    // is an approval or a complete control. Otherwise the numbers stay in the
+    // feature correction verbatim.
+    {
+      let trial = working;
+      const trialBudgets: number[] = [];
+      const trialTimeouts: number[] = [];
+      const duration = BARE_DURATION.exec(trial);
+      if (duration) {
+        const qty = Number(duration[1]);
+        trialTimeouts.push(Math.round(qty * ((duration[2] ?? "").toLowerCase().startsWith("h") ? 3600 : 60)));
+        trial = tidyRemainder(trial.replace(duration[0], " "));
+      }
+      const money = BARE_MONEY.exec(trial);
+      if (money) {
+        trialBudgets.push(Number(money[1] ?? money[2]));
+        trial = tidyRemainder(trial.replace(money[0], " "));
+      }
+      if ((duration || money) && (!trial || isBriefConfirmation(trial))) {
+        if (isBriefConfirmation(trial)) sawApproval = true;
+        for (const value of trialBudgets) addControlValue(budgetValues, value, "budget", clause, ambiguities);
+        for (const value of trialTimeouts) addControlValue(timeoutValues, value, "timeout", clause, ambiguities);
+        continue;
+      }
+    }
+
+    if (!working || isBriefConfirmation(working)) {
+      if (isBriefConfirmation(working)) sawApproval = true;
+      continue;
+    }
+    if (MONEY_CUE_RESIDUE.test(working) || CURRENCY_CUE_RESIDUE.test(working)) {
+      ambiguities.push({ control: "budget", kind: "unreadable_amount", text: working });
+      continue;
+    }
+    if (TIME_CUE_RESIDUE.test(working)) {
+      ambiguities.push({ control: "timeout", kind: "unreadable_amount", text: working });
+      continue;
+    }
+    corrections.push(working);
   }
 
-  // rc.6: last, whatever named a control and never produced a number. Scanned
-  // over the leftovers, so a clause that parsed cleanly is already gone.
-  if (MONEY_CUE_RESIDUE.test(working) || CURRENCY_CUE_RESIDUE.test(working)) {
-    ambiguities.push({ control: "budget", kind: "unreadable_amount", text: working });
+  const uniqueBudgets = [...new Set(budgetValues)];
+  const uniqueTimeouts = [...new Set(timeoutValues)];
+  if (uniqueBudgets.length > 1) {
+    ambiguities.push({ control: "budget", kind: "conflicting_values", text: uniqueBudgets.join(", ") });
   }
-  if (TIME_CUE_RESIDUE.test(working)) {
-    ambiguities.push({ control: "timeout", kind: "unreadable_amount", text: working });
+  if (uniqueTimeouts.length > 1) {
+    ambiguities.push({ control: "timeout", kind: "conflicting_values", text: uniqueTimeouts.join(", ") });
   }
-
-  const remainder = working === raw ? raw : tidyRemainder(working);
+  const budgetUsd = uniqueBudgets.length === 1 ? uniqueBudgets[0] : undefined;
+  const timeoutSeconds = uniqueTimeouts.length === 1 ? uniqueTimeouts[0] : undefined;
+  const featureRemainder =
+    corrections.length > 0 &&
+    budgetUsd === undefined &&
+    timeoutSeconds === undefined &&
+    preservationClauses.length === 0
+      ? raw
+      : corrections.join("\n").trim();
+  const remainder = featureRemainder || (sawApproval ? "confirm" : "");
   return {
     budgetUsd,
     timeoutSeconds,
@@ -612,7 +682,10 @@ export function parseConfirmationReply(answer: string): ParsedConfirmationReply 
     preservationClauses,
     // Nothing left, or only an affirmation left, means those clauses were the
     // entire qualification -- so this IS an approval.
-    approves: remainder.length === 0 || isBriefConfirmation(remainder),
+    approves:
+      ambiguities.length === 0 &&
+      featureRemainder.length === 0 &&
+      (sawApproval || budgetUsd !== undefined || timeoutSeconds !== undefined),
   };
 }
 
@@ -628,6 +701,16 @@ export function describeControlAmbiguities(ambiguities: readonly ControlAmbiguit
   );
   lines.push("");
   for (const a of ambiguities) {
+    if (a.control === "approval") {
+      const why =
+        a.kind === "hold"
+          ? "tells the harness not to start yet"
+          : a.kind === "conditional_or_historical"
+            ? "does not provide present, unconditional authorization"
+            : "has more than one possible instruction";
+      lines.push(`  - "${a.text}" ${why}.`);
+      continue;
+    }
     const name = a.control === "budget" ? "budget" : "wall clock";
     const why =
       a.kind === "out_of_range"

@@ -126,14 +126,14 @@ export interface ParsedConfirmationReply {
     ambiguities: ControlAmbiguity[];
 }
 /** Which operational control a reply failed to express usably. */
-export type ControlName = "budget" | "timeout";
+export type ControlName = "budget" | "timeout" | "approval";
 export type ControlAmbiguityKind = 
 /** A number was read but is not a limit anyone could run under. */
 "out_of_range"
 /** A control was named; nothing usable followed it. */
  | "unreadable_amount"
 /** The same control was given two different values. */
- | "conflicting_values";
+ | "conflicting_values" | "hold" | "conditional_or_historical" | "ambiguous_alternative" | "partial_amount";
 /**
  * A control the operator clearly tried to set and the harness could not read.
  *

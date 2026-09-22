@@ -1068,10 +1068,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                 secretToken: ghToken,
                 logger: api.logger,
               });
+                const pricedScout = backendRouter.priceTurn("scout", s);
                 return {
                   report: s.finalMessage,
                   conventions,
-                  costUsd: backendRouter.priceTurn("scout", s).costUsd ?? 0,
+                  costUsd: pricedScout.costUsd ?? 0,
+                  usageMeasured: pricedScout.costUsd !== undefined,
                   tokensIn: s.tokensIn,
                   tokensOut: s.tokensOut,
                   timedOut: s.stopReason === "timeout",
@@ -1090,7 +1092,15 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
                 deniedTools: SCOUT_DENIED_TOOLS,
                 logger: api.logger,
               });
-              return { report: r.report, conventions, costUsd: r.costUsd, tokensIn: r.tokensIn, tokensOut: r.tokensOut, timedOut: r.timedOut };
+              return {
+                report: r.report,
+                conventions,
+                costUsd: r.costUsd,
+                usageMeasured: r.usageMeasured,
+                tokensIn: r.tokensIn,
+                tokensOut: r.tokensOut,
+                timedOut: r.timedOut,
+              };
             } catch (err) {
               api.logger.warn("[lead] model scout failed after conventions were loaded; planning retains convention context", { repo: repoFullName, err: String(err) });
               return { report: "", conventions };
@@ -1461,6 +1471,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               },
               sdkSessionId: r.sdkSessionId,
               costUsd: r.costUsd,
+              usageMeasured: r.usageMeasured,
               tokensIn: r.tokensIn,
               tokensOut: r.tokensOut,
             };

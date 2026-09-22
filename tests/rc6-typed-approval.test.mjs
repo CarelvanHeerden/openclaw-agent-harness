@@ -86,6 +86,41 @@ test("rc13 smoke: currency-first budget and bare time survive line breaks", { sk
   }
 });
 
+test("rc13 post-audit: preservation aliases stay metadata and real corrections stay feature text", { skip }, () => {
+  for (const preservation of [
+    "Honor all restrictions",
+    "Keep current budget and time limits",
+    "Retain existing scope",
+  ]) {
+    const r = confirm.parseConfirmationReply(`Please continue\n$50 budget\n5 hours\n${preservation}`);
+    assert.equal(r.budgetUsd, 50, preservation);
+    assert.equal(r.timeoutSeconds, 18000, preservation);
+    assert.equal(r.approves, true, preservation);
+    assert.deepEqual(r.ambiguities, [], preservation);
+    assert.equal(r.remainder, "confirm", preservation);
+  }
+  const corrected = confirm.parseConfirmationReply("Please continue\n$50 budget\n5 hours\nUse performedAt");
+  assert.equal(corrected.budgetUsd, 50);
+  assert.equal(corrected.timeoutSeconds, 18000);
+  assert.equal(corrected.approves, false);
+  assert.equal(corrected.remainder, "Use performedAt");
+});
+
+test("rc13 post-audit: holds, provenance, alternatives, and partial numbers fail closed", { skip }, () => {
+  for (const reply of [
+    "Please continue\n$50 budget\n5 hours\nDo not start yet",
+    "The prior message said budget $50",
+    "If approved, budget $50",
+    "confirm, budget $40 or $50",
+    "confirm, budget $50.123",
+    "confirm\n5 hours\n10 hours",
+  ]) {
+    const r = confirm.parseConfirmationReply(reply);
+    assert.equal(r.approves, false, reply);
+    assert.ok(r.ambiguities.length > 0, reply);
+  }
+});
+
 test("rc6: the cue may follow the number as easily as precede it", { skip }, () => {
   // The report's "a 10 hour budget" case: b123 read cue-then-number only, so
   // the money landed and the hours were dropped from the same sentence.
@@ -328,6 +363,57 @@ test("rc13 smoke: the exact multiline reply persists both authorised limits", { 
   ).get(sessionId).crystallised_prompt);
   assert.equal(brief.acceptanceCriteria.length, 1, "preservation metadata never becomes feature scope");
   assert.doesNotMatch(JSON.stringify(brief), /\$50|Preserve all restrictions/);
+});
+
+test("rc13 post-audit: a hold causes zero writes and zero dispatches", { skip }, async () => {
+  const runtime = makeRuntime({ sessionDefaultUsd: 40 });
+  const { tools, sessionId } = await pausedSession(runtime);
+  const before = runtime.state.db.prepare(
+    "SELECT budget_usd,hard_timeout_seconds,crystallised_prompt FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  const result = await tools.get("harness_answer").execute({
+    sessionId,
+    answer: "Please continue\n$50 budget\n5 hours\nDo not start yet",
+    invokedBy: "U1",
+  });
+  const after = runtime.state.db.prepare(
+    "SELECT budget_usd,hard_timeout_seconds,crystallised_prompt,status,clarification_answer FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  assert.equal(result.details.started, false);
+  assert.equal(runtime.loopCalls.length, 0);
+  assert.equal(after.budget_usd, before.budget_usd);
+  assert.equal(after.hard_timeout_seconds, before.hard_timeout_seconds);
+  assert.equal(after.crystallised_prompt, before.crystallised_prompt);
+  assert.equal(after.status, "awaiting_clarification");
+  assert.equal(after.clarification_answer, null);
+});
+
+test("rc13 post-audit: limit and brief writes roll back together", { skip }, async () => {
+  const runtime = makeRuntime({ sessionDefaultUsd: 40 });
+  const { tools, sessionId } = await pausedSession(runtime);
+  const before = runtime.state.db.prepare(
+    "SELECT budget_usd,hard_timeout_seconds,crystallised_prompt FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  runtime.state.db.exec(
+    `CREATE TRIGGER deny_confirmation_timeout
+       BEFORE UPDATE OF hard_timeout_seconds ON sessions
+       BEGIN SELECT RAISE(ABORT, 'timeout write denied'); END`,
+  );
+  const result = await tools.get("harness_answer").execute({
+    sessionId,
+    answer: "Please continue\n$50 budget\n5 hours\nUse performedAt",
+    invokedBy: "U1",
+  });
+  const after = runtime.state.db.prepare(
+    "SELECT budget_usd,hard_timeout_seconds,crystallised_prompt,status,clarification_answer FROM sessions WHERE id = ?",
+  ).get(sessionId);
+  assert.equal(result.details.atomicApplyFailed, true);
+  assert.equal(runtime.loopCalls.length, 0);
+  assert.equal(after.budget_usd, before.budget_usd);
+  assert.equal(after.hard_timeout_seconds, before.hard_timeout_seconds);
+  assert.equal(after.crystallised_prompt, before.crystallised_prompt);
+  assert.equal(after.status, "awaiting_clarification");
+  assert.equal(after.clarification_answer, null);
 });
 
 test("rc6: a retried confirmation cannot start a second run", { skip }, async () => {

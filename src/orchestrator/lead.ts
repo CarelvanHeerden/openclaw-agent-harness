@@ -304,6 +304,8 @@ export interface LeadPlan {
    * revise paths that synthesise a plan without calling a model).
    */
   actualCostUsd?: number;
+  /** False when any physical planning/scout turn lacked measurable usage. */
+  usageMeasured?: boolean;
   /**
    * beta.104: what the pre-planning repo scout did. Carried on the plan so the
    * loop can audit it, because the question "did the lead actually see the
@@ -320,6 +322,7 @@ export interface LeadScoutOutcome {
   ran: boolean;
   reportChars: number;
   costUsd?: number;
+  usageMeasured?: boolean;
   durationMs?: number;
   /**
    * Why the lead planned blind: `disabled`, `unwired`, `no_repo_hint`,
@@ -447,6 +450,7 @@ export interface LeadDeps {
   ) => Promise<
     Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
       costUsd?: number;
+      usageMeasured?: boolean;
       tokensIn?: number;
       tokensOut?: number;
     }
@@ -479,7 +483,7 @@ export interface LeadDeps {
     repoFullName: string;
     /** False when only pre-plan convention ingestion is needed. */
     runModel?: boolean;
-  }) => Promise<{ report: string; conventions?: RepoConvention[]; costUsd?: number; tokensIn?: number; tokensOut?: number; timedOut?: boolean } | undefined>;
+  }) => Promise<{ report: string; conventions?: RepoConvention[]; costUsd?: number; usageMeasured?: boolean; tokensIn?: number; tokensOut?: number; timedOut?: boolean } | undefined>;
   /** Production fail-closed guard: convention ingestion must complete before the Lead sees an implementation brief. */
   requireConventionsBeforePlanning?: boolean;
   /** beta.105: see GitContext.onBranchDecision. Threaded through to allocation. */
@@ -514,6 +518,7 @@ export interface LeadDeps {
   ) => Promise<{
     contexts: Array<{ seq: number; workerContext: WorkerContext }>;
     costUsd?: number;
+    usageMeasured?: boolean;
     tokensIn?: number;
     tokensOut?: number;
   }>;
@@ -724,6 +729,7 @@ export async function runLeadPlanner(
   // best-effort: any failure leaves `brief.repoScoutReport` unset, and the
   // planning prompt is then byte-identical to b103's.
   let scoutOutcome: LeadScoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
+  let planningUsageMeasured = true;
   const scoutEnabled = deps.config.loop?.lead_repo_scout_enabled !== false;
   const conventionsNeeded =
     deps.config.brief?.ingest_repo_conventions !== false &&
@@ -766,6 +772,7 @@ export async function runLeadPlanner(
       const startedAt = Date.now();
       try {
         const result = await deps.scoutRepo({ brief, repoFullName: repoForScout, runModel: scoutEnabled });
+        if (result?.usageMeasured === false) planningUsageMeasured = false;
         if (Array.isArray(result?.conventions)) {
           brief.repoConventions = result.conventions;
         } else if (conventionsRequired) {
@@ -782,6 +789,7 @@ export async function runLeadPlanner(
             ran: true,
             reportChars: report.length,
             costUsd: result?.costUsd,
+            usageMeasured: result?.usageMeasured,
             durationMs: Date.now() - startedAt,
             timedOut: result?.timedOut === true ? true : undefined,
             truncated: bounds.truncated ? true : undefined,
@@ -810,6 +818,7 @@ export async function runLeadPlanner(
           scoutOutcome = {
             ran: false, reportChars: 0, skippedReason: "empty_report",
             costUsd: result?.costUsd,
+            usageMeasured: result?.usageMeasured,
             durationMs: Date.now() - startedAt,
             timedOut: result?.timedOut === true ? true : undefined,
           };
@@ -822,6 +831,7 @@ export async function runLeadPlanner(
           scoutOutcome = { ran: false, reportChars: 0, skippedReason: "disabled" };
         }
       } catch (err) {
+        if (scoutEnabled) planningUsageMeasured = false;
         if (conventionsRequired) throw err;
         // Cost is genuinely unknown here: the callable threw rather than
         // returning, so there is no usage to read. Left absent rather than
@@ -859,6 +869,7 @@ export async function runLeadPlanner(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       raw = await deps.callLeadModel(brief, deps.config.repos.allowed, correctiveNote);
+      if (raw.usageMeasured === false) planningUsageMeasured = false;
       leadCallCostUsd += raw.costUsd ?? 0;
       // beta.44: revise flow. Override the lead branch/repo BEFORE validation.
       if (brief.pinnedBranch) {
@@ -938,6 +949,7 @@ export async function runLeadPlanner(
       if (deps.callWorkerContextModel) {
         try {
           const topUp = await deps.callWorkerContextModel(brief, raw, missing);
+          if (topUp.usageMeasured === false) planningUsageMeasured = false;
           // v2.0.0-beta.1: bill the top-up. It joins `leadCallCostUsd`, which
           // is what `actualCostUsd` is built from, so before this the call was
           // free in the ledger and paid for in reality.
@@ -1014,7 +1026,14 @@ export async function runLeadPlanner(
   // scout's cost was already recorded on the outcome and also never reached the
   // ledger, so it joins the same total.
   const actualCostUsd = Number((leadCallCostUsd + (scoutOutcome?.costUsd ?? 0)).toFixed(6));
-  const plan: LeadPlan = { ...raw, worktreePath, approxCostUsd, actualCostUsd, scout: scoutOutcome };
+  const plan: LeadPlan = {
+    ...raw,
+    worktreePath,
+    approxCostUsd,
+    actualCostUsd,
+    usageMeasured: planningUsageMeasured,
+    scout: scoutOutcome,
+  };
   deps.logger.info("[lead] plan", {
     subTaskCount: plan.subTasks.length,
     risk: plan.riskLevel,

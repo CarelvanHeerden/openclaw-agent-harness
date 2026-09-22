@@ -497,6 +497,8 @@ export class BackendRouter {
         parsed: out.parsed,
         sdkSessionId: out.sdkSessionId,
         costUsd: priced.costUsd ?? 0,
+        usageMeasured: priced.costUsd !== undefined,
+        usageSource: out.usageSource,
         tokensIn: out.tokensIn,
         tokensOut: out.tokensOut,
         raw: out.raw,

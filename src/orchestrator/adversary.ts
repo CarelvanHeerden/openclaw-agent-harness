@@ -168,6 +168,7 @@ export interface ReviewReport {
   summary: string;
   sdkSessionId?: string;
   costUsd: number;
+  usageMeasured?: boolean;
   tokensIn: number;
   tokensOut: number;
   /**
@@ -383,6 +384,7 @@ export interface AdversaryDeps {
     parsed: { verdict: ReviewReport["verdict"]; findings: ReviewFinding[]; summary: string };
     sdkSessionId: string;
     costUsd: number;
+    usageMeasured?: boolean;
     tokensIn: number;
     tokensOut: number;
   }>;
@@ -451,6 +453,7 @@ export async function runAdversary(
   const systemPrompt = buildAdversarySystemPrompt(input);
   const diffText = await deps.readDiff(input.diffPath);
   let result;
+  let usageMeasured = true;
   try {
     result = await deps.callAdversaryModel({
       systemPrompt,
@@ -458,6 +461,7 @@ export async function runAdversary(
       model: input.model,
       timeoutSeconds: input.timeoutSeconds,
     });
+    if (result.usageMeasured === false) usageMeasured = false;
   } catch (err) {
     // beta.70 (F3): retry ONCE on a format error with a hardened nudge. Any
     // other error (timeout, SDK failure) propagates unchanged to the loop's
@@ -472,6 +476,7 @@ export async function runAdversary(
       model: input.model,
       timeoutSeconds: input.timeoutSeconds,
     });
+    if (result.usageMeasured === false) usageMeasured = false;
     deps.logger.info("[adversary] format-retry succeeded", { verdict: result.parsed.verdict });
   }
 
@@ -493,6 +498,7 @@ export async function runAdversary(
           model: input.model,
           timeoutSeconds: input.timeoutSeconds,
         });
+        if (retry.usageMeasured === false) usageMeasured = false;
         const stillMissing = findingsMissingFile(retry.parsed.findings);
         // Accept the retry result only if it is not WORSE (fewer or equal
         // unfiled diff-addressable findings). Keeps the better of the two.
@@ -590,6 +596,7 @@ export async function runAdversary(
     summary: result.parsed.summary,
     sdkSessionId: result.sdkSessionId,
     costUsd: result.costUsd,
+    usageMeasured,
     tokensIn: result.tokensIn,
     tokensOut: result.tokensOut,
   };

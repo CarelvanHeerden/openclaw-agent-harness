@@ -1295,13 +1295,15 @@ export class OrchestratorLoop {
         try {
             const result = await invoke();
             const measured = describe(result);
-            if (!Number.isFinite(measured.costUsd) || measured.costUsd < 0) {
+            if (measured.usageMeasured === false || !Number.isFinite(measured.costUsd) || measured.costUsd < 0) {
                 this.finishProviderCall(meta.sessionId, call.id, {
                     status: "unknown",
                     costUsd: null,
                     providerResultId: measured.providerResultId ?? null,
                     result: measured.result,
                 });
+                this.deps.state.db.prepare(`UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`).run(Date.now(), meta.sessionId);
                 throw new AccountingPersistenceError(`${meta.role} provider returned without a valid measured cost`);
             }
             this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, measured);
@@ -1963,6 +1965,7 @@ export class OrchestratorLoop {
                 },
             }), this.deps.config.loop.lead_timeout_seconds + scoutBudget, "lead_timeout_seconds"), (leadPlan) => ({
                 costUsd: leadPlan.actualCostUsd ?? 0,
+                usageMeasured: leadPlan.usageMeasured,
                 result: {
                     subTasks: leadPlan.subTasks.length,
                     riskLevel: leadPlan.riskLevel,
@@ -5516,6 +5519,7 @@ export class OrchestratorLoop {
                         baseSha: adversaryBaseSha,
                     }, () => withTimeout(this.deps.runAdversary({ brief, plan, sessionId, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings, revision: revisionContext }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds"), (review) => ({
                         costUsd: review.costUsd,
+                        usageMeasured: review.usageMeasured,
                         providerResultId: review.sdkSessionId ?? null,
                         result: { verdict: review.verdict, findings: review.findings.length },
                     }));
@@ -5747,6 +5751,7 @@ export class OrchestratorLoop {
                             revision: revisionContext,
                         }), this.deps.config.loop.adversary_timeout_seconds, "adversary_timeout_seconds"), (review) => ({
                             costUsd: review.costUsd,
+                            usageMeasured: review.usageMeasured,
                             providerResultId: review.sdkSessionId ?? null,
                             result: { verdict: review.verdict, findings: review.findings.length, stage: "runtime" },
                         }));

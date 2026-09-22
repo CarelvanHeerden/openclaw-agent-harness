@@ -41,6 +41,7 @@ export interface StructuredTimeout {
 export type StructuredAttempt = (correction: string | null) => Promise<{
     raw: string;
     costUsd: number;
+    usageMeasured?: boolean;
     tokensIn: number;
     tokensOut: number;
     sessionId: string;
@@ -65,6 +66,7 @@ export interface LadderResult<T> {
     parsed: T;
     raw: string;
     costUsd: number;
+    usageMeasured: boolean;
     tokensIn: number;
     tokensOut: number;
     sessionId: string;

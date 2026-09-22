@@ -330,6 +330,21 @@ test("rc.11: an unmeasured provider result is unknown cost, never free", { skip:
   assert.equal(call.cost_usd, null);
 });
 
+test("rc.13 post-audit: an unmeasured structured lead call is unknown, never free", { skip: !available }, async () => {
+  const result = await runScenario({
+    leadUsageMeasured: false,
+    subTasks: [mutateSubTask({ path: "src/structured-accounting.ts" })],
+  });
+  assert.equal(result.calls.worker, 0);
+  assert.equal(result.session().status, "accounting_incomplete");
+  const lead = result.db.prepare(
+    `SELECT status,cost_usd FROM provider_calls WHERE session_id='S1' AND role='lead'`,
+  ).get();
+  assert.equal(lead.status, "unknown");
+  assert.equal(lead.cost_usd, null);
+  assert.match(result.out.reason, /accounting_incomplete/);
+});
+
 function headline(over = {}) {
   return buildHeadline({
     phase: "Aborted",

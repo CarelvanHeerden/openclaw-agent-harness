@@ -335,6 +335,7 @@ export async function runScenario(opts = {}) {
         riskLevel: "low",
         approxCostUsd: 0,
         actualCostUsd: leadCostUsd + scoutCostUsd,
+        usageMeasured: opts.leadUsageMeasured ?? true,
         ...(scoutCostUsd ? { scout: { ran: true, reportChars: 128, costUsd: scoutCostUsd } } : {}),
         subTasks,
       };

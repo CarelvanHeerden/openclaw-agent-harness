@@ -303,6 +303,8 @@ export interface LeadPlan {
      * revise paths that synthesise a plan without calling a model).
      */
     actualCostUsd?: number;
+    /** False when any physical planning/scout turn lacked measurable usage. */
+    usageMeasured?: boolean;
     /**
      * beta.104: what the pre-planning repo scout did. Carried on the plan so the
      * loop can audit it, because the question "did the lead actually see the
@@ -318,6 +320,7 @@ export interface LeadScoutOutcome {
     ran: boolean;
     reportChars: number;
     costUsd?: number;
+    usageMeasured?: boolean;
     durationMs?: number;
     /**
      * Why the lead planned blind: `disabled`, `unwired`, `no_repo_hint`,
@@ -415,6 +418,7 @@ export interface LeadDeps {
      */
     callLeadModel: (brief: CrystallisedBrief, repos: string[], correctiveNote?: string) => Promise<Omit<LeadPlan, "worktreePath" | "approxCostUsd"> & {
         costUsd?: number;
+        usageMeasured?: boolean;
         tokensIn?: number;
         tokensOut?: number;
     }>;
@@ -447,6 +451,7 @@ export interface LeadDeps {
         report: string;
         conventions?: RepoConvention[];
         costUsd?: number;
+        usageMeasured?: boolean;
         tokensIn?: number;
         tokensOut?: number;
         timedOut?: boolean;
@@ -484,6 +489,7 @@ export interface LeadDeps {
             workerContext: WorkerContext;
         }>;
         costUsd?: number;
+        usageMeasured?: boolean;
         tokensIn?: number;
         tokensOut?: number;
     }>;
