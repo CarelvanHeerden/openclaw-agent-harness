@@ -1469,7 +1469,11 @@ const MUTATIONS = [
     file: "dist/tools/brief-confirmation.js",
     find: "            featureRemainder.length === 0 &&",
     replace: "            true &&",
-    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
+    tests: [
+      "tests/beta122-branch-identity-and-clarify.test.mjs",
+      "tests/rc6-typed-approval.test.mjs",
+      "tests/rc13-brief-proposal.test.mjs",
+    ],
   },
   {
     name: "the sub-task counter counts the plan (b122): 'Executing sub-task 1/1' described a ten-part plan",
