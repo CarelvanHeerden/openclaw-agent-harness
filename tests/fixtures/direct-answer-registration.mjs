@@ -14,6 +14,10 @@ export function registerHarnessTools(api, runtime) {
   const invoke=(body)=>command.handler({senderId:sender,channel:'slack',isAuthorizedSender:true,args:body,commandBody:'/harness-answer '+body});
   const review=await invoke(input.sessionId);
   const challenge=review.text.match(/\/harness-answer \S+ ([a-f0-9]{48})/);
+  const pageCount=Number(review.text.match(/page 1\/(\d+)/)?.[1] ?? 1);
+  if(challenge) for(let page=2;page<=pageCount;page++) {
+   await invoke(`${input.sessionId} ${challenge[1]} review ${page}`);
+  }
   const result=challenge?await invoke(`${input.sessionId} ${challenge[1]} ${input.answer}`):review;
   return {content:[{type:'text',text:result.text}],details:result.details??{ok:false}};
  }});

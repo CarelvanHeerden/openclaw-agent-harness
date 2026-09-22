@@ -520,6 +520,27 @@ The OpenClaw child-tool binding and parent delivery/re-arming path are owned by
 OpenClaw orchestration, not by this plugin. Do not claim the next smoke is
 monitored until that external path or a native Slack binding passes.
 
+## Large clarification review (rc.13)
+
+`/harness-answer <sessionId>` never asks the operator to shorten an already
+persisted brief or plan. The harness hashes the complete authority state,
+including `lead_plan_json`, then renders the complete decision-specific review:
+the governing brief, exact question, paused task/context, current limits and
+matching plan task. Unrelated plan tasks are represented by their full-plan
+hash, size and count rather than copied into the Slack decision.
+
+If that review exceeds one command response, follow the emitted
+`/harness-answer <sessionId> <challenge> review <page>` commands in order. The
+same single-use challenge binds every page and cannot be consumed until all
+pages have been served. Any state change invalidates the challenge; start a new
+review rather than force-resuming or reusing an old receipt.
+
+Revised briefs use this same path. The complete proposal is stored in the pause
+payload while `clarification_question` stays compact; there is no independent
+24,000-character display ceiling. PR/branch/cost recovery context and the
+normalized live-listener outcome are also state-bound, while routine heartbeat
+timestamp movement does not invalidate an otherwise unchanged review.
+
 ## PAT cache lifecycle
 
 At session start the harness fetches each required PAT from its own credential vault (`CredentialVault`, via `CredentialAdapter`) and caches it in-process (a plain `Map`, per-runtime, not persisted). Cached tokens live for the lifetime of the session and are dropped by `teardown()` when the session terminates.

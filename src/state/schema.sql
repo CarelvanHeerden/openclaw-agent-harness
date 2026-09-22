@@ -451,6 +451,8 @@ CREATE TABLE IF NOT EXISTS human_answer_challenges (
   sender TEXT NOT NULL,
   state_hash TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
-  consumed_at INTEGER
+  consumed_at INTEGER,
+  review_page_count INTEGER NOT NULL DEFAULT 1,
+  reviewed_through INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_human_answer_session ON human_answer_challenges(session_id);

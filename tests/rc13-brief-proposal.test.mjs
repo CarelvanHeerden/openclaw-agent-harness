@@ -111,8 +111,10 @@ test('rc13 brief proposal: exact stored correction/limits apply once, after revi
  assert.deepEqual(g.snapshot(),before);assert.equal(g.runtime.loopCalls.length,0);
  const stored=JSON.parse(g.row().clarification_subtask).briefProposal;
  assert.equal(stored.budgetUsd,50);assert.equal(stored.hardTimeoutSeconds,18000);
- assert.match(g.row().clarification_question,/Use performedAt/);
- assert.match(g.row().clarification_question,/recurrence identities are stable/);
+ assert.match(JSON.stringify(stored),/Use performedAt/);
+ assert.match(JSON.stringify(stored),/recurrence identities are stable/);
+ assert.match(g.row().clarification_question,/state-bound \/harness-answer/);
+ assert.doesNotMatch(g.row().clarification_question,/Use performedAt/,'the complete proposal is reviewed through the paginated command path, not duplicated into the question');
  const fullQuestion=g.row().clarification_question;
  for(const wrong of ['confirm', 'confirm brief '+ '0'.repeat(64),confirmation+' but not yet']) {
   const result=await g.answer(wrong);assert.equal(result.details.started,false);
@@ -185,6 +187,21 @@ test('rc13 brief proposal: oversized proposals and failed staging never mutate t
  g.runtime.state.db.exec("CREATE TRIGGER deny_staging BEFORE UPDATE OF clarification_subtask ON sessions BEGIN SELECT RAISE(ABORT,'test fault'); END");
  assert.equal((await g.answer('revise brief: Use performedAt')).details.proposalFailed,true);
  assert.deepEqual(g.snapshot(),before);assert.equal(g.row().clarification_answer,null);
+});
+
+test('rc13 brief proposal: a proposal above 24K is stored, paginated and exactly confirmable',async t=>{
+ const g=await gate(t);
+ const brief=JSON.parse(g.row().crystallised_prompt);
+ brief.acceptanceCriteria.push('preserve '+ 'x'.repeat(30000));
+ g.runtime.state.db.prepare('UPDATE sessions SET crystallised_prompt=? WHERE id=?').run(JSON.stringify(brief),g.row().id);
+ const key=await g.propose('Use performedAt');
+ const marker=JSON.parse(g.row().clarification_subtask);
+ assert.ok(JSON.stringify(marker.briefProposal,null,2).length>24000);
+ assert.ok(g.row().clarification_question.length<2000);
+ const result=await g.answer(key);
+ assert.equal(result.details.briefConfirmed,true);
+ assert.equal(g.runtime.loopCalls.length,1);
+ assert.match(JSON.stringify(g.runtime.loopCalls[0].brief),/Use performedAt/);
 });
 
 test('rc13 brief proposal: a staging audit failure preserves the previous proposal',async t=>{

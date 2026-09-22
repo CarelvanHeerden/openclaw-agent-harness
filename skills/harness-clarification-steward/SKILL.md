@@ -103,6 +103,12 @@ the answer is refused; obtain a fresh review command. Treat this command as the
 secure provenance fallback, not as permission to hand the interpretation work
 back to the human.
 
+When the decision-specific review spans several pages, relay the emitted
+`review <page>` command exactly and let the human send each page request
+directly. Do not summarise unseen pages, skip ahead, or suggest shortening an
+already-persisted brief/plan. The receipt remains unusable until every page has
+been served and remains bound to the hash of the complete stored state.
+
 ## Rule 3 — when "accept" is the right recommendation
 
 Recommend `accept` when the committed work is correct and the pause exists only

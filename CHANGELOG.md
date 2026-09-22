@@ -15,6 +15,14 @@
   the same prefix and proves every registered skill is replaced with the current
   release bytes. The existing installed-artifact verifier remains the post-update
   byte-for-byte check for the complete `skills/` tree.
+- Remove the 24,000-character `/harness-answer` deadlock. Receipts still hash
+  the complete persisted authority state, including the full lead plan, while
+  the human reviews a complete decision-specific payload in ordered pages.
+  Every page must be served before the receipt can be consumed; plan changes,
+  replay, expiry and skipped pages fail closed.
+- Bind PR/branch/cost and normalized listener-liveness recovery outcomes into
+  that receipt, and remove the separate 24,000-character revised-brief ceiling.
+  Complete proposals remain stored once and use the same ordered review path.
 
 # Changelog
 

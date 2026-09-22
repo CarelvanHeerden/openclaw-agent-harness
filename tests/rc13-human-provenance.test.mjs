@@ -7,6 +7,7 @@ import {DatabaseSync as Database} from 'node:sqlite';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const here=resolve(root,'tests');
 const {registerHarnessTools}=await import(pathToFileURL(resolve(root,'dist/tools/registration.js')));
+const {openStateStoreSync}=await import(pathToFileURL(resolve(root,'dist/state/store.js')));
 function makeRuntime({ riskLevel = "high", sessionDefaultUsd = 50, hardCeilingUsd, dbPath = ":memory:" } = {}) {
   const db = new Database(dbPath);
   db.exec(readFileSync(resolve(here, "..", "dist", "state", "schema.sql"), "utf8"));
@@ -124,6 +125,86 @@ test('human provenance: oversized or sanitized command cannot drop restrictions'
  const g=await fixture(t);const c=await g.challenge();const args=`${g.id} ${c} confirm`;
  await g.invoke(args,{commandBody:'/harness-answer '+args+' '+ 'x'.repeat(4000)+' DO NOT START'});
  assert.equal(g.runtime.loopCalls.length,0);
+});
+
+test('human provenance: a realistic oversized lead plan no longer deadlocks review',async t=>{
+ const g=await fixture(t);
+ const paused={seq:7,title:'Repair tenant-safe recurrence',intent:'Preserve recurrence identity and tenant boundaries'};
+ const plan={title:'large plan',subTasks:Array.from({length:180},(_,i)=>({
+  seq:i,title:`Task ${i}`,intent:`${i}:`+'x'.repeat(220),filesLikelyTouched:[`src/${i}.ts`],acceptanceCriteria:['verified'],
+ }))};
+ plan.subTasks[7]=paused;
+ g.runtime.state.db.prepare(`UPDATE sessions SET lead_plan_json=?, clarification_seq=7,
+   clarification_subtask=?, clarification_question=? WHERE id=?`).run(
+    JSON.stringify(plan),JSON.stringify({task:paused}),'May this exact repair continue?',g.id);
+ const review=await g.invoke(g.id);
+ assert.doesNotMatch(review.text,/too large|shorten the brief/i);
+ assert.match(review.text,/May this exact repair continue/);
+ assert.match(review.text,/Repair tenant-safe recurrence/);
+ assert.match(review.text,/full_plan_sha256/);
+ assert.match(review.text,/omitted_unrelated_subtasks/);
+ const challenge=review.text.match(/\/harness-answer \S+ ([a-f0-9]{48})/)[1];
+ g.runtime.state.db.prepare('UPDATE sessions SET lead_plan_json=? WHERE id=?').run(
+  JSON.stringify({...plan,title:'changed after review'}),g.id);
+ assert.match((await g.invoke(`${g.id} ${challenge} accept`)).text,/stale/);
+ assert.equal(g.runtime.loopCalls.length,0);
+});
+
+test('human provenance: recovery outcome and normalized listener liveness are state-bound',async t=>{
+ for(const [column,value] of [['final_pr_url','https://example.test/pr/1'],['pr_number',42],['branch','harness/changed'],['cost_usd',12.34]]) {
+  const g=await fixture(t);const c=await g.challenge();
+  g.runtime.state.db.prepare(`UPDATE sessions SET ${column}=? WHERE id=?`).run(value,g.id);
+  assert.match((await g.invoke(`${g.id} ${c} confirm`)).text,/stale/,column);
+  assert.equal(g.runtime.loopCalls.length,0);
+ }
+ const g=await fixture(t);
+ g.runtime.state.db.prepare('UPDATE sessions SET clarification_heartbeat_at=? WHERE id=?').run(Date.now(),g.id);
+ const c=await g.challenge();
+ g.runtime.state.db.prepare('UPDATE sessions SET clarification_heartbeat_at=? WHERE id=?').run(Date.now()+1000,g.id);
+ const accepted=await g.invoke(`${g.id} ${c} confirm`);
+ assert.equal(accepted.details.ok,true,'routine live heartbeat movement does not stale the receipt');
+ const h=await fixture(t);
+ h.runtime.state.db.prepare('UPDATE sessions SET clarification_heartbeat_at=? WHERE id=?').run(Date.now(),h.id);
+ const hc=await h.challenge();
+ h.runtime.state.db.prepare('UPDATE sessions SET clarification_heartbeat_at=0 WHERE id=?').run(h.id);
+ assert.match((await h.invoke(`${h.id} ${hc} confirm`)).text,/stale/,'a liveness outcome change invalidates the receipt');
+});
+
+test('human provenance: large decision review is paginated and every page is required',async t=>{
+ const g=await fixture(t);
+ g.runtime.state.db.prepare('UPDATE sessions SET clarification_question=? WHERE id=?').run(
+  `Review this complete constraint set:\n${'constraint '.repeat(4200)}`,g.id);
+ const first=await g.invoke(g.id);
+ const header=first.text.match(/page 1\/(\d+)/);assert.ok(header,first.text);
+ const pageCount=Number(header[1]);assert.ok(pageCount>1);
+ const challenge=first.text.match(/\/harness-answer \S+ ([a-f0-9]{48})/)[1];
+ assert.match((await g.invoke(`${g.id} ${challenge} confirm`)).text,/Review incomplete/);
+ assert.equal(g.runtime.loopCalls.length,0);
+ if(pageCount>2) assert.match((await g.invoke(`${g.id} ${challenge} review 3`)).text,/in order/);
+ for(let page=2;page<=pageCount;page++) {
+  const response=await g.invoke(`${g.id} ${challenge} review ${page}`);
+  assert.match(response.text,new RegExp(`page ${page}/${pageCount}`));
+ }
+ const accepted=await g.invoke(`${g.id} ${challenge} confirm`);
+ assert.equal(accepted.details.ok,true);
+ assert.equal(g.runtime.loopCalls.length,1);
+});
+
+test('human provenance: existing receipt tables migrate without losing rows',async t=>{
+ const {mkdtempSync,rmSync}=await import('node:fs');const {tmpdir}=await import('node:os');
+ const dir=mkdtempSync(resolve(tmpdir(),'human-receipt-migration-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const path=resolve(dir,'state.db');const legacy=new Database(path);
+ legacy.exec(`CREATE TABLE human_answer_challenges (
+   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, sender TEXT NOT NULL,
+   state_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_at INTEGER
+ )`);
+ legacy.prepare(`INSERT INTO human_answer_challenges
+   (id,session_id,sender,state_hash,expires_at,consumed_at) VALUES (?,?,?,?,?,NULL)`)
+   .run('legacy','S','U1','hash',9999999999999);legacy.close();
+ const store=openStateStoreSync(path);t.after(()=>store.close());
+ const row=store.db.prepare(`SELECT id,review_page_count,reviewed_through
+   FROM human_answer_challenges WHERE id='legacy'`).get();
+ assert.deepEqual({...row},{id:'legacy',review_page_count:1,reviewed_through:1});
 });
 
 test('human provenance: changed state after receipt consumption cannot dispatch or abort',async t=>{

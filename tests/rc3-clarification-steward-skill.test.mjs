@@ -86,6 +86,9 @@ test("rc13: the steward interprets natural language without treating interpretat
   assert.match(src, /structured proposal never proves that\s+the human approved it/i);
   assert.match(src, /secure provenance fallback/i);
   assert.match(src, /not as permission to hand the interpretation work\s+back to the human/i);
+  assert.match(src, /review <page>/i);
+  assert.match(src, /receipt remains unusable until every page has\s+been served/i);
+  assert.match(src, /hash of the complete stored state/i);
 });
 
 test("rc3: a relayed pause carries the question, a labelled recommendation and a paste-ready reply", () => {

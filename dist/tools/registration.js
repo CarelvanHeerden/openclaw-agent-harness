@@ -6,7 +6,7 @@
  * include the "run a task" surface -- that entry point is the Slack
  * listener. These tools are for inspection, admin, and cron jobs.
  */
-import { pendingAnswerState, answerStateHash, issueHumanAnswer } from "./human-answer-command.js";
+import { pendingAnswerState, answerStateHash, issueHumanAnswer, renderHumanAnswerReview } from "./human-answer-command.js";
 import { buildHarnessHelp } from "./help-content.js";
 import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
@@ -2109,7 +2109,7 @@ export function registerHarnessTools(api, runtime) {
                             proposalDb.exec("ROLLBACK TO SAVEPOINT brief_proposal_stage");
                             proposalDb.exec("RELEASE SAVEPOINT brief_proposal_stage");
                         }
-                        return keepPaused("No changes applied. The complete proposal could not be stored or displayed safely. Shorten the correction or resolve the storage fault, then retry.", { proposalFailed: true });
+                        return keepPaused("No changes applied. The complete proposal could not be stored safely. Resolve the storage fault, then retry.", { proposalFailed: true });
                     }
                 }
                 // beta.122: a budget named in the reply is an instruction to the
@@ -2694,9 +2694,41 @@ export function registerHarnessTools(api, runtime) {
                     return { text: "No pending question owned by this sender. Nothing changed." };
                 }
                 const stateHash = answerStateHash(state);
+                const receipt = db.prepare(`SELECT review_page_count, reviewed_through, consumed_at, expires_at
+          FROM human_answer_challenges
+          WHERE id = ? AND session_id = ? AND sender = ? AND state_hash = ?`).get(challenge, sessionId, sender, stateHash);
+                const reviewMatch = /^review\s+(\d+)$/i.exec(answer ?? "");
+                if (reviewMatch) {
+                    if (!receipt || receipt.consumed_at !== null || receipt.expires_at <= Date.now()) {
+                        return { text: "Approval challenge is stale, expired, used or does not match this sender/session. Review again with /harness-answer <sessionId>." };
+                    }
+                    const page = Number(reviewMatch[1]);
+                    if (!Number.isInteger(page) || page < 1 || page > receipt.review_page_count) {
+                        return { text: `Review page must be between 1 and ${receipt.review_page_count}. Nothing changed.` };
+                    }
+                    if (page > receipt.reviewed_through + 1) {
+                        return { text: `Review pages must be read in order. Request page ${receipt.reviewed_through + 1} next. Nothing changed.` };
+                    }
+                    if (page === receipt.reviewed_through + 1) {
+                        const advanced = db.prepare(`UPDATE human_answer_challenges SET reviewed_through = ?
+              WHERE id = ? AND state_hash = ? AND reviewed_through = ? AND consumed_at IS NULL AND expires_at > ?`).run(page, challenge, stateHash, receipt.reviewed_through, Date.now());
+                        if (advanced.changes !== 1) {
+                            return { text: "Approval challenge changed while reviewing. Review again with /harness-answer <sessionId>." };
+                        }
+                    }
+                    return renderHumanAnswerReview(state, sessionId, challenge, page);
+                }
+                if (!receipt) {
+                    return { text: "Approval challenge is stale, expired, used or does not match this sender/session. Review again with /harness-answer <sessionId>." };
+                }
+                if (receipt.reviewed_through < receipt.review_page_count) {
+                    const nextPage = receipt.reviewed_through + 1;
+                    return { text: `Review incomplete. Read page ${nextPage} with /harness-answer ${sessionId} ${challenge} review ${nextPage} before answering. Nothing changed.` };
+                }
                 const claimed = db.prepare(`UPDATE human_answer_challenges SET consumed_at = ?
           WHERE id = ? AND session_id = ? AND sender = ? AND state_hash = ?
-            AND consumed_at IS NULL AND expires_at > ?`).run(Date.now(), challenge, sessionId, sender, stateHash, Date.now());
+            AND consumed_at IS NULL AND expires_at > ?
+            AND reviewed_through >= review_page_count`).run(Date.now(), challenge, sessionId, sender, stateHash, Date.now());
                 if (claimed.changes !== 1)
                     return { text: "Approval challenge is stale, expired, used or does not match this sender/session. Review again with /harness-answer <sessionId>." };
                 // Receipt is consumed before any await: retries and concurrent delivery

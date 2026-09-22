@@ -1,1 +1,1 @@
-{"version":3,"file":"registration.d.ts","sourceRoot":"","sources":["../../src/tools/registration.ts"],"names":[],"mappings":"AAAA;;;;;;;GAOG;AAEH,OAAO,KAAK,EACV,gBAAgB,EAChB,cAAc,EAGf,MAAM,aAAa,CAAC;AA2OrB,wBAAgB,oBAAoB,CAAC,GAAG,EAAE,gBAAgB,EAAE,OAAO,EAAE,cAAc,GAAG,MAAM,IAAI,CAyrI/F"}
+{"version":3,"file":"registration.d.ts","sourceRoot":"","sources":["../../src/tools/registration.ts"],"names":[],"mappings":"AAAA;;;;;;;GAOG;AAEH,OAAO,KAAK,EACV,gBAAgB,EAChB,cAAc,EAGf,MAAM,aAAa,CAAC;AA2OrB,wBAAgB,oBAAoB,CAAC,GAAG,EAAE,gBAAgB,EAAE,OAAO,EAAE,cAAc,GAAG,MAAM,IAAI,CA6tI/F"}
