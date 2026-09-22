@@ -119,6 +119,8 @@ export interface HarnessToolDefinition {
 }
 
 export interface HarnessPluginApi {
+  /** Durable installed plugin root supplied by OpenClaw. */
+  rootDir?: string;
   registrationMode?: "cli-metadata" | "runtime";
   logger: {
     info: (msg: string, meta?: unknown) => void;
@@ -609,6 +611,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         } catch { return undefined; }
       },
       scratchDir: dataDir,
+      pluginRoot: api.rootDir,
       // The same overrides the v1 paths use. Omitting them here made
       // `models.price_overrides` a no-op on OpenCode -- see `priceOverrides`.
       priceOverrides: config.models.price_overrides,
@@ -1195,7 +1198,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       if (!route || route.backend !== "opencode") return plannedModel;
       return `opencode:${route.model ?? plannedModel}`;
     },
-    runWorker: async ({ brief, subTask, plan, worktreePath, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, firstTokenTimeoutSecondsOverride }) => {
+    runWorker: async ({ brief, subTask, plan, worktreePath, resumeSessionId, requester, dispatchHint, modelOverride, onStreamSlow, onActivity, firstTokenTimeoutSecondsOverride }) => {
       const systemPrompt = buildWorkerSystemPrompt(brief, subTask);
       const canUseTool = buildBashGuard(config.safety);
       const resolution = pat.resolve({
@@ -1251,11 +1254,18 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               model: backendRouter.backendFor("worker").model ?? params.model,
               effort: backendRouter.backendFor("worker").effort,
               resumeSessionId: params.resumeSessionId,
+              resumeCumulativeCostUsd: params.resumeSessionId
+                ? (state.db.prepare(
+                    `SELECT cumulative_cost_usd FROM provider_session_usage
+                      WHERE backend = 'opencode' AND provider_session_id = ?`,
+                  ).get(params.resumeSessionId) as { cumulative_cost_usd?: number } | undefined)?.cumulative_cost_usd
+                : undefined,
               timeoutSeconds: params.timeoutSeconds,
               streamOpenTimeoutSeconds: params.streamOpenTimeoutSeconds,
               firstTokenTimeoutSeconds: params.firstTokenTimeoutSeconds,
               streamIdleWarnSeconds: params.streamIdleWarnSeconds,
               onStreamSlow: params.onStreamSlow,
+              onActivity: params.onActivity,
               // NOT params.canUseTool: that guard keys on Claude Code tool
               // names and would fall through to allow on every ACP call.
               acpGuard: focusedWorkerAcpGuard(workerGuard),
@@ -1276,6 +1286,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
               costUsd: priced.costUsd ?? 0,
               usageMeasured: priced.costUsd !== undefined && r.usageSource !== "unavailable",
               usageSource: r.usageSource,
+              providerCumulativeCostUsd: r.cumulativeCostUsd,
+              providerCostBaselineUsd: r.costBaselineUsd,
+              providerCostCurrency: r.costCurrency,
             };
           },
           gitBaseSha: (wt) => git.baseSha(wt),
@@ -1293,6 +1306,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         onStreamSlow,
         modelOverride,
         firstTokenTimeoutSecondsOverride,
+        onActivity,
       );
     },
 

@@ -590,7 +590,7 @@ function validateMandatoryConventionAcknowledgement(plan, conventions) {
         throw new LeadPlanValidationError(`lead plan did not acknowledge mandatory repository conventions: ${missing.join(", ")}`);
     }
 }
-function validatePlan(plan, config) {
+export function validatePlan(plan, config) {
     if (!plan.repo || !plan.repo.includes("/")) {
         throw new Error(`lead plan repo "${plan.repo}" is not owner/repo`);
     }

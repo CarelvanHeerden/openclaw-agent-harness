@@ -44,6 +44,8 @@ export interface HarnessToolDefinition {
     execute: (callIdOrInput: unknown, paramsOrCtx?: unknown, context?: unknown) => Promise<unknown> | unknown;
 }
 export interface HarnessPluginApi {
+    /** Durable installed plugin root supplied by OpenClaw. */
+    rootDir?: string;
     registrationMode?: "cli-metadata" | "runtime";
     logger: {
         info: (msg: string, meta?: unknown) => void;

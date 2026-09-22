@@ -76,6 +76,8 @@ export interface RunWorkerAcpParams {
     /** ACP thought-level value (OpenCode exposes this as config id `effort`). */
     effort?: string;
     resumeSessionId?: string;
+    /** Durable cumulative cost last observed for resumeSessionId. */
+    resumeCumulativeCostUsd?: number;
     timeoutSeconds: number;
     streamOpenTimeoutSeconds?: number;
     firstTokenTimeoutSeconds?: number;
@@ -85,6 +87,10 @@ export interface RunWorkerAcpParams {
         elapsedMs: number;
         tokensOut: number;
         label: string;
+    }) => void;
+    onActivity?: (info: {
+        kind: string;
+        at: number;
     }) => void;
     /**
      * REQUIRED, and deliberately not the SDK-shaped `canUseTool` from
@@ -140,6 +146,10 @@ export interface RunWorkerAcpResult {
      *                  must say so rather than record a measured zero.
      */
     usageSource: "acp-delta" | "tokens-only" | "unavailable";
+    /** Provider cumulative session cost after this turn, for durable resume checkpoints. */
+    cumulativeCostUsd?: number;
+    costBaselineUsd?: number;
+    costCurrency?: string;
     /** Context-window occupancy, the only token signal ACP actually carries. */
     contextUsed?: number;
     contextSize?: number;

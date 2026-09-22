@@ -1,5 +1,55 @@
 # Changelog
 
+## 2.0.0-rc.13
+
+The first rc.12 real-request smoke failed before implementation on its initial
+load-bearing observe task. rc.13 repairs the complete handoff rather than
+accepting the misleading “no findings” summary.
+
+- The worker prompt, retry hint and validator now share one canonical
+  `OBSERVE_RESULT:` contract. Bare JSON and the two unambiguous wrappers emitted
+  during the incident are accepted only as whole-message envelopes; trailing
+  prose, multiple envelopes and arbitrary JSON extraction remain rejected.
+- Observe validation has typed satisfied, blocked, invalid-format,
+  invalid-schema and invalid-evidence outcomes. Valid blocked reports are fully
+  persisted, never release dependants, never trigger a blind format retry, and
+  pause with their evidenced decisions and the exact required findings/bindings
+  still missing. Structured evidence no longer depends on legacy tool-call
+  counters; identical invalid replies stop instead of consuming every retry.
+- Object-valued observe contract patches use a bounded typed schema and the
+  resulting complete plan is revalidated before atomic activation. Objects can
+  no longer be stringified into output paths or instructions.
+- Every observe attempt stores a bounded redacted candidate report linked to
+  its physical provider call. Retry start times and task-level cumulative
+  cost/summary are truthful, and a task remains `verifying` until verification
+  actually completes.
+- ACP session-load replay is excluded from current-turn output, first-token
+  timing and activity, and notifications for another backend session are
+  ignored. Resumed cumulative cost uses either the load-time
+  baseline or a durable backend-session checkpoint; a missing or conflicting
+  baseline is accounting-indeterminate rather than charged from zero.
+- Provider completion, cumulative checkpoint advancement and aggregate spend
+  commit atomically with baseline compare-and-swap. Repeated identical
+  completion is idempotent, conflicting completion fails closed, and an
+  unresolved started/unknown provider call fences later dispatch.
+- Current ACP activity advances the durable heartbeat. Provider rows record the
+  effective routed model, and storage health is refreshed on worktree allocation
+  and intentional release.
+- Qualified multiline confirmation controls are parsed separately from bounded
+  preservation directives. The smoke reply applies the full `$50` and five-hour
+  limits without writing either controls or “Preserve all restrictions” into
+  feature scope.
+- Known plan-policy conflicts now pause before the first worker dispatch, so a
+  later `.env.example` obligation cannot spend an earlier observe turn before
+  the safety conflict is surfaced.
+- OpenCode resolves the installed platform package from OpenClaw's durable
+  active plugin root, bypassing skipped-postinstall launcher stubs and installer
+  staging. Installed-artifact verification executes that exact binary.
+
+The failed rc.12 session remains terminal and its historical ledger is
+unchanged. No production configuration, live Slack app or governed document is
+modified by this release.
+
 ## 2.0.0-rc.12
 
 rc.11 remains an immutable rejected tag and was never installed for a new

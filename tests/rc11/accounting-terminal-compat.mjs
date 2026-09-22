@@ -37,16 +37,27 @@ test("rc.11: every protocol retry has required provider and attempt accounting",
           tokensOut: 1,
           reason: "end_turn",
           finalMessage: "I still need to make the requested change.",
+          sdkSessionId: "provider-session-1",
+          providerCumulativeCostUsd: 0.12,
+          providerCostBaselineUsd: 0,
+          providerCostCurrency: "USD",
         };
       }
       const done = await fallback(params);
-      return { ...done, costUsd: 0.34 };
+      return {
+        ...done,
+        costUsd: 0.34,
+        sdkSessionId: "provider-session-1",
+        providerCumulativeCostUsd: 0.46,
+        providerCostBaselineUsd: 0.12,
+        providerCostCurrency: "USD",
+      };
     },
   });
   assert.equal(result.out.status, "shipped");
   assert.equal(calls, 2);
   const provider = result.db.prepare(
-    `SELECT attempt,status,cost_usd,verification_json FROM provider_calls
+    `SELECT id,attempt,status,cost_usd,verification_json FROM provider_calls
       WHERE session_id='S1' AND role='worker' ORDER BY attempt`,
   ).all();
   assert.equal(provider.length, 2);
@@ -62,6 +73,14 @@ test("rc.11: every protocol retry has required provider and attempt accounting",
   assert.ok(allCalls.every((row) => row.status === "completed"));
   const providerTotal = allCalls.reduce((sum, row) => sum + row.cost_usd, 0);
   assert.ok(Math.abs(result.session().cost_usd - providerTotal) < 1e-9, "provider and session totals reconcile atomically");
+  const checkpoint = result.db.prepare(
+    `SELECT cumulative_cost_usd,last_provider_call_id,currency,checkpoint_version FROM provider_session_usage
+      WHERE backend='opencode' AND provider_session_id='provider-session-1'`,
+  ).get();
+  assert.ok(Math.abs(checkpoint.cumulative_cost_usd - 0.46) < 1e-9);
+  assert.equal(checkpoint.last_provider_call_id, provider.at(-1).id);
+  assert.equal(checkpoint.currency, "USD");
+  assert.equal(checkpoint.checkpoint_version, 2);
   const attempts = result.db.prepare(
     `SELECT attempt,worker_status,verification_status,task_outcome
        FROM sub_task_attempts WHERE session_id='S1' AND seq=1 ORDER BY attempt`,
@@ -137,6 +156,91 @@ test("rc.11: provider dispatch is refused when the required start row cannot per
   assert.equal(result.session().accounting_state, "incomplete");
   assert.equal(result.session().status, "accounting_incomplete");
   assert.match(result.out.reason, /accounting_incomplete/);
+});
+
+test("rc.13 smoke: unresolved provider calls block every later dispatch", { skip: !available }, async () => {
+  let workerCalls = 0;
+  const result = await runScenario({
+    seedSession({ db }) {
+      db.prepare(
+        `INSERT INTO provider_calls
+          (id,session_id,role,attempt,status,started_at)
+         VALUES ('orphaned','S1','worker',1,'unknown',?)`,
+      ).run(Date.now());
+    },
+    subTasks: [mutateSubTask({ path: "src/no-duplicate-spend.ts" })],
+    worker: async () => {
+      workerCalls += 1;
+      throw new Error("must not dispatch");
+    },
+  });
+  assert.equal(workerCalls, 0);
+  assert.equal(result.session().status, "accounting_incomplete");
+  assert.match(result.out.reason, /reconcile it before dispatch/);
+});
+
+test("rc.13 smoke: cumulative checkpoint mismatch rolls back spend atomically", { skip: !available }, async () => {
+  let workerCalls = 0;
+  const result = await runScenario({
+    seedSession({ db }) {
+      db.prepare(
+        `INSERT INTO provider_session_usage
+          (backend,provider_session_id,currency,cumulative_cost_usd,checkpoint_version,last_provider_call_id,updated_at)
+         VALUES ('opencode','provider-session-mismatch','USD',5,1,'prior',?)`,
+      ).run(Date.now());
+    },
+    subTasks: [mutateSubTask({ path: "src/checkpoint-cas.ts" })],
+    worker: async () => {
+      workerCalls += 1;
+      return {
+        status: "completed",
+        filesChanged: [],
+        costUsd: 1,
+        tokensIn: 1,
+        tokensOut: 1,
+        reason: "end_turn",
+        sdkSessionId: "provider-session-mismatch",
+        providerCostBaselineUsd: 0,
+        providerCumulativeCostUsd: 1,
+        providerCostCurrency: "USD",
+      };
+    },
+  });
+  assert.equal(workerCalls, 1);
+  assert.equal(result.session().status, "accounting_incomplete");
+  const checkpoint = result.db.prepare(
+    `SELECT cumulative_cost_usd,checkpoint_version FROM provider_session_usage
+      WHERE backend='opencode' AND provider_session_id='provider-session-mismatch'`,
+  ).get();
+  assert.equal(checkpoint.cumulative_cost_usd, 5);
+  assert.equal(checkpoint.checkpoint_version, 1);
+  const workerCall = result.db.prepare(
+    `SELECT status,cost_usd FROM provider_calls WHERE session_id='S1' AND role='worker'`,
+  ).get();
+  assert.equal(workerCall.status, "started", "provider row completion rolls back with the checkpoint");
+  assert.equal(workerCall.cost_usd, null);
+});
+
+test("rc.13 smoke: invalid provider cost cannot enter any spend ledger", { skip: !available }, async () => {
+  const result = await runScenario({
+    subTasks: [mutateSubTask({ path: "src/invalid-cost.ts" })],
+    worker: async () => ({
+      status: "completed",
+      filesChanged: [],
+      costUsd: -1,
+      tokensIn: 1,
+      tokensOut: 1,
+      reason: "end_turn",
+      sdkSessionId: "invalid-cost-session",
+    }),
+  });
+  assert.equal(result.session().status, "accounting_incomplete");
+  const provider = result.db.prepare(
+    `SELECT status,cost_usd FROM provider_calls WHERE session_id='S1' AND role='worker'`,
+  ).get();
+  assert.equal(provider.status, "started");
+  assert.equal(provider.cost_usd, null);
+  assert.ok(result.session().cost_usd >= 0);
 });
 
 test("rc.11: a provider response that cannot persist stops without blind retry", { skip: !available }, async () => {

@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   published_at             INTEGER,           -- epoch ms of that observation
   published_branch         TEXT,              -- branch the sha was observed on
   -- rc.9 storage health (see store.ts for why each exists)
-  storage_state            TEXT,              -- ok | missing_worktree | missing_objects | missing_commits | unknown
+  storage_state            TEXT,              -- ok | released | missing_worktree | missing_objects | missing_commits | unknown
   storage_reason           TEXT,
   storage_checked_at       INTEGER,
   last_attempted_sub_task  TEXT,              -- last worker turn persisted, success or not
@@ -253,12 +253,24 @@ CREATE TABLE IF NOT EXISTS provider_calls (
   provider_result_id    TEXT,
   result_json           TEXT,
   verification_json     TEXT,
+  completion_fingerprint TEXT,
   started_at            INTEGER NOT NULL,
   ended_at              INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_provider_calls_session
   ON provider_calls (session_id, role, cycle, seq, attempt);
+
+CREATE TABLE IF NOT EXISTS provider_session_usage (
+  backend               TEXT NOT NULL,
+  provider_session_id   TEXT NOT NULL,
+  currency              TEXT NOT NULL DEFAULT 'USD',
+  cumulative_cost_usd   REAL NOT NULL,
+  checkpoint_version    INTEGER NOT NULL DEFAULT 1,
+  last_provider_call_id TEXT NOT NULL,
+  updated_at            INTEGER NOT NULL,
+  PRIMARY KEY (backend, provider_session_id)
+);
 
 /* rc.11: only validated observe reports are eligible for hydration/handoff. */
 CREATE TABLE IF NOT EXISTS observe_reports (
@@ -278,6 +290,25 @@ CREATE TABLE IF NOT EXISTS observe_reports (
 
 CREATE INDEX IF NOT EXISTS idx_observe_reports_session
   ON observe_reports (session_id, cycle, seq, source_plan_revision, created_at);
+
+CREATE TABLE IF NOT EXISTS observe_attempt_reports (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  sub_task_id           TEXT,
+  provider_call_id      TEXT,
+  cycle                 INTEGER NOT NULL,
+  seq                   INTEGER NOT NULL,
+  attempt               INTEGER NOT NULL,
+  outcome               TEXT NOT NULL,
+  raw_report_text       TEXT,
+  parsed_result_json    TEXT,
+  validation_json       TEXT NOT NULL,
+  created_at            INTEGER NOT NULL,
+  UNIQUE (session_id, cycle, seq, attempt)
+);
+
+CREATE INDEX IF NOT EXISTS idx_observe_attempt_reports_session
+  ON observe_attempt_reports (session_id, cycle, seq, attempt);
 
 CREATE TABLE IF NOT EXISTS reviews (
   id           TEXT PRIMARY KEY,

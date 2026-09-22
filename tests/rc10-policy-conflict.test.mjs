@@ -166,13 +166,31 @@ test("rc.10 (F3): a blocked sub-task is never dispatched, and costs nothing", { 
 
   assert.equal(r.calls.worker, 0, "the whole point: no worker turn was bought");
   assert.ok(r.sawEvent("loop.plan_policy_conflict"), "the conflict is recorded at plan time");
-  assert.ok(r.sawEvent("loop.plan_policy_conflict_gate"), "and acted on at dispatch");
+  assert.ok(r.sawEvent("loop.plan_policy_conflict_pre_dispatch"), "and acted on before any worker dispatch");
 
   const session = r.session();
   assert.equal(session.status, "awaiting_clarification");
   assert.match(session.clarification_question, /REFUSE/);
   assert.match(session.clarification_question, /`\.env\.\*`/);
   assert.equal(session.cost_usd, 0, "nothing was spent on a turn policy would refuse");
+});
+
+test("rc.13 smoke: a later policy conflict pauses before an earlier observe worker spends", { skip: !available }, async () => {
+  const r = await runScenario({
+    config: makeConfig({ safety: { path_denylist: DENYLIST } }),
+    subTasks: [
+      {
+        ...mutateSubTask({ seq: 1, title: "inspect contracts", path: "src/thing.ts" }),
+        taskMode: "observe",
+        filesLikelyTouched: [],
+        verify: [],
+      },
+      mutateSubTask({ seq: 3, title: "Slack app config template", path: ".env.example" }),
+    ],
+  });
+  assert.equal(r.calls.worker, 0);
+  assert.equal(r.session().status, "awaiting_clarification");
+  assert.ok(r.sawEvent("loop.plan_policy_conflict_pre_dispatch"));
 });
 
 test("rc.10 (F3): sub-tasks without a conflict still run normally", { skip: !available }, async () => {

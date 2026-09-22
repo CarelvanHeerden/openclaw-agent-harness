@@ -74,6 +74,7 @@ test("rc13 smoke: currency-first budget and bare time survive line breaks", { sk
   for (const reply of [
     "Please continue\n$50 budget\n5 hours",
     "Please continue $50 budget 5 hours",
+    "Please continue\n$50 budget\n5 hours\nPreserve all restrictions.",
   ]) {
     const r = confirm.parseConfirmationReply(reply);
     assert.equal(r.budgetUsd, 50, `budget in: ${reply}`);
@@ -81,6 +82,7 @@ test("rc13 smoke: currency-first budget and bare time survive line breaks", { sk
     assert.equal(r.approves, true, `approval in: ${reply}`);
     assert.deepEqual(r.ambiguities, [], `unambiguous: ${reply}`);
     assert.doesNotMatch(r.remainder, /\$50|5 hours|budget/i);
+    assert.doesNotMatch(r.remainder, /preserve all restrictions/i);
   }
 });
 
@@ -307,7 +309,7 @@ test("rc13 smoke: the exact multiline reply persists both authorised limits", { 
   const { tools, sessionId } = await pausedSession(runtime);
   const result = await tools.get("harness_answer").execute({
     sessionId,
-    answer: "Please continue\n$50 budget\n5 hours",
+    answer: "Please continue\n$50 budget\n5 hours\nPreserve all restrictions.",
     invokedBy: "U1",
   });
   assert.equal(result.details.ok, true);
@@ -321,6 +323,11 @@ test("rc13 smoke: the exact multiline reply persists both authorised limits", { 
   assert.equal(row.status, "planning");
   assert.equal(result.details.budgetUsd, 50);
   assert.equal(result.details.hardTimeoutSeconds, 5 * 3600);
+  const brief = JSON.parse(runtime.state.db.prepare(
+    "SELECT crystallised_prompt FROM sessions WHERE id = ?",
+  ).get(sessionId).crystallised_prompt);
+  assert.equal(brief.acceptanceCriteria.length, 1, "preservation metadata never becomes feature scope");
+  assert.doesNotMatch(JSON.stringify(brief), /\$50|Preserve all restrictions/);
 });
 
 test("rc6: a retried confirmation cannot start a second run", { skip }, async () => {

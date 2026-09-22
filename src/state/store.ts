@@ -159,7 +159,7 @@ export function openStateStoreSync(pathHint: string): StateStore {
      * survives the process that discovered it. NULL means never checked, which
      * is deliberately different from `ok`.
      */
-    { table: "sessions", column: "storage_state",                type: "TEXT" },    // ok | missing_worktree | missing_objects | missing_commits | unknown
+    { table: "sessions", column: "storage_state",                type: "TEXT" },    // ok | released | missing_worktree | missing_objects | missing_commits | unknown
     { table: "sessions", column: "storage_reason",               type: "TEXT" },    // operator-facing detail for storage_state
     { table: "sessions", column: "storage_checked_at",           type: "INTEGER" }, // ms; when the reconciliation last ran
     /*
@@ -193,6 +193,9 @@ export function openStateStoreSync(pathHint: string): StateStore {
     { table: "sub_task_attempts", column: "verification_status",  type: "TEXT" },
     { table: "sub_task_attempts", column: "verification_json",    type: "TEXT" },
     { table: "sub_task_attempts", column: "task_outcome",         type: "TEXT" },
+    { table: "provider_calls", column: "completion_fingerprint",  type: "TEXT" },
+    { table: "provider_session_usage", column: "currency",       type: "TEXT NOT NULL DEFAULT 'USD'" },
+    { table: "provider_session_usage", column: "checkpoint_version", type: "INTEGER NOT NULL DEFAULT 1" },
   ];
   for (const m of additiveMigrations) {
     try {

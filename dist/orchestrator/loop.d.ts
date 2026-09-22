@@ -367,6 +367,10 @@ export interface OrchestratorDeps {
             tokensOut: number;
             label: string;
         }) => void;
+        onActivity?: (info: {
+            kind: string;
+            at: number;
+        }) => void;
         /** beta.113: per-attempt phase-2 watchdog widening; see runWorkerCallWithRetry. */
         firstTokenTimeoutSecondsOverride?: number;
     }) => Promise<WorkerResult>;
@@ -839,6 +843,7 @@ export declare class OrchestratorLoop {
      * observability and must NEVER disturb the worker call.
      */
     private makeStreamSlowCallback;
+    private makeWorkerActivityCallback;
     /**
      * beta.94 (Feature 2): the idle-no-work conjunction handler. Confirms the
      * sub-task produced NO worktree writes (committed OR working-tree changes)
@@ -881,6 +886,7 @@ export declare class OrchestratorLoop {
      * a table nothing depends on to make progress.
      */
     private recordSubTaskAttempt;
+    private recordObserveAttemptReport;
     private beginProviderCall;
     private finishProviderCall;
     private finishProviderCallWithSpend;

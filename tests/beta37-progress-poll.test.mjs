@@ -119,6 +119,18 @@ test("beta37: completed_no_change counts as done (beta.35 revise path)", { skip:
   assert.equal(snap.subTasks.done, 2, "completed_no_change must count as done");
 });
 
+test("rc13 smoke: a worker result under verification is active, never done", { skip: !buildProgressSnapshot }, () => {
+  const db = makeDb();
+  insertSession(db, "s-verify", { status: "executing", cycles_ran: 1 });
+  insertSubTask(db, "s-verify", 1, "verifying", "Validate observe report", { costUsd: 0.5 });
+  const snap = buildProgressSnapshot(db, "s-verify");
+  assert.equal(snap.subTasks.done, 0);
+  assert.equal(snap.subTasks.running, 1);
+  assert.equal(snap.subTasks.current.seq, 1);
+  const builtLoop = readFileSync(resolve(here, "..", "dist", "orchestrator", "loop.js"), "utf8");
+  assert.match(builtLoop, /SET status = 'verifying'.*completed_at = NULL/s);
+});
+
 test("rc1: completed rows count as done and revise totals use the stable scheduled subset", { skip: !buildProgressSnapshot }, () => {
   const db = makeDb();
   insertSession(db, "s-progress", { status: "executing", cycles_ran: 2 });

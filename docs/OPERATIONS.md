@@ -460,10 +460,10 @@ attempt. `accounting_incomplete` means completion or cost is unknown: preserve
 the worktree and reconcile that row/provider session before any retry. Do not
 force-resume it.
 
-## Runtime downgrade safety (rc.12)
+## Runtime downgrade safety (rc.13)
 
-Do not install rc.11 or older while any nonterminal session has
-`minimum_runtime_version = '2.0.0-rc.12'`. The current runtime refuses startup
+Do not install rc.12 or older while any nonterminal session has
+`minimum_runtime_version = '2.0.0-rc.13'`. The current runtime refuses startup
 when a session requires a newer version, but older builds do not contain that
 check; an unfamiliar status is not a fence because their
 `harness_resume(force:true)` path can accept nonterminal unknown states.
@@ -471,8 +471,8 @@ check; an unfamiliar status is not a fence because their
 The safe rollback sequence is:
 
 1. Stop admission of new sessions.
-2. Let every rc.12-only session reach `done`, `failed` or `aborted`, or cancel it
-   under rc.12 while preserving its worktree.
+2. Let every rc.13-only session reach `done`, `failed` or `aborted`, or cancel it
+   under rc.13 while preserving its worktree.
 3. Query for blockers:
 
 ```sql
@@ -495,6 +495,28 @@ node scripts/verify-installed-artifact.mjs <tested-release-checkout> <installed-
 
 Keep the reported manifest SHA with the CI run. A matching version string alone
 is insufficient: two different builds can carry the same version.
+
+## Agent-orchestrated smoke delivery (rc.13)
+
+An agent-orchestrated run with no `slackChannel`/`slackThread` has no native
+harness destination. In that mode, creating a DEVBOT watcher is not proof that
+terminal state will reach the initiating conversation. Before a paid smoke:
+
+1. Prefer a real Slack channel/thread binding so the harness owns progress
+   delivery, or verify the OpenClaw app-server watcher tool end to end.
+2. Inject one disposable terminal event and require an acknowledgement in the
+   initiating DM/thread.
+3. If a child tool reports that OpenClaw has no registered handler, stop:
+   polling the state database is diagnostic only and does not repair delivery.
+4. Never infer a dead provider from a stale phase heartbeat while ACP/backend
+   activity is still advancing.
+5. Confirm `brief.request_file_roots` contains the runtime's actual attachment
+   staging root. If it does not, pass the full original text with its byte/hash
+   receipt; never widen containment ad hoc.
+
+The OpenClaw child-tool binding and parent delivery/re-arming path are owned by
+OpenClaw orchestration, not by this plugin. Do not claim the next smoke is
+monitored until that external path or a native Slack binding passes.
 
 ## PAT cache lifecycle
 

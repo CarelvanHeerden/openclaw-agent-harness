@@ -13,10 +13,12 @@
  * The worker COMMITS but does not PUSH. Push happens once, at the end,
  * by the orchestrator after adversarial review passes.
  */
+import { createHash } from "node:crypto";
 import { renderConventionsForPrompt } from "./repo-conventions.js";
 import { authorizedGeneratedOutputs, authorizedGeneratorsForPaths, renderGeneratorInstruction, resolveGenerators, } from "./generated-artifacts.js";
 import { inferVerifyContract } from "./verify-contract.js";
 import { renderObserveReportsBlock } from "./observe-handoff.js";
+import { renderObserveContractInstructions } from "./observe-contract.js";
 import { HARNESS_SCRATCH_DIR } from "../adapters/git-worktree.js";
 /**
  * Beta.21: hard cap on injected concept content. A worker system prompt is
@@ -208,7 +210,7 @@ authorizedGenerators = []) {
     if (generatorBlock)
         lines.push(generatorBlock);
     if (subTask.taskMode === "observe" && subTask.observeContract) {
-        lines.push("", "## Structured observe deliverable (REQUIRED)", "Your final message must be JSON (or an OBSERVE_RESULT fenced JSON block) with:", '{"status":"ok|blocked","findings":[{"id":"...","summary":"...","evidence":[{"path":"...","line":1}]}],"bindings":[{"name":"...","type":"...","value":"...","evidence":[{"path":"..."}]}],"blockers":[]}', `Required finding ids: ${subTask.observeContract.requiredFindings.join(", ") || "(none)"}`, `Required bindings: ${subTask.observeContract.bindings.map((binding) => `${binding.name}:${binding.type}`).join(", ") || "(none)"}`, "A promise to inspect, a tool-call count, or prose without this contract is not a finding and will not release dependent work.");
+        lines.push("", renderObserveContractInstructions(subTask.observeContract));
     }
     return lines.join("\n");
 }
@@ -253,7 +255,7 @@ modelOverride,
  * call only. The loop escalates it per retry attempt, because retrying a slow
  * start against an identical deadline just fails identically.
  */
-firstTokenTimeoutSecondsOverride) {
+firstTokenTimeoutSecondsOverride, onActivity) {
     // rc.5: authorize generators for exactly the paths this sub-task owes. The
     // contract is derived with the SAME inference the verifier uses, so the set
     // the worker is told to produce cannot drift from the set it is judged on --
@@ -276,6 +278,7 @@ firstTokenTimeoutSecondsOverride) {
     const systemPrompt = buildWorkerSystemPrompt(brief, subTask, authorizedGenerators);
     const userMessage = `Please complete sub-task ${subTask.seq}: ${subTask.title}. Working directory is ${worktreePath}.` +
         (dispatchHint ? `\n\n${dispatchHint}` : "");
+    const actualPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
     const baseSha = await deps.gitBaseSha(worktreePath);
     const canUseTool = deps.buildCanUseTool();
     let sdkResult;
@@ -298,6 +301,7 @@ firstTokenTimeoutSecondsOverride) {
             // callback (when supplied by the loop) surfaces loop.worker_stream_slow +
             // bumps the session heartbeat. Never aborts.
             onStreamSlow,
+            onActivity,
             streamIdleWarnSeconds: deps.config.loop.worker_stream_idle_warn_seconds ?? 90,
             canUseTool,
         });
@@ -375,6 +379,11 @@ firstTokenTimeoutSecondsOverride) {
         msToFirstToken: sdkResult.msToFirstToken,
         usageMeasured: sdkResult.usageMeasured ?? true,
         usageSource: sdkResult.usageSource,
+        providerCumulativeCostUsd: sdkResult.providerCumulativeCostUsd,
+        providerCostBaselineUsd: sdkResult.providerCostBaselineUsd,
+        providerCostCurrency: sdkResult.providerCostCurrency,
+        actualPromptChars: actualPrompt.length,
+        actualPromptSha256: createHash("sha256").update(actualPrompt).digest("hex"),
     };
 }
 /**

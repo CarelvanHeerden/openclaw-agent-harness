@@ -117,6 +117,8 @@ export interface ParsedConfirmationReply {
     remainder: string;
     /** True when nothing but those clauses (and politeness) remained. */
     approves: boolean;
+    /** Bounded meta-directives that preserve existing scope; never feature corrections. */
+    preservationClauses: string[];
     /**
      * rc.6: controls the operator tried to set that could not be read. A
      * non-empty list means the run MUST NOT START -- see `parseConfirmationReply`.

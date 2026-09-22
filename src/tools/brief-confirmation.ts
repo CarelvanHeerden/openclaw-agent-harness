@@ -280,6 +280,8 @@ export interface ParsedConfirmationReply {
   remainder: string;
   /** True when nothing but those clauses (and politeness) remained. */
   approves: boolean;
+  /** Bounded meta-directives that preserve existing scope; never feature corrections. */
+  preservationClauses: string[];
   /**
    * rc.6: controls the operator tried to set that could not be read. A
    * non-empty list means the run MUST NOT START -- see `parseConfirmationReply`.
@@ -378,6 +380,13 @@ const BUDGET_CLAUSE = new RegExp(
     ")",
   "i",
 );
+
+const CURRENCY_FIRST_BUDGET = new RegExp(
+  String.raw`\$\s*(\d+(?:\.\d{1,2})?)\s*(?:usd|dollars?)?\s*(?:budget|cap|limit)\b`,
+  "i",
+);
+
+const PRESERVATION_CLAUSE = /(?:^|[\n.;])\s*((?:please\s+)?(?:preserve|keep|retain)\s+(?:(?:all|the|existing|current)\s+(?:restrictions|requirements|scope|boundaries|controls|limits)|everything(?:\s+else)?)(?:\s+unchanged)?)\s*(?=$|[\n.;])/gi;
 
 /**
  * rc.6: the shorthand, with no cue word at all.
@@ -484,10 +493,30 @@ function tidyRemainder(text: string): string {
 export function parseConfirmationReply(answer: string): ParsedConfirmationReply {
   const raw = (answer ?? "").trim();
   const ambiguities: ControlAmbiguity[] = [];
+  const preservationClauses: string[] = [];
 
-  // Time first, and cut it out before money is looked for: "a time budget of 3
+  let working = raw.replace(PRESERVATION_CLAUSE, (_whole, clause: string) => {
+    preservationClauses.push(clause.trim());
+    return "\n";
+  });
+  working = tidyRemainder(working);
+
+  // Currency-first controls are unambiguously money. Consume them before time
+  // so "$50 budget\n5 hours" cannot be stolen as the phrase "budget 5 hours".
+  let budgetUsd: number | undefined;
+  const currencyFirst = CURRENCY_FIRST_BUDGET.exec(working);
+  if (currencyFirst) {
+    const amount = Number(currencyFirst[1]);
+    if (Number.isFinite(amount) && amount > 0) {
+      budgetUsd = amount;
+    } else {
+      ambiguities.push({ control: "budget", kind: "out_of_range", text: currencyFirst[0].trim() });
+    }
+    working = tidyRemainder(working.replace(currencyFirst[0], " "));
+  }
+
+  // Time first, and cut it out before other money forms are looked for: "a time budget of 3
   // hours" is `budget`-followed-by-a-number, and would otherwise be read as $3.
-  let working = raw;
   let timeoutSeconds: number | undefined;
   for (const re of [TIME_CLAUSE, BUDGET_OF_DURATION, TIME_CLAUSE_TRAILING]) {
     const t = re.exec(working);
@@ -512,9 +541,12 @@ export function parseConfirmationReply(answer: string): ParsedConfirmationReply 
   const m = BUDGET_CLAUSE.exec(working);
   const captured = m ? m.slice(1).find((g) => typeof g === "string" && g.length > 0) : undefined;
   const value = Number(captured);
-  let budgetUsd: number | undefined;
   if (m && Number.isFinite(value) && value > 0) {
-    budgetUsd = value;
+    if (budgetUsd !== undefined && budgetUsd !== value) {
+      ambiguities.push({ control: "budget", kind: "conflicting_values", text: m[0].trim() });
+    } else {
+      budgetUsd = value;
+    }
     working = tidyRemainder(working.replace(m[0], " "));
   } else if (m) {
     ambiguities.push({ control: "budget", kind: "out_of_range", text: m[0].trim() });
@@ -577,6 +609,7 @@ export function parseConfirmationReply(answer: string): ParsedConfirmationReply 
     timeoutSeconds,
     remainder,
     ambiguities,
+    preservationClauses,
     // Nothing left, or only an affirmation left, means those clauses were the
     // entire qualification -- so this IS an approval.
     approves: remainder.length === 0 || isBriefConfirmation(remainder),

@@ -275,13 +275,13 @@ test("wiring: worker + index thread modelOverride to the SDK model", () => {
   // something else. What this test is actually about is that modelOverride
   // survives the destructure and reaches runWorkerCore.
   const destructure = /runWorker: async \(\{([^}]*)\}\)/.exec(index)?.[1] ?? "";
-  for (const p of ["brief", "subTask", "plan", "resumeSessionId", "requester", "dispatchHint", "modelOverride", "onStreamSlow"]) {
+  for (const p of ["brief", "subTask", "plan", "resumeSessionId", "requester", "dispatchHint", "modelOverride", "onStreamSlow", "onActivity"]) {
     assert.ok(
       destructure.split(",").map((x) => x.trim()).includes(p),
       `index.ts runWorker must still destructure ${p}; got: ${destructure.trim()}`,
     );
   }
-  assert.match(index, /onStreamSlow,\s*modelOverride,/);
+  assert.match(index, /onStreamSlow,\s*modelOverride,\s*firstTokenTimeoutSecondsOverride,\s*onActivity,/);
 });
 
 test("wiring: config + manifest declare all new keys with conservative defaults", () => {

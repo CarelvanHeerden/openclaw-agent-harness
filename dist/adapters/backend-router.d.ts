@@ -58,6 +58,8 @@ export interface BackendRouterInput {
         command: string;
         args: string[];
     };
+    /** Durable active plugin root supplied by OpenClaw; never installer staging. */
+    pluginRoot?: string;
     /**
      * `models.price_overrides`, the top of the resolution ladder.
      *
@@ -104,7 +106,7 @@ export interface ResolvedOpenCodeBinary {
  * different problem. It is reported, not silent: `source` tells the caller
  * which one it got, so an operator can see that the pin is not in force.
  */
-export declare function resolveOpenCodeBinary(requireFn?: (id: string) => string, exists?: (p: string) => boolean): ResolvedOpenCodeBinary;
+export declare function resolveOpenCodeBinary(requireFn?: (id: string) => string, exists?: (p: string) => boolean, pluginRoot?: string): ResolvedOpenCodeBinary;
 /** How OpenCode is launched when the operator has not said otherwise. */
 export declare function defaultOpenCodeCommand(): {
     command: string;

@@ -23,12 +23,26 @@ export interface StructuredObserveResult {
 }
 export type ObserveValidation = {
     ok: true;
+    kind: "satisfied";
     result: StructuredObserveResult;
     bindingsHash: string;
 } | {
     ok: false;
+    kind: "blocked";
+    reason: string;
+    result: StructuredObserveResult;
+    bindingsHash: string;
+    missingRequired: {
+        findings: string[];
+        bindings: string[];
+    };
+} | {
+    ok: false;
+    kind: "invalid_format" | "invalid_schema" | "invalid_evidence";
     reason: string;
 };
+export declare function parseObserveEnvelope(text: string): unknown;
+export declare function renderObserveContractInstructions(contract: ObserveContract): string;
 export declare function validateObserveResult(input: {
     finalMessage?: string;
     contract: ObserveContract;

@@ -17,7 +17,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
+import { tmpdir, platform as osPlatform, arch as osArch } from "node:os";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,9 +46,25 @@ test("the launcher resolves to the installed package, not a PATH lookup", () => 
 
   assert.equal(r.source, "dependency", `expected the npm copy, got PATH (${r.reason})`);
   assert.ok(isAbsolute(r.command), "a resolved binary must be an absolute path");
-  assert.ok(r.command.includes("opencode-ai"), "should point inside the opencode-ai package");
+  assert.match(r.command, /opencode-(?:darwin|linux|windows)-/, "should use the installed platform package directly");
   assert.ok(existsSync(r.command), "the resolved launcher must exist on disk");
   assert.equal(r.reason, undefined);
+});
+
+test("the active plugin root, not loader staging, anchors dependency resolution", () => {
+  const fakeRoot = mkdtempSync(resolve(tmpdir(), "oah-active-root-"));
+  writeFileSync(resolve(fakeRoot, "package.json"), JSON.stringify({ name: "active-plugin" }));
+  const platform = osPlatform() === "win32" ? "windows" : osPlatform();
+  const base = `opencode-${platform}-${osArch()}`;
+  const packageName = osArch() === "x64" ? `${base}-baseline` : base;
+  const packageRoot = resolve(fakeRoot, "node_modules", packageName);
+  mkdirSync(resolve(packageRoot, "bin"), { recursive: true });
+  writeFileSync(resolve(packageRoot, "package.json"), JSON.stringify({ name: packageName, version: PINNED_OPENCODE_VERSION }));
+  writeFileSync(resolve(packageRoot, "bin", platform === "windows" ? "opencode.exe" : "opencode"), "fixture");
+  const r = resolveOpenCodeBinary(undefined, undefined, fakeRoot);
+  assert.equal(r.source, "dependency");
+  assert.ok(r.command.startsWith(resolve(realpathSync(fakeRoot), "node_modules") + "/"));
+  assert.doesNotMatch(r.command, /\/tmp\/openclaw-plugin-build-/);
 });
 
 test("the resolved binary is the version package.json pins", () => {

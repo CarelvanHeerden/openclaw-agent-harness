@@ -12,6 +12,7 @@ const {
   validateObserveResult,
   applyObserveBindings,
   loadBearingObserveContractErrors,
+  renderObserveContractInstructions,
 } = await import("../../dist/orchestrator/observe-contract.js");
 
 const existingFiles = [
@@ -135,6 +136,7 @@ test("rc.12 pre-smoke: blocked observe results and note-only evidence never rele
     repoFiles: existingFiles,
   });
   assert.equal(blocked.ok, false);
+  assert.equal(blocked.kind, "blocked");
   assert.match(blocked.reason, /blocked/);
 
   const notesOnly = structuredClone(structuredResult);
@@ -147,6 +149,66 @@ test("rc.12 pre-smoke: blocked observe results and note-only evidence never rele
   });
   assert.equal(unsupported.ok, false);
   assert.match(unsupported.reason, /repository-backed evidence/);
+});
+
+test("rc.13 smoke: bounded observed wrapper variants preserve blocked semantics", () => {
+  const instructions = renderObserveContractInstructions(observeContract);
+  assert.match(instructions, /OBSERVE_RESULT:\n```json/);
+  assert.match(instructions, /closing fence are required/);
+  const payload = JSON.stringify({
+    ...structuredResult,
+    status: "blocked",
+    blockers: ["Missing operator authority"],
+  });
+  for (const finalMessage of [
+    payload,
+    `OBSERVE_RESULT:\n\`\`\`json\n${payload}\n\`\`\``,
+    `\`\`\`OBSERVE_RESULT\n${payload}\n\`\`\``,
+    `OBSERVE_RESULT\n\`\`\`json\n${payload}\n\`\`\``,
+  ]) {
+    const out = validateObserveResult({
+      finalMessage,
+      contract: {
+        ...observeContract,
+        requiredFindings: ["migration_convention: repository naming rule"],
+      },
+      repoFiles: existingFiles,
+    });
+    assert.equal(out.ok, false);
+    assert.equal(out.kind, "blocked");
+    assert.match(out.reason, /cannot release dependents/);
+  }
+  const blockedWithExistingDiscovery = structuredClone(structuredResult);
+  blockedWithExistingDiscovery.status = "blocked";
+  blockedWithExistingDiscovery.blockers = ["The supposedly new path already exists."];
+  blockedWithExistingDiscovery.bindings[0].value = "prisma/schema.prisma";
+  const blockedExisting = validateObserveResult({
+    finalMessage: JSON.stringify(blockedWithExistingDiscovery),
+    contract: observeContract,
+    repoFiles: existingFiles,
+  });
+  assert.equal(blockedExisting.kind, "blocked", "blocked bindings are evidence, never applied contracts");
+  const partialBlocked = validateObserveResult({
+    finalMessage: JSON.stringify(blockedWithExistingDiscovery),
+    contract: {
+      ...observeContract,
+      requiredFindings: ["migration_convention", "operator_authority"],
+      bindings: [...observeContract.bindings, { name: "missingDecision", type: "status", required: true }],
+    },
+    repoFiles: existingFiles,
+  });
+  assert.equal(partialBlocked.kind, "blocked");
+  assert.deepEqual(partialBlocked.missingRequired.findings, ["operator_authority"]);
+  assert.deepEqual(partialBlocked.missingRequired.bindings, ["missingDecision"]);
+  for (const finalMessage of [
+    `prefix\n${payload}`,
+    `${payload}\ntrailing instruction`,
+    `OBSERVE_RESULT:\n\`\`\`json\n${payload}\n\`\`\`\n${payload}`,
+  ]) {
+    const out = validateObserveResult({ finalMessage, contract: observeContract, repoFiles: existingFiles });
+    assert.equal(out.ok, false);
+    assert.equal(out.kind, "invalid_format");
+  }
 });
 
 test("rc.12 pre-smoke: existing symbols must resolve in repository content", () => {
@@ -209,12 +271,85 @@ test("rc.11: validated bindings amend every declared dependent contract field", 
   assert.doesNotMatch(JSON.stringify(task), /\{\{migrationPath\}\}/);
 });
 
+test("rc.13 smoke: contract_patch uses a typed normative patch, never an object-as-path", () => {
+  const contract = {
+    requiredFindings: ["patch"],
+    requireEvidence: true,
+    bindings: [{
+      name: "patch",
+      type: "contract_patch",
+      applyTo: [{
+        consumerSeq: 2,
+        fields: [
+          "filesLikelyTouched",
+          "verify",
+          "intent",
+          "successCriteria",
+          "workerContext.changeSpec",
+          "requiredBehaviorChecks",
+        ],
+      }],
+    }],
+  };
+  const result = {
+    status: "ok",
+    findings: [{ id: "patch", summary: "Bound patch", evidence: [{ path: "src/lib/config.ts", line: 1 }] }],
+    bindings: [{
+      name: "patch",
+      type: "contract_patch",
+      value: {
+        filesLikelyTouched: ["src/new.ts"],
+        verify: [{ kind: "file_committed", path: "src/new.ts" }],
+        intent: "Implement the bound change.",
+        successCriteria: ["The bound behavior passes."],
+        workerContextChangeSpec: "Edit src/new.ts.",
+        requiredBehaviorChecks: [{ id: "bound-test", ciCheck: "test", required: true }],
+      },
+      evidence: [{ path: "src/lib/config.ts", line: 1 }],
+    }],
+  };
+  const valid = validateObserveResult({
+    finalMessage: JSON.stringify(result),
+    contract,
+    repoFiles: existingFiles,
+  });
+  assert.equal(valid.ok, true, valid.reason);
+  const p = { repo: "o/r", branch: "b", worktreePath: "/w", subTasks: [producer({ observeContract: contract }), consumer()], reviewChecklist: [], riskLevel: "high", approxCostUsd: 1 };
+  const bound = applyObserveBindings({ plan: p, producer: p.subTasks[0], result });
+  const task = bound.plan.subTasks[1];
+  assert.ok(task.filesLikelyTouched.includes("src/new.ts"));
+  assert.ok(task.verify.some((probe) => probe.path === "src/new.ts"));
+  assert.match(task.intent, /Implement the bound change/);
+  assert.match(task.workerContext.changeSpec, /Edit src\/new\.ts/);
+  assert.ok(task.requiredBehaviorChecks.some((check) => check.id === "bound-test"));
+  assert.doesNotMatch(JSON.stringify(task.filesLikelyTouched), /\[object Object\]|filesLikelyTouched/);
+
+  const malformed = structuredClone(result);
+  malformed.bindings[0].value = { arbitrary: "object" };
+  const rejected = validateObserveResult({
+    finalMessage: JSON.stringify(malformed),
+    contract,
+    repoFiles: existingFiles,
+  });
+  assert.equal(rejected.kind, "invalid_schema");
+});
+
 test("rc.11: a load-bearing observe prerequisite without a contract is rejected at plan time", () => {
   const p = {
     subTasks: [producer({ observeContract: undefined }), consumer()],
   };
   assert.equal(loadBearingObserveContractErrors(p).length, 1);
   assert.equal(loadBearingObserveContractErrors({ subTasks: [producer(), consumer()] }).length, 0);
+  const duplicate = producer({
+    observeContract: {
+      ...observeContract,
+      requiredFindings: ["migration_convention: first", "migration_convention: duplicate"],
+    },
+  });
+  assert.match(
+    loadBearingObserveContractErrors({ subTasks: [duplicate, consumer()] }).join("\n"),
+    /duplicate required finding ids/,
+  );
 });
 
 const available = await scenarioAvailable();
@@ -240,7 +375,7 @@ test("rc.11: validated observe bindings persist into the plan before dependent d
           tokensOut: 1,
           reason: "end_turn",
           finalMessage: JSON.stringify(structuredResult),
-          allowedToolCalls: 1,
+          allowedToolCalls: 0,
           unguardedReads: 0,
         };
       }
@@ -268,7 +403,7 @@ test("rc.11: validated observe bindings persist into the plan before dependent d
 test("rc.11: invalid structured observe output never releases its dependent", { skip: !available }, async () => {
   const seen = [];
   const result = await runScenario({
-    configOver: { loop: { worker_protocol_max_attempts: 2 } },
+    configOver: { loop: { worker_protocol_max_attempts: 3 } },
     seedFiles: Object.fromEntries(existingFiles.map((path) => [path, "seed\n"])),
     subTasks: [producer(), consumer()],
     worker: async ({ subTask }) => {
@@ -288,5 +423,47 @@ test("rc.11: invalid structured observe output never releases its dependent", { 
     },
   });
   assert.ok(!seen.includes(2));
+  assert.equal(seen.filter((seq) => seq === 1).length, 2, "identical invalid output is not bought a third time");
   assert.equal(result.subTaskRows().find((row) => row.seq === 1).status, "failed_verification");
+});
+
+test("rc.13 smoke: a validated blocked report pauses once, persists evidence, and never dispatches consumers", { skip: !available }, async () => {
+  const seen = [];
+  let producerCalls = 0;
+  const blockedResult = {
+    ...structuredResult,
+    status: "blocked",
+    blockers: ["Operator must define the authorization mapping."],
+  };
+  const result = await runScenario({
+    seedFiles: Object.fromEntries(existingFiles.map((path) => [path, "seed\n"])),
+    subTasks: [producer(), consumer()],
+    worker: async ({ subTask }) => {
+      seen.push(subTask.seq);
+      if (subTask.seq === 1) producerCalls += 1;
+      return {
+        status: "completed",
+        filesChanged: [],
+        commitShas: [],
+        costUsd: 0.01,
+        tokensIn: 1,
+        tokensOut: 1,
+        reason: "end_turn",
+        finalMessage: `\`\`\`OBSERVE_RESULT\n${JSON.stringify(blockedResult)}\n\`\`\``,
+        allowedToolCalls: 1,
+        unguardedReads: 0,
+      };
+    },
+  });
+  assert.equal(producerCalls, 1, "blocked is a semantic outcome, not a format retry");
+  assert.ok(!seen.includes(2), "blocked observations never release dependents");
+  assert.equal(result.out.status, "awaiting_clarification");
+  assert.match(result.out.question, /validated BLOCKED observation/);
+  const stored = result.db.prepare(
+    `SELECT outcome,raw_report_text,parsed_result_json FROM observe_attempt_reports WHERE session_id='S1'`,
+  ).get();
+  assert.equal(stored.outcome, "blocked");
+  assert.match(stored.raw_report_text, /Operator must define/);
+  assert.match(stored.parsed_result_json, /migration_convention/);
+  assert.equal(result.db.prepare(`SELECT COUNT(*) AS n FROM observe_reports`).get().n, 0);
 });

@@ -113,7 +113,14 @@ export type ObserveBindingType =
 
 export interface ObserveBindingApplication {
   consumerSeq: number;
-  fields: Array<"filesLikelyTouched" | "verify" | "intent" | "successCriteria" | "workerContext.changeSpec">;
+  fields: Array<
+    "filesLikelyTouched" |
+    "verify" |
+    "intent" |
+    "successCriteria" |
+    "workerContext.changeSpec" |
+    "requiredBehaviorChecks"
+  >;
   /** Optional exact token to replace in textual fields; otherwise a binding line is appended. */
   placeholder?: string;
 }
@@ -137,6 +144,15 @@ export interface RequiredBehaviorCheck {
   ciCheck: string;
   command?: string;
   required?: boolean;
+}
+
+export interface ObserveContractPatch {
+  filesLikelyTouched?: string[];
+  verify?: SubTaskVerify[];
+  intent?: string;
+  successCriteria?: string[];
+  workerContextChangeSpec?: string;
+  requiredBehaviorChecks?: RequiredBehaviorCheck[];
 }
 
 /**
@@ -1045,7 +1061,7 @@ function validateMandatoryConventionAcknowledgement(
   }
 }
 
-function validatePlan(
+export function validatePlan(
   plan: Omit<LeadPlan, "worktreePath" | "approxCostUsd">,
   config: HarnessConfig,
 ): void {

@@ -2284,7 +2284,7 @@ export function registerHarnessTools(api, runtime) {
                             task.verify = (task.verify ?? []).filter((probe) => !probe.path || !expectedPaths.has(probe.path));
                             liveDb()
                                 .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                               minimum_runtime_version = '2.0.0-rc.12', updated_at = ? WHERE id = ?`)
+                                               minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`)
                                 .run(JSON.stringify(storedPlan), Date.now(), sessionId);
                             liveState().audit("tool.answer_contract_paths_persisted", { sessionId, seq, removed: [...expectedPaths], added: actualPaths }, sessionId);
                         }
@@ -2468,7 +2468,7 @@ export function registerHarnessTools(api, runtime) {
                                 liveDb().prepare(`UPDATE sessions
                         SET lead_plan_json = ?, crystallised_prompt = ?, status = 'planning',
                             plan_revision = COALESCE(plan_revision, 0) + 1,
-                            minimum_runtime_version = '2.0.0-rc.12', updated_at = ?
+                            minimum_runtime_version = '2.0.0-rc.13', updated_at = ?
                       WHERE id = ?`).run(JSON.stringify(revisedPlan), JSON.stringify(brief), now, sessionId);
                                 liveDb().exec("COMMIT");
                             }

@@ -227,8 +227,8 @@ const MUTATIONS = [
      */
     name: "rc.10: a planned write policy will refuse never reaches a worker",
     file: "dist/orchestrator/loop.js",
-    find: "                    const myPolicyConflicts = planPolicyConflicts.filter((c) => c.seq === st.seq);",
-    replace: "                    const myPolicyConflicts = [];",
+    find: "        if (planPolicyConflicts.length > 0 &&",
+    replace: "        if (false &&",
     tests: ["tests/rc10-policy-conflict.test.mjs"],
   },
   {
@@ -311,8 +311,8 @@ const MUTATIONS = [
     // turn announced itself as unmeasured.
     name: "v2 smoke: the logged usage source is the returned one",
     file: "dist/adapters/acp.js",
-    find: "const usageSource = acpUsageSource(sawAnyCost, sawTokenSplit);",
-    replace: "const usageSource = sawAnyCost ? \"acp-delta\" : \"unavailable\";",
+    find: "        : acpUsageSource(sawCurrentTurnCost, sawTokenSplit);",
+    replace: "        : acpUsageSource(sawCurrentTurnCost, false);",
     tests: ["tests/v2-acp-hardening.test.mjs"],
   },
   {
@@ -3680,8 +3680,8 @@ const MUTATIONS = [
   {
     name: "rc.11: required observe findings are deliverables, not tool-call activity",
     file: "dist/orchestrator/observe-contract.js",
-    find: "        if (!findings.has(id))\n            return { ok: false, reason: `required finding ${id} is missing` };",
-    replace: "        if (false)\n            return { ok: false, reason: `required finding ${id} is missing` };",
+    find: "        if (!findings.has(id))\n            return { ok: false, kind: \"invalid_schema\", reason: `required finding ${id} is missing` };",
+    replace: "        if (false)\n            return { ok: false, kind: \"invalid_schema\", reason: `required finding ${id} is missing` };",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
@@ -4068,6 +4068,150 @@ const MUTATIONS = [
     find: "    assertDowngradeSafe(state.db, PLUGIN_VERSION.pluginVersion);",
     replace: "    /* runtime compatibility check skipped */",
     tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: preservation qualifiers stay outside feature scope",
+    file: "dist/tools/brief-confirmation.js",
+    find: "    let working = raw.replace(PRESERVATION_CLAUSE, (_whole, clause) => {",
+    replace: "    let working = raw.replace(/$a/, (_whole, clause) => {",
+    tests: ["tests/rc6-typed-approval.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: labelled OBSERVE_RESULT fences are parsed",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "    if (labelledFence)\n        return JSON.parse(labelledFence[1]);",
+    replace: "    if (false)\n        return JSON.parse(labelledFence[1]);",
+    tests: ["tests/rc11-remediation.test.mjs", "tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: OBSERVE_RESULT colon is optional only for the bounded wrapper",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "const canonical = /^OBSERVE_RESULT\\s*:?\\s*```(?:json)?\\s*([\\s\\S]*?)```\\s*$/i.exec(trimmed);",
+    replace: "const canonical = /^OBSERVE_RESULT\\s*:\\s*```(?:json)?\\s*([\\s\\S]*?)```\\s*$/i.exec(trimmed);",
+    tests: ["tests/rc11-remediation.test.mjs", "tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: semantically blocked observations never release dependents",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "    if (result.status === \"blocked\") {",
+    replace: "    if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: load-time ACP replay is excluded from current output",
+    file: "dist/adapters/acp.js",
+    find: "        if (!promptSent && kind !== \"usage_update\") {",
+    replace: "        if (false) {",
+    tests: ["tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: resumed ACP cost never assumes a zero baseline",
+    file: "dist/adapters/acp.js",
+    find:
+      "    let costBaseline = resumeSessionId\n" +
+      "        ? (typeof resumeCumulativeCostUsd === \"number\" && Number.isFinite(resumeCumulativeCostUsd)\n" +
+      "            ? resumeCumulativeCostUsd\n" +
+      "            : null)\n" +
+      "        : 0;",
+    replace: "    let costBaseline = 0;",
+    tests: ["tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: cumulative ACP checkpoints persist atomically",
+    file: "dist/orchestrator/loop.js",
+    find: "                db.prepare(`INSERT INTO provider_session_usage",
+    replace: "                db.prepare(`INSERT INTO provider_session_usage_missing",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: every observe candidate is preserved before disposition",
+    file: "dist/orchestrator/loop.js",
+    find: "            this.deps.state.db.prepare(`INSERT OR REPLACE INTO observe_attempt_reports",
+    replace: "            this.deps.state.db.prepare(`INSERT OR REPLACE INTO observe_attempt_reports_missing",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: known plan policy conflicts pause before any worker",
+    file: "dist/orchestrator/loop.js",
+    find: "        if (planPolicyConflicts.length > 0 &&",
+    replace: "        if (false &&",
+    tests: ["tests/rc10-policy-conflict.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: OpenCode resolves from the durable active plugin root",
+    file: "dist/adapters/backend-router.js",
+    find:
+      "    const resolveDependency = pluginRoot\n" +
+      "        ? createRequire(resolvePath(pluginRoot, \"package.json\")).resolve\n" +
+      "        : requireFn;",
+    replace: "    const resolveDependency = requireFn;",
+    tests: ["tests/v2-opencode-packaging.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: contract patches are never coerced into file paths",
+    file: "dist/orchestrator/observe-contract.js",
+    find: "                if (!contractPatch(binding)) {",
+    replace: "                if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: structured evidence outranks legacy tool counters",
+    file: "dist/orchestrator/loop.js",
+    find: "                        const observeHasNoEvidence = () => !st.observeContract &&",
+    replace: "                        const observeHasNoEvidence = () =>",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: identical invalid observe output is not bought a third time",
+    file: "dist/orchestrator/loop.js",
+    find: "                            if (priorObserveFailureFingerprint === observeFailureFingerprint) {",
+    replace: "                            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: foreign ACP session updates never enter the current turn",
+    file: "dist/adapters/acp.js",
+    find: "        if (expectedSessionId && p.sessionId && p.sessionId !== expectedSessionId) {",
+    replace: "        if (false) {",
+    tests: ["tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: cumulative cost mismatch and currency changes fail indeterminate",
+    file: "dist/adapters/acp.js",
+    find: "        !baselineMismatch &&",
+    replace: "        true &&",
+    tests: ["tests/rc13-smoke-handoff.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: unresolved provider calls block new dispatch",
+    file: "dist/orchestrator/loop.js",
+    find: "            if (unresolved) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: cumulative checkpoint compare-and-swap prevents double charge",
+    file: "dist/orchestrator/loop.js",
+    find:
+      "            if (checkpoint &&\n" +
+      "                (checkpoint.currency !== \"USD\" ||\n" +
+      "                    Math.abs(checkpoint.cumulative_cost_usd - data.providerCostBaselineUsd) > 1e-9)) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: invalid provider costs fail closed before ledger updates",
+    file: "dist/orchestrator/loop.js",
+    find: "            if (!Number.isFinite(data.costUsd) || data.costUsd < 0) {",
+    replace: "            if (false) {",
+    tests: ["tests/rc11-remediation.test.mjs"],
+  },
+  {
+    name: "rc.13 smoke: task completion is written only after verification",
+    file: "dist/orchestrator/loop.js",
+    find: "           SET status = 'verifying', cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = NULL, updated_at = ?",
+    replace: "           SET status = 'completed', cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = NULL, updated_at = ?",
+    tests: ["tests/beta37-progress-poll.test.mjs", "tests/rc11-remediation.test.mjs"],
   },
 ];
 

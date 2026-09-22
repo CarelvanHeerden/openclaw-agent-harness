@@ -62,9 +62,30 @@ export class BackendConfigError extends Error {
  * different problem. It is reported, not silent: `source` tells the caller
  * which one it got, so an operator can see that the pin is not in force.
  */
-export function resolveOpenCodeBinary(requireFn = createRequire(import.meta.url).resolve, exists = existsSync) {
+export function resolveOpenCodeBinary(requireFn = createRequire(import.meta.url).resolve, exists = existsSync, pluginRoot) {
+    const resolveDependency = pluginRoot
+        ? createRequire(resolvePath(pluginRoot, "package.json")).resolve
+        : requireFn;
+    const platform = process.platform === "win32" ? "windows" : process.platform;
+    const arch = process.arch;
+    const base = `opencode-${platform}-${arch}`;
+    const platformPackages = arch === "x64"
+        ? [`${base}-baseline`, base, `${base}-baseline-musl`, `${base}-musl`]
+        : [base, `${base}-musl`];
+    const binaryName = platform === "windows" ? "opencode.exe" : "opencode";
+    for (const packageName of platformPackages) {
+        try {
+            const packageManifest = resolveDependency(`${packageName}/package.json`);
+            const binary = resolvePath(dirname(packageManifest), "bin", binaryName);
+            if (exists(binary))
+                return { command: binary, source: "dependency" };
+        }
+        catch {
+            /* try the next compatible optional package */
+        }
+    }
     try {
-        const manifestPath = requireFn("opencode-ai/package.json");
+        const manifestPath = resolveDependency("opencode-ai/package.json");
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
         // `bin` is a string for a single-binary package and a map otherwise.
         // opencode-ai publishes `{ "opencode": "./bin/opencode.exe" }`, whose
@@ -242,7 +263,7 @@ export class BackendRouter {
         if (this.input.openCodeCommand)
             return this.input.openCodeCommand;
         if (!this.openCodeBinary) {
-            this.openCodeBinary = resolveOpenCodeBinary();
+            this.openCodeBinary = resolveOpenCodeBinary(undefined, undefined, this.input.pluginRoot);
             if (this.openCodeBinary.source === "path") {
                 this.input.logger.warn(`[backend] falling back to \`opencode\` on PATH: ${this.openCodeBinary.reason}. ` +
                     `Whatever that resolves to is not necessarily ${PINNED_OPENCODE_VERSION}.`, { reason: this.openCodeBinary.reason });

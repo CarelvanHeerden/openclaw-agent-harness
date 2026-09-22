@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const expectedRoot = resolve(process.argv[2] ?? process.cwd());
 const installedRoot = resolve(process.argv[3] ?? "");
@@ -52,12 +54,31 @@ const entries = installedFiles.map((file) => {
   if (expected !== installed) throw new Error(`artifact mismatch: ${file}`);
   return `${expected}  ${file}`;
 });
+const { resolveOpenCodeBinary } = await import(
+  pathToFileURL(resolve(installedRoot, "dist/adapters/backend-router.js")).href
+);
+const openCode = resolveOpenCodeBinary(undefined, undefined, installedRoot);
+if (
+  openCode.source !== "dependency" ||
+  !realpathSync(openCode.command).startsWith(realpathSync(resolve(installedRoot, "..")))
+) {
+  throw new Error(`OpenCode did not resolve from the durable installation: ${JSON.stringify(openCode)}`);
+}
+const openCodeVersion = spawnSync(openCode.command, ["--version"], {
+  encoding: "utf8",
+  timeout: 10_000,
+});
+if (openCodeVersion.status !== 0) {
+  throw new Error(`installed OpenCode executable failed --version: ${openCodeVersion.stderr || openCodeVersion.stdout}`);
+}
 const manifestSha256 = createHash("sha256").update(entries.join("\n")).digest("hex");
 console.log(JSON.stringify({
   ok: true,
   version: expectedPackage.version,
   files: entries.length,
   manifestSha256,
+  openCodeCommand: openCode.command,
+  openCodeVersion: (openCodeVersion.stdout || openCodeVersion.stderr || "").trim(),
   testedRoot: expectedRoot,
   installedRoot,
 }, null, 2));

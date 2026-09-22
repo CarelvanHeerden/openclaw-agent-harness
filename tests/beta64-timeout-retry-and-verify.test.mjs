@@ -328,8 +328,11 @@ test("beta64/P0-4: scripted verifier fallback RUNS tsc + allowlisted checks and 
     const sf = state.audits.filter((e) => e.event === "loop.scripted_verify_fallback");
     assert.equal(sf.length, 1);
     assert.equal(sf[0].payload.result, "pass", "tsc clean + all scripts exit 0 => pass");
-    // A scripted PASS completes the verify sub-task, so the run proceeds to ship normally.
-    assert.equal(outcome.status, "shipped");
+    // The code verification passed, but a timed-out physical provider call still
+    // has unknown cost. Shipping before that ledger entry is reconciled would
+    // make the deterministic verifier an accounting bypass.
+    assert.equal(outcome.status, "failed");
+    assert.match(outcome.reason, /accounting_incomplete/);
     state.close();
   });
 

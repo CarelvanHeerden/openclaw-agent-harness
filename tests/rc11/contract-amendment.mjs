@@ -531,6 +531,8 @@ test("rc.11: CI packs, installs, compares and uploads one exact release artifact
   assert.equal(packageJson.openclaw.compat.minGatewayVersion, "2026.6.1");
   assert.equal(packageJson.openclaw.build.openclawVersion, "2026.6.1");
   assert.match(verifier, /filesUnder\(installedRoot, "\."\)/);
+  assert.match(verifier, /resolveOpenCodeBinary/);
+  assert.match(verifier, /spawnSync\(openCode\.command, \["--version"\]/);
   assert.match(readme, /test:no-build.*is \*\*not\*\*/s);
   assert.match(readme, /openclaw-agent-harness-verify-artifact/);
 });
