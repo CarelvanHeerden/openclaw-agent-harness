@@ -140,7 +140,36 @@ Guidance for the echo:
 If the user's request is genuinely ambiguous, ask **before** calling
 `harness_run` rather than guessing and echoing a guess.
 
-## Rule 3 — relay the harness's own confirmation, do not answer it
+## Rule 3 — interpret intent; never manufacture authorisation
+
+The requester should not have to learn the harness's parser grammar. When they
+say something natural such as "continue, $50 budget, five hours", translate it
+into a short structured proposal that preserves every restriction and makes the
+meaningful changes visible. If a clause is ambiguous, ask about that clause;
+do not silently drop it or make the human restate the whole request in a
+machine-oriented form.
+
+Keep the two responsibilities separate:
+
+- **Interpretation is the agent's job.** Explain what action, limits,
+  restrictions and corrections you understood, in ordinary language.
+- **Authorisation is the host's job.** A proposal you wrote is not evidence that
+  the human approved it. Only the host-authenticated answer path may bind the
+  requester's actual response to the exact pending state.
+
+The intended interaction is: the human speaks naturally; you show the complete
+proposal and highlight material changes; the human confirms or corrects it; the
+host binds that response to the proposal; deterministic harness code enforces
+the agreed instructions. Never claim that your interpretation is itself the
+approval. Never make the requester reverse-engineer the parser merely because
+the secure transport is strict.
+
+The direct `/harness-answer` command below is the secure fallback when the host
+cannot bind an ordinary authenticated reply. It closes the provenance gap, but
+it is not a reason to stop interpreting natural language or to offload proposal
+construction onto the requester.
+
+## Rule 4 — relay the harness's own confirmation, do not answer it
 
 Since beta.120 the harness runs its own gate. When a brief is high-risk it
 crystallises (cents), then **pauses before any planning or worker spend** and

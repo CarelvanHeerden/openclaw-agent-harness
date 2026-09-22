@@ -80,6 +80,14 @@ test("rc3: the skill demands live state, not a screenshot or an explanation", ()
   );
 });
 
+test("rc13: the steward interprets natural language without treating interpretation as approval", () => {
+  assert.match(src, /human may answer in ordinary language/i);
+  assert.match(src, /Interpretation is\s+agent work; authorisation is not/i);
+  assert.match(src, /structured proposal never proves that\s+the human approved it/i);
+  assert.match(src, /secure provenance fallback/i);
+  assert.match(src, /not as permission to hand the interpretation work\s+back to the human/i);
+});
+
 test("rc3: a relayed pause carries the question, a labelled recommendation and a paste-ready reply", () => {
   assert.match(src, /verbatim/, "the question is relayed as written");
   for (const label of ["accept", "skip", "abort", "human decision required"]) {

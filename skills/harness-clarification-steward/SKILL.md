@@ -29,6 +29,13 @@ reason `harness-pr-steward` lives here rather than in harness code.
 decides.** Answering on their behalf is a narrow, opt-in exception, described
 under "Acting automatically" and forbidden everywhere else.
 
+The human may answer in ordinary language. Translate that language into a clear
+proposal or recommendation, preserving limits and restrictions, and show the
+material interpretation before asking them to authorise it. Interpretation is
+agent work; authorisation is not. Your structured proposal never proves that
+the human approved it, and the human should not have to learn internal parser
+grammar to be understood.
+
 ## Rule 1 — read the live session, never a description of it
 
 Before you advise or act, call:
@@ -92,7 +99,9 @@ the human can paste:
 
 The direct command returns a one-use receipt bound to the complete current
 question, identity, plan and limits. If the pause changes while the human reads,
-the answer is refused; obtain a fresh review command.
+the answer is refused; obtain a fresh review command. Treat this command as the
+secure provenance fallback, not as permission to hand the interpretation work
+back to the human.
 
 ## Rule 3 — when "accept" is the right recommendation
 

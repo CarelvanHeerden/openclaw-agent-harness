@@ -7,6 +7,14 @@
   dispatch; reject stale/replayed/cross-session and altered/truncated commands.
 - Block force-resume while an unanswered clarification/approval remains pending.
 - No command API means no human approval. Delegated automation remains explicit.
+- Teach the calling-agent skills to translate natural-language intent into a
+  visible structured proposal while keeping host-authenticated authorisation a
+  separate boundary; the direct command is a secure fallback, not an excuse to
+  make operators learn parser grammar.
+- Add an old-to-new package upgrade regression that installs both versions into
+  the same prefix and proves every registered skill is replaced with the current
+  release bytes. The existing installed-artifact verifier remains the post-update
+  byte-for-byte check for the complete `skills/` tree.
 
 # Changelog
 

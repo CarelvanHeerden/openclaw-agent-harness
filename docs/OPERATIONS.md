@@ -494,7 +494,9 @@ node scripts/verify-installed-artifact.mjs <tested-release-checkout> <installed-
 ```
 
 Keep the reported manifest SHA with the CI run. A matching version string alone
-is insufficient: two different builds can carry the same version.
+is insufficient: two different builds can carry the same version. The verifier
+hashes the complete installed `skills/` tree as part of that comparison, so a
+stale or omitted `SKILL.md` fails the release check.
 
 ## Agent-orchestrated smoke delivery (rc.13)
 
