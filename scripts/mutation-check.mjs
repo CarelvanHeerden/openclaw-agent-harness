@@ -4320,95 +4320,26 @@ const MUTATIONS = [
     tests: ["tests/rc13-brief-proposal.test.mjs"],
   },
   {
-  "name": "rc.13 human provenance: agent cannot mint human capability",
-  "file": "dist/tools/registration.js",
-  "find": "const direct = directAnswers.get(toolContext);",
-  "replace": "const direct = directAnswers.get(toolContext) ?? { input, stateHash: answerStateHash(pendingAnswerState(liveDb(), sessionId)) };",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
+    name: "rc.13 human provenance: host requester is required",
+    file: "dist/tools/registration.js",
+    find: "const trustedSender = runtimeSender;",
+    replace: "const trustedSender = runtimeSender || invokedBy;",
+    tests: ["tests/rc13-human-provenance.test.mjs"],
+  },
   {
-  "name": "rc.13 human provenance: receipt cannot be consumed twice",
-  "file": "dist/tools/registration.js",
-  "find": "            AND consumed_at IS NULL AND expires_at > ?\n            AND reviewed_through >= review_page_count",
-  "replace": "            AND expires_at > ?\n            AND reviewed_through >= review_page_count",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
+    name: "rc.13 human provenance: claimed invoker must match host requester",
+    file: "dist/tools/registration.js",
+    find: "invokedBy !== trustedSender ||\n                !liveConfig().slack.authorised_users.includes(trustedSender)",
+    replace: "false ||\n                !liveConfig().slack.authorised_users.includes(trustedSender)",
+    tests: ["tests/rc13-human-provenance.test.mjs"],
+  },
   {
-  "name": "rc.13 human provenance: host sender must be authorized",
-  "file": "dist/tools/registration.js",
-  "find": "ctx.isAuthorizedSender !== true ||",
-  "replace": "false ||",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
-  {
-  "name": "rc.13 human provenance: expired receipt cannot authorize",
-  "file": "dist/tools/registration.js",
-  "find": "            AND consumed_at IS NULL AND expires_at > ?\n            AND reviewed_through >= review_page_count",
-  "replace": "            AND consumed_at IS NULL AND ? >= 0\n            AND reviewed_through >= review_page_count",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
-  {
-  "name": "rc.13 human provenance: receipt binds pending state",
-  "file": "dist/tools/human-answer-command.js",
-  "find": "export function answerStateHash(value) {\n    return createHash(\"sha256\").update(JSON.stringify(value)).digest(\"hex\");\n}",
-  "replace": "export function answerStateHash(value) {\n    return \"0\".repeat(64);\n}",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
-  {
-  "name": "rc.13 human provenance: final answer requires every review page",
-  "file": "dist/tools/registration.js",
-  "find": "            AND reviewed_through >= review_page_count",
-  "replace": "            AND 1 = 1",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
-  {
-  "name": "rc.13 human provenance: review pages cannot be requested out of order",
-  "file": "dist/tools/registration.js",
-  "find": "                    if (page > receipt.reviewed_through + 1) {",
-  "replace": "                    if (false) {",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
-  {
-  "name": "rc.13 human provenance: review-page advancement is compare-and-swap",
-  "file": "dist/tools/registration.js",
-  "find": "AND reviewed_through = ? AND consumed_at IS NULL AND expires_at > ?",
-  "replace": "AND ? >= 0 AND consumed_at IS NULL AND expires_at > ?",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
-  {
-  "name": "rc.13 human provenance: command channel must match",
-  "file": "dist/tools/registration.js",
-  "find": "ctx.channel !== \"slack\" ||",
-  "replace": "false ||",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
-  {
-  "name": "rc.13 human provenance: pending state rechecked after await",
-  "file": "dist/tools/registration.js",
-  "find": "if (trustedHuman && direct?.stateHash !== answerStateHash(pendingAnswerState(liveDb(), sessionId))) {\n                return { content: [{ type: \"text\", text: \"Pending state changed during validation.",
-  "replace": "if (false) {\n                return { content: [{ type: \"text\", text: \"Pending state changed during validation.",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
+    name: "rc.13 human provenance: host requester must be authorised",
+    file: "dist/tools/registration.js",
+    find: "!liveConfig().slack.authorised_users.includes(trustedSender)",
+    replace: "false",
+    tests: ["tests/rc13-human-provenance.test.mjs"],
+  },
   {
   "name": "rc.13 human provenance: force resume cannot bypass pending approval",
   "file": "dist/tools/registration.js",

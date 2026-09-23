@@ -51,7 +51,7 @@ const CAPABILITIES: Record<string, HelpCapability[]> = {
       tools: ["harness_progress"],
     },
     {
-      what: "Answer a paused question directly with /harness-answer <sessionId>. Human replies must bypass the agent; harness_answer is only for explicitly delegated automation.",
+      what: "Answer a paused question in natural language. OpenClaw interprets the authenticated requester's reply and calls the harness with the current pause identity; delegated automation remains separately restricted.",
       say: ["use the (portal) route group, not (app)"],
       tools: ["harness_answer"],
     },

@@ -795,11 +795,10 @@ export interface LoopConfig {
      * rather than an instruction it can decide it received.
      *
      * With this false, `harness_answer` refuses any answer marked
-     * `answeredBy: "automation"`. It does NOT otherwise inspect who is calling:
-     * an agent that simply omits the marker is not caught here, and nothing in
-     * this repository can catch it. What this buys is that an honest agent cannot
-     * talk itself into acting, and a dishonest one has to misrepresent itself in
-     * a recorded tool call to do so.
+     * `answeredBy: "automation"`. Human answers are a separate path: OpenClaw's
+     * trusted tool-factory `requesterSenderId` must match `invokedBy` and the
+     * configured authorised-user list. A model-supplied marker alone grants no
+     * authority.
      */
     clarification_auto_accept_delegated?: boolean;
     /**

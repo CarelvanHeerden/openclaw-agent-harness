@@ -6,7 +6,6 @@
  * include the "run a task" surface -- that entry point is the Slack
  * listener. These tools are for inspection, admin, and cron jobs.
  */
-import { pendingAnswerState, answerStateHash, issueHumanAnswer, renderHumanAnswerReview } from "./human-answer-command.js";
 import { buildHarnessHelp } from "./help-content.js";
 import { getCurrentRuntime } from "../runtime-registry.js";
 import { pruneRetention } from "../state/retention.js";
@@ -163,11 +162,6 @@ function storageIsUnrecoverable(storage) {
 }
 export function registerHarnessTools(api, runtime) {
     const disposers = [];
-    // Object identity is minted only inside the host command handler. No tool
-    // argument, factory-context property, or exported helper can create it.
-    const directAnswers = new WeakMap();
-    let commandsActive = true;
-    disposers.push(() => { commandsActive = false; });
     /**
      * Resolve the LIVE runtime for tool execution.
      *
@@ -855,9 +849,8 @@ export function registerHarnessTools(api, runtime) {
                         estimatedUsd: res.estimatedUsd,
                         effectiveBudget: res.effectiveBudget,
                         feedback: {
-                            instruction: "STOP and show question verbatim. Ask the requester to send /harness-answer <sessionId> directly to review and answer. Never relay human approval through an agent tool.",
-                            answerWith: "direct_command",
-                            command: `/harness-answer ${res.sessionId}`,
+                            instruction: "STOP and show the question verbatim. Wait for the authenticated requester to reply naturally, then call harness_answer with answeredBy:'human', invokedBy matching the host requester, and the current clarification identity. Do not approve on their behalf.",
+                            answerWith: "natural_language_reply",
                         },
                     },
                 };
@@ -1082,9 +1075,8 @@ export function registerHarnessTools(api, runtime) {
                         estimatedUsd: res.estimatedUsd,
                         effectiveBudget: res.effectiveBudget,
                         feedback: {
-                            instruction: "STOP and show question verbatim. Human approval must bypass the agent: the requester sends /harness-answer <sessionId> directly to review and answer. Do not relay a human answer through harness_answer, approve on their behalf, or start another run.",
-                            answerWith: "direct_command",
-                            command: `/harness-answer ${res.sessionId}`,
+                            instruction: "STOP and show the question verbatim. Wait for the authenticated requester to reply naturally, then call harness_answer with answeredBy:'human', invokedBy matching the host requester, and the current clarification identity. Do not approve on their behalf or start another run.",
+                            answerWith: "natural_language_reply",
                         },
                     },
                 };
@@ -1408,7 +1400,7 @@ export function registerHarnessTools(api, runtime) {
             if (!row)
                 return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
             if (row.status === "awaiting_clarification" || (row.clarification_question && row.clarification_answer == null)) {
-                return { content: [{ type: "text", text: `Cannot resume ${sessionId}: a pending approval/clarification cannot be bypassed with force. The requester must use /harness-answer ${sessionId} directly.` }],
+                return { content: [{ type: "text", text: `Cannot resume ${sessionId}: a pending approval/clarification cannot be bypassed with force. Relay the current question and wait for the authenticated requester to answer it.` }],
                     details: { ok: false, pendingApproval: true, badStatus: row.status } };
             }
             if (row.status === "accounting_incomplete") {
@@ -1495,10 +1487,10 @@ export function registerHarnessTools(api, runtime) {
     // register, never unregistered on teardown.
     const buildAnswer = (toolContext) => ({
         name: "harness_answer",
-        description: "Answer a paused harness clarification as automation, only where delegation permits it. " +
-            "Human approvals must use the authenticated /harness-answer <sessionId> command directly. " +
-            "A tool's answeredBy=human claim is never trusted. Brief approval/revision and budget grants " +
-            "cannot be delegated. For delegated answers, include current clarification identity and evidence.",
+        description: "Answer a paused harness clarification after interpreting the authenticated requester's natural-language reply, " +
+            "or as delegated automation where policy permits it. Human answers are accepted only when OpenClaw supplies a " +
+            "trusted requesterSenderId that exactly matches invokedBy and is listed in slack.authorised_users. Brief approval, " +
+            "revision, and budget grants cannot be delegated. Include the current clarification identity; automation also requires evidence.",
         parameters: {
             type: "object",
             properties: {
@@ -1517,7 +1509,8 @@ export function registerHarnessTools(api, runtime) {
                 answeredBy: {
                     type: "string",
                     enum: ["human", "automation"],
-                    description: "Agent tools must use automation. Human approval is accepted only through the authenticated /harness-answer command, never from this argument.",
+                    description: "Use 'human' only when interpreting the current host-authenticated requester's natural-language answer. " +
+                        "The tool verifies requesterSenderId against invokedBy and slack.authorised_users. Use 'automation' only for a delegated agent decision.",
                 },
                 evidence: {
                     type: "string",
@@ -1529,13 +1522,12 @@ export function registerHarnessTools(api, runtime) {
         },
         execute: async (_callId, input) => {
             const { sessionId, answer, invokedBy, clarificationSeq, clarificationId, answeredBy, evidence } = input;
-            // rc.12: the tool argument is an audit assertion, not an identity
-            // boundary. OpenClaw's factory context carries the runtime-authenticated
-            // sender; require it and require the claimed id to match. The explicit
-            // authorised-users list remains the policy boundary, so configured
-            // non-owner teammates still work. A model can no longer gain human
-            // authority by writing an
-            // authorised Slack id into its own parameters.
+            // rc.13: model-supplied identity is only an audit assertion. The tool
+            // factory context is host-authenticated, so human authority exists only
+            // when requesterSenderId is present, exactly matches invokedBy, and is
+            // in the configured allow-list. OpenClaw may interpret that requester's
+            // natural-language answer and call this tool; users never call the
+            // harness directly. Missing or mismatched host provenance fails closed.
             const runtimeSender = toolContext.requesterSenderId?.trim() ?? "";
             const trustedSender = runtimeSender;
             if (!trustedSender ||
@@ -1556,19 +1548,7 @@ export function registerHarnessTools(api, runtime) {
                     details: { ok: false, missingAnswerProvenance: true },
                 };
             }
-            const direct = directAnswers.get(toolContext);
-            directAnswers.delete(toolContext); // consume the in-process capability once
-            const trustedHuman = direct?.input === input;
-            if (!trustedHuman && answeredBy !== "automation") {
-                return {
-                    content: [{ type: "text", text: `Human answers cannot be relayed through an agent tool. Send /harness-answer ${sessionId} yourself to review and answer the current pause directly. Nothing changed.` }],
-                    details: { ok: false, trustedHumanCommandRequired: true, started: false },
-                };
-            }
-            if (trustedHuman && direct?.stateHash !== answerStateHash(pendingAnswerState(liveDb(), sessionId))) {
-                return { content: [{ type: "text", text: "Pending state changed before answer validation. Nothing applied; review again." }], details: { ok: false, staleHumanApproval: true } };
-            }
-            const effectiveAnsweredBy = trustedHuman ? "human" : "automation";
+            const effectiveAnsweredBy = answeredBy;
             const row = liveDb()
                 .prepare(`SELECT status, crystallised_prompt, lead_plan_json, clarification_question, clarification_seq, clarification_id,
                     clarification_subtask, clarification_heartbeat_at, final_pr_url, pr_number, branch, cost_usd,
@@ -1577,6 +1557,9 @@ export function registerHarnessTools(api, runtime) {
                 .get(sessionId);
             if (!row)
                 return { content: [{ type: "text", text: `No session ${sessionId}` }], details: { ok: false, notFound: true } };
+            if (row.status !== "awaiting_clarification") {
+                return { content: [{ type: "text", text: `Session ${sessionId} is not awaiting clarification (status ${row.status})` }], details: { ok: false, badStatus: row.status } };
+            }
             const trimmed = answer.trim();
             let amendmentAnswer = trimmed;
             let confirmedStoredAmendment = null;
@@ -1644,9 +1627,6 @@ export function registerHarnessTools(api, runtime) {
                 catch {
                     /* pre-rc.11 schema: continue through legacy status handling */
                 }
-            }
-            if (row.status !== "awaiting_clarification") {
-                return { content: [{ type: "text", text: `Session ${sessionId} is not awaiting clarification (status ${row.status})` }], details: { ok: false, badStatus: row.status } };
             }
             if (!row.crystallised_prompt) {
                 return { content: [{ type: "text", text: `Session ${sessionId} has no crystallised brief; cannot resume.` }], details: { ok: false, missingBrief: true } };
@@ -1742,8 +1722,9 @@ export function registerHarnessTools(api, runtime) {
             // Deliberately BEFORE the claim, so a refused caller leaves the pause
             // exactly as it found it.
             //
-            // Provenance is enforced by an object-identity capability minted only
-            // by the host's authenticated non-agent command callback.
+            // Human provenance was already established from the host-authenticated
+            // tool factory context. Automation remains separately constrained by
+            // delegation policy and evidence below.
             // rc.6: MONEY IS NEVER DELEGATED. A budget-extension pause asks the
             // operator to raise the figure the run is measured against, and the
             // answer moves `budget_usd` on the session row. Every other pause this
@@ -1857,10 +1838,6 @@ export function registerHarnessTools(api, runtime) {
                         details: { ok: false, storageMissing: true, storageState: storage.state, reason: storage.reason, seq },
                     };
                 }
-            }
-            if (trustedHuman && direct?.stateHash !== answerStateHash(pendingAnswerState(liveDb(), sessionId))) {
-                return { content: [{ type: "text", text: "Pending state changed during validation. Nothing applied; review the current pause again." }],
-                    details: { ok: false, staleHumanApproval: true } };
             }
             let precomputedAmendment = confirmedStoredAmendment;
             if (!precomputedAmendment &&
@@ -2104,10 +2081,13 @@ export function registerHarnessTools(api, runtime) {
                         staging = false;
                         return { content: [{ type: "text", text: question }], details: { ok: true, sessionId, started: false, awaitingConfirmation: true, briefProposed: true } };
                     }
-                    catch {
+                    catch (err) {
                         if (staging) {
                             proposalDb.exec("ROLLBACK TO SAVEPOINT brief_proposal_stage");
                             proposalDb.exec("RELEASE SAVEPOINT brief_proposal_stage");
+                        }
+                        if (/A brief revision must contain 1–8,000 characters/.test(String(err))) {
+                            return keepPaused("No changes applied: the brief revision is too long (maximum 8,000 characters).", { ok: false, proposalRejected: true });
                         }
                         return keepPaused("No changes applied. The complete proposal could not be stored safely. Resolve the storage fault, then retry.", { proposalFailed: true });
                     }
@@ -2662,99 +2642,6 @@ export function registerHarnessTools(api, runtime) {
         },
     });
     disposers.push(toDispose(api.registerTool(contextualToolFactory("harness_answer", buildAnswer))));
-    if (api.registerCommand) {
-        api.registerCommand({
-            name: "harness-answer",
-            description: "Review and answer your pending harness question directly (no agent approval).",
-            acceptsArgs: true,
-            requireAuth: true,
-            channels: ["slack"],
-            handler: async (ctx) => {
-                const sender = ctx.senderId?.trim();
-                if (!commandsActive || ctx.channel !== "slack" || ctx.isAuthorizedSender !== true || !sender ||
-                    !liveConfig().slack.authorised_users.includes(sender)) {
-                    return { text: "Unauthorised direct approval. Nothing changed." };
-                }
-                // OpenClaw sanitizes/truncates args. Never approve a different body from
-                // what the human sent (especially a truncated trailing restriction).
-                const raw = /^\/harness-answer(?:\s+([\s\S]*))?$/i.exec(ctx.commandBody ?? "");
-                const args = raw?.[1]?.trim() ?? "";
-                if (!raw || args !== (ctx.args ?? "").trim() || args.length > 3500) {
-                    return { text: "Command body was missing, changed or too long. Nothing changed; send a shorter direct command." };
-                }
-                const match = /^(\S+)(?:\s+([a-f0-9]{48})\s+([\s\S]+))?$/.exec(args);
-                if (!match)
-                    return { text: "Use /harness-answer <sessionId> to review a pending question and get a one-use answer command." };
-                const [, sessionId, challenge, answer] = match;
-                if (!challenge)
-                    return issueHumanAnswer(liveDb(), sessionId, sender);
-                const db = liveDb();
-                const state = pendingAnswerState(db, sessionId);
-                if (!state || state.status !== "awaiting_clarification" || state.requester !== sender) {
-                    return { text: "No pending question owned by this sender. Nothing changed." };
-                }
-                const stateHash = answerStateHash(state);
-                const receipt = db.prepare(`SELECT review_page_count, reviewed_through, consumed_at, expires_at
-          FROM human_answer_challenges
-          WHERE id = ? AND session_id = ? AND sender = ? AND state_hash = ?`).get(challenge, sessionId, sender, stateHash);
-                const reviewMatch = /^review\s+(\d+)$/i.exec(answer ?? "");
-                if (reviewMatch) {
-                    if (!receipt || receipt.consumed_at !== null || receipt.expires_at <= Date.now()) {
-                        return { text: "Approval challenge is stale, expired, used or does not match this sender/session. Review again with /harness-answer <sessionId>." };
-                    }
-                    const page = Number(reviewMatch[1]);
-                    if (!Number.isInteger(page) || page < 1 || page > receipt.review_page_count) {
-                        return { text: `Review page must be between 1 and ${receipt.review_page_count}. Nothing changed.` };
-                    }
-                    if (page > receipt.reviewed_through + 1) {
-                        return { text: `Review pages must be read in order. Request page ${receipt.reviewed_through + 1} next. Nothing changed.` };
-                    }
-                    if (page === receipt.reviewed_through + 1) {
-                        const advanced = db.prepare(`UPDATE human_answer_challenges SET reviewed_through = ?
-              WHERE id = ? AND state_hash = ? AND reviewed_through = ? AND consumed_at IS NULL AND expires_at > ?`).run(page, challenge, stateHash, receipt.reviewed_through, Date.now());
-                        if (advanced.changes !== 1) {
-                            return { text: "Approval challenge changed while reviewing. Review again with /harness-answer <sessionId>." };
-                        }
-                    }
-                    return renderHumanAnswerReview(state, sessionId, challenge, page);
-                }
-                if (!receipt) {
-                    return { text: "Approval challenge is stale, expired, used or does not match this sender/session. Review again with /harness-answer <sessionId>." };
-                }
-                if (receipt.reviewed_through < receipt.review_page_count) {
-                    const nextPage = receipt.reviewed_through + 1;
-                    return { text: `Review incomplete. Read page ${nextPage} with /harness-answer ${sessionId} ${challenge} review ${nextPage} before answering. Nothing changed.` };
-                }
-                const claimed = db.prepare(`UPDATE human_answer_challenges SET consumed_at = ?
-          WHERE id = ? AND session_id = ? AND sender = ? AND state_hash = ?
-            AND consumed_at IS NULL AND expires_at > ?
-            AND reviewed_through >= review_page_count`).run(Date.now(), challenge, sessionId, sender, stateHash, Date.now());
-                if (claimed.changes !== 1)
-                    return { text: "Approval challenge is stale, expired, used or does not match this sender/session. Review again with /harness-answer <sessionId>." };
-                // Receipt is consumed before any await: retries and concurrent delivery
-                // cannot manufacture another human answer, even after a restart/failure.
-                const input = { sessionId, answer, invokedBy: sender, answeredBy: "human",
-                    clarificationSeq: state.clarification_seq, clarificationId: state.clarification_id ?? undefined };
-                const context = { requesterSenderId: sender };
-                directAnswers.set(context, { input, stateHash });
-                try {
-                    liveState().audit("command.human_answer_consumed", { sessionId, sender, challenge, stateHash }, sessionId);
-                    const result = await buildAnswer(context).execute("direct-human-command", input);
-                    return { details: result.details, text: (result.content ?? []).map((c) => c.text ?? "").join("\n") +
-                            `\nIf still paused, review the current state with /harness-answer ${sessionId}.` };
-                }
-                catch {
-                    return { text: "Direct answer failed; the one-use receipt remains consumed. Check harness_progress and review the current pause again before retrying." };
-                }
-                finally {
-                    directAnswers.delete(context);
-                }
-            },
-        });
-    }
-    else {
-        api.logger.warn("[harness] direct command API unavailable: human approvals fail closed; agent tools cannot substitute for human commands.");
-    }
     // ---- beta.78 (Feature 4): per-user credential onboarding (DM flow) ----
     //
     // Authorised users onboard their OWN git token privately. Two actions:

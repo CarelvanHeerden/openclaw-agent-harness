@@ -79,8 +79,8 @@ test("rc13: the skill separates natural-language interpretation from human autho
   assert.match(src, /Authorisation is the host's job/i);
   assert.match(src, /proposal you wrote is not evidence that\s+the human approved it/i);
   assert.match(src, /host binds that response to the proposal/i);
-  assert.match(src, /direct `\/harness-answer` command.*secure fallback/is);
-  assert.match(src, /not a reason to stop interpreting natural language/i);
+  assert.match(src, /host-authenticated tool factory closes the provenance gap/i);
+  assert.match(src, /Never\s+offload proposal construction or harness-specific commands onto the requester/i);
 });
 
 test("the skill names the concrete failure, not just the rule", () => {

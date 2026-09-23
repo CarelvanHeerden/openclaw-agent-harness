@@ -90,24 +90,14 @@ answered `skip` meaning "the file is there, carry on" and a correct, committed
 database migration was dropped from every subsequent plan.
 
 Give a short reason grounded in what you read — a sentence or two naming the
-commit and the paths, not a paragraph of reasoning. Then give the exact reply
-the human can paste:
+commit and the paths, not a paragraph of reasoning. Then ask the human to reply
+naturally in the authenticated OpenClaw conversation.
 
-```
-/harness-answer <sessionId>
-```
-
-The direct command returns a one-use receipt bound to the complete current
-question, identity, plan and limits. If the pause changes while the human reads,
-the answer is refused; obtain a fresh review command. Treat this command as the
-secure provenance fallback, not as permission to hand the interpretation work
-back to the human.
-
-When the decision-specific review spans several pages, relay the emitted
-`review <page>` command exactly and let the human send each page request
-directly. Do not summarise unseen pages, skip ahead, or suggest shortening an
-already-persisted brief/plan. The receipt remains unusable until every page has
-been served and remains bound to the hash of the complete stored state.
+After the reply arrives, re-read `harness_progress`, interpret the answer, and
+call `harness_answer` with `answeredBy: "human"`, `invokedBy` matching the
+host-authenticated `requesterSenderId`, and the current `clarificationSeq` plus
+`clarificationId` when present. If the pause changed while the human read it,
+the stale identity guard refuses the answer; relay the new question instead.
 
 ## Rule 3 — when "accept" is the right recommendation
 
@@ -287,10 +277,13 @@ Any unchecked box means relay it and let the human decide.
 
 ## Trusted human provenance (rc.13)
 
-Human answers are no longer relayed through the agent tool. Ask the requester
-to send `/harness-answer <sessionId>` directly and then use its one-use command.
-The host-authenticated sender and full pending state are bound to the receipt;
-`answeredBy: "human"` in a tool call grants no authority. Delegated automation
-continues to use `harness_answer` with `answeredBy: "automation"` and evidence.
-Brief approval/revision and budget increases remain non-delegable. If direct
-commands are unavailable, stay paused; never emulate the command with a tool.
+Humans never call the harness directly. They answer in natural language and
+OpenClaw calls `harness_answer` in the authenticated turn. Pass
+`answeredBy: "human"` only when the host supplies `requesterSenderId`; it must
+exactly match `invokedBy` and be in `slack.authorised_users`. Missing or
+mismatched host provenance fails closed. Re-read and pass the current pause
+identity so stale replies cannot land on a later question.
+
+Delegated automation continues to use `answeredBy: "automation"` with evidence
+and remains governed by `loop.clarification_auto_accept_delegated`. Brief
+approval/revision and budget increases remain non-delegable.

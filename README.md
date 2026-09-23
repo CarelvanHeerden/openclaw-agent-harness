@@ -232,7 +232,7 @@ All 19 tools are called by the *agent*, not typed by the user. A person says
 **While a run is live**
 
 - `harness_progress` -- **poll this**: current phase, per-sub-task status, running cost vs budget, recent events, PR/deploy state, `msSinceLastEvent`, a ready-to-post `headline`, and (beta.108) a `worklog` of what each sub-task actually did. Poll every 30-60s and edit one message in place rather than posting per poll. The terminal headline carries the merge recommendation -- relay it, because a `do_not_merge` PR that reads as plain "Done" gets merged by mistake.
-- `harness_answer` -- answer a run paused in `awaiting_clarification`; `abort` and `skip` are accepted. Pass the `clarificationSeq` you read from `harness_progress` and the harness refuses an answer aimed at a question that has since moved on, rather than applying it to the wrong one. An agent answering by itself passes `answeredBy: "automation"` and `evidence`, and is refused without both. The bundled `harness-clarification-steward` skill covers how to relay a pause with a recommendation attached, and the narrow conditions under which a calling agent may answer one itself
+- `harness_answer` -- answer a run paused in `awaiting_clarification`; humans reply naturally to OpenClaw, which interprets the reply and calls the tool. `answeredBy: "human"` is accepted only when the host-authenticated `requesterSenderId` matches `invokedBy` and is authorised. Pass the current `clarificationSeq` and, when present, `clarificationId`; stale answers are refused. Delegated automation passes `answeredBy: "automation"` plus `evidence` and remains subject to `clarification_auto_accept_delegated`. Brief approval/revision and budget grants are never delegable.
 - `harness_cancel` -- set the abort flag; the loop stops at the next checkpoint
 - `harness_resume` -- re-kick an interrupted session with its brief (`force: true` for a dead executor)
 
@@ -357,19 +357,17 @@ MIT. See `LICENSE`.
 
 ### Human approval transport (rc.13)
 
-Human approval must arrive through OpenClaw's authenticated, non-agent command
-path: send `/harness-answer <sessionId>` in Slack. This displays the complete
-pending state and a one-use, ten-minute answer command. The receipt binds the
-requester, session, brief/proposal, limits and clarification identity. Send the
-resulting command yourself; do not ask the model to relay it. A revised brief
-still requires `confirm brief <sha256>` as the answer. Failed attempts consume
-the receipt; inspect the current pause and obtain a new command before retrying.
+Humans never interact with the harness directly. They reply in natural language
+to OpenClaw; OpenClaw interprets that reply and calls `harness_answer`.
 
-`harness_answer` is now an **automation-only tool**: a caller's `answeredBy:
-"human"` assertion cannot establish provenance. Existing delegated clarification
-policy still applies; brief approvals and budget grants cannot be automated.
-The host must expose `registerCommand`, deliver an authenticated sender and the
-original command body, and dispatch outside the model. Otherwise human approval
-fails closed. No fallback to tool parameters, transcript text or a caller-supplied
-message ID is permitted. This assumes a trusted host/plugin process; it does not
-sandbox an operator with arbitrary host code/database access.
+Human authority comes from the host-authenticated tool-factory context, not from
+model-supplied arguments. `answeredBy: "human"` is accepted only when
+`requesterSenderId` exists, exactly matches `invokedBy`, and is listed in
+`slack.authorised_users`. Missing or mismatched provenance fails closed. Current
+`clarificationSeq`/`clarificationId` values still bind the answer to the exact
+pause, and all status and atomic-claim guards remain in force.
+
+Delegated automation remains separate: it requires
+`loop.clarification_auto_accept_delegated`, `answeredBy: "automation"`, and
+reviewable evidence. Brief approvals, brief revisions, and budget grants cannot
+be delegated. See [docs/human-approval-commands.md](docs/human-approval-commands.md).

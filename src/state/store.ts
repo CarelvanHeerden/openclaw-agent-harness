@@ -196,8 +196,8 @@ export function openStateStoreSync(pathHint: string): StateStore {
     { table: "provider_calls", column: "completion_fingerprint",  type: "TEXT" },
     { table: "provider_session_usage", column: "currency",       type: "TEXT NOT NULL DEFAULT 'USD'" },
     { table: "provider_session_usage", column: "checkpoint_version", type: "INTEGER NOT NULL DEFAULT 1" },
-    // rc.13: large human approval reviews are paginated. A receipt cannot be
-    // consumed until every page bound to its full-state hash has been served.
+    // Legacy rc.13 receipt columns are retained so existing databases upgrade
+    // non-destructively even though current runtimes no longer use commands.
     { table: "human_answer_challenges", column: "review_page_count", type: "INTEGER NOT NULL DEFAULT 1" },
     { table: "human_answer_challenges", column: "reviewed_through", type: "INTEGER NOT NULL DEFAULT 1" },
   ];

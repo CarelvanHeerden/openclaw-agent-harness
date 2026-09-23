@@ -444,7 +444,8 @@ CREATE TABLE IF NOT EXISTS model_prices (
   payload     TEXT NOT NULL                        -- JSON: the parsed Catalogue
 );
 
--- Non-agent command approvals: opaque, state-bound, durable single-use receipts.
+-- Legacy rc.13 command-approval receipts. Retained for non-destructive upgrade compatibility;
+-- current runtimes do not create or consume these rows.
 CREATE TABLE IF NOT EXISTS human_answer_challenges (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

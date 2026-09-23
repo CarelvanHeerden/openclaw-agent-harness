@@ -113,8 +113,8 @@ test('rc13 brief proposal: exact stored correction/limits apply once, after revi
  assert.equal(stored.budgetUsd,50);assert.equal(stored.hardTimeoutSeconds,18000);
  assert.match(JSON.stringify(stored),/Use performedAt/);
  assert.match(JSON.stringify(stored),/recurrence identities are stable/);
- assert.match(g.row().clarification_question,/state-bound \/harness-answer/);
- assert.doesNotMatch(g.row().clarification_question,/Use performedAt/,'the complete proposal is reviewed through the paginated command path, not duplicated into the question');
+ assert.match(g.row().clarification_question,/authenticated OpenClaw conversation/);
+ assert.doesNotMatch(g.row().clarification_question,/Use performedAt/,'the complete proposal remains stored rather than duplicated into the question');
  const fullQuestion=g.row().clarification_question;
  for(const wrong of ['confirm', 'confirm brief '+ '0'.repeat(64),confirmation+' but not yet']) {
   const result=await g.answer(wrong);assert.equal(result.details.started,false);

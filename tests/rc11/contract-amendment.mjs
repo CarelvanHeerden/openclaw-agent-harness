@@ -719,7 +719,7 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
     clarificationId: "Q1",
   });
   assert.equal(duplicate.details.ok, false);
-  assert.match(duplicate.content[0].text, /No pending question/);
+  assert.match(duplicate.content[0].text, /not awaiting clarification/);
   assert.equal(resumed, 1, "duplicate delivery must not start a second loop");
 
   const conflict = await tools.get("harness_answer").execute({
@@ -730,7 +730,7 @@ test("rc.11: harness_answer atomically persists and activates the revised task b
     clarificationId: "Q1",
   });
   assert.equal(conflict.details.ok, false);
-  assert.match(conflict.content[0].text, /No pending question/);
+  assert.match(conflict.content[0].text, /not awaiting clarification/);
 });
 
 test("rc.11: a stale or missing clarification id cannot mutate the plan", async () => {

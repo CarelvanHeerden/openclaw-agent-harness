@@ -1,34 +1,21 @@
-## Unreleased — authenticated human command boundary
+## Unreleased — authenticated OpenClaw-mediated approval
 
-- Reject agent-tool `answeredBy: "human"` claims; requester identity is not proof
-  of a human's explicit approval.
-- Add non-agent `/harness-answer` with full-state review and durable single-use,
-  ten-minute receipts bound to requester/session/pending state. Consume before
-  dispatch; reject stale/replayed/cross-session and altered/truncated commands.
-- Block force-resume while an unanswered clarification/approval remains pending.
-- No command API means no human approval. Delegated automation remains explicit.
-- Teach the calling-agent skills to translate natural-language intent into a
-  visible structured proposal while keeping host-authenticated authorisation a
-  separate boundary; the direct command is a secure fallback, not an excuse to
-  make operators learn parser grammar.
-- Add an old-to-new package upgrade regression that installs both versions into
-  the same prefix and proves every registered skill is replaced with the current
-  release bytes. The existing installed-artifact verifier remains the post-update
-  byte-for-byte check for the complete `skills/` tree.
-- Remove the 24,000-character `/harness-answer` deadlock. Receipts still hash
-  the complete persisted authority state, including the full lead plan, while
-  the human reviews a complete decision-specific payload in ordered pages.
-  Every page must be served before the receipt can be consumed; plan changes,
-  replay, expiry and skipped pages fail closed.
-- Bind PR/branch/cost and normalized listener-liveness recovery outcomes into
-  that receipt, and remove the separate 24,000-character revised-brief ceiling.
-  Complete proposals remain stored once and use the same ordered review path.
-- Repair the three provenance mutation anchors after pagination introduced
-  duplicate SQL fragments, and run the focused provenance mutation gate on
-  exact branch-push CI commits instead of waiting for the PR-only full gate.
-- Add pagination-specific mutations for final-page consumption, ordered page
-  review, and compare-and-swap page advancement, with race regressions that
-  prove the atomic SQL guards rather than only the happy-path behavior.
+- Restore the intended architecture: humans speak natural language to OpenClaw
+  and never invoke harness-specific commands. Remove the legacy direct-answer
+  command registration, receipt UX, and user-facing command instructions.
+- Accept `answeredBy: "human"` only when the host-authenticated tool factory
+  supplies `requesterSenderId`, it exactly matches `invokedBy`, and the sender is
+  in `slack.authorised_users`. Missing or mismatched provenance fails closed.
+- Preserve exact pause binding through `clarificationSeq`/`clarificationId`, all
+  status and atomic-claim guards, and the force-resume refusal for pending
+  approvals.
+- Keep delegated automation governed by
+  `loop.clarification_auto_accept_delegated` plus reviewable `evidence`; brief
+  approval/revision and budget grants remain non-delegable.
+- Retain legacy receipt schema columns only for non-destructive database upgrade
+  compatibility. Current code no longer creates or consumes receipt rows.
+- Update source, built output, docs, bundled skills, focused provenance tests,
+  and mutation checks to enforce the host requester boundary.
 
 # Changelog
 

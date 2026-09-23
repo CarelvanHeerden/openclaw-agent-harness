@@ -67,7 +67,8 @@ test("beta.55 B2: progress snapshot surfaces awaiting_clarification with the que
   assert.match(snap.clarificationQuestion ?? "", /How should it proceed/);
   assert.equal(snap.clarificationSeq, 3);
   assert.match(snap.headline, /Awaiting clarification/);
-  assert.match(snap.headline, /harness_answer/);
+  assert.match(snap.headline, /reply naturally in this authenticated OpenClaw conversation/);
+  assert.match(snap.headline, /clarificationSeq=3/);
   // awaiting_clarification is NOT terminal (resumable):
   assert.equal(snap.terminal, false);
 });

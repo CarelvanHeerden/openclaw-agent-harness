@@ -383,7 +383,7 @@ export function buildProgressSnapshot(db, sessionId, limit = 12, stallSeconds = 
     const clarificationId = needsClarification ? (row.clarification_id ?? null) : null;
     const headline = needsClarification && clarificationQuestion
         ? `Awaiting clarification: ${clarificationQuestion.slice(0, 400)} ` +
-            `(human: /harness-answer ${sessionId}; delegated automation: harness_answer sessionId=${sessionId}${clarificationId ? ` clarificationId=${clarificationId}` : ""})`
+            `(reply naturally in this authenticated OpenClaw conversation; sessionId=${sessionId}, clarificationSeq=${clarificationSeq ?? "unknown"}${clarificationId ? `, clarificationId=${clarificationId}` : ""})`
         : buildHeadline({
             phase,
             status,

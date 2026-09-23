@@ -23,7 +23,7 @@ export function renderBriefProposal(proposal) {
     const hash = briefStateHash(proposal);
     return [
         "No work has started. The complete revised proposal is stored with the current pause.",
-        `Review it through the state-bound /harness-answer ${proposal.sessionId} flow; large proposals are shown in ordered pages rather than truncated.`,
+        `Review the complete stored proposal in this authenticated OpenClaw conversation before confirming it. OpenClaw binds the reply to session ${proposal.sessionId} and the current pause.`,
         `After that complete review, start exactly this proposal with: confirm brief ${hash}`,
         "A plain confirm will not activate a revised proposal. To replace it, send revise brief: <correction, optionally with budget/time controls>. Revisions are based on the original brief, not an unapproved proposal.",
     ].join("\n\n");

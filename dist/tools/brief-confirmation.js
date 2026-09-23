@@ -105,8 +105,9 @@ export function renderBriefConfirmation(input) {
         ? `Source: read verbatim from ${input.sourcePath}.`
         : `Source: the request text as the calling agent supplied it — if you gave it a spec file, check nothing was paraphrased away.`);
     lines.push("");
-    lines.push(`In the direct answer command, use "confirm" to start. To propose a correction, use "revise brief: <what to change>". ` +
-        `A revision stays paused until you review and explicitly confirm its complete stored proposal. Other replies do not start work.`);
+    lines.push(`Reply naturally with "confirm" to start. To propose a correction, reply "revise brief: <what to change>". ` +
+        `OpenClaw will interpret your authenticated reply and submit it to the harness. A revision stays paused until you ` +
+        `review and explicitly confirm its complete stored proposal. Other replies do not start work.`);
     // beta.122: the cap is the one number an operator most often wants to change
     // at this moment, and until now saying so did nothing -- "Confirm, Budget
     // $40" was filed as a correction to the SPEC and the run started at $10.
@@ -121,7 +122,7 @@ export function renderBriefConfirmation(input) {
     if (input.sessionId) {
         lines.push("");
         lines.push(`Session \`${input.sessionId}\`.`);
-        lines.push(`Human approval requires a direct command: /harness-answer ${input.sessionId}. Review its complete state and send the one-use command yourself. Agent-tool relays cannot approve.`);
+        lines.push(`Reply in this authenticated OpenClaw conversation. OpenClaw will bind your answer to this session and the current pause before calling the harness.`);
     }
     return lines.join("\n");
 }

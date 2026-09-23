@@ -164,10 +164,10 @@ the agreed instructions. Never claim that your interpretation is itself the
 approval. Never make the requester reverse-engineer the parser merely because
 the secure transport is strict.
 
-The direct `/harness-answer` command below is the secure fallback when the host
-cannot bind an ordinary authenticated reply. It closes the provenance gap, but
-it is not a reason to stop interpreting natural language or to offload proposal
-construction onto the requester.
+The host-authenticated tool factory closes the provenance gap: OpenClaw may
+interpret the requester's natural-language answer, but it must call the tool in
+the same authenticated turn so `requesterSenderId` is present and exact. Never
+offload proposal construction or harness-specific commands onto the requester.
 
 ## Rule 4 — relay the harness's own confirmation, do not answer it
 
@@ -190,13 +190,11 @@ When that happens:
    right. The entire value of the gate is that a human's eyes cross it.
 3. **Do not** start polling `harness_progress` yet, and do not fire another
    run — nothing is executing.
-4. Ask the requester to send `/harness-answer <sessionId>` **directly**. The host
-   executes this command without the model, displays the complete paused state,
-   and issues a ten-minute, single-use command bound to that sender and state.
-   The human must send the resulting command themselves. Never relay a human
-   answer through `harness_answer`, even with `answeredBy: "human"`; that is a
-   model-controlled claim and is rejected. If the command API is unavailable,
-   approval stays blocked. Do not emulate it through shell or another tool.
+4. Ask the requester to reply naturally in the authenticated OpenClaw
+   conversation. Interpret that reply, then call `harness_answer` with
+   `answeredBy: "human"`, `invokedBy` equal to the host requester, and the
+   current `clarificationSeq`/`clarificationId`. Do not approve on their behalf.
+   If the host does not supply `requesterSenderId`, approval stays blocked.
 
 An unqualified approval ("confirm", "yes", "go ahead") starts the current brief.
 Other replies, including rejections, holds and ordinary corrections, stay paused

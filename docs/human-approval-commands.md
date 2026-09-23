@@ -1,64 +1,25 @@
-# Human approvals through a non-agent command
+# Human approval through OpenClaw
 
-## Boundary
+Humans do not call the harness directly and do not use harness-specific slash commands. They reply in natural language to OpenClaw. OpenClaw interprets the reply and calls `harness_answer`.
 
-`harness_answer` is an automation-only tool. Tool parameters and a tool factory's
-requester identity do not prove that a person explicitly sent the answer. The
-`answeredBy: "human"` value is rejected, including when the requester is the owner.
-Never emulate the direct command from an agent, shell, or another tool.
+## Trust boundary
 
-The plugin registers the logical command `/harness-answer` through OpenClaw's
-`registerCommand` API. The host dispatches this before model execution, supplies
-the authenticated sender, checks command authorization, and carries the original
-command body. The plugin additionally checks its own allowlist, Slack channel
-provider, and session ownership. There is no transcript-search or message-ID
-assertion fallback. Without that host surface, approval remains blocked.
+A human answer is accepted only when all three checks pass:
 
-This is a tool-interface authority boundary, not a sandbox against arbitrary
-host code, database access, or a compromised OpenClaw/plugin process.
+1. OpenClaw's trusted tool-factory context contains `requesterSenderId`.
+2. `requesterSenderId` exactly equals the tool argument `invokedBy`.
+3. That sender is listed in `slack.authorised_users`.
 
-## Slack routing is a deployment prerequisite
+Tool arguments such as `invokedBy`, `answeredBy`, owner flags, or copied message metadata cannot create human authority by themselves. Missing or mismatched host provenance fails closed without changing the paused session.
 
-Registering a plugin command does **not** create a Slack app slash command.
-An operator must provide a supported inbound route before enabling the workflow:
+`answeredBy: "human"` means OpenClaw is interpreting the current authenticated requester's natural-language answer. It does not mean the model independently approved the action.
 
-- With Slack's configured single-command entry point, use
-  `/openclaw /harness-answer <sessionId>` (replace `openclaw` with the configured
-  `channels.slack.slashCommand.name`). The host dispatches the inner command.
-- Alternatively, configure a matching native Slack slash command and OpenClaw
-  native-command support according to the installed host's Slack documentation.
+## State binding
 
-Preserve the existing Slack app/configuration; do not replace the manifest or
-widen access. Enabling or changing the entry point is a separate operator action.
-A normal natural-language DM to the model is **not** equivalent to either route.
+OpenClaw should read the current pause with `harness_progress` and submit its `clarificationSeq` and, when present, `clarificationId`. The harness rejects stale sequence or identity values and preserves the existing status guards and atomic answer claim.
 
-## Operator flow
+For brief confirmation, revision, and budget grants, OpenClaw must wait for the human's reply. Those decisions cannot be delegated to automation.
 
-1. Send the logical `/harness-answer <sessionId>` command through the configured
-   non-agent route. The response contains the complete current pending state,
-   including brief, limits, plan and any proposal, plus a one-use command.
-2. Review the entire response. Send the generated command yourself, replacing
-   `<your answer>` with your decision and retaining the same routing prefix.
-3. For an initial approval, use `confirm`, optionally with explicit budget/time
-   controls. To propose edits, use `revise brief: <correction>`; this does not start
-   work. Review a revised proposal via a fresh command, then answer with its exact
-   `confirm brief <sha256>` instruction.
-4. If the pause changes, the receipt expires, or a command fails, inspect progress
-   and obtain a fresh review. Never automatically retry a consumed receipt.
+## Delegated automation
 
-Receipts expire after ten minutes, bind the session/requester/full pending-state
-hash, and are atomically consumed in SQLite before dispatch. Consumption survives
-restart and remains recorded even on subsequent validation or audit failure.
-After any asynchronous validation, state is checked again. A changed, sanitized,
-or overlong command body fails closed. Command answers are limited to 3,500 total
-argument characters and state previews to 24,000 characters; previews are never
-silently truncated for approval.
-
-## Release checks
-
-- Run the adversarial provenance tests and mutation checks against packaged code.
-- Verify the actual host command dispatcher rejects an unauthorised sender.
-- After reviewed installation, test the real Slack entry point with a disposable
-  paused session; prove the command bypasses the model and dispatches at most once.
-- Until the real Slack route is tested, report it as unverified. An in-process
-  host-dispatcher probe does not prove end-to-end Slack routing.
+An agent may answer by itself only when `loop.clarification_auto_accept_delegated` is enabled and the answer includes `answeredBy: "automation"` plus bounded review evidence. Brief approval, brief revision, and budget grants remain non-delegable regardless of that setting.
