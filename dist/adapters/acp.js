@@ -71,6 +71,31 @@ Use only evidence already present in the resumed session and emit the required f
 const OBSERVE_FINALIZATION_USER_MESSAGE = `FINALIZATION ONLY. Return the required final answer now with no tool calls.
 If the task requires OBSERVE_RESULT, output exactly one valid OBSERVE_RESULT JSON envelope matching the contract.
 Do not output reasoning, progress narration, or a plan. If evidence is insufficient, return the contract's blocked form.`;
+/**
+ * ACP-side containment for roles that must never act through tools.
+ *
+ * Disabling tools in OpenCode config is useful, but it is a backend promise.
+ * The permission guard is the harness-owned boundary: even if a backend still
+ * registers a built-in, MCP, or future custom tool, every permission request
+ * is rejected. Keep this separate from the ordinary worker guard so no
+ * allow-list change can accidentally grant a finalizer or structured role a
+ * capability.
+ */
+export function buildDenyAllAcpGuard(params) {
+    return async (call) => {
+        const reason = `role '${params.role}' runs with no tools`;
+        params.logger?.warn(`[acp/${params.role}] denied a tool call in a no-tools role; the backend is not honouring its tool configuration`, { role: params.role, kind: call.kind ?? null, title: call.title ?? null });
+        return {
+            allow: false,
+            reason,
+            denial: {
+                code: "unknown_kind",
+                kind: call.kind ?? undefined,
+                message: reason,
+            },
+        };
+    };
+}
 function openFrameTrace(label, scrub) {
     const dir = process.env.HARNESS_ACP_TRACE_DIR;
     if (!dir)
@@ -888,6 +913,10 @@ export async function runObserveWorkerAcp(params) {
         resumeCumulativeCostUsd: first.cumulativeCostUsd ?? params.initial.resumeCumulativeCostUsd,
         timeoutSeconds: Math.max(1, Math.min(params.finalizerTimeoutSeconds ?? 120, params.initial.timeoutSeconds)),
         traceLabel: params.initial.traceLabel ? `${params.initial.traceLabel}-finalize` : "observe-finalize",
+        // The OpenCode finalizer config also disables every known tool, but that
+        // is not the authorization boundary. Reject every ACP permission request
+        // here too, including unknown/custom kinds added after this release.
+        acpGuard: buildDenyAllAcpGuard({ role: "observe-finalizer", logger: params.initial.logger }),
     });
     const recovered = finalizer.finalMessage.trim().length > 0;
     const measured = first.usageSource !== "unavailable" && finalizer.usageSource !== "unavailable";
@@ -974,10 +1003,7 @@ function extractText(update) {
 export async function runStructuredAcp(params) {
     let sessionId = "";
     let usageSource = "unavailable";
-    const denyAll = async (call) => {
-        params.logger?.warn(`[acp/${params.role}] denied a tool call in a structured role; the backend is not honouring its tool configuration`, { role: params.role, kind: call.kind ?? null, title: call.title ?? null });
-        return { allow: false, reason: `role '${params.role}' runs with no tools` };
-    };
+    const denyAll = buildDenyAllAcpGuard({ role: params.role, logger: params.logger });
     let lastStopReason = null;
     let lastTimeout = null;
     const runTurn = async (correction) => {

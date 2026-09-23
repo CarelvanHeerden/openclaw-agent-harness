@@ -33,6 +33,7 @@ const update = (sessionId, u) =>
 
 const SESSION = "fake-session-1";
 let permissionAnswer = null;
+const clientResponses = new Map();
 let configuredModel = "default-model";
 let configuredEffort = "none";
 
@@ -62,8 +63,14 @@ const configOptions = () => [
 
 function handle(msg) {
   // Response to a request we (the agent) made -- i.e. the permission decision.
-  if (msg.id !== undefined && msg.result !== undefined && msg.method === undefined) {
-    permissionAnswer = msg.result;
+  if (msg.id !== undefined && msg.method === undefined && (msg.result !== undefined || msg.error !== undefined)) {
+    const pending = clientResponses.get(msg.id);
+    if (pending) {
+      clientResponses.delete(msg.id);
+      pending(msg);
+    } else {
+      permissionAnswer = msg.result;
+    }
     return;
   }
 
@@ -340,7 +347,7 @@ async function runTurn(id, sessionId) {
       if (/FINALIZATION ONLY/.test(asked)) {
         update(sessionId, {
           sessionUpdate: "agent_message_chunk",
-          content: { text: '{"status":"pass","findings":[],"bindings":[],"blockers":[]}' },
+          content: { text: '{"status":"ok","findings":[],"bindings":[],"blockers":[]}' },
         });
         return reply(id, { stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 8 } });
       }
@@ -354,7 +361,7 @@ async function runTurn(id, sessionId) {
         sessionUpdate: "agent_message_chunk",
         content: {
           text: /FINALIZATION ONLY/.test(asked)
-            ? '{"status":"pass","findings":[],"bindings":[],"blockers":[]}'
+            ? '{"status":"ok","findings":[],"bindings":[],"blockers":[]}'
             : "The maximum number of steps allowed for this agent has been reached. Work so far: inspected files.",
         },
       });
@@ -374,9 +381,59 @@ async function runTurn(id, sessionId) {
     case "observe-structured-success":
       update(sessionId, {
         sessionUpdate: "agent_message_chunk",
-        content: { text: '{"status":"pass","findings":[],"bindings":[],"blockers":[]}' },
+        content: { text: '{"status":"ok","findings":[],"bindings":[],"blockers":[]}' },
       });
       return reply(id, { stopReason: "end_turn", usage: { inputTokens: 4, outputTokens: 8 } });
+
+    // A hostile/broken finalizer ignores its no-tools configuration and tries
+    // every meaningful route anyway: read, edit, shell, a future custom tool,
+    // and the client-side fs RPC. The harness-owned deny-all ACP guard must
+    // reject all permission requests, while the unadvertised fs capability
+    // must return an RPC error. The scenario only writes marker files if one
+    // of those controls fails, making the test assert effects as well as
+    // permission bookkeeping.
+    case "observe-finalizer-tool-attempts": {
+      const asked = String(params_last?.prompt?.[0]?.text ?? "");
+      if (!/FINALIZATION ONLY/.test(asked)) {
+        await ask(sessionId, { kind: "read", title: "read", locations: [], rawInput: {} });
+        return reply(id, { stopReason: "end_turn", usage: { inputTokens: 4, outputTokens: 0 } });
+      }
+      const rejected = (decision) =>
+        decision?.outcome?.outcome !== "selected" || /reject/.test(decision?.outcome?.optionId ?? "");
+      const attempts = [
+        ["read", "read secret.txt", { filepath: "secret.txt" }, "finalizer-read-acted"],
+        ["edit", "write finalizer-edit-acted", { filepath: "finalizer-edit-acted", content: "acted" }, "finalizer-edit-acted"],
+        ["execute", "touch finalizer-bash-acted", { command: "touch finalizer-bash-acted" }, "finalizer-bash-acted"],
+        ["custom_future_tool", "custom action", { target: "finalizer-custom-acted" }, "finalizer-custom-acted"],
+      ];
+      const denied = [];
+      for (const [kind, title, rawInput, marker] of attempts) {
+        const decision = await ask(sessionId, { kind, title, rawInput, locations: rawInput.filepath ? [{ path: rawInput.filepath }] : [] });
+        denied.push(rejected(decision));
+        if (!rejected(decision)) writeFileSync(join(process.cwd(), marker), "acted");
+      }
+      const fsReply = await requestClient("fs/write_text_file", {
+        path: join(process.cwd(), "finalizer-client-write-acted"),
+        content: "acted",
+      });
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          text: JSON.stringify({ status: "ok", findings: [], bindings: [], blockers: [], denied, fsRefused: Boolean(fsReply.error) }),
+        },
+      });
+      return reply(id, { stopReason: "end_turn", usage: { inputTokens: 4, outputTokens: 8 } });
+    }
+
+    case "observe-empty-then-malformed-final": {
+      const asked = String(params_last?.prompt?.[0]?.text ?? "");
+      if (/FINALIZATION ONLY/.test(asked)) {
+        update(sessionId, { sessionUpdate: "agent_message_chunk", content: { text: "not an OBSERVE_RESULT" } });
+        return reply(id, { stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 4 } });
+      }
+      await ask(sessionId, { kind: "read", title: "read", locations: [], rawInput: {} });
+      return reply(id, { stopReason: "end_turn", usage: { inputTokens: 4, outputTokens: 0 } });
+    }
 
     // ---- v2.0.0 M6: capability-probe scenarios ----
 
@@ -483,4 +540,11 @@ function ask(sessionId, toolCall, options) {
       }
     }, 5);
   });
+}
+
+let clientRequestId = 2000;
+function requestClient(method, params) {
+  const id = clientRequestId++;
+  send({ jsonrpc: "2.0", id, method, params });
+  return new Promise((resolve) => clientResponses.set(id, resolve));
 }

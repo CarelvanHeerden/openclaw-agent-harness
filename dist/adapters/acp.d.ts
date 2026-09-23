@@ -204,6 +204,22 @@ export interface RunWorkerAcpResult {
  */
 export declare const OBSERVE_ACP_MAX_STEPS = 12;
 /**
+ * ACP-side containment for roles that must never act through tools.
+ *
+ * Disabling tools in OpenCode config is useful, but it is a backend promise.
+ * The permission guard is the harness-owned boundary: even if a backend still
+ * registers a built-in, MCP, or future custom tool, every permission request
+ * is rejected. Keep this separate from the ordinary worker guard so no
+ * allow-list change can accidentally grant a finalizer or structured role a
+ * capability.
+ */
+export declare function buildDenyAllAcpGuard(params: {
+    role: string;
+    logger?: {
+        warn: (m: string, meta?: unknown) => void;
+    };
+}): (call: AcpToolCallForGuard) => Promise<AcpGuardVerdict>;
+/**
  * Thrown when the agent asks us to perform something we declined in
  * `initialize`.
  *
