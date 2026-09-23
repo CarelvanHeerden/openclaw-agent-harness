@@ -366,7 +366,10 @@ export class BackendRouter {
   }
 
   /** The agent spec for a role, carrying the generated OpenCode configuration. */
-  agentSpecFor(role: RoleName): AcpAgentSpec {
+  agentSpecFor(
+    role: RoleName,
+    overrides: { toolless?: boolean; maxSteps?: number } = {},
+  ): AcpAgentSpec {
     const r = this.roles[role];
     return {
       ...this.openCodeCommandSpec(),
@@ -376,7 +379,8 @@ export class BackendRouter {
         // The six structured roles get no tools at all. The deny-all guard in
         // `runStructuredAcp` is the layer that does not depend on the backend
         // honouring its own configuration; this is the layer that asks nicely.
-        toolless: ROLE_SHAPES[role] === "structured",
+        toolless: overrides.toolless ?? ROLE_SHAPES[role] === "structured",
+        maxSteps: overrides.maxSteps,
       }),
       onVersionMismatch: (info) => {
         this.input.logger.warn(`[backend] ${info.message ?? "opencode version mismatch"}`, { role });

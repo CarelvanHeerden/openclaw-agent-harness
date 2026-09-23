@@ -69,21 +69,22 @@ test("every one of the eight roles is routed from the dispatch path", () => {
 
 test("the agentic roles pass an ACP-shaped guard, not the SDK one", () => {
   const src = readFileSync(join(root, "src", "index.ts"), "utf8");
-  const acpCalls = src.split("runWorkerAcp({").slice(1);
-  assert.equal(acpCalls.length, 2, "expected exactly the worker and scout ACP call sites");
-  for (const call of acpCalls) {
-    const body = call.slice(0, 3500);
-    assert.ok(
-      /acpGuard: buildAcpGuard\(/.test(body) ||
-        /acpGuard: focusedWorkerAcpGuard\(workerGuard\)/.test(body),
-      "an ACP call site is not passing through an ACP-shaped buildAcpGuard",
-    );
-    assert.doesNotMatch(
-      body,
-      /acpGuard: params\.canUseTool/,
-      "the SDK guard keys on Claude Code tool names and allows every ACP call",
-    );
-  }
+  const scoutCall = src.split("runWorkerAcp({")[1]?.slice(0, 3500) ?? "";
+  assert.match(scoutCall, /acpGuard: buildAcpGuard\(/, "scout must use the ACP-shaped guard");
+
+  const workerParams = src.split("const acpParams = {")[1]?.slice(0, 5000) ?? "";
+  assert.match(
+    workerParams,
+    /acpGuard: focusedWorkerAcpGuard\(workerGuard\)/,
+    "worker and its observe finalizer must share the focused ACP-shaped guard",
+  );
+  assert.match(workerParams, /runObserveWorkerAcp\(\{\s*initial: acpParams/);
+  assert.match(workerParams, /runWorkerAcp\(acpParams\)/);
+  assert.doesNotMatch(
+    `${scoutCall}\n${workerParams}`,
+    /acpGuard: params\.canUseTool/,
+    "the SDK guard keys on Claude Code tool names and allows every ACP call",
+  );
 });
 
 test("pricing is refreshed from the state DB, so the catalogue is not dead code", () => {

@@ -258,9 +258,32 @@ export interface RunWorkerAcpResult {
    * acts, so within a real session every tool call passes through here.
    */
   allowedToolCalls: number;
+  /**
+   * Observe-only recovery state. `failed` means a bounded tool-using turn ended
+   * with no assistant text and the subsequent tool-disabled continuation also
+   * emitted no final envelope. Callers must fail closed rather than resume the
+   * exploratory session again.
+   */
+  observeFinalization?: "recovered" | "failed";
 }
 
 const LOG_EXCERPT_MAX = 20_000;
+
+/**
+ * OpenCode defaults agent.steps to Infinity. Twelve model/tool-loop steps is
+ * deliberately enough for a focused repository probe while bounding the
+ * failure seen in ba4f199d, where an observe worker consumed the context window
+ * on reads and still ended with no assistant text.
+ */
+export const OBSERVE_ACP_MAX_STEPS = 12;
+
+const OBSERVE_FINALIZATION_SYSTEM_PROMPT = `You are finalizing a read-only observe task after its tool budget ended.
+Tools are disabled. Do not reason aloud, inspect more files, or describe future work.
+Use only evidence already present in the resumed session and emit the required final report envelope now.`;
+
+const OBSERVE_FINALIZATION_USER_MESSAGE = `FINALIZATION ONLY. Return the required final answer now with no tool calls.
+If the task requires OBSERVE_RESULT, output exactly one valid OBSERVE_RESULT JSON envelope matching the contract.
+Do not output reasoning, progress narration, or a plan. If evidence is insufficient, return the contract's blocked form.`;
 
 // ---------------------------------------------------------------------------
 // Raw frame tracing
@@ -1099,6 +1122,70 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     // tell "the model answered with nothing" from "we stopped waiting", and
     // `finalMessage: ""` looks identical in both cases.
     timeout: timeoutInfo,
+  };
+}
+
+/**
+ * Run a bounded observe turn and recover one specific ACP/OpenCode failure:
+ * an otherwise normal `end_turn` containing tool activity but no assistant
+ * text. OpenCode reports that shape when its last model step finishes with
+ * `finish_reason=tool-calls`; ACP correctly has no text to invent from it.
+ *
+ * Recovery is a single resumed continuation under a different OpenCode config:
+ * all tools disabled and `agent.build.steps=1`. If that continuation is also
+ * empty, the result is marked `observeFinalization: "failed"`; callers must
+ * not spend another unconstrained exploration retry on the same session.
+ */
+export async function runObserveWorkerAcp(params: {
+  initial: RunWorkerAcpParams;
+  finalizerAgent: AcpAgentSpec;
+  finalizerTimeoutSeconds?: number;
+}): Promise<RunWorkerAcpResult> {
+  const first = await runWorkerAcp(params.initial);
+  const toolOnlyEmptyEndTurn =
+    first.stopReason === "end_turn" &&
+    first.finalMessage.trim().length === 0 &&
+    first.allowedToolCalls + first.deniedToolCalls.length > 0;
+  // At agent.steps, OpenCode appends MAX_STEPS_PROMPT. Its required response is
+  // a generic "maximum steps reached" summary, not the task's OBSERVE_RESULT,
+  // so treat that as the same transport-level need for strict finalization.
+  const maxStepsSummary =
+    first.stopReason === "end_turn" &&
+    /maximum (?:number of )?steps(?: allowed)?(?: for this agent)? (?:has|have) been reached/i.test(first.finalMessage);
+  if (!toolOnlyEmptyEndTurn && !maxStepsSummary) return first;
+
+  const finalizer = await runWorkerAcp({
+    ...params.initial,
+    agent: params.finalizerAgent,
+    systemPrompt: OBSERVE_FINALIZATION_SYSTEM_PROMPT,
+    userMessage: OBSERVE_FINALIZATION_USER_MESSAGE,
+    resumeSessionId: first.sdkSessionId || params.initial.resumeSessionId,
+    resumeCumulativeCostUsd: first.cumulativeCostUsd ?? params.initial.resumeCumulativeCostUsd,
+    timeoutSeconds: Math.max(1, Math.min(params.finalizerTimeoutSeconds ?? 120, params.initial.timeoutSeconds)),
+    traceLabel: params.initial.traceLabel ? `${params.initial.traceLabel}-finalize` : "observe-finalize",
+  });
+
+  const recovered = finalizer.finalMessage.trim().length > 0;
+  const measured = first.usageSource !== "unavailable" && finalizer.usageSource !== "unavailable";
+  return {
+    ...finalizer,
+    // Preserve all spend and activity from the exploratory turn. The finalizer
+    // is not a replacement invocation; it is the terminal step of one observe
+    // attempt.
+    costUsd: first.costUsd + finalizer.costUsd,
+    tokensIn: first.tokensIn + finalizer.tokensIn,
+    tokensOut: first.tokensOut + finalizer.tokensOut,
+    tokensCached: (first.tokensCached ?? 0) + (finalizer.tokensCached ?? 0) || undefined,
+    logsExcerpt: `${first.logsExcerpt}\n[observe-finalization]\n${finalizer.logsExcerpt}`.slice(-LOG_EXCERPT_MAX),
+    streamOpened: first.streamOpened || finalizer.streamOpened,
+    msToFirstToken: finalizer.msToFirstToken ?? first.msToFirstToken,
+    usageSource: measured
+      ? (first.usageSource === "tokens-only" && finalizer.usageSource === "tokens-only" ? "tokens-only" : "acp-delta")
+      : "unavailable",
+    deniedToolCalls: [...first.deniedToolCalls, ...finalizer.deniedToolCalls],
+    unguardedReads: first.unguardedReads + finalizer.unguardedReads,
+    allowedToolCalls: first.allowedToolCalls + finalizer.allowedToolCalls,
+    observeFinalization: recovered ? "recovered" : "failed",
   };
 }
 

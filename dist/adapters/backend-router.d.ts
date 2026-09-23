@@ -172,7 +172,10 @@ export declare class BackendRouter {
      */
     private openCodeCommandSpec;
     /** The agent spec for a role, carrying the generated OpenCode configuration. */
-    agentSpecFor(role: RoleName): AcpAgentSpec;
+    agentSpecFor(role: RoleName, overrides?: {
+        toolless?: boolean;
+        maxSteps?: number;
+    }): AcpAgentSpec;
     /**
      * Prove the guard is live before any role is allowed onto OpenCode.
      *

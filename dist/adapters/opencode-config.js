@@ -171,6 +171,9 @@ export function buildOpenCodeConfig(input = {}) {
             tools[tool] = false;
         config.tools = tools;
     }
+    if (typeof input.maxSteps === "number" && Number.isFinite(input.maxSteps) && input.maxSteps >= 1) {
+        config.agent = { build: { steps: Math.floor(input.maxSteps) } };
+    }
     if (input.provider && Object.keys(input.provider).length > 0)
         config.provider = input.provider;
     if (input.model)

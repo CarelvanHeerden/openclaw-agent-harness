@@ -332,6 +332,52 @@ async function runTurn(id, sessionId) {
       return reply(id, { stopReason: "end_turn" });
     }
 
+    // rc.13 observe recovery: the exploratory turn performs a read but ends
+    // with finish_reason=tool-calls and no assistant text. A resumed,
+    // tool-disabled finalization prompt then emits the required envelope.
+    case "observe-empty-then-final": {
+      const asked = String(params_last?.prompt?.[0]?.text ?? "");
+      if (/FINALIZATION ONLY/.test(asked)) {
+        update(sessionId, {
+          sessionUpdate: "agent_message_chunk",
+          content: { text: '{"status":"pass","findings":[],"bindings":[],"blockers":[]}' },
+        });
+        return reply(id, { stopReason: "end_turn", usage: { inputTokens: 3, outputTokens: 8 } });
+      }
+      await ask(sessionId, { kind: "read", title: "read", locations: [], rawInput: {} });
+      return reply(id, { stopReason: "end_turn", usage: { inputTokens: 40, outputTokens: 0 } });
+    }
+
+    case "observe-max-steps-then-final": {
+      const asked = String(params_last?.prompt?.[0]?.text ?? "");
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          text: /FINALIZATION ONLY/.test(asked)
+            ? '{"status":"pass","findings":[],"bindings":[],"blockers":[]}'
+            : "The maximum number of steps allowed for this agent has been reached. Work so far: inspected files.",
+        },
+      });
+      return reply(id, { stopReason: "end_turn", usage: { inputTokens: 4, outputTokens: 8 } });
+    }
+
+    // Same initial failure, but even the forced finalizer emits no text. The
+    // harness must report persistent failure after this one continuation.
+    case "observe-empty-persistent": {
+      const asked = String(params_last?.prompt?.[0]?.text ?? "");
+      if (!/FINALIZATION ONLY/.test(asked)) {
+        await ask(sessionId, { kind: "read", title: "read", locations: [], rawInput: {} });
+      }
+      return reply(id, { stopReason: "end_turn", usage: { inputTokens: 4, outputTokens: 0 } });
+    }
+
+    case "observe-structured-success":
+      update(sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { text: '{"status":"pass","findings":[],"bindings":[],"blockers":[]}' },
+      });
+      return reply(id, { stopReason: "end_turn", usage: { inputTokens: 4, outputTokens: 8 } });
+
     // ---- v2.0.0 M6: capability-probe scenarios ----
 
     // A correctly configured agent: asks before writing, honours the refusal.

@@ -159,6 +159,15 @@ export interface OpenCodeConfigInput {
    * `buildOpenCodeConfig`: both are set anyway.
    */
   toolless?: boolean;
+  /**
+   * Maximum model/tool-loop steps for the default `build` agent.
+   *
+   * OpenCode 1.18.23 otherwise defaults this to Infinity. On the final step it
+   * appends its MAX_STEPS_PROMPT, which requires a text-only summary. The
+   * harness uses this for bounded observe workers and their one-step,
+   * tool-disabled finalizer; mutate workers keep the upstream default.
+   */
+  maxSteps?: number;
 }
 
 /**
@@ -193,6 +202,10 @@ export function buildOpenCodeConfig(input: OpenCodeConfigInput = {}): Record<str
     const tools: Record<string, boolean> = {};
     for (const tool of OPENCODE_TOOL_IDS) tools[tool] = false;
     config.tools = tools;
+  }
+
+  if (typeof input.maxSteps === "number" && Number.isFinite(input.maxSteps) && input.maxSteps >= 1) {
+    config.agent = { build: { steps: Math.floor(input.maxSteps) } };
   }
 
   if (input.provider && Object.keys(input.provider).length > 0) config.provider = input.provider;

@@ -165,6 +165,8 @@ export interface WorkerResult {
     /** False means a zero cost is unknown accounting, not a free call. */
     usageMeasured?: boolean;
     usageSource?: string;
+    /** ACP observe-only finalization recovery result. */
+    observeFinalization?: "recovered" | "failed";
 }
 export interface WorkerDeps {
     config: HarnessConfig;
@@ -240,6 +242,7 @@ export interface WorkerDeps {
         providerCumulativeCostUsd?: number;
         providerCostBaselineUsd?: number;
         providerCostCurrency?: string;
+        observeFinalization?: "recovered" | "failed";
     }>;
     /**
      * Injected git operations. Wraps `git -C <worktree>` calls.

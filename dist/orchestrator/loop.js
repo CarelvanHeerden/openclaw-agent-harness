@@ -41,6 +41,15 @@ class AccountingPersistenceError extends Error {
     }
 }
 /**
+ * Any ACP observe finalization is terminal for this logical attempt. The
+ * adapter already spent the one safe, tool-disabled continuation; if its text
+ * is malformed, validation must fail closed rather than resume with tools and
+ * repeat the expensive exploration that the finalizer exists to stop.
+ */
+export function observeProtocolRetryAllowed(result) {
+    return result.observeFinalization === undefined;
+}
+/**
  * rc.2: may a session adopt the worktree its stored plan names?
  *
  * Returns a human-readable reason it may NOT, or `null` when every condition
@@ -4713,6 +4722,7 @@ export class OrchestratorLoop {
                             return;
                         }
                         while (((!st.observeContract && observeReportIsNarration(result.finalMessage)) || observeHasNoEvidence() || !structuredObserveOk) &&
+                            observeProtocolRetryAllowed(result) &&
                             this.deps.config.loop.worker_protocol_retry_enabled !== false &&
                             observeRetries < observeMaxAttempts - 1) {
                             const observeFailureFingerprint = createHash("sha256")

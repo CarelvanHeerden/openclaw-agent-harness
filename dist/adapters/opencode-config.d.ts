@@ -107,6 +107,15 @@ export interface OpenCodeConfigInput {
      * `buildOpenCodeConfig`: both are set anyway.
      */
     toolless?: boolean;
+    /**
+     * Maximum model/tool-loop steps for the default `build` agent.
+     *
+     * OpenCode 1.18.23 otherwise defaults this to Infinity. On the final step it
+     * appends its MAX_STEPS_PROMPT, which requires a text-only summary. The
+     * harness uses this for bounded observe workers and their one-step,
+     * tool-disabled finalizer; mutate workers keep the upstream default.
+     */
+    maxSteps?: number;
 }
 /**
  * Build the configuration document.

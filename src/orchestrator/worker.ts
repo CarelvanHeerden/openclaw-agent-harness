@@ -181,6 +181,8 @@ export interface WorkerResult {
   /** False means a zero cost is unknown accounting, not a free call. */
   usageMeasured?: boolean;
   usageSource?: string;
+  /** ACP observe-only finalization recovery result. */
+  observeFinalization?: "recovered" | "failed";
 }
 
 export interface WorkerDeps {
@@ -237,6 +239,7 @@ export interface WorkerDeps {
   providerCumulativeCostUsd?: number;
   providerCostBaselineUsd?: number;
   providerCostCurrency?: string;
+  observeFinalization?: "recovered" | "failed";
   }>;
 
   /**
@@ -768,6 +771,7 @@ export async function runWorker(
     providerCumulativeCostUsd: sdkResult.providerCumulativeCostUsd,
     providerCostBaselineUsd: sdkResult.providerCostBaselineUsd,
     providerCostCurrency: sdkResult.providerCostCurrency,
+    observeFinalization: sdkResult.observeFinalization,
     actualPromptChars: actualPrompt.length,
     actualPromptSha256: createHash("sha256").update(actualPrompt).digest("hex"),
   };

@@ -188,7 +188,21 @@ export interface RunWorkerAcpResult {
      * acts, so within a real session every tool call passes through here.
      */
     allowedToolCalls: number;
+    /**
+     * Observe-only recovery state. `failed` means a bounded tool-using turn ended
+     * with no assistant text and the subsequent tool-disabled continuation also
+     * emitted no final envelope. Callers must fail closed rather than resume the
+     * exploratory session again.
+     */
+    observeFinalization?: "recovered" | "failed";
 }
+/**
+ * OpenCode defaults agent.steps to Infinity. Twelve model/tool-loop steps is
+ * deliberately enough for a focused repository probe while bounding the
+ * failure seen in ba4f199d, where an observe worker consumed the context window
+ * on reads and still ended with no assistant text.
+ */
+export declare const OBSERVE_ACP_MAX_STEPS = 12;
 /**
  * Thrown when the agent asks us to perform something we declined in
  * `initialize`.
@@ -211,6 +225,22 @@ export declare class AcpClientCapabilityError extends Error {
  * enforced here by aborting the child.
  */
 export declare function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorkerAcpResult>;
+/**
+ * Run a bounded observe turn and recover one specific ACP/OpenCode failure:
+ * an otherwise normal `end_turn` containing tool activity but no assistant
+ * text. OpenCode reports that shape when its last model step finishes with
+ * `finish_reason=tool-calls`; ACP correctly has no text to invent from it.
+ *
+ * Recovery is a single resumed continuation under a different OpenCode config:
+ * all tools disabled and `agent.build.steps=1`. If that continuation is also
+ * empty, the result is marked `observeFinalization: "failed"`; callers must
+ * not spend another unconstrained exploration retry on the same session.
+ */
+export declare function runObserveWorkerAcp(params: {
+    initial: RunWorkerAcpParams;
+    finalizerAgent: AcpAgentSpec;
+    finalizerTimeoutSeconds?: number;
+}): Promise<RunWorkerAcpResult>;
 /**
  * How to read the usage numbers on a result.
  *

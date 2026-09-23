@@ -43,7 +43,7 @@ import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { CredentialVault, VAULT_KEY_ENV } from "./adapters/credential-vault.js";
 import { buildBackendRouter } from "./adapters/backend-router.js";
-import { runWorkerAcp } from "./adapters/acp.js";
+import { OBSERVE_ACP_MAX_STEPS, runObserveWorkerAcp, runWorkerAcp } from "./adapters/acp.js";
 import { buildAcpGuard } from "./safety/bash-guard.js";
 import { focusedWorkerAcpGuard } from "./safety/focused-worker-acp-guard.js";
 import { ROLE_NAMES } from "./adapters/backend.js";
@@ -876,8 +876,10 @@ export function bootstrapHarnessSync(api) {
                         allow_git_push: config.safety.allow_git_push,
                         allow_network_commands: config.safety.allow_network_commands,
                     });
-                    const r = await runWorkerAcp({
-                        agent: backendRouter.agentSpecFor("worker"),
+                    const acpParams = {
+                        agent: backendRouter.agentSpecFor("worker", {
+                            maxSteps: subTask.taskMode === "observe" ? OBSERVE_ACP_MAX_STEPS : undefined,
+                        }),
                         worktreePath: params.worktreePath,
                         systemPrompt: params.systemPrompt,
                         userMessage: params.userMessage,
@@ -904,7 +906,17 @@ export function bootstrapHarnessSync(api) {
                         // env, so this is defence in depth rather than the only cover.
                         secretToken: await resolveGitToken(resolution).catch(() => ""),
                         logger: api.logger,
-                    });
+                    };
+                    const r = subTask.taskMode === "observe"
+                        ? await runObserveWorkerAcp({
+                            initial: acpParams,
+                            // One final model step, with no tools registered. This is a
+                            // different child/config even though it resumes the same ACP
+                            // session, so an empty tool-only end turn cannot re-enter
+                            // unconstrained repository exploration.
+                            finalizerAgent: backendRouter.agentSpecFor("worker", { toolless: true, maxSteps: 1 }),
+                        })
+                        : await runWorkerAcp(acpParams);
                     // Priced through the router so a provider that reports tokens
                     // without a cost is billed off the catalogue rather than recorded
                     // as a free turn.
@@ -917,6 +929,7 @@ export function bootstrapHarnessSync(api) {
                         providerCumulativeCostUsd: r.cumulativeCostUsd,
                         providerCostBaselineUsd: r.costBaselineUsd,
                         providerCostCurrency: r.costCurrency,
+                        observeFinalization: r.observeFinalization,
                     };
                 },
                 gitBaseSha: (wt) => git.baseSha(wt),

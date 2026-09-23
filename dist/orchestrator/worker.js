@@ -382,6 +382,7 @@ firstTokenTimeoutSecondsOverride, onActivity) {
         providerCumulativeCostUsd: sdkResult.providerCumulativeCostUsd,
         providerCostBaselineUsd: sdkResult.providerCostBaselineUsd,
         providerCostCurrency: sdkResult.providerCostCurrency,
+        observeFinalization: sdkResult.observeFinalization,
         actualPromptChars: actualPrompt.length,
         actualPromptSha256: createHash("sha256").update(actualPrompt).digest("hex"),
     };
