@@ -30,10 +30,13 @@ export interface MergeInspection {
 }
 export interface MergeProvider {
     inspect(input: {
+        runId: string;
         repository: string;
         prNumber: number;
+        readinessDigest: string;
     }): Promise<MergeInspection>;
     merge(input: {
+        runId: string;
         repository: string;
         prNumber: number;
         expectedHeadSha: string;
@@ -42,6 +45,7 @@ export interface MergeProvider {
         mergeSha: string;
     }>;
     verifyMerged(input: {
+        runId: string;
         repository: string;
         prNumber: number;
         mergeSha: string;
@@ -71,6 +75,8 @@ export declare class InternalMergeService {
     private readonly repository;
     private readonly provider;
     private readonly now;
+    private recoveryInFlight;
+    private static readonly MAX_RECOVERY_ATTEMPTS;
     constructor(db: DatabaseSync, repository: ControlRepository, provider: MergeProvider, now?: () => number);
     registerAuthorizationAndIntent(a: VerifiedMergeAuthorization, now?: number): string;
     registerAuthorization(a: VerifiedMergeAuthorization): void;

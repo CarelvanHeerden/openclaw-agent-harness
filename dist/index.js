@@ -123,9 +123,8 @@ export function bootstrapHarnessSync(api) {
                 timeoutSeconds: 120,
                 apiKey: await apiKeyForRole("crystalliser"),
                 concepts: ctxConcepts,
-                // beta.80: repo-only invariant + bimodality self-report prompt gates.
+                // Repo-only invariant and internal conservative ambiguity resolution.
                 repoOnlyInvariant: config.brief.repo_only_invariant,
-                bimodalClarify: config.brief.bimodal_clarify,
                 grounding: groundingFrom(config),
             }),
         }, concepts);
@@ -135,7 +134,7 @@ export function bootstrapHarnessSync(api) {
         // `costUsd`/`tokensIn`/`tokensOut`; the cost was measured and then dropped
         // here, at the wiring, because `CrystalliserDeps` typed the callables as
         // returning the bare result. Every crystallise pass therefore reported
-        // zero — including the reject and clarify paths, which still pay for a
+        // zero — including reject paths, which still pay for a
         // classifier call. `spend` now carries it through.
         const costUsd = result.spend.costUsd;
         if (result.spend.partial) {
@@ -146,9 +145,7 @@ export function bootstrapHarnessSync(api) {
         }
         return result.kind === "brief"
             ? { kind: "brief", brief: result.brief, costUsd }
-            : result.kind === "clarify"
-                ? { kind: "clarify", question: result.question, reason: result.reason, costUsd }
-                : { kind: "reject", intent: result.intent, reason: result.reason ?? "", costUsd };
+            : { kind: "reject", intent: result.intent, reason: result.reason ?? "", costUsd };
     };
     const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -1651,15 +1648,14 @@ export function bootstrapHarnessSync(api) {
                     : null,
     });
     const controlCredentialRouteDigest = (route) => createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
-    const resolveBoundControlCredential = async (repository, prNumber, requesterId) => {
-        const proposal = state.db.prepare(`SELECT p.credential_route_digest FROM control_proposals p JOIN control_runs r ON r.id=p.run_id WHERE p.pr_number=? AND r.repository=? AND r.requester_id=?`).get(prNumber, repository, requesterId);
-        if (!proposal?.credential_route_digest)
+    const resolveBoundControlCredential = async (runId, repository, prNumber, requesterId) => {
+        const proposal = state.db.prepare(`SELECT p.credential_route_digest,r.state,r.version,r.repository,r.requester_id,p.pr_number FROM control_proposals p JOIN control_runs r ON r.id=p.run_id WHERE r.id=?`).get(runId);
+        if (!proposal?.credential_route_digest || proposal.repository !== repository || proposal.requester_id !== requesterId || proposal.pr_number !== prNumber)
             throw new Error("credential_route_binding_missing");
         const route = pat.resolve({ slackUserId: requesterId, gitHubUser: repository.split("/")[0], repoFullName: repository });
         if (controlCredentialRouteDigest(route) !== proposal.credential_route_digest) {
-            const run = state.db.prepare(`SELECT r.id,r.state,r.version FROM control_runs r JOIN control_proposals p ON p.run_id=r.id WHERE p.pr_number=? AND r.repository=?`).get(prNumber, repository);
-            if (run && (run.state === "pr_ready" || run.state === "awaiting_merge"))
-                controlRepository.transition({ runId: run.id, expectedVersion: run.version, to: "failed", actor: "credential_guard", reason: "credential_route_changed", terminalCode: "credential_escalation", at: Date.now() });
+            if (proposal.state === "pr_ready" || proposal.state === "awaiting_merge")
+                controlRepository.transition({ runId, expectedVersion: proposal.version, to: "failed", actor: "credential_guard", reason: "credential_route_changed", terminalCode: "credential_escalation", at: Date.now() });
             throw new Error("credential_route_changed");
         }
         return { route, token: await resolveGitToken(route) };

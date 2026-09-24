@@ -451,12 +451,6 @@ export declare function runCrystalliserSdk(params: {
      */
     repoOnlyInvariant?: boolean;
     /**
-     * beta.80 (F2): when true (default), the crystalliser is told to SELF-REPORT
-     * competing readings (interpretations) and, when >=2 buildable readings
-     * exist, populate clarificationNeeded instead of guessing one.
-     */
-    bimodalClarify?: boolean;
-    /**
      * rc.2: the verified facts the crystalliser may reason from, and the explicit
      * statement that it knows nothing about the filesystem. See
      * `renderGroundingBlock`.

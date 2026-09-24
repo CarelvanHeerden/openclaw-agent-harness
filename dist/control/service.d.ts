@@ -69,10 +69,6 @@ export interface ControlServiceDeps {
         brief: CrystallisedBrief;
         costUsd?: number;
     } | {
-        kind: "clarify";
-        question: string;
-        costUsd?: number;
-    } | {
         kind: "reject";
         reason: string;
         costUsd?: number;
@@ -113,6 +109,7 @@ export declare class ControlPlaneService {
     private persistDispatchCompletion;
     private recoverDispatches;
     private proposal;
+    private assertProposalConsistency;
     private requireAttestation;
     private consumeAttestation;
     private confirmBindingDigest;

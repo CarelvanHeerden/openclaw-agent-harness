@@ -12,7 +12,7 @@ export interface BoundControlCredential {
 }
 export interface ControlMergeProviderDependencies {
     db: DatabaseSync;
-    resolveCredential(repository: string, prNumber: number, requesterId: string): Promise<BoundControlCredential>;
+    resolveCredential(runId: string, repository: string, prNumber: number, requesterId: string): Promise<BoundControlCredential>;
     getPullRequest(input: {
         repoFullName: string;
         prNumber: number;

@@ -60,7 +60,7 @@ test("production control merge provider recovers the exact provider merge SHA af
     first.db.prepare("UPDATE control_engine_merge_intents SET status='merging' WHERE change_id=? AND status='authorized'").run(seeded.run.id);
     first.db.prepare("UPDATE control_merge_authorizations SET consumed_at=100 WHERE id=? AND consumed_at IS NULL").run(seeded.auth.id);
     first.db.exec("COMMIT");
-    const mergeResult = await provider.merge({ repository, prNumber: 9, expectedHeadSha: seeded.head, idempotencyKey: "crash-window" });
+    const mergeResult = await provider.merge({ runId: seeded.run.id, repository, prNumber: 9, expectedHeadSha: seeded.head, idempotencyKey: "crash-window" });
     assert.equal(mergeResult.mergeSha, exactMergeSha);
     first.close();
 
@@ -72,7 +72,7 @@ test("production control merge provider recovers the exact provider merge SHA af
         getCiSnapshot: async () => ({ state: "success", statusReadable: true, checksReadable: true, statusState: "success", statusCount: 1, checkTotal: 1, checkIncomplete: 0, checkFailed: 0, checkPassed: 1, checkNames: ["test"], reason: "", permanentDenial: "", checksSource: "check_runs" }),
         mergePullRequest: async () => { throw new Error("recovery must not merge again"); },
       });
-      const inspection = await recoveredProvider.inspect({ repository, prNumber: 9 });
+      const inspection = await recoveredProvider.inspect({ runId: seeded.run.id, repository, prNumber: 9, readinessDigest: recovered.db.prepare("SELECT readiness_digest FROM control_proposals WHERE run_id=?").get(seeded.run.id).readiness_digest });
       assert.equal(inspection.mergeSha, exactMergeSha);
       assert.notEqual(inspection.mergeSha, unrelatedSha);
       await new InternalMergeService(recovered.db, new ControlRepository(recovered.db), recoveredProvider, () => 101).recoverPending();

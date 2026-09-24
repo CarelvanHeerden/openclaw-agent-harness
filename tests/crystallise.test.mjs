@@ -30,16 +30,27 @@ test("crystallise: dev_task path returns a validated brief",
     assert.deepEqual(result.brief, brief);
   });
 
-test("crystallise: clarify path returns a question",
+test("crystallise: legacy ambiguity is resolved into one bounded brief",
   { skip: crystallisePrompt === null }, async () => {
+    const brief = {
+      title: "Apply the smallest reversible change",
+      motivation: "Resolve ambiguity internally without pausing the caller.",
+      acceptanceCriteria: ["The conservative implementation is covered by tests."],
+      filesLikelyTouched: [],
+      outOfScope: [],
+      riskLevel: "low",
+    };
     const result = await crystallisePrompt("hm", {
       config: {},
       logger: noopLogger,
       callClassifier: async () => ({ intent: "clarify", reason: "ambiguous", suggestedClarification: "Which repo?" }),
-      callCrystalliser: async () => { throw new Error("should not be called"); },
+      callCrystalliser: async (_request, classifier) => {
+        assert.equal(classifier.intent, "dev_task");
+        return brief;
+      },
     });
-    assert.equal(result.kind, "clarify");
-    assert.match(result.question, /Which repo/);
+    assert.equal(result.kind, "brief");
+    assert.deepEqual(result.brief, brief);
   });
 
 test("crystallise: not_dev is rejected without calling crystalliser",

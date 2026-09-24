@@ -225,8 +225,8 @@ export interface HarnessRuntime {
   /**
    * Classify + crystallise a raw request into a structured brief for the
    * internal execution path.
-   * Returns a discriminated union: a `brief` ready to run, a `clarify`
-   * question to put back to the requester, or a `reject` with reason.
+   * Returns a discriminated union: one confirmable `brief`, or a terminal
+   * `reject` for a non-change or unsafe request. Ambiguity is resolved internally.
    */
   crystallise: (
     userText: string,
@@ -240,16 +240,6 @@ export interface HarnessRuntime {
     concepts?: import("./crystallise/prompt-refiner.js").OkfConceptRef[],
   ) => Promise<
     | { kind: "brief"; brief: CrystallisedBrief; costUsd: number }
-    /**
-     * rc.2: `reason` is the machine-readable WHY, so a pause is auditable
-     * without parsing the question text.
-     */
-    | {
-        kind: "clarify";
-        question: string;
-        reason: import("./crystallise/clarification-guard.js").ClarificationReason;
-        costUsd: number;
-      }
     | { kind: "reject"; intent: "not_dev" | "unsafe"; reason: string; costUsd: number }
   >;
   /**
@@ -460,9 +450,8 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
           timeoutSeconds: 120,
           apiKey: await apiKeyForRole("crystalliser"),
           concepts: ctxConcepts,
-          // beta.80: repo-only invariant + bimodality self-report prompt gates.
+          // Repo-only invariant and internal conservative ambiguity resolution.
           repoOnlyInvariant: config.brief.repo_only_invariant,
-          bimodalClarify: config.brief.bimodal_clarify,
           grounding: groundingFrom(config),
         }),
       },
@@ -474,7 +463,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     // `costUsd`/`tokensIn`/`tokensOut`; the cost was measured and then dropped
     // here, at the wiring, because `CrystalliserDeps` typed the callables as
     // returning the bare result. Every crystallise pass therefore reported
-    // zero — including the reject and clarify paths, which still pay for a
+    // zero — including reject paths, which still pay for a
     // classifier call. `spend` now carries it through.
     const costUsd = result.spend.costUsd;
     if (result.spend.partial) {
@@ -485,9 +474,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     }
     return result.kind === "brief"
       ? { kind: "brief" as const, brief: result.brief, costUsd }
-      : result.kind === "clarify"
-        ? { kind: "clarify" as const, question: result.question, reason: result.reason, costUsd }
-        : { kind: "reject" as const, intent: result.intent as "not_dev" | "unsafe", reason: result.reason ?? "", costUsd };
+      : { kind: "reject" as const, intent: result.intent as "not_dev" | "unsafe", reason: result.reason ?? "", costUsd };
   };
 
   const dbPath = config.storage.state_db_path.replace(/^~/, process.env.HOME ?? "");
@@ -2047,13 +2034,12 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   });
   const controlCredentialRouteDigest = (route: ReturnType<typeof pat.resolve>): string =>
     createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
-  const resolveBoundControlCredential = async (repository: string, prNumber: number, requesterId: string) => {
-    const proposal = state.db.prepare(`SELECT p.credential_route_digest FROM control_proposals p JOIN control_runs r ON r.id=p.run_id WHERE p.pr_number=? AND r.repository=? AND r.requester_id=?`).get(prNumber, repository, requesterId) as { credential_route_digest?: string } | undefined;
-    if (!proposal?.credential_route_digest) throw new Error("credential_route_binding_missing");
+  const resolveBoundControlCredential = async (runId: string, repository: string, prNumber: number, requesterId: string) => {
+    const proposal = state.db.prepare(`SELECT p.credential_route_digest,r.state,r.version,r.repository,r.requester_id,p.pr_number FROM control_proposals p JOIN control_runs r ON r.id=p.run_id WHERE r.id=?`).get(runId) as { credential_route_digest?: string;state:string;version:number;repository:string;requester_id:string;pr_number:number|null } | undefined;
+    if (!proposal?.credential_route_digest || proposal.repository !== repository || proposal.requester_id !== requesterId || proposal.pr_number !== prNumber) throw new Error("credential_route_binding_missing");
     const route = pat.resolve({ slackUserId: requesterId, gitHubUser: repository.split("/")[0]!, repoFullName: repository });
     if (controlCredentialRouteDigest(route) !== proposal.credential_route_digest) {
-      const run = state.db.prepare(`SELECT r.id,r.state,r.version FROM control_runs r JOIN control_proposals p ON p.run_id=r.id WHERE p.pr_number=? AND r.repository=?`).get(prNumber, repository) as { id:string;state:string;version:number } | undefined;
-      if (run && (run.state === "pr_ready" || run.state === "awaiting_merge")) controlRepository.transition({ runId: run.id, expectedVersion: run.version, to: "failed", actor: "credential_guard", reason: "credential_route_changed", terminalCode: "credential_escalation", at: Date.now() });
+      if (proposal.state === "pr_ready" || proposal.state === "awaiting_merge") controlRepository.transition({ runId, expectedVersion: proposal.version, to: "failed", actor: "credential_guard", reason: "credential_route_changed", terminalCode: "credential_escalation", at: Date.now() });
       throw new Error("credential_route_changed");
     }
     return { route, token: await resolveGitToken(route) };

@@ -253,6 +253,54 @@ CREATE TABLE IF NOT EXISTS control_security_receipts (
 CREATE INDEX IF NOT EXISTS idx_control_security_receipts_run ON control_security_receipts(run_id, id DESC);
 `,
   }),
+  Object.freeze({
+    id: "20260924_005_merge_run_integrity",
+    sql: `
+ALTER TABLE control_readiness_attestations RENAME TO control_readiness_attestations_old;
+CREATE TABLE control_readiness_attestations (
+  content_digest TEXT NOT NULL,
+  run_id TEXT NOT NULL REFERENCES control_runs(id) ON DELETE CASCADE,
+  generation INTEGER NOT NULL, policy_version TEXT NOT NULL, ready INTEGER NOT NULL CHECK (ready IN (0,1)),
+  verified_sha TEXT, input_json TEXT NOT NULL, failures_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id, content_digest), UNIQUE(run_id, generation)
+);
+INSERT INTO control_readiness_attestations SELECT content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at FROM control_readiness_attestations_old;
+DROP TABLE control_readiness_attestations_old;
+CREATE INDEX idx_control_readiness_latest ON control_readiness_attestations(run_id, generation DESC);
+
+CREATE UNIQUE INDEX uq_control_runs_merge_identity ON control_runs(id, repository, base_ref);
+CREATE UNIQUE INDEX uq_control_proposals_merge_binding ON control_proposals(run_id, pr_number, published_sha, readiness_digest);
+
+ALTER TABLE control_engine_merge_intents RENAME TO control_engine_merge_intents_old2;
+ALTER TABLE control_merge_authorizations RENAME TO control_merge_authorizations_old;
+CREATE TABLE control_merge_authorizations (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, actor_identity TEXT NOT NULL, conversation_identity TEXT NOT NULL,
+  repository_identity TEXT NOT NULL, base_ref TEXT NOT NULL, pr_number INTEGER NOT NULL, expected_head_sha TEXT NOT NULL,
+  readiness_digest TEXT NOT NULL, binding_digest TEXT NOT NULL, nonce TEXT NOT NULL UNIQUE, issued_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL, consumed_at INTEGER, UNIQUE(run_id), UNIQUE(repository_identity, pr_number),
+  UNIQUE(run_id, id, expected_head_sha),
+  FOREIGN KEY(run_id, repository_identity, base_ref) REFERENCES control_runs(id, repository, base_ref) ON DELETE CASCADE,
+  FOREIGN KEY(run_id, pr_number, expected_head_sha, readiness_digest) REFERENCES control_proposals(run_id, pr_number, published_sha, readiness_digest) ON DELETE CASCADE
+);
+INSERT INTO control_merge_authorizations
+  SELECT a.id,a.run_id,a.actor_identity,a.conversation_identity,a.repository_identity,a.base_ref,a.pr_number,a.expected_head_sha,
+         p.readiness_digest,a.binding_digest,a.nonce,a.issued_at,a.expires_at,a.consumed_at
+  FROM control_merge_authorizations_old a JOIN control_proposals p ON p.run_id=a.run_id
+  WHERE p.pr_number=a.pr_number AND p.published_sha=a.expected_head_sha AND p.readiness_digest IS NOT NULL;
+CREATE TABLE control_engine_merge_intents (
+  id TEXT PRIMARY KEY, change_id TEXT NOT NULL, authorization_id TEXT NOT NULL UNIQUE, expected_head_sha TEXT NOT NULL,
+  merge_provider_idempotency TEXT NOT NULL UNIQUE, status TEXT NOT NULL CHECK (status IN ('authorized','merging','merged','merge_failed','verification_failed')),
+  provider_merge_sha TEXT, recovery_attempts INTEGER NOT NULL DEFAULT 0 CHECK(recovery_attempts >= 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(change_id),
+  FOREIGN KEY(change_id, authorization_id, expected_head_sha) REFERENCES control_merge_authorizations(run_id, id, expected_head_sha) ON DELETE CASCADE
+);
+INSERT INTO control_engine_merge_intents(id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,provider_merge_sha,recovery_attempts,created_at,updated_at)
+  SELECT id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,provider_merge_sha,0,created_at,updated_at FROM control_engine_merge_intents_old2;
+DROP TABLE control_engine_merge_intents_old2;
+DROP TABLE control_merge_authorizations_old;
+CREATE INDEX idx_control_merge_authorizations_run ON control_merge_authorizations(run_id, issued_at);
+UPDATE control_metadata SET value='5',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
+`,
+  }),
 ]);
 
 function terminaliseLegacyControlChanges(db: DatabaseSync): void {

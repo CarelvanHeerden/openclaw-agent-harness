@@ -57,6 +57,13 @@ const retiredPackagePatterns = [
   /offers? a resumable continue-watching/gi,
   /pause for an operator to confirm/gi,
   /hard `?clarify`? pause-and-wait/gi,
+  /PAUSE[-_ ]AND[-_ ]WAIT/gi,
+  /pause-and-wait/gi,
+  /kind\s*:\s*["']clarify["']/g,
+  /\bbimodal_clarify\b/g,
+  /\bbimodal_min_interpretations\b/g,
+  /\bproposal_not_confirmable\b/g,
+  /Unresolved change request/g,
 ];
 
 function filesUnder(dir) {
@@ -149,6 +156,8 @@ test("public config and Slack deployment expose only outbound control-plane sett
   for (const publicSchema of [schema, manifest]) {
     assert.equal(publicSchema.properties.slack.properties.listener_enabled, undefined);
     assert.equal(publicSchema.properties.slack.properties.reactions, undefined);
+    assert.equal(publicSchema.properties.brief.properties.bimodal_clarify, undefined);
+    assert.equal(publicSchema.properties.brief.properties.bimodal_min_interpretations, undefined);
     for (const key of goneLoop) assert.equal(publicSchema.properties.loop.properties[key], undefined, key);
   }
   const slackManifest = read("deploy/slack-app-manifest.yaml");

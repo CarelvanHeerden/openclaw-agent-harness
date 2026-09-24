@@ -333,14 +333,21 @@ test("the crystallise pass reports what it spent, on every exit", async () => {
   assert.equal(rejected.kind, "reject");
   assert.equal(rejected.spend.costUsd, 0.004, "a rejected request reported as free");
 
-  // So did the clarify path.
-  const clarified = await crystallisePrompt("x", {
+  // Legacy ambiguous classifier output is resolved internally and still reports
+  // both calls rather than exposing a clarification pause.
+  const resolved = await crystallisePrompt("x", {
     ...base,
-    callClassifier: async () => ({ intent: "clarify", reason: "", suggestedClarification: "which repo?", costUsd: 0.003 }),
-    callCrystalliser: async () => { throw new Error("must not be called"); },
+    callClassifier: async () => ({ intent: "clarify", reason: "ambiguous repository", suggestedClarification: "which repo?", costUsd: 0.003 }),
+    callCrystalliser: async () => ({
+      title: "Apply the conservative change",
+      motivation: "Resolve the bounded ambiguity without pausing the caller.",
+      acceptanceCriteria: ["The smallest reversible change is implemented."],
+      filesLikelyTouched: [], outOfScope: [], riskLevel: "low",
+      costUsd: 0.007,
+    }),
   });
-  assert.equal(clarified.kind, "clarify");
-  assert.equal(clarified.spend.costUsd, 0.003);
+  assert.equal(resolved.kind, "brief");
+  assert.equal(resolved.spend.costUsd, 0.01);
 });
 
 test("a successful crystallise sums the classifier AND the brief", async () => {

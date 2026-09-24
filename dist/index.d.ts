@@ -154,8 +154,8 @@ export interface HarnessRuntime {
     /**
      * Classify + crystallise a raw request into a structured brief for the
      * internal execution path.
-     * Returns a discriminated union: a `brief` ready to run, a `clarify`
-     * question to put back to the requester, or a `reject` with reason.
+     * Returns a discriminated union: one confirmable `brief`, or a terminal
+     * `reject` for a non-change or unsafe request. Ambiguity is resolved internally.
      */
     crystallise: (userText: string, 
     /**
@@ -168,16 +168,6 @@ export interface HarnessRuntime {
     concepts?: import("./crystallise/prompt-refiner.js").OkfConceptRef[]) => Promise<{
         kind: "brief";
         brief: CrystallisedBrief;
-        costUsd: number;
-    }
-    /**
-     * rc.2: `reason` is the machine-readable WHY, so a pause is auditable
-     * without parsing the question text.
-     */
-     | {
-        kind: "clarify";
-        question: string;
-        reason: import("./crystallise/clarification-guard.js").ClarificationReason;
         costUsd: number;
     } | {
         kind: "reject";

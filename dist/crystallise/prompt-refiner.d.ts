@@ -6,7 +6,6 @@
  *
  *   1. Classifier (Haiku) decides intent:
  *      - "dev_task"     : real dev work, proceed to crystallisation.
- *      - "clarify"      : ambiguous, ask the user a question.
  *      - "not_dev"      : chat / non-dev request, decline politely.
  *      - "unsafe"       : mentions secrets, deletion, etc.; refuse.
  *
@@ -19,12 +18,11 @@
  * OpenClaw before execution begins.
  */
 import type { HarnessConfig } from "../config.js";
-import { type ClarificationGrounding, type ClarificationReason, type VerifiedContinuation } from "./clarification-guard.js";
-export type ClassifierIntent = "dev_task" | "clarify" | "not_dev" | "unsafe";
+import { type ClarificationGrounding, type VerifiedContinuation } from "./clarification-guard.js";
+export type ClassifierIntent = "dev_task" | "not_dev" | "unsafe";
 export interface ClassifierResult {
     intent: ClassifierIntent;
     reason: string;
-    suggestedClarification?: string;
 }
 /**
  * A single OKF concept referenced by the requester or auto-attached by the
@@ -132,24 +130,6 @@ export interface CrystallisedBrief {
      * `JSON.stringify(brief)`, reviewer independence goes with it.
      */
     repoScoutReport?: string;
-    /**
-     * The crystalliser's distinct readings that would produce materially
-     * different diffs. OpenClaw resolves this before confirmation; a confirmed
-     * run never exposes a new interaction state. Absent when unambiguous.
-     */
-    interpretations?: {
-        reading: string;
-        whatDiffers: string;
-    }[];
-    /**
-     * When crystallisation finds competing readings, this carries the bounded
-     * question OpenClaw must resolve before a change can be prepared. No
-     * confirmed control-plane session is started with this field unresolved.
-     */
-    clarificationNeeded?: {
-        question: string;
-        options: string[];
-    };
 }
 export interface RepoConvention {
     /** Source label, e.g. ".cursor/rules/keep-okf-current.mdc", "CONTRIBUTING.md", or "package.json#scripts". */
@@ -232,11 +212,6 @@ concepts?: OkfConceptRef[]): Promise<{
     kind: "brief";
     brief: CrystallisedBrief;
     classification: ClassifierResult;
-    spend: SpendTotals;
-} | {
-    kind: "clarify";
-    question: string;
-    reason: ClarificationReason;
     spend: SpendTotals;
 } | {
     kind: "reject";

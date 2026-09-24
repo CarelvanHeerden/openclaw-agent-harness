@@ -242,8 +242,6 @@ const DEFAULTS = {
         ingest_repo_conventions: true,
         convention_char_budget: 10000,
         repo_only_invariant: true,
-        bimodal_clarify: true,
-        bimodal_min_interpretations: 2,
         request_file_roots: [],
         request_file_max_bytes: 262144,
         confirm_before_spend: "always",

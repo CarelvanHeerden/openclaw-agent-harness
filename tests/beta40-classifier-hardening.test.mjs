@@ -145,6 +145,7 @@ test("beta135: the retry preview cannot describe itself as missing user input", 
   assert.equal(calls.length, 2);
   assert.doesNotMatch(calls[1].userMessage, /brief truncated/i);
   assert.match(calls[1].userMessage, /retained.*complete request/is);
-  assert.match(calls[1].userMessage, /NOT missing user input/);
-  assert.match(calls[1].systemPrompt, /Do NOT choose clarify merely because/i);
+  assert.doesNotMatch(calls[1].userMessage, /missing user input/i);
+  assert.match(calls[1].systemPrompt, /OpenClaw resolves them internally into one conservative, bounded repository brief/i);
+  assert.doesNotMatch(calls[1].systemPrompt, /choose clarify|ask the user|pause and wait/i);
 });

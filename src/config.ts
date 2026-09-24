@@ -234,18 +234,6 @@ export interface BriefConfig {
    */
   repo_only_invariant: boolean;
   /**
-   * beta.80 (F2): when true (default), the crystalliser self-reports competing
-   * readings of a brief and, when >= bimodal_min_interpretations distinct
-   * readings (or an explicit clarificationNeeded) exist, the run PAUSES for a
-   * hard clarify instead of guessing one reading. Set false to always proceed.
-   */
-  bimodal_clarify: boolean;
-  /**
-   * beta.80 (F2): how many distinct crystalliser interpretations force a
-   * clarify pause. Default 2.
-   */
-  bimodal_min_interpretations: number;
-  /**
    * beta.120 (brief fidelity): directories `harness_prepare_change`'s `requestPath` may
    * read a specification from. EMPTY BY DEFAULT, which disables file reads --
    * the harness holds GitHub tokens and a brief's contents reach model prompts
@@ -1859,8 +1847,6 @@ const DEFAULTS: HarnessConfig = {
     ingest_repo_conventions: true,
     convention_char_budget: 10000,
     repo_only_invariant: true,
-    bimodal_clarify: true,
-    bimodal_min_interpretations: 2,
     request_file_roots: [],
     request_file_max_bytes: 262144,
     confirm_before_spend: "always",

@@ -1064,18 +1064,6 @@
           "default": true,
           "description": "beta.80 (F1): the crystalliser is told the harness is a REPO tool. External-API side-effect acceptance criteria are reframed into 'build the code + a test', never 'perform the live call'. Live API calls are legitimate only as test/verify steps against code just written. Set false to restore the pre-beta.80 crystalliser prompt."
         },
-        "bimodal_clarify": {
-          "type": "boolean",
-          "default": true,
-          "description": "beta.80 (F2): the crystalliser self-reports competing readings of a brief; when >= bimodal_min_interpretations distinct readings (or an explicit clarificationNeeded) exist, the run PAUSES for a hard clarify (pause-and-wait, no session started) instead of guessing one reading. Set false to always proceed."
-        },
-        "bimodal_min_interpretations": {
-          "type": "integer",
-          "minimum": 2,
-          "maximum": 10,
-          "default": 2,
-          "description": "beta.80 (F2): how many distinct crystalliser interpretations force a clarify pause. Default 2."
-        },
         "request_file_roots": {
           "type": "array",
           "items": {
@@ -1218,7 +1206,7 @@
         "full_prompts": {
           "type": "boolean",
           "default": false,
-          "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
+          "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction \u2014 redaction on write is always applied."
         },
         "retention_days": {
           "type": "integer",

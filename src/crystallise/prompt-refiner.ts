@@ -6,7 +6,6 @@
  *
  *   1. Classifier (Haiku) decides intent:
  *      - "dev_task"     : real dev work, proceed to crystallisation.
- *      - "clarify"      : ambiguous, ask the user a question.
  *      - "not_dev"      : chat / non-dev request, decline politely.
  *      - "unsafe"       : mentions secrets, deletion, etc.; refuse.
  *
@@ -21,19 +20,16 @@
 
 import type { HarnessConfig } from "../config.js";
 import {
-  guardClarification,
   type ClarificationGrounding,
-  type ClarificationReason,
   type VerifiedContinuation,
 } from "./clarification-guard.js";
-import { renderRepoAmbiguityQuestion, resolveRepoAlias } from "./repo-alias.js";
+import { resolveRepoAlias } from "./repo-alias.js";
 
-export type ClassifierIntent = "dev_task" | "clarify" | "not_dev" | "unsafe";
+export type ClassifierIntent = "dev_task" | "not_dev" | "unsafe";
 
 export interface ClassifierResult {
   intent: ClassifierIntent;
   reason: string;
-  suggestedClarification?: string;
 }
 
 /**
@@ -143,18 +139,6 @@ export interface CrystallisedBrief {
    * `JSON.stringify(brief)`, reviewer independence goes with it.
    */
   repoScoutReport?: string;
-  /**
-   * The crystalliser's distinct readings that would produce materially
-   * different diffs. OpenClaw resolves this before confirmation; a confirmed
-   * run never exposes a new interaction state. Absent when unambiguous.
-   */
-  interpretations?: { reading: string; whatDiffers: string }[];
-  /**
-   * When crystallisation finds competing readings, this carries the bounded
-   * question OpenClaw must resolve before a change can be prepared. No
-   * confirmed control-plane session is started with this field unresolved.
-   */
-  clarificationNeeded?: { question: string; options: string[] };
 }
 
 export interface RepoConvention {
@@ -259,12 +243,11 @@ export async function crystallisePrompt(
   concepts?: OkfConceptRef[],
 ): Promise<
   | { kind: "brief"; brief: CrystallisedBrief; classification: ClassifierResult; spend: SpendTotals }
-  | { kind: "clarify"; question: string; reason: ClarificationReason; spend: SpendTotals }
   | { kind: "reject"; reason: string; intent: ClassifierIntent; spend: SpendTotals }
 > {
-  // v2.0.0-beta.1: every exit carries what it spent. The early `clarify` and
-  // `reject` returns are the reason this matters — they still ran a classifier
-  // call, and reporting zero for them made rejected requests look free. A
+  // v2.0.0-beta.1: every exit carries what it spent. Early rejections still
+  // ran a classifier call, so the measured spend must be retained.
+  // Reporting zero for them made rejected requests look free. A
   // channel that rejects a hundred prompts a day was invisible in the ledger.
   const spend: SpendTotals = { costUsd: 0, tokensIn: 0, tokensOut: 0, partial: false };
 
@@ -281,38 +264,23 @@ export async function crystallisePrompt(
   addSpend(spend, cls);
   deps.logger.info("[crystalliser] classifier", cls);
 
-  // rc.2: what the run proceeds AS, once an ungrounded clarify is withheld.
-  // The raw verdict stays in the audit trail; this is the one the brief carries,
-  // so a brief never reports that it was classified as needing clarification.
-  let effectiveCls: ClassifierResult = cls;
-
-  if (cls.intent === "clarify") {
-    const proposed = cls.suggestedClarification ?? "Could you say a bit more about what you'd like me to do?";
-    const verdict = guardClarification(proposed, grounding, "substantive_ambiguity");
-    if (verdict.action === "ask") {
-      audit("crystallise.clarification_asked", { role: "classifier", reason: verdict.reason, question: verdict.question });
-      return { kind: "clarify", question: verdict.question, reason: verdict.reason, spend };
-    }
-    // rc.2: the classifier asked about state it was never shown. Withholding
-    // is not the same as ignoring the ambiguity -- the request continues to the
-    // crystalliser, which is the role that can actually name a fork in what
-    // gets BUILT, and which re-raises one below if a real fork exists.
-    deps.logger.warn("[crystalliser] classifier clarification withheld as ungrounded", {
-      suppressed: verdict.suppressed,
-      question: verdict.question,
-    });
-    audit("crystallise.clarification_withheld", {
-      role: "classifier",
-      suppressed: verdict.suppressed,
-      question: verdict.question,
-    });
-    effectiveCls = { ...cls, intent: "dev_task", reason: `${cls.reason} (ungrounded clarification withheld)` };
+  // Older classifier implementations may still emit the retired `clarify`
+  // intent. Treat any such dev-shaped ambiguity as a development request and
+  // let the crystalliser choose the bounded conservative interpretation. The
+  // harness never turns that model suggestion into a user-facing pause.
+  const rawIntent = String((cls as { intent?: unknown }).intent ?? "");
+  const effectiveCls: ClassifierResult = rawIntent === "clarify"
+    ? { intent: "dev_task", reason: `${cls.reason} (resolved internally using conservative defaults)` }
+    : cls;
+  if (rawIntent === "clarify") {
+    deps.logger.info("[crystalliser] classifier ambiguity resolved internally", { reason: cls.reason });
+    audit("crystallise.ambiguity_resolved", { role: "classifier", strategy: "conservative_default" });
   }
-  if (cls.intent === "not_dev" || cls.intent === "unsafe") {
-    return { kind: "reject", reason: cls.reason, intent: cls.intent, spend };
+  if (effectiveCls.intent === "not_dev" || effectiveCls.intent === "unsafe") {
+    return { kind: "reject", reason: effectiveCls.reason, intent: effectiveCls.intent, spend };
   }
 
-  const brief = await deps.callCrystalliser(userText, cls, concepts);
+  const brief = await deps.callCrystalliser(userText, effectiveCls, concepts);
   addSpend(spend, brief);
   // beta.21: guarantee concepts land on the brief even if the SDK-side
   // crystalliser silently drops the field (e.g. pre-beta.21 model version).
@@ -321,102 +289,64 @@ export async function crystallisePrompt(
     brief.relevantConcepts = concepts;
   }
 
-  // rc.2: settle repository identity deterministically, before any question
-  // about it can be asked. A bare "StitchGuard" that matches exactly one
-  // allowed entry is not missing information -- it is a name the harness can
-  // look up. Only a genuine collision reaches the human, and then the question
-  // is ONLY which repository: no path, no worktree, nothing the harness owns.
+  // Repository identity is deterministic. The explicit repository supplied to
+  // the control plane remains authoritative; for legacy bare-name collisions,
+  // select the lexicographically first allowed candidate rather than exposing
+  // a harness pause. This recommendation is stable across retries and hosts.
   const repoResolution = resolveRepoAlias(brief.repoHint, grounding.allowedRepos);
   if (repoResolution.kind === "ambiguous") {
-    const question = renderRepoAmbiguityQuestion(repoResolution.hint, repoResolution.candidates);
-    audit("crystallise.clarification_asked", {
-      role: "harness",
-      reason: "repository_ambiguous",
+    const selected = [...repoResolution.candidates].sort((a, b) => a.localeCompare(b))[0]!;
+    brief.repoHint = selected;
+    deps.logger.info("[crystalliser] ambiguous repo alias resolved conservatively", {
       hint: repoResolution.hint,
-      candidates: repoResolution.candidates,
-      question,
+      selected,
+      candidates: repoResolution.candidates.length,
     });
-    return { kind: "clarify", question, reason: "repository_ambiguous", spend };
-  }
-  if (repoResolution.kind === "resolved" && repoResolution.via === "alias") {
+    audit("crystallise.ambiguity_resolved", {
+      role: "harness",
+      strategy: "lexicographic_allowed_repository",
+      hint: repoResolution.hint,
+      selected,
+    });
+  } else if (repoResolution.kind === "resolved" && repoResolution.via === "alias") {
     deps.logger.info("[crystalliser] repo alias resolved", { hint: brief.repoHint, repo: repoResolution.repo });
     audit("crystallise.repo_alias_resolved", { hint: brief.repoHint, repo: repoResolution.repo });
     brief.repoHint = repoResolution.repo;
   }
 
-  // beta.80 (F2): planning-time bimodality gate. The crystalliser self-reports
-  // competing readings that would produce materially different diffs. When it
-  // does (or explicitly asks), PAUSE-AND-WAIT: return a `clarify` (which starts
-  // NO session) instead of guessing one reading. Carel's rule: assumptions
-  // cause delays -- ask up front. This is the 77-beta gap (nothing ever routed
-  // into clarify on a bimodal brief); the crystalliser previously invented one
-  // reading and committed to it.
-  const briefCfg = (deps.config?.brief ?? {}) as Partial<HarnessConfig["brief"]>;
-  if (briefCfg.bimodal_clarify !== false) {
-    const minInterp =
-      typeof briefCfg.bimodal_min_interpretations === "number" ? briefCfg.bimodal_min_interpretations : 2;
-    const interpretations = Array.isArray(brief.interpretations) ? brief.interpretations : [];
-    const explicit = brief.clarificationNeeded?.question?.trim();
-    if (explicit || interpretations.length >= minInterp) {
-      const question = renderBimodalClarification(brief, interpretations);
-      // rc.2: the same grounding rule applies to the crystalliser's fork. A
-      // "fork" between basing on latest main and opening a PR against main is
-      // not a fork, and one whose options quote a filesystem path is describing
-      // something the crystalliser cannot see.
-      const verdict = guardClarification(question, grounding, "substantive_ambiguity");
-      if (verdict.action === "ask") {
-        deps.logger.info("[crystalliser] bimodal brief -> clarify (pause-and-wait)", {
-          interpretations: interpretations.length,
-          explicit: Boolean(explicit),
-          question,
-        });
-        audit("crystallise.clarification_asked", {
-          role: "crystalliser",
-          reason: verdict.reason,
-          interpretations: interpretations.length,
-          question: verdict.question,
-        });
-        return { kind: "clarify", question: verdict.question, reason: verdict.reason, spend };
-      }
-      deps.logger.warn("[crystalliser] bimodal clarification withheld as ungrounded", {
-        suppressed: verdict.suppressed,
-        question,
-      });
-      audit("crystallise.clarification_withheld", {
-        role: "crystalliser",
-        suppressed: verdict.suppressed,
-        question,
-      });
-    }
-  }
+  // Tolerate one release of stale model output from the retired bimodal schema.
+  // Select the first model-ranked buildable reading, explicitly bound it to a
+  // repository change with tests, and discard the pause-only fields before the
+  // brief is persisted or shown for confirmation.
+  resolveRetiredAmbiguityFields(brief, audit);
 
   validateBrief(brief);
   return { kind: "brief", brief, classification: effectiveCls, spend };
 }
 
-/**
- * beta.80 (F2): render the fork the crystalliser found into a single
- * pause-and-wait question. Prefers the crystalliser's own explicit
- * clarificationNeeded (question + options); falls back to enumerating the
- * distinct interpretations.
- */
-function renderBimodalClarification(
-  brief: CrystallisedBrief,
-  interpretations: { reading: string; whatDiffers: string }[],
-): string {
-  const cn = brief.clarificationNeeded;
-  if (cn?.question?.trim()) {
-    const opts = (cn.options ?? []).filter((o) => typeof o === "string" && o.trim().length > 0);
-    if (opts.length > 0) {
-      const lettered = opts.map((o, i) => `(${String.fromCharCode(97 + i)}) ${o}`).join("  ");
-      return `${cn.question.trim()}  Options: ${lettered}`;
+function resolveRetiredAmbiguityFields(brief: CrystallisedBrief, audit: (event: string, payload: Record<string, unknown>) => void): void {
+  const legacy = brief as CrystallisedBrief & {
+    interpretations?: Array<{ reading?: unknown; whatDiffers?: unknown }>;
+    clarificationNeeded?: { question?: unknown; options?: unknown };
+  };
+  const interpretations = Array.isArray(legacy.interpretations) ? legacy.interpretations : [];
+  const firstReading = interpretations
+    .map((item) => typeof item?.reading === "string" ? item.reading.trim() : "")
+    .find(Boolean);
+  const options = Array.isArray(legacy.clarificationNeeded?.options)
+    ? legacy.clarificationNeeded.options.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  const selected = firstReading ?? options[0]?.trim();
+  if (selected) {
+    const note = `Conservative interpretation selected: ${selected}.`;
+    if (!brief.motivation.includes(note)) brief.motivation = `${brief.motivation.trim()} ${note}`;
+    if (!brief.acceptanceCriteria.some((criterion) => /repository change.*test/i.test(criterion))) {
+      brief.acceptanceCriteria.push("Implement the selected interpretation as a bounded repository change with deterministic tests; do not perform live external side effects.");
     }
-    return cn.question.trim();
+    audit("crystallise.ambiguity_resolved", { role: "crystalliser", strategy: "first_ranked_bounded_reading" });
   }
-  const lines = interpretations
-    .map((it, i) => `(${String.fromCharCode(97 + i)}) ${it.reading}${it.whatDiffers ? ` — ${it.whatDiffers}` : ""}`)
-    .join("  ");
-  return `This request has more than one valid interpretation that would produce different changes. Which do you want?  ${lines}`;
+  delete legacy.interpretations;
+  delete legacy.clarificationNeeded;
 }
 
 function validateBrief(brief: CrystallisedBrief): void {

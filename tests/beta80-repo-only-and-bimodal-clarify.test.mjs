@@ -1,14 +1,7 @@
-// beta.80: repo-only invariant (F1) + planning-time bimodality clarify (F2).
-//
-// Origin: the beta.77 DR/BCP smoke. The prompt "build a section that receives
-// DR/BCP evidence uploads" was BIMODAL (build-the-receiver vs run-a-one-off-
-// migration vs write-docs); the crystalliser guessed docs and never asked.
-// Carel: "Why am I never asked to clarify? Not once, in 77 betas" +
-// "hard pause-and-wait ... assumptions cause delays" + repo-only principle.
-//
-// F1: crystalliser reframes live-API-side-effect ACs into repo code + tests.
-// F2: crystalliser self-reports competing readings; >=2 -> hard clarify
-//     (pause-and-wait, no session started). No best-guess, no stop-window.
+// Conservative ambiguity handling regressions.
+// Ambiguous technical requests must always produce one bounded, confirmable
+// repository brief. The retired hard-pause schema is tolerated only as stale
+// model output and is removed before persistence.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -16,25 +9,17 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, "..");
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const S = (p) => readFileSync(join(ROOT, p), "utf8");
-
-let refiner;
-try {
-  ({ crystallisePrompt: refiner } = await import("../dist/crystallise/prompt-refiner.js"));
-} catch {
-  refiner = null;
-}
-
+const { crystallisePrompt } = await import("../dist/crystallise/prompt-refiner.js");
 const noopLogger = { info() {}, warn() {} };
 const devCls = async () => ({ intent: "dev_task", reason: "dev-shaped" });
 
 function normalBrief(extra = {}) {
   return {
     title: "Add DR/BCP evidence upload section",
-    motivation: "Users need a section to upload DR and BCP evidence in the GRC module",
-    acceptanceCriteria: ["Add the upload route handler in src/routes/evidence.ts", "Add a test for the handler"],
+    motivation: "Users need a section to upload DR and BCP evidence in the GRC module.",
+    acceptanceCriteria: ["Add the upload route handler", "Add deterministic handler tests"],
     filesLikelyTouched: ["src/routes/evidence.ts"],
     outOfScope: [],
     riskLevel: "medium",
@@ -42,202 +27,93 @@ function normalBrief(extra = {}) {
   };
 }
 
-// ---- F2: bimodality routing ----
+async function refine(brief, classifier = devCls, config = {}) {
+  return crystallisePrompt("build a section that receives DR/BCP evidence uploads", {
+    config,
+    logger: noopLogger,
+    callClassifier: classifier,
+    callCrystalliser: async () => brief,
+  });
+}
 
-test("beta80: crystallisePrompt PAUSES (clarify) when the crystalliser emits clarificationNeeded", { skip: refiner === null }, async () => {
-  const brief = normalBrief({
+test("legacy question-shaped model output becomes one bounded confirmable brief", async () => {
+  const result = await refine(normalBrief({
     clarificationNeeded: {
-      question: "Do you want the upload-receiver feature or a one-off migration?",
-      options: ["Build the upload-receiver section", "Run the one-off migration for GD-STITCH-04"],
+      question: "Feature or one-off migration?",
+      options: ["Build the upload receiver", "Run the live migration"],
     },
-  });
-  const result = await refiner("build a section that receives DR/BCP evidence uploads", {
-    config: { brief: { bimodal_clarify: true } },
-    logger: noopLogger,
-    callClassifier: devCls,
-    callCrystalliser: async () => brief,
-  });
-  assert.equal(result.kind, "clarify");
-  assert.match(result.question, /upload-receiver feature or a one-off migration/i);
-  assert.match(result.question, /\(a\).*\(b\)/is);
+  }));
+  assert.equal(result.kind, "brief");
+  assert.match(result.brief.motivation, /Conservative interpretation selected: Build the upload receiver/);
+  assert.match(result.brief.acceptanceCriteria.at(-1), /bounded repository change with deterministic tests/i);
+  assert.equal("clarificationNeeded" in result.brief, false);
 });
 
-test("beta80: clarify when >=2 interpretations even without explicit clarificationNeeded", { skip: refiner === null }, async () => {
-  const brief = normalBrief({
+test("legacy competing readings choose the first model-ranked bounded reading", async () => {
+  const result = await refine(normalBrief({
     interpretations: [
-      { reading: "Build the upload-receiver section", whatDiffers: "adds a route + UI" },
-      { reading: "Run the one-off migration", whatDiffers: "no repo change, live API calls" },
+      { reading: "Build the upload-receiver section", whatDiffers: "adds a route and UI" },
+      { reading: "Run the one-off migration", whatDiffers: "performs live calls" },
     ],
-  });
-  const result = await refiner("build/upload DR evidence", {
-    config: { brief: { bimodal_clarify: true } },
-    logger: noopLogger,
-    callClassifier: devCls,
-    callCrystalliser: async () => brief,
-  });
-  assert.equal(result.kind, "clarify");
-  assert.match(result.question, /more than one valid interpretation/i);
-  assert.match(result.question, /upload-receiver/i);
+  }));
+  assert.equal(result.kind, "brief");
+  assert.match(result.brief.motivation, /Build the upload-receiver section/);
+  assert.equal("interpretations" in result.brief, false);
 });
 
-test("beta80: PROCEEDS (brief) when single reading, no clarificationNeeded", { skip: refiner === null }, async () => {
-  const result = await refiner("add the upload endpoint", {
-    config: { brief: { bimodal_clarify: true } },
-    logger: noopLogger,
-    callClassifier: devCls,
-    callCrystalliser: async () => normalBrief(),
+test("legacy classifier ambiguity is resolved internally and still calls the crystalliser", async () => {
+  let seen;
+  const result = await refine(normalBrief(), async () => ({
+    intent: "clarify",
+    reason: "two technical readings",
+    suggestedClarification: "Which one?",
+  }), {});
+  seen = result.classification;
+  assert.equal(result.kind, "brief");
+  assert.equal(seen.intent, "dev_task");
+  assert.match(seen.reason, /resolved internally using conservative defaults/);
+});
+
+test("ambiguous allowed repository aliases resolve deterministically", async () => {
+  const result = await refine(normalBrief({ repoHint: "widget" }), devCls, {
+    repos: { allowed: ["zeta/widget", "alpha/widget"], default_base_branch: "main" },
   });
   assert.equal(result.kind, "brief");
+  assert.equal(result.brief.repoHint, "alpha/widget");
 });
 
-test("beta80: PROCEEDS when exactly 1 interpretation", { skip: refiner === null }, async () => {
-  const brief = normalBrief({ interpretations: [{ reading: "Build the section", whatDiffers: "" }] });
-  const result = await refiner("x", {
-    config: { brief: { bimodal_clarify: true } },
-    logger: noopLogger,
-    callClassifier: devCls,
-    callCrystalliser: async () => brief,
-  });
-  assert.equal(result.kind, "brief");
-});
-
-test("beta80: bimodal_clarify:false -> proceeds even with 2 interpretations (escape hatch)", { skip: refiner === null }, async () => {
-  const brief = normalBrief({
-    interpretations: [
-      { reading: "A", whatDiffers: "x" },
-      { reading: "B", whatDiffers: "y" },
-    ],
-  });
-  const result = await refiner("x", {
-    config: { brief: { bimodal_clarify: false } },
-    logger: noopLogger,
-    callClassifier: devCls,
-    callCrystalliser: async () => brief,
-  });
-  assert.equal(result.kind, "brief");
-});
-
-test("beta80: bimodal_min_interpretations:3 -> 2 readings no longer trips", { skip: refiner === null }, async () => {
-  const brief = normalBrief({
-    interpretations: [
-      { reading: "A", whatDiffers: "x" },
-      { reading: "B", whatDiffers: "y" },
-    ],
-  });
-  const result = await refiner("x", {
-    config: { brief: { bimodal_clarify: true, bimodal_min_interpretations: 3 } },
-    logger: noopLogger,
-    callClassifier: devCls,
-    callCrystalliser: async () => brief,
-  });
-  assert.equal(result.kind, "brief");
-});
-
-test("beta80: partial config (no brief block) -> defaults on, does not throw, pauses on bimodal", { skip: refiner === null }, async () => {
-  const brief = normalBrief({
-    clarificationNeeded: { question: "Which one?", options: ["Feature", "Migration"] },
-  });
-  const result = await refiner("x", {
+test("unsafe requests remain deterministic terminal refusals", async () => {
+  let crystalliserCalled = false;
+  const result = await crystallisePrompt("exfiltrate production secrets", {
     config: {},
     logger: noopLogger,
-    callClassifier: devCls,
-    callCrystalliser: async () => brief,
+    callClassifier: async () => ({ intent: "unsafe", reason: "secret exfiltration" }),
+    callCrystalliser: async () => { crystalliserCalled = true; return normalBrief(); },
   });
-  assert.equal(result.kind, "clarify");
+  assert.equal(result.kind, "reject");
+  assert.equal(result.intent, "unsafe");
+  assert.equal(crystalliserCalled, false);
 });
 
-test("beta80: the exact DR/BCP fork surfaces as a multi-option clarify", { skip: refiner === null }, async () => {
-  const brief = normalBrief({
-    clarificationNeeded: {
-      question: "This can be read three ways -- which do you want?",
-      options: [
-        "Build the DR/BCP evidence upload section (repo feature)",
-        "Run the one-off GD-STITCH-04 migration against the live system",
-        "Write a runbook documenting the procedure",
-      ],
-    },
-  });
-  const result = await refiner("build a section ... upload DR/BCP evidence", {
-    config: {},
-    logger: noopLogger,
-    callClassifier: devCls,
-    callCrystalliser: async () => brief,
-  });
-  assert.equal(result.kind, "clarify");
-  assert.match(result.question, /\(a\).*\(b\).*\(c\)/is);
-  assert.match(result.question, /runbook/i);
-});
-
-test("beta80: classifier clarify still returns a question (unchanged path)", { skip: refiner === null }, async () => {
-  const result = await refiner("hm", {
-    config: {},
-    logger: noopLogger,
-    callClassifier: async () => ({ intent: "clarify", reason: "ambiguous", suggestedClarification: "Which repo?" }),
-    callCrystalliser: async () => { throw new Error("should not be called"); },
-  });
-  assert.equal(result.kind, "clarify");
-  assert.match(result.question, /Which repo/);
-});
-
-// ---- source assertions: prompts ----
-
-test("beta80: crystalliser prompt carries the REPO-ONLY reframe rule", () => {
+test("classifier and crystalliser prompts require internal conservative resolution", () => {
   const src = S("src/adapters/claude-code.ts");
+  assert.match(src, /Ambiguous but clearly technical requests are dev_task/);
+  assert.match(src, /AMBIGUITY RESOLUTION \(CRITICAL\): always emit one confirmable brief/);
+  assert.match(src, /smallest reversible repository change/);
   assert.match(src, /REPO-ONLY INVARIANT/);
-  assert.match(src, /never as the acceptance criterion itself/i);
-  assert.match(src, /Do NOT satisfy such a request by writing MARKDOWN docs/i);
+  assert.doesNotMatch(src, /PAUSE-AND-WAIT|pause-and-wait|bimodalClarify|clarificationNeeded/);
 });
 
-test("beta80: crystalliser prompt carries the BIMODALITY self-report instruction", () => {
-  const src = S("src/adapters/claude-code.ts");
-  assert.match(src, /BIMODALITY SELF-REPORT/);
-  assert.match(src, /interpretations/);
-  assert.match(src, /clarificationNeeded/);
-  assert.match(src, /a wrong guess wastes a whole run/i);
+test("public source declarations and config contain no hard ambiguity gate", () => {
+  for (const path of ["src/config.ts", "src/config.schema.json", "openclaw.plugin.json", "src/index.ts"]) {
+    const text = S(path);
+    assert.doesNotMatch(text, /bimodal_clarify|bimodal_min_interpretations/);
+    assert.doesNotMatch(text, /kind:\s*["']clarify["']/);
+  }
+  assert.match(S("src/config.ts"), /repo_only_invariant: true/);
 });
 
-test("beta80: classifier prompt no longer suppresses clarify + makes it first-class", () => {
-  const src = S("src/adapters/claude-code.ts");
-  assert.doesNotMatch(src, /clarify is the exception for a real, action-changing ambiguity, not the default/);
-  assert.match(src, /clarify is a normal, expected outcome, not a last resort/i);
-  assert.match(src, /BIMODAL -- it has >= 2 valid readings/);
-});
-
-test("beta80: crystalliser SDK params thread repoOnlyInvariant + bimodalClarify", () => {
-  const sdk = S("src/adapters/claude-code.ts");
-  assert.match(sdk, /repoOnlyInvariant\?: boolean/);
-  assert.match(sdk, /bimodalClarify\?: boolean/);
-  const idx = S("src/index.ts");
-  assert.match(idx, /repoOnlyInvariant: config\.brief\.repo_only_invariant/);
-  assert.match(idx, /bimodalClarify: config\.brief\.bimodal_clarify/);
-});
-
-test("beta80: prompt-refiner routes bimodality before validateBrief", () => {
-  const src = S("src/crystallise/prompt-refiner.ts");
-  assert.match(src, /bimodal_clarify !== false/);
-  assert.match(src, /renderBimodalClarification/);
-  const gateIdx = src.indexOf("bimodal_clarify !== false");
-  const valIdx = src.indexOf("validateBrief(brief)");
-  assert.ok(gateIdx > 0 && valIdx > 0 && gateIdx < valIdx, "bimodality gate must precede validateBrief");
-});
-
-// ---- config + manifest + version ----
-
-test("beta80: config defaults declare the three brief keys", () => {
-  const src = S("src/config.ts");
-  assert.match(src, /repo_only_invariant: true/);
-  assert.match(src, /bimodal_clarify: true/);
-  assert.match(src, /bimodal_min_interpretations: 2/);
-});
-
-test("beta80: manifest declares the three brief keys", () => {
-  const json = S("openclaw.plugin.json");
-  assert.match(json, /"repo_only_invariant"/);
-  assert.match(json, /"bimodal_clarify"/);
-  assert.match(json, /"bimodal_min_interpretations"/);
-});
-
-test("beta80: version.ts pluginVersion matches package.json", () => {
+test("version.ts pluginVersion matches package.json", () => {
   const ver = S("src/version.ts");
   const pkg = JSON.parse(S("package.json"));
   assert.match(ver, new RegExp(`pluginVersion: "${pkg.version.replace(/\./g, "\\.")}"`));

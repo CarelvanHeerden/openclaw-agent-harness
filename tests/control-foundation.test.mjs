@@ -178,6 +178,9 @@ test("merge-intent recovery migration preserves existing one-use intents atomica
   run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "awaiting_confirmation", actor: "test", reason: "prepared", at: 2 });
   run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "autonomous_run", actor: "test", reason: "confirmed", at: 3 });
   run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "pr_ready", actor: "test", reason: "ready", at: 4 });
+  const migrationHead = sha("c",40), migrationReadiness = "readiness-migration";
+  db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,pr_number,published_sha,readiness_digest,created_at,updated_at) VALUES (?,1,1,?,'{}','[]','[]',?,'medium','[]',500,1,?,?,1,4)`).run(run.id,sha("a",40),sha("9",64),migrationHead,migrationReadiness);
+  db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,1,'control-readiness/v2',1,?,'{}','[]',4)`).run(migrationReadiness,run.id,migrationHead);
   db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,binding_digest,nonce,issued_at,expires_at,consumed_at) VALUES ('auth-migration',?,'U123','C1:T1','acme/widget','main',1,?,'digest','nonce',5,500,NULL)`).run(run.id, sha("c",40));
   db.prepare(`INSERT INTO control_engine_merge_intents (id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,created_at,updated_at) VALUES ('intent-migration',?,'auth-migration',?,'key-migration','authorized',5,5)`).run(run.id, sha("c",40));
   applyStateMigrations(db);
@@ -208,3 +211,28 @@ test("run leases use monotonically increasing fences and reject stale owners", (
   const third = repo.acquireLease("leased", "worker-a", 100, 1_155);
   assert.equal(third.fence, 3);
 }));
+
+test("merge storage rejects cross-run PR collisions while allowing equal readiness digests per run", () => {
+  const db = new DatabaseSync(":memory:");
+  applyStateMigrations(db);
+  const repo = new ControlRepository(db);
+  const create = (id, requester) => {
+    const base = makeEnvelope();
+    const authority = { ...base, requesterId: requester, nonce: `nonce-${id}` };
+    let run = repo.createRun({ id, authority, createdAt: 10 });
+    run = repo.transition({ runId: id, expectedVersion: run.version, to: "awaiting_confirmation", actor: requester, reason: "prepared", at: 11 });
+    run = repo.transition({ runId: id, expectedVersion: run.version, to: "autonomous_run", actor: requester, reason: "confirmed", at: 12 });
+    run = repo.transition({ runId: id, expectedVersion: run.version, to: "pr_ready", actor: requester, reason: "ready", at: 13 });
+    const head=sha("d",40), digest="shared-readiness";
+    db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,pr_number,published_sha,readiness_digest,created_at,updated_at) VALUES (?,1,1,?,'{}','[]','[]',?,'medium','[]',500,7,?,?,10,13)`).run(id,sha("a",40),sha("9",64),head,digest);
+    db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,1,'control-readiness/v2',1,?,'{}','[]',13)`).run(digest,id,head);
+    return { run, head, digest };
+  };
+  const a=create("collision-a","U-A"), b=create("collision-b","U-B");
+  assert.equal(db.prepare(`SELECT count(*) n FROM control_readiness_attestations WHERE content_digest='shared-readiness'`).get().n,2);
+  db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,readiness_digest,binding_digest,nonce,issued_at,expires_at) VALUES ('auth-a',?,'U-A','C','acme/widget','main',7,?,?,'binding-a','merge-a',20,500)`).run(a.run.id,a.head,a.digest);
+  assert.throws(()=>db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,readiness_digest,binding_digest,nonce,issued_at,expires_at) VALUES ('auth-b',?,'U-B','C','acme/widget','main',7,?,?,'binding-b','merge-b',20,500)`).run(b.run.id,b.head,b.digest),/UNIQUE constraint/i);
+  assert.throws(()=>db.prepare(`INSERT INTO control_engine_merge_intents (id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,created_at,updated_at) VALUES ('bad-intent',?,'auth-a',?,'bad-key','authorized',20,20)`).run(b.run.id,a.head),/FOREIGN KEY constraint/i);
+  assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(),[]);
+  db.close();
+});

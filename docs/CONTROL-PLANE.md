@@ -51,7 +51,9 @@ Success returns a single review object:
 
 The response contains no internal prompt, session/subtask identifier, clarification identifier, retry count, polling direction, or harness command.
 
-Validation failure is terminal for that prepare attempt. It returns one stable error code and a user-remediable summary. It does not ask a question from inside a run.
+OpenClaw resolves ordinary ambiguity before returning this object. It chooses the smallest reversible repository change, prefers code plus deterministic tests over documentation or one-off live operations, performs no live external side effect during preparation, and treats the authenticated `repository` argument as authoritative. A legacy model response containing competing readings is reduced deterministically to its first ranked bounded repository interpretation and those internal fields are discarded.
+
+Validation failure is terminal for that prepare attempt. It is reserved for a non-change request, a genuine safety refusal, invalid configuration, or an unavailable authenticated repository binding. It returns one stable error code and a user-remediable summary; ambiguity never creates a harness pause.
 
 ### 2.2 Confirm
 
@@ -104,6 +106,7 @@ There is no post-confirmation `awaiting_clarification` path. Confirmation is the
 - `prepared` — waiting for the one confirmation;
 - `running` — confirmation is durably committed and implementation/review/publication is queued or active;
 - `pr_ready` — terminal success, PR proven ready under section 6;
+- `merging` — the separately authorized merge is being durably reconciled;
 - `failed` — terminal failure with no hidden question or resumable user decision;
 - `merged` — terminal merge success;
 - `merge_failed` — terminal merge failure.
