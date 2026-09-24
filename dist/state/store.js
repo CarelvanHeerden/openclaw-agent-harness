@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { applyStateMigrations } from "./migrations.js";
 function locateSchema() {
     const here = dirname(fileURLToPath(import.meta.url));
     const candidates = [
@@ -54,6 +55,7 @@ export function openStateStoreSync(pathHint) {
     db.exec("PRAGMA busy_timeout = 5000");
     const schema = readFileSync(locateSchema(), "utf8");
     db.exec(schema);
+    applyStateMigrations(db);
     // Additive migrations. Each entry is 'try to add column, ignore if already there'.
     // Keep this list short and only ever ADD, never DROP or MODIFY (breaks rollback).
     const additiveMigrations = [

@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { applyStateMigrations } from "./migrations.js";
 
 export interface StateStore {
   db: DatabaseSync;
@@ -67,6 +68,7 @@ export function openStateStoreSync(pathHint: string): StateStore {
 
   const schema = readFileSync(locateSchema(), "utf8");
   db.exec(schema);
+  applyStateMigrations(db);
 
   // Additive migrations. Each entry is 'try to add column, ignore if already there'.
   // Keep this list short and only ever ADD, never DROP or MODIFY (breaks rollback).
