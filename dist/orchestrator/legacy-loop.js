@@ -613,12 +613,14 @@ export class OrchestratorLoop {
         if (!guard)
             return;
         const row = this.deps.state.db.prepare(`SELECT cost_usd,created_at,cycles_ran FROM sessions WHERE id=?`).get(sessionId);
+        const retryRow = this.deps.state.db.prepare(`SELECT COUNT(*) AS retries FROM provider_calls WHERE session_id=? AND attempt>1`).get(sessionId);
         try {
             guard({
                 ...check,
                 projectedBudgetUsd: check.projectedBudgetUsd ?? Number(row?.cost_usd ?? 0),
                 projectedActiveTimeMs: check.projectedActiveTimeMs ?? Math.max(0, Date.now() - Number(row?.created_at ?? Date.now())),
                 projectedCycles: check.projectedCycles ?? Number(row?.cycles_ran ?? 0),
+                projectedRetries: Math.max(check.projectedRetries, Number(retryRow?.retries ?? 0)),
             });
         }
         catch (error) {
@@ -1211,7 +1213,7 @@ export class OrchestratorLoop {
         this.assertConfirmedControlAuthority(meta.sessionId, {
             kind: authorityKind,
             action: authorityAction,
-            paths: [],
+            paths: meta.paths ?? [],
             projectedCycles: meta.cycle,
             projectedRetries: Math.max(0, call.attempt - 1),
         });
@@ -3885,6 +3887,7 @@ export class OrchestratorLoop {
                                             model: selectWorkerModel(st, this.deps.config.models),
                                             requester: row.requester,
                                             baseSha: subTaskBaseSha,
+                                            paths: st.filesLikelyTouched ?? [],
                                         }, () => this.deps.runWorker({
                                             brief,
                                             // Keep the dispatch overlay: the previous retry silently
@@ -4900,6 +4903,7 @@ export class OrchestratorLoop {
                                     model: selectWorkerModel(st, this.deps.config.models),
                                     requester: row.requester,
                                     baseSha: subTaskBaseSha,
+                                    paths: st.filesLikelyTouched ?? [],
                                 }, () => this.deps.runWorker({
                                     brief,
                                     subTask: dispatchSt,
@@ -7170,6 +7174,7 @@ export class OrchestratorLoop {
                         model: selectedWorkerModel,
                         requester,
                         baseSha: idleSubTaskBase,
+                        paths: st.filesLikelyTouched ?? [],
                     }, () => this.deps.runWorker({
                         brief, subTask: st, plan, requester, dispatchHint,
                         // beta.117: the leased slot, which is NOT plan.worktreePath when
@@ -10614,6 +10619,12 @@ export class OrchestratorLoop {
      * won't reap the worktree or auto-fail the pause.
      */
     async finaliseAwaitingClarification(sessionId, question, seq, cycles, totalCostUsd, subtask) {
+        if (this.confirmedControlGuards.has(sessionId)) {
+            const now = Date.now();
+            this.deps.state.db.prepare(`UPDATE sessions SET status='failed',worktree_preserved=1,clarification_question=NULL,clarification_seq=NULL,clarification_id=NULL,updated_at=? WHERE id=?`).run(now, sessionId);
+            this.deps.state.audit("control.interactive_pause_rejected", { sessionId, seq, reason: "confirmed_control_is_non_interactive" }, sessionId);
+            return { status: "failed", sessionId, reason: "confirmed control requires an out-of-envelope human decision", cycles, totalCostUsd };
+        }
         /*
          * rc.9: checkpoint BEFORE blocking on a human.
          *

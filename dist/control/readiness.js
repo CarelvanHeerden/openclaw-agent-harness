@@ -17,7 +17,7 @@ function stable(value) {
 }
 function digest(value) { return createHash("sha256").update(stable(value)).digest("hex"); }
 function exactSet(left, right) {
-    return left.length > 0 && new Set(left).size === left.length && new Set(right).size === right.length &&
+    return new Set(left).size === left.length && new Set(right).size === right.length &&
         left.length === right.length && left.every((item) => right.includes(item));
 }
 function cleanPath(path) { return path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, ""); }
@@ -50,15 +50,22 @@ export function evaluatePrReadiness(input, checkedAt = Date.now()) {
         failures.push("runtime_evidence_indeterminate");
     else if (input.runtimeEvidence.status === "fail")
         failures.push("runtime_evidence_failed");
+    else if (input.runtimeEvidence.status === "pass" && (input.runtimeEvidence.sha !== input.candidateSha || !Number.isFinite(input.runtimeEvidence.observedAt) || input.runtimeEvidence.observedAt <= 0 || input.runtimeEvidence.observedAt > checkedAt))
+        failures.push("runtime_evidence_indeterminate");
     if (input.securityEvidence.status === "indeterminate")
         failures.push("security_evidence_indeterminate");
     else if (input.securityEvidence.status === "fail")
         failures.push("security_evidence_failed");
+    else if (input.securityEvidence.status === "pass" && (input.securityEvidence.sha !== input.candidateSha || !Number.isFinite(input.securityEvidence.observedAt) || input.securityEvidence.observedAt <= 0 || input.securityEvidence.observedAt > checkedAt))
+        failures.push("security_evidence_indeterminate");
     if (!Number.isFinite(input.elapsedTimeMs) || !Number.isFinite(input.timeLimitMs) || input.elapsedTimeMs < 0 || input.elapsedTimeMs > input.timeLimitMs)
         failures.push("elapsed_time_exceeded");
     if (input.changedPaths.some((path) => !input.allowedScope.some((root) => within(path, root)) || input.excludedScope.some((root) => within(path, root))))
         failures.push("scope_exceeded");
-    if (input.operationsPerformed.some((operation) => !input.allowedOperations.includes(operation)))
+    const receipts = input.operationReceipts ?? [];
+    const receiptOperations = receipts.map((receipt) => receipt.operation);
+    const receiptsMeasured = receipts.every((receipt) => receipt.source.trim().length > 0 && Number.isFinite(receipt.observedAt) && receipt.observedAt > 0 && receipt.observedAt <= checkedAt && (!receipt.sha || receipt.sha === input.candidateSha));
+    if (input.operationsPerformed.some((operation) => !input.allowedOperations.includes(operation)) || !exactSet([...new Set(input.operationsPerformed)], [...new Set(receiptOperations)]) || !receiptsMeasured)
         failures.push("operation_not_authorized");
     if (!/^[a-f0-9]{64}$/.test(input.credentialRouteDigest) || input.credentialRouteDigest !== input.expectedCredentialRouteDigest)
         failures.push("credential_route_changed");

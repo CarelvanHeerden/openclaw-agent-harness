@@ -33,7 +33,9 @@ function cleanPath(path) {
 }
 function pathWithin(path, root) {
     const candidate = cleanPath(path);
-    const scopeRoot = cleanPath(root);
+    const scopeRoot = cleanPath(root)?.replace(/\/\*\*$/, "") ?? null;
+    if (scopeRoot === "**" || scopeRoot === "*")
+        return candidate !== null;
     return candidate !== null && scopeRoot !== null && (candidate === scopeRoot || candidate.startsWith(`${scopeRoot}/`));
 }
 function terminate(reason) {

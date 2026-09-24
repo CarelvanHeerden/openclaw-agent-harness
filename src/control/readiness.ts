@@ -20,7 +20,8 @@ export interface RequiredCiEvidence {
   readonly sha: string;
   readonly status: "success" | "failure" | "pending" | "indeterminate";
 }
-export interface DeterminateEvidence { readonly status: "pass" | "fail" | "not_required" | "indeterminate"; readonly detail?: string }
+export interface DeterminateEvidence { readonly status: "pass" | "fail" | "not_required" | "indeterminate"; readonly detail?: string; readonly sha?: string; readonly observedAt?: number }
+export interface OperationReceipt { readonly operation: string; readonly observedAt: number; readonly sha?: string; readonly source: string }
 
 export interface PrReadinessInput {
   readonly finalVerdict: "pass" | "revise" | "block" | "crashed" | "indeterminate";
@@ -41,6 +42,7 @@ export interface PrReadinessInput {
   readonly allowedScope: readonly string[];
   readonly excludedScope: readonly string[];
   readonly operationsPerformed: readonly string[];
+  readonly operationReceipts: readonly OperationReceipt[];
   readonly allowedOperations: readonly string[];
   readonly credentialRouteDigest: string;
   readonly expectedCredentialRouteDigest: string;
@@ -61,7 +63,7 @@ function stable(value: unknown): string {
 }
 function digest(value: unknown): string { return createHash("sha256").update(stable(value)).digest("hex"); }
 function exactSet(left: readonly string[], right: readonly string[]): boolean {
-  return left.length > 0 && new Set(left).size === left.length && new Set(right).size === right.length &&
+  return new Set(left).size === left.length && new Set(right).size === right.length &&
     left.length === right.length && left.every((item) => right.includes(item));
 }
 function cleanPath(path: string): string { return path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, ""); }
@@ -84,11 +86,16 @@ export function evaluatePrReadiness(input: PrReadinessInput, checkedAt = Date.no
   if (ci.status !== "success" || ci.sha !== input.candidateSha || !exactSet(ci.requiredChecks, ci.successfulChecks)) failures.push("required_ci_not_green");
   if (input.runtimeEvidence.status === "indeterminate") failures.push("runtime_evidence_indeterminate");
   else if (input.runtimeEvidence.status === "fail") failures.push("runtime_evidence_failed");
+  else if (input.runtimeEvidence.status === "pass" && (input.runtimeEvidence.sha !== input.candidateSha || !Number.isFinite(input.runtimeEvidence.observedAt) || input.runtimeEvidence.observedAt! <= 0 || input.runtimeEvidence.observedAt! > checkedAt)) failures.push("runtime_evidence_indeterminate");
   if (input.securityEvidence.status === "indeterminate") failures.push("security_evidence_indeterminate");
   else if (input.securityEvidence.status === "fail") failures.push("security_evidence_failed");
+  else if (input.securityEvidence.status === "pass" && (input.securityEvidence.sha !== input.candidateSha || !Number.isFinite(input.securityEvidence.observedAt) || input.securityEvidence.observedAt! <= 0 || input.securityEvidence.observedAt! > checkedAt)) failures.push("security_evidence_indeterminate");
   if (!Number.isFinite(input.elapsedTimeMs) || !Number.isFinite(input.timeLimitMs) || input.elapsedTimeMs < 0 || input.elapsedTimeMs > input.timeLimitMs) failures.push("elapsed_time_exceeded");
   if (input.changedPaths.some((path) => !input.allowedScope.some((root) => within(path, root)) || input.excludedScope.some((root) => within(path, root)))) failures.push("scope_exceeded");
-  if (input.operationsPerformed.some((operation) => !input.allowedOperations.includes(operation))) failures.push("operation_not_authorized");
+  const receipts = input.operationReceipts ?? [];
+  const receiptOperations = receipts.map((receipt) => receipt.operation);
+  const receiptsMeasured = receipts.every((receipt) => receipt.source.trim().length > 0 && Number.isFinite(receipt.observedAt) && receipt.observedAt > 0 && receipt.observedAt <= checkedAt && (!receipt.sha || receipt.sha === input.candidateSha));
+  if (input.operationsPerformed.some((operation) => !input.allowedOperations.includes(operation)) || !exactSet([...new Set(input.operationsPerformed)], [...new Set(receiptOperations)]) || !receiptsMeasured) failures.push("operation_not_authorized");
   if (!/^[a-f0-9]{64}$/.test(input.credentialRouteDigest) || input.credentialRouteDigest !== input.expectedCredentialRouteDigest) failures.push("credential_route_changed");
   if (input.secretExposure.detected || input.secretExposure.evidence !== "pass") failures.push("secret_exposure");
   if (!Number.isFinite(input.spendUsd) || !Number.isFinite(input.budgetUsd) || input.spendUsd < 0 || input.spendUsd > input.budgetUsd) failures.push("spend_exceeded");

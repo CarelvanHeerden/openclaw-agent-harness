@@ -1656,12 +1656,11 @@ export function bootstrapHarnessSync(api) {
       )`).get(prNumber, repository);
             if (!run?.requester_id)
                 throw new Error("Control requester is unavailable");
-            const route = pat.resolve({ slackUserId: run.requester_id, gitHubUser: repository.split("/")[0], repoFullName: repository });
-            const ghToken = await resolveGitToken(route);
+            const { route, token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
             const pr = await getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase });
             const ci = await getCiSnapshot({ repoFullName: repository, sha: pr.headSha, ghToken, apiBase: route.apiBase });
-            const proposal = state.db.prepare(`SELECT p.*, r.base_ref, r.policy_digest, r.authority_envelope_json
-        FROM control_proposals p JOIN control_runs r ON r.id=p.run_id WHERE p.pr_number=? AND r.repository=?`).get(prNumber, repository);
+            const proposal = state.db.prepare(`SELECT p.*, r.base_ref, r.policy_digest, r.authority_envelope_json, s.published_at
+        FROM control_proposals p JOIN control_runs r ON r.id=p.run_id LEFT JOIN sessions s ON s.id=p.run_id WHERE p.pr_number=? AND r.repository=?`).get(prNumber, repository);
             const latest = state.db.prepare(`SELECT input_json FROM control_readiness_attestations WHERE run_id=? ORDER BY generation DESC LIMIT 1`).get(String(proposal.run_id));
             const prior = JSON.parse(latest.input_json);
             return {
@@ -1674,7 +1673,7 @@ export function bootstrapHarnessSync(api) {
                 readiness: {
                     ...prior,
                     candidateSha: pr.headSha,
-                    publication: { sha: String(proposal.published_sha), observedAt: Date.now() },
+                    publication: { sha: String(proposal.published_sha), observedAt: Number(proposal.published_at) },
                     pullRequest: { repository, baseRef: pr.baseBranch, headSha: pr.headSha, open: pr.state === "open" && !pr.merged, number: prNumber, url: pr.htmlUrl },
                     requiredCi: {
                         registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0,
@@ -1692,8 +1691,7 @@ export function bootstrapHarnessSync(api) {
       )`).get(prNumber, repository);
             if (!run?.requester_id)
                 throw new Error("Control requester is unavailable");
-            const route = pat.resolve({ slackUserId: run.requester_id, gitHubUser: repository.split("/")[0], repoFullName: repository });
-            const ghToken = await resolveGitToken(route);
+            const { token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
             const merged = await mergePullRequest({ repoFullName: repository, prNumber, ghToken, method: "squash", expectedHeadSha });
             if (!merged.merged || !merged.sha)
                 throw new Error(merged.message || "Provider did not merge the pull request");
@@ -1705,8 +1703,7 @@ export function bootstrapHarnessSync(api) {
       )`).get(prNumber, repository);
             if (!run?.requester_id)
                 return false;
-            const route = pat.resolve({ slackUserId: run.requester_id, gitHubUser: repository.split("/")[0], repoFullName: repository });
-            const ghToken = await resolveGitToken(route);
+            const { route, token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
             const pr = await getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase });
             return pr.merged && mergeSha.length >= 40;
         },
@@ -1724,6 +1721,20 @@ export function bootstrapHarnessSync(api) {
                 : route.tokenPointer?.value ? { inlineDigest: createHash("sha256").update(route.tokenPointer.value).digest("hex") }
                     : null,
     });
+    const controlCredentialRouteDigest = (route) => createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
+    const resolveBoundControlCredential = async (repository, prNumber, requesterId) => {
+        const proposal = state.db.prepare(`SELECT p.credential_route_digest FROM control_proposals p JOIN control_runs r ON r.id=p.run_id WHERE p.pr_number=? AND r.repository=? AND r.requester_id=?`).get(prNumber, repository, requesterId);
+        if (!proposal?.credential_route_digest)
+            throw new Error("credential_route_binding_missing");
+        const route = pat.resolve({ slackUserId: requesterId, gitHubUser: repository.split("/")[0], repoFullName: repository });
+        if (controlCredentialRouteDigest(route) !== proposal.credential_route_digest) {
+            const run = state.db.prepare(`SELECT r.id,r.state,r.version FROM control_runs r JOIN control_proposals p ON p.run_id=r.id WHERE p.pr_number=? AND r.repository=?`).get(prNumber, repository);
+            if (run && (run.state === "pr_ready" || run.state === "awaiting_merge"))
+                controlRepository.transition({ runId: run.id, expectedVersion: run.version, to: "failed", actor: "credential_guard", reason: "credential_route_changed", terminalCode: "credential_escalation", at: Date.now() });
+            throw new Error("credential_route_changed");
+        }
+        return { route, token: await resolveGitToken(route) };
+    };
     runtime.controlPlane = new ControlPlaneService({
         db: state.db,
         repository: controlRepository,
@@ -1732,6 +1743,8 @@ export function bootstrapHarnessSync(api) {
         crystallise: runtime.crystallise,
         maximumBudgetUsd: config.budgets?.session_hard_ceiling_usd,
         maximumTimeSeconds: config.loop?.session_hard_timeout_seconds,
+        maximumCycles: config.loop?.max_cycles,
+        maximumRetries: Math.max(1, config.loop?.worker_protocol_max_attempts ?? 1) + (config.loop?.worker_timeout_retry_enabled === false ? 0 : 1),
         resolveRepository: async ({ repository, baseRef, actorIdentity }) => {
             const ref = baseRef?.trim() || config.repos?.default_base_branch || "main";
             const route = pat.resolve({ slackUserId: actorIdentity, gitHubUser: repository.split("/")[0], repoFullName: repository });
@@ -1751,7 +1764,7 @@ export function bootstrapHarnessSync(api) {
         executeEngine: async (change) => {
             change.assertCurrent();
             let route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
-            const currentRouteDigest = createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
+            const currentRouteDigest = controlCredentialRouteDigest(route);
             if (currentRouteDigest !== change.credentialRouteDigest) {
                 const run = controlRepository.getRun(change.changeId);
                 if (!run)
@@ -1783,7 +1796,7 @@ export function bootstrapHarnessSync(api) {
             const authorize = (check) => {
                 change.assertCurrent();
                 route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
-                const observedRouteDigest = createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
+                const observedRouteDigest = controlCredentialRouteDigest(route);
                 const credentialChange = observedRouteDigest !== change.credentialRouteDigest;
                 const decision = autonomousEngine.decide(change.changeId, change.lease, {
                     kind: check.kind,
@@ -1808,6 +1821,14 @@ export function bootstrapHarnessSync(api) {
                 if (decision.outcome === "terminate")
                     throw new Error(decision.code);
             };
+            const boundProviderCredential = async (action, kind = "verification_retry") => {
+                authorize({ kind, action, paths: [], projectedBudgetUsd: Number(state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId)?.cost_usd ?? 0), projectedActiveTimeMs: Math.max(0, Date.now() - controlRun.createdAt), projectedCycles: Number(state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId)?.cycles_ran ?? 0), projectedRetries: 0 });
+                const boundRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
+                if (controlCredentialRouteDigest(boundRoute) !== change.credentialRouteDigest)
+                    throw new Error("credential_escalation");
+                route = boundRoute;
+                return { route: boundRoute, token: await resolveGitToken(boundRoute) };
+            };
             authorize({ kind: "implementation_choice", action: "implement", paths: [], projectedBudgetUsd: 0, projectedActiveTimeMs: 0, projectedCycles: 0, projectedRetries: 0 });
             const now = Date.now();
             const controlledBrief = { ...change.brief, repoHint: change.repositoryIdentity, filesLikelyTouched: [...change.scope], outOfScope: [...change.excludedScope],
@@ -1815,8 +1836,9 @@ export function bootstrapHarnessSync(api) {
             state.db.prepare(`INSERT OR IGNORE INTO sessions (id,slack_thread,slack_channel,requester,requester_gh,repo,branch,worktree_path,status,crystallised_prompt,created_at,updated_at,budget_usd,cost_usd,cycles_ran,estimated_usd,hard_timeout_seconds,plan_base_sha,minimum_runtime_version) VALUES (?,?,'',?,?,?,'','','planning',?,?,?,?,0,0,?,?,?,?,?)`)
                 .run(change.changeId, `control:${change.changeId}`, change.actorIdentity, change.actorIdentity, change.repositoryIdentity, JSON.stringify(controlledBrief), now, now, change.budgetUsd, change.budgetUsd, change.timeLimitSeconds, change.baseRevision, PLUGIN_VERSION.pluginVersion);
             change.assertCurrent();
-            const existingSession = state.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha FROM sessions WHERE id=?`).get(change.changeId);
-            const outcome = existingSession?.status === "done" && existingSession.pr_number && existingSession.published_sha
+            const existingSession = state.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha,published_at FROM sessions WHERE id=?`).get(change.changeId);
+            const terminalLegacyPublication = existingSession && ["done", "failed", "aborted", "accounting_incomplete"].includes(existingSession.status) && existingSession.pr_number && existingSession.final_pr_url && existingSession.published_sha && existingSession.published_at;
+            const outcome = terminalLegacyPublication
                 ? { status: "shipped", sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
                 : await runtime.loop.runConfirmedControl(change.changeId, controlledBrief, authorize);
             change.assertCurrent();
@@ -1835,15 +1857,17 @@ export function bootstrapHarnessSync(api) {
                 projectedCycles: Number(state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId)?.cycles_ran ?? 0),
                 projectedRetries: 0,
             });
-            const ghToken = await resolveGitToken(route);
-            const pr = await getPullRequest({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), ghToken, apiBase: route.apiBase });
-            const ci = await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken, apiBase: route.apiBase });
+            const prCredential = await boundProviderCredential("test");
+            const pr = await getPullRequest({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), ghToken: prCredential.token, apiBase: prCredential.route.apiBase });
+            const ciCredential = await boundProviderCredential("test");
+            const ci = await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken: ciCredential.token, apiBase: ciCredential.route.apiBase });
             const findings = review?.findings ? JSON.parse(review.findings) : [];
             const pullRequestFiles = [];
             const apiBase = route.apiBase ?? "https://api.github.com";
             for (let page = 1; page <= 30; page += 1) {
+                const filesCredential = await boundProviderCredential("test");
                 const response = await fetch(`${apiBase}/repos/${change.repositoryIdentity}/pulls/${Number(row.pr_number)}/files?per_page=100&page=${page}`, {
-                    headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
+                    headers: { Authorization: `Bearer ${filesCredential.token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
                 });
                 if (!response.ok)
                     throw new Error(`pull_request_files_unavailable:${response.status}`);
@@ -1862,22 +1886,46 @@ export function bootstrapHarnessSync(api) {
             }
             const changedPaths = [...new Set(pullRequestFiles.map((file) => file.filename))];
             const probeRows = state.db.prepare(`WITH ranked AS (
-        SELECT verification_status,commit_sha,ROW_NUMBER() OVER (PARTITION BY cycle,seq ORDER BY attempt DESC) AS rank
+        SELECT verification_status,commit_sha,ended_at,ROW_NUMBER() OVER (PARTITION BY cycle,seq ORDER BY attempt DESC) AS rank
         FROM sub_task_attempts WHERE session_id=?
-      ) SELECT verification_status,commit_sha FROM ranked WHERE rank=1`).all(change.changeId);
+      ) SELECT verification_status,commit_sha,ended_at FROM ranked WHERE rank=1`).all(change.changeId);
             const completedProbes = probeRows.filter((item) => item.verification_status === "passed").length;
             const indeterminateProbes = probeRows.filter((item) => item.verification_status !== "passed" && item.verification_status !== "failed").length;
             const hasSecurityFinding = findings.some((finding) => /secret|credential|security/i.test(JSON.stringify(finding)));
             const secretScanComplete = pullRequestFiles.every((file) => file.status === "removed" || typeof file.patch === "string");
             const secretScan = scanPatchForSecrets(pullRequestFiles.map((file) => file.patch ?? "").join("\n"));
             const publicationObservedAt = Number(row.published_at);
-            const operationsPerformed = [
-                ...(changedPaths.length > 0 ? ["implement"] : []),
-                ...(completedProbes > 0 ? ["test"] : []),
-                ...(probeRows.some((item) => Boolean(item.commit_sha)) ? ["commit"] : []),
-                ...(row.published_sha && Number.isFinite(publicationObservedAt) && publicationObservedAt > 0 ? ["push_feature_branch"] : []),
-                ...(row.pr_number && row.final_pr_url ? ["open_pull_request"] : []),
-            ];
+            const evidenceObservedAt = Date.now();
+            state.audit("control.pr_diff_observed", { sessionId: change.changeId, sha: pr.headSha, paths: changedPaths, prNumber: Number(row.pr_number) }, change.changeId);
+            state.audit("control.secret_scan_observed", { sessionId: change.changeId, sha: pr.headSha, complete: secretScanComplete, detected: secretScan.found }, change.changeId);
+            const providerReceipt = state.db.prepare(`SELECT role,MAX(ended_at) AS observed_at FROM provider_calls WHERE session_id=? AND status='completed' AND ended_at IS NOT NULL GROUP BY role`).all(change.changeId);
+            const shippedReceipt = state.db.prepare(`SELECT created_at,payload FROM audit_log WHERE session_id=? AND event='loop.shipped' ORDER BY id DESC LIMIT 1`).get(change.changeId);
+            const operationReceipts = [];
+            const workerReceipt = providerReceipt.find((receipt) => receipt.role === "worker");
+            if (changedPaths.length > 0 && workerReceipt)
+                operationReceipts.push({ operation: "implement", observedAt: workerReceipt.observed_at, source: "provider_calls:worker" });
+            const testReceipt = providerReceipt.filter((receipt) => receipt.role === "adversary").sort((a, b) => b.observed_at - a.observed_at)[0];
+            if (completedProbes > 0 && testReceipt)
+                operationReceipts.push({ operation: "test", observedAt: Math.max(testReceipt.observed_at, ...probeRows.filter((item) => item.verification_status === "passed").map((item) => item.ended_at)), source: "provider_calls+sub_task_attempts" });
+            const exactCommitReceipt = probeRows.filter((item) => item.commit_sha === String(row.published_sha)).sort((a, b) => b.ended_at - a.ended_at)[0];
+            if (row.published_sha && Number.isFinite(publicationObservedAt) && publicationObservedAt > 0) {
+                operationReceipts.push({ operation: "commit", observedAt: exactCommitReceipt?.ended_at ?? publicationObservedAt, sha: String(row.published_sha), source: exactCommitReceipt ? "sub_task_attempts" : "sessions.publication" });
+                operationReceipts.push({ operation: "push_feature_branch", observedAt: publicationObservedAt, sha: String(row.published_sha), source: "sessions.publication" });
+            }
+            if (row.pr_number && row.final_pr_url && shippedReceipt)
+                operationReceipts.push({ operation: "open_pull_request", observedAt: shippedReceipt.created_at, sha: String(row.published_sha), source: "audit_log:loop.shipped" });
+            const runtimeReceipt = state.db.prepare(`SELECT created_at,payload FROM audit_log WHERE session_id=? AND event='loop.preview_runtime' ORDER BY id DESC LIMIT 1`).get(change.changeId);
+            let runtimeEvidence = { status: config.vercel?.enabled ? "indeterminate" : "not_required" };
+            if (config.vercel?.enabled && runtimeReceipt) {
+                try {
+                    const measured = JSON.parse(runtimeReceipt.payload);
+                    runtimeEvidence = measured.status === "ok" && measured.headSha === String(row.published_sha) ? { status: "pass", sha: measured.headSha, observedAt: runtimeReceipt.created_at } : { status: measured.status === "build_failed" ? "fail" : "indeterminate", sha: measured.headSha, observedAt: runtimeReceipt.created_at };
+                }
+                catch {
+                    runtimeEvidence = { status: "indeterminate" };
+                }
+            }
+            const operationsPerformed = operationReceipts.map((receipt) => receipt.operation);
             return {
                 finalVerdict: review?.verdict === "pass" && row.merge_recommendation === "merge" ? "pass" : review?.verdict === "block" ? "block" : "revise",
                 blockingFindings: findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true, hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty }))).length,
@@ -1888,11 +1936,11 @@ export function bootstrapHarnessSync(api) {
                 expectedRepository: change.repositoryIdentity, expectedBaseRef: change.baseRef,
                 requiredCi: { registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0, requiredChecks: ci.checkNames, successfulChecks: ci.state === "success" ? ci.checkNames : [], sha: pr.headSha,
                     status: ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate" },
-                runtimeEvidence: { status: config.vercel?.enabled ? (row.deploy_status === "ready" ? "pass" : "indeterminate") : "not_required" },
-                securityEvidence: { status: !secretScanComplete ? "indeterminate" : review?.verdict === "pass" && !hasSecurityFinding && !secretScan.found ? "pass" : "fail" }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000,
+                runtimeEvidence,
+                securityEvidence: { status: !secretScanComplete ? "indeterminate" : review?.verdict === "pass" && !hasSecurityFinding && !secretScan.found ? "pass" : "fail", sha: String(row.published_sha), observedAt: evidenceObservedAt }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000,
                 changedPaths, allowedScope: change.scope, excludedScope: change.excludedScope,
-                operationsPerformed, allowedOperations: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
-                credentialRouteDigest: createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex"), expectedCredentialRouteDigest: change.credentialRouteDigest,
+                operationsPerformed, operationReceipts, allowedOperations: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
+                credentialRouteDigest: controlCredentialRouteDigest(route), expectedCredentialRouteDigest: change.credentialRouteDigest,
                 secretExposure: { detected: secretScan.found, evidence: !secretScanComplete ? "indeterminate" : secretScan.found ? "fail" : "pass" }, spendUsd: Number(row.cost_usd), budgetUsd: change.budgetUsd,
             };
         },

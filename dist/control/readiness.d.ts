@@ -15,6 +15,14 @@ export interface RequiredCiEvidence {
 export interface DeterminateEvidence {
     readonly status: "pass" | "fail" | "not_required" | "indeterminate";
     readonly detail?: string;
+    readonly sha?: string;
+    readonly observedAt?: number;
+}
+export interface OperationReceipt {
+    readonly operation: string;
+    readonly observedAt: number;
+    readonly sha?: string;
+    readonly source: string;
 }
 export interface PrReadinessInput {
     readonly finalVerdict: "pass" | "revise" | "block" | "crashed" | "indeterminate";
@@ -46,6 +54,7 @@ export interface PrReadinessInput {
     readonly allowedScope: readonly string[];
     readonly excludedScope: readonly string[];
     readonly operationsPerformed: readonly string[];
+    readonly operationReceipts: readonly OperationReceipt[];
     readonly allowedOperations: readonly string[];
     readonly credentialRouteDigest: string;
     readonly expectedCredentialRouteDigest: string;

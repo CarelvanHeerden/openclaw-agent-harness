@@ -3,7 +3,7 @@ import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
 import type { AutonomousControlEngine } from "./engine.js";
 import type { InternalMergeService } from "./merge.js";
 import type { ControlRepository, RunLease } from "./repository.js";
-import type { PrReadinessInput } from "./readiness.js";
+import { type PrReadinessInput } from "./readiness.js";
 export declare const CONTROL_PLANE_CONTRACT_VERSION = "control-plane-contract/v2";
 export declare const CONFIRM_DOMAIN = "control-plane-confirm/v2";
 export declare const MERGE_DOMAIN = "control-plane-merge/v2";
@@ -88,6 +88,8 @@ export interface ControlServiceDeps {
     dispatchLeaseMs?: number;
     maximumBudgetUsd?: number;
     maximumTimeSeconds?: number;
+    maximumCycles?: number;
+    maximumRetries?: number;
     minimumRuntimeVersion?: string;
 }
 export declare function controlDigest(domain: string, binding: unknown): string;
@@ -108,6 +110,7 @@ export declare class ControlPlaneService {
     result(changeId: string, context: TrustedControlContext): Record<string, unknown>;
     merge(changeId: string, context: TrustedControlContext): Promise<Record<string, unknown>>;
     private dispatch;
+    private persistDispatchCompletion;
     private recoverDispatches;
     private proposal;
     private requireAttestation;

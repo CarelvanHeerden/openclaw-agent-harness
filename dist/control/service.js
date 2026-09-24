@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createAuthorityEnvelope } from "./authority.js";
 import { createVerifiedMergeAuthorization } from "./merge.js";
+import { evaluatePrReadiness } from "./readiness.js";
 export const CONTROL_PLANE_CONTRACT_VERSION = "control-plane-contract/v2";
 export const CONFIRM_DOMAIN = "control-plane-confirm/v2";
 export const MERGE_DOMAIN = "control-plane-merge/v2";
@@ -77,7 +78,9 @@ export class ControlPlaneService {
         const id = `chg_${randomBytes(18).toString("base64url")}`;
         const briefDigest = digest(brief);
         const credentialRouteDigest = digest(resolved.credentialRoute);
-        const authority = createAuthorityEnvelope({ version: 1, requesterId: actor, conversationId: conversation, repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, briefDigest, policyDigest: resolved.policyDigest, scope: { paths: scope }, allowedActions: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"], limits: { budgetUsd: budget, activeTimeMs: time * 1000, cycles: 10, retries: 10 }, issuedAt: now, expiresAt: now + this.ttl, nonce: randomBytes(18).toString("base64url") });
+        const cycles = Math.max(1, Math.floor(this.deps.maximumCycles ?? 3));
+        const retries = Math.max(0, Math.floor(this.deps.maximumRetries ?? 10));
+        const authority = createAuthorityEnvelope({ version: 1, requesterId: actor, conversationId: conversation, repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, briefDigest, policyDigest: resolved.policyDigest, scope: { paths: scope }, allowedActions: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"], limits: { budgetUsd: budget, activeTimeMs: time * 1000, cycles, retries }, issuedAt: now, expiresAt: now + Math.max(this.ttl, time * 1000), nonce: randomBytes(18).toString("base64url") });
         let run = this.deps.repository.createRun({ id, authority, createdAt: now });
         run = this.deps.repository.transition({ runId: id, expectedVersion: run.version, to: "awaiting_confirmation", actor: "control_service", reason: "prepared", at: now });
         this.deps.db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,policy_version,minimum_runtime_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, 1, confirmable ? 1 : 0, resolved.baseRevision, JSON.stringify(brief), JSON.stringify(scope), JSON.stringify(excluded), credentialRouteDigest, resolved.securityClass, JSON.stringify(assumptions), now + this.ttl, CONTROL_PLANE_CONTRACT_VERSION, this.deps.minimumRuntimeVersion ?? "2.0.0-rc.13", now, now);
@@ -146,12 +149,8 @@ export class ControlPlaneService {
             throw new Error(`stale_dispatch:${changeId}`); };
         const input = await this.deps.executeEngine({ changeId, brief: JSON.parse(p.brief_json), actorIdentity: run.requesterId, conversationIdentity: run.conversationId, repositoryIdentity: run.repository, baseRef: run.baseRef, baseRevision: p.base_revision, budgetUsd: run.authorityEnvelope.limits.budgetUsd, timeLimitSeconds: Math.floor(run.authorityEnvelope.limits.activeTimeMs / 1000), scope: parseList(p.scope_json), excludedScope: parseList(p.excluded_scope_json), credentialRouteDigest: p.credential_route_digest, lease, assertCurrent, checkpoint: (sha, payload) => { assertCurrent(); this.deps.engine.checkpoint(changeId, lease, sha, payload); } });
         assertCurrent();
-        const readiness = this.deps.engine.evaluateReadiness(changeId, lease, input);
-        assertCurrent();
-        const generation = p.generation + 1;
-        this.deps.db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(readiness.contentDigest, changeId, generation, readiness.policyVersion, readiness.ready ? 1 : 0, readiness.ready ? readiness.verifiedSha : null, JSON.stringify(input), JSON.stringify(readiness.ready ? [] : readiness.failures), readiness.checkedAt);
-        this.deps.db.prepare(`UPDATE control_proposals SET generation=?,pr_number=?,pr_url=?,published_sha=?,readiness_digest=?,spend_usd=?,terminal_summary=?,updated_at=? WHERE run_id=?`).run(generation, input.pullRequest.number ?? null, input.pullRequest.url ?? null, input.publication?.sha ?? null, readiness.contentDigest, input.spendUsd, readiness.ready ? null : `Readiness failed: ${readiness.failures.join(", ")}`, this.now(), changeId);
-        this.deps.db.prepare(`UPDATE control_dispatch_intents SET status=?,completed_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE run_id=? AND lease_owner=? AND lease_fence=?`).run(readiness.ready ? "completed" : "failed", this.now(), this.now(), changeId, owner, intent.lease_fence);
+        const readiness = evaluatePrReadiness(input, this.now());
+        this.persistDispatchCompletion(changeId, owner, intent.lease_fence, lease, p, input, readiness);
         if (heartbeat)
             clearInterval(heartbeat);
     }
@@ -160,8 +159,8 @@ export class ControlPlaneService {
             clearInterval(heartbeat);
         if (String(error).includes("stale_dispatch") || String(error).includes("stale_write"))
             return;
-        const shipped = this.deps.db.prepare(`SELECT status,pr_number,published_sha FROM sessions WHERE id=?`).get(changeId);
-        if (shipped?.status === "done" && shipped.pr_number && shipped.published_sha) {
+        const shipped = this.deps.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha,published_at FROM sessions WHERE id=?`).get(changeId);
+        if (shipped?.pr_number && shipped.published_sha && shipped.published_at && shipped.final_pr_url) {
             this.deps.db.prepare(`UPDATE control_dispatch_intents SET status='pending',last_error=?,completed_at=NULL,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE run_id=? AND lease_owner=? AND lease_fence=?`).run(String(error).slice(0, 500), this.now(), changeId, owner, intent.lease_fence);
             if (lease && this.deps.repository.validateLease(lease, this.now()))
                 this.deps.repository.releaseLease(changeId, lease.ownerId, lease.fence, this.now());
@@ -172,6 +171,27 @@ export class ControlPlaneService {
             this.deps.repository.transitionFenced({ runId: changeId, expectedVersion: run.version, to: "failed", actor: "autonomous_engine", reason: "execution_failed", terminalCode: "execution_failed", lease, at: this.now() });
         this.deps.db.prepare(`UPDATE control_proposals SET terminal_summary='The change did not complete.',updated_at=? WHERE run_id=?`).run(this.now(), changeId);
         this.deps.db.prepare(`UPDATE control_dispatch_intents SET status='failed',last_error=?,completed_at=?,updated_at=? WHERE run_id=? AND lease_owner=? AND lease_fence=?`).run(String(error).slice(0, 500), this.now(), this.now(), changeId, owner, intent.lease_fence);
+    } }
+    persistDispatchCompletion(changeId, owner, intentFence, lease, p, input, readiness) { const at = this.now(), generation = p.generation + 1; this.deps.db.exec("BEGIN IMMEDIATE"); try {
+        const live = this.deps.db.prepare(`SELECT r.state,r.version,l.owner_id,l.fence,l.expires_at,l.authority_hash,d.status,d.lease_owner,d.lease_fence,d.lease_expires_at FROM control_runs r JOIN run_leases l ON l.run_id=r.id JOIN control_dispatch_intents d ON d.run_id=r.id WHERE r.id=?`).get(changeId);
+        if (!live || live.state !== "autonomous_run" || live.owner_id !== lease.ownerId || Number(live.fence) !== lease.fence || Number(live.expires_at) <= at || live.authority_hash !== lease.authorityHash || live.status !== "running" || live.lease_owner !== owner || Number(live.lease_fence) !== intentFence || Number(live.lease_expires_at) <= at)
+            throw new Error(`stale_dispatch:${changeId}`);
+        this.deps.db.prepare(`INSERT INTO control_readiness_results (run_id,lease_fence,ready,verified_sha,failures_json,created_at) VALUES (?,?,?,?,?,?)`).run(changeId, lease.fence, readiness.ready ? 1 : 0, readiness.ready ? readiness.verifiedSha : null, JSON.stringify(readiness.ready ? [] : readiness.failures), at);
+        this.deps.db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(readiness.contentDigest, changeId, generation, readiness.policyVersion, readiness.ready ? 1 : 0, readiness.ready ? readiness.verifiedSha : null, JSON.stringify(input), JSON.stringify(readiness.ready ? [] : readiness.failures), readiness.checkedAt);
+        this.deps.db.prepare(`UPDATE control_proposals SET generation=?,pr_number=?,pr_url=?,published_sha=?,readiness_digest=?,spend_usd=?,terminal_summary=?,updated_at=? WHERE run_id=?`).run(generation, input.pullRequest.number ?? null, input.pullRequest.url ?? null, input.publication?.sha ?? null, readiness.contentDigest, input.spendUsd, readiness.ready ? null : `Readiness failed: ${readiness.failures.join(", ")}`, at, changeId);
+        const changed = this.deps.db.prepare(`UPDATE control_runs SET state=?,version=version+1,updated_at=?,terminal_code=? ,pull_request_url=COALESCE(?,pull_request_url) WHERE id=? AND state='autonomous_run' AND version=?`).run(readiness.ready ? "pr_ready" : "failed", at, readiness.ready ? null : (readiness.failures[0] ?? "readiness_failed"), input.pullRequest.url ?? null, changeId, Number(live.version));
+        if (Number(changed.changes) !== 1)
+            throw new Error(`stale_write:${changeId}`);
+        this.deps.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) VALUES (?,'autonomous_run',?,?,?,?,?,?)`).run(changeId, readiness.ready ? "pr_ready" : "failed", Number(live.version), Number(live.version) + 1, "autonomous_engine", readiness.ready ? "strict_readiness_passed" : readiness.failures.join(","), at);
+        this.deps.db.prepare(`UPDATE control_dispatch_intents SET status=?,completed_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE run_id=? AND lease_owner=? AND lease_fence=?`).run(readiness.ready ? "completed" : "failed", at, at, changeId, owner, intentFence);
+        this.deps.db.exec("COMMIT");
+    }
+    catch (error) {
+        try {
+            this.deps.db.exec("ROLLBACK");
+        }
+        catch { }
+        throw error;
     } }
     async recoverDispatches() { try {
         const rows = this.deps.db.prepare(`SELECT run_id FROM control_dispatch_intents WHERE status='pending' OR (status='running' AND lease_expires_at<?)`).all(this.now());
