@@ -845,8 +845,6 @@ export interface OrchestratorDeps {
     resolveCredentialForMutation?: ConfirmedControlCredentialResolver;
   }) => Promise<string>;
 
-  /** Signal source: user Slack reactions on our messages. */
-  readReactions: (sessionId: string) => Promise<{ shipIt: boolean; abort: boolean; pause: boolean; budgetBump: boolean }>;
   reportProgress?: (sessionId: string, status: LoopStatus, meta?: unknown) => Promise<void>;
   /**
    * beta.77: harness-native OUTBOUND progress/terminal delivery. Fired from
@@ -1290,7 +1288,6 @@ export class OrchestratorLoop {
      */
     shipTimeReserved?: boolean;
   }): { nextStatus: LoopStatus; reason: string } {
-    if (input.reactions.abort) return { nextStatus: "aborted", reason: "user_abort_reaction" };
     // beta.129: a ceiling exists to stop us STARTING work we cannot finish. It
     // must never discard work that IS finished. Session d48ba433 spent 122
     // minutes, earned `verdict: pass` with zero blocking findings, and was
@@ -1299,13 +1296,10 @@ export class OrchestratorLoop {
     // Landing a passing review costs a push and an API call, no model spend, so
     // neither the clock nor the daily cap is a reason to refuse it.
     const terminalVerdictInHand =
-      input.currentStatus === "reviewing" && (input.verdict === "pass" || input.reactions.shipIt === true);
+      input.currentStatus === "reviewing" && input.verdict === "pass";
     if (!terminalVerdictInHand) {
       if (input.budgetExhausted) return { nextStatus: "aborted", reason: "budget_exhausted" };
       if (input.hardTimeout) return { nextStatus: "aborted", reason: "hard_timeout" };
-    }
-    if (input.reactions.shipIt && input.currentStatus === "reviewing") {
-      return { nextStatus: "done", reason: "user_ship_it_reaction" };
     }
     switch (input.currentStatus) {
       case "crystallising": return { nextStatus: "planning", reason: "crystallise_ok" };
@@ -1378,7 +1372,7 @@ export class OrchestratorLoop {
           // (renderPrBody #3). The post-ship merge recommendation is derived
           // from `reachedCleanPass=false`, so it comes out `do_not_merge`
           // (beta.34 hard gate): the PR exists, but a HUMAN must approve the
-          // merge (via harness_merge_pr, which will refuse and point to the
+          // merge (via harness_merge_change, which will refuse and point to the
           // GitHub UI, or via the UI directly) -- which is exactly the
           // "you review, then tell me to merge and verify the deploy" flow.
           // A `block` verdict never reaches here (returned above): a genuine
@@ -4208,8 +4202,6 @@ export class OrchestratorLoop {
             return;
           }
         }
-        const reactions = confirmedControl ? { shipIt: false, abort: false, pause: false, budgetBump: false } : await this.deps.readReactions(sessionId);
-        if (reactions.abort) { failed.err = "user_abort_reaction"; failed.seq = st.seq; return; }
         if (Date.now() > hardDeadlineMs) { failed.err = "hard_timeout"; failed.seq = st.seq; return; }
         if (confirmedControl && totalCost > row.budget_usd) { failed.err = "budget_exceeded"; failed.seq = st.seq; return; }
         // beta.78 (Feature 2): the SESSION budget is now SOFT. Crossing it
@@ -4231,12 +4223,11 @@ export class OrchestratorLoop {
         // spend TODAY (persistent budgets_daily ledger + the next sub-task's
         // estimate + the beta.61 review/push reserve) would cross daily_max.
         // budgets_daily already includes this session's recorded spend, so we
-        // must NOT add totalCost again (avoid double-count). budgetBump lets a
-        // user blow past caps deliberately (:moneybag: reaction).
+        // must NOT add totalCost again (avoid double-count). The daily cap is mandatory.
         {
           const subEst = this.estimateSubTaskCost(st, subTaskCosts);
           const dailyMax = this.dailyMaxUsd();
-          if (!reactions.budgetBump && dailyMax > 0) {
+          if (dailyMax > 0) {
             const dailySoFar = this.safeDailySpend(row.requester);
             // beta.61 reserve: keep headroom for the pending adversary review +
             // push so a daily-cap abort doesn't strand committed work one
@@ -6759,7 +6750,7 @@ export class OrchestratorLoop {
         // beta.60: bound the ENTIRE sub-task, not just the worker SDK call.
         // beta.42 wrapped runWorker in withTimeout, but a sub-task ALSO awaits
         // unbounded git/IO before and after the worker (worktreeHeadSha,
-        // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
+        // git/IO verification and budget recording). A
         // hang in ANY of those froze the run forever with the sub-task row
         // stuck `running`, sdk_session_id=null, cost_usd=0, and NO worker
         // process spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent,
@@ -6826,7 +6817,6 @@ export class OrchestratorLoop {
         // through the salvaging path -- it ships resource aborts and preserves
         // the worktree for the rest. Only an abort with nothing committed ends
         // up deleting anything.
-        if (failed.err === "user_abort_reaction") return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
         if (failed.err === "hard_timeout") return await this.finaliseAbortSalvaging(sessionId, "hard_timeout", cycle, totalCost);
         if (failed.err === "budget_exhausted") return await this.finaliseAbortSalvaging(sessionId, "budget_exhausted", cycle, totalCost);
         // beta.78 (Feature 2): per-user daily hard-cap abort.
@@ -6855,17 +6845,15 @@ export class OrchestratorLoop {
       // falling back to a conservative reserve. Abort at the cycle boundary
       // rather than blowing the budget by ~$0.83 on a review we can't pay for.
       {
-        const reactions = confirmedControl ? { shipIt: false, abort: false, pause: false, budgetBump: false } : await this.deps.readReactions(sessionId);
         const reviewEstimate = this.estimateReviewCost(subTaskCosts);
         // beta.78 (Feature 2): the review-gate hard abort now keys off the
         // per-user DAILY cap, not the (soft) session budget. Crossing the
         // session budget only WARNS; a review is only skipped/aborted when
-        // paying for it would blow the user's daily_max_usd. budgetBump
-        // (:moneybag:) still overrides.
+        // paying for it would blow the user's daily_max_usd. The cap is mandatory.
         const dailyMax = this.dailyMaxUsd();
         const dailySoFar = this.safeDailySpend(row.requester);
         let dailyWouldExceed = dailyMax > 0 && dailySoFar + reviewEstimate > dailyMax;
-        if (!reactions.budgetBump && dailyWouldExceed) {
+        if (dailyWouldExceed) {
           // beta.8 (adversary point): the adversary was the only actor that
           // caught the beta.6 confabulation, and beta.7's review-budget abort
           // HID that failure by skipping review on cost. The observable-side-
@@ -7215,17 +7203,6 @@ export class OrchestratorLoop {
           );
           this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
         }
-        // beta.69 (F5): if the user cancelled while the adversary SDK call was
-        // in flight (forensic 1f2e6642: cycle-3 review landed 2s AFTER the
-        // cancel and was persisted + transitioned on), discard this review and
-        // abort cleanly. We still record the spend already incurred (honest
-        // accounting) but do NOT let a post-cancel verdict drive a transition.
-        const postReviewReactions = confirmedControl ? { shipIt: false, abort: false, pause: false, budgetBump: false } : await this.deps.readReactions(sessionId);
-        if (postReviewReactions.abort) {
-          this.deps.state.audit("loop.review_discarded_post_cancel", { sessionId, cycle, verdict: report.verdict }, sessionId);
-          this.deps.logger.info("[loop] adversary review completed after user cancel; discarding verdict and aborting", { sessionId, cycle });
-          return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
-        }
       } catch (err) {
         // beta.43: a hung reviewer is a distinct, already-audited class.
         const accountingError = err instanceof AccountingPersistenceError;
@@ -7566,7 +7543,6 @@ export class OrchestratorLoop {
       // wall-clock guards reason with.
       if (cycleStartedAtMs > 0) maxCycleMs = Math.max(maxCycleMs, Date.now() - cycleStartedAtMs);
 
-      const reactions = confirmedControl ? { shipIt: false, abort: false, pause: false, budgetBump: false } : await this.deps.readReactions(sessionId);
       const blockingFindings = this.countBlockingFindings(report.findings);
       blockingCountsByCycle.push(blockingFindings);
       this.deps.state.audit(
@@ -7601,14 +7577,14 @@ export class OrchestratorLoop {
           hasWork: cycle >= 1,
           observedCycleMs: maxCycleMs,
         }),
-        reactions,
+        reactions: { shipIt: false, abort: false, pause: false },
         // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
         // per-user DAILY cap, not the (now-soft) session budget. Crossing the
         // session budget warns but does not stop; only the daily hard-cap
-        // (or :moneybag: override) blocks a further cycle.
+        // blocks a further cycle.
         budgetExhausted: confirmedControl
           ? totalCost > row.budget_usd
-          : !reactions.budgetBump && this.dailyMaxUsd() > 0 && this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
+          : this.dailyMaxUsd() > 0 && this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
         hardTimeout: Date.now() > hardDeadlineMs,
       };
       let decision = OrchestratorLoop.advance(advanceInput);
@@ -8094,7 +8070,7 @@ export class OrchestratorLoop {
 
     // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
     // the final review + whether we reached a clean pass. Persist it + the PR
-    // number for the harness_merge_pr hard gate.
+    // number for the harness_merge_change hard gate.
     const reachedCleanPass = lastReview.verdict === "pass";
     const mergeBlockers = this.mergeBlockingFindings(lastReview.findings);
     const rec = deriveMergeRecommendation({
@@ -10300,8 +10276,7 @@ export class OrchestratorLoop {
    * Split out of the gate below because repair now has to consult these
    * WITHOUT the session-budget comparison that used to sit beside them --
    * repair is funded from its own reserve, and folding the two together is what
-   * made implementation's overspend refuse it. `overridden` is the `:moneybag:`
-   * reaction or an answered budget question, which are the same authority.
+   * made implementation's overspend refuse it. `overridden` records an explicit operator budget decision.
    *
    * The per-user MONTHLY cap is deliberately absent: it lives in
    * `BudgetEnforcer.check` at session admission and is the one limit nothing in
@@ -10350,7 +10325,7 @@ export class OrchestratorLoop {
      * b120's rule, which measured against the undivided budget.
      */
     sessionBudgetUsd?: number,
-    /** `:moneybag:`, or an answered budget question. */
+    /** An explicit operator budget decision. */
     overridden = false,
   ): boolean {
     try {
@@ -10416,7 +10391,7 @@ export class OrchestratorLoop {
         // Nudge for a budget increase when the remaining daily headroom looks
         // low relative to what this run has already spent.
         if (remaining < totalCost) {
-          text += ` That may be low to finish this — reply with a higher budget or drop :moneybag: to override the cap.`;
+          text += ` That may be low to finish this — prepare a new change with a higher budget if needed.`;
         }
       }
       this.deps.postWarning?.(sessionId, text);
@@ -10435,7 +10410,7 @@ export class OrchestratorLoop {
         sessionId,
         `:octagonal_sign: Daily budget reached for <@${user}> ` +
           `($${dailySoFar.toFixed(2)} / $${dailyMax.toFixed(2)}). This run is stopping. ` +
-          `Drop :moneybag: to override the cap, or resume tomorrow when the daily budget resets (UTC).`,
+          `Prepare a new change after the daily budget resets (UTC), or choose a smaller scope.`,
       );
     } catch {
       /* best-effort */
@@ -10452,7 +10427,7 @@ export class OrchestratorLoop {
    * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
    * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
    * idle waiting for `a trusted host confirmation`. Nothing was left to read the flag. The
-   * Slack reaction poller skips `awaiting_clarification`, the dead-loop sweep
+   * Paused clarification rows are handled outside the worker loop; the dead-loop sweep
    * queries only `executing|planning|reviewing`, and recovery excludes it on
    * purpose. So the cancel was recorded, acknowledged, and never happened.
    *
@@ -10567,7 +10542,7 @@ export class OrchestratorLoop {
   private terminalCauseFor(reason: string, fallback: "failed" | "aborted"): string {
     if (reason === "budget_exhausted" || reason === "daily_max_exhausted") return "budget_exhausted";
     if (reason === "hard_timeout") return "hard_timeout";
-    if (reason === "user_abort_reaction" || reason.startsWith("user_cancel")) return "user_cancel";
+    if (reason.startsWith("user_cancel")) return "user_cancel";
     if (reason.startsWith("accounting_incomplete")) return "accounting_incomplete";
     return fallback;
   }
@@ -12237,7 +12212,7 @@ export class OrchestratorLoop {
    *   - this cycle's own sub-task self-verification is fully GREEN (the latest
    *     verification for every sub-task passed),
    * open the PR anyway with `merge_recommendation = 'needs_human_review'` so a
-   * human can inspect the adversary-motivated commits. The harness_merge_pr
+   * human can inspect the adversary-motivated commits. The harness_merge_change
    * hard gate refuses `needs_human_review` (never auto-overridable), so this
    * cannot silently ship unverified code -- it just preserves the deliverable.
    * OTHERWISE fail terminally but PRESERVE the worktree (fix #3) so the branch

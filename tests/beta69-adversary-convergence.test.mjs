@@ -238,10 +238,9 @@ test("beta69 (F4): worktree bootstrap re-installs when a declared check-script b
   assert.doesNotMatch(src, /"ci", "--ignore-scripts"/);
 });
 
-test("beta69 (F5): loop discards a post-cancel adversary review + audits converged_on_green (source)", () => {
+test("beta69 (F5): convergence remains while retired post-review interaction logic is absent (source)", () => {
   const src = S("src/orchestrator/legacy-loop.ts");
-  assert.match(src, /"loop\.review_discarded_post_cancel"/);
-  assert.match(src, /postReviewReactions\.abort/);
+  assert.doesNotMatch(src, /review_discarded_post_cancel|postReviewReactions/);
   assert.match(src, /"loop\.converged_on_green"/);
   // priorFindings threaded from the prior cycle's review
   assert.match(src, /priorFindings: lastReview\?\.findings/);

@@ -124,13 +124,9 @@ test("max_cycle_extensions: 0 restores the pre-b119 hard ceiling", skip, () => {
   assert.equal(d.reason, "shipped_max_cycles_revise_converging");
 });
 
-test("an extension never overrides abort, budget exhaustion or hard timeout", skip, () => {
+test("an extension never overrides budget exhaustion or hard timeout", skip, () => {
   assert.equal(OrchestratorLoop.advance(reviewing({ budgetExhausted: true })).nextStatus, "aborted");
   assert.equal(OrchestratorLoop.advance(reviewing({ hardTimeout: true })).nextStatus, "aborted");
-  assert.equal(
-    OrchestratorLoop.advance(reviewing({ reactions: { shipIt: false, abort: true, pause: false } })).nextStatus,
-    "aborted",
-  );
 });
 
 test("a `block` verdict is never extended", skip, () => {

@@ -433,13 +433,6 @@ export interface OrchestratorDeps {
         requester?: string;
         resolveCredentialForMutation?: ConfirmedControlCredentialResolver;
     }) => Promise<string>;
-    /** Signal source: user Slack reactions on our messages. */
-    readReactions: (sessionId: string) => Promise<{
-        shipIt: boolean;
-        abort: boolean;
-        pause: boolean;
-        budgetBump: boolean;
-    }>;
     reportProgress?: (sessionId: string, status: LoopStatus, meta?: unknown) => Promise<void>;
     /**
      * beta.77: harness-native OUTBOUND progress/terminal delivery. Fired from
@@ -1357,8 +1350,7 @@ export declare class OrchestratorLoop {
      * Split out of the gate below because repair now has to consult these
      * WITHOUT the session-budget comparison that used to sit beside them --
      * repair is funded from its own reserve, and folding the two together is what
-     * made implementation's overspend refuse it. `overridden` is the `:moneybag:`
-     * reaction or an answered budget question, which are the same authority.
+     * made implementation's overspend refuse it. `overridden` records an explicit operator budget decision.
      *
      * The per-user MONTHLY cap is deliberately absent: it lives in
      * `BudgetEnforcer.check` at session admission and is the one limit nothing in
@@ -1405,7 +1397,7 @@ export declare class OrchestratorLoop {
      * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
      * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
      * idle waiting for `a trusted host confirmation`. Nothing was left to read the flag. The
-     * Slack reaction poller skips `awaiting_clarification`, the dead-loop sweep
+     * Paused clarification rows are handled outside the worker loop; the dead-loop sweep
      * queries only `executing|planning|reviewing`, and recovery excludes it on
      * purpose. So the cancel was recorded, acknowledged, and never happened.
      *
@@ -1824,7 +1816,7 @@ export declare class OrchestratorLoop {
      *   - this cycle's own sub-task self-verification is fully GREEN (the latest
      *     verification for every sub-task passed),
      * open the PR anyway with `merge_recommendation = 'needs_human_review'` so a
-     * human can inspect the adversary-motivated commits. The harness_merge_pr
+     * human can inspect the adversary-motivated commits. The harness_merge_change
      * hard gate refuses `needs_human_review` (never auto-overridable), so this
      * cannot silently ship unverified code -- it just preserves the deliverable.
      * OTHERWISE fail terminally but PRESERVE the worktree (fix #3) so the branch

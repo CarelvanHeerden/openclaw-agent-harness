@@ -80,7 +80,7 @@ export interface DeployVerifyResult {
 }
 /**
  * beta.34: verify the Vercel deployment for a specific commit SHA (the merge
- * commit produced by harness_merge_pr). Polls deployments filtered to the
+ * commit produced by harness_merge_change). Polls deployments filtered to the
  * project, matches on `meta.githubCommitSha`, waits for a terminal state,
  * and on ERROR pulls the build logs. Returns a compact result for reporting.
  */

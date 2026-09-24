@@ -1,9 +1,8 @@
 # Optional Slack app manifest for outbound control-plane notifications.
 #
-# The v2 harness has no Slack listener, dispatcher, slash command, interactive
-# callback, or reaction control protocol. Ordinary users drive it exclusively
-# through the four host-authenticated control-plane tools. Install this app only
-# when the host should post lifecycle messages into Slack.
+# Ordinary users drive the product through four host-authenticated control-plane
+# tools. Install this app only when the host should post lifecycle messages into
+# Slack.
 
 display_information:
   name: OpenClaw Agent Harness
@@ -12,7 +11,6 @@ display_information:
   long_description: |
     Posts concise lifecycle notifications for changes prepared, confirmed,
     executed, reviewed, and published through the OpenClaw control plane.
-    The app never starts work from Slack messages or emoji reactions.
 
 features:
   bot_user:

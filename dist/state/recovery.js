@@ -7,17 +7,9 @@
  *
  *   - stale by clock (updated_at older than `recovery.stale_after_seconds`):
  *       mark 'interrupted' and post a Slack note.
- *   - fresh:
- *       LISTENER mode (slack.listener_enabled): mark 'resumable' and post a
- *         Slack note; the reaction handler resumes on a human :arrows_counterclockwise:.
- *       AGENT-ORCHESTRATED mode (default, slack.listener_enabled=false):
- *         there is NO reaction poller and NO Slack listener, so a 'resumable'
- *         session can NEVER be resumed -- it strands silently (and holds its
- *         thread lock). This was the beta.29 ProjectThanos symptom: the
- *         container restarted ~4min into a run, the session sat at 'planning',
- *         recovery marked it 'resumable', and the log went dead with nothing
- *         ever driving it forward. In this mode we AUTO-RESUME fresh sessions
- *         by re-driving the loop from their stored crystallised brief.
+ *   - fresh: auto-resume by re-driving the loop from the stored crystallised
+ *       brief when agent-orchestrated recovery is enabled; otherwise mark the
+ *       session resumable for an operator-managed recovery path.
  *
  * Stale sessions (older than the hard timeout) are always marked
  * 'interrupted' -- they're too old to safely auto-resume.
@@ -52,7 +44,7 @@ export function recordResumeAndCheckBreaker(sessionId, maxResumes, windowSeconds
     return { tripped: kept.length > maxResumes, countInWindow: kept.length };
 }
 // beta.57 (P3): 'resumable' is included. A session marked 'resumable' by a
-// LISTENER-mode recovery (or by an older build) whose process then died again
+// an older recovery path whose process then died again
 // was invisible to every later recovery scan -- it held its thread lock and
 // stranded forever. In agent-orchestrated mode it now auto-resumes like any
 // other fresh in-flight session; stale ones age out to 'interrupted'.
@@ -97,8 +89,8 @@ export async function recoverSessions(state, opts) {
                 });
                 continue;
             }
-            // No reaction poller / listener in this mode -> a 'resumable' session
-            // would strand forever. Auto-resume by re-driving the loop.
+            // A fresh non-terminal session would otherwise strand. Auto-resume by
+            // re-driving the loop.
             resumable++;
             // beta.81 (Track C / C4): circuit breaker. Count this resume attempt; if
             // the session has bounced too many times in the window, HARD-STOP it
@@ -132,8 +124,7 @@ export async function recoverSessions(state, opts) {
             else {
                 // beta.64 (P1-7): carry a visible `cause` so the audit trail explains
                 // WHY the session is being auto-resumed (previously it fired with no
-                // reason). An agent-orchestrated harness has no reaction poller/listener,
-                // so a non-terminal session left by a restart/crash would strand -- the
+                // reason). A non-terminal session left by a restart/crash would strand, so the
                 // recovery re-drives it. `wasStatus` is the phase it was interrupted in.
                 state.audit("recovery.auto_resuming", { sessionId: s.id, wasStatus: s.status, cause: "interrupted_non_terminal_agent_orchestrated" }, s.id);
                 try {

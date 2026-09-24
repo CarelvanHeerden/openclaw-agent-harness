@@ -72,7 +72,7 @@ export interface CrystallisedBrief {
   riskLevel: "low" | "medium" | "high";
   /**
    * beta.21: OKF concept references carried through from the caller. When
-   * the OpenClaw agent invokes `harness_run` with concepts already surfaced
+   * the OpenClaw agent invokes `harness_prepare_change` with concepts already surfaced
    * by the OKF plugin's context enrichment, they land here and propagate
    * to the lead planner + workers. Optional — pre-beta.21 briefs simply
    * omit the field.
@@ -212,7 +212,7 @@ export interface CrystalliserDeps {
    * beta.21: the crystalliser callable now receives optional pre-known
    * concept references so the SDK-side prompt can enrich the brief with
    * concept-aware `filesLikelyTouched` / `outOfScope` guidance. Callers
-   * that don't have OKF context (e.g. the legacy Slack listener path) pass
+   * that don't have OKF context pass
    * `undefined` and behaviour is identical to pre-beta.21.
    */
   callCrystalliser: (userText: string, classifier: ClassifierResult, concepts?: OkfConceptRef[]) => Promise<CrystallisedBrief & Partial<RoleCost>>;

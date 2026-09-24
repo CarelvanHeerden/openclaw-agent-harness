@@ -699,7 +699,7 @@ export async function runLeadPlanner(
   // beta.73 (D2): when the brief carries a `branchHint` that names an EXISTING
   // remote branch (e.g. an open PR's branch) and it is NOT already a pinned
   // revise, promote it to `pinnedBranch`. This is the fix for session
-  // 70341bc3: a harness_run brief said `branchHint:
+  // 70341bc3: a harness_prepare_change brief said `branchHint:
   // harness/grc-changes-export-mode` + "build on the existing branch (PR #876),
   // do not open a new PR", but branchHint is only a NAME hint -- reuse
   // (checkout the branch HEAD) was gated on `pinnedBranch`, which was unset. So

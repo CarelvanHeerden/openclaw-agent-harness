@@ -439,7 +439,7 @@ export declare function runCrystalliserSdk(params: {
      * present, they are formatted into the system prompt so the crystalliser
      * can reference them by id when building the brief. Populated end-to-end
      * only when the OpenClaw agent surfaced OKF blocks in its own context
-     * and forwarded them to `harness_run`; empty otherwise (behaviour is
+     * and forwarded them to `harness_prepare_change`; empty otherwise (behaviour is
      * identical to pre-beta.21).
      */
     concepts?: OkfConceptRef[];

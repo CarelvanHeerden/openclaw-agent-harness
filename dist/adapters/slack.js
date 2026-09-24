@@ -1,10 +1,7 @@
 /**
  * Slack adapter.
  *
- * The harness needs to:
- *   - post replies into a thread
- *   - add/remove emoji reactions (for lifecycle signals)
- *   - listen for reactions on our own messages (ship_it, abort, pause, budget_bump)
+ * The harness uses this adapter only for outbound messages.
  *
  * We prefer to use OpenClaw's built-in messaging pipeline (`api.sendMessage`
  * / hook events) instead of hitting Slack's Web API directly. This keeps
@@ -23,22 +20,6 @@ export class SlackAdapter {
     }
     async postNew(channel, text) {
         return this.deps.sendMessage({ channel, text });
-    }
-    async addReaction(channel, ts, name) {
-        if (!this.deps.addReaction) {
-            this.deps.logger.warn("[slack] addReaction not wired; skipping", { channel, ts, name });
-            return;
-        }
-        try {
-            await this.deps.addReaction({ channel, ts, name });
-        }
-        catch (err) {
-            // Slack returns already_reacted -- harmless, log and continue.
-            const msg = String(err);
-            if (/already_reacted/.test(msg))
-                return;
-            this.deps.logger.warn("[slack] addReaction failed", { channel, ts, name, err: msg });
-        }
     }
 }
 //# sourceMappingURL=slack.js.map

@@ -87,25 +87,6 @@ export interface HarnessPluginApi {
     }) => (() => void) | {
         dispose?: () => void;
     };
-    /** Host-dispatched commands bypass the model/tool path. */
-    registerCommand?: (command: {
-        name: string;
-        description: string;
-        acceptsArgs: boolean;
-        requireAuth: boolean;
-        channels?: string[];
-        handler: (context: {
-            senderId?: string;
-            channel?: string;
-            isAuthorizedSender?: boolean;
-            args?: string;
-            commandBody?: string;
-        }) => Promise<{
-            text: string;
-        }> | {
-            text: string;
-        };
-    }) => unknown;
     registerService?: (svc: {
         id: string;
         start?: () => Promise<void> | void;
@@ -127,11 +108,6 @@ export interface HarnessPluginApi {
     }) => Promise<{
         ts: string;
     }>;
-    addReaction?: (input: {
-        channel: string;
-        ts: string;
-        name: string;
-    }) => Promise<void>;
     /**
      * Optional -- lookup for calling another plugin's tool. beta.110: NO LONGER
      * used for credentials; the harness owns its vault. Retained for other
@@ -333,7 +309,7 @@ export interface PreflightResult {
     /** Provenance of the routing decision, for logging. */
     provenance?: string;
 }
-/** beta.34: result of a harness_merge_pr invocation. */
+/** beta.34: result of a harness_merge_change invocation. */
 export interface MergePrResult {
     ok: boolean;
     /** True when the hard gate refused the merge (recommendation = do_not_merge / needs_human_review). */

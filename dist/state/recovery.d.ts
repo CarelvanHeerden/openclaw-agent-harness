@@ -7,17 +7,9 @@
  *
  *   - stale by clock (updated_at older than `recovery.stale_after_seconds`):
  *       mark 'interrupted' and post a Slack note.
- *   - fresh:
- *       LISTENER mode (slack.listener_enabled): mark 'resumable' and post a
- *         Slack note; the reaction handler resumes on a human :arrows_counterclockwise:.
- *       AGENT-ORCHESTRATED mode (default, slack.listener_enabled=false):
- *         there is NO reaction poller and NO Slack listener, so a 'resumable'
- *         session can NEVER be resumed -- it strands silently (and holds its
- *         thread lock). This was the beta.29 ProjectThanos symptom: the
- *         container restarted ~4min into a run, the session sat at 'planning',
- *         recovery marked it 'resumable', and the log went dead with nothing
- *         ever driving it forward. In this mode we AUTO-RESUME fresh sessions
- *         by re-driving the loop from their stored crystallised brief.
+ *   - fresh: auto-resume by re-driving the loop from the stored crystallised
+ *       brief when agent-orchestrated recovery is enabled; otherwise mark the
+ *       session resumable for an operator-managed recovery path.
  *
  * Stale sessions (older than the hard timeout) are always marked
  * 'interrupted' -- they're too old to safely auto-resume.
@@ -32,8 +24,7 @@ export interface RecoveryOptions {
         warn: (m: string, meta?: unknown) => void;
     };
     /**
-     * When true (agent-orchestrated mode, no reaction poller / Slack listener),
-     * fresh in-flight sessions are auto-resumed instead of being left in the
+     * When true, fresh in-flight sessions are auto-resumed instead of being left in the
      * un-resumable 'resumable' state. `autoResume` re-drives the loop from the
      * session's stored crystallised brief. Must be provided when
      * `agentOrchestrated` is true.

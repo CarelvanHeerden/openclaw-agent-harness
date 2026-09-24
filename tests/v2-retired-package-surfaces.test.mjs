@@ -1,49 +1,95 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
-const retired = [
+const retiredModules = [
   "orchestrator/budget-extension",
   "orchestrator/time-extension",
   "slack/channel-listener",
   "slack/dispatcher",
+  "hooks/okf-auto-forward",
+];
+const retiredPackagePatterns = [
+  /harness_run/g,
+  /harness_start_session/g,
+  /harness_merge_pr/g,
+  /listener_enabled/g,
+  /readReactions/g,
+  /:moneybag:/g,
+  /\bbudget_bump\b/g,
+  /\bship_it\b/g,
+  /user_abort_reaction/g,
+  /user_ship_it_reaction/g,
+  /reaction_added/g,
+  /reaction_removed/g,
+  /reactions:(?:read|write)/g,
+  /slash_commands/g,
+  /\/harness-(?:onboard|run|start|merge)\b/g,
+  /registerCommand\s*[?(:]/g,
 ];
 
+function filesUnder(dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) out.push(...filesUnder(path));
+    else out.push(path);
+  }
+  return out;
+}
+
 test("retired interactive modules are absent from source and built output", () => {
-  for (const module of retired) {
+  for (const module of retiredModules) {
     assert.equal(existsSync(resolve(root, `src/${module}.ts`)), false, `src/${module}.ts`);
     assert.equal(existsSync(resolve(root, `dist/${module}.js`)), false, `dist/${module}.js`);
     assert.equal(existsSync(resolve(root, `dist/${module}.d.ts`)), false, `dist/${module}.d.ts`);
   }
 });
 
-test("the exact npm payload excludes retired interactive modules", () => {
-  const snapshot = mkdtempSync(resolve(tmpdir(), "oah-pack-snapshot-"));
+test("the exact packed artifact has only the four ordinary operations and no retired interaction surface", () => {
+  const temp = mkdtempSync(resolve(tmpdir(), "oah-packed-surface-"));
   try {
-    for (const path of ["package.json", "LICENSE", "README.md", "openclaw.plugin.json", "dist", "docs", "scripts"]) {
-      cpSync(resolve(root, path), resolve(snapshot, path), { recursive: true });
-    }
-    const packed = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-      cwd: snapshot,
+    const packed = JSON.parse(execFileSync("npm", ["pack", root, "--json", "--ignore-scripts", "--pack-destination", temp], {
+      cwd: temp,
       encoding: "utf8",
     }));
     const artifact = packed[0] ?? Object.values(packed)[0];
-    const files = artifact.files.map(({ path }) => path);
-    for (const module of retired) {
-      assert.ok(!files.some((path) => path.startsWith(`dist/${module}.`)), `${module} leaked into npm payload`);
+    const tarball = join(temp, artifact.filename);
+    execFileSync("tar", ["-xzf", tarball, "-C", temp]);
+    const packageRoot = join(temp, "package");
+    const files = filesUnder(packageRoot);
+    const leaks = [];
+    for (const path of files) {
+      const bytes = readFileSync(path);
+      if (bytes.includes(0)) continue;
+      const text = bytes.toString("utf8");
+      for (const pattern of retiredPackagePatterns) {
+        pattern.lastIndex = 0;
+        if (pattern.test(text)) leaks.push(`${path.slice(packageRoot.length + 1)}: ${pattern}`);
+      }
     }
+    assert.deepEqual(leaks, []);
+
+    const registration = readFileSync(join(packageRoot, "dist/tools/registration.js"), "utf8");
+    const names = [...registration.matchAll(/"(harness_[a-z_]+)"/g)].map((match) => match[1]);
+    assert.deepEqual([...new Set(names)].sort(), [
+      "harness_change_result",
+      "harness_confirm_change",
+      "harness_merge_change",
+      "harness_prepare_change",
+    ]);
   } finally {
-    rmSync(snapshot, { recursive: true, force: true });
+    rmSync(temp, { recursive: true, force: true });
   }
 });
 
-test("public config and Slack deployment expose no extension, listener, or reaction controls", () => {
+test("public config and Slack deployment expose only outbound control-plane settings", () => {
   const schema = JSON.parse(read("src/config.schema.json"));
   const manifest = JSON.parse(read("openclaw.plugin.json")).configSchema;
   const goneLoop = [
@@ -55,10 +101,11 @@ test("public config and Slack deployment expose no extension, listener, or react
   ];
   for (const publicSchema of [schema, manifest]) {
     assert.equal(publicSchema.properties.slack.properties.listener_enabled, undefined);
+    assert.equal(publicSchema.properties.slack.properties.reactions, undefined);
     for (const key of goneLoop) assert.equal(publicSchema.properties.loop.properties[key], undefined, key);
   }
   const slackManifest = read("deploy/slack-app-manifest.yaml");
-  assert.doesNotMatch(slackManifest, /reaction_added|reaction_removed|reactions:(?:read|write)|event_subscriptions|interactivity|slash_commands/);
+  assert.doesNotMatch(slackManifest, /listener|reaction|slash|interactiv/i);
   assert.match(slackManifest, /chat:write/);
 });
 

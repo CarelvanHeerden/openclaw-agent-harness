@@ -34,7 +34,7 @@ The plugin reads configuration only from `plugins.entries["openclaw-agent-harnes
 
 Git provider credentials are resolved through configured PAT routing and the credential vault. Tokens are used only in provider requests and are never persisted in control proposals, readiness records, logs, or public results.
 
-Slack reactions, interactive answers, revise commands, and progress delivery are not part of the ordinary control-plane product.
+The ordinary product surface is limited to the four authenticated control-plane operations.
 
 ## Generated schema reference
 
@@ -59,8 +59,8 @@ setting it REPLACES the default rather than extending it.
 
 #### `slack`
 
-- **`slack.channel`** — `string`, default `"C0XXXXXXXXX"`. Slack channel ID (e.g. C0DEVCHAN). Optional: outbound posting only, since beta.34 removed the listener.
-- **`slack.authorised_users`** — `string[]`, default `["U000000"]`. Slack user IDs allowed to open sessions or drop control reactions
+- **`slack.channel`** — `string`, default `"C0XXXXXXXXX"`. Slack channel ID (e.g. C0DEVCHAN). Optional: outbound posting only.
+- **`slack.authorised_users`** — `string[]`, default `["U000000"]`. Slack user IDs allowed to operate the control plane
 
 #### `budgets`
 
@@ -106,7 +106,7 @@ setting it REPLACES the default rather than extending it.
 - **`loop.stuck_loop_seconds`** — `integer`, default `2700`. beta.40: reclaim threshold for a wedged loop. If run() is asked to start a session still marked running by the module-level re-entrancy guard, but its last_checkpoint_at/updated_at has not advanced for this many seconds, the tracked loop is treated as dead (torn down with a prior runtime on plugin re-register), the stale guard entry is force-cleared, and the fresh run proceeds. Must exceed a normal long worker SDK call so a busy loop is never reclaimed.
 - **`loop.teardown_drain_seconds`** — `integer`, default `3600`. beta.41: max seconds teardown() waits for a still-running loop from the runtime being torn down to finish before closing its state DB. A plugin re-register (OKF / gateway auto-discovery churn when plugins.allow is empty) schedules a fire-and-forget teardown of the previous runtime; closing the DB out from under an in-flight loop.run() crashes the run. Draining first prevents that. Bounded so a wedged loop can't block teardown forever.
 - **`loop.stall_watchdog_seconds`** — `integer`, default `90`. beta.42: active stall-watchdog delay. When the re-entrancy guard skips a re-entry (loop.run_skipped_already_running) it arms a timer for this long, then re-checks the session's progress; if none, the wedged loop's stale guard handle is force-deregistered (loop.wedge_detected) so recovery/next-run can reclaim it. Makes beta.40's passive reclaim active -- a loop that wedges with no further re-register is now noticed.
-- **`loop.subtask_deadline_seconds`** — `integer`, default `2100`. beta.60: max wall-clock seconds a single sub-task's dispatch (runOne) may run before it is force-failed. beta.42 bounded only the worker SDK call, but runOne also awaits unbounded git/IO (worktreeHeadSha, readReactions, verify probes, recordSpend) between the row-flip-to-running and the worker spawn; a hang in any of those wedged the whole dispatcher (b59 PR#858 seq-7: 5h30m silent, row stuck running with sdk_session_id=null and no worker process). This bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin.
+- **`loop.subtask_deadline_seconds`** — `integer`, default `2100`. beta.60: max wall-clock seconds a single sub-task's dispatch (runOne) may run before it is force-failed. The worker SDK call and surrounding git/IO verification can all block between the row transition and worker completion; this bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin.
 - **`loop.budget_reserve_ratio`** — `number`, default `0.15`. beta.61: fraction of the total session budget held in reserve for the pending adversary review + push while a cycle's review hasn't run yet. The pre-sub-task projection adds this reserve so the loop aborts early (before a sub-task that would leave no room to finish the cycle) instead of completing all sub-tasks and dying one review short of a PR (the b60 smoke failure). Clamped [0,0.9].
 - **`loop.env_wait_retry_enabled`** — `boolean`, default `true`. beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn 'Monitor event' (env-wait hallucination) and made no committed change, re-invoke the sub-task ONCE with corrective context (branched on whether it wrote-but-didn't-commit) instead of failing the run. Set false to disable the retry; the failure is still tagged loop.worker_env_wait_hallucination.
 - **`loop.worker_protocol_retry_enabled`** — `boolean`, default `true`. rc.2: retry a sub-task whose worker ended with no commit for a reason the harness can correct itself -- a safety-guard denial that named a permitted alternative (e.g. inline code denied, 'write a script file instead'), or a turn that ended narrating what it was about to do. The retry prompt quotes the denial verbatim, names the permitted route and restates the observable contract. Set false to disable the retry; classification and audit events still fire.

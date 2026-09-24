@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   pr_closed_at             INTEGER,          -- epoch ms; NULL until watcher observes close
   pr_merged_at             INTEGER,          -- epoch ms; NULL if closed without merge
   -- beta.34: post-ship merge recommendation + deploy verification
-  pr_number                INTEGER,          -- GitHub PR number (for harness_merge_pr)
+  pr_number                INTEGER,          -- GitHub PR number used by the control merge operation
   merge_recommendation     TEXT,             -- 'merge' | 'do_not_merge' | 'needs_human_review'
   merge_recommendation_reason TEXT,          -- human-readable reasoning
   deploy_status            TEXT,             -- 'ready'|'error'|'pending'|'unavailable'|'reverted'|'repair_budget_paused'|NULL
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- beta.81 (Track A / A1): the harness-owned SESSION cost ESTIMATE surfaced up
   -- front (from recommendBudget). Persisted so the control result / terminal /
   -- the loop.start audit echo "Estimated ~$X; cap $Y" independent of whether
-  -- the agent relays the harness_run note.
+  -- the agent relays the prepared-change note.
   estimated_usd            REAL,              -- session cost estimate (USD) at start
   -- beta.123: a per-session wall-clock ceiling, set when the operator answers
   -- the confirmation gate with something like "confirm, budget $40 with a time

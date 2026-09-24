@@ -237,7 +237,7 @@ export interface BriefConfig {
      */
     bimodal_min_interpretations: number;
     /**
-     * beta.120 (brief fidelity): directories `harness_run`'s `requestPath` may
+     * beta.120 (brief fidelity): directories `harness_prepare_change`'s `requestPath` may
      * read a specification from. EMPTY BY DEFAULT, which disables file reads --
      * the harness holds GitHub tokens and a brief's contents reach model prompts
      * and PR bodies, so an operator must name the safe directories explicitly.
@@ -659,7 +659,7 @@ export interface LoopConfig {
      * it is force-failed. beta.42 bounded only the worker SDK call
      * (worker_timeout_seconds); but runOne ALSO awaits unbounded git/IO between
      * the row-flip-to-running and the worker spawn -- notably worktreeHeadSha
-     * (git rev-parse), readReactions, verifySubTaskOutput probes, and
+     * (git rev-parse), verifySubTaskOutput probes, and
      * budget.recordSpend. A hang in ANY of those wedges the whole dispatcher at
      * `await Promise.race(inFlight)` with the sub-task row stuck `running`,
      * `sdk_session_id=null`, `cost_usd=0`, and NO worker process ever spawned --
@@ -1450,7 +1450,7 @@ export interface DeployRepairConfig {
      * loop (all attempts) shares this pool; if exhausted mid-loop, the harness
      * reverts to a working `main` and pauses for the user's go-ahead. Default
      * 0.25 (25% of daily max). User-overridable per invocation via the
-     * `harness_merge_pr` `repairBudgetUsd` param.
+     * `harness_merge_change` `repairBudgetUsd` param.
      */
     budget_ratio: number;
 }

@@ -66,11 +66,11 @@ test("advance: beta.35 — adversary BLOCK on last cycle still FAILS (ships noth
     assert.equal(r.reason, "adversary_block");
   });
 
-test("advance: user abort short-circuits everything",
+test("advance: retired abort input is ignored",
   { skip: OrchestratorLoop === null }, () => {
     const r = OrchestratorLoop.advance({ ...base, currentStatus: "executing", reactions: { shipIt: false, abort: true, pause: false } });
-    assert.equal(r.nextStatus, "aborted");
-    assert.equal(r.reason, "user_abort_reaction");
+    assert.equal(r.nextStatus, "reviewing");
+    assert.equal(r.reason, "subtasks_complete");
   });
 
 test("advance: budget exhausted -> aborted",
@@ -87,15 +87,14 @@ test("advance: hard timeout -> aborted",
     assert.equal(r.reason, "hard_timeout");
   });
 
-test("advance: ship-it only counts during reviewing",
+test("advance: retired ship input is ignored",
   { skip: OrchestratorLoop === null }, () => {
     const rDuringExec = OrchestratorLoop.advance({ ...base, currentStatus: "executing", reactions: { shipIt: true, abort: false, pause: false } });
-    // ship-it in executing does NOT prematurely finish (executing -> reviewing)
     assert.equal(rDuringExec.nextStatus, "reviewing");
 
-    const rDuringReview = OrchestratorLoop.advance({ ...base, currentStatus: "reviewing", reactions: { shipIt: true, abort: false, pause: false } });
-    assert.equal(rDuringReview.nextStatus, "done");
-    assert.equal(rDuringReview.reason, "user_ship_it_reaction");
+    const rDuringReview = OrchestratorLoop.advance({ ...base, currentStatus: "reviewing", verdict: "revise", reactions: { shipIt: true, abort: false, pause: false } });
+    assert.equal(rDuringReview.nextStatus, "executing");
+    assert.equal(rDuringReview.reason, "adversary_revise");
   });
 
 test("advance: terminal states are stable",

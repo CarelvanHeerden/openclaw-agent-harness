@@ -192,12 +192,12 @@ test("beta123: a file that merely EXISTS and was never touched still fails", { s
 // The terminal dispositions, each reached on purpose.
 // ---------------------------------------------------------------------------
 
-test("beta123: an abort reaction stops the run and does not push", { skip }, async () => {
+test("beta123: retired reaction input does not alter the run", { skip }, async () => {
   const s = await runScenario({
-    readReactions: async () => ({ shipIt: false, abort: true, pause: false, budgetBump: false }),
+    readReactions: async () => ({ shipIt: false, abort: true, pause: false, budgetBump: true }),
   });
-  assert.equal(s.out.status, "aborted", `expected aborted, got ${s.out.status}`);
-  assert.equal(s.calls.push, 0);
+  assert.equal(s.out.status, "shipped", `expected shipped, got ${s.out.status}`);
+  assert.equal(s.calls.push, 1);
 });
 
 test("beta123: a revise verdict runs a second cycle and then ships", { skip }, async () => {

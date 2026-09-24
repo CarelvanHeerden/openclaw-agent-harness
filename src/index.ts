@@ -39,13 +39,7 @@ import { ControlPlaneService } from "./control/service.js";
 import { ControlRepository } from "./control/repository.js";
 import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
-import {
-  parseOkfBlocksFromContext,
-  OkfConceptCache,
-  decideAutoForward,
-  buildRewrittenParams,
-  cacheKeyForCtx,
-} from "./hooks/okf-auto-forward.js";
+import { createControlMergeProvider } from "./control/github-merge-provider.js";
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { CredentialVault, VAULT_KEY_ENV, type CredentialRecord } from "./adapters/credential-vault.js";
@@ -161,18 +155,6 @@ export interface HarnessPluginApi {
     handler: (event: unknown) => unknown,
     opts?: { name: string; description?: string },
   ) => (() => void) | { dispose?: () => void };
-  /** Host-dispatched commands bypass the model/tool path. */
-  registerCommand?: (command: {
-    name: string;
-    description: string;
-    acceptsArgs: boolean;
-    requireAuth: boolean;
-    channels?: string[];
-    handler: (context: {
-      senderId?: string; channel?: string; isAuthorizedSender?: boolean;
-      args?: string; commandBody?: string;
-    }) => Promise<{ text: string }> | { text: string };
-  }) => unknown;
   registerService?: (svc: {
     id: string;
     start?: () => Promise<void> | void;
@@ -186,7 +168,6 @@ export interface HarnessPluginApi {
 
   /** Optional -- for sending Slack messages. Different runtimes wire this differently. */
   sendMessage?: (input: { channel: string; threadTs?: string; text: string; blocks?: unknown[] }) => Promise<{ ts: string }>;
-  addReaction?: (input: { channel: string; ts: string; name: string }) => Promise<void>;
 
   /**
    * Optional -- lookup for calling another plugin's tool. beta.110: NO LONGER
@@ -400,7 +381,7 @@ export interface PreflightResult {
   provenance?: string;
 }
 
-/** beta.34: result of a harness_merge_pr invocation. */
+/** beta.34: result of a harness_merge_change invocation. */
 export interface MergePrResult {
   ok: boolean;
   /** True when the hard gate refused the merge (recommendation = do_not_merge / needs_human_review). */
@@ -466,7 +447,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         config,
         logger: api.logger,
         // rc.2: durable trail for clarification decisions, including withheld
-        // ones. `harness_run` clarifies before a session exists, so there is no
+        // ones. `harness_prepare_change` clarifies before a session exists, so there is no
         // session id to hang these off -- they are global audit rows.
         audit: (event, payload) => state.audit(event, payload),
         callClassifier: async () => runClassifierSdk({
@@ -945,7 +926,6 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   const slack = new SlackAdapter({
     logger: api.logger,
     sendMessage: api.sendMessage ?? (async () => ({ ts: `${Date.now()}` })),
-    addReaction: api.addReaction,
   });
 
   // ---- Orchestrator wiring ----
@@ -1693,7 +1673,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       // beta.75 (#1): post the review verdict + findings as a PR COMMENT on
       // EVERY review -- not just at PR creation. createPullRequest writes the
       // review into the PR body only on the first open; when the PR already
-      // exists (updatedExisting: a revise, or a harness_run D2-promoted onto an
+      // exists (updatedExisting: a revise, or a harness_prepare_change D2-promoted onto an
       // open-PR branch) the body is NOT rewritten, so the new verdict/findings
       // were invisible on the PR (Carel on #876). A fresh comment per review
       // surfaces the current verdict/findings on the PR timeline. Best-effort:
@@ -1857,7 +1837,6 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
 
     buildVerifyProbes: createVerifyProbes({ git, pat, config, resolveGitToken }),
 
-    readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
 
     reportProgress: async (sessionId, status, meta) => {
       try {
@@ -2067,62 +2046,6 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     ownerId: `runtime:${process.pid}:${Date.now()}`,
     leaseTtlMs: 5 * 60_000,
   });
-  const controlMergeProvider = {
-    inspect: async ({ repository, prNumber }: { repository: string; prNumber: number }) => {
-      const run = state.db.prepare(`SELECT requester_id FROM control_runs WHERE id = (
-        SELECT run_id FROM control_proposals WHERE pr_number = ? AND run_id IN (SELECT id FROM control_runs WHERE repository = ?)
-      )`).get(prNumber, repository) as { requester_id?: string } | undefined;
-      if (!run?.requester_id) throw new Error("Control requester is unavailable");
-      const { route, token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
-      const pr = await getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase });
-      const ci = await getCiSnapshot({ repoFullName: repository, sha: pr.headSha, ghToken, apiBase: route.apiBase });
-      const proposal = state.db.prepare(`SELECT p.*, r.base_ref, r.policy_digest, r.authority_envelope_json, s.published_at
-        FROM control_proposals p JOIN control_runs r ON r.id=p.run_id LEFT JOIN sessions s ON s.id=p.run_id WHERE p.pr_number=? AND r.repository=?`).get(prNumber, repository) as Record<string, unknown>;
-      const latest = state.db.prepare(`SELECT input_json FROM control_readiness_attestations WHERE run_id=? ORDER BY generation DESC LIMIT 1`).get(String(proposal.run_id)) as { input_json: string };
-      const prior = JSON.parse(latest.input_json) as import("./control/readiness.js").PrReadinessInput;
-      return {
-        repository,
-        baseRef: pr.baseBranch,
-        prNumber,
-        headSha: pr.headSha,
-        open: pr.state === "open" && !pr.merged,
-        merged: pr.merged,
-        readiness: {
-          ...prior,
-          candidateSha: pr.headSha,
-          publication: { sha: String(proposal.published_sha), observedAt: Number(proposal.published_at) },
-          pullRequest: { repository, baseRef: pr.baseBranch, headSha: pr.headSha, open: pr.state === "open" && !pr.merged, number: prNumber, url: pr.htmlUrl },
-          requiredCi: {
-            registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0,
-            requiredChecks: ci.checkNames,
-            successfulChecks: ci.state === "success" ? ci.checkNames : [],
-            sha: pr.headSha,
-            status: (ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate") as "success" | "failure" | "pending" | "indeterminate",
-          },
-        },
-      };
-    },
-    merge: async ({ repository, prNumber, expectedHeadSha }: { repository: string; prNumber: number; expectedHeadSha: string; idempotencyKey: string }) => {
-      const run = state.db.prepare(`SELECT requester_id FROM control_runs WHERE id = (
-        SELECT run_id FROM control_proposals WHERE pr_number = ? AND run_id IN (SELECT id FROM control_runs WHERE repository = ?)
-      )`).get(prNumber, repository) as { requester_id?: string } | undefined;
-      if (!run?.requester_id) throw new Error("Control requester is unavailable");
-      const { route, token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
-      const merged = await mergePullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase, method: "squash", expectedHeadSha });
-      if (!merged.merged || !merged.sha) throw new Error(merged.message || "Provider did not merge the pull request");
-      return { mergeSha: merged.sha };
-    },
-    verifyMerged: async ({ repository, prNumber, mergeSha }: { repository: string; prNumber: number; mergeSha: string }) => {
-      const run = state.db.prepare(`SELECT requester_id FROM control_runs WHERE id = (
-        SELECT run_id FROM control_proposals WHERE pr_number = ? AND run_id IN (SELECT id FROM control_runs WHERE repository = ?)
-      )`).get(prNumber, repository) as { requester_id?: string } | undefined;
-      if (!run?.requester_id) return false;
-      const { route, token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
-      const pr = await getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase });
-      return /^[a-f0-9]{40}$/i.test(mergeSha) && pr.merged && pr.mergeCommitSha === mergeSha;
-    },
-  };
-  const internalMergeService = new InternalMergeService(state.db, controlRepository, controlMergeProvider);
   const controlCredentialRoute = (route: ReturnType<typeof pat.resolve>): string => JSON.stringify({
     provider: route.provider,
     credentialService: route.credentialService,
@@ -2148,6 +2071,14 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     }
     return { route, token: await resolveGitToken(route) };
   };
+  const controlMergeProvider = createControlMergeProvider({
+    db: state.db,
+    resolveCredential: resolveBoundControlCredential,
+    getPullRequest,
+    getCiSnapshot,
+    mergePullRequest,
+  });
+  const internalMergeService = new InternalMergeService(state.db, controlRepository, controlMergeProvider);
   runtime.controlPlane = new ControlPlaneService({
     db: state.db,
     repository: controlRepository,
@@ -2346,27 +2277,6 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   const disposeTools = registerHarnessTools(api, runtime);
   runtime.disposers.push(disposeTools);
 
-  // beta.23: OKF auto-forward hooks (Option B).
-  //
-  // beta.21 wired the `relevantConcepts` pass-through end-to-end;
-  // beta.22 added a prompt-side instruction on the tool descriptions.
-  // Beta.23 adds a plugin-side hook pair that deterministically
-  // extracts OKF blocks from the calling agent's context and injects
-  // them into `harness_run` / `harness_start_session` tool params
-  // before the tool call fires. Belt-and-suspenders on top of
-  // Option A: even if a model ignores the tool description, the hook
-  // still gets the concepts through.
-  //
-  // Requires
-  //   plugins.entries.openclaw-agent-harness.hooks.allowConversationAccess: true
-  // in openclaw.json for `before_prompt_build` to receive the current
-  // prompt / messages. When that flag is off, the parser hook is
-  // silently skipped by the platform and auto-forward degrades to the
-  // beta.22 model-instruction path. Runtime never fails hard.
-  {
-    const disposeOkfHooks = registerOkfAutoForwardHooks(api, runtime);
-    for (const d of disposeOkfHooks) runtime.disposers.push(d);
-  }
 
   // v2.0.0: parallel sub-task dispatch is gone. Warn rather than refuse: a
   // config naming these keys is not wrong, it is old, and refusing it would
@@ -2918,138 +2828,6 @@ export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRu
   return runtime;
 }
 
-/**
- * beta.23: register the OKF auto-forward hook pair.
- *
- * - `before_prompt_build` observes the current turn's context, parses
- *   any `## Relevant Knowledge (OKF)` section, and caches the parsed
- *   concepts under the session key.
- * - `before_tool_call` filtered to `harness_run` /
- *   `harness_start_session` reads the cache and, when the tool call
- *   doesn't already carry `relevantConcepts`, rewrites the params to
- *   inject them.
- *
- * Returns an array of disposer functions the caller pushes into the
- * runtime's teardown list.
- *
- * All failures are logged and swallowed. This is a pure enhancement;
- * a broken hook must not fail an otherwise-healthy harness. If neither
- * `api.on` nor `api.registerHook` is available, or if the platform
- * skips `before_prompt_build` because `allowConversationAccess` is
- * off, the hooks are silently unregistered and auto-forward degrades
- * to the beta.22 prompt-side path.
- */
-function registerOkfAutoForwardHooks(
-  api: HarnessPluginApi,
-  runtime: HarnessRuntime,
-): Array<() => void> {
-  const disposers: Array<() => void> = [];
-  const cache = new OkfConceptCache();
-  // Store on the runtime so tests + observability can inspect the cache.
-  (runtime as unknown as { okfConceptCache?: OkfConceptCache }).okfConceptCache = cache;
-
-  const promptBuildHandler = async (event: unknown) => {
-    try {
-      const evt = (event ?? {}) as {
-        systemPrompt?: unknown;
-        prompt?: unknown;
-        messages?: unknown;
-        context?: unknown;
-      };
-      // Aggregate all plausible text sources into one blob. Cheap; the
-      // parser is regex-bounded to the OKF section header.
-      const parts: string[] = [];
-      if (typeof evt.systemPrompt === "string") parts.push(evt.systemPrompt);
-      if (typeof evt.prompt === "string") parts.push(evt.prompt);
-      if (Array.isArray(evt.messages)) {
-        for (const m of evt.messages) {
-          const mm = m as { content?: unknown } | undefined;
-          if (mm && typeof mm.content === "string") parts.push(mm.content);
-        }
-      }
-      const text = parts.join("\n\n");
-      const concepts = parseOkfBlocksFromContext(text);
-      if (concepts.length === 0) return;
-      const key = cacheKeyForCtx((evt.context ?? evt) as unknown);
-      if (!key) return;
-      cache.set(key, concepts);
-    } catch (err) {
-      api.logger.warn("[harness] okf-auto-forward: prompt observer failed", { err: String(err) });
-    }
-  };
-
-  const toolCallHandler = async (event: unknown) => {
-    try {
-      const evt = (event ?? {}) as {
-        toolName?: string;
-        params?: unknown;
-        context?: unknown;
-        ctx?: unknown;
-      };
-      const toolName = evt.toolName ?? "";
-      if (toolName !== "harness_run" && toolName !== "harness_start_session") return;
-      const key = cacheKeyForCtx((evt.context ?? evt.ctx ?? {}) as unknown);
-      if (!key) return;
-      const cached = cache.get(key);
-      const decision = decideAutoForward({ toolName, params: evt.params, cached });
-      if (!decision.inject) return;
-      const rewritten = buildRewrittenParams(toolName, evt.params, decision.concepts);
-      api.logger.info("[harness] okf-auto-forward: injected concepts into tool params", {
-        toolName,
-        sessionKey: key,
-        conceptCount: decision.concepts.length,
-        injectionSite: decision.injectionSite,
-      });
-      // eslint-disable-next-line consistent-return
-      return { params: rewritten };
-    } catch (err) {
-      api.logger.warn("[harness] okf-auto-forward: tool-call rewriter failed", { err: String(err) });
-      // Fall through: do not block the tool call on a hook bug.
-    }
-  };
-
-  const on = (event: string, handler: (evt: unknown) => unknown) => {
-    if (typeof api.on === "function") {
-      const dispose = api.on(event, handler as (event: unknown) => unknown);
-      if (typeof dispose === "function") disposers.push(dispose);
-      return true;
-    }
-    if (typeof api.registerHook === "function") {
-      const dispose = api.registerHook([event], handler as (event: unknown) => unknown, {
-        name: `${PLUGIN_ID}:${event}`,
-        description: `OKF auto-forward ${event} observer/rewriter`,
-      });
-      disposers.push(() => {
-        if (typeof dispose === "function") dispose();
-        else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function") dispose.dispose();
-      });
-      return true;
-    }
-    return false;
-  };
-
-  const promptOk = on("before_prompt_build", promptBuildHandler);
-  const toolOk = on("before_tool_call", toolCallHandler);
-
-  if (!promptOk && !toolOk) {
-    api.logger.warn(
-      "[harness] okf-auto-forward: neither api.on nor api.registerHook available; auto-forward disabled",
-    );
-  } else if (!promptOk) {
-    api.logger.warn(
-      "[harness] okf-auto-forward: prompt observer could not register; auto-forward will only fire if a caller pre-populates the cache",
-    );
-  } else if (!toolOk) {
-    api.logger.warn(
-      "[harness] okf-auto-forward: tool-call rewriter could not register; parsing OKF blocks but will not inject",
-    );
-  } else {
-    api.logger.info("[harness] okf-auto-forward: hooks registered");
-  }
-
-  return disposers;
-}
-
 /** beta.36: extract a PR/MR number from a GitHub/GitLab PR URL. */
 
 function parsePrNumber(prUrl: string): number | undefined {
@@ -3070,8 +2848,8 @@ function renderReviewComment(
   const emoji = verdict === "pass" ? "\u2705" : verdict === "block" ? "\u26d4" : "\u{1f501}";
   const gate =
     verdict === "pass"
-      ? "No blocking findings from this review. The `harness_merge_pr` gate still applies."
-      : "This review did NOT sign off (`" + verdict + "`). Address the findings below; `harness_merge_pr` will refuse a non-pass verdict.";
+      ? "No blocking findings from this review. The `harness_merge_change` gate still applies."
+      : "This review did NOT sign off (`" + verdict + "`). Address the findings below; `harness_merge_change` will refuse a non-pass verdict.";
   const findings = review.findings ?? [];
   // The operator's steer for this revise, above the verdict it was reviewed
   // against. A revise updates an existing PR and createPullRequest only writes a
@@ -3109,7 +2887,7 @@ function renderPrBody(
   // in-loop preview deploy) -- become an explicit, honest PR annotation
   // instead of silently killing the run. The runtime-dimension findings in
   // particular are exactly what the post-merge Vercel deploy verification
-  // (harness_merge_pr) checks for real, so we call that out: the loop
+  // (harness_merge_change) checks for real, so we call that out: the loop
   // couldn't render it, but the merge step will verify the actual deploy.
   const shippedWithoutCleanPass = review.verdict !== "pass";
   const runtimeFindings = (review.findings ?? []).filter(
@@ -3139,7 +2917,7 @@ function renderPrBody(
           `but they are NOT resolved in-loop and must be verified before/at merge.`,
         runtimeFindings.length
           ? `\n**Runtime not verified in-loop (${runtimeFindings.length} finding${runtimeFindings.length === 1 ? "" : "s"}):** the harness has no in-loop preview-deploy pipeline, so it could not render/exercise this change. ` +
-            `The post-merge Vercel deploy verification (\`harness_merge_pr\`) will verify the real deployment for the merge commit (READY/ERROR + build logs).`
+            `The post-merge Vercel deploy verification (\`harness_merge_change\`) will verify the real deployment for the merge commit (READY/ERROR + build logs).`
           : ``,
         ...runtimeFindings.map(
           (f: any) => `- **${(f.severity ?? "info").toUpperCase()}** [${f.dimension}] ${f.title}`,
@@ -3343,7 +3121,7 @@ export default definePluginEntry({
     // Bridge the OpenClaw SDK API to our internal HarnessPluginApi shape.
     // The SDK exposes a superset of what we consume; the fields we use
     // (`logger`, `registerTool`, `registerHook`, `registerService`,
-    // `pluginConfig`, `workspaceDir`, `sendMessage`, `addReaction`,
+    // `pluginConfig`, `workspaceDir`, `sendMessage`,
     // `callTool`) are all present on the runtime `api` object.
     const pluginApi = api as HarnessPluginApi;
     if (pluginApi.registrationMode === "cli-metadata") {

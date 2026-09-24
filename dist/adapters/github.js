@@ -135,7 +135,7 @@ async function applyPrLabels(input) {
  *
  * WHY: `createPullRequest` writes the review verdict/findings into the PR
  * BODY only at CREATE time. On a re-push to an EXISTING PR (a revise, or a
- * harness_run that D2 promoted onto an open-PR branch), the commits update the
+ * harness_prepare_change that D2 promoted onto an open-PR branch), the commits update the
  * PR diff but nothing surfaces the NEW review outcome -- so a `do_not_merge`
  * verdict + its findings were invisible on the PR itself (Carel on #876: "the
  * new test file is there but the PR comments didn't update"). Posting a fresh

@@ -23,9 +23,7 @@
  *      their token message themselves. (A Slack modal would keep the token out
  *      of chat entirely, but raw modal submission is not exposed to plugins.)
  *
- * SLACK-APP CAVEAT: the `/harness-onboard` slash command must be added to the
- * Slack app manifest (`slash_commands[]`) and the app reinstalled before Slack
- * will route it. That is a one-time host/admin step, documented in the README.
+ * Credential onboarding is invoked through the authenticated host tool path.
  *
  * This module is pure/side-effect-injected (fetch is injectable) so it is
  * trivially unit-testable and never throws into the run path.

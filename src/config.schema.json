@@ -41,7 +41,7 @@
       "properties": {
         "channel": {
           "type": "string",
-          "description": "Slack channel ID (e.g. C0DEVCHAN). Optional: outbound posting only, since beta.34 removed the listener."
+          "description": "Slack channel ID (e.g. C0DEVCHAN). Optional: outbound posting only."
         },
         "authorised_users": {
           "type": "array",
@@ -50,7 +50,7 @@
             "type": "string",
             "pattern": "^U[A-Z0-9]+$"
           },
-          "description": "Slack user IDs allowed to open sessions or drop control reactions"
+          "description": "Slack user IDs allowed to operate the control plane"
         }
       }
     },
@@ -321,7 +321,7 @@
           "minimum": 60,
           "maximum": 86400,
           "default": 2100,
-          "description": "beta.60: max wall-clock seconds a single sub-task's dispatch (runOne) may run before it is force-failed. beta.42 bounded only the worker SDK call, but runOne also awaits unbounded git/IO (worktreeHeadSha, readReactions, verify probes, recordSpend) between the row-flip-to-running and the worker spawn; a hang in any of those wedged the whole dispatcher (b59 PR#858 seq-7: 5h30m silent, row stuck running with sdk_session_id=null and no worker process). This bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin."
+          "description": "beta.60: max wall-clock seconds a single sub-task's dispatch (runOne) may run before it is force-failed. The worker SDK call and surrounding git/IO verification can all block between the row transition and worker completion; this bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin."
         },
         "worker_timeout_retry_enabled": {
           "type": "boolean",

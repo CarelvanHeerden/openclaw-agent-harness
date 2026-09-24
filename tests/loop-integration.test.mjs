@@ -137,31 +137,22 @@ test("loop: adversary revise once then pass",
     assert.equal(advCallNo, 2);
   });
 
-test("loop: user abort reaction short-circuits",
+test("loop: retired reaction input is ignored",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
     insertSession(state.db, "S3");
     const brief = { title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
     const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/wt", subTasks: [{ seq:1, title:"a", intent:"a", filesLikelyTouched:[], successCriteria:["a"], estimatedTokens:100 }], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
     const loop = new OrchestratorLoop({
-      config: config(),
-      state,
-      budget: new BudgetEnforcer(config().budgets, state),
-      pat: new PatRouter(config().pat_routing),
-      logger: { info() {}, warn() {}, error() {} },
-      runLead: async () => plan,
-      runWorker: async () => { throw new Error("worker should not run"); },
-      runAdversary: async () => { throw new Error("adversary should not run"); },
-      pushBranchAndOpenPr: async () => "unused",
-      readReactions: async () => ({ shipIt: false, abort: true, pause: false, budgetBump: false }),
+      config: config(), state, budget: new BudgetEnforcer(config().budgets, state), pat: new PatRouter(config().pat_routing),
+      logger: { info() {}, warn() {}, error() {} }, runLead: async () => plan,
+      runWorker: async () => ({ status: "completed", filesChanged: ["a"], commitSha: "s", costUsd: 0.01, tokensIn: 1, tokensOut: 1, reason: "end_turn" }),
+      runAdversary: async () => ({ verdict: "pass", findings: [], summary: "ok", costUsd: 0.01, tokensIn: 1, tokensOut: 1 }),
+      pushBranchAndOpenPr: async () => "https://x/pr/3",
+      readReactions: async () => ({ shipIt: false, abort: true, pause: false, budgetBump: true }),
     });
     const outcome = await loop.run("S3", brief);
-    assert.equal(outcome.status, "aborted");
-    // beta.120 (fix 1): the reason now also tells the operator their commits
-    // survived and where to find them, so match the machine token as a prefix.
-    assert.match(outcome.reason, /^user_abort_reaction\b/);
-    const row = state.db.prepare(`SELECT status FROM sessions WHERE id = 'S3'`).get();
-    assert.equal(row.status, "aborted");
+    assert.equal(outcome.status, "shipped");
   });
 
 test("loop: budget exhaustion aborts unless budget_bump",

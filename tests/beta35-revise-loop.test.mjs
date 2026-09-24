@@ -102,5 +102,5 @@ test("#3: renderPrBody annotates a non-pass ship + points at deploy verification
   assert.match(indexSrc, /shippedWithoutCleanPass/, "renderPrBody must detect a non-pass ship");
   assert.match(indexSrc, /Shipped without a clean adversary pass/, "PR body must carry the honest annotation");
   assert.match(indexSrc, /Runtime not verified in-loop/, "PR body must flag unverified runtime");
-  assert.match(indexSrc, /harness_merge_pr/, "PR body must point at the merge-time deploy verification");
+  assert.match(indexSrc, /harness_merge_change/, "PR body must point at the merge-time deploy verification");
 });
