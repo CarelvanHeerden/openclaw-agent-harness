@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 /**
  * beta.18: observe-breadcrumb emitter must gate on taskMode !== "mutate".
  *
@@ -129,7 +130,7 @@ test(
       releaseWorktree: async () => ({ ok: true }),
     });
 
-    const outcome = await loop.runConfirmedControl("S_MUT_NOPROBES", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_MUT_NOPROBES", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");
@@ -184,7 +185,7 @@ test(
       releaseWorktree: async () => ({ ok: true }),
     });
 
-    const outcome = await loop.runConfirmedControl("S_OBS_NOPROBES", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_OBS_NOPROBES", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");
@@ -237,7 +238,7 @@ test(
       releaseWorktree: async () => ({ ok: true }),
     });
 
-    const outcome = await loop.runConfirmedControl("S_UNSPEC", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_UNSPEC", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");

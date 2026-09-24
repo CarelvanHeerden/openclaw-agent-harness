@@ -21,6 +21,10 @@ export function packIsolatedHead(root, prefix = "oah-package-artifact-") {
   // Keep the staging tree on the repository filesystem: node_modules is close
   // to 1 GB and hard links cannot cross from the workspace mount into /tmp.
   const temp = mkdtempSync(join(dirname(root), `.${prefix}`));
+  const cleanup = () => rmSync(temp, { recursive: true, force: true });
+  const interrupted = (signal) => { cleanup(); process.exit(128 + (signal === "SIGINT" ? 2 : 15)); };
+  process.once("SIGINT", () => interrupted("SIGINT"));
+  process.once("SIGTERM", () => interrupted("SIGTERM"));
   try {
     const source = join(temp, "source");
     const packDir = join(temp, "pack");
@@ -38,10 +42,10 @@ export function packIsolatedHead(root, prefix = "oah-package-artifact-") {
       packDir,
       artifact,
       tarball: join(packDir, basename(artifact.filename)),
-      cleanup: () => rmSync(temp, { recursive: true, force: true }),
+      cleanup,
     };
   } catch (error) {
-    rmSync(temp, { recursive: true, force: true });
+    cleanup();
     throw error;
   }
 }

@@ -27,6 +27,16 @@ function filesUnder(dir) {
   walk(dir);
   return out.sort();
 }
+function assertFirstPartyFilesMatchCommit(packageRoot) {
+  for (const file of filesUnder(packageRoot)) {
+    if (file === ".oah-artifact.json" || file.startsWith("node_modules/")) continue;
+    let committed;
+    try { committed = execFileSync("git", ["show", `HEAD:${file}`], { cwd: root }); }
+    catch { throw new Error(`refusing to pack non-commit content: ${file}`); }
+    const packed = readFileSync(resolve(packageRoot, file));
+    if (!packed.equals(committed)) throw new Error(`refusing to pack content that differs from HEAD: ${file}`);
+  }
+}
 function manifestFor(packageRoot) {
   const entries = filesUnder(packageRoot)
     .filter((file) => file !== ".oah-artifact.json")
@@ -78,9 +88,18 @@ function packedManifest() {
     const extracted = resolve(temp, "extract");
     mkdirSync(extracted);
     execFileSync("tar", ["-xzf", resolve(temp, basename(filename)), "-C", extracted]);
-    return manifestFor(resolve(extracted, "package"));
+    const packageRoot = resolve(extracted, "package");
+    assertFirstPartyFilesMatchCommit(packageRoot);
+    return manifestFor(packageRoot);
   } finally { rmSync(temp, { recursive: true, force: true }); }
 }
+
+const onSignal = (signal) => {
+  try { restore(); releaseLock(); }
+  finally { process.exit(128 + (signal === "SIGINT" ? 2 : 15)); }
+};
+process.once("SIGINT", () => onSignal("SIGINT"));
+process.once("SIGTERM", () => onSignal("SIGTERM"));
 
 if (action === "prepare") {
   acquireLock();

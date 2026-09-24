@@ -39,7 +39,15 @@ export class InternalMergeService {
   private static readonly INTENT_LEASE_MS = 300_000;
   private static readonly MAX_RECOVERY_ATTEMPTS = 12;
   private static readonly MAX_INSPECTIONS_PER_ATTEMPT = 5;
-  constructor(private readonly db:DatabaseSync,private readonly repository:ControlRepository,private readonly provider:MergeProvider,private readonly now:()=>number=Date.now){}
+  constructor(private readonly db:DatabaseSync,private readonly repository:ControlRepository,private readonly provider:MergeProvider,private readonly now:()=>number=Date.now,private readonly providerDeadlineMs=15_000){}
+  private async providerCall<T>(operation:string,call:()=>Promise<T>):Promise<T>{
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    const timeout=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${operation}_deadline_exceeded`)),this.providerDeadlineMs);timer.unref?.();});
+    try{return await Promise.race([call(),timeout]);}finally{if(timer)clearTimeout(timer);}
+  }
+  private inspect(input:Parameters<MergeProvider["inspect"]>[0]):Promise<MergeInspection>{return this.providerCall("provider_inspect",()=>this.provider.inspect(input));}
+  private async verifyMerged(input:Parameters<MergeProvider["verifyMerged"]>[0]):Promise<boolean>{try{return await this.providerCall("provider_verify_merged",()=>this.provider.verifyMerged(input));}catch{return false;}}
+
 
   registerAuthorizationAndIntent(a:VerifiedMergeAuthorization, now=this.now()): string {
     const {bindingDigest,...unsigned}=a;
@@ -77,7 +85,7 @@ export class InternalMergeService {
     if(!intent)return Object.freeze({status:"refused",code:"merge_attestation_required"});
     if(intent.status==="merged"&&intent.provider_merge_sha&&EXACT_PROVIDER_SHA.test(intent.provider_merge_sha)){
       const raw=this.db.prepare(`SELECT run_id,repository_identity,pr_number FROM control_merge_authorizations WHERE id=?`).get(id) as {run_id:string;repository_identity:string;pr_number:number}|undefined;
-      if(raw&&await this.provider.verifyMerged({runId:raw.run_id,repository:raw.repository_identity,prNumber:raw.pr_number,mergeSha:intent.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:intent.provider_merge_sha});
+      if(raw&&await this.verifyMerged({runId:raw.run_id,repository:raw.repository_identity,prNumber:raw.pr_number,mergeSha:intent.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:intent.provider_merge_sha});
     }
     if(intent.status==="merge_failed")return Object.freeze({status:"merge_failed",code:"provider_failure"});
     if(intent.status==="verification_failed")return Object.freeze({status:"merge_failed",code:"verification_failed"});
@@ -93,7 +101,7 @@ export class InternalMergeService {
       if(!current)return Object.freeze({status:"refused",code:"merge_attestation_required"});
       if(current.status==="merged"&&current.provider_merge_sha&&EXACT_PROVIDER_SHA.test(current.provider_merge_sha)){
         const auth=this.db.prepare(`SELECT run_id,repository_identity,pr_number FROM control_merge_authorizations WHERE id=?`).get(authorizationId) as {run_id:string;repository_identity:string;pr_number:number}|undefined;
-        if(auth&&await this.provider.verifyMerged({runId:auth.run_id,repository:auth.repository_identity,prNumber:auth.pr_number,mergeSha:current.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:current.provider_merge_sha});
+        if(auth&&await this.verifyMerged({runId:auth.run_id,repository:auth.repository_identity,prNumber:auth.pr_number,mergeSha:current.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:current.provider_merge_sha});
       }
       if(current.status==="merge_failed")return Object.freeze({status:"merge_failed",code:"provider_failure"});
       if(current.status==="verification_failed")return Object.freeze({status:"merge_failed",code:"verification_failed"});
@@ -118,11 +126,11 @@ export class InternalMergeService {
     if(intent.status!=="authorized")return this.reconcileClaimedMerge(auth,intent.id,lease);
 
     let inspection:MergeInspection;
-    try{inspection=await this.provider.inspect({runId:run.id,repository:auth.repository,prNumber:auth.prNumber,readinessDigest:auth.readinessDigest});}
+    try{inspection=await this.inspect({runId:run.id,repository:auth.repository,prNumber:auth.prNumber,readinessDigest:auth.readinessDigest});}
     catch{return Object.freeze({status:"merge_in_progress"});}
     if(inspection.merged){
       const mergeSha=inspection.mergeSha??intent.provider_merge_sha??undefined;
-      if(mergeSha&&EXACT_PROVIDER_SHA.test(mergeSha)&&await this.provider.verifyMerged({runId:run.id,repository:auth.repository,prNumber:auth.prNumber,mergeSha})&&this.completeRun(run.id,intent.id,mergeSha,lease))return Object.freeze({status:"already_merged",mergeSha});
+      if(mergeSha&&EXACT_PROVIDER_SHA.test(mergeSha)&&await this.verifyMerged({runId:run.id,repository:auth.repository,prNumber:auth.prNumber,mergeSha})&&this.completeRun(run.id,intent.id,mergeSha,lease))return Object.freeze({status:"already_merged",mergeSha});
       this.failRun(run.id,intent.id,"verification_failed",lease);return Object.freeze({status:"merge_failed",code:"verification_failed"});
     }
     if(!inspection.open||inspection.repository!==auth.repository||inspection.baseRef!==auth.baseRef||inspection.prNumber!==auth.prNumber){this.refuseRun(run.id,intent.id,"pr_identity_mismatch",lease);return Object.freeze({status:"refused",code:"pr_identity_mismatch"});}
@@ -140,10 +148,10 @@ export class InternalMergeService {
     }catch(error){try{this.db.exec("ROLLBACK");}catch{}if(error instanceof Error&&error.message==="merge_claim_lost")return Object.freeze({status:"merge_in_progress"});return Object.freeze({status:"refused",code:"authorization_replayed"});}
 
     try{
-      const merged=await this.provider.merge({runId:run.id,repository:auth.repository,prNumber:auth.prNumber,expectedHeadSha:auth.expectedHeadSha,idempotencyKey:intent.merge_provider_idempotency});
+      const merged=await this.providerCall("provider_merge",()=>this.provider.merge({runId:run.id,repository:auth.repository,prNumber:auth.prNumber,expectedHeadSha:auth.expectedHeadSha,idempotencyKey:intent.merge_provider_idempotency}));
       if(!EXACT_PROVIDER_SHA.test(merged.mergeSha)){this.failRun(run.id,intent.id,"verification_failed",lease);return Object.freeze({status:"merge_failed",code:"verification_failed"});}
       this.db.prepare(`UPDATE control_engine_merge_intents SET provider_merge_sha=?,updated_at=? WHERE id=? AND status='merging' AND recovery_owner=? AND recovery_fence=?`).run(merged.mergeSha,this.now(),intent.id,lease.owner,lease.fence);
-      if(!this.verifyPersistedAuthorizationRow(id)||!this.verifyPersistedReadiness(run.id,auth.readinessDigest)||!await this.provider.verifyMerged({runId:run.id,repository:auth.repository,prNumber:auth.prNumber,mergeSha:merged.mergeSha})){this.failRun(run.id,intent.id,"verification_failed",lease);return Object.freeze({status:"merge_failed",code:"verification_failed"});}
+      if(!this.verifyPersistedAuthorizationRow(id)||!this.verifyPersistedReadiness(run.id,auth.readinessDigest)||!await this.verifyMerged({runId:run.id,repository:auth.repository,prNumber:auth.prNumber,mergeSha:merged.mergeSha})){this.failRun(run.id,intent.id,"verification_failed",lease);return Object.freeze({status:"merge_failed",code:"verification_failed"});}
       if(!this.completeRun(run.id,intent.id,merged.mergeSha,lease))return Object.freeze({status:"merge_in_progress"});
       return Object.freeze({status:"merged",mergeSha:merged.mergeSha});
     }catch{return this.reconcileClaimedMerge(auth,intent.id,lease);}
@@ -157,17 +165,17 @@ export class InternalMergeService {
       const current=this.db.prepare(`SELECT status,provider_merge_sha FROM control_engine_merge_intents WHERE id=?`).get(intentId) as {status:string;provider_merge_sha:string|null}|undefined;
       if(!current)return Object.freeze({status:"refused",code:"merge_attestation_required"});
       if(current.status==="merged"){
-        if(current.provider_merge_sha&&EXACT_PROVIDER_SHA.test(current.provider_merge_sha)&&await this.provider.verifyMerged({runId:auth.runId,repository:auth.repository,prNumber:auth.prNumber,mergeSha:current.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:current.provider_merge_sha});
+        if(current.provider_merge_sha&&EXACT_PROVIDER_SHA.test(current.provider_merge_sha)&&await this.verifyMerged({runId:auth.runId,repository:auth.repository,prNumber:auth.prNumber,mergeSha:current.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:current.provider_merge_sha});
         return Object.freeze({status:"merge_failed",code:"verification_failed"});
       }
       if(current.status==="merge_failed")return Object.freeze({status:"merge_failed",code:"provider_failure"});
       if(current.status==="verification_failed")return Object.freeze({status:"merge_failed",code:"verification_failed"});
       let inspection:MergeInspection|undefined;
-      try{inspection=await this.provider.inspect({runId:auth.runId,repository:auth.repository,prNumber:auth.prNumber,readinessDigest:auth.readinessDigest});}catch{}
+      try{inspection=await this.inspect({runId:auth.runId,repository:auth.repository,prNumber:auth.prNumber,readinessDigest:auth.readinessDigest});}catch{}
       inspections++;
       if(inspection?.merged){
         const mergeSha=inspection.mergeSha;
-        if(mergeSha&&EXACT_PROVIDER_SHA.test(mergeSha)&&await this.provider.verifyMerged({runId:auth.runId,repository:auth.repository,prNumber:auth.prNumber,mergeSha})&&this.completeRun(auth.runId,intentId,mergeSha,lease))return Object.freeze({status:"already_merged",mergeSha});
+        if(mergeSha&&EXACT_PROVIDER_SHA.test(mergeSha)&&await this.verifyMerged({runId:auth.runId,repository:auth.repository,prNumber:auth.prNumber,mergeSha})&&this.completeRun(auth.runId,intentId,mergeSha,lease))return Object.freeze({status:"already_merged",mergeSha});
         this.failRun(auth.runId,intentId,"verification_failed",lease);return Object.freeze({status:"merge_failed",code:"verification_failed"});
       }
       if(inspections>=InternalMergeService.MAX_INSPECTIONS_PER_ATTEMPT||Date.now()>=deadline)return Object.freeze({status:"merge_in_progress"});

@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 // Defects found by running v2.0.0-beta.1 against a real repository with the
 // worker on OpenCode, rather than by reading it.
 //
@@ -9,7 +10,7 @@
 //
 //   1. The sub-task ledger recorded `config.models.worker` unconditionally, so
 //      a turn served by OpenCode was filed under the Claude Code model name.
-//      The A/B matrix in docs/V2_SMOKE.md reads that exact column to decide
+//      Backend comparison and audit reporting read that exact column to decide
 //      whether a cheaper worker is worth adopting, so the failure is not a
 //      cosmetic label — it attributes one backend's spend to the other.
 //
@@ -99,7 +100,7 @@ async function ledgerModelFor(sessionId, describeWorkerModel) {
 
   const outcome = await loop.runConfirmedControl(sessionId, {
     title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low",
-  }, () => {});
+  }, createInternalConfirmedControlAuthorityGuard(() => {}));
   assert.equal(outcome.status, "shipped");
   return state.db.prepare(`SELECT worker_model FROM sub_tasks WHERE session_id = ?`).get(sessionId).worker_model;
 }

@@ -258,3 +258,21 @@ test("worktree heal protects durable autonomous worktrees", async () => withStor
   assert.equal(result.protected_running, 1);
   assert.equal(releases, 0);
 }));
+
+test("provider deadlines terminalize hung inspection and verification instead of stranding recovery", async () => withStore(async ({ db }) => {
+  const store={db};
+  const inspectSeed=seedMergeState(store,"merge-hung-inspect",31);
+  const never=()=>new Promise(()=>{});
+  const inspectService=new InternalMergeService(db,inspectSeed.repo,{inspect:never,merge:async()=>{throw new Error("must not merge")},verifyMerged:async()=>false},()=>100,10);
+  inspectService.registerAuthorization(inspectSeed.auth);
+  for(let i=0;i<12;i++) await inspectService.merge(inspectSeed.auth.id);
+  assert.equal(inspectSeed.repo.getRun(inspectSeed.run.id).state,"failed");
+  assert.equal(db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(inspectSeed.run.id).status,"merge_failed");
+
+  const verifySeed=seedMergeState(store,"merge-hung-verify",32);
+  const mergeSha=sha("e",40);
+  const verifyService=new InternalMergeService(db,verifySeed.repo,{inspect:async()=>({repository:"acme/repo",baseRef:"main",prNumber:32,headSha:verifySeed.head,open:false,merged:true,mergeSha,readiness:verifySeed.readiness}),merge:async()=>{throw new Error("must not merge")},verifyMerged:never},()=>100,10);
+  verifyService.registerAuthorization(verifySeed.auth);
+  assert.deepEqual(await verifyService.merge(verifySeed.auth.id),{status:"merge_failed",code:"verification_failed"});
+  assert.equal(verifySeed.repo.getRun(verifySeed.run.id).state,"failed");
+}));

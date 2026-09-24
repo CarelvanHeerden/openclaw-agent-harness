@@ -75,11 +75,15 @@ export declare class InternalMergeService {
     private readonly repository;
     private readonly provider;
     private readonly now;
+    private readonly providerDeadlineMs;
     private recoveryInFlight;
     private static readonly INTENT_LEASE_MS;
     private static readonly MAX_RECOVERY_ATTEMPTS;
     private static readonly MAX_INSPECTIONS_PER_ATTEMPT;
-    constructor(db: DatabaseSync, repository: ControlRepository, provider: MergeProvider, now?: () => number);
+    constructor(db: DatabaseSync, repository: ControlRepository, provider: MergeProvider, now?: () => number, providerDeadlineMs?: number);
+    private providerCall;
+    private inspect;
+    private verifyMerged;
     registerAuthorizationAndIntent(a: VerifiedMergeAuthorization, now?: number): string;
     registerAuthorization(a: VerifiedMergeAuthorization): void;
     recoverPending(): Promise<void>;

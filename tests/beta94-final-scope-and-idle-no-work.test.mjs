@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 // beta.94 — kill the idle-prone LLM "final verification of scope boundaries"
 // sub-task (the b93 seq-12 stall) and add a narrow idle-no-work abort channel.
 //
@@ -216,7 +217,7 @@ test("beta94 F1a (loop): trailing scope-observe sub-task is elided at plan_ready
       // No committed-files probe => the F1b scope check is a no-op here.
     });
 
-    await loop.runConfirmedControl("E1", brief, () => {});
+    await loop.runConfirmedControl("E1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     const elided = state.audits.filter((e) => e.event === "loop.final_verify_subtask_elided");
     assert.equal(elided.length, 1, "the trailing scope-observe sub-task is elided once");
     assert.equal(elided[0].payload.seq, 2);
@@ -253,7 +254,7 @@ test("beta94 F1a (loop): elision is SKIPPED when deterministic_final_scope_check
       worktreeHeadSha: async () => "basesha",
       worktreeMergeBase: async () => "basesha",
     });
-    await loop.runConfirmedControl("E2", brief, () => {});
+    await loop.runConfirmedControl("E2", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(state.audits.filter((e) => e.event === "loop.final_verify_subtask_elided").length, 0);
     state.close();
   });

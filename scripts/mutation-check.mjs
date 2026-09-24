@@ -21,12 +21,35 @@
 //      that did survive a previous run cannot be mistaken for the baseline.
 //
 // Run: node scripts/mutation-check.mjs
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Run the destructive scan in an immutable checkout so it cannot race with a
+// build, package test, or another mutation scan rewriting the repository dist/.
+if (process.env.OAH_MUTATION_ISOLATED !== "1") {
+  const temp = mkdtempSync(join(dirname(root), ".oah-mutation-"));
+  const cleanup = () => rmSync(temp, { recursive: true, force: true });
+  const interrupted = (signal) => { cleanup(); process.exit(128 + (signal === "SIGINT" ? 2 : 15)); };
+  process.once("SIGINT", () => interrupted("SIGINT"));
+  process.once("SIGTERM", () => interrupted("SIGTERM"));
+  try {
+    const source = join(temp, "source");
+    let result = spawnSync("git", ["clone", "--quiet", "--shared", root, source], { encoding: "utf8" });
+    if (result.status !== 0) throw new Error(result.stderr || result.stdout || "isolated mutation clone failed");
+    result = spawnSync("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], { encoding: "utf8" });
+    if (result.status !== 0) throw new Error(result.stderr || result.stdout || "isolated dependency staging failed");
+    result = spawnSync(process.execPath, ["scripts/mutation-check.mjs", ...process.argv.slice(2)], {
+      cwd: source, stdio: "inherit", env: { ...process.env, OAH_MUTATION_ISOLATED: "1" }, timeout: 2_700_000,
+    });
+    process.exitCode = result.status ?? 1;
+  } finally { cleanup(); }
+  await new Promise((resolve) => setImmediate(resolve));
+  process.exit(process.exitCode ?? 1);
+}
 
 /**
  * Each mutation names a safety mechanism, the exact built code implementing it,
@@ -3584,13 +3607,6 @@ const MUTATIONS = [
     file: ".github/workflows/ci.yml",
     find: "        run: npm audit --omit=dev --audit-level=high",
     replace: "        run: echo 'production dependency audit skipped'",
-    tests: ["tests/rc11-remediation.test.mjs"],
-  },
-  {
-    name: "rc.12 pre-smoke: the advertised smoke command loads the OpenClaw SDK stub",
-    file: "package.json",
-    find: "\"smoke\": \"npm run build && node --import ./scripts/register-smoke-loader.mjs scripts/smoke.mjs\"",
-    replace: "\"smoke\": \"npm run build && node scripts/smoke.mjs\"",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {

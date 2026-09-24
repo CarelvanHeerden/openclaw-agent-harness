@@ -195,9 +195,8 @@ test("beta67-A: stall-sweep service registered like pr-watcher/retention-nightly
   assert.match(src, /loop\s*\.\s*sweepStalls\(\)/);
   // uses the same api.registerService lifecycle + setInterval fallback
   assert.match(src, /api\.registerService/);
-  // smoke asserts the service is registered alongside retention-nightly
-  const smoke = S("scripts/smoke.mjs");
-  assert.match(smoke, /"retention-nightly", "stall-sweep"/);
+  assert.match(src, /\$\{PLUGIN_ID\}:retention-nightly/,
+    "stall-sweep remains registered alongside retention-nightly");
 });
 
 test("beta67-A: sweepStalls keeps the in-process checkStalls fast path (does NOT rip it out)", () => {

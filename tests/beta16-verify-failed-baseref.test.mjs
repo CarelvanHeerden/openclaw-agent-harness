@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 /**
  * beta.16 regression: `verify_failed` audit events carry `baseRef` +
  * `baseSemantics: "worker-session-start"`.
@@ -166,7 +167,7 @@ test(
       releaseWorktree: async () => {},
     });
 
-    const outcome = await loop.runConfirmedControl("S_FAILINJ", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_FAILINJ", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "failed");
     assert.match(outcome.reason, /failed_verification/);
 
@@ -244,7 +245,7 @@ test(
       releaseWorktree: async () => {},
     });
 
-    const outcome = await loop.runConfirmedControl("S_OK", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_OK", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "shipped");
 
     const umbrella = state.audits.filter((e) => e.event === "loop.subtask_verification");

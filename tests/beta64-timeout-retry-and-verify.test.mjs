@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 // beta.64 (P0-2 / P0-3 / P0-4) — worker-timeout RETRY, BEST-EFFORT VERIFY, and
 // SCRIPTED VERIFIER FALLBACK. Fixes beta.63 smoke #2: seq-3 (a verify sub-task)
 // worker SDK call HUNG (stream opened, zero tokens) and sat the full 1800s ->
@@ -128,7 +129,7 @@ test("rc.11: a worker timeout with unknown completion is not blindly retried",
         runWorker: async () => { workerCalls++; return HANG(); },
       },
     }));
-    const outcome = await loop.runConfirmedControl("R1", brief, () => {});
+    const outcome = await loop.runConfirmedControl("R1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "failed");
     assert.equal(workerCalls, 1, "unknown provider completion must not be duplicated");
     const retries = state.audits.filter((e) => e.event === "loop.worker_timeout_retry");
@@ -151,7 +152,7 @@ test("beta64/P0-2: worker_timeout_retry_enabled=false does NOT retry (single att
         ...config().loop, worker_timeout_retry_enabled: false, best_effort_verify: false, scripted_verify_fallback: false } },
       extra: { runWorker: async () => { workerCalls++; return HANG(); } },
     }));
-    const outcome = await loop.runConfirmedControl("R0", brief, () => {});
+    const outcome = await loop.runConfirmedControl("R0", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "failed");
     assert.equal(workerCalls, 1, "no retry when disabled");
     assert.equal(state.audits.filter((e) => e.event === "loop.worker_timeout_retry").length, 0);
@@ -189,7 +190,7 @@ test("beta64/P0-3 (rc.3): verify sub-task timeout with NO review preserves the w
         },
       },
     }));
-    const outcome = await loop.runConfirmedControl("B1", brief, () => {});
+    const outcome = await loop.runConfirmedControl("B1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "failed", "nothing reviewed this, so it is not pushed");
     assert.equal(prCalls, 0, "no PR is opened for code no adversary has seen");
     assert.match(outcome.reason, /no adversary review has ever run/i);
@@ -241,7 +242,7 @@ test("beta64/P0-3: verify timeout but prior probe RED => NOT eligible, no ship",
         },
       },
     }));
-    const outcome = await loop.runConfirmedControl("B2", brief, () => {});
+    const outcome = await loop.runConfirmedControl("B2", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     // seq-1 fails verification (red) -> run fails at seq-1, verify sub-task never reached.
     assert.equal(outcome.status, "failed");
     assert.equal(prCalls, 0, "must NOT ship when the prior probe was red");
@@ -273,7 +274,7 @@ test("beta64/P0-4: verify sub-task timeout => scripted verifier fallback runs (t
     // the discovered check scripts. discoverCheckScripts reads package.json at
     // the (nonexistent) worktree path -> returns [] -> nothing runnable ->
     // scripted fallback is "unavailable" -> escalates to best-effort verify.
-    const outcome = await loop.runConfirmedControl("F1", brief, () => {});
+    const outcome = await loop.runConfirmedControl("F1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     // The subject of this test is the ESCALATION -- scripted fallback finds
     // nothing runnable, reports `unavailable`, and hands off to best-effort
     // verify. That is unchanged and asserted below.
@@ -322,7 +323,7 @@ test("beta64/P0-4: scripted verifier fallback RUNS tsc + allowlisted checks and 
         runCheckScript: (name) => { scriptsRun.push(name); return { status: 0, stdout: "", stderr: "" }; },
       },
     }));
-    const outcome = await loop.runConfirmedControl("SF1", brief, () => {});
+    const outcome = await loop.runConfirmedControl("SF1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(tscRan, 1, "tsc ran once (tsconfig present)");
     assert.ok(scriptsRun.includes("typecheck") && scriptsRun.includes("lint"), "allowlisted check scripts ran");
     const sf = state.audits.filter((e) => e.event === "loop.scripted_verify_fallback");
@@ -360,7 +361,7 @@ test("beta64/P0-4: scripted verifier fallback reports FAIL when a check script e
         runCheckScript: (name) => (name === "lint" ? { status: 1, stdout: "", stderr: "lint error" } : { status: 0, stdout: "", stderr: "" }),
       },
     }));
-    const outcome = await loop.runConfirmedControl("SF2", brief, () => {});
+    const outcome = await loop.runConfirmedControl("SF2", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     const sf = state.audits.filter((e) => e.event === "loop.scripted_verify_fallback");
     assert.equal(sf.length, 1);
     assert.equal(sf[0].payload.result, "fail", "a non-zero check script => scripted verdict fail");

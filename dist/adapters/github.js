@@ -200,6 +200,7 @@ export async function getPullRequest(input) {
     const apiBase = input.apiBase ?? "https://api.github.com";
     const res = await fetch(`${apiBase}/repos/${input.repoFullName}/pulls/${input.prNumber}`, {
         headers: GH_HEADERS(input.ghToken),
+        signal: input.signal,
     });
     if (!res.ok)
         throw new Error(`GitHub get PR #${input.prNumber} failed ${res.status}: ${(await res.text()).slice(0, 300)}`);
@@ -320,7 +321,7 @@ function denialRemedy(api, status) {
 async function readWorkflowRuns(input) {
     const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], reason: "" };
     try {
-        const res = await fetch(`${input.base}/repos/${input.repoFullName}/actions/runs?head_sha=${input.sha}&per_page=100`, { headers: GH_HEADERS(input.ghToken) });
+        const res = await fetch(`${input.base}/repos/${input.repoFullName}/actions/runs?head_sha=${input.sha}&per_page=100`, { headers: GH_HEADERS(input.ghToken), signal: input.signal });
         if (!res.ok)
             return { ...miss, reason: `workflow-runs API HTTP ${res.status}` };
         const body = (await res.json());
@@ -374,7 +375,7 @@ export async function getCiSnapshot(input) {
     const denials = [];
     try {
         const sRes = await fetch(`${base}/repos/${input.repoFullName}/commits/${input.sha}/status`, {
-            headers: GH_HEADERS(input.ghToken),
+            headers: GH_HEADERS(input.ghToken), signal: input.signal,
         });
         if (sRes.ok) {
             const sj = (await sRes.json());
@@ -393,7 +394,7 @@ export async function getCiSnapshot(input) {
     }
     try {
         const cRes = await fetch(`${base}/repos/${input.repoFullName}/commits/${input.sha}/check-runs?per_page=100`, {
-            headers: GH_HEADERS(input.ghToken),
+            headers: GH_HEADERS(input.ghToken), signal: input.signal,
         });
         if (cRes.ok) {
             const cj = (await cRes.json());
@@ -427,7 +428,13 @@ export async function getCiSnapshot(input) {
     // CAN reach with `Actions: read`. Only on a permanent denial -- a transient
     // 5xx should be re-polled against the real endpoint, not routed around.
     if (!snap.checksReadable && denials.length > 0 && input.workflowRunsFallback !== false) {
-        const wf = await readWorkflowRuns({ repoFullName: input.repoFullName, sha: input.sha, ghToken: input.ghToken, base });
+        const wf = await readWorkflowRuns({
+            repoFullName: input.repoFullName,
+            sha: input.sha,
+            ghToken: input.ghToken,
+            base,
+            signal: input.signal,
+        });
         if (wf.ok) {
             snap.checksReadable = true;
             snap.checksSource = "workflow_runs";
@@ -722,6 +729,7 @@ export async function mergePullRequest(input) {
     const res = await fetch(`${input.apiBase ?? "https://api.github.com"}/repos/${input.repoFullName}/pulls/${input.prNumber}/merge`, {
         method: "PUT",
         headers: { ...GH_HEADERS(input.ghToken), "Content-Type": "application/json" },
+        signal: input.signal,
         body: JSON.stringify({
             merge_method: input.method ?? "squash",
             ...(input.commitTitle ? { commit_title: input.commitTitle } : {}),

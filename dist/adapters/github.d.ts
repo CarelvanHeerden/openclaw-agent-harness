@@ -90,6 +90,7 @@ export declare function getPullRequest(input: {
     prNumber: number;
     ghToken: string;
     apiBase?: string;
+    signal?: AbortSignal;
 }): Promise<{
     headSha: string;
     state: string;
@@ -216,6 +217,7 @@ export declare function getCiSnapshot(input: {
     apiBase?: string;
     /** beta.125: `ci.workflow_runs_fallback`. false restores b124 behaviour. */
     workflowRunsFallback?: boolean;
+    signal?: AbortSignal;
 }): Promise<CiSnapshot>;
 /**
  * beta.119: the OAuth scopes GitHub reports for this token.
@@ -268,6 +270,7 @@ export declare function mergePullRequest(input: {
     /** Refuse provider-side if the PR head moved after final inspection. */
     expectedHeadSha?: string;
     apiBase?: string;
+    signal?: AbortSignal;
 }): Promise<{
     merged: boolean;
     sha: string;

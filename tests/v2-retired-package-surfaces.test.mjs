@@ -174,11 +174,9 @@ test("control-plane documentation matches the v2 running response", () => {
   assert.doesNotMatch(doc, /`accepted`/);
 });
 
-test("operational scripts expose only the four confirmed control operations", () => {
-  assert.equal(existsSync(resolve(root, "scripts/local-drive.mjs")), false);
-  const smoke = read("scripts/smoke.mjs");
-  for (const name of ["harness_prepare_change","harness_confirm_change","harness_change_result","harness_merge_change"]) assert.match(smoke,new RegExp(name));
-  for (const name of ["harness_run","harness_progress","harness_answer","harness_start_session","harness_cancel"]) assert.doesNotMatch(smoke,new RegExp(name));
+test("retired smoke and interactive examples are not shipped", () => {
+  for (const path of ["scripts/local-drive.mjs","scripts/smoke.mjs","scripts/register-smoke-loader.mjs","scripts/live-sdk-smoke.mjs","docs/V2_SMOKE.md","examples/minimal-task.md",".github/workflows/live-sdk-smoke.yml"]) assert.equal(existsSync(resolve(root,path)),false,path);
+  assert.equal(JSON.parse(read("package.json")).scripts.smoke,undefined);
 });
 
 test("public declarations do not expose bootstrap or legacy executor bypasses", () => {
@@ -191,10 +189,9 @@ test("public declarations do not expose bootstrap or legacy executor bypasses", 
 test("raw legacy executor access fails before any dependency can run", async () => {
   const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
   const loop = new OrchestratorLoop({});
-  await assert.rejects(
-    () => loop.run("unauthorized", { title:"x", motivation:"x", acceptanceCriteria:[], filesLikelyTouched:[], outOfScope:[], riskLevel:"low" }),
-    /direct loop execution is not authorized/,
-  );
+  const brief={ title:"x", motivation:"x", acceptanceCriteria:["x"], filesLikelyTouched:["src/**"], outOfScope:[], riskLevel:"low" };
+  await assert.rejects(() => loop.run("unauthorized", brief), /direct loop execution is not authorized/);
+  await assert.rejects(() => loop.runConfirmedControl("unauthorized", brief, () => {}), /internal authority capability/);
 });
 
 test("CI requests GitHub provenance for the exact packed tarball", () => {

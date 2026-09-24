@@ -14,14 +14,37 @@ export function confirmationAttestationDigest(reviewDigest, att) {
     return controlDigest(CONFIRM_DOMAIN, { reviewDigest, attestation: { version: att.version, provenance: att.provenance, operation: att.operation, actorIdentity: att.actorIdentity, conversationIdentity: att.conversationIdentity, hostEventId: att.hostEventId, nonce: att.nonce, issuedAt: att.issuedAt, expiresAt: att.expiresAt } });
 }
 function canonicalPreparedBrief(input, repositoryIdentity) {
-    const strings = (value) => Array.isArray(value) && value.every(item => typeof item === "string") ? [...value] : [];
-    if (!input || typeof input !== "object" || typeof input.title !== "string" || typeof input.motivation !== "string" || !["low", "medium", "high"].includes(input.riskLevel))
-        throw new ControlError("request_rejected", "The request did not produce a canonical reviewable brief.");
-    const brief = { title: input.title, motivation: input.motivation, acceptanceCriteria: strings(input.acceptanceCriteria), filesLikelyTouched: strings(input.filesLikelyTouched), outOfScope: strings(input.outOfScope), repoHint: repositoryIdentity, riskLevel: input.riskLevel };
-    if (typeof input.branchHint === "string")
-        brief.branchHint = input.branchHint;
-    if (Array.isArray(input.relevantConcepts))
-        brief.relevantConcepts = input.relevantConcepts.filter(concept => concept && typeof concept.id === "string").map(concept => ({ id: concept.id, ...(typeof concept.path === "string" ? { path: concept.path } : {}), ...(typeof concept.summary === "string" ? { summary: concept.summary } : {}), ...(Array.isArray(concept.tags) && concept.tags.every(tag => typeof tag === "string") ? { tags: [...concept.tags] } : {}), ...(typeof concept.content === "string" ? { content: concept.content } : {}) }));
+    const reject = () => { throw new ControlError("request_rejected", "The request did not produce a canonical reviewable brief."); };
+    const requiredStrings = (value, nonEmpty) => {
+        if (!Array.isArray(value) || value.some(item => typeof item !== "string" || item.trim().length === 0) || (nonEmpty && value.length === 0))
+            return reject();
+        return value.map(item => item.trim());
+    };
+    if (!input || typeof input !== "object" || typeof input.title !== "string" || !input.title.trim() || typeof input.motivation !== "string" || !input.motivation.trim() || !["low", "medium", "high"].includes(input.riskLevel))
+        return reject();
+    const brief = { title: input.title.trim(), motivation: input.motivation.trim(), acceptanceCriteria: requiredStrings(input.acceptanceCriteria, true), filesLikelyTouched: requiredStrings(input.filesLikelyTouched, false), outOfScope: requiredStrings(input.outOfScope, false), repoHint: repositoryIdentity, riskLevel: input.riskLevel };
+    if (input.branchHint !== undefined) {
+        if (typeof input.branchHint !== "string" || !input.branchHint.trim())
+            return reject();
+        brief.branchHint = input.branchHint.trim();
+    }
+    if (input.relevantConcepts !== undefined) {
+        if (!Array.isArray(input.relevantConcepts))
+            return reject();
+        brief.relevantConcepts = input.relevantConcepts.map((concept) => {
+            if (!concept || typeof concept !== "object" || typeof concept.id !== "string" || !concept.id.trim())
+                return reject();
+            if (concept.path !== undefined && (typeof concept.path !== "string" || !concept.path.trim()))
+                return reject();
+            if (concept.summary !== undefined && (typeof concept.summary !== "string" || !concept.summary.trim()))
+                return reject();
+            if (concept.content !== undefined && (typeof concept.content !== "string" || !concept.content.trim()))
+                return reject();
+            if (concept.tags !== undefined && (!Array.isArray(concept.tags) || concept.tags.some(tag => typeof tag !== "string" || !tag.trim())))
+                return reject();
+            return { id: concept.id.trim(), ...(concept.path !== undefined ? { path: concept.path.trim() } : {}), ...(concept.summary !== undefined ? { summary: concept.summary.trim() } : {}), ...(concept.tags !== undefined ? { tags: concept.tags.map(tag => tag.trim()) } : {}), ...(concept.content !== undefined ? { content: concept.content } : {}) };
+        });
+    }
     return brief;
 }
 function contextIdentity(context) { const actor = (context.requesterSenderId ?? "").trim(); const conversation = (context.conversationId ?? "").trim(); if (!actor)
@@ -71,10 +94,13 @@ export class ControlPlaneService {
             throw new ControlError("request_rejected", crystallised.reason || "The request cannot be prepared safely.");
         const assumptions = [];
         const brief = canonicalPreparedBrief(crystallised.brief, resolved.repositoryIdentity);
-        const scope = [...new Set((input.scope?.filter(Boolean).length ? input.scope : brief.filesLikelyTouched).filter(Boolean))];
+        const validateScope = (value, field) => { if (!Array.isArray(value) || value.some(item => typeof item !== "string" || !item.trim()))
+            throw new ControlError("invalid_scope", `${field} must be an array of non-empty repository-relative paths.`); return value.map(item => item.trim()); };
+        const requestedScope = input.scope === undefined ? brief.filesLikelyTouched : validateScope(input.scope, "scope");
+        const scope = [...new Set(requestedScope)];
         if (scope.length === 0)
-            scope.push("**/*");
-        const excluded = [...new Set((input.excludedScope ?? brief.outOfScope).filter(Boolean))];
+            throw new ControlError("invalid_scope", "At least one explicit repository-relative scope path is required.");
+        const excluded = [...new Set(input.excludedScope === undefined ? brief.outOfScope : validateScope(input.excludedScope, "excludedScope"))];
         if ([...scope, ...excluded].some(p => p.startsWith("/") || p.includes("\\") || p.split("/").includes("..")))
             throw new ControlError("path_violation", "Scope paths must be repository-relative.");
         const maxBudget = this.deps.maximumBudgetUsd ?? 50;

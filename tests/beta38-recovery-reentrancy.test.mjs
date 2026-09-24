@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 /**
  * beta.38: recovery re-entrancy guard + worktree collision fixes.
  *
@@ -114,14 +115,14 @@ test("beta38: re-entrant run() for a session already running is skipped, not dou
       runLead: async () => { leadCalls++; await gate; return plan; },
     });
 
-    const first = loop.runConfirmedControl("S1", brief, () => {}); // starts, parks in runLead
+    const first = loop.runConfirmedControl("S1", brief, createInternalConfirmedControlAuthorityGuard(() => {})); // starts, parks in runLead
 
     // Give the first call a tick to register in runningSessions.
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(isSessionLoopRunning("S1"), true, "S1 should be marked running");
 
     // Second, re-entrant call -> must be skipped WITHOUT invoking runLead again.
-    const second = await loop.runConfirmedControl("S1", brief, () => {});
+    const second = await loop.runConfirmedControl("S1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(second.status, "skipped_already_running");
     assert.equal(second.sessionId, "S1");
     assert.equal(leadCalls, 1, "runLead must NOT have been called a second time");
@@ -143,7 +144,7 @@ test("beta38: guard clears even when the loop throws/fails, and allows a later r
     const loop = makeLoop(state, {
       runLead: async () => { throw new Error("boom"); }, // -> loop.plan_failed -> failed outcome
     });
-    const out = await loop.runConfirmedControl("S2", brief, () => {});
+    const out = await loop.runConfirmedControl("S2", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(out.status, "failed");
     // Even on failure the finally{} must have cleared the guard.
     assert.equal(isSessionLoopRunning("S2"), false);
@@ -159,8 +160,8 @@ test("beta38: independent sessions run concurrently (guard is per-session, not g
     const gate = new Promise((r) => { release = r; });
     const loop = makeLoop(state, { runLead: async () => { await gate; return plan; } });
 
-    const a = loop.runConfirmedControl("A", brief, () => {});
-    const b = loop.runConfirmedControl("B", brief, () => {});
+    const a = loop.runConfirmedControl("A", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
+    const b = loop.runConfirmedControl("B", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(isSessionLoopRunning("A"), true);
     assert.equal(isSessionLoopRunning("B"), true, "B must NOT be blocked by A (guard is per-session)");
@@ -197,7 +198,7 @@ test("rc13: a stale loop is reclaimed but its unresolved provider call fences re
       config: config({ loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 60 } }),
       runLead: async () => { firstLead++; await gate; return plan; },
     });
-    const first = loop.runConfirmedControl("Z1", brief, () => {});
+    const first = loop.runConfirmedControl("Z1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(isSessionLoopRunning("Z1"), true, "first run registered the guard");
 
@@ -210,7 +211,7 @@ test("rc13: a stale loop is reclaimed but its unresolved provider call fences re
       config: config({ loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 60 } }),
       runLead: async () => { secondLead++; return plan; },
     });
-    const out = await loop2.runConfirmedControl("Z1", brief, () => {});
+    const out = await loop2.runConfirmedControl("Z1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(out.status, "failed");
     assert.match(out.reason, /accounting_incomplete.*reconcile it before dispatch/);
     assert.equal(secondLead, 0, "an unresolved physical call must be reconciled before another dispatch");
@@ -233,7 +234,7 @@ test("beta40: a FRESH guard entry (recent progress) is still skipped, not reclai
       config: config({ loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 2700 } }),
       runLead: async () => { await gate; return plan; },
     });
-    const first = loop.runConfirmedControl("Z2", brief, () => {});
+    const first = loop.runConfirmedControl("Z2", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(isSessionLoopRunning("Z2"), true);
 
@@ -245,7 +246,7 @@ test("beta40: a FRESH guard entry (recent progress) is still skipped, not reclai
       config: config({ loop: { max_cycles: 3, adversarial_pass_ends_early: true, worker_timeout_seconds: 60, adversary_timeout_seconds: 60, session_hard_timeout_seconds: 3600, stuck_loop_seconds: 2700 } }),
       runLead: async () => { secondLead++; return plan; },
     });
-    const out = await loop2.runConfirmedControl("Z2", brief, () => {});
+    const out = await loop2.runConfirmedControl("Z2", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(out.status, "skipped_already_running", "a busy loop must still be skipped");
     assert.equal(secondLead, 0, "the busy loop must NOT be re-driven");
     assert.ok(!state.audits.some((a) => a.event === "loop.run_reclaimed_stuck"));

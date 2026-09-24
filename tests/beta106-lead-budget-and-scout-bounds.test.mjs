@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 // beta.106 — the b105 smoke (session b08502aa) never reached a plan. Four
 // defects, all introduced by b104's scout turn or exposed by it.
 //
@@ -133,7 +134,7 @@ async function runLeadPhase(overrides = {}) {
     }),
     releaseWorktree: async () => ({ ok: true, path: wt }),
   });
-  return loop.runConfirmedControl("S1", brief, () => {});
+  return loop.runConfirmedControl("S1", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
 }
 
 test("beta106: a lead phase longer than lead_timeout_seconds alone still completes", { skip }, async () => {

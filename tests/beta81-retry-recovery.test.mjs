@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 // beta.81 Track C — retry / deadline / recovery.
 //   C1: worker-timeout retry actually RE-INVOKES runWorker (behavioural spy) and
 //       never log-then-noops; a still-failing retry goes terminal.
@@ -114,7 +115,7 @@ test("rc.11/C1: a worker timeout does not buy a duplicate unknown provider call"
     const loop = new OrchestratorLoop(baseDeps(state, {
       runWorker: async () => { workerCalls++; return HANG(); },
     }));
-    const outcome = await loop.runConfirmedControl("C1a", brief, () => {});
+    const outcome = await loop.runConfirmedControl("C1a", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(workerCalls, 1, "an in-flight provider call with unknown cost/result cannot be duplicated");
     assert.equal(outcome.status, "failed");
     assert.equal(state.audits.some((a) => a.event === "loop.worker_retry_reinvoked"), false);

@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../dist/orchestrator/legacy-loop.js";
 /**
  * beta.16 fix #3: `releaseWorktree` is called on terminal transitions.
  *
@@ -114,7 +115,7 @@ test(
     const releaseCalls = [];
     const loop = new OrchestratorLoop(baseDeps(state, plan(), releaseCalls));
 
-    const outcome = await loop.runConfirmedControl("S_SHIP", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_SHIP", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "shipped");
 
     assert.equal(releaseCalls.length, 1, `expected exactly one releaseWorktree call, got ${releaseCalls.length}`);
@@ -148,7 +149,7 @@ test(
     deps.runLead = async () => { throw Object.assign(new Error("planner exploded"), { costUsd: 0 }); };
 
     const loop = new OrchestratorLoop(deps);
-    const outcome = await loop.runConfirmedControl("S_FAIL", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_FAIL", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "failed");
     assert.match(outcome.reason, /^plan_failed:/);
 
@@ -172,7 +173,7 @@ test(
     delete deps.releaseWorktree; // simulate old-style test double
 
     const loop = new OrchestratorLoop(deps);
-    const outcome = await loop.runConfirmedControl("S_NOOP", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_NOOP", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "shipped");
     assert.equal(releaseCalls.length, 0);
     // No audit events either (nothing to release).
@@ -195,7 +196,7 @@ test(
     deps.releaseWorktree = async () => { throw new Error("git worktree remove exploded"); };
 
     const loop = new OrchestratorLoop(deps);
-    const outcome = await loop.runConfirmedControl("S_FAIL_REL", brief, () => {});
+    const outcome = await loop.runConfirmedControl("S_FAIL_REL", brief, createInternalConfirmedControlAuthorityGuard(() => {}));
     assert.equal(outcome.status, "shipped", "release failure must not fail the outcome");
 
     const failEvents = state.audits.filter((e) => e.event === "loop.worktree_release_failed");

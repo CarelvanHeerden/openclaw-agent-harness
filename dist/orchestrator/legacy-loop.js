@@ -582,6 +582,13 @@ export function isConvergingBlockingTrend(blocking) {
         return false; // no net progress across the run
     return last <= prev; // and the most recent cycle did not regress
 }
+const internalConfirmedControlGuards = new WeakSet();
+/** Internal module capability; not exported from the package root. */
+export function createInternalConfirmedControlAuthorityGuard(guard) {
+    const bound = (check) => guard(check);
+    internalConfirmedControlGuards.add(bound);
+    return bound;
+}
 class ConfirmedControlAuthorityError extends Error {
     cause;
     constructor(cause) {
@@ -1743,8 +1750,8 @@ export class OrchestratorLoop {
      * the control-plane contract: a request for clarification is terminal.
      */
     async runConfirmedControl(sessionId, brief, authorityGuard, credentialResolver) {
-        if (typeof authorityGuard !== "function") {
-            throw new ConfirmedControlAuthorityError("confirmed control requires an authority guard");
+        if (typeof authorityGuard !== "function" || !internalConfirmedControlGuards.has(authorityGuard)) {
+            throw new ConfirmedControlAuthorityError("confirmed control requires an internal authority capability");
         }
         const ownsGuard = !this.confirmedControlGuards.has(sessionId);
         if (ownsGuard) {

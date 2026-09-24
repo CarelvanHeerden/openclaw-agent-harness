@@ -42,7 +42,17 @@ Success returns a single review object:
     "filesLikelyTouched": ["src/**", "tests/**"],
     "outOfScope": ["secrets/**"],
     "repoHint": "owner/name",
-    "riskLevel": "medium"
+    "branchHint": "existing-feature-branch",
+    "riskLevel": "medium",
+    "relevantConcepts": [
+      {
+        "id": "services/retry",
+        "path": "src/retry.ts",
+        "summary": "Retry policy and invariants",
+        "tags": ["reliability"],
+        "content": "Optional bounded reference text"
+      }
+    ]
   },
   "repository": "owner/name",
   "baseRef": "main",
@@ -62,6 +72,20 @@ Success returns a single review object:
   }
 }
 ```
+
+The persisted and reviewed brief schema is exactly:
+
+- `title`: required non-empty string.
+- `motivation`: required non-empty string.
+- `acceptanceCriteria`: required non-empty array of non-empty strings.
+- `filesLikelyTouched`: required array of non-empty repository-relative path strings. Either it or an explicit `scope` argument must contain at least one path; preparation never widens an empty scope to `**/*`.
+- `outOfScope`: required array of non-empty repository-relative path strings; the array may be empty.
+- `repoHint`: canonical authenticated `owner/name` repository identity.
+- `branchHint`: optional non-empty string naming an existing branch to continue.
+- `riskLevel`: required `low`, `medium`, or `high`.
+- `relevantConcepts`: optional array. Every entry requires a non-empty `id`; optional `path`, `summary`, and `content` are non-empty strings, and optional `tags` is an array of non-empty strings.
+
+Malformed arrays or entries refuse preparation deterministically; they are never coerced, filtered, or treated as empty. `branchHint` and the complete `relevantConcepts` entries are persisted in `brief_json`, displayed for review, included in the canonical brief digest, and therefore bound by `confirmation.reviewDigest`.
 
 The returned `brief` is the exact canonical brief persisted and executed. Model-produced properties outside the documented brief schema are stripped before persistence, digesting, and display. The response contains no internal prompt, session/subtask identifier, clarification identifier, polling direction, or harness command.
 

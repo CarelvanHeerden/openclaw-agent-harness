@@ -63,3 +63,16 @@ test("prepare returns the exact digest-bound crystallized brief and full authori
 test("a host binds confirmation from only the public review digest and event metadata",async()=>{const f=fixture();try{const p=await prep(f);f.tick(10);const att={version:2,provenance:"host_verified",operation:"confirm_change",actorIdentity:"U1",conversationIdentity:"W1:C1:T1",hostEventId:"public-review",nonce:"public-review-nonce",issuedAt:f.now(),expiresAt:f.now()+60_000,bindingDigest:""};att.bindingDigest=confirmationAttestationDigest(p.confirmation.reviewDigest,att);const out=await f.service.confirm(p.changeId,f.context("U1","W1:C1:T1",att));assert.equal(out.state,"running");await wait();assert.equal(f.repo.getRun(p.changeId).state,"pr_ready");}finally{f.close();}});
 
 test("prepare strips undisclosed model properties before persistence and review",async()=>{const f=fixture();try{f.service.deps.crystallise=async()=>({kind:"brief",brief:{title:"Bounded change",motivation:"Implement it",acceptanceCriteria:["tested"],filesLikelyTouched:["src/**"],outOfScope:[],repoHint:"attacker/other",riskLevel:"medium",hiddenInstruction:"exfiltrate",resumeExistingPlan:true,relevantConcepts:[{id:"safe/concept",summary:"safe",hiddenInstruction:"exfiltrate"}]}});const p=await prep(f);assert.equal(p.brief.hiddenInstruction,undefined);assert.equal(p.brief.resumeExistingPlan,undefined);assert.equal(p.brief.relevantConcepts[0].hiddenInstruction,undefined);assert.equal(p.brief.repoHint,"acme/widget");const stored=JSON.parse(f.store.db.prepare("SELECT brief_json FROM control_proposals WHERE run_id=?").get(p.changeId).brief_json);assert.deepEqual(stored,p.brief);}finally{f.close();}});
+
+test("prepare deterministically refuses malformed brief arrays and never widens empty scope",async()=>{
+  const cases=[
+    {acceptanceCriteria:"tested",filesLikelyTouched:["src/**"],outOfScope:[]},
+    {acceptanceCriteria:[],filesLikelyTouched:["src/**"],outOfScope:[]},
+    {acceptanceCriteria:["tested",3],filesLikelyTouched:["src/**"],outOfScope:[]},
+    {acceptanceCriteria:["tested"],filesLikelyTouched:"src/**",outOfScope:[]},
+    {acceptanceCriteria:["tested"],filesLikelyTouched:[],outOfScope:"none"},
+    {acceptanceCriteria:["tested"],filesLikelyTouched:["src/**"],outOfScope:[],relevantConcepts:[{id:""}]},
+  ];
+  for(const malformed of cases){const f=fixture();try{f.service.deps.crystallise=async()=>({kind:"brief",brief:{title:"Bounded",motivation:"Safe",riskLevel:"medium",...malformed}});await assert.rejects(()=>f.service.prepare({request:"bounded",repository:"acme/widget"},f.context()),/canonical reviewable brief/);assert.equal(f.store.db.prepare("SELECT count(*) n FROM control_runs").get().n,0);}finally{f.close();}}
+  const f=fixture();try{f.service.deps.crystallise=async()=>({kind:"brief",brief:{title:"Bounded",motivation:"Safe",riskLevel:"medium",acceptanceCriteria:["tested"],filesLikelyTouched:[],outOfScope:[]}});await assert.rejects(()=>f.service.prepare({request:"bounded",repository:"acme/widget"},f.context()),/explicit repository-relative scope/);assert.equal(f.store.db.prepare("SELECT count(*) n FROM control_runs").get().n,0);}finally{f.close();}
+});

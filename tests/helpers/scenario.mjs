@@ -1,3 +1,4 @@
+import { createInternalConfirmedControlAuthorityGuard } from "../../dist/orchestrator/legacy-loop.js";
 // beta.123 — the layer the suite did not have.
 //
 // 1808 test cases, 157 files, and four of them asserted what a RUN terminates
@@ -377,7 +378,7 @@ export async function runScenario(opts = {}) {
   };
 
   const loop = new OrchestratorLoop(deps);
-  const out = await loop.runConfirmedControl(sessionId, brief, () => {});
+  const out = await loop.runConfirmedControl(sessionId, brief, createInternalConfirmedControlAuthorityGuard(() => {}));
 
   const events = (name) => audits.filter((a) => a.event === name);
   const sawEvent = (name) => events(name).length > 0;

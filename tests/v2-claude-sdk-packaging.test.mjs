@@ -48,6 +48,21 @@ test("npm pack rejects package-eligible untracked content before binding a commi
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
+
+test("npm pack rejects package-eligible content hidden by git excludes", () => {
+  const temp = mkdtempSync(join(dirname(root), ".oah-ignored-pack-"));
+  try {
+    const source = join(temp, "source");
+    run("git", ["clone", "--quiet", "--shared", root, source], temp);
+    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    writeFileSync(join(source, ".git", "info", "exclude"), "dist/ignored-pack-probe.js\n", { flag: "a" });
+    writeFileSync(join(source, "dist", "ignored-pack-probe.js"), "must never ship\n");
+    assert.equal(run("git", ["status", "--porcelain", "--untracked-files=all"], source), "");
+    const packed = spawnSync("npm", ["pack", "--pack-destination", temp], { cwd: source, encoding: "utf8", timeout: 300_000 });
+    assert.notEqual(packed.status, 0);
+    assert.match(`${packed.stdout}\n${packed.stderr}`, /refusing to pack non-commit content: dist\/ignored-pack-probe\.js/);
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
 test("the exact tarball clean-installs, audits, and runs consumer-platform Claude and OpenCode binaries", async () => {
   const packed = packIsolatedHead(root, "oah-native-consumer-");
   try {

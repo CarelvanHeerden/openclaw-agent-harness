@@ -742,8 +742,8 @@ export interface OrchestratorDeps {
    * wrong in two directions at once: it ignored beta.91's per-sub-task
    * `modelOverride`, and from v2 it ignored per-role backend routing entirely —
    * a turn served by OpenCode was filed under the Claude Code model name. That
-   * is not a cosmetic slip. The A/B matrix in docs/V2_SMOKE.md compares cost per
-   * merged PR across backends by reading exactly this column, so a mislabelled
+   * is not a cosmetic slip. Backend comparison and audit reporting read exactly
+   * this column, so a mislabelled
    * row does not merely lose information, it silently attributes one backend's
    * spend to the other and flatters whichever one is not actually running.
    *
@@ -1160,7 +1160,7 @@ export function isConvergingBlockingTrend(blocking: number[] | undefined): boole
   return last <= prev;             // and the most recent cycle did not regress
 }
 
-export interface ConfirmedControlAuthorityCheck {
+interface ConfirmedControlAuthorityCheck {
   kind: "implementation_choice" | "replan" | "retry" | "repair" | "verification_retry" | "review_repair";
   action: "implement" | "retry" | "repair" | "test" | "commit" | "push_feature_branch" | "open_pull_request" | "update_pull_request" | "deploy";
   paths?: readonly string[];
@@ -1170,14 +1170,21 @@ export interface ConfirmedControlAuthorityCheck {
   projectedRetries: number;
 }
 
-export type ConfirmedControlAuthorityGuard = (check: ConfirmedControlAuthorityCheck) => void;
+type ConfirmedControlAuthorityGuard = (check: ConfirmedControlAuthorityCheck) => void;
+const internalConfirmedControlGuards = new WeakSet<ConfirmedControlAuthorityGuard>();
+/** Internal module capability; not exported from the package root. */
+export function createInternalConfirmedControlAuthorityGuard(guard: ConfirmedControlAuthorityGuard): ConfirmedControlAuthorityGuard {
+  const bound:ConfirmedControlAuthorityGuard=(check)=>guard(check);
+  internalConfirmedControlGuards.add(bound);
+  return bound;
+}
 
-export interface ConfirmedControlCredential {
+interface ConfirmedControlCredential {
   token: string;
   provider: string;
   apiBase?: string;
 }
-export type ConfirmedControlCredentialResolver = (action: "push_feature_branch" | "open_pull_request" | "update_pull_request") => Promise<ConfirmedControlCredential>;
+type ConfirmedControlCredentialResolver = (action: "push_feature_branch" | "open_pull_request" | "update_pull_request") => Promise<ConfirmedControlCredential>;
 
 class ConfirmedControlAuthorityError extends Error {
   constructor(readonly cause: unknown) {
@@ -2725,14 +2732,14 @@ export class OrchestratorLoop {
    * reused for planning and workers, but its interactive pause is not part of
    * the control-plane contract: a request for clarification is terminal.
    */
-  async runConfirmedControl(
+  private async runConfirmedControl(
     sessionId: string,
     brief: CrystallisedBrief,
     authorityGuard: ConfirmedControlAuthorityGuard,
     credentialResolver?: ConfirmedControlCredentialResolver,
   ): Promise<LoopOutcome> {
-    if (typeof authorityGuard !== "function") {
-      throw new ConfirmedControlAuthorityError("confirmed control requires an authority guard");
+    if (typeof authorityGuard !== "function" || !internalConfirmedControlGuards.has(authorityGuard)) {
+      throw new ConfirmedControlAuthorityError("confirmed control requires an internal authority capability");
     }
     const ownsGuard = !this.confirmedControlGuards.has(sessionId);
     if (ownsGuard) {

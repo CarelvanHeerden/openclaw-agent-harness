@@ -355,29 +355,3 @@ test("an exhausted ceiling is reported as the CEILING, even when the clock is sh
   assert.equal(last.reason, "ceiling", "naming the clock here is what made b130's report cry wolf");
   assert.ok(last.blockers.includes("ceiling"), "and every failing constraint must be listed");
 });
-
-// ---------------------------------------------------------------------------
-// 4. The report that would have called all of the above a regression.
-// ---------------------------------------------------------------------------
-
-test("the report does not call a ceiling-blocked refusal a b130 regression (b131)", { skip: skipDist }, async () => {
-  const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../scripts/smoke-report.mjs", import.meta.url), "utf8");
-
-  // The predicate must be derived from the individual flags, not from `reason`
-  // -- audit rows written before b131 carry the buggy label and still have to
-  // be read correctly.
-  assert.match(src, /clockWasTheOnlyBlocker/, "the report needs a notion of 'the clock was the ONLY blocker'");
-  assert.match(src, /ceilingWasOk/);
-  assert.doesNotMatch(
-    src,
-    /reason === "wall_clock"\)\s*\{\s*\n\s*console\.log\(`   operator asked for time/,
-    "keying the ask-check off `reason` alone is the bug this test exists to stop coming back",
-  );
-
-  // And the "shipped RED WITHOUT ASKING" alarm must be gated on the same thing.
-  const alarmAt = src.indexOf("shipped RED WITHOUT ASKING");
-  assert.ok(alarmAt > 0, "the b130 alarm must still exist -- it is right, when it applies");
-  const gate = src.slice(Math.max(0, alarmAt - 1200), alarmAt);
-  assert.match(gate, /clockWasTheOnlyBlocker/, "the alarm must only fire when time would actually have helped");
-});

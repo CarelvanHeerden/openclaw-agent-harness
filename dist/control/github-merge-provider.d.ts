@@ -18,12 +18,14 @@ export interface ControlMergeProviderDependencies {
         prNumber: number;
         ghToken: string;
         apiBase?: string;
+        signal?: AbortSignal;
     }): Promise<PullRequest>;
     getCiSnapshot(input: {
         repoFullName: string;
         sha: string;
         ghToken: string;
         apiBase?: string;
+        signal?: AbortSignal;
     }): Promise<CiSnapshot>;
     mergePullRequest(input: {
         repoFullName: string;
@@ -32,8 +34,9 @@ export interface ControlMergeProviderDependencies {
         apiBase?: string;
         method: "squash";
         expectedHeadSha: string;
+        signal?: AbortSignal;
     }): Promise<MergeResult>;
 }
-export declare function createControlMergeProvider(deps: ControlMergeProviderDependencies): MergeProvider;
+export declare function createControlMergeProvider(deps: ControlMergeProviderDependencies, deadlineMs?: number): MergeProvider;
 export {};
 //# sourceMappingURL=github-merge-provider.d.ts.map

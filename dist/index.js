@@ -20,7 +20,7 @@ import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedParallelKeys 
 import { openStateStoreSync } from "./state/store.js";
 import { decideDrainAction } from "./state/teardown-drain.js";
 import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
-import { OrchestratorLoop } from "./orchestrator/legacy-loop.js";
+import { OrchestratorLoop, createInternalConfirmedControlAuthorityGuard } from "./orchestrator/legacy-loop.js";
 import { runningSessionIds } from "./orchestrator/loop.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { blocksMerge, classifyFinding, normaliseSeverity } from "./orchestrator/finding-classify.js";
@@ -1775,7 +1775,7 @@ function bootstrapHarnessSync(api) {
             const terminalLegacyPublication = existingSession && ["done", "failed", "aborted"].includes(existingSession.status) && existingSession.pr_number && existingSession.final_pr_url && existingSession.published_sha && existingSession.published_at;
             const outcome = terminalLegacyPublication
                 ? { status: "shipped", sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
-                : await loop.runConfirmedControl(change.changeId, controlledBrief, authorize, async (action) => {
+                : await loop.runConfirmedControl(change.changeId, controlledBrief, createInternalConfirmedControlAuthorityGuard(authorize), async (action) => {
                     authorize({ kind: "implementation_choice", action, paths: [], projectedBudgetUsd: Number(state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId)?.cost_usd ?? 0), projectedActiveTimeMs: Math.max(0, Date.now() - controlRun.createdAt), projectedCycles: Number(state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId)?.cycles_ran ?? 0), projectedRetries: 0 });
                     const freshRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
                     if (controlCredentialRouteDigest(freshRoute) !== change.credentialRouteDigest)

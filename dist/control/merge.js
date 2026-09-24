@@ -14,16 +14,36 @@ export class InternalMergeService {
     repository;
     provider;
     now;
+    providerDeadlineMs;
     recoveryInFlight = null;
     static INTENT_LEASE_MS = 300_000;
     static MAX_RECOVERY_ATTEMPTS = 12;
     static MAX_INSPECTIONS_PER_ATTEMPT = 5;
-    constructor(db, repository, provider, now = Date.now) {
+    constructor(db, repository, provider, now = Date.now, providerDeadlineMs = 15_000) {
         this.db = db;
         this.repository = repository;
         this.provider = provider;
         this.now = now;
+        this.providerDeadlineMs = providerDeadlineMs;
     }
+    async providerCall(operation, call) {
+        let timer;
+        const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${operation}_deadline_exceeded`)), this.providerDeadlineMs); timer.unref?.(); });
+        try {
+            return await Promise.race([call(), timeout]);
+        }
+        finally {
+            if (timer)
+                clearTimeout(timer);
+        }
+    }
+    inspect(input) { return this.providerCall("provider_inspect", () => this.provider.inspect(input)); }
+    async verifyMerged(input) { try {
+        return await this.providerCall("provider_verify_merged", () => this.provider.verifyMerged(input));
+    }
+    catch {
+        return false;
+    } }
     registerAuthorizationAndIntent(a, now = this.now()) {
         const { bindingDigest, ...unsigned } = a;
         if (mergeAuthorizationDigest(unsigned) !== bindingDigest)
@@ -67,7 +87,7 @@ export class InternalMergeService {
             return Object.freeze({ status: "refused", code: "merge_attestation_required" });
         if (intent.status === "merged" && intent.provider_merge_sha && EXACT_PROVIDER_SHA.test(intent.provider_merge_sha)) {
             const raw = this.db.prepare(`SELECT run_id,repository_identity,pr_number FROM control_merge_authorizations WHERE id=?`).get(id);
-            if (raw && await this.provider.verifyMerged({ runId: raw.run_id, repository: raw.repository_identity, prNumber: raw.pr_number, mergeSha: intent.provider_merge_sha }))
+            if (raw && await this.verifyMerged({ runId: raw.run_id, repository: raw.repository_identity, prNumber: raw.pr_number, mergeSha: intent.provider_merge_sha }))
                 return Object.freeze({ status: "already_merged", mergeSha: intent.provider_merge_sha });
         }
         if (intent.status === "merge_failed")
@@ -92,7 +112,7 @@ export class InternalMergeService {
                 return Object.freeze({ status: "refused", code: "merge_attestation_required" });
             if (current.status === "merged" && current.provider_merge_sha && EXACT_PROVIDER_SHA.test(current.provider_merge_sha)) {
                 const auth = this.db.prepare(`SELECT run_id,repository_identity,pr_number FROM control_merge_authorizations WHERE id=?`).get(authorizationId);
-                if (auth && await this.provider.verifyMerged({ runId: auth.run_id, repository: auth.repository_identity, prNumber: auth.pr_number, mergeSha: current.provider_merge_sha }))
+                if (auth && await this.verifyMerged({ runId: auth.run_id, repository: auth.repository_identity, prNumber: auth.pr_number, mergeSha: current.provider_merge_sha }))
                     return Object.freeze({ status: "already_merged", mergeSha: current.provider_merge_sha });
             }
             if (current.status === "merge_failed")
@@ -136,14 +156,14 @@ export class InternalMergeService {
             return this.reconcileClaimedMerge(auth, intent.id, lease);
         let inspection;
         try {
-            inspection = await this.provider.inspect({ runId: run.id, repository: auth.repository, prNumber: auth.prNumber, readinessDigest: auth.readinessDigest });
+            inspection = await this.inspect({ runId: run.id, repository: auth.repository, prNumber: auth.prNumber, readinessDigest: auth.readinessDigest });
         }
         catch {
             return Object.freeze({ status: "merge_in_progress" });
         }
         if (inspection.merged) {
             const mergeSha = inspection.mergeSha ?? intent.provider_merge_sha ?? undefined;
-            if (mergeSha && EXACT_PROVIDER_SHA.test(mergeSha) && await this.provider.verifyMerged({ runId: run.id, repository: auth.repository, prNumber: auth.prNumber, mergeSha }) && this.completeRun(run.id, intent.id, mergeSha, lease))
+            if (mergeSha && EXACT_PROVIDER_SHA.test(mergeSha) && await this.verifyMerged({ runId: run.id, repository: auth.repository, prNumber: auth.prNumber, mergeSha }) && this.completeRun(run.id, intent.id, mergeSha, lease))
                 return Object.freeze({ status: "already_merged", mergeSha });
             this.failRun(run.id, intent.id, "verification_failed", lease);
             return Object.freeze({ status: "merge_failed", code: "verification_failed" });
@@ -181,13 +201,13 @@ export class InternalMergeService {
             return Object.freeze({ status: "refused", code: "authorization_replayed" });
         }
         try {
-            const merged = await this.provider.merge({ runId: run.id, repository: auth.repository, prNumber: auth.prNumber, expectedHeadSha: auth.expectedHeadSha, idempotencyKey: intent.merge_provider_idempotency });
+            const merged = await this.providerCall("provider_merge", () => this.provider.merge({ runId: run.id, repository: auth.repository, prNumber: auth.prNumber, expectedHeadSha: auth.expectedHeadSha, idempotencyKey: intent.merge_provider_idempotency }));
             if (!EXACT_PROVIDER_SHA.test(merged.mergeSha)) {
                 this.failRun(run.id, intent.id, "verification_failed", lease);
                 return Object.freeze({ status: "merge_failed", code: "verification_failed" });
             }
             this.db.prepare(`UPDATE control_engine_merge_intents SET provider_merge_sha=?,updated_at=? WHERE id=? AND status='merging' AND recovery_owner=? AND recovery_fence=?`).run(merged.mergeSha, this.now(), intent.id, lease.owner, lease.fence);
-            if (!this.verifyPersistedAuthorizationRow(id) || !this.verifyPersistedReadiness(run.id, auth.readinessDigest) || !await this.provider.verifyMerged({ runId: run.id, repository: auth.repository, prNumber: auth.prNumber, mergeSha: merged.mergeSha })) {
+            if (!this.verifyPersistedAuthorizationRow(id) || !this.verifyPersistedReadiness(run.id, auth.readinessDigest) || !await this.verifyMerged({ runId: run.id, repository: auth.repository, prNumber: auth.prNumber, mergeSha: merged.mergeSha })) {
                 this.failRun(run.id, intent.id, "verification_failed", lease);
                 return Object.freeze({ status: "merge_failed", code: "verification_failed" });
             }
@@ -211,7 +231,7 @@ export class InternalMergeService {
             if (!current)
                 return Object.freeze({ status: "refused", code: "merge_attestation_required" });
             if (current.status === "merged") {
-                if (current.provider_merge_sha && EXACT_PROVIDER_SHA.test(current.provider_merge_sha) && await this.provider.verifyMerged({ runId: auth.runId, repository: auth.repository, prNumber: auth.prNumber, mergeSha: current.provider_merge_sha }))
+                if (current.provider_merge_sha && EXACT_PROVIDER_SHA.test(current.provider_merge_sha) && await this.verifyMerged({ runId: auth.runId, repository: auth.repository, prNumber: auth.prNumber, mergeSha: current.provider_merge_sha }))
                     return Object.freeze({ status: "already_merged", mergeSha: current.provider_merge_sha });
                 return Object.freeze({ status: "merge_failed", code: "verification_failed" });
             }
@@ -221,13 +241,13 @@ export class InternalMergeService {
                 return Object.freeze({ status: "merge_failed", code: "verification_failed" });
             let inspection;
             try {
-                inspection = await this.provider.inspect({ runId: auth.runId, repository: auth.repository, prNumber: auth.prNumber, readinessDigest: auth.readinessDigest });
+                inspection = await this.inspect({ runId: auth.runId, repository: auth.repository, prNumber: auth.prNumber, readinessDigest: auth.readinessDigest });
             }
             catch { }
             inspections++;
             if (inspection?.merged) {
                 const mergeSha = inspection.mergeSha;
-                if (mergeSha && EXACT_PROVIDER_SHA.test(mergeSha) && await this.provider.verifyMerged({ runId: auth.runId, repository: auth.repository, prNumber: auth.prNumber, mergeSha }) && this.completeRun(auth.runId, intentId, mergeSha, lease))
+                if (mergeSha && EXACT_PROVIDER_SHA.test(mergeSha) && await this.verifyMerged({ runId: auth.runId, repository: auth.repository, prNumber: auth.prNumber, mergeSha }) && this.completeRun(auth.runId, intentId, mergeSha, lease))
                     return Object.freeze({ status: "already_merged", mergeSha });
                 this.failRun(auth.runId, intentId, "verification_failed", lease);
                 return Object.freeze({ status: "merge_failed", code: "verification_failed" });

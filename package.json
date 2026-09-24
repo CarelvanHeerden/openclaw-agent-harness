@@ -39,9 +39,8 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql && node scripts/gen-build-integrity.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && GIT_CONFIG_GLOBAL=$PWD/tests/fixtures/gitconfig GIT_CONFIG_SYSTEM=/dev/null node --test --test-timeout=300000 tests/*.mjs",
+    "test": "node scripts/test-isolated.mjs",
     "test:no-build": "node --test --test-timeout=300000 tests/*.mjs",
-    "smoke": "npm run build && node --import ./scripts/register-smoke-loader.mjs scripts/smoke.mjs",
     "docs:config": "npm run build && node scripts/gen-config-reference.mjs",
     "lint": "eslint 'src/**/*.ts'",
     "check:downgrade": "node scripts/check-downgrade.mjs",
@@ -50,7 +49,8 @@
     "schema:sync": "node scripts/gen-config-schema.mjs",
     "schema:check": "node scripts/gen-config-schema.mjs --check",
     "prepack": "node scripts/prepare-package-artifact.mjs prepare",
-    "postpack": "node scripts/prepare-package-artifact.mjs restore"
+    "postpack": "node scripts/prepare-package-artifact.mjs restore",
+    "test:in-place": "npm run build && GIT_CONFIG_GLOBAL=$PWD/tests/fixtures/gitconfig GIT_CONFIG_SYSTEM=/dev/null node --test --test-timeout=300000 tests/*.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.207",
