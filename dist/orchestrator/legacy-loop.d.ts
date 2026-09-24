@@ -771,9 +771,21 @@ export declare function isConvergingFindingTrend(counts: number[] | undefined): 
  * just went backwards has not earned another turn.
  */
 export declare function isConvergingBlockingTrend(blocking: number[] | undefined): boolean;
+export interface ConfirmedControlAuthorityCheck {
+    kind: "implementation_choice" | "replan" | "retry" | "repair" | "verification_retry" | "review_repair";
+    action: "implement" | "retry" | "repair" | "test" | "commit" | "push_feature_branch" | "open_pull_request" | "update_pull_request" | "deploy";
+    paths?: readonly string[];
+    projectedBudgetUsd: number;
+    projectedActiveTimeMs: number;
+    projectedCycles: number;
+    projectedRetries: number;
+}
+export type ConfirmedControlAuthorityGuard = (check: ConfirmedControlAuthorityCheck) => void;
 export declare class OrchestratorLoop {
     private readonly deps;
+    private readonly confirmedControlGuards;
     constructor(deps: OrchestratorDeps);
+    private assertConfirmedControlAuthority;
     private routeLog;
     /**
      * Pure state-transition rule (unit-tested).
@@ -963,7 +975,7 @@ export declare class OrchestratorLoop {
      * reused for planning and workers, but its interactive pause is not part of
      * the control-plane contract: a request for clarification is terminal.
      */
-    runConfirmedControl(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
+    runConfirmedControl(sessionId: string, brief: CrystallisedBrief, authorityGuard?: ConfirmedControlAuthorityGuard): Promise<LoopOutcome>;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
     /**
      * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is

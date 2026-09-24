@@ -100,7 +100,9 @@ export declare class ControlPlaneService {
     private readonly now;
     private readonly ttl;
     private readonly dispatchLeaseMs;
+    private readonly recoveryTimer;
     constructor(deps: ControlServiceDeps);
+    dispose(): void;
     prepare(input: PrepareChangeInput, context: TrustedControlContext): Promise<Record<string, unknown>>;
     confirm(changeId: string, context: TrustedControlContext): Promise<Record<string, unknown>>;
     result(changeId: string, context: TrustedControlContext): Record<string, unknown>;

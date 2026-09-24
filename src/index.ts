@@ -97,6 +97,7 @@ import { resolveGenerators } from "./orchestrator/generated-artifacts.js";
 import { foldGeneratedFiles } from "./adapters/shared/diff.js";
 import { diagnoseCheckEnv, runTypecheckDirect } from "./orchestrator/typecheck-fallback.js";
 import { buildBashGuard } from "./safety/bash-guard.js";
+import { scanPatchForSecrets } from "./safety/path-policy.js";
 import { PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESCRIPTION, PLUGIN_VERSION } from "./version.js";
 import { assertDowngradeSafe } from "./state/runtime-compat.js";
 
@@ -2153,7 +2154,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     commitIdentity: route.commitIdentity,
     tokenPointer: route.tokenPointer?.env ? { env: route.tokenPointer.env }
       : route.tokenPointer?.vault ? { vault: route.tokenPointer.vault }
-      : route.tokenPointer?.value ? { inline: true }
+      : route.tokenPointer?.value ? { inlineDigest: createHash("sha256").update(route.tokenPointer.value).digest("hex") }
       : null,
   });
   runtime.controlPlane = new ControlPlaneService({
@@ -2180,7 +2181,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     },
     executeEngine: async (change) => {
       change.assertCurrent();
-      const route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
+      let route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
       const currentRouteDigest = createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
       if (currentRouteDigest !== change.credentialRouteDigest) {
         const run = controlRepository.getRun(change.changeId);
@@ -2208,26 +2209,34 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       }
       const controlRun = controlRepository.getRun(change.changeId);
       if (!controlRun) throw new Error("authority_violation");
-      const authorityDecision = autonomousEngine.decide(change.changeId, change.lease, {
-        kind: "implementation_choice",
-        request: {
-          requesterId: controlRun.requesterId,
-          conversationId: controlRun.conversationId,
-          repository: controlRun.repository,
-          baseRef: controlRun.baseRef,
-          briefDigest: controlRun.briefDigest,
-          policyDigest: controlRun.policyDigest,
-          nonce: controlRun.authorityEnvelope.nonce,
-          action: "implement",
-          paths: [],
-          projectedBudgetUsd: 0,
-          projectedActiveTimeMs: 0,
-          projectedCycles: 0,
-          projectedRetries: 0,
-          now: Date.now(),
-        },
-      });
-      if (authorityDecision.outcome === "terminate") throw new Error(authorityDecision.code);
+      const authorize = (check: import("./orchestrator/legacy-loop.js").ConfirmedControlAuthorityCheck): void => {
+        change.assertCurrent();
+        route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
+        const observedRouteDigest = createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
+        const credentialChange = observedRouteDigest !== change.credentialRouteDigest;
+        const decision = autonomousEngine.decide(change.changeId, change.lease, {
+          kind: check.kind,
+          request: {
+            requesterId: controlRun.requesterId,
+            conversationId: controlRun.conversationId,
+            repository: controlRun.repository,
+            baseRef: controlRun.baseRef,
+            briefDigest: controlRun.briefDigest,
+            policyDigest: controlRun.policyDigest,
+            nonce: controlRun.authorityEnvelope.nonce,
+            action: check.action,
+            paths: check.paths ?? [],
+            projectedBudgetUsd: check.projectedBudgetUsd,
+            projectedActiveTimeMs: check.projectedActiveTimeMs,
+            projectedCycles: check.projectedCycles,
+            projectedRetries: check.projectedRetries,
+            credentialChange,
+            now: Date.now(),
+          },
+        });
+        if (decision.outcome === "terminate") throw new Error(decision.code);
+      };
+      authorize({ kind: "implementation_choice", action: "implement", paths: [], projectedBudgetUsd: 0, projectedActiveTimeMs: 0, projectedCycles: 0, projectedRetries: 0 });
       const now = Date.now();
       const controlledBrief: CrystallisedBrief = { ...change.brief, repoHint: change.repositoryIdentity, filesLikelyTouched: [...change.scope], outOfScope: [...change.excludedScope],
         acceptanceCriteria: [...change.brief.acceptanceCriteria, `Immutable base revision: ${change.baseRevision}`, `Maximum active time: ${change.timeLimitSeconds} seconds`] };
@@ -2238,18 +2247,42 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         { status: string; pr_number: number | null; final_pr_url: string | null; published_sha: string | null } | undefined;
       const outcome = existingSession?.status === "done" && existingSession.pr_number && existingSession.published_sha
         ? { status: "shipped" as const, sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
-        : await runtime.loop.runConfirmedControl(change.changeId, controlledBrief);
+        : await runtime.loop.runConfirmedControl(change.changeId, controlledBrief, authorize);
       change.assertCurrent();
       if (outcome.status !== "shipped") throw new Error(`autonomous_terminal:${outcome.status}`);
-      const row = state.db.prepare(`SELECT pr_number,final_pr_url,published_sha,published_at,cost_usd,created_at,updated_at,merge_recommendation FROM sessions WHERE id=?`).get(change.changeId) as Record<string, unknown>;
+      const row = state.db.prepare(`SELECT pr_number,final_pr_url,published_sha,published_at,cost_usd,created_at,updated_at,merge_recommendation,deploy_status FROM sessions WHERE id=?`).get(change.changeId) as Record<string, unknown>;
       const review = state.db.prepare(`SELECT verdict,findings FROM reviews WHERE session_id=? ORDER BY cycle DESC LIMIT 1`).get(change.changeId) as { verdict?: string; findings?: string } | undefined;
       if (!row.pr_number || !row.published_sha) throw new Error("publication_evidence_missing");
+      authorize({
+        kind: "verification_retry",
+        action: "test",
+        paths: [],
+        projectedBudgetUsd: Number(row.cost_usd),
+        projectedActiveTimeMs: Number(row.updated_at)-Number(row.created_at),
+        projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as { cycles_ran?: number } | undefined)?.cycles_ran ?? 0),
+        projectedRetries: 0,
+      });
       const ghToken = await resolveGitToken(route);
       const pr = await getPullRequest({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), ghToken, apiBase: route.apiBase });
       const ci = await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken, apiBase: route.apiBase });
       const findings = review?.findings ? JSON.parse(review.findings) as ReviewFinding[] : [];
-      const changedPathsRows = state.db.prepare(`SELECT files_touched FROM sub_task_attempts WHERE session_id=? AND files_touched IS NOT NULL`).all(change.changeId) as Array<{ files_touched: string }>;
-      const changedPaths = [...new Set(changedPathsRows.flatMap((r) => { try { return JSON.parse(r.files_touched) as string[]; } catch { return []; } }))];
+      const pullRequestFiles: Array<{ filename: string; status: string; patch?: string }> = [];
+      const apiBase = route.apiBase ?? "https://api.github.com";
+      for (let page = 1; page <= 30; page += 1) {
+        const response = await fetch(`${apiBase}/repos/${change.repositoryIdentity}/pulls/${Number(row.pr_number)}/files?per_page=100&page=${page}`, {
+          headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
+        });
+        if (!response.ok) throw new Error(`pull_request_files_unavailable:${response.status}`);
+        const pageFiles = await response.json() as Array<{ filename?: string; status?: string; patch?: string }>;
+        if (!Array.isArray(pageFiles)) throw new Error("pull_request_files_invalid");
+        for (const file of pageFiles) {
+          if (!file.filename || !file.status) throw new Error("pull_request_file_evidence_incomplete");
+          pullRequestFiles.push({ filename: file.filename, status: file.status, ...(typeof file.patch === "string" ? { patch: file.patch } : {}) });
+        }
+        if (pageFiles.length < 100) break;
+        if (page === 30) throw new Error("pull_request_files_pagination_exceeded");
+      }
+      const changedPaths = [...new Set(pullRequestFiles.map((file) => file.filename))];
       const probeRows = state.db.prepare(`WITH ranked AS (
         SELECT verification_status,commit_sha,ROW_NUMBER() OVER (PARTITION BY cycle,seq ORDER BY attempt DESC) AS rank
         FROM sub_task_attempts WHERE session_id=?
@@ -2257,32 +2290,36 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const completedProbes = probeRows.filter((item) => item.verification_status === "passed").length;
       const indeterminateProbes = probeRows.filter((item) => item.verification_status !== "passed" && item.verification_status !== "failed").length;
       const hasSecurityFinding = findings.some((finding) => /secret|credential|security/i.test(JSON.stringify(finding)));
+      const secretScanComplete = pullRequestFiles.every((file) => file.status === "removed" || typeof file.patch === "string");
+      const secretScan = scanPatchForSecrets(pullRequestFiles.map((file) => file.patch ?? "").join("\n"));
+      const publicationObservedAt = Number(row.published_at);
       const operationsPerformed = [
         ...(changedPaths.length > 0 ? ["implement"] : []),
         ...(completedProbes > 0 ? ["test"] : []),
         ...(probeRows.some((item) => Boolean(item.commit_sha)) ? ["commit"] : []),
-        "push_feature_branch",
-        "open_pull_request",
+        ...(row.published_sha && Number.isFinite(publicationObservedAt) && publicationObservedAt > 0 ? ["push_feature_branch"] : []),
+        ...(row.pr_number && row.final_pr_url ? ["open_pull_request"] : []),
       ];
       return {
         finalVerdict: review?.verdict === "pass" && row.merge_recommendation === "merge" ? "pass" : review?.verdict === "block" ? "block" : "revise",
         blockingFindings: findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true, hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty }))).length,
         reviewCompleted: !!review,
         verificationProbes: { completed: completedProbes, required: probeRows.length, indeterminate: indeterminateProbes },
-        candidateSha: String(row.published_sha), publication: { sha: String(row.published_sha), observedAt: Number(row.published_at ?? Date.now()) },
+        candidateSha: String(row.published_sha), publication: { sha: String(row.published_sha), observedAt: publicationObservedAt },
         pullRequest: { repository: change.repositoryIdentity, baseRef: pr.baseBranch, headSha: pr.headSha, open: pr.state === "open" && !pr.merged, number: Number(row.pr_number), url: String(row.final_pr_url) },
         expectedRepository: change.repositoryIdentity, expectedBaseRef: change.baseRef,
         requiredCi: { registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0, requiredChecks: ci.checkNames, successfulChecks: ci.state === "success" ? ci.checkNames : [], sha: pr.headSha,
           status: ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate" },
         runtimeEvidence: { status: config.vercel?.enabled ? (row.deploy_status === "ready" ? "pass" : "indeterminate") : "not_required" },
-        securityEvidence: { status: review?.verdict === "pass" && !hasSecurityFinding ? "pass" : "fail" }, elapsedTimeMs: Number(row.updated_at)-Number(row.created_at), timeLimitMs: change.timeLimitSeconds*1000,
+        securityEvidence: { status: !secretScanComplete ? "indeterminate" : review?.verdict === "pass" && !hasSecurityFinding && !secretScan.found ? "pass" : "fail" }, elapsedTimeMs: Number(row.updated_at)-Number(row.created_at), timeLimitMs: change.timeLimitSeconds*1000,
         changedPaths, allowedScope: change.scope, excludedScope: change.excludedScope,
         operationsPerformed, allowedOperations: ["implement","retry","repair","test","commit","push_feature_branch","open_pull_request","update_pull_request","deploy"],
         credentialRouteDigest: createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex"), expectedCredentialRouteDigest: change.credentialRouteDigest,
-        secretExposure: { detected: hasSecurityFinding, evidence: review?.verdict === "pass" && !hasSecurityFinding ? "pass" : "indeterminate" }, spendUsd: Number(row.cost_usd), budgetUsd: change.budgetUsd,
+        secretExposure: { detected: secretScan.found, evidence: !secretScanComplete ? "indeterminate" : secretScan.found ? "fail" : "pass" }, spendUsd: Number(row.cost_usd), budgetUsd: change.budgetUsd,
       };
     },
   });
+  runtime.disposers.push(() => runtime.controlPlane?.dispose());
 
   // Tools (sync)
   const disposeTools = registerHarnessTools(api, runtime);

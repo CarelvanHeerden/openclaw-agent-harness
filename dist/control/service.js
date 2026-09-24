@@ -31,13 +31,17 @@ export class ControlPlaneService {
     now;
     ttl;
     dispatchLeaseMs;
+    recoveryTimer;
     constructor(deps) {
         this.deps = deps;
         this.now = deps.now ?? Date.now;
         this.ttl = deps.confirmationTtlMs ?? 900_000;
         this.dispatchLeaseMs = deps.dispatchLeaseMs ?? 300_000;
         queueMicrotask(() => void this.recoverDispatches());
+        this.recoveryTimer = setInterval(() => void this.recoverDispatches(), Math.max(10, Math.floor(this.dispatchLeaseMs / 3)));
+        this.recoveryTimer.unref?.();
     }
+    dispose() { clearInterval(this.recoveryTimer); }
     async prepare(input, context) {
         const { actor, conversation } = contextIdentity(context);
         const request = input.request?.trim();
@@ -134,7 +138,7 @@ export class ControlPlaneService {
         lease = this.deps.engine.acquire(changeId);
         heartbeat = setInterval(() => { const at = this.now(); if (!lease)
             return; const renewed = this.deps.repository.renewLease(changeId, lease.ownerId, lease.fence, this.dispatchLeaseMs, at); if (renewed)
-            this.deps.db.prepare(`UPDATE control_dispatch_intents SET lease_expires_at=?,updated_at=? WHERE run_id=? AND status='running' AND lease_owner=? AND lease_fence=?`).run(at + this.dispatchLeaseMs, at, changeId, owner, intent.lease_fence); }, Math.max(1000, Math.floor(this.dispatchLeaseMs / 3)));
+            this.deps.db.prepare(`UPDATE control_dispatch_intents SET lease_expires_at=?,updated_at=? WHERE run_id=? AND status='running' AND lease_owner=? AND lease_fence=?`).run(at + this.dispatchLeaseMs, at, changeId, owner, intent.lease_fence); }, Math.max(10, Math.floor(this.dispatchLeaseMs / 3)));
         heartbeat.unref?.();
         const run = this.deps.repository.getRun(changeId);
         const p = this.proposal(changeId);
@@ -156,6 +160,13 @@ export class ControlPlaneService {
             clearInterval(heartbeat);
         if (String(error).includes("stale_dispatch") || String(error).includes("stale_write"))
             return;
+        const shipped = this.deps.db.prepare(`SELECT status,pr_number,published_sha FROM sessions WHERE id=?`).get(changeId);
+        if (shipped?.status === "done" && shipped.pr_number && shipped.published_sha) {
+            this.deps.db.prepare(`UPDATE control_dispatch_intents SET status='pending',last_error=?,completed_at=NULL,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE run_id=? AND lease_owner=? AND lease_fence=?`).run(String(error).slice(0, 500), this.now(), changeId, owner, intent.lease_fence);
+            if (lease && this.deps.repository.validateLease(lease, this.now()))
+                this.deps.repository.releaseLease(changeId, lease.ownerId, lease.fence, this.now());
+            return;
+        }
         const run = this.deps.repository.getRun(changeId);
         if (run?.state === "autonomous_run" && lease && this.deps.repository.validateLease(lease, this.now()))
             this.deps.repository.transitionFenced({ runId: changeId, expectedVersion: run.version, to: "failed", actor: "autonomous_engine", reason: "execution_failed", terminalCode: "execution_failed", lease, at: this.now() });

@@ -1187,8 +1187,50 @@ export function isConvergingBlockingTrend(blocking: number[] | undefined): boole
   return last <= prev;             // and the most recent cycle did not regress
 }
 
+export interface ConfirmedControlAuthorityCheck {
+  kind: "implementation_choice" | "replan" | "retry" | "repair" | "verification_retry" | "review_repair";
+  action: "implement" | "retry" | "repair" | "test" | "commit" | "push_feature_branch" | "open_pull_request" | "update_pull_request" | "deploy";
+  paths?: readonly string[];
+  projectedBudgetUsd: number;
+  projectedActiveTimeMs: number;
+  projectedCycles: number;
+  projectedRetries: number;
+}
+
+export type ConfirmedControlAuthorityGuard = (check: ConfirmedControlAuthorityCheck) => void;
+
+class ConfirmedControlAuthorityError extends Error {
+  constructor(readonly cause: unknown) {
+    super(`confirmed control authority terminated: ${String(cause)}`);
+    this.name = "ConfirmedControlAuthorityError";
+  }
+}
+
 export class OrchestratorLoop {
+  private readonly confirmedControlGuards = new Map<string, ConfirmedControlAuthorityGuard>();
+
   constructor(private readonly deps: OrchestratorDeps) {}
+
+  private assertConfirmedControlAuthority(
+    sessionId: string,
+    check: Omit<ConfirmedControlAuthorityCheck, "projectedBudgetUsd" | "projectedActiveTimeMs" | "projectedCycles"> &
+      Partial<Pick<ConfirmedControlAuthorityCheck, "projectedBudgetUsd" | "projectedActiveTimeMs" | "projectedCycles">>,
+  ): void {
+    const guard = this.confirmedControlGuards.get(sessionId);
+    if (!guard) return;
+    const row = this.deps.state.db.prepare(`SELECT cost_usd,created_at,cycles_ran FROM sessions WHERE id=?`).get(sessionId) as
+      { cost_usd: number; created_at: number; cycles_ran: number } | undefined;
+    try {
+      guard({
+        ...check,
+        projectedBudgetUsd: check.projectedBudgetUsd ?? Number(row?.cost_usd ?? 0),
+        projectedActiveTimeMs: check.projectedActiveTimeMs ?? Math.max(0, Date.now() - Number(row?.created_at ?? Date.now())),
+        projectedCycles: check.projectedCycles ?? Number(row?.cycles_ran ?? 0),
+      });
+    } catch (error) {
+      throw new ConfirmedControlAuthorityError(error);
+    }
+  }
 
   private routeLog(role: RoleName, fallbackModel: string, selectedModel?: string): {
     model: string;
@@ -2025,6 +2067,15 @@ export class OrchestratorLoop {
       role: "worker",
       route: route.backend,
     });
+    const authorityKind = call.attempt > 1 ? "retry" : meta.cycle > 1 ? "repair" : "implementation_choice";
+    const authorityAction = call.attempt > 1 ? "retry" : meta.cycle > 1 ? "repair" : "implement";
+    this.assertConfirmedControlAuthority(meta.sessionId, {
+      kind: authorityKind,
+      action: authorityAction,
+      paths: [],
+      projectedCycles: meta.cycle,
+      projectedRetries: Math.max(0, call.attempt - 1),
+    });
     const startedAt = Date.now();
     this.deps.interactionLog?.logSdkRequest(meta.sessionId, {
       role: "worker",
@@ -2087,6 +2138,24 @@ export class OrchestratorLoop {
           actualPromptSha256: result.actualPromptSha256 ?? null,
         },
       });
+      this.assertConfirmedControlAuthority(meta.sessionId, {
+        kind: authorityKind,
+        action: authorityAction,
+        paths: result.filesChanged ?? [],
+        projectedBudgetUsd: Number((this.deps.state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(meta.sessionId) as { cost_usd?: number } | undefined)?.cost_usd ?? 0),
+        projectedCycles: meta.cycle,
+        projectedRetries: Math.max(0, call.attempt - 1),
+      });
+      if (result.commitSha || (result.commitShas?.length ?? 0) > 0) {
+        this.assertConfirmedControlAuthority(meta.sessionId, {
+          kind: authorityKind,
+          action: "commit",
+          paths: result.filesChanged ?? [],
+          projectedBudgetUsd: Number((this.deps.state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(meta.sessionId) as { cost_usd?: number } | undefined)?.cost_usd ?? 0),
+          projectedCycles: meta.cycle,
+          projectedRetries: Math.max(0, call.attempt - 1),
+        });
+      }
       result.providerCallId = call.id;
       this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
         role: "worker",
@@ -2103,7 +2172,7 @@ export class OrchestratorLoop {
       });
       return result;
     } catch (err) {
-      if (err instanceof AccountingPersistenceError) throw err;
+      if (err instanceof AccountingPersistenceError || err instanceof ConfirmedControlAuthorityError) throw err;
       const measuredErrorCost = (err as { costUsd?: unknown } | null)?.costUsd;
       if (typeof measuredErrorCost === "number" && Number.isFinite(measuredErrorCost) && measuredErrorCost >= 0) {
         this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
@@ -2157,6 +2226,14 @@ export class OrchestratorLoop {
     },
   ): Promise<T> {
     const call = this.beginProviderCall(meta);
+    const authorityKind = call.attempt > 1 ? "retry" : meta.role === "adversary" ? "review_repair" : meta.cycle && meta.cycle > 1 ? "replan" : "implementation_choice";
+    this.assertConfirmedControlAuthority(meta.sessionId, {
+      kind: authorityKind,
+      action: call.attempt > 1 ? "retry" : meta.role === "adversary" ? "test" : "implement",
+      paths: [],
+      projectedCycles: meta.cycle ?? 0,
+      projectedRetries: Math.max(0, call.attempt - 1),
+    });
     try {
       const result = await invoke();
       const measured = describe(result);
@@ -2174,9 +2251,17 @@ export class OrchestratorLoop {
         throw new AccountingPersistenceError(`${meta.role} provider returned without a valid measured cost`);
       }
       this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, measured);
+      this.assertConfirmedControlAuthority(meta.sessionId, {
+        kind: authorityKind,
+        action: call.attempt > 1 ? "retry" : meta.role === "adversary" ? "test" : "implement",
+        paths: [],
+        projectedBudgetUsd: Number((this.deps.state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(meta.sessionId) as { cost_usd?: number } | undefined)?.cost_usd ?? 0),
+        projectedCycles: meta.cycle ?? 0,
+        projectedRetries: Math.max(0, call.attempt - 1),
+      });
       return result;
     } catch (err) {
-      if (err instanceof AccountingPersistenceError) throw err;
+      if (err instanceof AccountingPersistenceError || err instanceof ConfirmedControlAuthorityError) throw err;
       const measuredErrorCost = (err as { costUsd?: unknown } | null)?.costUsd;
       if (typeof measuredErrorCost === "number" && Number.isFinite(measuredErrorCost) && measuredErrorCost >= 0) {
         this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
@@ -2660,19 +2745,28 @@ export class OrchestratorLoop {
    * reused for planning and workers, but its interactive pause is not part of
    * the control-plane contract: a request for clarification is terminal.
    */
-  async runConfirmedControl(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
-    const outcome = await this.run(sessionId, brief);
-    if (outcome.status !== "awaiting_clarification") return outcome;
-    const now = Date.now();
-    this.deps.state.db.prepare(`UPDATE sessions SET status='failed', clarification_question=NULL, updated_at=? WHERE id=? AND status='awaiting_clarification'`).run(now, sessionId);
-    this.deps.state.audit("control.interactive_pause_rejected", { sessionId, reason: "confirmed_control_is_non_interactive" }, sessionId);
-    return {
-      status: "failed",
-      sessionId,
-      reason: "confirmed control requested interactive clarification",
-      cycles: outcome.cycles,
-      totalCostUsd: outcome.totalCostUsd,
-    };
+  async runConfirmedControl(
+    sessionId: string,
+    brief: CrystallisedBrief,
+    authorityGuard?: ConfirmedControlAuthorityGuard,
+  ): Promise<LoopOutcome> {
+    if (authorityGuard) this.confirmedControlGuards.set(sessionId, authorityGuard);
+    try {
+      const outcome = await this.run(sessionId, brief);
+      if (outcome.status !== "awaiting_clarification") return outcome;
+      const now = Date.now();
+      this.deps.state.db.prepare(`UPDATE sessions SET status='failed', clarification_question=NULL, updated_at=? WHERE id=? AND status='awaiting_clarification'`).run(now, sessionId);
+      this.deps.state.audit("control.interactive_pause_rejected", { sessionId, reason: "confirmed_control_is_non_interactive" }, sessionId);
+      return {
+        status: "failed",
+        sessionId,
+        reason: "confirmed control requested interactive clarification",
+        cycles: outcome.cycles,
+        totalCostUsd: outcome.totalCostUsd,
+      };
+    } finally {
+      this.confirmedControlGuards.delete(sessionId);
+    }
   }
 
   async run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
@@ -2837,6 +2931,7 @@ export class OrchestratorLoop {
     if (["done", "failed", "aborted"].includes(row.status)) {
       throw new Error(`session ${sessionId} is already terminal (${row.status})`);
     }
+    const confirmedControl = this.confirmedControlGuards.has(sessionId);
 
     const startedAt = Date.now();
     // beta.123: a per-session ceiling, when the operator set one at the
@@ -4127,9 +4222,10 @@ export class OrchestratorLoop {
             return;
           }
         }
-        const reactions = await this.deps.readReactions(sessionId);
+        const reactions = confirmedControl ? { shipIt: false, abort: false, pause: false, budgetBump: false } : await this.deps.readReactions(sessionId);
         if (reactions.abort) { failed.err = "user_abort_reaction"; failed.seq = st.seq; return; }
         if (Date.now() > hardDeadlineMs) { failed.err = "hard_timeout"; failed.seq = st.seq; return; }
+        if (confirmedControl && totalCost > row.budget_usd) { failed.err = "budget_exceeded"; failed.seq = st.seq; return; }
         // beta.78 (Feature 2): the SESSION budget is now SOFT. Crossing it
         // WARNS once and the run CONTINUES (was a hard abort). The true HARD
         // stop is the per-user daily_max_usd, checked below. This matches
@@ -4170,7 +4266,7 @@ export class OrchestratorLoop {
               // who can lift it, so ask before killing the run. An unanswered
               // question aborts exactly as it did before.
               let funded = false;
-              if (!budgetExtensionRefused) {
+              if (!confirmedControl && !budgetExtensionRefused) {
                 const grantedUsd = await this.askForBudgetExtension({
                   sessionId,
                   cycle,
@@ -6802,7 +6898,7 @@ export class OrchestratorLoop {
       // falling back to a conservative reserve. Abort at the cycle boundary
       // rather than blowing the budget by ~$0.83 on a review we can't pay for.
       {
-        const reactions = await this.deps.readReactions(sessionId);
+        const reactions = confirmedControl ? { shipIt: false, abort: false, pause: false, budgetBump: false } : await this.deps.readReactions(sessionId);
         const reviewEstimate = this.estimateReviewCost(subTaskCosts);
         // beta.78 (Feature 2): the review-gate hard abort now keys off the
         // per-user DAILY cap, not the (soft) session budget. Crossing the
@@ -6815,7 +6911,7 @@ export class OrchestratorLoop {
         // rc.6: without a review nothing ships at all -- the branch is
         // salvaged, not delivered -- so this is the most valuable dollar in the
         // run and the worst one to refuse silently. Ask before abandoning it.
-        if (!reactions.budgetBump && !budgetOverrideGranted && dailyWouldExceed && !budgetExtensionRefused) {
+        if (!confirmedControl && !reactions.budgetBump && !budgetOverrideGranted && dailyWouldExceed && !budgetExtensionRefused) {
           const grantedUsd = await this.askForBudgetExtension({
             sessionId,
             cycle,
@@ -7192,7 +7288,7 @@ export class OrchestratorLoop {
         // cancel and was persisted + transitioned on), discard this review and
         // abort cleanly. We still record the spend already incurred (honest
         // accounting) but do NOT let a post-cancel verdict drive a transition.
-        const postReviewReactions = await this.deps.readReactions(sessionId);
+        const postReviewReactions = confirmedControl ? { shipIt: false, abort: false, pause: false, budgetBump: false } : await this.deps.readReactions(sessionId);
         if (postReviewReactions.abort) {
           this.deps.state.audit("loop.review_discarded_post_cancel", { sessionId, cycle, verdict: report.verdict }, sessionId);
           this.deps.logger.info("[loop] adversary review completed after user cancel; discarding verdict and aborting", { sessionId, cycle });
@@ -7309,6 +7405,13 @@ export class OrchestratorLoop {
           if (!previewHeadSha) {
             throw new Error("could not resolve candidate HEAD before preview push");
           }
+          this.assertConfirmedControlAuthority(sessionId, {
+            kind: "implementation_choice",
+            action: "push_feature_branch",
+            paths: [],
+            projectedCycles: cycle,
+            projectedRetries: 0,
+          });
           this.deps.state.audit("loop.preview_push_started", { sessionId, cycle, branch: plan.branch }, sessionId);
           const pushed = await this.deps.pushBranchForPreview({ plan, requester: row.requester, commitSha: previewHeadSha });
           if (!pushed.remoteSha || pushed.remoteSha !== previewHeadSha) {
@@ -7525,7 +7628,7 @@ export class OrchestratorLoop {
       // wall-clock guards reason with.
       if (cycleStartedAtMs > 0) maxCycleMs = Math.max(maxCycleMs, Date.now() - cycleStartedAtMs);
 
-      const reactions = await this.deps.readReactions(sessionId);
+      const reactions = confirmedControl ? { shipIt: false, abort: false, pause: false, budgetBump: false } : await this.deps.readReactions(sessionId);
       const blockingFindings = this.countBlockingFindings(report.findings);
       blockingCountsByCycle.push(blockingFindings);
       this.deps.state.audit(
@@ -7545,7 +7648,7 @@ export class OrchestratorLoop {
         // budget can genuinely absorb it. See `advance`.
         blockingCountsByCycle,
         cycleExtensionsGranted,
-        maxCycleExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
+        maxCycleExtensions: confirmedControl ? 0 : (this.deps.config.loop.max_cycle_extensions ?? 1),
         budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, budgetPolicy.implementationTargetUsd, budgetOverrideGranted),
         // beta.120 (fix 4): only meaningful once there is something to land.
         // beta.129: now sized against a MEASURED cycle, and against the
@@ -7565,10 +7668,9 @@ export class OrchestratorLoop {
         // per-user DAILY cap, not the (now-soft) session budget. Crossing the
         // session budget warns but does not stop; only the daily hard-cap
         // (or :moneybag: override) blocks a further cycle.
-        budgetExhausted:
-          !reactions.budgetBump &&
-          this.dailyMaxUsd() > 0 &&
-          this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
+        budgetExhausted: confirmedControl
+          ? totalCost > row.budget_usd
+          : !reactions.budgetBump && this.dailyMaxUsd() > 0 && this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
         hardTimeout: Date.now() > hardDeadlineMs,
       };
       let decision = OrchestratorLoop.advance(advanceInput);
@@ -7579,6 +7681,7 @@ export class OrchestratorLoop {
       // the second call costs nothing, and a copy of its conditions in this
       // file would drift the first time somebody edited one of them.
       if (
+        !confirmedControl &&
         !budgetOverrideGranted &&
         !budgetExtensionRefused &&
         decision.nextStatus !== "executing"
@@ -7618,6 +7721,7 @@ export class OrchestratorLoop {
       // `time_extension_wait_seconds`. If the answer does not come, we ship
       // exactly as b120 shipped and nothing is lost by having asked.
       if (
+        !confirmedControl &&
         decision.nextStatus === "done" &&
         decision.reason === "ship_time_reserved" &&
         this.deps.config.loop.time_extension_ask_enabled !== false &&
@@ -8026,7 +8130,7 @@ export class OrchestratorLoop {
       // about money mid-run; there is now, and it is the same ask. Money is
       // asked FIRST because the clock question describes itself as "out of
       // time, not out of money", which would be a lie if both were short.
-      if (wantsRepair && ceilingOk && !budgetOk && !budgetExtensionRefused) {
+      if (!confirmedControl && wantsRepair && ceilingOk && !budgetOk && !budgetExtensionRefused) {
         const grantedUsd = await this.askForBudgetExtension({
           sessionId,
           cycle,
@@ -8052,6 +8156,7 @@ export class OrchestratorLoop {
       }
 
       if (
+        !confirmedControl &&
         wantsRepair &&
         ceilingOk &&
         budgetOk &&
@@ -11921,9 +12026,30 @@ export class OrchestratorLoop {
     let prUrl: string;
     try {
       if (reuse && this.deps.openPullRequest) {
+        this.assertConfirmedControlAuthority(sessionId, {
+          kind: "implementation_choice",
+          action: "open_pull_request",
+          paths: [],
+          projectedCycles: cycle,
+          projectedRetries: 0,
+        });
         this.deps.state.audit("loop.publication_reused_push", { sessionId, cycle, stage, branch: plan.branch, sha: candidateSha }, sessionId);
         prUrl = await this.deps.openPullRequest({ plan, brief, reviewReport, requester });
       } else {
+        this.assertConfirmedControlAuthority(sessionId, {
+          kind: "implementation_choice",
+          action: "push_feature_branch",
+          paths: [],
+          projectedCycles: cycle,
+          projectedRetries: 0,
+        });
+        this.assertConfirmedControlAuthority(sessionId, {
+          kind: "implementation_choice",
+          action: "open_pull_request",
+          paths: [],
+          projectedCycles: cycle,
+          projectedRetries: 0,
+        });
         this.deps.state.audit("loop.publication_push_started", { sessionId, cycle, stage, branch: plan.branch, candidateSha: candidateSha || "(unresolved)" }, sessionId);
         prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester });
       }

@@ -803,7 +803,7 @@ test("rc5: finalisation no longer chooses its callback from the preview CONFIG F
   // And the PR-only callback is only ever reached behind proven reuse.
   const i = src.indexOf("prUrl = await this.deps.openPullRequest({ plan, brief, reviewReport, requester });");
   assert.ok(i > 0);
-  const before = src.slice(Math.max(0, i - 400), i);
+  const before = src.slice(Math.max(0, i - 900), i);
   assert.match(before, /if \(reuse && this\.deps\.openPullRequest\)/);
 });
 

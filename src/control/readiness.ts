@@ -77,7 +77,7 @@ export function evaluatePrReadiness(input: PrReadinessInput, checkedAt = Date.no
   if (!Number.isSafeInteger(input.blockingFindings) || input.blockingFindings !== 0) failures.push("blocking_findings");
   const probes = input.verificationProbes;
   if (![probes.completed, probes.required, probes.indeterminate].every(Number.isSafeInteger) || probes.required < 1 || probes.completed !== probes.required || probes.indeterminate !== 0) failures.push("missing_probes");
-  if (!input.publication || input.publication.sha !== input.candidateSha || input.publication.observedAt > checkedAt) failures.push("stale_publication");
+  if (!input.publication || input.publication.sha !== input.candidateSha || !Number.isFinite(input.publication.observedAt) || input.publication.observedAt <= 0 || input.publication.observedAt > checkedAt) failures.push("stale_publication");
   if (!input.pullRequest.open || input.pullRequest.repository !== input.expectedRepository || input.pullRequest.baseRef !== input.expectedBaseRef || input.pullRequest.headSha !== input.candidateSha) failures.push("pr_identity_mismatch");
   const ci = input.requiredCi;
   if (!ci.registered || ci.requiredChecks.length === 0) failures.push("required_ci_unregistered");

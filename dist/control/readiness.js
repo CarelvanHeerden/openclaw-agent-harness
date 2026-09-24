@@ -37,7 +37,7 @@ export function evaluatePrReadiness(input, checkedAt = Date.now()) {
     const probes = input.verificationProbes;
     if (![probes.completed, probes.required, probes.indeterminate].every(Number.isSafeInteger) || probes.required < 1 || probes.completed !== probes.required || probes.indeterminate !== 0)
         failures.push("missing_probes");
-    if (!input.publication || input.publication.sha !== input.candidateSha || input.publication.observedAt > checkedAt)
+    if (!input.publication || input.publication.sha !== input.candidateSha || !Number.isFinite(input.publication.observedAt) || input.publication.observedAt <= 0 || input.publication.observedAt > checkedAt)
         failures.push("stale_publication");
     if (!input.pullRequest.open || input.pullRequest.repository !== input.expectedRepository || input.pullRequest.baseRef !== input.expectedBaseRef || input.pullRequest.headSha !== input.candidateSha)
         failures.push("pr_identity_mismatch");
