@@ -37,7 +37,7 @@ export function deriveMergeRecommendation(input: RecommendationInput): Recommend
       .join("; ");
     return {
       recommendation: "do_not_merge",
-      reason: `The final review retains ${blockingCount} blocking finding(s)${titles ? `: ${titles}` : ""}.`,
+      reason: `The final review passed but carries ${blockingCount} blocking finding(s)${titles ? `: ${titles}` : ""}.`,
     };
   }
   if (ciStatus !== "success") {

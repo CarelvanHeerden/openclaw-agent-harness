@@ -89,14 +89,14 @@ export class InternalMergeService {
         const intentId = randomUUID();
         const idempotencyKey = `control-merge:${run.id}:${expectedHeadSha}`;
         try {
-            this.db.prepare(`INSERT INTO control_merge_intents
+            this.db.prepare(`INSERT INTO control_engine_merge_intents
         (id, change_id, authorization_id, expected_head_sha, merge_provider_idempotency, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'authorized', ?, ?)`)
                 .run(intentId, run.id, authorizationId, expectedHeadSha, idempotencyKey, now, now);
         }
         catch (error) {
-            if (/UNIQUE constraint failed: control_merge_intents\.change_id/i.test(String(error))) {
-                const prior = this.db.prepare(`SELECT status, provider_merge_sha FROM control_merge_intents WHERE change_id = ?`).get(run.id);
+            if (/UNIQUE constraint failed: control_engine_merge_intents\.change_id/i.test(String(error))) {
+                const prior = this.db.prepare(`SELECT status, provider_merge_sha FROM control_engine_merge_intents WHERE change_id = ?`).get(run.id);
                 return Object.freeze({ status: "already_merged", ...(prior.provider_merge_sha ? { mergeSha: prior.provider_merge_sha } : {}) });
             }
             throw error;
@@ -105,11 +105,11 @@ export class InternalMergeService {
             const merged = await this.provider.merge({ repository, prNumber, expectedHeadSha, idempotencyKey });
             const verified = await this.provider.verifyMerged({ repository, prNumber, mergeSha: merged.mergeSha });
             if (!verified) {
-                this.db.prepare(`UPDATE control_merge_intents SET status='verification_failed', provider_merge_sha=?, updated_at=? WHERE id=?`)
+                this.db.prepare(`UPDATE control_engine_merge_intents SET status='verification_failed', provider_merge_sha=?, updated_at=? WHERE id=?`)
                     .run(merged.mergeSha, this.now(), intentId);
                 return Object.freeze({ status: "merge_failed", code: "verification_failed" });
             }
-            this.db.prepare(`UPDATE control_merge_intents SET status='merged', provider_merge_sha=?, updated_at=? WHERE id=?`)
+            this.db.prepare(`UPDATE control_engine_merge_intents SET status='merged', provider_merge_sha=?, updated_at=? WHERE id=?`)
                 .run(merged.mergeSha, this.now(), intentId);
             const current = this.repository.getRun(run.id);
             if (current?.state === "pr_ready") {
@@ -122,7 +122,7 @@ export class InternalMergeService {
             return Object.freeze({ status: "merged", mergeSha: merged.mergeSha });
         }
         catch {
-            this.db.prepare(`UPDATE control_merge_intents SET status='merge_failed', updated_at=? WHERE id=?`).run(this.now(), intentId);
+            this.db.prepare(`UPDATE control_engine_merge_intents SET status='merge_failed', updated_at=? WHERE id=?`).run(this.now(), intentId);
             return Object.freeze({ status: "merge_failed", code: "provider_failure" });
         }
     }

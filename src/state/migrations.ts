@@ -128,7 +128,7 @@ CREATE TABLE control_merge_authorizations (
 );
 CREATE INDEX idx_control_merge_authorizations_run ON control_merge_authorizations(run_id, issued_at);
 
-CREATE TABLE control_merge_intents (
+CREATE TABLE control_engine_merge_intents (
   id TEXT PRIMARY KEY,
   change_id TEXT NOT NULL REFERENCES control_runs(id) ON DELETE CASCADE,
   authorization_id TEXT NOT NULL UNIQUE REFERENCES control_merge_authorizations(id),

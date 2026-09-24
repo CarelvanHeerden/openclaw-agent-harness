@@ -274,28 +274,27 @@ const MINIMAL_CONFIG = {
   repos: { allowed: ["example-org/*"], default_base_branch: "main" },
 };
 
-test("beta100: both new config keys default to true", async () => {
+test("beta100: path reconciliation remains enabled while interactive escalation is retired", async () => {
   const { parseHarnessConfig } = await import("../dist/config.js");
   const cfg = parseHarnessConfig(MINIMAL_CONFIG);
   assert.equal(cfg.loop.contract_test_path_reconcile, true);
-  assert.equal(cfg.loop.contract_mismatch_escalation_enabled, true);
+  assert.equal(cfg.loop.contract_mismatch_escalation_enabled, undefined);
 });
 
-test("beta100: both new keys are operator-overridable to false", async () => {
+test("beta100: path reconciliation remains operator-overridable", async () => {
   const { parseHarnessConfig } = await import("../dist/config.js");
   const cfg = parseHarnessConfig({
     ...MINIMAL_CONFIG,
-    loop: { contract_test_path_reconcile: false, contract_mismatch_escalation_enabled: false },
+    loop: { contract_test_path_reconcile: false },
   });
   assert.equal(cfg.loop.contract_test_path_reconcile, false);
-  assert.equal(cfg.loop.contract_mismatch_escalation_enabled, false);
 });
 
-test("beta100: both new keys are declared in the plugin manifest schema", () => {
+test("beta100: path reconciliation is declared and interactive escalation is absent", () => {
   const manifest = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"));
   const loop = manifest.configSchema.properties.loop.properties;
   assert.equal(loop.contract_test_path_reconcile.default, true);
-  assert.equal(loop.contract_mismatch_escalation_enabled.default, true);
+  assert.equal(loop.contract_mismatch_escalation_enabled, undefined);
 });
 
 test("beta100: pluginVersion and package.json agree at >= beta.100", async () => {

@@ -66,6 +66,7 @@ const recommend = (verdict, findings, over = {}) => {
     mergeBlockingFindings: mb.length,
     mergeBlockingTitles: mb.map((f) => f.title || f.dimension || "(untitled)"),
     reachedCleanPass: verdict === "pass",
+    ciStatus: "success",
     ...over,
   });
 };
@@ -118,6 +119,7 @@ test("a caller's classified zero is authoritative -- severity cannot override it
     blockingFindings: 0,
     mergeBlockingFindings: 0,
     reachedCleanPass: true,
+    ciStatus: "success",
   });
   assert.equal(rec.recommendation, "merge", rec.reason);
 });
@@ -136,6 +138,7 @@ test("the count in the reason is the count the caller gave, not a maximum of two
     mergeBlockingFindings: 1,
     mergeBlockingTitles: ["real defect"],
     reachedCleanPass: true,
+    ciStatus: "success",
   });
   assert.equal(rec.recommendation, "do_not_merge");
   assert.match(rec.reason, /carries 1 blocking finding/);
@@ -237,13 +240,12 @@ test("classes nobody can close do not gate the merge", () => {
  * The two branches of one function
  * ------------------------------------------------------------------ */
 
-test("the pass and revise branches agree about an identical set of findings", () => {
-  // Step 2b already honoured the classified count; step 4 did not. That
-  // disagreement, inside one function, is what #1084 exposed.
+test("strict PR readiness requires a final pass even when no finding blocks merge", () => {
   const findings = [RUNTIME_1084];
   const asRevise = recommend("revise", findings, { reachedCleanPass: false });
   const asPass = recommend("pass", findings, { reachedCleanPass: true });
-  assert.equal(asRevise.recommendation, "merge", asRevise.reason);
+  assert.equal(asRevise.recommendation, "do_not_merge", asRevise.reason);
+  assert.match(asRevise.reason, /not a pass/);
   assert.equal(asPass.recommendation, "merge", asPass.reason);
 });
 

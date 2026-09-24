@@ -643,7 +643,7 @@ export interface LoopConfig {
      * nothing could raise time. Disabling this restores the b120 behaviour of
      * shipping whatever exists.
      */
-    time_extension_ask_enabled: boolean;
+    time_extension_ask_enabled?: boolean;
     /**
      * beta.129: how long the loop waits, in place, for an answer to that question
      * before giving up and shipping. Bounded on purpose: an unanswered question
@@ -676,7 +676,7 @@ export interface LoopConfig {
      * which stays an outright refusal. Default true; false restores the silent
      * refusals of rc.5 and earlier.
      */
-    budget_extension_ask_enabled: boolean;
+    budget_extension_ask_enabled?: boolean;
     /**
      * rc.6: how long the loop waits, in place, for an answer to that question.
      * Bounded for beta.129's reason: an unanswered question must never be why a

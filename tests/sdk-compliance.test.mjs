@@ -13,26 +13,10 @@ const pkgPath = resolve(repoRoot, "package.json");
 // Expected tool contract - must be kept in sync with src/tools/registration.ts
 // beta.9: added harness_bootstrap_test_repo (was registered since beta.6 but missing from manifest)
 const EXPECTED_TOOLS = [
-  "harness_run",
-  "harness_help",
-  "harness_status",
-  "harness_progress",
-  "harness_logs",
-  "harness_health",
-  "harness_start_session",
-  "harness_session_get",
-  "harness_telemetry",
-  "harness_upload_logs",
-  "harness_cancel",
-  "harness_resume",
-  "harness_answer",
-  "harness_retention_prune",
-  "harness_bootstrap_test_repo",
-  "harness_merge_pr",
-  "harness_link_pr",
-  "harness_list_revisable",
-  "harness_revise",
-  "harness_onboard",
+  "harness_prepare_change",
+  "harness_confirm_change",
+  "harness_change_result",
+  "harness_merge_change",
 ];
 
 test("sdk: openclaw.plugin.json exists", () => {

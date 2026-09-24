@@ -660,7 +660,7 @@ export interface LoopConfig {
    * nothing could raise time. Disabling this restores the b120 behaviour of
    * shipping whatever exists.
    */
-  time_extension_ask_enabled: boolean;
+  time_extension_ask_enabled?: boolean;
   /**
    * beta.129: how long the loop waits, in place, for an answer to that question
    * before giving up and shipping. Bounded on purpose: an unanswered question
@@ -693,7 +693,7 @@ export interface LoopConfig {
    * which stays an outright refusal. Default true; false restores the silent
    * refusals of rc.5 and earlier.
    */
-  budget_extension_ask_enabled: boolean;
+  budget_extension_ask_enabled?: boolean;
   /**
    * rc.6: how long the loop waits, in place, for an answer to that question.
    * Bounded for beta.129's reason: an unanswered question must never be why a
@@ -1784,11 +1784,9 @@ const DEFAULTS: HarnessConfig = {
     adversary_timeout_seconds: 900,
     lead_timeout_seconds: 900,
     session_hard_timeout_seconds: 7200,
-    time_extension_ask_enabled: true,
     time_extension_wait_seconds: 300,
     time_extension_default_seconds: 1800,
     repair_reserve_ratio: 0.3,
-    budget_extension_ask_enabled: true,
     budget_extension_wait_seconds: 300,
     stuck_loop_seconds: 2700,
     teardown_drain_seconds: 3600,
@@ -1798,8 +1796,6 @@ const DEFAULTS: HarnessConfig = {
     env_wait_retry_enabled: true,
     worker_protocol_retry_enabled: true,
     worker_protocol_max_attempts: 3,
-    clarification_escalation_enabled: true,
-    clarification_auto_accept_delegated: false,
     graceful_pr_on_review_crash: true,
     session_stall_seconds: 1800,
     stall_auto_terminal: true,
@@ -1817,7 +1813,6 @@ const DEFAULTS: HarnessConfig = {
     worker_confab_detect: true,
     contract_rederive_enabled: true,
     contract_test_path_reconcile: true,
-    contract_mismatch_escalation_enabled: true,
     ledger_reachability_guard_enabled: true,
     plan_path_validation_enabled: true,
     plan_policy_conflict_check_enabled: true,

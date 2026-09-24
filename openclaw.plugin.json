@@ -5,11 +5,7 @@
   "activation": {
     "onStartup": true
   },
-  "skills": [
-    "skills/harness-brief-intake",
-    "skills/harness-credentials",
-    "skills/harness-pr-steward"
-  ],
+  "skills": [],
   "contracts": {
     "tools": [
       "harness_prepare_change",
@@ -22,6 +18,33 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "control": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "lease_ttl_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 3600000,
+            "default": 120000,
+            "description": "Durable autonomous executor lease TTL. Every state write is fenced by the acquired lease generation."
+          },
+          "authority_ttl_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400,
+            "default": 7200,
+            "description": "Validity window for the immutable confirmation authority envelope."
+          },
+          "readiness_timeout_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 7200,
+            "default": 1800,
+            "description": "Maximum exact-head readiness observation window before indeterminate evidence fails terminally."
+          }
+        }
+      },
       "slack": {
         "type": "object",
         "additionalProperties": false,
@@ -271,11 +294,6 @@
             "maximum": 86400,
             "default": 7200
           },
-          "time_extension_ask_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.129: when the wall clock cannot fit another cycle but findings remain open, ask the operator for more time instead of silently shipping a half-reviewed branch. Answer with legacy operator handling; a reply carrying a time clause ('2 more hours') sets the new ceiling. Disable to restore the b120 behaviour of landing whatever exists."
-          },
           "time_extension_wait_seconds": {
             "type": "integer",
             "minimum": 0,
@@ -296,11 +314,6 @@
             "maximum": 0.5,
             "default": 0.3,
             "description": "rc.6: fraction of the approved session budget held back for CI repair and the verification tail, carved out before implementation spends anything. #1184 spent $53.81 of a $50 budget and was then refused a repair cycle for being over $50 -- implementation is SOFT and may cross the number, repair was measured HARD against it, so repair paid for implementation's overspend. A reserve gives repair its own pot, measured against repair's own spend, which no amount of implementation spend can consume. Clamped to 0.5; a larger reserve starves ordinary work. Default 0.3."
-          },
-          "budget_extension_ask_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "rc.6: may the loop ASK the operator for more money when a money-based stop is about to refuse useful work (CI repair, a cycle extension, the adversary review, the next sub-task, or the daily cap)? The :moneybag: reaction has always granted the same authority; this asks for it at the moment of the decision instead of relying on somebody watching. The per-user MONTHLY cap is never askable. Default true; false restores the silent refusals of rc.5 and earlier."
           },
           "budget_extension_wait_seconds": {
             "type": "integer",
@@ -367,16 +380,6 @@
             "maximum": 5,
             "default": 3,
             "description": "rc.2: TOTAL attempts for a sub-task under the protocol retry, INCLUDING the first -- the same counting worker_timeout_max_attempts uses. 1 disables retrying without disabling classification. On exhaustion the sub-task fails cleanly with loop.worker_retry_exhausted rather than asking the operator a question that has no answer."
-          },
-          "clarification_escalation_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.55 (B2): when a worker refuses/confabulates a sub-task even after the beta.54 async-coord retry, pause the session in 'legacy paused state' (persisting the worker's question + paused seq, preserving the worktree) and surface it via internal diagnostics for a human to answer with legacy operator handling, instead of hard-failing the run. Set false to keep the terminal-fail behaviour. rc.2: only a genuine refusal or a human-decidable blocker reaches this path; recoverable denials and progress-only endings are retried instead."
-          },
-          "clarification_auto_accept_delegated": {
-            "type": "boolean",
-            "default": false,
-            "description": "rc.3: may a CALLING AGENT answer a clarification by itself, without putting it to a human? Default false, and false is what you want unless you have a specific reason otherwise. The legacy control steward skill teaches an agent to relay a pause with a recommendation and to answer only narrow, objectively verifiable contract-path mismatches under delegation -- but left to the skill alone, 'delegated' is a conversational judgment made by the same layer the policy constrains. This makes delegation a value an agent must READ rather than an instruction it can decide it received. With this false, legacy operator handling refuses any answer marked answeredBy:'automation'. It does not otherwise inspect the caller: an agent that omits the marker is not caught, and nothing in this repository can catch it. An automatic answer must also carry `evidence` -- the changed-file list, the worker commit, the check results and why the deviation is safe -- and is refused without it, so an automatic decision can be reviewed afterwards against what it claimed at the time."
           },
           "graceful_pr_on_review_crash": {
             "type": "boolean",
@@ -468,11 +471,6 @@
             "type": "boolean",
             "default": true,
             "description": "beta.100: bounded TEST-CONTRACT reconciliation. Rewrite a contract path that is a TEST file and does not structurally resolve against what the sub-task actually touched onto that sub-task's own committed test file -- ONLY when exactly one such unmatched test contract and exactly one unclaimed committed test file exist, so the pairing is unambiguous. Closes the b99 seq-3 failure (session 4420aa45), where the lead guessed a co-located route.test.ts and the worker correctly used the repo's real Jest __tests__/ location; the beta.76 prefix-remapper could not help because the two paths share no trailing directory chain. Cannot re-open the beta.84 sibling false-positive: a non-test contract path never enters the rule. Default true; false restores the pre-b100 strict failure."
-          },
-          "contract_mismatch_escalation_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.100: when a sub-task made a REAL commit but its files do not match the contract paths, pause in legacy paused state (worktree + commits preserved, resumable via legacy operator handling) instead of hard-failing the run. The sub-task still FAILS verification and nothing is accepted -- only the terminal disposition changes. Closes the b99 seq-3 death, where the b53 env-wait retry (needs no commit), the b35 revise no-op (needs cycle > 1) and the b55 refusal escalation (needs no commit) all missed a worker that had committed correct work. Default true; false restores the pre-b100 hard fail."
           },
           "ledger_reachability_guard_enabled": {
             "type": "boolean",
@@ -1205,7 +1203,7 @@
           "full_prompts": {
             "type": "boolean",
             "default": false,
-            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction \u2014 redaction on write is always applied."
+            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
           },
           "retention_days": {
             "type": "integer",
@@ -1219,7 +1217,7 @@
       "credentials": {
         "type": "object",
         "additionalProperties": false,
-        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them. Every key here is optional \u2014 the defaults are a working configuration, and $OAH_VAULT_KEY / $OAH_VAULT_KEY_FILE cover the same ground without touching config.",
+        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them. Every key here is optional — the defaults are a working configuration, and $OAH_VAULT_KEY / $OAH_VAULT_KEY_FILE cover the same ground without touching config.",
         "properties": {
           "dir": {
             "type": "string",
@@ -1233,7 +1231,7 @@
           },
           "key_file": {
             "type": "string",
-            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent \u2014 back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir \u2014 they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you."
+            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent — back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir — they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you."
           }
         }
       },
