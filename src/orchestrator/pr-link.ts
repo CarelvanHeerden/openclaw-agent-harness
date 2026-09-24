@@ -658,7 +658,7 @@ export function renderLinkVerification(
       ? v.ok
         ? [
             ``,
-            `Nothing has been written. To apply, call harness_link_pr again with apply: true and`,
+            `Nothing has been written. To apply, repeat the operator recovery procedure with apply enabled and`,
             `expectedHeadSha: "${pr.headSha}". The apply re-reads the PR and refuses if the head has moved.`,
           ]
         : [``, `Nothing has been written, and the association was NOT proposed. Resolve the blockers above first.`]

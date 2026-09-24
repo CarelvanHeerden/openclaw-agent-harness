@@ -10,8 +10,6 @@
  * extension `advance()` grants for a converging finding trend (b119). Early
  * exits:
  *   - Adversary verdict "pass"
- *   - User ship-it reaction
- *   - User abort reaction
  *   - Session budget breached
  *   - Session hard timeout
  *
@@ -396,15 +394,6 @@ const runningSessions = new Set<string>();
 
 /** The statuses from which a session never moves again. */
 export const TERMINAL_STATUSES: readonly string[] = ["done", "failed", "aborted"];
-
-/**
- * rc.2: sessions with a cancel mid-flight.
- *
- * `cancelSession` awaits the salvage path, so two cancels arriving in the same
- * tick would both pass the terminal check and both run a finaliser. Module
- * scope matches `runningSessions`: one process owns a session at a time.
- */
-const cancellingSessions = new Set<string>();
 
 /**
  * beta.52/53: detect a worker that ended its turn WAITING for a mid-turn event
@@ -1255,7 +1244,6 @@ export class OrchestratorLoop {
     maxCycles: number;
     /** beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order. */
     findingCountsByCycle?: number[];
-    reactions: { shipIt: boolean; abort: boolean; pause: boolean };
     budgetExhausted: boolean;
     hardTimeout: boolean;
     /**
@@ -7577,7 +7565,6 @@ export class OrchestratorLoop {
           hasWork: cycle >= 1,
           observedCycleMs: maxCycleMs,
         }),
-        reactions: { shipIt: false, abort: false, pause: false },
         // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
         // per-user DAILY cap, not the (now-soft) session budget. Crossing the
         // session budget warns but does not stop; only the daily hard-cap
@@ -10417,128 +10404,6 @@ export class OrchestratorLoop {
     }
   }
 
-  /**
-   * rc.2: cancel a session from ANY state, immediately and idempotently.
-   *
-   * WHAT HAPPENED. An operator cancelled a session sitting in
-   * `awaiting_clarification`. `harness_cancel` did the only thing it has ever
-   * done -- set `reactions_json.abort = true` -- on the documented promise that
-   * "the loop reads it on its next checkpoint". There was no next checkpoint.
-   * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
-   * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
-   * idle waiting for `a trusted host confirmation`. Nothing was left to read the flag. The
-   * Paused clarification rows are handled outside the worker loop; the dead-loop sweep
-   * queries only `executing|planning|reviewing`, and recovery excludes it on
-   * purpose. So the cancel was recorded, acknowledged, and never happened.
-   *
-   * THE RULE. Cancellation is the operator's, not the loop's. Where a loop is
-   * running we still have to ask it to stop -- an in-flight model call cannot be
-   * torn out from under itself -- but where there is NO loop, there is nothing
-   * to cooperate with and the harness must simply end the session itself.
-   *
-   * Idempotent in both directions: cancelling a terminal session succeeds
-   * without writing anything, and two concurrent cancels cannot both terminate.
-   */
-  async cancelSession(
-    sessionId: string,
-    opts: { reason?: string; requester?: string; classification?: "failed_smoke_test" | "operator_cancelled" } = {},
-  ): Promise<{
-    ok: boolean;
-    notFound?: boolean;
-    status?: string;
-    alreadyTerminal?: boolean;
-    terminatedNow?: boolean;
-    loopRunning?: boolean;
-  }> {
-    const row = this.deps.state.db
-      .prepare(`SELECT status, reactions_json, cycles_ran, cost_usd FROM sessions WHERE id = ?`)
-      .get(sessionId) as
-      | { status: string; reactions_json: string | null; cycles_ran: number; cost_usd: number }
-      | undefined;
-    if (!row) return { ok: false, notFound: true };
-
-    // Already finished. Report success: the caller asked for this session to be
-    // over, and it is. Returning a failure here made the natural "cancel it
-    // again to be sure" read as though the cancel had not worked.
-    if (TERMINAL_STATUSES.includes(row.status)) {
-      return { ok: true, alreadyTerminal: true, status: row.status, terminatedNow: false };
-    }
-    if (cancellingSessions.has(sessionId)) {
-      return { ok: true, status: row.status, terminatedNow: false };
-    }
-
-    const reason = (opts.reason ?? "").trim() || "user_cancel";
-    const classification = opts.classification ?? "operator_cancelled";
-    // The flag goes down first and unconditionally, so a live loop stops at its
-    // next checkpoint even if everything below fails.
-    let reactions: Record<string, unknown> = {};
-    try {
-      reactions = row.reactions_json ? (JSON.parse(row.reactions_json) as Record<string, unknown>) : {};
-    } catch {
-      reactions = {}; // a corrupt blob must not block a cancel
-    }
-    reactions.abort = true;
-    this.deps.state.db
-      .prepare(
-        `UPDATE sessions SET reactions_json = ?, terminal_cause = 'user_cancel',
-                             terminal_classification = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(JSON.stringify(reactions), classification, Date.now(), sessionId);
-
-    const loopRunning = isSessionLoopRunning(sessionId);
-    this.deps.state.audit(
-      "loop.cancel_requested",
-      { sessionId, reason, classification, requester: opts.requester ?? null, status: row.status, loopRunning },
-      sessionId,
-    );
-
-    if (loopRunning) {
-      // Cooperative, and honestly so: the loop owns its worktree and its
-      // in-flight call, and reaping it from underneath would race its own
-      // finalisers. It reads the flag at its next checkpoint.
-      return { ok: true, status: row.status, terminatedNow: false, loopRunning: true };
-    }
-
-    cancellingSessions.add(sessionId);
-    try {
-      // A paused session is not waiting for an answer any more.
-      if (row.status === "awaiting_clarification") {
-        this.deps.state.db
-          .prepare(
-            `UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL,
-                    clarification_subtask = NULL, updated_at = ? WHERE id = ?`,
-          )
-          .run(Date.now(), sessionId);
-      }
-      // Salvaging, not raw: a cancelled session may be holding commits, and a
-      // cancel means "stop spending", not "throw away what I already paid for".
-      // `user_cancel` is deliberately absent from ABORT_REASONS_WORTH_SHIPPING,
-      // so this preserves the worktree rather than opening a PR nobody asked for.
-      const outcome = await this.finaliseAbortSalvaging(
-        sessionId,
-        reason,
-        row.cycles_ran ?? 0,
-        row.cost_usd ?? 0,
-      );
-      this.deps.state.audit(
-        "loop.cancel_terminated",
-        { sessionId, reason, classification, requester: opts.requester ?? null, fromStatus: row.status, finalStatus: outcome.status },
-        sessionId,
-      );
-      this.deps.interactionLog?.log(sessionId, {
-        event: "cancel_terminated",
-        phase: mapPhase(row.status as LoopStatus),
-        reason: `${reason} (from ${row.status})`,
-      });
-      this.deps.logger.warn("[loop] cancelled a session with no running loop; terminated it directly", {
-        sessionId, fromStatus: row.status, finalStatus: outcome.status,
-      });
-      return { ok: true, status: outcome.status, terminatedNow: true, loopRunning: false };
-    } finally {
-      cancellingSessions.delete(sessionId);
-    }
-  }
-
   private terminalCauseFor(reason: string, fallback: "failed" | "aborted"): string {
     if (reason === "budget_exhausted" || reason === "daily_max_exhausted") return "budget_exhausted";
     if (reason === "hard_timeout") return "hard_timeout";
@@ -11210,9 +11075,9 @@ export class OrchestratorLoop {
     }
     return (
       `${where} This terminal session cannot be reopened. If a PR was already opened for ` +
-      `branch ${row.branch ?? "this branch"}, recover the association with harness_link_pr ` +
+      `branch ${row.branch ?? "this branch"}, recover the association through the operator recovery procedure ` +
       `(sessionId ${sessionId}, repo ${pr?.repo || "<owner/name>"}, the PR number), then start a new confirmed change referencing that PR; ` +
-      `harness_link_pr is a dry run until you pass apply. Otherwise push the branch by hand and prepare a new confirmed change.`
+      `The operator recovery procedure is a dry run until apply is enabled. Otherwise push the branch by hand and prepare a new confirmed change.`
     );
   }
 
@@ -11751,35 +11616,7 @@ export class OrchestratorLoop {
     return handled;
   }
 
-  /**
-   * beta.67 (Bug A): EXTERNAL stall-sweep entry point.
-   *
-   * Origin: beta.66 smoke #4 -- the loop-runner PROCESS died between a
-   * worker's sdk_response and the next handler step. The session record stayed
-   * `status=executing` forever; `ps` showed no live process. beta.63's
-   * in-process `checkStalls` watchdog CANNOT fire in this case: a dead process
-   * cannot watchdog its own death. Also `harness_cancel` set a `reactions_json.
-   * abort` flag that the dead loop never consumed, so the session never
-   * reached a terminal status.
-   *
-   * This method is meant to be called by the EXTERNAL periodic `stall-sweep`
-   * service (registered in src/index.ts like pr-watcher / retention-nightly),
-   * which runs INDEPENDENT of any loop-runner process. On each tick it:
-   *
-   *   1. runs the EXISTING {@link checkStalls} fast path (detection + bounded
-   *      re-tick recovery + auto-terminal transition) -- the external process
-   *      is the safety net, checkStalls is still the in-process fast path;
-   *   2. ADDITIONALLY reaps sessions that have a pending cancel flag
-   *      (`reactions_json.abort`) set but are STILL non-terminal because their
-   *      loop is dead (no live loop-runner) -- transitions those to a terminal
-   *      `failed` (reason `cancelled_dead_loop`) PRESERVING the worktree
-   *      (beta.62 pattern), consuming the cancel the dead loop never did.
-   *
-   * Covers `executing`, `planning`, and `reviewing` (checkStalls covers only
-   * executing/reviewing; a planning session whose loop dies must also be
-   * reaped by the cancel path). Idempotent + never throws. Returns a summary
-   * for tests + telemetry.
-   */
+  /** External stall-sweep entry point. Retired interactive cancellation state is not consulted. */
   async sweepStalls(now = Date.now()): Promise<{
     ran: boolean;
     recovered: Array<{ sessionId: string; phase: string; msSinceProgress: number; action: string }>;
@@ -11787,75 +11624,14 @@ export class OrchestratorLoop {
   }> {
     this.deps.state.audit("loop.stall_sweep_ran", { at: now }, undefined);
     const recovered: Array<{ sessionId: string; phase: string; msSinceProgress: number; action: string }> = [];
-    const terminated: Array<{ sessionId: string; phase: string; reason: string }> = [];
-
-    // 1. Fast path: run the EXISTING in-process watchdog logic. From the
-    //    external process this is the actual safety net for a dead executor.
     try {
       const handled = await this.checkStalls(now);
-      for (const h of handled) recovered.push(h);
-      if (handled.length > 0) {
-        this.deps.state.audit("loop.stall_sweep_recovered", { count: handled.length, handled }, undefined);
-      }
+      recovered.push(...handled);
+      if (handled.length > 0) this.deps.state.audit("loop.stall_sweep_recovered", { count: handled.length, handled }, undefined);
     } catch (err) {
       this.deps.logger.warn("[loop] sweepStalls checkStalls failed", { err: String(err) });
     }
-
-    // 2. Pending-cancel + dead-loop reaping. A `harness_cancel` set
-    //    reactions_json.abort but the loop-runner is dead, so the abort was
-    //    never consumed and the session sits non-terminal forever.
-    let rows: Array<{ id: string; status: string; reactions_json: string | null; cycles_ran: number; cost_usd: number }>;
-    try {
-      rows = this.deps.state.db
-        .prepare(
-          // rc.2: `awaiting_clarification` joins the list. A cancel on a paused
-          // session is terminated inline by `cancelSession`, but a restart
-          // between setting the flag and consuming it would otherwise leave it
-          // stuck exactly as before -- no loop to read the flag, and no sweep
-          // looking at the status.
-          `SELECT id, status, reactions_json, cycles_ran, cost_usd
-             FROM sessions
-            WHERE status IN ('executing', 'planning', 'reviewing', 'awaiting_clarification')`,
-        )
-        .all() as typeof rows;
-    } catch (err) {
-      this.deps.logger.warn("[loop] sweepStalls cancel query failed", { err: String(err) });
-      return { ran: true, recovered, terminated };
-    }
-
-    const liveRunners = runningSessionIds();
-    for (const row of rows) {
-      let aborted = false;
-      try {
-        aborted = !!(row.reactions_json ? (JSON.parse(row.reactions_json) as { abort?: boolean }).abort : false);
-      } catch { aborted = false; }
-      if (!aborted) continue;
-      // A live runner will consume the abort at its next checkpoint (beta.55
-      // path at loop.ts ~866); do NOT double-reap it here.
-      if (liveRunners.includes(row.id)) continue;
-
-      // rc.2: a paused session has no dead loop -- it has no loop at all, by
-      // design. Cancelling one is an ordinary cancel that lost its process, so
-      // it ends `aborted` like every other cancel, not `failed`.
-      if (row.status === "awaiting_clarification") {
-        this.deps.logger.warn("[loop] stall-sweep completing a cancel left pending on a paused session", { sessionId: row.id });
-        await this.cancelSession(row.id, { reason: "user_cancel_swept" });
-        terminated.push({ sessionId: row.id, phase: row.status, reason: "user_cancel_swept" });
-        continue;
-      }
-
-      // Dead loop with a pending cancel -> consume it: terminal failed,
-      // PRESERVING the worktree (beta.62 pattern) so the branch stays
-      // inspectable on disk.
-      const reason = "cancelled_dead_loop";
-      this.deps.logger.error("[loop] stall-sweep reaping cancelled session with a dead loop", { sessionId: row.id, phase: row.status });
-      await this.finaliseFailedPreserveWorktree(row.id, reason, row.cycles_ran ?? 0, row.cost_usd ?? 0);
-      this.deps.state.audit("loop.stall_sweep_terminated", { sessionId: row.id, phase: row.status, reason }, row.id);
-      this.deps.interactionLog?.log(row.id, { event: "stall_sweep_terminated", phase: mapPhase(row.status as LoopStatus), reason });
-      terminated.push({ sessionId: row.id, phase: row.status, reason });
-    }
-
-    return { ran: true, recovered, terminated };
+    return { ran: true, recovered, terminated: [] };
   }
 
   /**

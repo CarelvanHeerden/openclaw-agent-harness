@@ -13,7 +13,7 @@
  *
  * Runtime sources are pluggable behind `harness.vercel.enabled`:
  *   - vercel: automatic bridge (preview build + event logs)
- *   - manual: uploaded via `harness_upload_logs` tool (any deploy target)
+ *   - manual: supplied through operator-only runtime diagnostics (any deploy target)
  *   - none:   nothing available; adversary must not sign off on runtime
  *
  * Runtime rule (unchanged): if the runtime data is missing or shows

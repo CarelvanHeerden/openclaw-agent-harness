@@ -212,15 +212,15 @@ export interface HarnessRuntime {
    * beta.63 (Part B): durable, structured interaction log written OUTSIDE the
    * worktree. Threaded into the loop + SDK adapters so every LLM call, state
    * transition, verify probe, and stall/recovery event lands in a JSONL trail
-   * that survives worktree release + container restart. Read via harness_logs.
+   * that survives worktree release + container restart. Read through operator diagnostics.
    */
   interactionLog: InteractionLog;
   slack: SlackAdapter;
   git: GitAdapter;
   creds: CredentialAdapter;
-  /** beta.110: the harness-owned vault. Used by `harness_onboard` to STORE tokens. */
+  /** beta.110: the harness-owned vault. Used by operator credential administration to store tokens. */
   vault: CredentialStore;
-  /** beta.110: set when the vault could not be opened; surfaced by `harness_health`. */
+  /** beta.110: set when the vault could not be opened; surfaced by operator diagnostics. */
   vaultError?: string;
   /**
    * Classify + crystallise a raw request into a structured brief for the
@@ -322,7 +322,7 @@ export interface HarnessRuntime {
   githubServiceFor: (repoFullName?: string) => string | undefined;
   /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
   /**
-   * Routes written by `harness_onboard`. The same instance the router reads,
+   * Routes written by operator credential administration. The same instance the router reads,
    * so a route the tool writes is live for the next session without a restart.
    */
   routeOverlay?: RouteOverlay;
@@ -336,31 +336,20 @@ export interface HarnessRuntime {
      * hierarchy or overlay entry, and the vault name it points at.
      *
      * `credentialService` is SYNTHETIC on those paths -- the router builds it
-     * for logging and never looks a token up by it. Onboarding compares the
-     * name it is about to write against what sessions read, so handing it the
-     * synthetic name makes the check compare against a string nothing uses:
-     * it refuses valid setups, and aligning the patterns to satisfy it stores
-     * the token under a name that still is not read.
+     * for logging and never looks a token up by it. Operator-side credential
+     * administration must use the resolved vault pointer rather than this
+     * display-only name.
      */
     tokenSource?: "vault" | "env" | "value";
     vaultPointer?: string;
   } | undefined;
   disposers: Array<() => void | Promise<void>>;
   /**
-   * Promise for the async bootstrap phase (reactions poller start,
-   * session recovery). Populated by `register()` once it has kicked off
-   * `bootstrapHarnessAsync`. Teardown awaits this to ensure recovery
-   * notifications have flushed before closing the state DB.
+   * Promise for the async bootstrap phase. Populated by `register()` once it
+   * has kicked off `bootstrapHarnessAsync`; teardown awaits it before closing
+   * the state DB.
    */
   asyncBootstrap?: Promise<void>;
-  /**
-   * beta.77: harness-native OUTBOUND progress/terminal poster. Built during
-   * async bootstrap ONLY when `slack.credential_service` resolves a bot token
-   * (same token as the reactions poller). Null until then (and forever if no
-   * credential_service) -- `deliverProgress` reads this slot lazily and falls
-   * back to the poll model when it's null. Direct `chat.postMessage`, bypassing
-   * the wedge-prone agent `api.sendMessage` turn.
-   */
   /**
    * beta.86 (Staging review nit): last progress headline posted per session, so
    * `deliverProgress` skips an IDENTICAL consecutive post. beta.85 #4 fires
@@ -395,7 +384,7 @@ export interface MergePrResult {
   message: string;
 }
 
-/** rc.4: result of a harness_link_pr invocation (dry run or apply). */
+/** rc.4: result of an operator PR-association recovery (dry run or apply). */
 export interface LinkPrResult {
   ok: boolean;
   /** True when this was a read-only dry run. No row was written. */
@@ -516,7 +505,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   });
 
   const budget = new BudgetEnforcer(config.budgets, state);
-  // Routes written by `harness_onboard`, merged BENEATH the config tree so a
+  // Routes written by operator credential administration, merged BENEATH the config tree so a
   // hand-written entry always wins. Without this the tool can store a secret
   // and nothing that tells the router to use it.
   const routeOverlay = new RouteOverlay(state.db);
@@ -554,7 +543,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   } catch (err) {
     // A vault we cannot open (wrong key, corrupt file) is fatal to every run,
     // but crashing `register()` would take the whole plugin down and leave the
-    // operator with no `harness_health` to ask WHY. So we boot with a sealed
+    // operator with no diagnostic route explaining why. So we boot with a sealed
     // stub that carries the real reason into every credential read.
     vaultOpenError = String(err);
     api.logger.warn(`[harness] CREDENTIAL VAULT UNAVAILABLE: ${vaultOpenError}. Every credential lookup will fail until this is fixed.`, { dir: vaultDir });
@@ -569,7 +558,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   // moves a role, so a v1 install gets no router, no probe, and none of this
   // code path. Construction VALIDATES and throws on a bad configuration --
   // caught here rather than propagated, because taking `register()` down would
-  // leave the operator without the `harness_health` that explains why.
+  // leave the operator without diagnostics that explain why.
   /**
    * The v1 `models.*` value for a role: what it runs on when no v2 backend
    * entry names a model. Declared here rather than beside its other use so the
@@ -1479,7 +1468,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     previewVerificationEnabled: config.vercel?.enabled === true,
     fetchRuntime: async ({ plan, sessionId, waitForPreview = false, commitSha }) => {
       // Prefer a manual upload if one exists (most recent wins). This lets
-      // non-Vercel deploys hand-supply logs via the harness_upload_logs tool.
+      // non-Vercel deploys can supply runtime logs through operator-only internals.
       const upload = state.db
         .prepare(
           `SELECT status, source, logs_excerpt, error_count, deployment_url, uploaded_at, uploaded_by
@@ -1885,10 +1874,8 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const concrete = repo.endsWith(glob) ? repo.slice(0, -1) + "_probe" : repo;
       try {
         const r = pat.resolve({
-          // beta.133: onboarding needs the name THIS requester resolves to, not
-          // whatever the first authorised user would get. With a {userid} or
-          // {requester} pattern those differ, which is exactly the case the
-          // onboard consistency check exists to catch.
+          // Resolve credentials for the actual requester rather than the first
+          // authorised user; user-scoped service patterns can differ.
           slackUserId: slackUserId ?? config.slack.authorised_users[0] ?? "unknown",
           gitHubUser: concrete.split("/")[0]!,
           repoFullName: concrete,
@@ -2383,10 +2370,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   // beta.67 (Bug A): EXTERNAL stall-sweep service. beta.66 smoke #4 died
   // between a worker sdk_response and the next handler step -- the loop-runner
   // PROCESS was gone, so beta.63's in-process checkStalls could never fire (a
-  // dead process cannot watchdog its own death) and a pending harness_cancel
-  // was never consumed. This periodic service runs INDEPENDENT of any
-  // loop-runner process and drives loop.sweepStalls() (which runs the existing
-  // checkStalls fast path + reaps pending-cancel dead-loop sessions). Uses the
+  // dead process cannot watchdog its own death). This periodic service runs
+  // INDEPENDENT of any loop-runner process and drives loop.sweepStalls(), using
+  // the existing checkStalls fast path from outside the failed executor. Uses the
   // same api.registerService lifecycle as pr-watcher / retention-nightly, with
   // an in-process setInterval fallback when the runtime has no service hook.
   {
@@ -2461,8 +2447,6 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
   } catch (err) {
     api.logger.warn("[harness] budget coherence check threw (non-fatal)", { err: String(err) });
   }
-
-  // Legacy reaction polling and native progress delivery are retired.
 
   // beta.61: startup model-pricing health check (Carel's ask -- "the harness
   // should check latest pricing on the anthropic api"). LIMITATION: Anthropic

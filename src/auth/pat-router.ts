@@ -66,7 +66,7 @@ export class PatRequesterNotAuthorisedError extends Error {
     super(
       `no ${provider} token configured for requester '${slackUserId}' under org '${org}'. ` +
         `Add a person entry at pat_routing.${provider}.${org}.<person> with a matching slack_user_id, ` +
-        `token, name and email, or have them onboard their own with harness_onboard. ` +
+        `token, name and email, or have an operator configure their credential route. ` +
         `(No silent fallback to another user's token.)`,
     );
     this.name = "PatRequesterNotAuthorisedError";
@@ -88,7 +88,7 @@ const personFromRoute = (route: CredentialRoute): PersonToken => ({
 
 export class PatRouter {
   /**
-   * `overlay` supplies routes written by `harness_onboard`. It is consulted
+   * `overlay` supplies routes written by operator credential administration. It is consulted
    * only where the config tree has nothing to say, so a hand-written entry is
    * never overridden by a chat message. Omitted entirely, the router behaves
    * exactly as it did before onboarding could write routes.
@@ -225,7 +225,7 @@ export class PatRouter {
         .replaceAll("{owner}", owner.toLowerCase())
         .replaceAll("{repo}", repo.toLowerCase())
         .replaceAll("{requester}", requester)
-        // beta.133: the raw Slack id. `harness_onboard` writes its vault entry
+        // beta.133: the raw Slack id. credential administration writes its vault entry
         // from `{userid}`, and until now nothing on this side could read that
         // back -- the closest placeholder, {requester}, is the provider login.
         // The two default patterns were therefore incapable of agreeing, so an

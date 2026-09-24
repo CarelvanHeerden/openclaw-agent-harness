@@ -144,13 +144,12 @@ export async function healOrphanedWorktrees(state: StateStore, deps: WorktreeHea
 
     const row = rowsByPath.get(dir) ?? rowsByBasename.get(bn);
 
-    // beta.129 GUARD 3: an abort that could not ship its commits preserves the
-    // worktree and tells the operator to go and get them. `aborted` is
-    // terminal, so without this guard the very next bootstrap deleted exactly
-    // the directory the abort had just promised to keep.
+    // beta.129 GUARD 3: a terminal run that could not publish its commits
+    // preserves the worktree for operator recovery. Without this guard the
+    // next bootstrap could delete the directory it promised to keep.
     if (row?.worktree_preserved) {
       result.protected_preserved += 1;
-      deps.logger.info("[worktree-heal] skipping worktree preserved by an abort (unpushed commits)", { dir, sessionId: row.id });
+      deps.logger.info("[worktree-heal] skipping preserved worktree with unpublished commits", { dir, sessionId: row.id });
       continue;
     }
 

@@ -19,7 +19,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   crystallised_prompt      TEXT,
   lead_plan_json           TEXT,             -- serialised LeadPlan
   final_pr_url             TEXT,
-  reactions_json           TEXT,             -- serialised { shipIt, abort, pause, budgetBump } (reactions only; NOT PR lifecycle)
   -- PR lifecycle (populated by github-watcher on close/merge)
   pr_merged                INTEGER,          -- 0 | 1 | NULL (unknown)
   pr_closed_at             INTEGER,          -- epoch ms; NULL until watcher observes close
@@ -371,8 +370,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log (created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log (session_id);
 
--- Manual runtime log uploads. Populated by `harness_upload_logs` tool when
--- vercel.enabled=false, or when the requester wants to hand-supply logs
+-- Manual runtime log uploads. Populated through an operator-only internal path when
+-- vercel.enabled=false, or when an operator supplies logs
 -- from a non-Vercel deploy target (Cloudflare, AWS, on-prem, etc).
 -- The adversary reads the most recent row for a session and treats it as
 -- `AdversaryInput.runtime` with provider="manual".
@@ -391,7 +390,7 @@ CREATE TABLE IF NOT EXISTS runtime_uploads (
 
 CREATE INDEX IF NOT EXISTS idx_runtime_uploads_session ON runtime_uploads (session_id, uploaded_at DESC);
 
--- Credential routes written by `harness_onboard`.
+-- Credential routes written by operator-only credential administration.
 --
 -- The routing tree `pat_routing.<provider>.<org>.<person>` lives in plugin
 -- config, which is read-only at runtime. Onboarding could therefore store a

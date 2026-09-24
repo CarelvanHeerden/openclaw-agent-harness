@@ -186,7 +186,7 @@ export declare class InteractionLog {
     }): void;
     /**
      * Read the tail of a session's JSONL as parsed events (newest last). Used by
-     * the `harness_logs` tool so operators can read the trail without shell /
+     * operator diagnostics so the trail can be read without shell /
      * container access. Returns `{ found:false }` when the file does not exist.
      */
     readSessionTail(sessionId: string, limit?: number): {

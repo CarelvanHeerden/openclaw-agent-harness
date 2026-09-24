@@ -6,8 +6,7 @@
  * PR has been merged / closed. When it has:
  *   - drops a Slack note in the session's thread
  *   - marks the session with a `pr_merged_at` timestamp (soft column;
- *     schema-forward-compatible, stored as JSON in reactions_json for
- *     now to avoid a migration on beta)
+ *     stored in dedicated PR lifecycle columns)
  *   - releases the worktree
  *
  * Cheap: `GET /repos/:owner/:repo/pulls/:number` is a single request per
@@ -92,8 +91,7 @@ export class PrMergedWatcher {
         return { state: j.state, merged: j.merged, mergedAt: j.merged_at };
     }
     async finalise(row, state) {
-        // Proper columns as of 2026-07-13. `reactions_json` no longer stores
-        // PR lifecycle (that was a beta-era shortcut). See src/state/store.ts.
+        // PR lifecycle is stored in dedicated columns.
         const now = Date.now();
         const mergedAtMs = state.mergedAt ? (Date.parse(state.mergedAt) || null) : null;
         this.state.db.prepare(`UPDATE sessions

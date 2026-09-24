@@ -1017,10 +1017,6 @@
         "default_service_pattern": {
           "type": "string",
           "default": "{provider}-{owner}"
-        },
-        "onboard_service_pattern": {
-          "type": "string",
-          "description": "beta.78: vault service-name pattern for harness_onboard token storage. Placeholders {userid} {provider}. Default git-pat:{userid}."
         }
       },
       "description": "Git credential routing. beta.25 hierarchical shape (github/gitlab -> org -> person -> {token,name,email,slack_user_id}) plus legacy flat fields. See docs/GITHUB_AUTH.md."

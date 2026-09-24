@@ -1,7 +1,7 @@
 /**
  * Org URL parsing for credential onboarding.
  *
- * `harness_onboard` asks for an org URL rather than a bare org name because the
+ * credential administration asks for an org URL rather than a bare org name because the
  * URL states the provider as well: "https://github.com/stitch-vercel" says both
  * "github" and "stitch-vercel", where "stitch-vercel" on its own says neither.
  * A person holding tokens on two providers otherwise has no way to express

@@ -6,8 +6,7 @@
  * PR has been merged / closed. When it has:
  *   - drops a Slack note in the session's thread
  *   - marks the session with a `pr_merged_at` timestamp (soft column;
- *     schema-forward-compatible, stored as JSON in reactions_json for
- *     now to avoid a migration on beta)
+ *     stored in dedicated PR lifecycle columns)
  *   - releases the worktree
  *
  * Cheap: `GET /repos/:owner/:repo/pulls/:number` is a single request per

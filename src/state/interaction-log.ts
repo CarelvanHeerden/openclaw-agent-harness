@@ -109,7 +109,7 @@ export function redactValue(value: unknown, key?: string): unknown {
  * Keys whose value is a credential whatever it happens to look like.
  *
  * Shape matching only catches the formats we already know -- `ghp_`,
- * `github_pat_`, `glpat-`. `harness_onboard` now accepts self-hosted providers,
+ * `github_pat_`, `glpat-`. credential administration accepts self-hosted providers,
  * where the token has whatever shape that deployment chose, and its tool input
  * carries the raw secret under a known key. Redacting BY KEY is therefore the
  * half that cannot be outrun by a token format nobody has seen yet.
@@ -393,7 +393,7 @@ export class InteractionLog {
 
   /**
    * Read the tail of a session's JSONL as parsed events (newest last). Used by
-   * the `harness_logs` tool so operators can read the trail without shell /
+   * operator diagnostics so the trail can be read without shell /
    * container access. Returns `{ found:false }` when the file does not exist.
    */
   readSessionTail(sessionId: string, limit = 100): { found: boolean; file: string; events: Array<Record<string, unknown>>; totalLines: number } {

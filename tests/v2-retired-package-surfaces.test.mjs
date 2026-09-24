@@ -16,12 +16,32 @@ const retiredModules = [
   "hooks/okf-auto-forward",
 ];
 const retiredPackagePatterns = [
+  /\breactions_json\b/g,
+  /\bcancelSession\b/g,
+  /\bshipIt\b/g,
+  /\bbudgetBump\b/g,
   /harness_run/g,
   /harness_start_session/g,
   /harness_merge_pr/g,
+  /harness_cancel/g,
+  /harness_onboard/g,
+  /harness_health/g,
+  /harness_logs/g,
+  /harness_status/g,
+  /harness_progress/g,
+  /harness_session_get/g,
+  /harness_telemetry/g,
+  /harness_upload_logs/g,
+  /harness_resume/g,
+  /harness_answer/g,
+  /harness_retention_prune/g,
+  /harness_list_revisable/g,
+  /harness_revise/g,
+  /harness_link_pr/g,
   /listener_enabled/g,
   /readReactions/g,
   /:moneybag:/g,
+  /:rocket:/g,
   /\bbudget_bump\b/g,
   /\bship_it\b/g,
   /user_abort_reaction/g,
@@ -55,7 +75,7 @@ test("retired interactive modules are absent from source and built output", () =
 test("the exact packed artifact has only the four ordinary operations and no retired interaction surface", () => {
   const temp = mkdtempSync(resolve(tmpdir(), "oah-packed-surface-"));
   try {
-    const packed = JSON.parse(execFileSync("npm", ["pack", root, "--json", "--ignore-scripts", "--pack-destination", temp], {
+    const packed = JSON.parse(execFileSync("npm", ["pack", root, "--json", "--pack-destination", temp], {
       cwd: temp,
       encoding: "utf8",
     }));
@@ -64,14 +84,24 @@ test("the exact packed artifact has only the four ordinary operations and no ret
     execFileSync("tar", ["-xzf", tarball, "-C", temp]);
     const packageRoot = join(temp, "package");
     const files = filesUnder(packageRoot);
+    assert.equal(
+      files.some((path) => path.slice(packageRoot.length + 1).startsWith("node_modules/@anthropic-ai/claude-agent-sdk-")),
+      false,
+      "platform-specific Claude binaries must be installed for the consumer platform, not bundled into the artifact",
+    );
     const leaks = [];
     for (const path of files) {
+      const relative = path.slice(packageRoot.length + 1);
+      // Third-party bundled dependencies are audited as dependencies, not as
+      // first-party product surface. Their protocol/type vocabulary does not
+      // register or document an ordinary harness operation.
+      if (relative.startsWith("node_modules/")) continue;
       const bytes = readFileSync(path);
       if (bytes.includes(0)) continue;
       const text = bytes.toString("utf8");
       for (const pattern of retiredPackagePatterns) {
         pattern.lastIndex = 0;
-        if (pattern.test(text)) leaks.push(`${path.slice(packageRoot.length + 1)}: ${pattern}`);
+        if (pattern.test(text)) leaks.push(`${relative}: ${pattern}`);
       }
     }
     assert.deepEqual(leaks, []);
@@ -107,6 +137,12 @@ test("public config and Slack deployment expose only outbound control-plane sett
   const slackManifest = read("deploy/slack-app-manifest.yaml");
   assert.doesNotMatch(slackManifest, /listener|reaction|slash|interactiv/i);
   assert.match(slackManifest, /chat:write/);
+});
+
+test("the manifest config schema is generated from the canonical schema without semantic drift", () => {
+  const schema = JSON.parse(read("src/config.schema.json"));
+  const manifest = JSON.parse(read("openclaw.plugin.json"));
+  assert.deepEqual(manifest.configSchema, schema);
 });
 
 test("control-plane documentation matches the v2 running response", () => {

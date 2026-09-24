@@ -3,11 +3,11 @@
 //
 //   BUG A — EXTERNAL stall-sweep. The loop-runner PROCESS died between a
 //     worker sdk_response and the next handler step; the session stayed
-//     status=executing forever and a pending harness_cancel was never
-//     consumed, because beta.63's checkStalls runs IN-PROCESS (a dead process
-//     cannot watchdog its own death). A new EXTERNAL periodic `stall-sweep`
-//     service runs loop.sweepStalls() independent of any loop process: runs
-//     the checkStalls fast path AND reaps pending-cancel dead-loop sessions.
+//     status=executing forever because beta.63's checkStalls runs IN-PROCESS
+//     (a dead process cannot watchdog its own death). An EXTERNAL periodic
+//     `stall-sweep` service runs loop.sweepStalls() independently and invokes
+//     the checkStalls fast path. Retired interactive cancellation state is not
+//     part of that recovery path.
 //
 //   BUG B — adversary diffed against the WRONG base. It reviewed against
 //     main-at-review-time (accumulated prior work), not the branch's
@@ -44,7 +44,7 @@ const schemaPath = resolve(here, "..", "dist", "state", "schema.sql");
 
 function config(overrides = {}) {
   return {
-    slack: { channel: "C1", authorised_users: ["U1"], reactions: { ship_it: "rocket", abort: "x", pause: "pause_button", budget_bump: "moneybag" } },
+    slack: { channel: "C1", authorised_users: ["U1"] },
     budgets: { monthly_per_user_usd: 1000, session_default_usd: 50, session_hard_ceiling_usd: 200, daily_warn_usd: 100, monthly_warn_ratio: 0.8 },
     repos: { allowed: ["o/*"], can_create: false, create_org: "", create_visibility: "private", default_base_branch: "main" },
     models: { lead: "claude-fable-5", worker: "claude-sonnet-5", adversary: "claude-fable-5", classifier: "claude-haiku-4-5" },
@@ -76,18 +76,16 @@ function makeStore() {
 const brief = { title: "t", motivation: "motivation long enough", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
 const plan = { repo: "o/r", branch: "harness/x", worktreePath: "/tmp/wt/s", subTasks: [], reviewChecklist: [], riskLevel: "low", approxCostUsd: 0 };
 
-function insertSession(db, id, { status = "executing", staleMs, abort = false, planBaseSha = null } = {}) {
+function insertSession(db, id, { status = "executing", staleMs, planBaseSha = null } = {}) {
   const now = Date.now();
   const lastProgress = now - (staleMs ?? 3_600_000);
   db.prepare(
     `INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch,
        worktree_path, status, created_at, updated_at, last_progress_at, budget_usd, cost_usd, cycles_ran,
-       crystallised_prompt, lead_plan_json, reactions_json, plan_base_sha)
-     VALUES (?, ?, 'C1', 'U1', 'u1', 'o/r', 'harness/x', '/tmp/wt/s', ?, ?, ?, ?, 50, 1, 1, ?, ?, ?, ?)`,
+       crystallised_prompt, lead_plan_json, plan_base_sha)
+     VALUES (?, ?, 'C1', 'U1', 'u1', 'o/r', 'harness/x', '/tmp/wt/s', ?, ?, ?, ?, 50, 1, 1, ?, ?, ?)`,
   ).run(id, `thread-${id}`, status, now, lastProgress, lastProgress,
-    JSON.stringify(brief), JSON.stringify(plan),
-    abort ? JSON.stringify({ abort: true }) : null,
-    planBaseSha);
+    JSON.stringify(brief), JSON.stringify(plan), planBaseSha);
 }
 
 function greenProbes() {
@@ -115,7 +113,6 @@ function makeLoop(state, over = {}) {
     runWorker: async () => ({ status: "completed", filesChanged: [], costUsd: 0, tokensIn: 0, tokensOut: 0, reason: "end_turn" }),
     runAdversary: over.runAdversary ?? (async () => ({ verdict: "pass", findings: [], summary: "", costUsd: 0, tokensIn: 0, tokensOut: 0 })),
     pushBranchAndOpenPr: over.pushBranchAndOpenPr ?? (async () => "https://github.com/o/r/pull/77"),
-    readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     worktreeHeadSha: over.worktreeHeadSha ?? (async () => "headsha00"),
     worktreeMergeBase: over.worktreeMergeBase ?? (async () => "forkpoint0"),
     worktreeCommitCount: over.worktreeCommitCount ?? (async () => 1),
@@ -146,43 +143,15 @@ test("beta67-A: sweepStalls detects an executing session with stale progress + t
     state.close();
   });
 
-test("beta67-A: sweepStalls reaps a pending-cancel + dead-loop session to terminal failed (cancelled_dead_loop)",
-  { skip: OrchestratorLoop === null }, async () => {
-    const state = makeStore();
-    // fresh progress (NOT stalled) but a pending abort flag + dead loop
-    insertSession(state.db, "A2", { status: "executing", staleMs: 5_000, abort: true });
-    const loop = makeLoop(state);
-    const r = await loop.sweepStalls();
-    assert.equal(r.terminated.length, 1, "one cancelled dead-loop session reaped");
-    assert.equal(r.terminated[0].sessionId, "A2");
-    assert.equal(r.terminated[0].reason, "cancelled_dead_loop");
-
-    const row = state.db.prepare(`SELECT status FROM sessions WHERE id='A2'`).get();
-    assert.equal(row.status, "failed", "transitioned to terminal failed");
-    // worktree PRESERVED (beta.62 pattern) — audit fired, no release
-    assert.equal(state.audits.filter((e) => e.event === "loop.failed_worktree_preserved").length, 1);
-    assert.equal(state.audits.filter((e) => e.event === "loop.stall_sweep_terminated").length, 1);
-    const term = state.audits.find((e) => e.event === "loop.stall_sweep_terminated");
-    assert.equal(term.payload.reason, "cancelled_dead_loop");
-    state.close();
-  });
-
-test("beta67-A: sweepStalls covers planning sessions for the cancel path (checkStalls does not)",
-  { skip: OrchestratorLoop === null }, async () => {
-    const state = makeStore();
-    insertSession(state.db, "A3", { status: "planning", staleMs: 5_000, abort: true });
-    const loop = makeLoop(state);
-    const r = await loop.sweepStalls();
-    assert.equal(r.terminated.length, 1);
-    assert.equal(r.terminated[0].phase, "planning");
-    assert.equal(state.db.prepare(`SELECT status FROM sessions WHERE id='A3'`).get().status, "failed");
-    state.close();
-  });
+test("beta67-A: sweepStalls has no retired interactive cancellation path", () => {
+  const source = S("src/orchestrator/legacy-loop.ts");
+  assert.doesNotMatch(source, /reactions_json|cancelSession|cancelled_dead_loop/);
+});
 
 test("beta67-A: sweepStalls leaves a healthy non-stalled, non-cancelled session alone",
   { skip: OrchestratorLoop === null }, async () => {
     const state = makeStore();
-    insertSession(state.db, "A4", { status: "executing", staleMs: 5_000, abort: false });
+    insertSession(state.db, "A4", { status: "executing", staleMs: 5_000 });
     const loop = makeLoop(state);
     const r = await loop.sweepStalls();
     assert.equal(r.recovered.length, 0);

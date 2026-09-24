@@ -2,7 +2,7 @@
  * Credential route overlay.
  *
  * The routing tree `pat_routing.<provider>.<org>.<person>` lives in plugin
- * config, which is read-only at runtime. `harness_onboard` could therefore
+ * config, which is read-only at runtime. operator credential administration could therefore
  * store a secret but nothing that told the router to use it -- the token landed
  * in the vault under a name no session looked up, every step reported success,
  * and the run died at clone.

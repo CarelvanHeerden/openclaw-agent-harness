@@ -532,7 +532,7 @@ export async function runLeadPlanner(brief, deps) {
             // beta.99 (P0-1): the gate has now had its bounded re-ask and the plan is
             // STILL thin. Historically this threw and killed the run. A thin-context
             // plan is a DEGRADED plan (workers start colder), not a broken one -- so
-            // by default we ship it with a loud warning instead of burning the whole
+            // by default we continue with a loud warning instead of burning the whole
             // session. Set loop.require_worker_context_strict:true to restore the
             // old hard-fail.
             if (deps.config.loop?.require_worker_context_strict === true) {

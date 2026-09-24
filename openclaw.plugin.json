@@ -15,6 +15,9 @@
     ]
   },
   "configSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://openclaw.ai/schemas/harness/config.json",
+    "title": "openclaw-agent-harness config",
     "type": "object",
     "additionalProperties": false,
     "properties": {
@@ -134,18 +137,36 @@
             "type": "string",
             "default": "main"
           },
+          "draft_pr_on_nonpass": {
+            "type": "boolean",
+            "default": false,
+            "description": "beta.32: when the adversary verdict is not a clean pass, open the PR as a GitHub draft. Default false, because draft PRs are rejected with HTTP 422 on repos that do not support them (private repos on free plans), which would kill the run at the very last step; even when true the live path retries as a non-draft PR on a 422 rather than failing. The verdict warning goes in the PR body either way. Added to the manifest in b124: the key was read by the code and defaulted in config since b32, but was absent here, so the gateway rejected any config that tried to set it."
+          },
           "never_commit_paths": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "default": [],
-            "description": "beta.114: pathspecs whose changes are reverted instead of committed -- generated trees that belong to the repo's tooling, not to any feature (e.g. [\"okf/**\"]). Empty by default."
-          },
-          "draft_pr_on_nonpass": {
-            "type": "boolean",
-            "default": false,
-            "description": "beta.32: when the adversary verdict is not a clean pass, open the PR as a GitHub draft. Default false, because draft PRs are rejected with HTTP 422 on repos that do not support them (private repos on free plans), which would kill the run at the very last step; even when true the live path retries as a non-draft PR on a 422 rather than failing. The verdict warning goes in the PR body either way. Added to the manifest in b124: the key was read by the code and defaulted in config since b32, but was absent here, so the gateway rejected any config that tried to set it."
+            "description": "beta.114: pathspecs whose changes are reverted instead of committed -- generated trees that belong to the repo's tooling, not to any feature (e.g. [\"okf/**\"]). Configured, never inferred. Empty by default."
+          }
+        }
+      },
+      "logging": {
+        "type": "object",
+        "description": "beta.24: harness log verbosity. When level='debug', SDK errors (crystallise, lead, worker, adversary) log their full error object instead of a one-line summary. Vault-lookup and pat-routing failures also log the exact keys tried. Set to 'debug' during smoke testing to make credential + planner failures diagnosable without a code change.",
+        "additionalProperties": false,
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": [
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ],
+            "default": "info",
+            "description": "Minimum log level the harness emits. Defaults to 'info' (current behaviour)."
           }
         }
       },
@@ -159,10 +180,6 @@
           "worker": {
             "type": "string"
           },
-          "worker_mechanical": {
-            "type": "string",
-            "description": "beta.91 (Fix 3): optional cheaper/faster model for mechanical scaffolding sub-tasks (prisma models, migration, sidebar entry, barrel exports). When set, mechanical sub-tasks dispatch on this model; lead + adversary + non-mechanical workers stay on the strong models. Absent = every sub-task uses `worker`."
-          },
           "adversary": {
             "type": "string"
           },
@@ -174,11 +191,11 @@
             "minimum": 0,
             "maximum": 128000,
             "default": 64000,
-            "description": "beta.99: output-token ceiling exported to the SDK subprocess as CLAUDE_CODE_MAX_OUTPUT_TOKENS. Nothing previously set one, so every structured call inherited whatever ceiling the bundled SDK picked for the model id -- which is undefined for a model newer than the pinned SDK (e.g. claude-opus-5 against SDK 0.3.207). 0 disables (inherit the SDK default)."
+            "description": "beta.99: output-token ceiling exported to the SDK subprocess as CLAUDE_CODE_MAX_OUTPUT_TOKENS. Nothing previously set one, so structured calls inherited whatever the bundled SDK picked for the model id -- undefined for a model newer than the pinned SDK. 0 disables (inherit the SDK default)."
           },
           "price_overrides": {
             "type": "object",
-            "description": "Per-model price overrides for cost estimation, keyed by model id. Values are USD per million tokens.",
+            "description": "beta.57 schema fix (drift): per-model price overrides for cost estimation, keyed by model id. Values are USD per million tokens.",
             "additionalProperties": {
               "type": "object",
               "additionalProperties": false,
@@ -200,17 +217,22 @@
           },
           "auth": {
             "type": "object",
+            "description": "beta.4+ addition, beta.24 schema fix. Anthropic API key resolution: vault-first, then env fallback. Both fields optional; when omitted, harness relies solely on env (ANTHROPIC_API_KEY) or SDK default behaviour.",
             "additionalProperties": false,
-            "description": "Anthropic auth for the embedded Claude Agent SDK. Vault-first (credential_service), env fallback (api_key_env, default ANTHROPIC_API_KEY).",
             "properties": {
               "credential_service": {
-                "type": "string"
+                "type": "string",
+                "description": "Vault service name for the Anthropic API key. Vault-first lookup key."
               },
               "api_key_env": {
                 "type": "string",
-                "default": "ANTHROPIC_API_KEY"
+                "description": "Environment variable to read on vault miss. Defaults to ANTHROPIC_API_KEY."
               }
             }
+          },
+          "worker_mechanical": {
+            "type": "string",
+            "description": "beta.91 (Fix 3): optional cheaper/faster model for mechanical scaffolding sub-tasks (prisma models, migration, sidebar entry, barrel exports). When set, mechanical sub-tasks dispatch on this model; lead + adversary + non-mechanical workers stay on the strong models. Absent = every sub-task uses `worker`."
           }
         }
       },
@@ -265,7 +287,12 @@
             "minimum": 1,
             "maximum": 8,
             "deprecated": true,
-            "description": "REMOVED in v2.0.0 and now ignored. Sub-tasks run one at a time in the session worktree. Still declared here ONLY so an existing config naming it validates: this manifest is additionalProperties:false, so dropping the key would reject the operator's entire plugin config rather than remove a setting. Delete it from your config."
+            "description": "REMOVED in v2.0.0 and ignored. Accepted so an existing config still validates. Delete it."
+          },
+          "parallel_independent_subtasks": {
+            "type": "boolean",
+            "deprecated": true,
+            "description": "REMOVED in v2.0.0 and ignored. Accepted so an existing config still validates. Delete it."
           },
           "stuck_loop_seconds": {
             "type": "integer",
@@ -288,20 +315,6 @@
             "default": 90,
             "description": "beta.42: active stall-watchdog delay. When the re-entrancy guard skips a re-entry (loop.run_skipped_already_running) it arms a timer for this long, then re-checks the session's progress; if none, the wedged loop's stale guard handle is force-deregistered (loop.wedge_detected) so recovery/next-run can reclaim it. Makes beta.40's passive reclaim active -- a loop that wedges with no further re-register is now noticed."
           },
-          "subtask_deadline_seconds": {
-            "type": "integer",
-            "minimum": 60,
-            "maximum": 21600,
-            "default": 2100,
-            "description": "beta.60: max wall-clock seconds a single sub-task's dispatch (runOne) may run before it is force-failed. The worker SDK call and surrounding git/IO verification can all block between the row transition and worker completion; this bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin."
-          },
-          "budget_reserve_ratio": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 0.9,
-            "default": 0.15,
-            "description": "beta.61: fraction of the total session budget held in reserve for the pending adversary review + push while a cycle's review hasn't run yet. The pre-sub-task projection adds this reserve so the loop aborts early (before a sub-task that would leave no room to finish the cycle) instead of completing all sub-tasks and dying one review short of a PR (the b60 smoke failure). Clamped [0,0.9]."
-          },
           "env_wait_retry_enabled": {
             "type": "boolean",
             "default": true,
@@ -318,6 +331,231 @@
             "maximum": 5,
             "default": 3,
             "description": "rc.2: TOTAL attempts for a sub-task under the protocol retry, INCLUDING the first -- the same counting worker_timeout_max_attempts uses. 1 disables retrying without disabling classification. On exhaustion the sub-task fails cleanly with loop.worker_retry_exhausted rather than asking the operator a question that has no answer."
+          },
+          "subtask_deadline_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400,
+            "default": 2100,
+            "description": "beta.60: max wall-clock seconds a single sub-task's dispatch (runOne) may run before it is force-failed. The worker SDK call and surrounding git/IO verification can all block between the row transition and worker completion; this bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin."
+          },
+          "worker_timeout_retry_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.64 (P0-2): when a worker sub-task fails with a first_token_timeout OR a worker timeout, RETRY it ONCE on a FRESH SDK session (no resumeSessionId) before flipping the run terminal. The retry re-verifies; a pass completes the sub-task, a fail falls through to the existing terminal path using the retry's result. Max 1 retry per sub-task."
+          },
+          "best_effort_verify": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.64 (P0-3): BEST-EFFORT VERIFY. If a VERIFY sub-task (observe-mode, the last/verify sub-task) times out even after the P0-2 retry, AND the prior mutate sub-task's verify_probe was GREEN, AND git diff-stat shows only expected files touched, mark the run verify_skipped (reason worker_timeout), push the branch, and open the PR flagged merge_recommendation=needs_human_review (reusing the beta.62 graceful-PR machinery) rather than discarding shippable work. This is what SHOULD have happened in beta.63 smoke #2 -- the code was shippable, only the verifier hung."
+          },
+          "scripted_verify_fallback": {
+            "type": "boolean",
+            "default": false,
+            "description": "beta.126: corrected from true. b85 set this false on purpose -- it is the last local-execution path, and verification has been CI-only since b81. The manifest and the code both said false; only this schema said true, advertising a default that would run the repo suite locally."
+          },
+          "recovery_max_resumes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 3,
+            "description": "beta.81 (Track C / C4): recovery-resume circuit breaker. When MORE than this many recovery.auto_resuming events fire for the SAME session within recovery_resume_window_seconds, the harness HARD-STOPS that session (marks it failed, reason recovery_bounce_loop) and surfaces it to a human instead of resuming again (forensic d01a7484 bounce loop)."
+          },
+          "recovery_resume_window_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86400,
+            "default": 60,
+            "description": "beta.81 (Track C / C4): window (seconds) over which recovery_max_resumes auto-resumes for a single session trip the circuit breaker."
+          },
+          "recovery_resume_at_subtask": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.81 (Track C / C3): when a session left mid-executing is recovered, RESUME AT the failed/incomplete sub-task (mark the orphaned running sub-task failed, preserve completed sub-task commits) instead of re-planning the whole session from scratch (which re-burns completed sub-tasks). Set false to restore the pre-beta.81 full-restart recovery behaviour."
+          },
+          "recovery_replan_guard": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.132: refuse to auto-resume a session that already has a plan and at least one finished cycle. Resuming re-plans from scratch (fresh lead + scout, cycle counter reset, completed sub-tasks re-run over their own commits), and it fires unattended on plugin boot -- which is how a new build gets installed. Such a session is surfaced for a human instead; sessions with no plan yet still resume normally."
+          },
+          "lead_json_retry_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.81 (Track C): give the LEAD re-plan SDK call the same retry-once-on-extractJson-failure guard the classifier has, so a transient prose-drift (lead returns prose instead of the JSON plan contract) does not hard-crash the plan."
+          },
+          "require_worker_context_strict": {
+            "type": "boolean",
+            "default": false,
+            "description": "beta.99: hard-fail the plan when workerContext is still thin after the bounded re-ask. Default false -- ship the degraded plan with a warning instead of burning the session (the b98 failure mode)."
+          },
+          "lead_salvage_truncated_plan": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.99: when both lead plan attempts are cut off at the output ceiling, salvage the well-formed prefix instead of failing with plan_failed. The salvaged plan is INCOMPLETE and is logged as such."
+          },
+          "lead_syntax_retry_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.128: when a lead plan comes back COMPLETE but fails JSON.parse (e.g. a bare `undefined` token), spend one more call asking for the same plan with the fault corrected, quoting the parse error and the text around it. Salvage cannot help here because the document is whole."
+          },
+          "contract_test_path_reconcile": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.100: rewrite a drifted TEST contract path onto the test file the sub-task actually committed, but only when exactly one unmatched test contract and exactly one unclaimed committed test file exist. Closes the b99 seq-3 failure. Default true."
+          },
+          "ledger_reachability_guard_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.101: before adversary review, check every sub-task commit_sha is reachable from HEAD and fail the run when any is not, rather than reviewing or shipping a branch that has lost work. Default true."
+          },
+          "observe_evidence_check_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "rc.10 (F4): require an observe sub-task to have actually read something before its report is accepted and handed to dependent sub-tasks. Checks the tool-call counters (allowedToolCalls, files, commit), not the prose. Default true."
+          },
+          "plan_path_validation_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.101: at plan time, flag filesLikelyTouched entries naming a file in a directory that does not exist and warn the worker to treat them as guesses. Advisory; never blocks. Default true."
+          },
+          "plan_policy_conflict_check_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "rc.10 (F3): at plan_ready, compare every filesLikelyTouched entry against the effective safety.path_denylist (honouring path_denylist_exceptions) and record any planned write the policy will refuse; the affected sub-task then pauses for an operator decision INSTEAD of being dispatched. Default true."
+          },
+          "plan_path_writeback_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.103: after verification proves a contract path correction, write it back into the sub-task's filesLikelyTouched so later revise cycles scope findings against the real path instead of the lead's fictional one. Never widens a sub-task's scope. Default true."
+          },
+          "lead_repo_scout_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.104: run a read-only repo investigation turn before the lead plans, so the plan names real paths and quotes real code. Best-effort; a scout failure falls back to the pre-b104 blind plan. Default true."
+          },
+          "lead_scout_timeout_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600,
+            "default": 420,
+            "description": "beta.106: wall-clock ceiling on the lead's repo scout turn, ADDED to lead_timeout_seconds by the loop rather than carved out of it. Pair it with lead_scout_max_turns, which is the bound that actually holds."
+          },
+          "lead_scout_max_turns": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 400,
+            "default": 60,
+            "description": "beta.106: hard ceiling on scout agent turns. Aborting the wall clock cannot interrupt a tool call already in flight, so the SDK turn cap is the bound that actually holds."
+          },
+          "lead_scout_max_chars": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 120000,
+            "default": 32000,
+            "description": "beta.107: ceiling on the scout report folded into the planning prompt. Raised 20000 -> 32000 after b106 reported reportChars 20049, the exact length produced by truncating at 20000. Truncation is now middle-out, keeping the head (locations and conventions) and the tail (traps)."
+          },
+          "revise_max_adoptions_per_cycle": {
+            "type": "number",
+            "default": 3,
+            "minimum": 0,
+            "description": "beta.108: ceiling on orphan-finding adoptions per revise cycle. Adoption widens a sub-task's file scope, and scope is what a revise cycle costs. The b106 revise on PR #932 fired 21 mapping misses across two cycles against the original smoke's two, because the adversary re-reads the whole branch each cycle and keeps surfacing adjacent issues; uncapped adoption would pull most of the branch back into every cycle. Candidates are taken in severity order, and info-severity findings are never adopted -- info is how the adversary records that a PRIOR finding was verified fixed."
+          },
+          "revise_route_co_fix_owners": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.119: also route a finding to the owners of the OTHER files its fix needs (the adversary's `relatedFiles`, plus any repo path the finding's prose names). The b118 smoke raised 'the upload route discards the kind/title fields the drawer sends' in all three cycles and fixed it in none: routing was correct, but the route file's owner could not act alone -- persisting the fields needed a Prisma column it did not own, and removing the dead dropdown needed the drawer it did not own. It reported no-change, indistinguishable from 'already correct', and the finding was re-raised until the cycle ceiling. Set false for pre-b119 single-owner routing."
+          },
+          "finding_repair_subtasks_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "rc.3: give a reviewer finding whose files no sub-task declared its own repair sub-task, with exactly those files granted and a verification contract generated from them. Such a finding used to be broadcast to every sub-task as context; on StitchGuard PR #1168 findings about the integration UI, credentials, authorization, OpenAPI, help content, the schema and the migration were shown to tasks like 'Declare SAST workflow routes', whose workers correctly refused to edit files outside their scope -- so the finding survived, was re-raised, and was re-routed to the same people next cycle. Set false for the pre-rc.3 broadcast-to-all behaviour."
+          },
+          "workflow_scope_precheck": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.119: when the plan intends to edit .github/workflows/**, verify the routed token carries the `workflow` scope BEFORE running any sub-task. The CI-optimisation run planned a one-line ci.yml change, executed it, reviewed it, and learned only at the push that GitHub refuses workflow writes without that scope -- answerable from the plan and a response header before the first worker started. Only a token that PROVABLY lacks the scope stops a run; fine-grained PATs and GitHub App tokens report no scope header and are waved through, since 'cannot tell' must not read as 'cannot do'."
+          },
+          "abort_salvage_pr": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.120 (fix 1): when a run ABORTS on a resource ceiling (wall clock, session budget, daily cap) and the branch has commits, push them and open a needs_human_review PR instead of discarding the worktree. A ceiling says nothing about the quality of the code -- the b119 take-2 smoke ran 121.6 minutes against a 120-minute limit and deleted 27 commits, 15 files, ~1900 lines, a clean typecheck and a review that was converging 14 -> 10 -> 8; the work survived only because git had not yet GC'd a cached clone. Set false to restore the old behaviour for resource aborts. The worktree is still PRESERVED whenever commits exist: an abort never deletes work."
+          },
+          "ship_time_reserve_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "default": 600,
+            "description": "beta.120 (fix 4): stop starting new revise cycles once fewer than this many seconds remain before session_hard_timeout_seconds, and ship what exists instead. The b119 take-2 run was killed at a review boundary with no runway left to push, because the deadline was only ever consulted to decide whether to ABORT, never whether there was still time to finish properly. Clamped to 25% of session_hard_timeout_seconds so a short timeout cannot ship after cycle 1 and disable revising. Set 0 to disable.",
+            "$comment": "Clamp lives in shouldReserveTimeToShip (MAX_RESERVE_FRACTION)."
+          },
+          "scope_blowout_file_threshold": {
+            "type": "number",
+            "default": 500,
+            "minimum": 0,
+            "description": "beta.110: out-of-scope committed file count at which a cycle is abandoned BEFORE adversary review, instead of folding the overage into the review as a `fit` finding. On ProjectThanos PR #932 an in-worktree npm cache was swept into a commit by git add -A; the check reported 12423 out-of-scope files, produced a finding, and let the run continue -- the adversary then hit its 900s timeout on a 12432-file diff and the session died having pushed nothing, stranding eight good commits. A diff that size cannot be reviewed, so discovering that slowly is pure loss. Set 0 to disable and keep the pre-b110 finding-only behaviour."
+          },
+          "ship_when_no_blocking_findings": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.109: end the review loop when the adversary says `revise` but no finding is diff-addressable at medium severity or above. The adversary writes `revise` while ANY finding is open, including the informational ones it emits to record that a prior finding was fixed, so a run converges to a floor it can never cross: ProjectThanos PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten low, six info and one low convention finding, nothing at medium or above, over three separate revises. Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and a new confirmed change picks them up on request."
+          },
+          "auto_resolve_satisfied_contract": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.111: settle a contract mismatch from the branch's own history instead of pausing the run for a human, when every expected path the sub-task did not touch was already changed by an earlier commit on this branch. Findings are often written conditionally (\"if the handler extends `to` unconditionally...\"); a worker that reads the code, finds the condition already handled and commits only a test then trips the contract check. That escalated on two runs running -- b109 sub-task 2 and b110 sub-task 5, the latter idle for forty minutes at $2.99 waiting for someone to type \"skip\" -- on evidence the harness already held in git. Strict: one expected path never touched on this branch and it still asks."
+          },
+          "early_exit_no_change_cycle": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.108: end a revise cycle that moved the branch tip nowhere instead of buying an adversary pass over an unchanged diff. The b106 revise's cycle 3 dispatched five sub-tasks, four returned subtask_revise_no_change, and the run still paid for a full review. Applies from cycle 2 only, and only when a prior review exists to carry forward."
+          },
+          "revise_adopt_orphan_findings": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.107: when an adversary finding names a file no sub-task claims, let the nearest sub-task adopt it so a worker is actually asked to fix it. On b106 the help-content.ts convention finding was raised in both revise cycles, owned by nobody, and could not have been closed however many cycles the run was given."
+          },
+          "resume_ledger_guard_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.105: also run the ledger reachability guard at RESUME, right after a re-plan re-allocates the worktree. b101 ran it only before adversary review; the b103 smoke lost eight of ten recorded commits on a resume, then stalled before review, so the guard never fired."
+          },
+          "basename_rescue_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.105: on a single-file contract mismatch where the basenames match, the planned directory is absent from the repo and the committed directory is present, synthesize the remap and re-verify instead of pausing for a human. Only continues if re-verification actually passes."
+          },
+          "file_written_accepts_rename": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.105: accept a file_written contract when the path was added or renamed-to inside the sub-task's commit range, even though the blob's mtime predates it. git mv preserves mtime, so a correct move made file_committed pass and file_written fail on the same file in the same commit."
+          },
+          "worker_timeout_max_attempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "default": 3,
+            "description": "beta.113: total worker attempts for a timeout-class failure, including the first."
+          },
+          "worker_first_token_retry_multiplier": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 3,
+            "description": "beta.113: widen the first-token watchdog on each retry (30s -> 90s -> 270s). 1 disables escalation."
+          },
+          "worker_first_token_retry_cap_seconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 1800,
+            "default": 300,
+            "description": "beta.113: ceiling for the escalated first-token window."
+          },
+          "budget_reserve_ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.9,
+            "default": 0.15,
+            "description": "beta.61: fraction of the total session budget held in reserve for the pending adversary review + push while a cycle's review hasn't run yet. The pre-sub-task projection adds this reserve so the loop aborts early (before a sub-task that would leave no room to finish the cycle) instead of completing all sub-tasks and dying one review short of a PR (the b60 smoke failure). Clamped [0,0.9]."
           },
           "graceful_pr_on_review_crash": {
             "type": "boolean",
@@ -340,18 +578,6 @@
             "type": "boolean",
             "default": true,
             "description": "beta.63 (Part A): on an UNRECOVERABLE stall with commits on the branch, attempt a graceful push + PR flagged needs_human_review (beta.62 pattern) so a near-done deliverable is not evaporated. Set false to fail-and-preserve-worktree only."
-          },
-          "abort_salvage_pr": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.120 (fix 1): when a run ABORTS on a resource ceiling (wall clock, session budget, daily cap) and the branch has commits, push them and open a needs_human_review PR instead of discarding the worktree. A ceiling says nothing about code quality: the b119 take-2 smoke hit its 120-minute limit at 121.6 minutes and deleted 27 commits, 15 files and a clean typecheck. Set false to restore the old behaviour for resource aborts -- the worktree is still PRESERVED whenever commits exist, because an abort never deletes work."
-          },
-          "ship_time_reserve_seconds": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 3600,
-            "default": 600,
-            "description": "beta.120 (fix 4): stop starting new revise cycles once fewer than this many seconds remain before session_hard_timeout_seconds, and ship what exists instead. Turns 'out of time' from a cliff into a landing. Automatically clamped to 25% of session_hard_timeout_seconds so a short timeout cannot disable revising altogether. Set 0 to disable."
           },
           "stall_sweep_interval_seconds": {
             "type": "integer",
@@ -385,11 +611,6 @@
             "default": true,
             "description": "beta.91 (Fix 1): on a revise cycle, skip sub-tasks whose file scope does not intersect any review finding's file (already-correct from a prior cycle; the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks). A finding with no resolvable file makes the cycle unscopable => run every sub-task (conservative). Never skips a sub-task a kept one depends on. Default true; false restores beta.90 run-all."
           },
-          "parallel_independent_subtasks": {
-            "type": "boolean",
-            "deprecated": true,
-            "description": "REMOVED in v2.0.0 and now ignored. Parallel sub-task dispatch, its worktree pool and its merge-back are deleted; the session worktree is the isolation boundary and workers commit to it serially. Still declared here ONLY so an existing config naming it validates: this manifest is additionalProperties:false, so dropping the key would reject the operator's entire plugin config rather than remove a setting. Delete it from your config."
-          },
           "deterministic_revise_mapping": {
             "type": "boolean",
             "default": true,
@@ -405,83 +626,12 @@
             "default": true,
             "description": "beta.76 + beta.93 kill-switch: correct a stale lead-guessed contract path against the repo's real touched layout BEFORE verification (with the beta.93 exact-match short-circuit + same-basename evidence guards, so a correctly-committed path is never rewritten -- the session de0cba9f false-positive). Default true; false disables re-derivation entirely (verify against the declared path verbatim, relying on the beta.50+ tolerant match rules)."
           },
-          "contract_test_path_reconcile": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.100: bounded TEST-CONTRACT reconciliation. Rewrite a contract path that is a TEST file and does not structurally resolve against what the sub-task actually touched onto that sub-task's own committed test file -- ONLY when exactly one such unmatched test contract and exactly one unclaimed committed test file exist, so the pairing is unambiguous. Closes the b99 seq-3 failure (session 4420aa45), where the lead guessed a co-located route.test.ts and the worker correctly used the repo's real Jest __tests__/ location; the beta.76 prefix-remapper could not help because the two paths share no trailing directory chain. Cannot re-open the beta.84 sibling false-positive: a non-test contract path never enters the rule. Default true; false restores the pre-b100 strict failure."
-          },
-          "ledger_reachability_guard_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.101: before the adversary SDK call, cross-check every commit_sha in the sub-task ledger for reachability from HEAD, and fail the run with an explicit ledger_commits_unreachable reason when any is missing. Detects a branch that has silently lost work the run already committed. In the b100 smoke (session 3c6c1608) a clarification resume reset the branch to origin/main and orphaned six recorded commits; nothing noticed until the adversary blocked on the absence of work that had in fact been written correctly, after a paid review turn. The b101 preserve-local-branch fix removes that specific trigger; this guard is the independent detector for the next one. Fails OPEN -- a git probe error never blocks a healthy run. Default true."
-          },
-          "observe_evidence_check_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "rc.10 (F4): accept an observe sub-task's report only when the turn actually inspected something. In the 15 September Client Offboarding smoke test the prerequisite observer's four nested-agent calls were all denied (audits 5572-5575); it then ended the turn having had zero tool calls allowed, touched no files and made no commit, and its 280-character promise about what it was going to read -- 'I'll split the read-only probe across repository conventions/specification...' -- was recorded as the sub-task's findings (5577, 5578) and handed verbatim to two dependent workers (5579, 5587). The existing narration detector is a judgement about English and missed it; the tool-call counters in the same audit row are not a judgement about anything. The gate reads allowedToolCalls (every permission request the guard let through, of any kind), not unguardedReads, which counts only reads the denylist could not be applied to and is legitimately 0 on a backend that supplies read paths. When the check fires the worker is retried with guidance naming the permitted route (read directly rather than delegating) within the existing worker_protocol_max_attempts budget, and a prerequisite that still produces nothing fails rather than releasing the sub-tasks that depend on it. A read-only sub-task still needs no commit; it simply cannot skip the reading. Backends that do not report the counter are unaffected. Default true."
-          },
-          "plan_path_validation_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.101: at plan time, flag any filesLikelyTouched entry that names a file whose PARENT DIRECTORY does not exist in the repo, and fold a warning into that sub-task's worker dispatch telling it to treat the path as a guess and locate the real convention. The parent directory is the discriminator: planning a file that does not exist yet is normal (most sub-tasks create files), but a file in a directory that does not exist either is usually invented. In the b100 smoke the lead planned src/components/layout/grc-nav.tsx when src/components/layout/ does not exist, costing a failed verify, a clarification round-trip, a re-plan and a review turn. Advisory only -- new modules legitimately create new directories, so this never blocks. Default true."
-          },
-          "plan_policy_conflict_check_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "rc.10 (F3): compare the plan against the safety policy before spending anything on it. In the 15 September Client Offboarding smoke test, sub-task 3 required .env.example while the effective denylist contained .env.*, and nothing compared the two until a worker had already been dispatched and billed. It was then billed a second time, after an operator correction that changed the test path and left the policy untouched -- $0.4262756 buying a retry of work unchanged policy could only refuse again (audits 5598 and 5619). Both facts were knowable at plan_ready. This check records the conflict there, naming the rule and the path, and gates the affected sub-task's dispatch on an operator decision that states the rule rather than describing the block as a path mistake. Other sub-tasks are unaffected and still run. filesLikelyTouched is the lead's guess, so a conflict is evidence a sub-task is heading for a wall, not proof it must -- which is why this gates one sub-task rather than failing the plan. Default true."
-          },
-          "plan_path_writeback_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.103: once verification proves a contract path correction (the b76 rederive or the b100 test reconcile), write that correction back into the sub-task's filesLikelyTouched so the rest of the run reasons about the real path. Before b103 a correction only ever reached the local contract array, so the plan kept the lead's fictional path -- and both computeReviseScope and mapFindingsToSubTasks key off filesLikelyTouched. In the b102 smoke (PR #906) the lead planned src/app/(app)/... where the repo uses (portal); verification rederived it and the sub-task passed, but on cycle 3 the scoper could not intersect the adversary's (portal) findings with the plan's (app) path, skipped that sub-task, and shipped a PR blocked on a one-character lint error it had been told about for three cycles. Only ever REWRITES a path the plan already declared, never appends, so a sub-task's scope can be corrected but never widened. Default true."
-          },
-          "lead_repo_scout_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.104: give the lead a READ-ONLY look at the repository before it plans. Until b104 every lead call ran through structuredCall with tools:[] and Read/Glob/Grep explicitly disallowed, and the worktree did not exist yet (runLeadPlanner calls the lead model first and allocateWorktree afterwards) -- so the lead planned entire features, file paths and code excerpts included, having never opened a single file of the repo. The b67 gate simultaneously REQUIRED every mutate sub-task to carry workerContext.codeExcerpts described as 'the ACTUAL code you read, verbatim', which the lead could not have read, so the harness was mandating plausible fabrication and then spending the rest of the run detecting it: the b63 conventions ingest, the b76 rederive, the b100 test reconcile, the b101 suspect-path check and the b103 writeback are all downstream of this one blindfold. In the b102 smoke loop.plan_paths_suspect counted seven fictional paths in a single plan ((app) where the repo uses (portal), components/layout where it uses components/ui), and the workers re-explored the repo anyway -- context that is confidently wrong is worse than none. With this enabled the lead first runs a scout turn in a real worktree with Read/Glob/Grep and no write tools, then the existing toolless planning call receives that report as its only admissible source of repo facts. The planning call itself is unchanged, which preserves the b28/b40 protection against a tool-enabled planner wandering off and writing its plan to a file. The adversary never sees the report -- its prompt is built from a hand-written projection of the brief, not the brief object -- so reviewer independence is unaffected. Best-effort: unwired, disabled, no resolvable repoHint, a throw or an empty report all fall back to the pre-b104 blind plan. Default true."
-          },
-          "lead_scout_timeout_seconds": {
-            "type": "integer",
-            "minimum": 60,
-            "maximum": 3600,
-            "default": 420,
-            "description": "beta.106: wall-clock ceiling on the lead's repo scout turn, now ADDED to lead_timeout_seconds by the loop instead of being carved out of it. b104 nested the scout inside the lead budget without raising it: with the shipped defaults (lead 900s, scout 600s) that left 300s for planning, and planning alone measured 441s and 182s on b103 -- arithmetic that never closed, and the b105 smoke duly died at exactly 900s after the scout started with the lead mid-plan. Note this is the SOFT bound: aborting the wall clock signals the SDK but cannot interrupt a tool call already in flight, so the harness stops WAITING 30s past this ceiling and plans with the partial report, letting the SDK unwind in the background. lead_scout_max_turns is the hard bound. Exceeding either costs the scout only -- the run continues, with a partial report or blind."
-          },
-          "lead_scout_max_turns": {
-            "type": "integer",
-            "minimum": 5,
-            "maximum": 400,
-            "default": 60,
-            "description": "beta.106: hard ceiling on scout agent turns. The b105 smoke (session b08502aa) scouted for FOURTEEN MINUTES against a 600s budget: aborting the wall clock signals the SDK but cannot interrupt a tool call already in flight, so the abort fired at 600s and the scout still ran to roughly 850s. The SDK turn cap is the only bound that reliably holds. 60 turns is enough to find one analogue, read it, verify the paths the plan will name and note the traps, and deliberately not enough to survey a codebase; the scout prompt states the same budget in words so the model spends it deliberately rather than being truncated mid-exploration."
-          },
-          "lead_scout_max_chars": {
-            "type": "integer",
-            "minimum": 2000,
-            "maximum": 120000,
-            "default": 32000,
-            "description": "beta.107: ceiling on the scout report folded into the lead planning prompt. Raised 20000 -> 32000: b106 reported reportChars 20049, the exact length produced by truncating at 20000, so the ceiling was binding on an ordinary brief with nothing in the trail saying so. Truncation is now MIDDLE-OUT, keeping both ends -- the head carries locations and conventions, the tail carries the traps, and head-only truncation was dropping precisely the repo rules the plan needed. b98 is why a ceiling exists at all: an oversized lead input cost a whole run when the reply breached the output ceiling."
-          },
-          "resume_ledger_guard_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.105: also run the ledger reachability guard at RESUME, immediately after a re-plan re-allocates the worktree, not only before adversary review. b101 built the guard and wired it in one place. The b103 smoke (session b8ece861) then lost eight of ten recorded commits when a clarification resume re-allocated onto a different tip, stalled at a second clarification and was aborted -- so the guard never ran at all and the loss surfaced four hours later in a hand-written post-mortem. Re-allocation is the operation that loses commits, so it is where the check belongs. A fresh run has an empty ledger and short-circuits, so this costs one no-op call on the common path."
-          },
-          "basename_rescue_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.105: generate a path remap from the mismatch itself instead of escalating to a human. b103's rederive only corrects a contract path when an EARLIER sub-task already taught the run the substitution; it has no producer. On the b103 smoke, seq 9 was the first sub-task to touch src/components/, so the lead's fictional components/layout/sidebar.tsx met the worker's correct components/ui/sidebar.tsx with no lesson to apply, no rederive fired, and a mechanically-obvious correction cost an hour of clarification dead time. Fires only when the mismatch is a SINGLE file, the basenames match, the planned directory is absent from the repo and the committed directory is present -- and even then only continues if re-verification against the corrected contract actually passes."
-          },
-          "file_written_accepts_rename": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.105: accept a file_written contract when git shows the path was ADDED or RENAMED-TO inside the sub-task's own commit range, even though the blob's mtime predates the sub-task. mtime is a proxy for authorship and git mv preserves it, so a worker that correctly moves a file onto the contract's path produced a file_committed PASS and a file_written FAIL on the same file in the same commit (b103 smoke seq 3). Two checks disagreeing about one file is incoherent verifier state, not a safety property. Presence and non-emptiness on disk are still required, and the range is the sub-task's own, so a merely pre-existing file still fails."
-          },
           "sdk_first_token_timeout_seconds": {
             "type": "integer",
             "minimum": 10,
             "maximum": 1800,
             "default": 30,
-            "description": "beta.64 (P0-1) / beta.65 (P0): PHASE-2 first-token watchdog window (seconds). Armed inside consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on the first assistant content block (text/tool_use). No first content block within this window => abort with the distinct stopReason first_token_timeout so the loop retries on a fresh session. beta.65 split-phase redesign: phase 2 (stream-open -> first-token) is always near-instant on success (4-5ms in smoke #3), so the default is LOWERED 90 -> 30. The pre-stream stall is covered by sdk_stream_open_timeout_seconds (phase 1). Clamped [10,1800]."
+            "description": "beta.64 (P0-1) / beta.65 (P0): PHASE-2 first-token watchdog window (seconds). Armed inside consumeWorkerStream when the SDK stream OPENS (system/init) and disarmed on the first assistant content block (text/tool_use). No first content block within this window => abort with the distinct stopReason first_token_timeout so the loop retries on a fresh session. beta.65 split-phase redesign: phase 2 (stream-open -> first-token) is always near-instant on success (4-5ms in smoke #3), so the default is LOWERED 90 -> 30. The pre-stream stall is covered by sdk_stream_open_timeout_seconds (phase 1). Clamped [10,1800]. rc.4: this ALSO governs the six structured roles (adversary, lead, crystalliser, classifier, revise_spec, worker_context) when they run on an ACP backend such as OpenCode -- before rc.4 it was never passed down that path and those roles silently used runWorkerAcp's own 30s default whatever this said. It has no effect on structured roles running on the Claude Code SDK, which has no first-token phase (partial messages are off, so text arrives only when the turn completes); raise sdk_stream_open_timeout_seconds for those instead."
           },
           "sdk_stream_open_timeout_seconds": {
             "type": "integer",
@@ -495,62 +645,7 @@
             "minimum": 30,
             "maximum": 600,
             "default": 90,
-            "description": "beta.90 (Feature 2): worker STREAM-SLOW idle-warn window (seconds). Inside consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick watches for token/message activity; if the stream goes IDLE (no delta) for this many seconds it emits loop.worker_stream_slow and bumps the session liveness heartbeat (last_progress_at) so internal diagnostics surfaces 'worker stream idle Ns' instead of the phase looking wedged. OBSERVABILITY ONLY -- it NEVER aborts (a slow stream recovered on b89; a blunt abort would have wrongly killed it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went idle ~15 min with no signal in internal diagnostics. Default 90; clamped [30,600]."
-          },
-          "worker_timeout_retry_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.64 (P0-2): when a worker sub-task fails with a first_token_timeout OR a worker timeout, RETRY it ONCE on a FRESH SDK session (no resumeSessionId) before flipping the run terminal. The retry re-verifies; a pass completes the sub-task, a fail falls through to the existing terminal path using the retry's result. Max 1 retry per sub-task."
-          },
-          "best_effort_verify": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.64 (P0-3): BEST-EFFORT VERIFY. If a VERIFY sub-task (observe-mode, the last/verify sub-task) times out even after the P0-2 retry, AND the prior mutate sub-task's verify_probe was GREEN, AND git diff-stat shows only expected files touched, mark the run verify_skipped (reason worker_timeout), push the branch, and open the PR flagged merge_recommendation=needs_human_review (reusing the beta.62 graceful-PR machinery) rather than discarding shippable work. This is what SHOULD have happened in beta.63 smoke #2 -- the code was shippable, only the verifier hung."
-          },
-          "scripted_verify_fallback": {
-            "type": "boolean",
-            "default": false,
-            "description": "beta.64 (P0-4): SCRIPTED VERIFIER FALLBACK. When an observe-mode VERIFY sub-task times out, run a DETERMINISTIC fallback -- npx tsc --noEmit + git diff --stat + the allowlisted repo check scripts -- LOCALLY in the worktree. beta.85: DEFAULT FALSE. This was the last remaining local-execution path, against the hard 'never run the repo suite locally, ever' rule (verification is CI-only since beta.81). Opt in explicitly if you want the local deterministic rescue; the default no longer runs anything locally."
-          },
-          "recovery_max_resumes": {
-            "type": "number",
-            "default": 3,
-            "description": "beta.81 (Track C / C4): recovery-resume circuit breaker. When MORE than this many recovery.auto_resuming events fire for the SAME session within recovery_resume_window_seconds, the harness HARD-STOPS that session (marks it failed, reason recovery_bounce_loop) and surfaces it to a human instead of resuming again (forensic d01a7484 bounce loop)."
-          },
-          "recovery_resume_window_seconds": {
-            "type": "number",
-            "default": 60,
-            "description": "beta.81 (Track C / C4): window (seconds) over which recovery_max_resumes auto-resumes for a single session trip the circuit breaker."
-          },
-          "recovery_resume_at_subtask": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.81 (Track C / C3): when a session left mid-executing is recovered, RESUME AT the failed/incomplete sub-task (mark the orphaned running sub-task failed, preserve completed sub-task commits) instead of re-planning the whole session from scratch (which re-burns completed sub-tasks). Set false to restore the pre-beta.81 full-restart recovery behaviour."
-          },
-          "recovery_replan_guard": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.132: refuse to auto-resume a session that already has a plan AND at least one finished cycle, in any phase. b81 stopped this for `executing` only; every other phase fell through to a re-drive of loop.run, which re-plans from scratch -- a fresh lead call and scout (mean $6.24 across this repo's own audit history), cycles_ran reset to zero, and completed sub-tasks re-run against a branch that already carries their commits. Nobody asks for it: it fires unattended on plugin boot for any session left non-terminal, and restarting the container is how a new build gets installed, so a restart landing on a mid-flight run is routine rather than exotic. Session 2b4c1d33 sat at `planning` holding a $6.03 plan and two finished cycles when a boot picked it up. With the guard on, such a session is surfaced instead -- marked needs_human_review against its PR if it has one, otherwise failed with the worktree preserved so the commits survive the next heal. A session with no plan yet has nothing to lose and still resumes normally. Set false to restore the pre-beta.132 re-drive."
-          },
-          "lead_json_retry_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.81 (Track C): give the LEAD re-plan SDK call the same retry-once-on-extractJson-failure guard the classifier has, so a transient prose-drift (lead returns prose instead of the JSON plan contract) does not hard-crash the plan."
-          },
-          "require_worker_context_strict": {
-            "type": "boolean",
-            "default": false,
-            "description": "beta.99: what to do when a plan still lacks substantive workerContext after the bounded re-ask. false (default) ships the degraded plan with a loud warning -- workers on those seqs simply start colder. true restores the pre-beta.99 hard-fail. The default flipped because b98 (session f2613eec) burned an entire session and produced nothing while the harness was holding a valid plan."
-          },
-          "lead_salvage_truncated_plan": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.99: when BOTH lead plan attempts are cut off at the output ceiling, salvage the well-formed prefix of the reply instead of failing the run with plan_failed. The salvaged plan is REAL but INCOMPLETE (trailing sub-tasks were cut off) and is logged loudly as such; it still has to pass validatePlan. Set false to restore the pre-beta.99 hard-fail."
-          },
-          "lead_syntax_retry_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.128: when a lead plan comes back COMPLETE but fails JSON.parse, spend one more call asking for the SAME plan with the fault corrected, quoting the parser's complaint and the text either side of it. This is the `\"seq_note\":undefined` class -- a whole 24k-char plan spoiled by one JavaScript literal, which truncation salvage cannot repair because nothing was cut off. Set false to hard-fail instead of paying for a third call."
+            "description": "beta.90 (Feature 2): worker STREAM-SLOW idle-warn window (seconds). Inside consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick watches for token/message activity; if the stream goes IDLE (no delta) for this many seconds it emits loop.worker_stream_slow and bumps the session liveness heartbeat (last_progress_at) so the control result surfaces 'worker stream idle Ns' instead of the phase looking wedged. OBSERVABILITY ONLY -- it NEVER aborts (a slow stream recovered on b89; a blunt abort would have wrongly killed it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went idle ~15 min with no signal in the control result. Default 90; clamped [30,600]."
           },
           "deterministic_final_scope_check": {
             "type": "boolean",
@@ -576,74 +671,6 @@
             "default": 900,
             "description": "beta.94 (Feature 2): minimum cumulative elapsed (seconds) inside the worker stream before loop.worker_idle_no_work may fire. Default 900 (15 min); clamped [60,3600]."
           },
-          "revise_max_adoptions_per_cycle": {
-            "type": "number",
-            "default": 3,
-            "minimum": 0,
-            "description": "beta.108: ceiling on orphan-finding adoptions per revise cycle. Adoption widens a sub-task's file scope, and scope is what a revise cycle costs. The b106 revise on PR #932 fired 21 mapping misses across two cycles against the original smoke's two, because the adversary re-reads the whole branch each cycle and keeps surfacing adjacent issues; uncapped adoption would pull most of the branch back into every cycle. Candidates are taken in severity order, and info-severity findings are never adopted -- info is how the adversary records that a PRIOR finding was verified fixed."
-          },
-          "revise_route_co_fix_owners": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.119: also route a finding to the owners of the OTHER files its fix needs (the adversary's `relatedFiles`, plus any repo path the finding's prose names). The b118 smoke raised 'the upload route discards the kind/title fields the drawer sends' in all three cycles and fixed it in none: routing was correct, but the route file's owner could not act alone -- persisting the fields needed a Prisma column it did not own, and removing the dead dropdown needed the drawer it did not own. It reported no-change, indistinguishable from 'already correct', and the finding was re-raised until the cycle ceiling. Set false for pre-b119 single-owner routing."
-          },
-          "finding_repair_subtasks_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "rc.3: give a reviewer finding whose files no sub-task declared its own repair sub-task, with exactly those files granted and a verification contract generated from them. Such a finding used to be broadcast to every sub-task as context; on StitchGuard PR #1168 findings about the integration UI, credentials, authorization, OpenAPI, help content, the schema and the migration were shown to tasks like 'Declare SAST workflow routes', whose workers correctly refused to edit files outside their scope -- so the finding survived, was re-raised, and was re-routed to the same people next cycle. Set false for the pre-rc.3 broadcast-to-all behaviour."
-          },
-          "workflow_scope_precheck": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.119: when the plan intends to edit .github/workflows/**, verify the routed token carries the `workflow` scope BEFORE running any sub-task. The CI-optimisation run planned a one-line ci.yml change, executed it, reviewed it, and learned only at the push that GitHub refuses workflow writes without that scope -- answerable from the plan and a response header before the first worker started. Only a token that PROVABLY lacks the scope stops a run; fine-grained PATs and GitHub App tokens report no scope header and are waved through, since 'cannot tell' must not read as 'cannot do'."
-          },
-          "scope_blowout_file_threshold": {
-            "type": "number",
-            "default": 500,
-            "minimum": 0,
-            "description": "beta.110: out-of-scope committed file count at which a cycle is abandoned BEFORE adversary review, instead of folding the overage into the review as a `fit` finding. On ProjectThanos PR #932 an in-worktree npm cache was swept into a commit by git add -A; the check reported 12423 out-of-scope files, produced a finding, and let the run continue -- the adversary then hit its 900s timeout on a 12432-file diff and the session died having pushed nothing, stranding eight good commits. A diff that size cannot be reviewed, so discovering that slowly is pure loss. Set 0 to disable and keep the pre-b110 finding-only behaviour."
-          },
-          "ship_when_no_blocking_findings": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.109: end the review loop when the adversary says `revise` but no finding is diff-addressable at medium severity or above. The adversary writes `revise` while ANY finding is open, including the informational ones it emits to record that a prior finding was fixed, so a run converges to a floor it can never cross: ProjectThanos PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten low, six info and one low convention finding, nothing at medium or above, over three separate revises. Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and a newly prepared change picks them up on request."
-          },
-          "auto_resolve_satisfied_contract": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.111: settle a contract mismatch from the branch's own history instead of pausing the run for a human, when every expected path the sub-task did not touch was already changed by an earlier commit on this branch. Findings are often written conditionally (\"if the handler extends `to` unconditionally...\"); a worker that reads the code, finds the condition already handled and commits only a test then trips the contract check. That escalated on two runs running -- b109 sub-task 2 and b110 sub-task 5, the latter idle for forty minutes at $2.99 waiting for someone to type \"skip\" -- on evidence the harness already held in git. Strict: one expected path never touched on this branch and it still asks."
-          },
-          "early_exit_no_change_cycle": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.108: end a revise cycle that moved the branch tip nowhere instead of buying an adversary pass over an unchanged diff. The b106 revise's cycle 3 dispatched five sub-tasks, four returned subtask_revise_no_change, and the run still paid for a full review. Applies from cycle 2 only, and only when a prior review exists to carry forward."
-          },
-          "revise_adopt_orphan_findings": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.107: when an adversary finding names a file that no sub-task's plan claims, let the nearest sub-task adopt it so a worker is actually asked to fix it. b92 broadcasts such a finding to every sub-task as context, which never drops it but never targets it either, and b91 scoping then skips those sub-tasks because their files intersect no finding. On b106 the help-content.ts convention finding was raised in both revise cycles, owned by nobody, and could not have been closed however many cycles the run was given. Adoption prefers a sub-task the finding's own prose names, else the nearest in the directory tree, and leaves a finding that matches neither as a pure broadcast."
-          },
-          "worker_timeout_max_attempts": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5,
-            "default": 3,
-            "description": "beta.113: total worker attempts for a timeout-class failure, including the first. Two attempts was one retry, against the same too-short first-token window."
-          },
-          "worker_first_token_retry_multiplier": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 10,
-            "default": 3,
-            "description": "beta.113: widen the first-token watchdog on each retry, so a slow start gets a wider window instead of the identical one that just failed (30s -> 90s -> 270s). 1 disables escalation."
-          },
-          "worker_first_token_retry_cap_seconds": {
-            "type": "integer",
-            "minimum": 10,
-            "maximum": 1800,
-            "default": 300,
-            "description": "beta.113: ceiling for the escalated first-token window."
-          },
           "revise_targeted_planbase_window": {
             "type": "boolean",
             "default": true,
@@ -654,27 +681,46 @@
       "ci": {
         "type": "object",
         "additionalProperties": false,
-        "description": "beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness polls the commit's combined GitHub status/check-runs and treats CI as the verification spine.",
         "properties": {
           "wait_timeout_seconds": {
-            "type": "number",
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 7200,
             "default": 900,
             "description": "beta.81 (B2): max wall-clock seconds the harness waits for CI to finish after pushing a branch before it treats the wait as a SOFT checkpoint (surfaces 'CI still running after N min on <sha>' and offers a resumable continue-watching -- never a hard fail). Clamped [30, 7200]."
           },
           "poll_interval_seconds": {
-            "type": "number",
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 300,
             "default": 20,
             "description": "beta.81 (B2): poll interval (seconds) for the post-push CI wait; the harness re-queries getCombinedStatus(headSha) every this-many seconds until it is not pending or the wait_timeout_seconds elapses. Clamped [5, 300]."
           },
           "none_grace_seconds": {
-            "type": "number",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300,
             "default": 45,
             "description": "beta.91 (F4): grace window (seconds) for an authored-this-cycle CI workflow to REGISTER on GitHub before the harness concludes 'no CI'. Fixes the b90 bug where the harness shipped a merge recommendation 0.5s after push, before its own workflow registered, then CI later caught a real typecheck error. Only applies when a workflow was authored this cycle; a genuine no-CI repo still returns none fast. A still-none result after the grace window is a distinct NON-blocking authored_workflow_never_registered outcome (merge still recommended, but the human sees CI did not verify the SHA). 0 disables (beta.90 terminate-on-first-none). Clamped [0, 300]."
           },
           "permanent_denial_polls": {
-            "type": "number",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
             "default": 2,
             "description": "beta.124: how many CONSECUTIVE polls answered 401/403/404 before the harness stops polling CI and reports the denial as the outcome. A denial is an answer, not a delay: the b123 smoke asked the check-runs API 44 times over 896 seconds (12% of the run's wall clock), was told 403 every time, and ended on 'could NOT determine CI state' -- which does not tell anyone what to fix. Stopping early instead reports the remedy. Not 1, because a lone 403 can be a secondary rate limit or a token mid-rotation; two in a row is a fact about the configuration. The merge recommendation is unchanged -- an unreadable gate is still needs_human_review, never a pass. Minimum 1."
+          },
+          "max_repair_cycles": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "default": 1,
+            "description": "beta.127: extra revise cycles a red CI may buy at the ship gate, on top of max_cycles and any beta.124 extension. Only a definite failure with a parseable log qualifies. 0 restores b126 behaviour."
+          },
+          "repair_subtask_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "beta.131: when a red CI names no file, give the failure its own sub-task carrying the raw output and no declared file scope, instead of broadcasting it to every sub-task and having none of them own it."
           },
           "workflow_runs_fallback": {
             "type": "boolean",
@@ -692,20 +738,9 @@
             "minimum": 0,
             "default": 1500,
             "description": "rc.5 (#2): delay between publication revalidation reads, in milliseconds. See publication_verify_attempts."
-          },
-          "max_repair_cycles": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 5,
-            "default": 1,
-            "description": "beta.127: how many extra revise cycles a RED CI may buy at the ship gate. Before b127 CI ran once, after the loop had already decided to finish, and its only effect was to stamp needs_human_review on the recommendation -- nothing was fixed, because there was no cycle left to fix it in. The b126 smoke ran 33 sub-tasks with zero verification failures across four cycles, 107 minutes and $18.78, and shipped a PR failing 2 of 8836 tests: one pre-existing test it broke by inserting a nav entry into a group asserted to be contiguous, and one it wrote itself comparing a Date to the string it becomes after JSON serialisation. Both one-liners, neither visible to any cycle, because the only thing that runs the repo's suite is CI and CI ran after the last cycle ended. These cycles are granted ON TOP of max_cycles and any beta.124 converging extension, and only when the budget covers another cycle -- hitting the cycle ceiling means the harness ran out of opinions, which is not the same as the build being broken. Only a definite CI failure qualifies (never a timeout or an unreadable verdict), and only when the failing log could be parsed into findings, because a worker sent after an unknown failure produces noise. Each granted cycle re-pushes and re-checks. 0 disables and restores b126 behaviour."
-          },
-          "repair_subtask_enabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "beta.131: when a red CI names no file, give the failure its own sub-task instead of broadcasting it to everyone. b127 folds CI findings into the review and routes each to whoever owns its file, which works when the finding HAS a file. When it does not, the finding becomes a mapping miss and is attached to every sub-task as background context -- owned by none of them. Session 03a8a7b6 bought a repair cycle for exactly that, re-ran all seven sub-tasks against the adversary's opinions for about $3, and left CI red on the same assertion it started with; the audit recorded '1 CI finding(s), unrouted' twice and spent the cycle anyway. The sub-task added here carries the raw failing output verbatim and declares no file scope, which is what lets it fix whichever file turns out to be responsible. Only fires when NO CI finding names a file -- one that does has a real owner with the context to fix it, and a fresh worker starting cold is worse. Set false to restore b127 broadcast behaviour."
           }
-        }
+        },
+        "description": "beta.81 (Track B): CI-verification shift. After a branch is pushed, the harness polls the commit's combined GitHub status/check-runs and treats CI as the verification spine."
       },
       "vercel": {
         "type": "object",
@@ -738,7 +773,6 @@
           "deploy_repair": {
             "type": "object",
             "additionalProperties": false,
-            "description": "beta.36: post-merge deploy-repair loop. On a merged PR whose Vercel deploy ERRORs, auto-attempt fixes (up to max_attempts new PRs) from the build logs; if still failing, revert all merges and leave the last attempt open for review.",
             "properties": {
               "enabled": {
                 "type": "boolean",
@@ -757,7 +791,8 @@
                 "default": 0.25,
                 "description": "Repair budget as a fraction of budgets.daily_max_usd, shared across all attempts."
               }
-            }
+            },
+            "description": "beta.36: post-merge deploy-repair loop. On a merged PR whose Vercel deploy ERRORs, auto-attempt fixes (up to max_attempts new PRs) from the build logs; if still failing, revert all merges and leave the last attempt open for review."
           }
         }
       },
@@ -849,28 +884,72 @@
       },
       "pat_routing": {
         "type": "object",
-        "additionalProperties": true,
-        "description": "Git credential routing. beta.25 hierarchical shape (github/gitlab -> org -> person -> {token,name,email,slack_user_id}) plus legacy flat fields. See docs/GITHUB_AUTH.md.",
-        "properties": {
-          "github": {
+        "additionalProperties": false,
+        "$defs": {
+          "personToken": {
             "type": "object",
-            "description": "Hierarchical GitHub routing: org -> person -> {token:{value|env|vault}, name, email, slack_user_id}.",
-            "additionalProperties": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "object"
+            "additionalProperties": false,
+            "required": [
+              "token",
+              "name",
+              "email"
+            ],
+            "properties": {
+              "token": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Exactly one of value | env | vault.",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Inline secret (single-operator; setter accepts risk)."
+                  },
+                  "env": {
+                    "type": "string",
+                    "description": "Env var name holding the token."
+                  },
+                  "vault": {
+                    "type": "string",
+                    "description": "Service name in the harness-owned credential vault (see the top-level `credentials` block)."
+                  }
+                },
+                "minProperties": 1,
+                "maxProperties": 1
+              },
+              "name": {
+                "type": "string",
+                "description": "Git commit author name."
+              },
+              "email": {
+                "type": "string",
+                "format": "email",
+                "description": "Git commit author email (required)."
+              },
+              "slack_user_id": {
+                "type": "string",
+                "description": "Slack user id mapping an inbound request to this person. Auto-captured in vault/self-write tiers; manual in copy-paste tier."
               }
             }
           },
-          "gitlab": {
+          "orgMap": {
             "type": "object",
-            "description": "Hierarchical GitLab routing: org -> person -> {token:{value|env|vault}, name, email, slack_user_id}.",
+            "description": "Repo owner/org -> { person: PersonToken }.",
             "additionalProperties": {
               "type": "object",
               "additionalProperties": {
-                "type": "object"
+                "$ref": "#/properties/pat_routing/$defs/personToken"
               }
             }
+          }
+        },
+        "properties": {
+          "github": {
+            "$ref": "#/properties/pat_routing/$defs/orgMap",
+            "description": "beta.25 hierarchical GitHub routing: org -> person -> token."
+          },
+          "gitlab": {
+            "$ref": "#/properties/pat_routing/$defs/orgMap",
+            "description": "beta.25 hierarchical GitLab routing: org -> person -> token."
           },
           "overrides": {
             "type": "object",
@@ -904,8 +983,12 @@
           },
           "user_identities": {
             "type": "object",
+            "description": "Legacy: { slackUserId: { github?: login, gitlab?: login } }",
             "additionalProperties": {
-              "type": "object"
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
             }
           },
           "default_provider": {
@@ -928,33 +1011,50 @@
           "providers": {
             "type": "object",
             "additionalProperties": {
-              "type": "object"
+              "type": "object",
+              "properties": {
+                "api_base": {
+                  "type": "string"
+                },
+                "api_key_env": {
+                  "type": "string"
+                }
+              }
             }
           },
           "auth": {
             "type": "object",
-            "additionalProperties": true
+            "properties": {
+              "api_key_env": {
+                "type": "string"
+              }
+            }
           },
           "default_service_pattern": {
             "type": "string",
             "default": "{provider}-{owner}"
           }
-        }
+        },
+        "description": "Git credential routing. beta.25 hierarchical shape (github/gitlab -> org -> person -> {token,name,email,slack_user_id}) plus legacy flat fields. See docs/GITHUB_AUTH.md."
       },
-      "logging": {
+      "credentials": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Harness log verbosity. 'debug' makes error sites log full error objects.",
+        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them.",
         "properties": {
-          "level": {
+          "dir": {
             "type": "string",
-            "enum": [
-              "debug",
-              "info",
-              "warn",
-              "error"
-            ],
-            "default": "info"
+            "default": "harness-vault",
+            "description": "Directory holding vault.db and (by default) vault.key. Relative paths resolve against the harness data dir, NOT the git worktree, so the vault survives worktree teardown."
+          },
+          "key_env": {
+            "type": "string",
+            "default": "OAH_VAULT_KEY",
+            "description": "Env var checked for a raw 32-byte key (64 hex chars or base64). When set it OVERRIDES the key file. Never reaches the worker subprocess."
+          },
+          "key_file": {
+            "type": "string",
+            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600. Generated on first boot if absent -- back it up, because without it every stored credential is unrecoverable."
           }
         }
       },
@@ -1015,7 +1115,7 @@
               "always"
             ],
             "default": "always",
-            "description": "Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; legacy operator handling can approve or change the brief, budget, or time limit."
+            "description": "Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; a new confirmed request can approve or change the brief, budget, or time limit."
           },
           "confirm_min_risk": {
             "type": "string",
@@ -1134,7 +1234,7 @@
           "full_prompts": {
             "type": "boolean",
             "default": false,
-            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction \u2014 redaction on write is always applied."
+            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
           },
           "retention_days": {
             "type": "integer",
@@ -1142,27 +1242,6 @@
             "maximum": 3650,
             "default": 14,
             "description": "beta.63 (Part B): prune per-session log files older than this many days."
-          }
-        }
-      },
-      "credentials": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them. Every key here is optional \u2014 the defaults are a working configuration, and $OAH_VAULT_KEY / $OAH_VAULT_KEY_FILE cover the same ground without touching config.",
-        "properties": {
-          "dir": {
-            "type": "string",
-            "default": "harness-vault",
-            "description": "Directory holding vault.db and (by default) vault.key. Relative paths resolve against the harness data dir, NOT the git worktree, so the vault survives worktree teardown."
-          },
-          "key_env": {
-            "type": "string",
-            "default": "OAH_VAULT_KEY",
-            "description": "Env var checked for a raw 32-byte key (64 hex chars or base64). When set it OVERRIDES the key file. Renaming it also moves the worker-subprocess env strip, so the key never reaches a worker under either name."
-          },
-          "key_file": {
-            "type": "string",
-            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent \u2014 back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir \u2014 they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you."
           }
         }
       },

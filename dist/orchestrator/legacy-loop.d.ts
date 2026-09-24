@@ -10,8 +10,6 @@
  * extension `advance()` grants for a converging finding trend (b119). Early
  * exits:
  *   - Adversary verdict "pass"
- *   - User ship-it reaction
- *   - User abort reaction
  *   - Session budget breached
  *   - Session hard timeout
  *
@@ -801,11 +799,6 @@ export declare class OrchestratorLoop {
         maxCycles: number;
         /** beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order. */
         findingCountsByCycle?: number[];
-        reactions: {
-            shipIt: boolean;
-            abort: boolean;
-            pause: boolean;
-        };
         budgetExhausted: boolean;
         hardTimeout: boolean;
         /**
@@ -1387,40 +1380,6 @@ export declare class OrchestratorLoop {
      * aborted because the user's daily_max_usd would be exceeded. Never throws.
      */
     private warnDailyMaxHit;
-    /**
-     * rc.2: cancel a session from ANY state, immediately and idempotently.
-     *
-     * WHAT HAPPENED. An operator cancelled a session sitting in
-     * `awaiting_clarification`. `harness_cancel` did the only thing it has ever
-     * done -- set `reactions_json.abort = true` -- on the documented promise that
-     * "the loop reads it on its next checkpoint". There was no next checkpoint.
-     * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
-     * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
-     * idle waiting for `a trusted host confirmation`. Nothing was left to read the flag. The
-     * Paused clarification rows are handled outside the worker loop; the dead-loop sweep
-     * queries only `executing|planning|reviewing`, and recovery excludes it on
-     * purpose. So the cancel was recorded, acknowledged, and never happened.
-     *
-     * THE RULE. Cancellation is the operator's, not the loop's. Where a loop is
-     * running we still have to ask it to stop -- an in-flight model call cannot be
-     * torn out from under itself -- but where there is NO loop, there is nothing
-     * to cooperate with and the harness must simply end the session itself.
-     *
-     * Idempotent in both directions: cancelling a terminal session succeeds
-     * without writing anything, and two concurrent cancels cannot both terminate.
-     */
-    cancelSession(sessionId: string, opts?: {
-        reason?: string;
-        requester?: string;
-        classification?: "failed_smoke_test" | "operator_cancelled";
-    }): Promise<{
-        ok: boolean;
-        notFound?: boolean;
-        status?: string;
-        alreadyTerminal?: boolean;
-        terminatedNow?: boolean;
-        loopRunning?: boolean;
-    }>;
     private terminalCauseFor;
     private persistTerminalCause;
     private finaliseAbort;
@@ -1664,35 +1623,7 @@ export declare class OrchestratorLoop {
         msSinceProgress: number;
         action: string;
     }>>;
-    /**
-     * beta.67 (Bug A): EXTERNAL stall-sweep entry point.
-     *
-     * Origin: beta.66 smoke #4 -- the loop-runner PROCESS died between a
-     * worker's sdk_response and the next handler step. The session record stayed
-     * `status=executing` forever; `ps` showed no live process. beta.63's
-     * in-process `checkStalls` watchdog CANNOT fire in this case: a dead process
-     * cannot watchdog its own death. Also `harness_cancel` set a `reactions_json.
-     * abort` flag that the dead loop never consumed, so the session never
-     * reached a terminal status.
-     *
-     * This method is meant to be called by the EXTERNAL periodic `stall-sweep`
-     * service (registered in src/index.ts like pr-watcher / retention-nightly),
-     * which runs INDEPENDENT of any loop-runner process. On each tick it:
-     *
-     *   1. runs the EXISTING {@link checkStalls} fast path (detection + bounded
-     *      re-tick recovery + auto-terminal transition) -- the external process
-     *      is the safety net, checkStalls is still the in-process fast path;
-     *   2. ADDITIONALLY reaps sessions that have a pending cancel flag
-     *      (`reactions_json.abort`) set but are STILL non-terminal because their
-     *      loop is dead (no live loop-runner) -- transitions those to a terminal
-     *      `failed` (reason `cancelled_dead_loop`) PRESERVING the worktree
-     *      (beta.62 pattern), consuming the cancel the dead loop never did.
-     *
-     * Covers `executing`, `planning`, and `reviewing` (checkStalls covers only
-     * executing/reviewing; a planning session whose loop dies must also be
-     * reaped by the cancel path). Idempotent + never throws. Returns a summary
-     * for tests + telemetry.
-     */
+    /** External stall-sweep entry point. Retired interactive cancellation state is not consulted. */
     sweepStalls(now?: number): Promise<{
         ran: boolean;
         recovered: Array<{

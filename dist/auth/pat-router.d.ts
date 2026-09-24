@@ -61,7 +61,7 @@ export declare class PatRouter {
     private readonly cfg;
     private readonly overlay?;
     /**
-     * `overlay` supplies routes written by `harness_onboard`. It is consulted
+     * `overlay` supplies routes written by operator credential administration. It is consulted
      * only where the config tree has nothing to say, so a hand-written entry is
      * never overridden by a chat message. Omitted entirely, the router behaves
      * exactly as it did before onboarding could write routes.

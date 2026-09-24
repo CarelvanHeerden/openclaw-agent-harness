@@ -2,7 +2,7 @@
 
 The public surface has four tools: prepare, confirm, result, and merge. `control_runs` is the only live state machine. `ControlPlaneService` creates immutable proposals, consumes host-verified attestations, and owns durable fenced dispatch intents. `AutonomousControlEngine` applies authority decisions and the single strict readiness evaluator. `InternalMergeService` re-inspects the current PR and reconciles durable provider intents.
 
-Legacy session rows are historical execution evidence only. Startup does not recover them or start reaction, answer, revise, or progress services.
+Legacy session rows are historical execution evidence only and are not part of the live control plane.
 
 ```mermaid
 flowchart LR

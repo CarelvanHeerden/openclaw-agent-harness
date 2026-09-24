@@ -22,7 +22,7 @@ export interface RuntimeSnapshot {
   deploymentUrl?: string;
   logsExcerpt?: string;
   errorCount?: number;
-  /** Present when provider="manual" (see harness_upload_logs tool). */
+  /** Present when provider="manual" (operator-supplied runtime evidence). */
   uploadedAt?: number;
   uploadedBy?: string;
   source?: string;

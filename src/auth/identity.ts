@@ -1,7 +1,7 @@
 /**
  * Token-attested identity.
  *
- * `harness_onboard` takes the requester as an ARGUMENT, and nothing in an
+ * credential administration receives the requester as an argument, and nothing in an
  * agent-relayed call proves the caller is that person. The DM flow already
  * protects capture -- a prompt opens in the named user's own DM, so a caller
  * cannot read someone else's token -- but it does not protect storage: a caller

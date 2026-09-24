@@ -141,15 +141,15 @@ export interface HarnessRuntime {
      * beta.63 (Part B): durable, structured interaction log written OUTSIDE the
      * worktree. Threaded into the loop + SDK adapters so every LLM call, state
      * transition, verify probe, and stall/recovery event lands in a JSONL trail
-     * that survives worktree release + container restart. Read via harness_logs.
+     * that survives worktree release + container restart. Read through operator diagnostics.
      */
     interactionLog: InteractionLog;
     slack: SlackAdapter;
     git: GitAdapter;
     creds: CredentialAdapter;
-    /** beta.110: the harness-owned vault. Used by `harness_onboard` to STORE tokens. */
+    /** beta.110: the harness-owned vault. Used by operator credential administration to store tokens. */
     vault: CredentialStore;
-    /** beta.110: set when the vault could not be opened; surfaced by `harness_health`. */
+    /** beta.110: set when the vault could not be opened; surfaced by operator diagnostics. */
     vaultError?: string;
     /**
      * Classify + crystallise a raw request into a structured brief for the
@@ -268,7 +268,7 @@ export interface HarnessRuntime {
     githubServiceFor: (repoFullName?: string) => string | undefined;
     /** Provider-aware resolution (service + provider + apiBase + apiKeyEnv) for health/introspection. */
     /**
-     * Routes written by `harness_onboard`. The same instance the router reads,
+     * Routes written by operator credential administration. The same instance the router reads,
      * so a route the tool writes is live for the next session without a restart.
      */
     routeOverlay?: RouteOverlay;
@@ -282,21 +282,18 @@ export interface HarnessRuntime {
          * hierarchy or overlay entry, and the vault name it points at.
          *
          * `credentialService` is SYNTHETIC on those paths -- the router builds it
-         * for logging and never looks a token up by it. Onboarding compares the
-         * name it is about to write against what sessions read, so handing it the
-         * synthetic name makes the check compare against a string nothing uses:
-         * it refuses valid setups, and aligning the patterns to satisfy it stores
-         * the token under a name that still is not read.
+         * for logging and never looks a token up by it. Operator-side credential
+         * administration must use the resolved vault pointer rather than this
+         * display-only name.
          */
         tokenSource?: "vault" | "env" | "value";
         vaultPointer?: string;
     } | undefined;
     disposers: Array<() => void | Promise<void>>;
     /**
-     * Promise for the async bootstrap phase (reactions poller start,
-     * session recovery). Populated by `register()` once it has kicked off
-     * `bootstrapHarnessAsync`. Teardown awaits this to ensure recovery
-     * notifications have flushed before closing the state DB.
+     * Promise for the async bootstrap phase. Populated by `register()` once it
+     * has kicked off `bootstrapHarnessAsync`; teardown awaits it before closing
+     * the state DB.
      */
     asyncBootstrap?: Promise<void>;
 }
@@ -327,7 +324,7 @@ export interface MergePrResult {
     /** Human-facing message summarising the outcome. */
     message: string;
 }
-/** rc.4: result of a harness_link_pr invocation (dry run or apply). */
+/** rc.4: result of an operator PR-association recovery (dry run or apply). */
 export interface LinkPrResult {
     ok: boolean;
     /** True when this was a read-only dry run. No row was written. */

@@ -87,8 +87,12 @@ These are properties of the design, not bugs with fixes pending. Adding each row
 - **`repos.allowed`.** The harness will not operate on a repository outside this list. Enforced in-process, above the worker.
 - **PAT scope and ownership.** Nothing pushes without a per-repo, per-user token the requester owns. A worker cannot widen its own reach beyond what that token can do — this is the control that bounds blast radius, and it is enforced by GitHub, not by us. Keep tokens narrow and short-lived; that is the single highest-value thing an operator can do.
 - **Git subprocess argument safety.** `spawn("git", args)` with a hardcoded executable, a positional argv array, and no `shell: true`, so metacharacters in any input are literal argv. See above.
-- **Authorisation.** Session-starting Slack messages, `harness_upload_logs`, and (optionally, via `invokedBy`) `harness_cancel` and `harness_resume` validate against `slack.authorised_users`.
+- **Authorisation.** Each of the four public control-plane operations binds authority to authenticated host context. Operator-only diagnostics and credential administration are not ordinary tools.
 - **Credential storage at rest.** The harness's own vault is AES-256-GCM encrypted, in a SQLite file, with a `0600` key file. `harness-vault/`, `vault.key` and `vault.db` are in the default `path_denylist`, and the vault key environment variable is stripped from worker subprocesses.
+
+### Production dependency audit
+
+The release pins and bundles the fixed production dependency graph required by the agent SDKs, including `fast-uri` `3.1.8`, `hono` `4.13.8`, and `qs` `6.16.0`. Bundling is required because those fixed versions are not yet discoverable through the configured public registry metadata even though their upstream fixes are released; it also prevents npm peer resolution from installing an older nested copy. Release verification packs the exact artifact, installs it in an empty directory, and runs `npm audit --omit=dev`. On September 24, 2026, that exact production install reported zero advisories at every severity, so there are no moderate exceptions to document.
 
 ### What is best-effort only
 
@@ -152,16 +156,9 @@ This narrows to nothing under the same exit criteria as the section above: a sco
 | **Until then** | Non-Anthropic workers are **trusted-repo-only**. This is documented, not enforced — the harness has no way to tell a trusted repository from an untrusted one. |
 | **Review** | Re-assessed each minor release; this section is wrong the day the exit criteria land, and should be deleted rather than softened. |
 
-## What the push invariant actually guarantees
+## What the merge invariant guarantees
 
-The README used to say "nothing pushes until the adversary passes". That is the normal path and it was too strong as an unqualified claim. Precisely, as of `1.0.0-rc.3`:
-
-- An explicit **`block` verdict never pushes.** No path overrides this.
-- A **human `:rocket:`** is an intentional override and pushes without an adversary pass.
-- Three abnormal endings — a verify sub-task timeout, a resource-ceiling abort, and a crashed review — can push code the *final* cycle's adversary never saw. They do so **only when an earlier cycle was reviewed**, and the result is stamped `needs_human_review`, labelled `do-not-merge` and `harness:unreviewed`, and excluded from the merge tool's override path.
-- A session that **no adversary has ever reviewed does not push at all.** Its commits are kept in a preserved worktree and the session stays resumable (`loop.salvage_refused_unreviewed` in the audit log).
-
-The `do-not-merge` label exists so this is enforceable rather than advisory: a repo can require its absence in branch protection. The harness cannot make a human read a PR body.
+The public merge operation re-inspects the current pull request and applies the same strict readiness evaluator used by the autonomous control engine. A blocking verdict, failing required check, stale head, missing approval, or unresolved policy requirement prevents merge. There is no ordinary-tool override path.
 
 ## Other security-relevant surfaces
 

@@ -80,10 +80,11 @@ test("the credentials block specifically is reachable (the rc.1 regression)", ()
 });
 
 test("rejectedAt models the gateway rather than merely reporting absence", () => {
-  // A key under a block that permits extras is fine, and must not be reported.
-  assert.equal(manifest.configSchema.properties.pat_routing.additionalProperties, true);
-  assert.equal(rejectedAt("pat_routing.some_future_key"), null);
-  // A key under a closed block is not.
+  // Canonical pat routing is closed: provider/org/person expansion is allowed
+  // only at the explicitly declared nested map nodes, not at this root.
+  assert.equal(manifest.configSchema.properties.pat_routing.additionalProperties, false);
+  assert.equal(rejectedAt("pat_routing.some_future_key"), "pat_routing.some_future_key");
+  // A key under another closed block is not.
   assert.equal(manifest.configSchema.properties.safety.additionalProperties, false);
   assert.equal(rejectedAt("safety.some_future_key"), "safety.some_future_key");
   // And an unknown top-level section is refused at the top.

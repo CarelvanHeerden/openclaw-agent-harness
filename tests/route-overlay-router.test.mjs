@@ -129,7 +129,7 @@ test("a stranger in a configured org is still refused", () => {
   );
 });
 
-test("the refusal names onboarding as a way out", () => {
+test("the refusal names operator credential administration as a way out", () => {
   const cfg = {
     ...BASE,
     github: {
@@ -142,7 +142,7 @@ test("the refusal names onboarding as a way out", () => {
     resolve(new PatRouter(cfg), "U0STRANGER");
     assert.fail("expected a refusal");
   } catch (err) {
-    assert.match(err.message, /harness_onboard/);
+    assert.match(err.message, /operator configure their credential route/);
     assert.match(err.message, /No silent fallback/);
   }
 });
