@@ -12,6 +12,7 @@
  *
  * Shape mirrors memory-hybrid.
  */
+import { createHash } from "node:crypto";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import { mkdirSync, realpathSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -37,6 +38,7 @@ import { PatRouter } from "./auth/pat-router.js";
 import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
+import { ControlPlaneService } from "./control/service.js";
 import { guidanceCommentSection } from "./tools/revise-guidance.js";
 import { parseOkfBlocksFromContext, OkfConceptCache, decideAutoForward, buildRewrittenParams, cacheKeyForCtx, } from "./hooks/okf-auto-forward.js";
 import { setCurrentRuntime } from "./runtime-registry.js";
@@ -1699,11 +1701,11 @@ export function bootstrapHarnessSync(api) {
                     `store it under your identity (${resolution.person ?? requester}) so future runs just work.`,
             };
         },
-        mergePr: async ({ sessionId, invokedBy, repairBudgetUsd }) => {
-            // beta.57 (P2): invokedBy is REQUIRED. It used to be optional and only
-            // checked when present, so omitting it merged a PR with no authorisation.
-            if (!invokedBy || !config.slack.authorised_users.includes(invokedBy)) {
-                return { ok: false, message: `Invoker ${invokedBy ?? "(missing)"} is not authorised (invokedBy is required).` };
+        mergePr: async ({ sessionId, authenticatedActor, repairBudgetUsd }) => {
+            // Internal compatibility service. The public merge boundary verifies a
+            // fresh host attestation before reaching this method.
+            if (!authenticatedActor || !config.slack.authorised_users.includes(authenticatedActor)) {
+                return { ok: false, message: "The authenticated merge actor is not authorised." };
             }
             const row = state.db
                 .prepare(`SELECT repo, requester_gh, requester, status, pr_number, final_pr_url, merge_recommendation, merge_recommendation_reason, pr_merged
@@ -1992,6 +1994,71 @@ export function bootstrapHarnessSync(api) {
         }, args),
         disposers: [],
     };
+    // Ordinary-user control plane. Preparation is read-only; session/worktree
+    // allocation starts only after a one-use host-attested confirmation.
+    runtime.controlPlane = new ControlPlaneService({
+        db: state.db,
+        crystallise: runtime.crystallise,
+        maximumBudgetUsd: config.budgets?.session_hard_ceiling_usd,
+        maximumTimeSeconds: config.loop?.session_hard_timeout_seconds,
+        resolveRepository: async ({ repository, baseRef, actorIdentity }) => {
+            const ref = baseRef?.trim() || config.repos?.default_base_branch || "main";
+            const route = pat.resolve({ slackUserId: actorIdentity, gitHubUser: repository.split("/")[0], repoFullName: repository });
+            const token = await resolveGitToken(route);
+            const apiBase = route.apiBase ?? "https://api.github.com";
+            const response = await fetch(`${apiBase}/repos/${repository}/commits/${encodeURIComponent(ref)}`, {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "User-Agent": "openclaw-agent-harness/control-plane",
+                },
+            });
+            if (!response.ok)
+                throw new Error(`Unable to resolve ${repository}@${ref} (${response.status})`);
+            const payload = await response.json();
+            if (!payload.sha || !/^[a-f0-9]{40,64}$/i.test(payload.sha))
+                throw new Error("Repository base revision was not returned by the provider");
+            return {
+                repositoryIdentity: repository.toLowerCase(),
+                baseRef: ref,
+                baseRevision: payload.sha.toLowerCase(),
+                credentialRoute: route.credentialService,
+                policyDigest: createHash("sha256").update(JSON.stringify({
+                    contract: "control-plane-contract/v1",
+                    allowedRepos: config.repos?.allowed ?? [],
+                    baseRef: ref,
+                })).digest("hex"),
+                securityClass: "medium",
+            };
+        },
+        startEngine: async (change) => {
+            const sessionId = change.engineSessionId;
+            const now = Date.now();
+            const inserted = state.db.prepare(`INSERT OR IGNORE INTO sessions (
+        id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
+        status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran, estimated_usd
+      ) VALUES (?, ?, '', ?, ?, ?, '', '', 'planning', ?, ?, ?, ?, 0, 0, ?)`)
+                .run(sessionId, `control:${change.changeId}`, change.actorIdentity, change.actorIdentity, change.repositoryIdentity, JSON.stringify(change.brief), now, now, Number(change.budgetUsd), Number(change.budgetUsd));
+            if (Number(inserted.changes) === 0)
+                return { engineSessionId: sessionId };
+            void runtime.loop.run(sessionId, change.brief).catch((error) => {
+                api.logger.error("[control-plane] engine run failed", { changeId: change.changeId, error: String(error) });
+                state.db.prepare(`UPDATE control_changes SET state='failed', terminal_code='execution_failed',
+          terminal_summary='The change did not complete.', updated_at=? WHERE change_id=? AND state IN ('accepted','running')`)
+                    .run(Date.now(), change.changeId);
+            });
+            return { engineSessionId: sessionId };
+        },
+        mergeChange: async (change) => {
+            const intent = state.db.prepare("SELECT engine_session_id FROM control_execution_intents WHERE change_id = ?")
+                .get(change.changeId);
+            if (!intent?.engine_session_id)
+                return { merged: false, message: "The execution record is unavailable." };
+            const outcome = await runtime.mergePr({ sessionId: intent.engine_session_id, authenticatedActor: change.actorIdentity });
+            return { merged: outcome.merged === true, mergeSha: outcome.mergeSha, message: outcome.message };
+        },
+    });
     // Tools (sync)
     const disposeTools = registerHarnessTools(api, runtime);
     runtime.disposers.push(disposeTools);

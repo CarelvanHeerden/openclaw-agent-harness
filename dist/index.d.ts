@@ -22,6 +22,7 @@ import { SlackProgressPoster } from "./slack/progress-poster.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 import { RouteOverlay } from "./auth/route-overlay.js";
+import { ControlPlaneService } from "./control/service.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { type CredentialRecord } from "./adapters/credential-vault.js";
 import { type EffectiveBackendRoute } from "./adapters/backend-router.js";
@@ -30,7 +31,13 @@ import { SlackAdapter } from "./adapters/slack.js";
 import { type CrystallisedBrief } from "./crystallise/prompt-refiner.js";
 /** Minimal shape of the OpenClaw plugin API surface that we use. */
 export interface HarnessToolContext {
+    /** Authenticated identities supplied by OpenClaw, never tool arguments. */
     requesterSenderId?: string;
+    conversationId?: string;
+    workspaceId?: string;
+    hostEventId?: string;
+    receivedAt?: number;
+    trustedControlAttestation?: import("./control/service.js").TrustedControlContext["trustedControlAttestation"];
     senderIsOwner?: boolean;
     sessionKey?: string;
     sessionId?: string;
@@ -251,9 +258,11 @@ export interface HarnessRuntime {
      */
     mergePr: (args: {
         sessionId: string;
-        invokedBy?: string;
+        authenticatedActor?: string;
         repairBudgetUsd?: number;
     }) => Promise<MergePrResult>;
+    /** Ordinary-user control plane. Authority is accepted only through trusted host context. */
+    controlPlane?: ControlPlaneService;
     /**
      * rc.4: associate an EXISTING pull request with the session that produced it,
      * after a failure lost the association.

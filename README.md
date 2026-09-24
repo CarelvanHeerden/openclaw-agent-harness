@@ -5,18 +5,16 @@
 > *Status: release candidate.* Version `2.0.0-rc.13`. See `docs/REAL-TEST-RUNBOOK.md` before wiring up a live channel, **`docs/AUTH.md`** for model-provider credentials and the verification contract reference, and **`docs/GITHUB_AUTH.md`** for git provider tokens (GitHub + GitLab, per-user; required in a headless/Docker deployment, else the first session fails at plan phase).
 > Documentation snapshot reviewed as of `2.0.0-rc.13`.
 >
-> **beta.136:** the two settings that default to off are now documented where you would look for them: `repos.never_commit_paths` keeps a regenerated tree out of the commit, and without `brief.request_file_roots` a `harness_run({ requestPath })` is refused. Both are in [CONFIGURATION.md](docs/CONFIGURATION.md).
+> **Control-plane v1 (September 24, 2026):** ordinary coding work uses exactly four operations: prepare, confirm, result, and merge. Confirmation and merge are separate one-use host-attested decisions.
 > **beta.135:** onboarding asks which org, so one person can hold a separate token per org and per provider instead of one token standing for everything.
 > **beta.134:** the harness owns its credential vault (AES-256-GCM, its own key file, stripped from worker subprocesses) rather than borrowing another plugin's store.
-> **beta.108:** `harness_progress` carries a `worklog` of what each sub-task actually did.
 > Full history in the [CHANGELOG](CHANGELOG.md).
 
 ### How to drive it
 
 **Agent-orchestrated, and only that.** The OpenClaw agent owns the conversation
 and calls the harness as a set of tools. You talk to your OpenClaw agent; it
-calls `harness_run` (raw request -> crystallise -> plan -> workers -> adversary
--> PR), watches with `harness_status` / `harness_session_get`, and reports back.
+calls `harness_prepare_change`, presents one complete immutable proposal, confirms it only from a later authenticated decision, and returns the safe result. A ready pull request requires a second authenticated decision through `harness_merge_change`.
 The plugin does **not** listen to Slack.
 
 > **`slack.listener_enabled` is deprecated and ignored.** beta.34 removed the
@@ -216,34 +214,20 @@ This is the normal path. A `block` verdict never pushes; a human `:rocket:` over
 | State store                  | `src/state/store.ts` + `schema.sql`              | SQLite (built-in `node:sqlite`), audit log             |
 | Retention                    | `src/state/retention.ts`                         | 90-day audit prune, terminal-session prune             |
 | Session recovery             | `src/state/recovery.ts`                          | Stale in-flight -> `interrupted`, Slack notify         |
-| Tools                        | `src/tools/registration.ts`                      | 19 tools (see below)                                   |
+| Tools                        | `src/tools/registration.ts`                      | Four ordinary change operations (see below)            |
 
 ## Tools exposed
 
-All 19 tools are called by the *agent*, not typed by the user. A person says
-"fix the findings on that PR" and the agent picks `harness_revise`.
+Ordinary users see exactly four operations:
 
-**Starting work**
+- `harness_prepare_change` — create one complete immutable proposal without starting implementation.
+- `harness_confirm_change` — confirm that exact proposal from a later authenticated message; accepts only the opaque change identity.
+- `harness_change_result` — return a coarse safe state or final PR outcome, without internal execution details.
+- `harness_merge_change` — merge a PR-ready change after a separate later authenticated decision.
 
-- `harness_run` -- **primary entry point**: raw request -> crystallise -> start session (returns sessionId, a clarifying question, or a rejection)
-- `harness_start_session` -- start from a pre-built structured brief (skips crystallisation)
-- `harness_help` -- what the harness can do, in plain language, for a human who asks
+There is no direct answer command, resumable mid-run decision, revision command, or ordinary progress protocol. Required scope, budget, time, path, credential, or security expansion ends the change; prepare a new bounded change instead.
 
-**While a run is live**
-
-- `harness_progress` -- **poll this**: current phase, per-sub-task status, running cost vs budget, recent events, PR/deploy state, `msSinceLastEvent`, a ready-to-post `headline`, and (beta.108) a `worklog` of what each sub-task actually did. Poll every 30-60s and edit one message in place rather than posting per poll. The terminal headline carries the merge recommendation -- relay it, because a `do_not_merge` PR that reads as plain "Done" gets merged by mistake.
-- `harness_answer` -- answer a run paused in `awaiting_clarification`; `abort` and `skip` are accepted. Pass the `clarificationSeq` you read from `harness_progress` and the harness refuses an answer aimed at a question that has since moved on, rather than applying it to the wrong one. An agent answering by itself passes `answeredBy: "automation"` and `evidence`, and is refused without both. The bundled `harness-clarification-steward` skill covers how to relay a pause with a recommendation attached, and the narrow conditions under which a calling agent may answer one itself
-- `harness_cancel` -- set the abort flag; the loop stops at the next checkpoint
-- `harness_resume` -- re-kick an interrupted session with its brief (`force: true` for a dead executor)
-
-**Once a PR exists**
-
-- `harness_revise` -- address the outstanding findings and update the SAME PR; takes `prNumber` or `sessionId`, or neither to get the picker. Two optional steers: `dropFindings: [n]` excludes stale findings by index, and `guidance: "..."` says what the fix must actually DO, for when a finding names a symptom but understates the remedy and each cycle keeps satisfying it the cheapest way. Guidance is folded into the brief as an authoritative instruction the lead, workers and adversary all see; it adds intent only and cannot drop a finding or lower a severity.
-- `harness_list_revisable` -- shipped PRs that are not merge-ready, for "what's still outstanding?"
-- `harness_merge_pr` -- merge and verify the deploy. Refuses anything the review did not sign off on, and the refusal says why.
-- `harness_link_pr` -- reconnect a session that failed *after* opening its PR, so `harness_revise` can update that PR instead of rebuilding the feature. Dry run by default: it verifies against provider metadata -- repository, head repository (a fork is refused), head branch, base branch, open/unmerged state, and whether the session's own recorded commits are actually on the PR -- then reports the evidence and writes nothing. Applying takes a second call with `apply: true` and the `expectedHeadSha` the dry run reported, and refuses if the head moved in between. Linking is an association only: the session keeps its failed status, its findings and its spend, and an unreviewed PR still cannot merge.
-
-**Diagnosis and operations**
+**Privileged diagnosis and operations**
 
 - `harness_session_get` -- one session with sub-tasks, reviews and audit trail
 - `harness_logs` -- tail the durable interaction log when progress looks stalled
