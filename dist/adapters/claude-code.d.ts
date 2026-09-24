@@ -96,6 +96,7 @@ export declare function buildSdkEnv(apiKey?: string, maxOutputTokens?: number): 
  *      `error_max_structured_output_retries` subtype (b97's original check).
  */
 export declare function messageIndicatesTruncation(message: unknown): boolean;
+export declare function configureVerifiedClaudeExecutable(path: string): void;
 /**
  * beta.126: test seam for the retry ladder.
  *

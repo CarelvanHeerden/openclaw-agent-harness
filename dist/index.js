@@ -31,7 +31,7 @@ import { PatRouter } from "./auth/pat-router.js";
 import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
-import { ControlPlaneService } from "./control/service.js";
+import { ControlError, ControlPlaneService } from "./control/service.js";
 import { ControlRepository } from "./control/repository.js";
 import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
@@ -49,14 +49,16 @@ import { memoiseSuccess } from "./adapters/shared/once.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { buildScoutSystemPrompt, buildScoutUserMessage, SCOUT_ALLOWED_TOOLS, SCOUT_DENIED_TOOLS, SCOUT_MAX_TURNS, } from "./orchestrator/lead-scout.js";
 import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getMergeBase, getTokenScopes, listPullRequestCommits, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { getGitLabCiSnapshot, getGitLabMergeRequest, getGitLabMergeRequestFiles, getGitLabRevision, mergeGitLabMergeRequest } from "./adapters/gitlab.js";
 import { linkPullRequest } from "./orchestrator/pr-link.js";
 import { canPushWorkflows } from "./orchestrator/workflow-scope.js";
 import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
-import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, registerDeniedSdkEnvVar, } from "./adapters/claude-code.js";
+import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, configureVerifiedClaudeExecutable, registerDeniedSdkEnvVar, } from "./adapters/claude-code.js";
+import { verifyClaudeRuntime } from "./adapters/runtime-binary-integrity.js";
 import { verifyDeploymentForSha } from "./vercel/logs.js";
 import { crystallisePrompt, groundingFrom } from "./crystallise/prompt-refiner.js";
-import { runLeadPlanner } from "./orchestrator/lead.js";
+import { isRepoAllowed, runLeadPlanner } from "./orchestrator/lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/worker.js";
 import { runAdversary as runAdversaryCore } from "./orchestrator/adversary.js";
 import { discoverCheckScripts, ingestRepoConventions } from "./orchestrator/repo-conventions.js";
@@ -156,6 +158,8 @@ function bootstrapHarnessSync(api) {
     // DB. The interaction log lives in `<dataDir>/logs` by default -- crucially
     // OUTSIDE the ephemeral git worktree so it survives teardown + restart.
     const dataDir = dirname(dbPath);
+    const verifiedClaude = verifyClaudeRuntime(api.rootDir ?? process.cwd(), dataDir);
+    configureVerifiedClaudeExecutable(verifiedClaude.command);
     const interactionLog = new InteractionLog({
         config: resolveInteractionLogConfig(config.log, dataDir),
         logger: api.logger,
@@ -1444,7 +1448,7 @@ function bootstrapHarnessSync(api) {
         postWarning: () => undefined,
     });
     const runtime = {
-        config, state, budget, pat, interactionLog, slack, git, creds,
+        config, authorisedUsers: config.slack.authorised_users, state, budget, pat, interactionLog, slack, git, creds,
         ownedRunningSessionIds: () => loop.ownedRunningSessionIds(),
         effectiveBackendRoutes, ensureBackendReady,
         vault, vaultError: vaultOpenError,
@@ -1650,7 +1654,12 @@ function bootstrapHarnessSync(api) {
                     : null,
     });
     const controlCredentialRouteDigest = (route) => createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
+    const assertControlRepoAllowed = (repository) => {
+        if (!isRepoAllowed(repository, config.repos.allowed))
+            throw new ControlError("repository_not_allowed", `Repository ${repository} is not in repos.allowed.`);
+    };
     const resolveBoundControlCredential = async (runId, repository, prNumber, requesterId) => {
+        assertControlRepoAllowed(repository);
         const proposal = state.db.prepare(`SELECT p.credential_route_digest,r.state,r.version,r.repository,r.requester_id,p.pr_number FROM control_proposals p JOIN control_runs r ON r.id=p.run_id WHERE r.id=?`).get(runId);
         if (!proposal?.credential_route_digest || proposal.repository !== repository || proposal.requester_id !== requesterId || proposal.pr_number !== prNumber)
             throw new Error("credential_route_binding_missing");
@@ -1665,9 +1674,15 @@ function bootstrapHarnessSync(api) {
     const controlMergeProvider = createControlMergeProvider({
         db: state.db,
         resolveCredential: resolveBoundControlCredential,
-        getPullRequest,
-        getCiSnapshot,
-        mergePullRequest,
+        getPullRequest: async (input) => input.provider === "gitlab"
+            ? getGitLabMergeRequest({ repoFullName: input.repoFullName, prNumber: input.prNumber, token: input.ghToken, apiBase: input.apiBase, signal: input.signal })
+            : getPullRequest(input),
+        getCiSnapshot: async (input) => input.provider === "gitlab"
+            ? getGitLabCiSnapshot({ repoFullName: input.repoFullName, sha: input.sha, token: input.ghToken, apiBase: input.apiBase, signal: input.signal })
+            : getCiSnapshot(input),
+        mergePullRequest: async (input) => input.provider === "gitlab"
+            ? mergeGitLabMergeRequest({ repoFullName: input.repoFullName, prNumber: input.prNumber, token: input.ghToken, apiBase: input.apiBase, expectedHeadSha: input.expectedHeadSha, signal: input.signal })
+            : mergePullRequest(input),
     });
     const internalMergeService = new InternalMergeService(state.db, controlRepository, controlMergeProvider);
     runtime.controlPlane = new ControlPlaneService({
@@ -1682,22 +1697,29 @@ function bootstrapHarnessSync(api) {
         maximumRetries: Math.max(1, config.loop?.worker_protocol_max_attempts ?? 1) + (config.loop?.worker_timeout_retry_enabled === false ? 0 : 1),
         resolveRepository: async ({ repository, baseRef, actorIdentity }) => {
             const ref = baseRef?.trim() || config.repos?.default_base_branch || "main";
+            assertControlRepoAllowed(repository);
             const route = pat.resolve({ slackUserId: actorIdentity, gitHubUser: repository.split("/")[0], repoFullName: repository });
             const token = await resolveGitToken(route);
             const apiBase = route.apiBase ?? "https://api.github.com";
-            const response = await fetch(`${apiBase}/repos/${repository}/commits/${encodeURIComponent(ref)}`, {
-                headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
-            });
-            if (!response.ok)
-                throw new Error(`Unable to resolve ${repository}@${ref} (${response.status})`);
-            const payload = await response.json();
-            if (!payload.sha || !/^[a-f0-9]{40,64}$/i.test(payload.sha))
-                throw new Error("Repository base revision was not returned by the provider");
-            return { repositoryIdentity: repository.toLowerCase(), baseRef: ref, baseRevision: payload.sha.toLowerCase(), credentialRoute: controlCredentialRoute(route),
+            const baseRevision = route.provider === "gitlab"
+                ? await getGitLabRevision({ repoFullName: repository, ref, token, apiBase })
+                : await (async () => {
+                    const response = await fetch(`${apiBase}/repos/${repository}/commits/${encodeURIComponent(ref)}`, {
+                        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
+                    });
+                    if (!response.ok)
+                        throw new Error(`Unable to resolve ${repository}@${ref} (${response.status})`);
+                    const payload = await response.json();
+                    if (!payload.sha || !/^[a-f0-9]{40,64}$/i.test(payload.sha))
+                        throw new Error("Repository base revision was not returned by the provider");
+                    return payload.sha.toLowerCase();
+                })();
+            return { repositoryIdentity: repository.toLowerCase(), baseRef: ref, baseRevision, credentialRoute: controlCredentialRoute(route),
                 policyDigest: createHash("sha256").update(JSON.stringify({ contract: "control-plane-contract/v2", allowedRepos: config.repos?.allowed ?? [], baseRef: ref })).digest("hex"), securityClass: "medium" };
         },
         executeEngine: async (change) => {
             change.assertCurrent();
+            assertControlRepoAllowed(change.repositoryIdentity);
             let route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
             const currentRouteDigest = controlCredentialRouteDigest(route);
             if (currentRouteDigest !== change.credentialRouteDigest) {
@@ -1799,30 +1821,39 @@ function bootstrapHarnessSync(api) {
                 projectedRetries: 0,
             });
             const prCredential = await boundProviderCredential("test");
-            const pr = await getPullRequest({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), ghToken: prCredential.token, apiBase: prCredential.route.apiBase });
+            const pr = prCredential.route.provider === "gitlab"
+                ? await getGitLabMergeRequest({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), token: prCredential.token, apiBase: prCredential.route.apiBase })
+                : await getPullRequest({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), ghToken: prCredential.token, apiBase: prCredential.route.apiBase });
             const ciCredential = await boundProviderCredential("test");
-            const ci = await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken: ciCredential.token, apiBase: ciCredential.route.apiBase });
+            const ci = ciCredential.route.provider === "gitlab"
+                ? await getGitLabCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, token: ciCredential.token, apiBase: ciCredential.route.apiBase })
+                : await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken: ciCredential.token, apiBase: ciCredential.route.apiBase });
             const findings = review?.findings ? JSON.parse(review.findings) : [];
             const pullRequestFiles = [];
-            for (let page = 1; page <= 30; page += 1) {
-                const filesCredential = await boundProviderCredential("test");
-                const response = await fetch(`${filesCredential.route.apiBase}/repos/${change.repositoryIdentity}/pulls/${Number(row.pr_number)}/files?per_page=100&page=${page}`, {
-                    headers: { Authorization: `Bearer ${filesCredential.token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
-                });
-                if (!response.ok)
-                    throw new Error(`pull_request_files_unavailable:${response.status}`);
-                const pageFiles = await response.json();
-                if (!Array.isArray(pageFiles))
-                    throw new Error("pull_request_files_invalid");
-                for (const file of pageFiles) {
-                    if (!file.filename || !file.status)
-                        throw new Error("pull_request_file_evidence_incomplete");
-                    pullRequestFiles.push({ filename: file.filename, status: file.status, ...(typeof file.patch === "string" ? { patch: file.patch } : {}) });
+            const filesCredential = await boundProviderCredential("test");
+            if (filesCredential.route.provider === "gitlab") {
+                pullRequestFiles.push(...await getGitLabMergeRequestFiles({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), token: filesCredential.token, apiBase: filesCredential.route.apiBase }));
+            }
+            else {
+                for (let page = 1; page <= 30; page += 1) {
+                    const response = await fetch(`${filesCredential.route.apiBase}/repos/${change.repositoryIdentity}/pulls/${Number(row.pr_number)}/files?per_page=100&page=${page}`, {
+                        headers: { Authorization: `Bearer ${filesCredential.token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
+                    });
+                    if (!response.ok)
+                        throw new Error(`pull_request_files_unavailable:${response.status}`);
+                    const pageFiles = await response.json();
+                    if (!Array.isArray(pageFiles))
+                        throw new Error("pull_request_files_invalid");
+                    for (const file of pageFiles) {
+                        if (!file.filename || !file.status)
+                            throw new Error("pull_request_file_evidence_incomplete");
+                        pullRequestFiles.push({ filename: file.filename, status: file.status, ...(typeof file.patch === "string" ? { patch: file.patch } : {}) });
+                    }
+                    if (pageFiles.length < 100)
+                        break;
+                    if (page === 30)
+                        throw new Error("pull_request_files_pagination_exceeded");
                 }
-                if (pageFiles.length < 100)
-                    break;
-                if (page === 30)
-                    throw new Error("pull_request_files_pagination_exceeded");
             }
             const changedPaths = [...new Set(pullRequestFiles.map((file) => file.filename))];
             const probeRows = state.db.prepare(`WITH ranked AS (
@@ -1887,6 +1918,8 @@ function bootstrapHarnessSync(api) {
         },
     });
     runtime.disposers.push(() => runtime.controlPlane?.dispose());
+    runtime.disposers.push(() => backendRouter?.dispose());
+    runtime.disposers.push(verifiedClaude.cleanup);
     // Tools (sync)
     const disposeTools = registerHarnessTools(api, runtime);
     runtime.disposers.push(disposeTools);

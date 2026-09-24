@@ -83,7 +83,7 @@ function safeFailure(error: unknown): Record<string, unknown> {
   return { ok: false, code: "control_unavailable", summary: "The change service is temporarily unavailable." };
 }
 
-type ControlRuntime = { controlPlane?: ControlPlaneService };
+type ControlRuntime = { controlPlane?: ControlPlaneService; authorisedUsers?: readonly string[] };
 
 function serviceFor(runtime: ControlRuntime): ControlPlaneService {
   const service = runtime.controlPlane;
@@ -117,6 +117,10 @@ function tool(
           workspaceId: context.workspaceId,
           trustedControlAttestation: context.trustedControlAttestation,
         } satisfies TrustedControlContext;
+        const actor = trusted.requesterSenderId?.trim() ?? "";
+        if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
+          throw new ControlError("unauthorised_requester", "This requester is not authorised to use the change service.");
+        }
         return await run(serviceFor(runtime), call.input, trusted);
       } catch (error) {
         return safeFailure(error);

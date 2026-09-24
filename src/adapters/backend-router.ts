@@ -41,6 +41,7 @@ import {
 } from "./role-config.js";
 import { openCodeConfigEnv } from "./opencode-config.js";
 import { PINNED_OPENCODE_VERSION } from "./opencode-version.js";
+import { verifyOpenCodeRuntime, type VerifiedRuntimeBinary } from "./runtime-binary-integrity.js";
 import { preflightAcpBackendLive, runStructuredAcp, type AcpAgentSpec } from "./acp.js";
 import {
   costOf,
@@ -196,6 +197,7 @@ export class BackendRouter {
   private readonly failSafeWarned = new Set<string>();
   /** Resolved on first use, because resolution touches the filesystem. */
   private openCodeBinary: ResolvedOpenCodeBinary | undefined;
+  private verifiedOpenCode: VerifiedRuntimeBinary | undefined;
 
   constructor(private readonly input: BackendRouterInput) {
     const cfg = {
@@ -346,23 +348,24 @@ export class BackendRouter {
    */
   private openCodeCommandSpec(): { command: string; args: string[] } {
     if (this.input.openCodeCommand) return this.input.openCodeCommand;
-    if (!this.openCodeBinary) {
-      this.openCodeBinary = resolveOpenCodeBinary(undefined, undefined, this.input.pluginRoot);
-      if (this.openCodeBinary.source === "path") {
-        this.input.logger.warn(
-          `[backend] falling back to \`opencode\` on PATH: ${this.openCodeBinary.reason}. ` +
-            `Whatever that resolves to is not necessarily ${PINNED_OPENCODE_VERSION}.`,
-          { reason: this.openCodeBinary.reason },
-        );
-      }
+    if (!this.input.pluginRoot) throw new Error("OpenCode runtime integrity verification requires the active plugin root");
+    if (!this.verifiedOpenCode) {
+      this.verifiedOpenCode = verifyOpenCodeRuntime(this.input.pluginRoot, this.input.scratchDir);
+      this.openCodeBinary = { command: this.verifiedOpenCode.command, source: "dependency" };
       this.input.audit("backend.opencode_binary", {
-        source: this.openCodeBinary.source,
-        command: this.openCodeBinary.command,
-        reason: this.openCodeBinary.reason,
+        source: "verified_snapshot",
+        command: this.verifiedOpenCode.command,
+        packageName: this.verifiedOpenCode.packageName,
+        digest: this.verifiedOpenCode.digest,
         pinned: PINNED_OPENCODE_VERSION,
       });
     }
-    return { command: this.openCodeBinary.command, args: ["acp"] };
+    return { command: this.verifiedOpenCode.command, args: ["acp"] };
+  }
+
+  dispose(): void {
+    this.verifiedOpenCode?.cleanup();
+    this.verifiedOpenCode = undefined;
   }
 
   /** The agent spec for a role, carrying the generated OpenCode configuration. */

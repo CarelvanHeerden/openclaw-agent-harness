@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "packages": {
+    "opencode-linux-arm64": {
+      "version": "1.18.23",
+      "integrity": "sha512-g1zDFhuE9FOYwjSGderlu69wfd4GQzS0xsDiIY11QUciuBmM6DrHqLvmhlLFsUVHYVnCPY1YeN1pq5ewE3x72Q==",
+      "entries": [
+        "ef8514274321679d97f1c7f2ad251890d7f073f2fca743859f379bff55085ac8  bin/opencode",
+        "ba293c5cf92af17b4d885ab835df46af6d3351311019e89b51e4258bfdde34e1  package.json"
+      ]
+    }
+  }
+}

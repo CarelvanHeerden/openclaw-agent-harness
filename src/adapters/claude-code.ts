@@ -192,6 +192,17 @@ export function messageIndicatesTruncation(message: unknown): boolean {
 }
 
 let sdkCache: unknown;
+let verifiedClaudeExecutable: string | undefined;
+
+export function configureVerifiedClaudeExecutable(path: string): void {
+  if (!path) throw new Error("A verified Claude executable path is required");
+  verifiedClaudeExecutable = path;
+}
+
+function mandatoryClaudeExecutable(): string {
+  if (!verifiedClaudeExecutable) throw new Error("Claude runtime integrity verification has not succeeded");
+  return verifiedClaudeExecutable;
+}
 
 /**
  * beta.126: test seam for the retry ladder.
@@ -207,8 +218,10 @@ let sdkCache: unknown;
  */
 export function __setSdkForTests(fake: unknown): () => void {
   const previous = sdkCache;
+  const previousExecutable = verifiedClaudeExecutable;
   sdkCache = fake;
-  return () => { sdkCache = previous; };
+  verifiedClaudeExecutable = process.execPath;
+  return () => { sdkCache = previous; verifiedClaudeExecutable = previousExecutable; };
 }
 
 async function loadSdk(): Promise<any> {
@@ -644,6 +657,7 @@ export async function runWorkerSdk(params: RunWorkerParams): Promise<RunWorkerRe
     const stream = sdk.query({
       prompt: params.userMessage,
       options: {
+        pathToClaudeCodeExecutable: mandatoryClaudeExecutable(),
         model: params.model,
         systemPrompt: params.systemPrompt,
         cwd: params.worktreePath,
@@ -725,6 +739,7 @@ export async function runLeadScoutSdk(params: {
     const stream = sdk.query({
       prompt: params.userMessage,
       options: {
+        pathToClaudeCodeExecutable: mandatoryClaudeExecutable(),
         model: params.model,
         systemPrompt: params.systemPrompt,
         cwd: params.worktreePath,
@@ -988,6 +1003,7 @@ async function structuredCall<T>(params: {
     const stream = sdk.query({
       prompt: params.userMessage,
       options: {
+        pathToClaudeCodeExecutable: mandatoryClaudeExecutable(),
         model: params.model,
         systemPrompt: params.systemPrompt,
         // These are SINGLE-SHOT structured JSON extractors

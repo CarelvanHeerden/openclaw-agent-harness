@@ -20,8 +20,12 @@ function filesUnder(root, rel) {
   const walk = (path) => {
     for (const name of readdirSync(path).sort()) {
       const full = resolve(path, name);
-      if (statSync(full).isDirectory()) walk(full);
-      else out.push(relative(root, full));
+      const relPath = relative(root, full);
+      if (relPath === "node_modules/.bin" || relPath.startsWith("node_modules/.bin/")) continue;
+      const metadata = lstatSync(full);
+      if (metadata.isDirectory()) walk(full);
+      else if (metadata.isFile()) out.push(relPath);
+      else throw new Error(`artifact contains unsupported filesystem entry: ${relPath}`);
     }
   };
   walk(start);
@@ -124,6 +128,31 @@ if (
   !realpathSync(openCode.command).startsWith(realpathSync(resolve(installedRoot, "..")))
 ) {
   throw new Error(`OpenCode did not resolve from the durable installation: ${JSON.stringify(openCode)}`);
+}
+const openCodePackageRoot = dirname(dirname(openCode.command));
+const openCodePackage = JSON.parse(readFileSync(resolve(openCodePackageRoot, "package.json"), "utf8"));
+const expectedOpenCodePackages = JSON.parse(committedBytes("scripts/opencode-native-package-manifest.json").toString("utf8"));
+const expectedOpenCodePackage = expectedOpenCodePackages.packages?.[openCodePackage.name];
+const expectedOpenCodeLock = JSON.parse(committedBytes("package-lock.json").toString("utf8")).packages?.[`node_modules/${openCodePackage.name}`];
+if (
+  expectedOpenCodePackages.version !== 1 ||
+  !expectedOpenCodePackage ||
+  expectedOpenCodePackage.version !== openCodePackage.version ||
+  expectedOpenCodeLock?.version !== expectedOpenCodePackage.version ||
+  expectedOpenCodeLock?.integrity !== expectedOpenCodePackage.integrity
+) {
+  throw new Error(`OpenCode native package manifest is stale or incomplete for ${openCodePackage.name}`);
+}
+const openCodePackageFiles = strictFilesUnder(openCodePackageRoot);
+const openCodePackageManifest = contentManifest(openCodePackageRoot, openCodePackageFiles);
+const openCodeMismatch = expectedOpenCodePackage.entries?.findIndex(
+  (entry, index) => entry !== openCodePackageManifest.entries[index],
+) ?? -1;
+if (
+  expectedOpenCodePackage.entries?.length !== openCodePackageManifest.entries.length ||
+  openCodeMismatch !== -1
+) {
+  throw new Error(`OpenCode native package content is not bound to the tested commit: ${openCodePackage.name}`);
 }
 const openCodeVersion = spawnSync(openCode.command, ["--version"], {
   encoding: "utf8",

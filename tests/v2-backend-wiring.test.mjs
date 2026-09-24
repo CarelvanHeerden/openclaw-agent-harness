@@ -28,6 +28,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const baseInput = () => ({
   resolveKey: (service) => (service === "kimi-key" ? "sk-test-value" : undefined),
   scratchDir: "/tmp",
+  openCodeCommand: { command: process.execPath, args: [] },
   logger: { info: () => {}, warn: () => {} },
   audit: () => {},
 });

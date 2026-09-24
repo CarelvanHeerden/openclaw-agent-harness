@@ -14,6 +14,7 @@ export declare const CONTROL_CONFIRMATION_DOMAIN = "control-plane-confirm/v2";
 export declare const CONTROL_ATTESTATION_ERRORS: readonly ["confirmation_attestation_required", "stale_confirmation", "wrong_actor", "wrong_conversation", "already_confirmed", "confirmation_replayed", "merge_attestation_required", "stale_pr_head", "already_merged"];
 type ControlRuntime = {
     controlPlane?: ControlPlaneService;
+    authorisedUsers?: readonly string[];
 };
 /**
  * Register the ordinary OpenClaw product surface. It intentionally contains

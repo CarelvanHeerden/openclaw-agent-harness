@@ -6,6 +6,7 @@ type CiSnapshot = Awaited<ReturnType<typeof getCiSnapshot>>;
 type MergeResult = Awaited<ReturnType<typeof mergePullRequest>>;
 export interface BoundControlCredential {
     route: {
+        provider?: "github" | "gitlab";
         apiBase?: string;
     };
     token: string;
@@ -14,6 +15,7 @@ export interface ControlMergeProviderDependencies {
     db: DatabaseSync;
     resolveCredential(runId: string, repository: string, prNumber: number, requesterId: string): Promise<BoundControlCredential>;
     getPullRequest(input: {
+        provider?: "github" | "gitlab";
         repoFullName: string;
         prNumber: number;
         ghToken: string;
@@ -21,6 +23,7 @@ export interface ControlMergeProviderDependencies {
         signal?: AbortSignal;
     }): Promise<PullRequest>;
     getCiSnapshot(input: {
+        provider?: "github" | "gitlab";
         repoFullName: string;
         sha: string;
         ghToken: string;
@@ -28,6 +31,7 @@ export interface ControlMergeProviderDependencies {
         signal?: AbortSignal;
     }): Promise<CiSnapshot>;
     mergePullRequest(input: {
+        provider?: "github" | "gitlab";
         repoFullName: string;
         prNumber: number;
         ghToken: string;

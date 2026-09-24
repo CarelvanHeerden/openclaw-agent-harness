@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -39,7 +39,7 @@ test("npm pack rejects package-eligible untracked content before binding a commi
   try {
     const source = join(temp, "source");
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
     writeFileSync(join(source, "docs", "untracked-pack-probe.md"), "must never ship\n");
     const packed = spawnSync("npm", ["pack", "--pack-destination", temp], { cwd: source, encoding: "utf8", timeout: 300_000 });
     assert.notEqual(packed.status, 0);
@@ -54,7 +54,7 @@ test("npm pack rejects package-eligible content hidden by git excludes", () => {
   try {
     const source = join(temp, "source");
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
     writeFileSync(join(source, ".git", "info", "exclude"), "dist/ignored-pack-probe.js\n", { flag: "a" });
     writeFileSync(join(source, "dist", "ignored-pack-probe.js"), "must never ship\n");
     assert.equal(run("git", ["status", "--porcelain", "--untracked-files=all"], source), "");
@@ -69,7 +69,7 @@ test("npm pack rejects modified bundled dependency bytes hidden in node_modules"
   try {
     const source = join(temp, "source");
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
     const manifest = join(source, "node_modules", "zod", "package.json");
     const original = readFileSync(manifest, "utf8");
     rmSync(manifest);
@@ -86,7 +86,7 @@ test("npm pack rejects extra packable bundled dependency bytes hidden in node_mo
   try {
     const source = join(temp, "source");
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
     writeFileSync(join(source, "node_modules", "zod", "commit-binding-probe.js"), "export default 'must never ship';\n");
     const packed = spawnSync("npm", ["pack", "--pack-destination", temp], { cwd: source, encoding: "utf8", timeout: 300_000 });
     assert.notEqual(packed.status, 0);
@@ -126,6 +126,63 @@ test("the exact tarball clean-installs, audits, and runs consumer-platform Claud
     assert.match(result.claudeNativePackage, /^@anthropic-ai\/claude-agent-sdk-(?:linux|darwin|win32)-/);
     assert.match(result.claudeNativePackageManifestSha256, /^[a-f0-9]{64}$/);
     assert.match(result.claudeVersion, /^\d+\.\d+\.\d+ \(Claude Code\)$/);
+
+    const verify = () => spawnSync(
+      process.execPath,
+      [join(packageRoot, "scripts", "verify-installed-artifact.mjs"), root, packageRoot],
+      { cwd: installDir, encoding: "utf8", timeout: 30_000 },
+    );
+    const rejectMutation = (path, mutate, expected) => {
+      const original = readFileSync(path);
+      try {
+        mutate(original);
+        const rejected = verify();
+        assert.notEqual(rejected.status, 0);
+        assert.match(rejected.stderr, expected);
+      } finally {
+        rmSync(path, { force: true });
+        writeFileSync(path, original);
+      }
+    };
+
+    rejectMutation(join(packageRoot, "README.md"), (original) => {
+      const external = join(temp, "external-readme.md");
+      writeFileSync(external, original);
+      rmSync(join(packageRoot, "README.md"));
+      symlinkSync(external, join(packageRoot, "README.md"));
+    }, /artifact contains unsupported filesystem entry: README\.md/);
+    rejectMutation(join(packageRoot, "node_modules", "zod", "package.json"), (original) => {
+      const external = join(temp, "external-zod-package.json");
+      writeFileSync(external, original);
+      rmSync(join(packageRoot, "node_modules", "zod", "package.json"));
+      symlinkSync(external, join(packageRoot, "node_modules", "zod", "package.json"));
+    }, /artifact contains unsupported filesystem entry: node_modules\/zod\/package\.json/);
+    rejectMutation(join(packageRoot, "README.md"), () => {
+      rmSync(join(packageRoot, "README.md"));
+    }, /packaged file list is missing README\.md/);
+    rejectMutation(join(packageRoot, "README.md"), (original) => {
+      writeFileSync(join(packageRoot, "README.md"), Buffer.concat([original, Buffer.from("\nmutation\n")]));
+    }, /artifact mismatch: README\.md/);
+    const extraPath = join(packageRoot, "unexpected-artifact.txt");
+    try {
+      writeFileSync(extraPath, "unexpected\n");
+      const rejected = verify();
+      assert.notEqual(rejected.status, 0);
+      assert.match(rejected.stderr, /packaged first-party file is not bound to the tested commit: unexpected-artifact\.txt/);
+    } finally {
+      rmSync(extraPath, { force: true });
+    }
+
+    const originalOpenCodeSize = statSync(result.openCodeCommand).size;
+    try {
+      appendFileSync(result.openCodeCommand, "\nOAH malicious same-version OpenCode substitution probe\n");
+      assert.match(run(result.openCodeCommand, ["--version"], installDir), /^1\.18\.23\s*$/);
+      const substituted = verify();
+      assert.notEqual(substituted.status, 0);
+      assert.match(substituted.stderr, /OpenCode native package content is not bound to the tested commit/);
+    } finally {
+      truncateSync(result.openCodeCommand, originalOpenCodeSize);
+    }
 
     const originalClaudeSize = statSync(result.claudeCommand).size;
     try {

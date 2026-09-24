@@ -95,6 +95,10 @@ function tool(name, description, parameters, context, run, runtime) {
                     workspaceId: context.workspaceId,
                     trustedControlAttestation: context.trustedControlAttestation,
                 };
+                const actor = trusted.requesterSenderId?.trim() ?? "";
+                if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
+                    throw new ControlError("unauthorised_requester", "This requester is not authorised to use the change service.");
+                }
                 return await run(serviceFor(runtime), call.input, trusted);
             }
             catch (error) {

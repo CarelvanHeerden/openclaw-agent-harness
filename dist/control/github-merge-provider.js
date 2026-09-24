@@ -18,8 +18,8 @@ export function createControlMergeProvider(deps, deadlineMs = 15_000) {
             if (String(proposal.readiness_digest) !== readinessDigest)
                 throw new Error("Control readiness binding mismatch");
             const { route, token: ghToken } = await deps.resolveCredential(runId, repository, prNumber, requesterId);
-            const pr = await deps.getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase, signal: signal() });
-            const ci = await deps.getCiSnapshot({ repoFullName: repository, sha: pr.headSha, ghToken, apiBase: route.apiBase, signal: signal() });
+            const pr = await deps.getPullRequest({ provider: route.provider, repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase, signal: signal() });
+            const ci = await deps.getCiSnapshot({ provider: route.provider, repoFullName: repository, sha: pr.headSha, ghToken, apiBase: route.apiBase, signal: signal() });
             const latest = deps.db.prepare(`SELECT input_json FROM control_readiness_attestations WHERE run_id=? AND content_digest=?`).get(runId, readinessDigest);
             if (!latest)
                 throw new Error("Control readiness binding is unavailable");
@@ -35,7 +35,7 @@ export function createControlMergeProvider(deps, deadlineMs = 15_000) {
         merge: async ({ runId, repository, prNumber, expectedHeadSha }) => {
             const { requesterId } = bindingFor(runId, repository, prNumber);
             const { route, token: ghToken } = await deps.resolveCredential(runId, repository, prNumber, requesterId);
-            const merged = await deps.mergePullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase, method: "squash", expectedHeadSha, signal: signal() });
+            const merged = await deps.mergePullRequest({ provider: route.provider, repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase, method: "squash", expectedHeadSha, signal: signal() });
             if (!merged.merged || !merged.sha)
                 throw new Error(merged.message || "Provider did not merge the pull request");
             return { mergeSha: merged.sha };
@@ -49,7 +49,7 @@ export function createControlMergeProvider(deps, deadlineMs = 15_000) {
                 return false;
             }
             const { route, token: ghToken } = await deps.resolveCredential(runId, repository, prNumber, requesterId);
-            const pr = await deps.getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase, signal: signal() });
+            const pr = await deps.getPullRequest({ provider: route.provider, repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase, signal: signal() });
             return /^[a-f0-9]{40}$/i.test(mergeSha) && pr.merged && pr.mergeCommitSha === mergeSha;
         },
     };

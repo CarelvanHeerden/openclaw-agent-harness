@@ -123,6 +123,7 @@ export declare class BackendRouter {
     private readonly failSafeWarned;
     /** Resolved on first use, because resolution touches the filesystem. */
     private openCodeBinary;
+    private verifiedOpenCode;
     constructor(input: BackendRouterInput);
     /** Roles the operator has moved off the default backend. */
     get openCodeRoles(): RoleName[];
@@ -171,6 +172,7 @@ export declare class BackendRouter {
      * from silence afterwards.
      */
     private openCodeCommandSpec;
+    dispose(): void;
     /** The agent spec for a role, carrying the generated OpenCode configuration. */
     agentSpecFor(role: RoleName): AcpAgentSpec;
     /**

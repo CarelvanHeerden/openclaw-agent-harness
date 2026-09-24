@@ -34,6 +34,8 @@
     "scripts/check-downgrade.mjs",
     "scripts/gen-build-integrity.mjs",
     "scripts/package-artifact-policy.mjs",
+    "scripts/claude-native-package-manifest.json",
+    "scripts/opencode-native-package-manifest.json",
     "scripts/prepare-package-artifact.mjs",
     "scripts/verify-installed-artifact.mjs"
   ],

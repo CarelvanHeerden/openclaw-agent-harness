@@ -13,14 +13,14 @@ function run(command, args, cwd, env = {}) {
 }
 
 /**
- * Pack the exact committed HEAD from an isolated checkout with a hard-linked
- * dependency tree. npm lifecycle hooks may rewrite only this disposable tree,
- * so parallel package tests cannot race on the repository's dist, staging, or
- * native-package state. The caller must invoke cleanup in a finally block.
+ * Pack the exact committed HEAD from an isolated checkout with an independent
+ * dependency tree. A reflink is copy-on-write and a normal copy is the fallback,
+ * so parallel mutation tests cannot race through shared hard-link inodes. The
+ * caller must invoke cleanup in a finally block.
  */
 export function packIsolatedHead(root, prefix = "oah-package-artifact-") {
   // Keep the staging tree on the repository filesystem: node_modules is close
-  // to 1 GB and hard links cannot cross from the workspace mount into /tmp.
+  // to 1 GB, and same-filesystem reflinks avoid duplicate allocation where supported.
   const managedTemp = createManagedTemp(dirname(root), `.${prefix}`);
   const temp = managedTemp.path;
   const cleanup = managedTemp.cleanup;
@@ -29,7 +29,7 @@ export function packIsolatedHead(root, prefix = "oah-package-artifact-") {
     const packDir = join(temp, "pack");
     mkdirSync(packDir);
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
     const packed = JSON.parse(run("npm", ["pack", source, "--json", "--pack-destination", packDir], temp, {
       npm_config_cache: join(temp, "npm-cache"),
     }));

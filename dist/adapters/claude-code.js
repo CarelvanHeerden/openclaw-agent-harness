@@ -150,6 +150,17 @@ export function messageIndicatesTruncation(message) {
     return false;
 }
 let sdkCache;
+let verifiedClaudeExecutable;
+export function configureVerifiedClaudeExecutable(path) {
+    if (!path)
+        throw new Error("A verified Claude executable path is required");
+    verifiedClaudeExecutable = path;
+}
+function mandatoryClaudeExecutable() {
+    if (!verifiedClaudeExecutable)
+        throw new Error("Claude runtime integrity verification has not succeeded");
+    return verifiedClaudeExecutable;
+}
 /**
  * beta.126: test seam for the retry ladder.
  *
@@ -164,8 +175,10 @@ let sdkCache;
  */
 export function __setSdkForTests(fake) {
     const previous = sdkCache;
+    const previousExecutable = verifiedClaudeExecutable;
     sdkCache = fake;
-    return () => { sdkCache = previous; };
+    verifiedClaudeExecutable = process.execPath;
+    return () => { sdkCache = previous; verifiedClaudeExecutable = previousExecutable; };
 }
 async function loadSdk() {
     if (sdkCache)
@@ -462,6 +475,7 @@ export async function runWorkerSdk(params) {
         const stream = sdk.query({
             prompt: params.userMessage,
             options: {
+                pathToClaudeCodeExecutable: mandatoryClaudeExecutable(),
                 model: params.model,
                 systemPrompt: params.systemPrompt,
                 cwd: params.worktreePath,
@@ -525,6 +539,7 @@ export async function runLeadScoutSdk(params) {
         const stream = sdk.query({
             prompt: params.userMessage,
             options: {
+                pathToClaudeCodeExecutable: mandatoryClaudeExecutable(),
                 model: params.model,
                 systemPrompt: params.systemPrompt,
                 cwd: params.worktreePath,
@@ -655,6 +670,7 @@ async function structuredCall(params) {
         const stream = sdk.query({
             prompt: params.userMessage,
             options: {
+                pathToClaudeCodeExecutable: mandatoryClaudeExecutable(),
                 model: params.model,
                 systemPrompt: params.systemPrompt,
                 // These are SINGLE-SHOT structured JSON extractors
