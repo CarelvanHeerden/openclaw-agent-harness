@@ -1,0 +1,6 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+const { evaluatePrReadiness } = await import("../dist/control/readiness.js");
+const h="a".repeat(40),d="b".repeat(64);const input=paths=>({finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:1,required:1,indeterminate:0},candidateSha:h,publication:{sha:h,observedAt:1},pullRequest:{repository:"o/r",baseRef:"main",headSha:h,open:true},expectedRepository:"o/r",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["ci"],successfulChecks:["ci"],sha:h,status:"success"},runtimeEvidence:{status:"pass"},securityEvidence:{status:"pass"},elapsedTimeMs:1,timeLimitMs:10,changedPaths:paths,allowedScope:["src","tests"],excludedScope:[],operationsPerformed:["test"],allowedOperations:["test"],credentialRouteDigest:d,expectedCredentialRouteDigest:d,secretExposure:{detected:false,evidence:"pass"},spendUsd:1,budgetUsd:2});
+test("exact committed paths are evaluated as observed, never heuristically re-derived",()=>{assert.equal(evaluatePrReadiness(input(["tests/unit/a.test.mjs"])).ready,true);});
+test("a genuinely out-of-scope observed path remains blocked",()=>{const r=evaluatePrReadiness(input(["generated/a.test.mjs"]));assert.equal(r.ready,false);assert.ok(r.failures.includes("scope_exceeded"));});

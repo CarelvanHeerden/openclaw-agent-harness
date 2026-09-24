@@ -248,11 +248,11 @@ test("beta47 P3: worker deps are wired with gitHeadSha + gitListCommittedFiles",
 // ----------------------------------------------------------------------------
 // P4: recovery skips auto-resume for an already-running session loop.
 // ----------------------------------------------------------------------------
-test("beta47 P4: recovery auto-resume is guarded by runningSessionIds()", () => {
+test("canonical recovery uses fenced control dispatch instead of legacy session auto-resume", () => {
   const indexSrc = read("src/index.ts");
-  assert.match(
-    indexSrc,
-    /autoResume:\s*async\s*\(s\)\s*=>\s*\{[\s\S]*?if \(runningSessionIds\(\)\.includes\(s\.id\)\)/,
-    "auto-resume must bail when the session loop is already running in-process",
-  );
+  const serviceSrc = read("src/control/service.ts");
+  assert.doesNotMatch(indexSrc, /autoResume:\s*async/);
+  assert.match(serviceSrc, /recoverDispatches/);
+  assert.match(serviceSrc, /control_dispatch_intents/);
+  assert.match(serviceSrc, /lease_fence/);
 });

@@ -382,11 +382,12 @@ test("an indeterminate CI overrides the merge recommendation to needs_human_revi
   assert.match(block, /will not call an unverifiable commit green/);
 });
 
-test("the merge tool refuses on an indeterminate or still-running CI", () => {
-  const src = S("src/index.ts");
-  assert.match(src, /reason: "ci_indeterminate"/);
-  assert.match(src, /reason: "ci_pending"/);
-  assert.match(src, /could not determine CI state on the head commit/);
+test("canonical merge reuses strict readiness for indeterminate or pending CI", () => {
+  const src = S("src/control/readiness.ts");
+  const merge = S("src/control/merge.ts");
+  assert.match(src, /required_ci_not_green/);
+  assert.match(src, /ci\.status !== "success"/);
+  assert.match(merge, /evaluatePrReadiness\(inspection\.readiness/);
 });
 
 test("getCiSnapshot has no bare fall-through to success", () => {

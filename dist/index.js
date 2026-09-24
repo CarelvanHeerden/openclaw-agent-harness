@@ -20,18 +20,13 @@ import { mkdir } from "node:fs/promises";
 import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedListenerFlag, declaresRemovedParallelKeys } from "./config.js";
 import { openStateStoreSync } from "./state/store.js";
 import { decideDrainAction } from "./state/teardown-drain.js";
-import { decideRecoveryResume } from "./state/recovery-guard.js";
 import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
 import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
-import { buildProgressSnapshot } from "./orchestrator/progress.js";
 import { blocksMerge, classifyFinding, normaliseSeverity } from "./orchestrator/finding-classify.js";
 import { prLabelsFor } from "./orchestrator/pr-labels.js";
 import { SlackChannelListener } from "./slack/channel-listener.js";
 import { Dispatcher } from "./slack/dispatcher.js";
-import { SlackReactionsReader } from "./slack/reactions.js";
-import { ReactionsPoller } from "./slack/reactions-poller.js";
-import { SlackProgressPoster, hasRealSlackBinding } from "./slack/progress-poster.js";
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
@@ -39,7 +34,9 @@ import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import { ControlPlaneService } from "./control/service.js";
-import { guidanceCommentSection } from "./tools/revise-guidance.js";
+import { ControlRepository } from "./control/repository.js";
+import { AutonomousControlEngine } from "./control/engine.js";
+import { InternalMergeService } from "./control/merge.js";
 import { parseOkfBlocksFromContext, OkfConceptCache, decideAutoForward, buildRewrittenParams, cacheKeyForCtx, } from "./hooks/okf-auto-forward.js";
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
@@ -60,7 +57,6 @@ import { authorCiWorkflow } from "./adapters/ci-workflow.js";
 import { SlackAdapter } from "./adapters/slack.js";
 import { estimateSubTaskCost, runAdversarySdk, runClassifierSdk, runCrystalliserSdk, runLeadSdk, runLeadScoutSdk, runLeadWorkerContextSdk, runLeadReviseSpecSdk, runWorkerSdk, fetchLiveModelIds, assessModelPricingHealth, registerDeniedSdkEnvVar, } from "./adapters/claude-code.js";
 import { verifyDeploymentForSha } from "./vercel/logs.js";
-import { runDeployRepair } from "./orchestrator/deploy-repair.js";
 import { crystallisePrompt, groundingFrom } from "./crystallise/prompt-refiner.js";
 import { runLeadPlanner } from "./orchestrator/lead.js";
 import { runWorker as runWorkerCore, buildWorkerSystemPrompt } from "./orchestrator/worker.js";
@@ -1420,28 +1416,7 @@ export function bootstrapHarnessSync(api) {
             return outcome;
         },
         buildVerifyProbes: createVerifyProbes({ git, pat, config, resolveGitToken }),
-        readReactions: async (sessionId) => {
-            // Reactions are surfaced via a separate poller (see below) that writes
-            // into sessions.reactions_json. Read from there.
-            const row = state.db.prepare(`SELECT reactions_json FROM sessions WHERE id = ?`).get(sessionId);
-            const parsed = row?.reactions_json ? JSON.parse(row.reactions_json) : {};
-            return {
-                shipIt: !!parsed.shipIt,
-                abort: !!parsed.abort,
-                pause: !!parsed.pause,
-                budgetBump: !!parsed.budgetBump,
-            };
-        },
-        // beta.37: progress is surfaced via the POLL model, not a direct Slack
-        // post. The harness is tool-driven (beta.34 removed the Slack listener),
-        // so it must NOT talk to Slack itself. The old implementation posted to
-        // sessions.slack_channel/thread — which are ""/"agent:<uuid>" for
-        // agent-orchestrated runs — so every post was rejected by Slack and
-        // swallowed by a blind .catch(() => {}); not a single line ever reached
-        // anyone. Now reportProgress ONLY writes a `loop.progress` audit row so the
-        // phase transition shows up in the event tail that `harness_progress`
-        // returns. The calling OpenClaw agent polls `harness_progress` and relays
-        // updates to Slack in its own voice.
+        readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
         reportProgress: async (sessionId, status, meta) => {
             try {
                 state.audit("loop.progress", { status, ...(meta && typeof meta === "object" ? meta : { meta }) }, sessionId);
@@ -1460,98 +1435,8 @@ export function bootstrapHarnessSync(api) {
         // binding (channel + non-synthetic thread passed on harness_run). Otherwise
         // no-op -> graceful fallback to the poll model (unchanged behaviour).
         // Clarifications/inbound stay agent-mediated (harness_answer) -- untouched.
-        deliverProgress: (sessionId, status) => {
-            // beta.88 [E4]: evict this session's de-dup entry on a terminal transition
-            // so `lastProgressHeadline` doesn't grow one entry per session for the
-            // life of the process. Done before the poster gate so it evicts even when
-            // native delivery is off.
-            if (status === "done" || status === "failed" || status === "aborted") {
-                runtime.lastProgressHeadline?.delete(sessionId);
-            }
-            const poster = runtime.progressPoster;
-            if (!poster)
-                return; // no token -> poll-model fallback
-            if (config.slack.native_progress_delivery === false)
-                return;
-            let bind;
-            try {
-                bind = state.db
-                    .prepare(`SELECT slack_channel, slack_thread FROM sessions WHERE id = ?`)
-                    .get(sessionId);
-            }
-            catch {
-                return;
-            }
-            const channel = bind?.slack_channel ?? "";
-            const thread = bind?.slack_thread ?? "";
-            if (!hasRealSlackBinding(channel, thread))
-                return; // agent-orchestrated run -> poll model
-            // beta.96: a TERMINAL transition must ALWAYS speak. Pre-b96 a plan-phase
-            // death had an empty ledger -> empty headline -> `if (!headline) return`
-            // dropped the only failure signal (session 1b267b86, ~2h no feedback).
-            const isTerminal = status === "done" || status === "failed" || status === "aborted";
-            let headline = "";
-            try {
-                headline = buildProgressSnapshot(state.db, sessionId).headline;
-            }
-            catch {
-                if (!isTerminal)
-                    return; // snapshot failure only silences non-terminals
-            }
-            if (!headline && isTerminal)
-                headline = terminalFallbackHeadline(state.db, sessionId, status);
-            if (!headline)
-                return;
-            // beta.86: skip an IDENTICAL consecutive headline for this session (nit:
-            // per-sub-task fire could double-post the same "Executing sub-task N/M"
-            // line for two back-to-back sub-tasks before the ledger differs).
-            const dedup = (runtime.lastProgressHeadline ??= new Map());
-            if (dedup.get(sessionId) === headline)
-                return;
-            dedup.set(sessionId, headline);
-            // beta.97 (Fix #4): the TERMINAL post is the one message a run must not
-            // lose -- b96 guaranteed we always GENERATE a reason-bearing terminal
-            // headline, but a single fire-and-forget best-effort POST still drops it
-            // on a transient Slack 429/5xx/network blip (zero-feedback death via the
-            // transport vector). Route terminal posts through the bounded-retry
-            // Retry-After path; keep the high-frequency PROGRESS stream on the
-            // best-effort single-shot post (a dropped mid-run headline is harmless).
-            // Both never throw.
-            if (isTerminal) {
-                void poster.postTerminal(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
-            }
-            else {
-                void poster.post(channel, thread, `:robot_face: ${headline}`).catch(() => undefined);
-            }
-        },
-        // beta.78 (Feature 1+2): ad-hoc warning delivery over the SAME independent
-        // direct-post channel as deliverProgress. Same gating (poster present +
-        // native_progress_delivery not disabled + real Slack binding). No-op for
-        // agent-orchestrated runs (they get the warning via the poll model /
-        // harness_progress). Best-effort; never throws.
-        postWarning: (sessionId, text) => {
-            const poster = runtime.progressPoster;
-            if (!poster)
-                return;
-            if (config.slack.native_progress_delivery === false)
-                return;
-            let bind;
-            try {
-                bind = state.db
-                    .prepare(`SELECT slack_channel, slack_thread FROM sessions WHERE id = ?`)
-                    .get(sessionId);
-            }
-            catch {
-                return;
-            }
-            const channel = bind?.slack_channel ?? "";
-            const thread = bind?.slack_thread ?? "";
-            if (!hasRealSlackBinding(channel, thread))
-                return;
-            if (!text)
-                return;
-            void poster.post(channel, thread, text).catch(() => undefined);
-        },
+        deliverProgress: () => undefined,
+        postWarning: () => undefined,
     });
     const dispatcher = new Dispatcher({
         config,
@@ -1572,9 +1457,6 @@ export function bootstrapHarnessSync(api) {
         config, state, budget, pat, loop, interactionLog, listener, dispatcher, slack, git, creds,
         effectiveBackendRoutes, ensureBackendReady,
         vault, vaultError: vaultOpenError,
-        // beta.77: built during async bootstrap when slack.credential_service
-        // resolves a token; null until then (and forever without one).
-        progressPoster: null,
         crystallise,
         anthropicApiKey,
         githubToken: resolveGithubToken,
@@ -1701,247 +1583,11 @@ export function bootstrapHarnessSync(api) {
                     `store it under your identity (${resolution.person ?? requester}) so future runs just work.`,
             };
         },
-        mergePr: async ({ sessionId, authenticatedActor, repairBudgetUsd }) => {
-            // Internal compatibility service. The public merge boundary verifies a
-            // fresh host attestation before reaching this method.
-            if (!authenticatedActor || !config.slack.authorised_users.includes(authenticatedActor)) {
-                return { ok: false, message: "The authenticated merge actor is not authorised." };
-            }
-            const row = state.db
-                .prepare(`SELECT repo, requester_gh, requester, status, pr_number, final_pr_url, merge_recommendation, merge_recommendation_reason, pr_merged
-             FROM sessions WHERE id = ?`)
-                .get(sessionId);
-            if (!row)
-                return { ok: false, message: `No session ${sessionId}.` };
-            if (!row.pr_number || !row.final_pr_url) {
-                return { ok: false, message: `Session ${sessionId} has no open PR to merge (status: ${row.status}).` };
-            }
-            if (row.pr_merged === 1) {
-                return { ok: false, merged: true, message: `PR #${row.pr_number} is already merged.` };
-            }
-            // Is this project Vercel-configured? That decides the gate policy.
-            const vercelConfigured = !!(config.vercel?.enabled && config.vercel.project_id);
-            // The FINAL adversary verdict for this session (distinguishes a
-            // "revise" do-not-merge from a genuinely blocking one).
-            const lastReviewRow = state.db
-                .prepare(`SELECT verdict, findings FROM reviews WHERE session_id = ? ORDER BY cycle DESC LIMIT 1`)
-                .get(sessionId);
-            const lastVerdict = (lastReviewRow?.verdict ?? "").toLowerCase();
-            let hasBlockingFinding = false;
-            // rc.5: true when EVERY finding standing between this PR and a merge is an
-            // `env` one -- the harness reporting it could not verify something, rather
-            // than a defect anybody can fix. Those are cleared by a green pipeline,
-            // not by a code change, so they are resolved against CI further down
-            // instead of hard-refusing here.
-            let envOnlyBlock = false;
-            try {
-                const findings = lastReviewRow?.findings ? JSON.parse(lastReviewRow.findings) : [];
-                // rc.3: this used to count only high/critical, so a `medium` finding --
-                // blocking everywhere else in the system -- left the PR eligible for the
-                // Vercel override.
-                //
-                // rc.5: and it read severity with no classification at all, so it
-                // disagreed with the recommendation it was gating on. The beta.115
-                // typecheck-gate finding is deliberately `high` and deliberately
-                // non-blocking; severity alone made it an unoverridable blocker on every
-                // run on a host with no `tsc`, which is a permanent refusal rather than
-                // a safety check. Classify, then ask what the class means for a merge.
-                // rc.5: same ClassifyCtx the loop and the adversary used, so this gate
-                // cannot reach a different verdict on a generated-artifact finding than
-                // the review that produced it.
-                const cctx = {
-                    repoHasTestScript: true,
-                    hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
-                };
-                const blockers = findings.filter((f) => blocksMerge(f, classifyFinding(f, cctx)));
-                hasBlockingFinding = blockers.length > 0;
-                envOnlyBlock = blockers.length > 0 && blockers.every((f) => classifyFinding(f, cctx) === "env");
-            }
-            catch { /* ignore malformed */ }
-            // ---- GATE (beta.36: Vercel-aware) ----
-            // Baseline recommendation from ship time.
-            const rec = (row.merge_recommendation ?? "do_not_merge");
-            // beta.62: `needs_human_review` (graceful PR opened after a review crash,
-            // work self-verified green but the adversary never signed off) is NEVER
-            // auto-overridable -- there is no machine verdict to lean on, so a human
-            // MUST look. It always takes the hard-refuse branch regardless of Vercel.
-            const reviewCrashPr = rec === "needs_human_review";
-            // A do-not-merge is OVERRIDABLE (auto-merge allowed) ONLY when:
-            //   - the project is Vercel-configured (so the post-merge deploy
-            //     verification is the runtime arbiter the loop never had), AND
-            //   - the reason is a `revise` verdict (improvable), NOT a `block`
-            //     verdict and NOT a surviving blocking-severity finding.
-            // A `block` verdict, a blocking-severity finding, or a non-Vercel
-            // project keeps the HARD refuse (human merges via the GitHub UI).
-            const reviseOnly = lastVerdict === "revise" && !hasBlockingFinding;
-            const overridable = vercelConfigured && reviseOnly && !reviewCrashPr;
-            // rc.5: an env-ONLY block asks a question CI can answer, so it is deferred
-            // rather than refused here. "The harness could not typecheck this" matters
-            // only if nothing else did -- and the merge path below already refuses
-            // unless CI is EXPLICITLY green (beta.119 made failure, pending and
-            // unreadable all hard refusals). So if the repo's own pipeline went green,
-            // the thing the harness could not verify has been verified, and a missing
-            // local `tsc` should not be a permanent bar to every merge on that host.
-            // If CI is absent or not green, the deferral is refused below.
-            const deferToCi = rec !== "merge" && !overridable && envOnlyBlock && !reviewCrashPr && lastVerdict !== "block";
-            if (rec !== "merge" && !overridable && !deferToCi) {
-                state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, recommendation: rec, lastVerdict, hasBlockingFinding, vercelConfigured }, sessionId);
-                return {
-                    ok: false,
-                    refused: true,
-                    recommendation: rec,
-                    message: `Refusing to merge PR #${row.pr_number}. HARD SAFETY GATE. ` +
-                        (reviewCrashPr
-                            ? `Recommendation: NEEDS HUMAN REVIEW — ${row.merge_recommendation_reason ?? "the adversary review did not complete"}. The code work self-verified green but the adversary never produced a sign-off, so a human MUST review before merge. `
-                            : `Recommendation: DO NOT MERGE — ${row.merge_recommendation_reason ?? "no clean adversary sign-off"}. `) +
-                        (lastVerdict === "block" || hasBlockingFinding
-                            ? `The adversary raised a BLOCKING concern; this is never auto-overridden. `
-                            : reviewCrashPr
-                                ? `An incomplete adversary review is never auto-overridden. `
-                                : !vercelConfigured
-                                    ? `This project has no Vercel deploy verification, so there's no runtime arbiter to auto-merge behind. `
-                                    : ``) +
-                        `To merge anyway, use the GitHub UI (deliberately outside this automation).`,
-                };
-            }
-            if (rec !== "merge" && overridable) {
-                state.audit("tool.merge_override", { sessionId, prNumber: row.pr_number, reason: "vercel_revise_override", lastVerdict }, sessionId);
-            }
-            // Resolve token for the repo.
-            let ghToken;
-            try {
-                const resolution = pat.resolve({
-                    slackUserId: row.requester,
-                    gitHubUser: row.repo.split("/")[0],
-                    repoFullName: row.repo,
-                });
-                ghToken = await resolveGitToken(resolution);
-            }
-            catch (err) {
-                return { ok: false, recommendation: rec, message: `Could not resolve a token to merge PR #${row.pr_number}: ${String(err)}` };
-            }
-            // Re-check CI on the PR head right before merge (recommendation was
-            // computed at ship time; CI may have moved).
-            let mergeSha = "";
-            try {
-                const pr = await getPullRequest({ repoFullName: row.repo, prNumber: row.pr_number, ghToken });
-                if (pr.merged) {
-                    state.db.prepare(`UPDATE sessions SET pr_merged = 1, pr_merged_at = ?, updated_at = ? WHERE id = ?`).run(Date.now(), Date.now(), sessionId);
-                    return { ok: true, merged: true, recommendation: rec, message: `PR #${row.pr_number} was already merged on GitHub.` };
-                }
-                const ciSnap = await getCiSnapshot({ repoFullName: row.repo, sha: pr.headSha, ghToken });
-                const ci = ciSnap.state;
-                if (ci === "failure") {
-                    state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "ci_failure", ciReason: ciSnap.reason }, sessionId);
-                    return {
-                        ok: false, refused: true, recommendation: rec,
-                        message: `Refusing to merge PR #${row.pr_number}: CI is FAILING on the head commit (${ciSnap.reason}). Hard gate — fix CI or merge from the GitHub UI.`,
-                    };
-                }
-                // beta.119: an unreadable CI state is not a green one. Pre-b119 this
-                // gate only refused on an explicit "failure", so the same unreadable
-                // check-run list that faked a green ship would also have waved the
-                // merge through. Refuse and make a human look.
-                if (ci === "unknown") {
-                    state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "ci_indeterminate", ciReason: ciSnap.reason }, sessionId);
-                    return {
-                        ok: false, refused: true, recommendation: rec,
-                        message: `Refusing to merge PR #${row.pr_number}: could not determine CI state on the head commit (${ciSnap.reason}). Hard gate — check the PR's checks tab, or merge from the GitHub UI.`,
-                    };
-                }
-                // beta.119: still-running checks are likewise not a pass. The b118
-                // false-green shipped while Tests was mid-flight and Tests later failed.
-                if (ci === "pending") {
-                    state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "ci_pending", ciReason: ciSnap.reason }, sessionId);
-                    return {
-                        ok: false, refused: true, recommendation: rec,
-                        message: `Refusing to merge PR #${row.pr_number}: CI is still running on the head commit (${ciSnap.reason}). Hard gate — wait for CI, then retry.`,
-                    };
-                }
-                // rc.5: resolve the env-only deferral. The three refusals above have
-                // already taken failure, unreadable and pending, so the only non-green
-                // state left here is `none` -- a repo with no checks configured. That is
-                // the case the beta.115 finding exists for: the harness could not verify
-                // the code and neither did anything else, so nothing has. Refuse.
-                // Written as `!== "success"` rather than `=== "none"` so a new CI state
-                // fails toward the refusal.
-                if (deferToCi && ci !== "success") {
-                    state.audit("tool.merge_refused", { sessionId, prNumber: row.pr_number, reason: "env_block_no_green_ci", ci, ciReason: ciSnap.reason }, sessionId);
-                    return {
-                        ok: false, refused: true, recommendation: rec,
-                        message: `Refusing to merge PR #${row.pr_number}. ${row.merge_recommendation_reason ?? "The harness could not verify this change."} ` +
-                            `CI could not clear it either (${ciSnap.reason}), so nothing has verified this code. ` +
-                            `Hard gate — fix the harness's check environment, add CI, or merge from the GitHub UI.`,
-                    };
-                }
-                if (deferToCi) {
-                    state.audit("tool.merge_override", { sessionId, prNumber: row.pr_number, reason: "env_block_cleared_by_green_ci", ci }, sessionId);
-                }
-                const merged = await mergePullRequest({ repoFullName: row.repo, prNumber: row.pr_number, ghToken, method: "squash" });
-                mergeSha = merged.sha;
-                state.db.prepare(`UPDATE sessions SET pr_merged = 1, pr_merged_at = ?, updated_at = ? WHERE id = ?`).run(Date.now(), Date.now(), sessionId);
-                state.audit("tool.merged", { sessionId, prNumber: row.pr_number, mergeSha, ci }, sessionId);
-            }
-            catch (err) {
-                return { ok: false, recommendation: rec, message: `Merge of PR #${row.pr_number} failed: ${String(err)}` };
-            }
-            // ---- Post-merge Vercel deploy verification (+ beta.36 repair loop) ----
-            let deploy;
-            let repairMessage = "";
-            if (config.vercel?.enabled) {
-                const vToken = await resolveVercelToken();
-                if (!vToken) {
-                    deploy = { status: "unavailable", detail: "Vercel enabled but no token (vault + env empty)." };
-                    state.db.prepare(`UPDATE sessions SET deploy_status = ?, deploy_detail = ?, updated_at = ? WHERE id = ?`).run("unavailable", deploy.detail, Date.now(), sessionId);
-                }
-                else {
-                    const dv = await verifyDeploymentForSha({
-                        vercelToken: vToken,
-                        teamId: config.vercel.team_id,
-                        projectId: config.vercel.project_id,
-                        sha: mergeSha,
-                        waitSeconds: config.vercel.preview_wait_seconds,
-                        logger: api.logger,
-                    });
-                    deploy = { status: dv.status, detail: dv.detail, deploymentUrl: dv.deploymentUrl, logsExcerpt: dv.logsExcerpt };
-                    state.db.prepare(`UPDATE sessions SET deploy_status = ?, deploy_detail = ?, updated_at = ? WHERE id = ?`).run(dv.status, `${dv.detail}${dv.logsExcerpt ? "\n" + dv.logsExcerpt : ""}`.slice(0, 5000), Date.now(), sessionId);
-                    state.audit("tool.deploy_verified", { sessionId, mergeSha, deployStatus: dv.status }, sessionId);
-                    // ---- beta.36: deploy ERRORED -> auto-repair loop ----
-                    const repairCfg = config.vercel.deploy_repair;
-                    if (dv.status === "error" && repairCfg?.enabled) {
-                        const repairBudget = repairBudgetUsd && repairBudgetUsd > 0
-                            ? repairBudgetUsd
-                            : config.budgets.daily_max_usd * repairCfg.budget_ratio;
-                        const repairResult = await runDeployRepair(buildDeployRepairDeps({ config, state, git, pat, crystallise, loop, api, resolveGitToken, resolveVercelToken, requester: row.requester }), {
-                            sessionId,
-                            repoFullName: row.repo,
-                            originalMergeSha: mergeSha,
-                            originalDeploy: { status: "error", detail: dv.detail, deploymentUrl: dv.deploymentUrl, logsExcerpt: dv.logsExcerpt },
-                            maxAttempts: repairCfg.max_attempts,
-                            repairBudgetUsd: repairBudget,
-                        });
-                        repairMessage = ` ${repairResult.message}`;
-                        if (repairResult.outcome === "repaired" && repairResult.finalDeploy) {
-                            deploy = {
-                                status: repairResult.finalDeploy.status,
-                                detail: repairResult.finalDeploy.detail,
-                                deploymentUrl: repairResult.finalDeploy.deploymentUrl,
-                                logsExcerpt: repairResult.finalDeploy.logsExcerpt,
-                            };
-                        }
-                    }
-                }
-            }
-            const deployMsg = deploy?.status === "ready" ? ` Deploy is READY (${deploy.deploymentUrl}).`
-                : deploy?.status === "error" ? ` \u26a0\ufe0f Deploy ERRORED — ${deploy.detail}`
-                    : deploy?.status === "pending" ? ` Deploy still building — ${deploy.detail}`
-                        : deploy?.status === "unavailable" ? ` Deploy status unavailable — ${deploy.detail}`
-                            : "";
-            return {
-                ok: true, merged: true, mergeSha, recommendation: rec, deploy,
-                message: `Merged PR #${row.pr_number} (squash, ${mergeSha.slice(0, 12)}).${deployMsg}${repairMessage}`,
-            };
-        },
+        mergePr: async ({ sessionId }) => ({
+            ok: false,
+            refused: true,
+            message: `Legacy session merge is disabled for ${sessionId}. Use the attested control-plane merge operation.`,
+        }),
         // ---- rc.4: recover a lost PR association ----
         //
         // StitchGuard session 112673df pushed nine commits and opened PR #1168,
@@ -1996,8 +1642,80 @@ export function bootstrapHarnessSync(api) {
     };
     // Ordinary-user control plane. Preparation is read-only; session/worktree
     // allocation starts only after a one-use host-attested confirmation.
+    const controlRepository = new ControlRepository(state.db);
+    const autonomousEngine = new AutonomousControlEngine({
+        repository: controlRepository,
+        ownerId: `runtime:${process.pid}:${Date.now()}`,
+        leaseTtlMs: 5 * 60_000,
+    });
+    const controlMergeProvider = {
+        inspect: async ({ repository, prNumber }) => {
+            const run = state.db.prepare(`SELECT requester_id FROM control_runs WHERE id = (
+        SELECT run_id FROM control_proposals WHERE pr_number = ? AND run_id IN (SELECT id FROM control_runs WHERE repository = ?)
+      )`).get(prNumber, repository);
+            if (!run?.requester_id)
+                throw new Error("Control requester is unavailable");
+            const route = pat.resolve({ slackUserId: run.requester_id, gitHubUser: repository.split("/")[0], repoFullName: repository });
+            const ghToken = await resolveGitToken(route);
+            const pr = await getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase });
+            const ci = await getCiSnapshot({ repoFullName: repository, sha: pr.headSha, ghToken, apiBase: route.apiBase });
+            const proposal = state.db.prepare(`SELECT p.*, r.base_ref, r.policy_digest, r.authority_envelope_json
+        FROM control_proposals p JOIN control_runs r ON r.id=p.run_id WHERE p.pr_number=? AND r.repository=?`).get(prNumber, repository);
+            const latest = state.db.prepare(`SELECT input_json FROM control_readiness_attestations WHERE run_id=? ORDER BY generation DESC LIMIT 1`).get(String(proposal.run_id));
+            const prior = JSON.parse(latest.input_json);
+            return {
+                repository,
+                baseRef: pr.baseBranch,
+                prNumber,
+                headSha: pr.headSha,
+                open: pr.state === "open" && !pr.merged,
+                merged: pr.merged,
+                readiness: {
+                    ...prior,
+                    candidateSha: pr.headSha,
+                    publication: { sha: String(proposal.published_sha), observedAt: Date.now() },
+                    pullRequest: { repository, baseRef: pr.baseBranch, headSha: pr.headSha, open: pr.state === "open" && !pr.merged, number: prNumber, url: pr.htmlUrl },
+                    requiredCi: {
+                        registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0,
+                        requiredChecks: ci.checkNames,
+                        successfulChecks: ci.state === "success" ? ci.checkNames : [],
+                        sha: pr.headSha,
+                        status: (ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate"),
+                    },
+                },
+            };
+        },
+        merge: async ({ repository, prNumber, expectedHeadSha }) => {
+            const run = state.db.prepare(`SELECT requester_id FROM control_runs WHERE id = (
+        SELECT run_id FROM control_proposals WHERE pr_number = ? AND run_id IN (SELECT id FROM control_runs WHERE repository = ?)
+      )`).get(prNumber, repository);
+            if (!run?.requester_id)
+                throw new Error("Control requester is unavailable");
+            const route = pat.resolve({ slackUserId: run.requester_id, gitHubUser: repository.split("/")[0], repoFullName: repository });
+            const ghToken = await resolveGitToken(route);
+            const merged = await mergePullRequest({ repoFullName: repository, prNumber, ghToken, method: "squash", expectedHeadSha });
+            if (!merged.merged || !merged.sha)
+                throw new Error(merged.message || "Provider did not merge the pull request");
+            return { mergeSha: merged.sha };
+        },
+        verifyMerged: async ({ repository, prNumber, mergeSha }) => {
+            const run = state.db.prepare(`SELECT requester_id FROM control_runs WHERE id = (
+        SELECT run_id FROM control_proposals WHERE pr_number = ? AND run_id IN (SELECT id FROM control_runs WHERE repository = ?)
+      )`).get(prNumber, repository);
+            if (!run?.requester_id)
+                return false;
+            const route = pat.resolve({ slackUserId: run.requester_id, gitHubUser: repository.split("/")[0], repoFullName: repository });
+            const ghToken = await resolveGitToken(route);
+            const pr = await getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase });
+            return pr.merged && mergeSha.length >= 40;
+        },
+    };
+    const internalMergeService = new InternalMergeService(state.db, controlRepository, controlMergeProvider);
     runtime.controlPlane = new ControlPlaneService({
         db: state.db,
+        repository: controlRepository,
+        engine: autonomousEngine,
+        mergeService: internalMergeService,
         crystallise: runtime.crystallise,
         maximumBudgetUsd: config.budgets?.session_hard_ceiling_usd,
         maximumTimeSeconds: config.loop?.session_hard_timeout_seconds,
@@ -2007,56 +1725,61 @@ export function bootstrapHarnessSync(api) {
             const token = await resolveGitToken(route);
             const apiBase = route.apiBase ?? "https://api.github.com";
             const response = await fetch(`${apiBase}/repos/${repository}/commits/${encodeURIComponent(ref)}`, {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    Accept: "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "openclaw-agent-harness/control-plane",
-                },
+                headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
             });
             if (!response.ok)
                 throw new Error(`Unable to resolve ${repository}@${ref} (${response.status})`);
             const payload = await response.json();
             if (!payload.sha || !/^[a-f0-9]{40,64}$/i.test(payload.sha))
                 throw new Error("Repository base revision was not returned by the provider");
-            return {
-                repositoryIdentity: repository.toLowerCase(),
-                baseRef: ref,
-                baseRevision: payload.sha.toLowerCase(),
-                credentialRoute: route.credentialService,
-                policyDigest: createHash("sha256").update(JSON.stringify({
-                    contract: "control-plane-contract/v1",
-                    allowedRepos: config.repos?.allowed ?? [],
-                    baseRef: ref,
-                })).digest("hex"),
-                securityClass: "medium",
-            };
+            return { repositoryIdentity: repository.toLowerCase(), baseRef: ref, baseRevision: payload.sha.toLowerCase(), credentialRoute: route.credentialService,
+                policyDigest: createHash("sha256").update(JSON.stringify({ contract: "control-plane-contract/v2", allowedRepos: config.repos?.allowed ?? [], baseRef: ref })).digest("hex"), securityClass: "medium" };
         },
-        startEngine: async (change) => {
-            const sessionId = change.engineSessionId;
+        executeEngine: async (change) => {
+            change.assertCurrent();
             const now = Date.now();
-            const inserted = state.db.prepare(`INSERT OR IGNORE INTO sessions (
-        id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path,
-        status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran, estimated_usd
-      ) VALUES (?, ?, '', ?, ?, ?, '', '', 'planning', ?, ?, ?, ?, 0, 0, ?)`)
-                .run(sessionId, `control:${change.changeId}`, change.actorIdentity, change.actorIdentity, change.repositoryIdentity, JSON.stringify(change.brief), now, now, Number(change.budgetUsd), Number(change.budgetUsd));
-            if (Number(inserted.changes) === 0)
-                return { engineSessionId: sessionId };
-            void runtime.loop.run(sessionId, change.brief).catch((error) => {
-                api.logger.error("[control-plane] engine run failed", { changeId: change.changeId, error: String(error) });
-                state.db.prepare(`UPDATE control_changes SET state='failed', terminal_code='execution_failed',
-          terminal_summary='The change did not complete.', updated_at=? WHERE change_id=? AND state IN ('accepted','running')`)
-                    .run(Date.now(), change.changeId);
-            });
-            return { engineSessionId: sessionId };
-        },
-        mergeChange: async (change) => {
-            const intent = state.db.prepare("SELECT engine_session_id FROM control_execution_intents WHERE change_id = ?")
-                .get(change.changeId);
-            if (!intent?.engine_session_id)
-                return { merged: false, message: "The execution record is unavailable." };
-            const outcome = await runtime.mergePr({ sessionId: intent.engine_session_id, authenticatedActor: change.actorIdentity });
-            return { merged: outcome.merged === true, mergeSha: outcome.mergeSha, message: outcome.message };
+            const controlledBrief = { ...change.brief, repoHint: change.repositoryIdentity, filesLikelyTouched: [...change.scope], outOfScope: [...change.excludedScope],
+                acceptanceCriteria: [...change.brief.acceptanceCriteria, `Immutable base revision: ${change.baseRevision}`, `Maximum active time: ${change.timeLimitSeconds} seconds`] };
+            state.db.prepare(`INSERT OR IGNORE INTO sessions (id,slack_thread,slack_channel,requester,requester_gh,repo,branch,worktree_path,status,crystallised_prompt,created_at,updated_at,budget_usd,cost_usd,cycles_ran,estimated_usd,hard_timeout_seconds,plan_base_sha,minimum_runtime_version) VALUES (?,?,'',?,?,?,'','','planning',?,?,?,?,0,0,?,?,?,?,?)`)
+                .run(change.changeId, `control:${change.changeId}`, change.actorIdentity, change.actorIdentity, change.repositoryIdentity, JSON.stringify(controlledBrief), now, now, change.budgetUsd, change.budgetUsd, change.timeLimitSeconds, change.baseRevision, PLUGIN_VERSION.pluginVersion);
+            change.assertCurrent();
+            const outcome = await runtime.loop.runConfirmedControl(change.changeId, controlledBrief);
+            change.assertCurrent();
+            if (outcome.status !== "shipped")
+                throw new Error(`autonomous_terminal:${outcome.status}`);
+            const row = state.db.prepare(`SELECT pr_number,final_pr_url,published_sha,published_at,cost_usd,created_at,updated_at,merge_recommendation FROM sessions WHERE id=?`).get(change.changeId);
+            const review = state.db.prepare(`SELECT verdict,findings FROM reviews WHERE session_id=? ORDER BY cycle DESC LIMIT 1`).get(change.changeId);
+            if (!row.pr_number || !row.published_sha)
+                throw new Error("publication_evidence_missing");
+            const route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
+            const ghToken = await resolveGitToken(route);
+            const pr = await getPullRequest({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), ghToken, apiBase: route.apiBase });
+            const ci = await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken, apiBase: route.apiBase });
+            const findings = review?.findings ? JSON.parse(review.findings) : [];
+            const changedPathsRows = state.db.prepare(`SELECT files_touched FROM sub_task_attempts WHERE session_id=? AND files_touched IS NOT NULL`).all(change.changeId);
+            const changedPaths = [...new Set(changedPathsRows.flatMap((r) => { try {
+                    return JSON.parse(r.files_touched);
+                }
+                catch {
+                    return [];
+                } }))];
+            return {
+                finalVerdict: review?.verdict === "pass" && row.merge_recommendation === "merge" ? "pass" : review?.verdict === "block" ? "block" : "revise",
+                blockingFindings: findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true, hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty }))).length,
+                reviewCompleted: !!review,
+                verificationProbes: { completed: 1, required: 1, indeterminate: 0 },
+                candidateSha: String(row.published_sha), publication: { sha: String(row.published_sha), observedAt: Number(row.published_at ?? Date.now()) },
+                pullRequest: { repository: change.repositoryIdentity, baseRef: pr.baseBranch, headSha: pr.headSha, open: pr.state === "open" && !pr.merged, number: Number(row.pr_number), url: String(row.final_pr_url) },
+                expectedRepository: change.repositoryIdentity, expectedBaseRef: change.baseRef,
+                requiredCi: { registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0, requiredChecks: ci.checkNames, successfulChecks: ci.state === "success" ? ci.checkNames : [], sha: pr.headSha,
+                    status: ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate" },
+                runtimeEvidence: { status: config.vercel?.enabled ? (row.deploy_status === "ready" ? "pass" : "indeterminate") : "not_required" },
+                securityEvidence: { status: review?.verdict === "pass" ? "pass" : "fail" }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000,
+                changedPaths, allowedScope: change.scope, excludedScope: change.excludedScope,
+                operationsPerformed: ["implement", "test", "commit", "push_feature_branch", "open_pull_request"], allowedOperations: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
+                credentialRouteDigest: createHash("sha256").update(JSON.stringify(route.credentialService)).digest("hex"), expectedCredentialRouteDigest: change.credentialRouteDigest,
+                secretExposure: { detected: false, evidence: review?.verdict === "pass" ? "pass" : "indeterminate" }, spendUsd: Number(row.cost_usd), budgetUsd: change.budgetUsd,
+            };
         },
     });
     // Tools (sync)
@@ -2339,53 +2062,7 @@ export async function bootstrapHarnessAsync(runtime, api) {
     catch (err) {
         api.logger.warn("[harness] budget coherence check threw (non-fatal)", { err: String(err) });
     }
-    // Reactions poller (only if slack.credential_service is set so we have a bot token).
-    if (config.slack.credential_service) {
-        try {
-            const slackToken = await creds.getToken(config.slack.credential_service);
-            // beta.77: build the harness-native progress poster from the SAME token.
-            // Enables direct chat.postMessage for progress/terminal (bypassing the
-            // wedge-prone agent api.sendMessage turn) when a session is really bound.
-            if (config.slack.native_progress_delivery !== false) {
-                runtime.progressPoster = new SlackProgressPoster({ slackToken, logger: api.logger });
-                api.logger.info("[harness] native progress poster armed (direct chat.postMessage on real Slack bindings)");
-            }
-            const reader = new SlackReactionsReader({
-                config,
-                state,
-                slackToken,
-                logger: api.logger,
-            });
-            const poller = new ReactionsPoller(state, reader, {
-                intervalMs: config.slack.reactions_poll_ms ?? 15000,
-                logger: api.logger,
-            });
-            if (api.registerService) {
-                const dispose = api.registerService({
-                    id: `${PLUGIN_ID}:reactions-poller`,
-                    start: () => poller.start(),
-                    stop: () => poller.stop(),
-                });
-                runtime.disposers.push(async () => {
-                    await poller.stop();
-                    if (typeof dispose === "function")
-                        dispose();
-                    else if (dispose && "dispose" in dispose && typeof dispose.dispose === "function")
-                        dispose.dispose();
-                });
-            }
-            else {
-                await poller.start();
-                runtime.disposers.push(() => poller.stop());
-            }
-        }
-        catch (err) {
-            api.logger.warn("[harness] reactions poller not started", { err: String(err) });
-        }
-    }
-    else {
-        api.logger.info("[harness] slack.credential_service not set; reactions poller idle");
-    }
+    // Legacy reaction polling and native progress delivery are retired.
     // beta.61: startup model-pricing health check (Carel's ask -- "the harness
     // should check latest pricing on the anthropic api"). LIMITATION: Anthropic
     // has NO pricing API -- GET /v1/models returns model IDs only, not per-token
@@ -2722,171 +2399,7 @@ export async function bootstrapHarnessAsync(runtime, api) {
             /* audit itself broken; the log line above is the record */
         }
     }
-    // Session recovery: mark stale non-terminal sessions as 'interrupted' and
-    // notify their Slack threads. Fresh in-flight sessions AUTO-RESUME (re-drive
-    // the loop) -- there is no reaction poller or listener to resume them
-    // otherwise, so they would strand silently (beta.30 fix for the ProjectThanos
-    // symptom). The alternative, leaving them 'resumable' for a human reaction,
-    // belonged to listener mode; beta.133 removed the setting that selected it.
-    const agentOrchestrated = true;
-    try {
-        const { recoverSessions } = await import("./state/recovery.js");
-        const result = await recoverSessions(state, {
-            staleAfterSeconds: config.loop.session_hard_timeout_seconds,
-            logger: api.logger,
-            agentOrchestrated,
-            // beta.81 (Track C / C4): recovery-resume circuit breaker thresholds.
-            maxResumes: config.loop.recovery_max_resumes ?? 3,
-            resumeWindowSeconds: config.loop.recovery_resume_window_seconds ?? 60,
-            // beta.107: ask the live-runner question BEFORE the breaker counts an
-            // attempt, not after. The b47 check inside autoResume below stays as
-            // defence in depth, but by then the ledger entry already exists.
-            isLiveRunner: (id) => runningSessionIds().includes(id),
-            autoResume: async (s) => {
-                // beta.47: recovery runs on every bootstrap (incl. plugin re-register
-                // churn while a session is still mid-flight). If a loop for this
-                // session is ALREADY running in-process, re-driving it is pointless
-                // noise: the beta.38 re-entrancy guard would just skip it with
-                // `loop.run_skipped_already_running` (session 94a516a0 emitted two of
-                // those, staleMs 8/11, during a <2min planning window). Skip the
-                // re-drive entirely instead of flipping status + re-calling run().
-                if (runningSessionIds().includes(s.id)) {
-                    api.logger.info("[harness] recovery: session loop already running in-process, skipping auto-resume", { sessionId: s.id });
-                    return;
-                }
-                const row = state.db
-                    .prepare(`SELECT crystallised_prompt, lead_plan_json, repo, branch, worktree_path, cycles_ran, cost_usd, final_pr_url
-               FROM sessions WHERE id = ?`)
-                    .get(s.id);
-                if (!row?.crystallised_prompt) {
-                    api.logger.warn("[harness] recovery auto-resume: no crystallised brief, marking interrupted", { sessionId: s.id });
-                    state.db.prepare(`UPDATE sessions SET status = 'interrupted', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
-                    return;
-                }
-                // beta.81 (Track C / C3): resume-AT-failed-sub-task instead of a FULL
-                // SESSION RESTART. A session interrupted mid-`executing` (forensic
-                // d01a7484) has a persisted plan + completed sub-task COMMITS on the
-                // worktree. The pre-beta.81 path re-drove `loop.run`, which re-planned
-                // from scratch AND re-executed the already-completed sub-tasks
-                // (re-burning ~$5) -- and the re-plan itself crashed on an extractJson
-                // prose-drift. Instead: mark the orphaned `running` sub-task row(s)
-                // `failed`, emit `recovery.resume_at_subtask`, and FAIL the session
-                // cleanly, PRESERVING the worktree so the completed commits stay
-                // reviewable. This removes the re-burn + the re-plan crash trigger
-                // entirely (per the beta.81 spec's terminal datapoint). Gated by
-                // loop.recovery_resume_at_subtask (default on) and only for a session
-                // that was actually mid-execution with a persisted plan.
-                const resumeAtSubtask = config.loop.recovery_resume_at_subtask !== false;
-                if (resumeAtSubtask && s.status === "executing" && row.lead_plan_json) {
-                    const orphaned = state.db
-                        .prepare(`SELECT id, seq FROM sub_tasks WHERE session_id = ? AND status = 'running'`)
-                        .all(s.id);
-                    for (const o of orphaned) {
-                        state.db
-                            .prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`)
-                            .run("orphaned by restart; failed on recovery (resume-at-subtask, no full re-plan)", Date.now(), o.id);
-                    }
-                    // beta.132: `failed` is terminal, and the startup self-heal reaps
-                    // every worktree whose session is terminal -- so this path has been
-                    // promising preserved commits and then deleting them at the next
-                    // bounce, which is precisely the broken promise b129 fixed for
-                    // aborts. The flag is what actually keeps it.
-                    state.db
-                        .prepare(`UPDATE sessions SET status = 'failed', worktree_preserved = 1, updated_at = ? WHERE id = ?`)
-                        .run(Date.now(), s.id);
-                    state.audit("recovery.resume_at_subtask", { sessionId: s.id, wasStatus: s.status, orphanedSubTasks: orphaned.map((o) => o.seq), reason: "resume_at_failed_subtask_no_replan" }, s.id);
-                    api.logger.warn("[harness] recovery: resume-at-subtask -- marked orphaned sub-task(s) failed, session failed cleanly (worktree preserved, no re-plan/re-burn)", { sessionId: s.id, orphaned: orphaned.map((o) => o.seq) });
-                    if (s.slack_channel && s.slack_thread) {
-                        await slack
-                            .replyInThread(s.slack_channel, s.slack_thread, `:warning: Harness restarted mid-execution; the interrupted sub-task was failed and the run stopped (completed sub-task commits are preserved on branch \`${row.branch ?? "?"}\` for review). Re-run to continue -- prior work will not be re-burned.`)
-                            .catch(() => undefined);
-                    }
-                    return;
-                }
-                // beta.132: b81 protected `executing`. Every other phase of a run that
-                // already has a plan fell straight through to the re-drive below, and
-                // that re-drive is a FULL RE-PLAN: a fresh lead call and scout ($6.24
-                // on average across this repo's own audit history), `cycles_ran` reset
-                // to zero, and every sub-task re-run against a branch that already
-                // carries their commits.
-                //
-                // Nobody asks for this. It fires on plugin boot, unattended, for any
-                // session left non-terminal -- and restarting the container is how a
-                // new build gets installed, so a restart landing on a mid-flight run
-                // is routine rather than exotic. Session 2b4c1d33 sat at `planning`
-                // holding a $6.03 plan and two finished cycles when a boot picked it
-                // up.
-                //
-                // A session with no plan yet has nothing to lose and still resumes
-                // below; the cheap re-drive is the whole point of that path.
-                const cyclesRan = Number(row.cycles_ran ?? 0);
-                const prUrl = (row.final_pr_url ?? "").trim();
-                const verdict = decideRecoveryResume({
-                    enabled: config.loop.recovery_replan_guard !== false,
-                    hasPlan: Boolean(row.lead_plan_json),
-                    cyclesRan,
-                    prUrl,
-                });
-                if (!verdict.resume) {
-                    const spent = Number(row.cost_usd ?? 0);
-                    if (verdict.outcome === "ship_for_review") {
-                        // The work reached GitHub before the restart, so there is nothing
-                        // left to rescue -- only a verdict to record.
-                        state.db
-                            .prepare(`UPDATE sessions SET status = 'done', merge_recommendation = 'needs_human_review',
-                        merge_recommendation_reason = ?, updated_at = ? WHERE id = ?`)
-                            .run(`The harness restarted while this run was mid-flight, after its PR was already open. Resuming ` +
-                            `would have re-planned from scratch and re-spent the lead and scout, so it was left for a human.`, Date.now(), s.id);
-                    }
-                    else {
-                        state.db
-                            .prepare(`UPDATE sessions SET status = 'failed', worktree_preserved = 1, updated_at = ? WHERE id = ?`)
-                            .run(Date.now(), s.id);
-                    }
-                    state.audit("recovery.replan_refused", {
-                        sessionId: s.id, wasStatus: s.status, cyclesRan, spentUsd: Number(spent.toFixed(4)),
-                        hasPr: Boolean(prUrl), branch: row.branch ?? null,
-                        outcome: verdict.outcome,
-                        reason: "would_replan_from_scratch",
-                    }, s.id);
-                    api.logger.warn("[harness] recovery: refusing to auto-resume -- this session already has a plan and finished cycles, so resuming would re-plan from scratch and re-spend the lead and scout", { sessionId: s.id, wasStatus: s.status, cyclesRan, spentUsd: spent, hasPr: Boolean(prUrl) });
-                    if (s.slack_channel && s.slack_thread) {
-                        await slack
-                            .replyInThread(s.slack_channel, s.slack_thread, prUrl
-                            ? `:warning: Harness restarted mid-run, after this session's PR was already open. It was NOT auto-resumed: that would re-plan from scratch and re-spend the lead and scout. Review ${prUrl} — CI on it may be unfinished.`
-                            : `:warning: Harness restarted mid-run (cycle ${cyclesRan}). It was NOT auto-resumed: that would re-plan from scratch and re-spend the lead and scout ($${spent.toFixed(2)} already spent). The commits are preserved on branch \`${row.branch ?? "?"}\`.`)
-                            .catch(() => undefined);
-                    }
-                    return;
-                }
-                const brief = JSON.parse(row.crystallised_prompt);
-                state.db.prepare(`UPDATE sessions SET status = 'planning', updated_at = ? WHERE id = ?`).run(Date.now(), s.id);
-                api.logger.warn("[harness] recovery auto-resuming session (agent-orchestrated mode)", { sessionId: s.id, wasStatus: s.status });
-                if (s.slack_channel && s.slack_thread) {
-                    await slack
-                        .replyInThread(s.slack_channel, s.slack_thread, `:arrows_counterclockwise: Harness restarted mid-run; auto-resuming this session from its plan (agent-orchestrated mode).`)
-                        .catch(() => undefined);
-                }
-                void runtime.loop.run(s.id, brief).catch((err) => {
-                    api.logger.error("[harness] recovery auto-resume loop.run failed", { sessionId: s.id, err: String(err) });
-                });
-            },
-            notify: async (s) => {
-                const msg = s.stale
-                    ? `:arrows_counterclockwise: This harness session was interrupted at cycle ${s.cycles_ran} (state \`${s.status}\`). React :arrows_counterclockwise: to resume, :x: to abort.`
-                    : `:arrows_counterclockwise: Harness restarted while this session was mid-flight (cycle ${s.cycles_ran}). Watching for signals.`;
-                await slack.replyInThread(s.slack_channel, s.slack_thread, msg).catch((err) => {
-                    api.logger.warn("[harness] recovery notify failed", { err: String(err), sessionId: s.id });
-                });
-            },
-        });
-        if (result.interrupted + result.resumable > 0) {
-            api.logger.warn(`[harness] recovery: ${result.interrupted} interrupted, ${result.resumable} resumable`);
-        }
-    }
-    catch (err) {
-        api.logger.warn("[harness] session recovery on start failed", { err: String(err) });
-    }
+    // Legacy session auto-resume is disabled. Canonical control dispatch recovery is owned by ControlPlaneService.
 }
 /**
  * Backwards-compat facade. New code should prefer
@@ -3020,32 +2533,6 @@ function registerOkfAutoForwardHooks(api, runtime) {
     return disposers;
 }
 /** beta.36: extract a PR/MR number from a GitHub/GitLab PR URL. */
-/**
- * beta.96: minimal reason-bearing terminal headline for the native Slack post
- * when `buildProgressSnapshot` yields an empty headline (a plan-phase death has
- * an empty sub-task ledger). Reads the canonical `loop.failed`/`loop.plan_failed`
- * {reason|err}. Guarantees a terminal transition ALWAYS announces itself (the
- * 1b267b86 zero-feedback class). Best-effort; never throws.
- */
-function terminalFallbackHeadline(db, sessionId, status) {
-    let reason = "";
-    try {
-        const fr = db
-            .prepare(`SELECT payload FROM audit_log
-           WHERE session_id = ? AND event IN ('loop.failed','loop.plan_failed')
-           ORDER BY created_at DESC, id DESC LIMIT 1`)
-            .get(sessionId);
-        if (fr?.payload) {
-            const p = JSON.parse(fr.payload);
-            reason = (p.reason ?? p.err ?? "").toString().slice(0, 300);
-        }
-    }
-    catch {
-        /* best-effort: a missing/garbled reason must never re-silence the terminal */
-    }
-    const label = status === "done" ? "completed" : status;
-    return reason ? `Run ${label} — ${reason}.` : `Run ${label}.`;
-}
 function parsePrNumber(prUrl) {
     const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
     return m ? Number(m[1]) : undefined;
@@ -3055,126 +2542,6 @@ function parsePrNumber(prUrl) {
  * machine. All I/O the machine needs (run a repair pipeline, verify a deploy,
  * revert merges, persist) is closed over the runtime's adapters here.
  */
-function buildDeployRepairDeps(ctx) {
-    const { config, state, git, pat, crystallise, loop, api, resolveGitToken, resolveVercelToken, requester } = ctx;
-    const tokenFor = async (repoFullName) => {
-        const resolution = pat.resolve({ slackUserId: requester, gitHubUser: repoFullName.split("/")[0], repoFullName });
-        return resolveGitToken(resolution);
-    };
-    return {
-        audit: (event, payload, sessionId) => state.audit(event, payload, sessionId),
-        logger: api.logger,
-        persist: (sessionId, patch) => {
-            const cols = Object.keys(patch);
-            if (cols.length === 0)
-                return;
-            const set = cols.map((c) => `${c} = ?`).join(", ");
-            const vals = cols.map((c) => patch[c]);
-            state.db.prepare(`UPDATE sessions SET ${set}, updated_at = ? WHERE id = ?`).run(...vals, Date.now(), sessionId);
-        },
-        verifyDeploy: async ({ repoFullName, sha }) => {
-            void repoFullName;
-            const vToken = await resolveVercelToken();
-            if (!vToken || !config.vercel?.project_id) {
-                return { status: "unavailable", detail: "no vercel token/project" };
-            }
-            const dv = await verifyDeploymentForSha({
-                vercelToken: vToken,
-                teamId: config.vercel.team_id,
-                projectId: config.vercel.project_id,
-                sha,
-                waitSeconds: config.vercel.preview_wait_seconds,
-                logger: api.logger,
-            });
-            return { status: dv.status, detail: dv.detail, deploymentUrl: dv.deploymentUrl, logsExcerpt: dv.logsExcerpt };
-        },
-        revertMerges: async ({ sessionId, repoFullName, shas }) => {
-            const ghToken = await tokenFor(repoFullName);
-            const r = await git.revertCommits(repoFullName, shas, ghToken, { baseBranch: config.repos.default_base_branch });
-            if (r.pushedToMain) {
-                return { ok: true, pushedToMain: true, detail: `reverted ${r.revertedShas.length} commit(s) straight to ${config.repos.default_base_branch}` };
-            }
-            // Branch-protected: open + auto-merge a revert PR.
-            try {
-                const resolution = pat.resolve({ slackUserId: requester, gitHubUser: repoFullName.split("/")[0], repoFullName });
-                const pr = await createPullRequest({
-                    repoFullName,
-                    head: r.branch,
-                    base: config.repos.default_base_branch,
-                    apiBase: resolution.apiBase,
-                    title: `harness: revert failed deploy-repair chain (session ${sessionId.slice(0, 8)})`,
-                    body: `Automated revert of a deploy-repair chain that could not produce a healthy Vercel deployment. Reverts ${r.revertedShas.length} merge(s) to restore \`${config.repos.default_base_branch}\` to a working state.`,
-                    ghToken,
-                    draft: false,
-                });
-                await mergePullRequest({ repoFullName, prNumber: pr.number, ghToken, method: "merge" });
-                await git.releaseByPath(r.worktreePath, repoFullName).catch(() => { });
-                return { ok: true, pushedToMain: false, revertPrUrl: pr.htmlUrl, detail: `reverted via auto-merged revert PR ${pr.htmlUrl}` };
-            }
-            catch (err) {
-                await git.releaseByPath(r.worktreePath, repoFullName).catch(() => { });
-                throw new Error(`revert branch pushed but revert-PR merge failed: ${String(err)}`);
-            }
-        },
-        runRepairAttempt: async ({ sessionId, repoFullName, attempt, deploy, budgetRemaining }) => {
-            // Build a repair brief from the deploy error + logs.
-            const logs = (deploy.logsExcerpt ?? deploy.detail ?? "").slice(0, 6000);
-            const repairText = `The production Vercel deployment for the merge to \`${config.repos.default_base_branch}\` FAILED to build/deploy. ` +
-                `Diagnose the cause from the build output below and fix it. This is deploy-repair attempt ${attempt}. ` +
-                `Make the minimal change that makes the deployment succeed; do not change unrelated behaviour.\n\n` +
-                `Vercel deploy error: ${deploy.detail}\n\nBuild log excerpt:\n${logs}`;
-            let brief;
-            try {
-                const c = await crystallise(repairText);
-                if (c.kind !== "brief") {
-                    return { shipped: false, costUsd: 0, reason: `crystallise did not yield a brief (${c.kind})` };
-                }
-                brief = { ...c.brief, repoHint: repoFullName };
-            }
-            catch (err) {
-                return { shipped: false, costUsd: 0, reason: `crystallise threw: ${String(err)}` };
-            }
-            // Create a distinct repair session sharing the parent's requester,
-            // budgeted by the remaining repair pool.
-            const repairSessionId = globalThis.crypto?.randomUUID?.() ?? `repair-${Date.now()}`;
-            state.db
-                .prepare(`INSERT INTO sessions (id, slack_thread, slack_channel, requester, requester_gh, repo, branch, worktree_path, status, crystallised_prompt, created_at, updated_at, budget_usd, cost_usd, cycles_ran, parent_session_id)
-           VALUES (?, ?, '', ?, ?, '', '', '', 'planning', ?, ?, ?, ?, 0, 0, ?)`)
-                .run(repairSessionId, `agent:${repairSessionId}`, requester, requester, JSON.stringify(brief), Date.now(), Date.now(), budgetRemaining, sessionId);
-            state.audit("deploy.repair_session_started", { sessionId, repairSessionId, attempt }, sessionId);
-            let outcome;
-            try {
-                outcome = await loop.run(repairSessionId, brief);
-            }
-            catch (err) {
-                return { shipped: false, costUsd: 0, reason: `repair loop threw: ${String(err)}` };
-            }
-            if (outcome.status !== "shipped") {
-                // Read whatever PR (if any) the repair session opened for the handoff.
-                const rr = state.db.prepare(`SELECT final_pr_url FROM sessions WHERE id = ?`).get(repairSessionId);
-                return { shipped: false, costUsd: outcome.totalCostUsd, reason: `repair pipeline ${outcome.status}: ${"reason" in outcome ? outcome.reason : ""}`, prUrl: rr?.final_pr_url ?? undefined };
-            }
-            // Merge the repair PR.
-            const prNumber = parsePrNumber(outcome.prUrl);
-            if (!prNumber)
-                return { shipped: false, costUsd: outcome.totalCostUsd, reason: `could not parse PR number from ${outcome.prUrl}`, prUrl: outcome.prUrl };
-            try {
-                const ghToken = await tokenFor(repoFullName);
-                const merged = await mergePullRequest({ repoFullName, prNumber, ghToken, method: "squash" });
-                state.db.prepare(`UPDATE sessions SET pr_merged = 1, pr_merged_at = ?, updated_at = ? WHERE id = ?`).run(Date.now(), Date.now(), repairSessionId);
-                return { shipped: true, prUrl: outcome.prUrl, prNumber, mergeSha: merged.sha, costUsd: outcome.totalCostUsd };
-            }
-            catch (err) {
-                return { shipped: false, costUsd: outcome.totalCostUsd, reason: `repair PR merge failed: ${String(err)}`, prUrl: outcome.prUrl, prNumber };
-            }
-        },
-    };
-}
-// beta.75 (#1): compact review comment posted on the PR after EVERY review.
-// Distinct from renderPrBody (the one-time PR description): this is a timeline
-// comment carrying THIS review's verdict + findings, so a re-push to an
-// existing PR surfaces the current outcome (e.g. a `revise`/`block` verdict or
-// a specific out-of-scope finding) instead of it living only in the harness DB.
 function renderReviewComment(review, opts = { updatedExisting: false }) {
     const verdict = String(review.verdict ?? "").toLowerCase();
     const emoji = verdict === "pass" ? "\u2705" : verdict === "block" ? "\u26d4" : "\u{1f501}";
@@ -3187,7 +2554,7 @@ function renderReviewComment(review, opts = { updatedExisting: false }) {
     // body on first open (beta.75), so the PR body -- which does render guidance,
     // via acceptanceCriteria -- is never rewritten for the case guidance exists
     // for. Without this the steer would be invisible on the only PR it applies to.
-    const guidanceLines = opts.operatorGuidance ? guidanceCommentSection(opts.operatorGuidance) : [];
+    const guidanceLines = opts.operatorGuidance ? ["### Operator direction", opts.operatorGuidance] : [];
     const lines = [
         `## ${emoji} Harness adversarial review \u2014 verdict: \`${review.verdict}\`${opts.updatedExisting ? " (updated PR)" : ""}`,
         ``,

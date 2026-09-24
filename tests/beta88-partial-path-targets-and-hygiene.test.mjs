@@ -71,12 +71,9 @@ test("beta.88 [E1]: loop gates relaxation on anyTargetResolvable + audits unreso
 });
 
 // [E4] — de-dup map eviction on terminal
-test("beta.88 [E4]: deliverProgress evicts the de-dup entry on a terminal transition", () => {
+test("beta.88 [E4]: retired progress de-dup state is absent", () => {
   const src = readSrc("src/index.ts");
-  assert.ok(
-    /status === "done" \|\| status === "failed" \|\| status === "aborted"[\s\S]{0,120}lastProgressHeadline\?\.delete\(sessionId\)/.test(src),
-    "must delete the session's dedup entry on done/failed/aborted",
-  );
+  assert.ok(!src.includes("lastProgressHeadline"));
 });
 
 // [E3] — documented precedence

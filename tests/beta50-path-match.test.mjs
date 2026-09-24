@@ -14,11 +14,12 @@
 // a correct worker. Plus headline enrichment on path-mismatch failures.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "..");
 const S = (p) => readFileSync(join(here, "..", p), "utf8");
 
 const { pathMatches, pathMatchRule, anyPathMatches, stripRouteGroups, normalisePath, resolveContractPath } =
@@ -169,11 +170,9 @@ test("beta50: anyPathMatches finds the route-group file among many committed", (
 // described is now asserted against a real repo in
 // tests/beta123-verify-probes.test.mjs.
 
-test("beta50: headline enriches path-mismatch failures", () => {
-  const progSrc = S("src/orchestrator/legacy-progress.ts");
-  assert.match(progSrc, /loop\.file_committed_verify_failed/);
-  assert.match(progSrc, /failureDetail/);
-  assert.match(progSrc, /verifier path check:/);
-  // buildHeadline consumes it
-  assert.match(progSrc, /const why = input\.failureDetail \? ` — \$\{input\.failureDetail\}` : ""/);
+test("canonical readiness terminally reports path mismatches without a progress surface", () => {
+  const readinessSrc = S("src/control/readiness.ts");
+  assert.match(readinessSrc, /scope_exceeded/);
+  assert.match(readinessSrc, /excludedScope/);
+  assert.equal(existsSync(join(root, "src/orchestrator/legacy-progress.ts")), false);
 });

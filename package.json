@@ -30,12 +30,11 @@
     "README.md",
     "LICENSE",
     "docs",
-    "skills",
     "scripts/check-downgrade.mjs",
     "scripts/verify-installed-artifact.mjs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && GIT_CONFIG_GLOBAL=$PWD/tests/fixtures/gitconfig GIT_CONFIG_SYSTEM=/dev/null node --test --test-timeout=300000 tests/*.mjs",
     "test:no-build": "node --test --test-timeout=300000 tests/*.mjs",

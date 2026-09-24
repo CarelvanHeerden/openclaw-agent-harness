@@ -255,6 +255,8 @@ export declare function mergePullRequest(input: {
     ghToken: string;
     method?: "squash" | "merge" | "rebase";
     commitTitle?: string;
+    /** Refuse provider-side if the PR head moved after final inspection. */
+    expectedHeadSha?: string;
 }): Promise<{
     merged: boolean;
     sha: string;

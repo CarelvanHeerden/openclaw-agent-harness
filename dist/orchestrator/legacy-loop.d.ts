@@ -958,6 +958,12 @@ export declare class OrchestratorLoop {
      * The guard is registered/cleared here so EVERY entry path (fresh run and
      * recovery auto-resume both call `run()`) is covered and can't be forgotten.
      */
+    /**
+     * Confirmed-control entry point. The historical implementation machinery is
+     * reused for planning and workers, but its interactive pause is not part of
+     * the control-plane contract: a request for clarification is terminal.
+     */
+    runConfirmedControl(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
     /**
      * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is

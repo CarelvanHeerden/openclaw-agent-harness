@@ -1,0 +1,8 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+const { ensureWorktreesRootWritable } = await import("../dist/state/worktrees-preflight.js");
+const { evaluatePrReadiness } = await import("../dist/control/readiness.js");
+const sha=c=>c.repeat(40), digest=c=>c.repeat(64);
+const ready=(o={})=>({finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:1,required:1,indeterminate:0},candidateSha:sha("a"),publication:{sha:sha("a"),observedAt:1},pullRequest:{repository:"acme/repo",baseRef:"main",headSha:sha("a"),open:true},expectedRepository:"acme/repo",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["test"],successfulChecks:["test"],sha:sha("a"),status:"success"},runtimeEvidence:{status:"pass"},securityEvidence:{status:"pass"},elapsedTimeMs:1,timeLimitMs:10,changedPaths:["src/a.ts"],allowedScope:["src"],excludedScope:[],operationsPerformed:["test"],allowedOperations:["test"],credentialRouteDigest:digest("b"),expectedCredentialRouteDigest:digest("b"),secretExposure:{detected:false,evidence:"pass"},spendUsd:1,budgetUsd:2,...o});
+test("worktree root preflight creates a missing durable root",()=>{let made="";const r=ensureWorktreesRootWritable({worktreesRoot:"/durable/worktrees",exists:()=>false,mkdirp:p=>{made=p},probeWritable:()=>true,getuid:()=>1000});assert.equal(r.ok,true);assert.equal(r.created,true);assert.equal(made,"/durable/worktrees");});
+test("review findings remain blocking data in strict readiness",()=>{const r=evaluatePrReadiness(ready({finalVerdict:"revise",blockingFindings:2}));assert.equal(r.ready,false);assert.ok(r.failures.includes("review_not_passed"));assert.ok(r.failures.includes("blocking_findings"));});

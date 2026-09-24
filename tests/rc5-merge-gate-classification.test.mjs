@@ -289,49 +289,28 @@ test("step 4 cannot fall back to raw severity when the caller has counted", () =
   assert.match(src, /input\.mergeBlockingFindings \?\? input\.blockingFindings \?\? severityBlocking\.length/);
 });
 
-test("harness_merge_pr classifies rather than reading raw severity", () => {
-  const src = S("src/index.ts");
-  // rc.5: the ctx is built once as `cctx` so this gate uses the same
-  // hasDeclaredGenerators reading as the review it is gating on.
-  assert.match(src, /blocksMerge\(f, classifyFinding\(f, cctx\)\)/);
-  // rc.6 gave resolveGenerators a second argument (never_commit_paths), so this
-  // is matched on the property it is about -- the gate reads generator presence
-  // from the resolved map -- rather than on the exact call text.
-  assert.match(src, /hasDeclaredGenerators: !resolveGenerators\(config\.verify\?\.generators[\s\S]{0,120}?\)\.empty/);
-  assert.doesNotMatch(src, /hasBlockingFinding = findings\.some\(\(f\) => isAtLeastMedium\(f\.severity\)\)/);
+test("canonical merge consumes the already classified blocking count", () => {
+  const src = S("src/control/readiness.ts");
+  assert.match(src, /input\.blockingFindings/);
+  assert.match(src, /blocking_findings/);
+  assert.doesNotMatch(S("src/index.ts"), /hasBlockingFinding = findings\.some/);
 });
 
 /* ------------------------------------------------------------------ *
  * The env deferral is not an escape hatch
  * ------------------------------------------------------------------ */
 
-test("an env-only block is deferred to CI, and refused unless CI is explicitly green", () => {
+test("environment findings have no merge override or CI deferral", () => {
   const src = S("src/index.ts");
-  // Only env-only, and never for a block verdict or a crashed review.
-  assert.match(
-    src,
-    /deferToCi = rec !== "merge" && !overridable && envOnlyBlock && !reviewCrashPr && lastVerdict !== "block"/,
-  );
-  // `every` -- one real defect alongside the env finding and the deferral is off.
-  assert.match(src, /blockers\.every\(\(f\) => classifyFinding\(f, cctx\) === "env"\)/);
-  // Green means green. Written as !== "success" so a new CI state refuses.
-  assert.match(src, /if \(deferToCi && ci !== "success"\)/);
-  assert.doesNotMatch(src, /if \(deferToCi && ci === "none"\)/, "must fail toward the refusal, not enumerate states");
-  // And it is audited either way.
-  assert.match(src, /env_block_no_green_ci/);
-  assert.match(src, /env_block_cleared_by_green_ci/);
+  const readiness = S("src/control/readiness.ts");
+  assert.doesNotMatch(src, /deferToCi|env_block_cleared_by_green_ci|vercel_revise_override/);
+  assert.match(readiness, /input\.finalVerdict !== "pass"/);
+  assert.match(readiness, /ci\.status !== "success"/);
 });
 
-test("the deferral sits after the failure, unreadable and pending refusals", () => {
-  // If it ran before them, a red CI would merge on an env-only block.
-  const src = S("src/index.ts");
-  const at = (re) => src.search(re);
-  const failure = at(/reason: "ci_failure"/);
-  const unknown = at(/reason: "ci_indeterminate"/);
-  const pending = at(/reason: "ci_pending"/);
-  const deferred = at(/if \(deferToCi && ci !== "success"\)/);
-  assert.ok(failure > 0 && unknown > 0 && pending > 0 && deferred > 0, "all four gates must be present");
-  assert.ok(deferred > failure, "the deferral must not precede the CI failure refusal");
-  assert.ok(deferred > unknown, "the deferral must not precede the unreadable-CI refusal");
-  assert.ok(deferred > pending, "the deferral must not precede the pending-CI refusal");
+test("strict readiness is evaluated before the provider merge mutation", () => {
+  const src = S("src/control/merge.ts");
+  const readiness = src.indexOf("evaluatePrReadiness(inspection.readiness");
+  const mutation = src.indexOf("this.provider.merge", readiness);
+  assert.ok(readiness > 0 && mutation > readiness);
 });

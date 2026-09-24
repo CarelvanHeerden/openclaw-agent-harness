@@ -24,6 +24,18 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
  */
 const INERT = new Map([
   [
+    "recovery_max_resumes",
+    "Legacy session auto-resume is disabled for ordinary control-plane runs; retained only so existing configurations continue to validate.",
+  ],
+  [
+    "recovery_resume_window_seconds",
+    "Legacy session auto-resume is disabled for ordinary control-plane runs; retained only so existing configurations continue to validate.",
+  ],
+  [
+    "recovery_resume_at_subtask",
+    "Legacy session auto-resume is disabled for ordinary control-plane runs; canonical control dispatch recovery uses fenced control_dispatch_intents.",
+  ],
+  [
     "revise_spec_turn_enabled",
     "b92 deleted the LLM revise-spec turn for a deterministic mapping. Retained so pre-b92 configs still validate under additionalProperties:false.",
   ],

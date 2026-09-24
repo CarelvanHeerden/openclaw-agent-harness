@@ -718,6 +718,7 @@ export async function mergePullRequest(input) {
         body: JSON.stringify({
             merge_method: input.method ?? "squash",
             ...(input.commitTitle ? { commit_title: input.commitTitle } : {}),
+            ...(input.expectedHeadSha ? { sha: input.expectedHeadSha } : {}),
         }),
     });
     const j = (await res.json().catch(() => ({})));

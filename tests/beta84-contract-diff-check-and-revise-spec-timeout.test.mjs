@@ -26,7 +26,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -246,12 +246,6 @@ test("beta.92 SUPERSEDES beta.84 #2: the timed revise-spec turn was DELETED (no 
   assert.ok(src.includes("mapFindingsToSubTasks"), "beta.92 uses the deterministic mapping");
 });
 
-test("beta.84 #2: progress fallback detection includes the timeout event", skip, () => {
-  const src = readSrc("src/orchestrator/legacy-progress.ts");
-  assert.ok(
-    src.includes("loop.revise_spec_timeout"),
-    "reviseSpecFellBack detection must treat a timeout as a raw-findings fallback",
-  );
-  // still reads the pre-existing fallback events (no regression to beta.83 #1)
-  assert.ok(src.includes("loop.revise_spec_failed") && src.includes("loop.revise_spec_empty"));
+test("retired progress fallback module is absent", skip, () => {
+  assert.equal(existsSync(join(ROOT, "src/orchestrator/legacy-progress.ts")), false);
 });

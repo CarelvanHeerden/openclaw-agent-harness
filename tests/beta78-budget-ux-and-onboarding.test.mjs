@@ -1,0 +1,7 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const { createAuthorityEnvelope, evaluateAuthority } = await import("../dist/control/authority.js");
+const s=c=>c.repeat(64);const e=createAuthorityEnvelope({version:1,requesterId:"U",conversationId:"C",repository:"o/r",baseRef:"main",briefDigest:s("a"),policyDigest:s("b"),scope:{paths:["src"]},allowedActions:["implement"],limits:{budgetUsd:5,activeTimeMs:100,cycles:1,retries:0},issuedAt:1,expiresAt:1000,nonce:"n"});const req=x=>({requesterId:"U",conversationId:"C",repository:"o/r",baseRef:"main",briefDigest:s("a"),policyDigest:s("b"),nonce:"n",action:"implement",paths:["src/a"],projectedBudgetUsd:4,projectedActiveTimeMs:50,projectedCycles:1,projectedRetries:0,now:2,...x});
+test("budget is an immutable authority cap, not an interactive bump UX",()=>{assert.deepEqual(evaluateAuthority(e,req({projectedBudgetUsd:5})),{outcome:"approve",reason:"in_envelope"});assert.deepEqual(evaluateAuthority(e,req({projectedBudgetUsd:5.01})),{outcome:"terminate",reason:"budget_expansion"});});
+test("credential onboarding is retired from the ordinary public catalog",()=>{const src=readFileSync(new URL("../src/tools/registration.ts",import.meta.url),"utf8");assert.doesNotMatch(src,/name:\s*["']harness_onboard["']/);assert.match(readFileSync(new URL("../src/control/service.ts",import.meta.url),"utf8"),/credentialRouteDigest/);});

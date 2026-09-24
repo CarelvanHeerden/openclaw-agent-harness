@@ -19,7 +19,6 @@
 //   ask-to-extend note instead of a bare do_not_merge.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SlackProgressPoster } from "../dist/slack/progress-poster.js";
 import { OrchestratorLoop, isConvergingFindingTrend } from "../dist/orchestrator/loop.js";
 import { extractJson } from "../dist/adapters/claude-code.js";
 
@@ -118,97 +117,12 @@ test("advance(): a pass/block verdict is unaffected by the convergence branch", 
   assert.equal(OrchestratorLoop.advance({ ...base, verdict: "block" }).reason, "adversary_block");
 });
 
-// ---- Fix #4: terminal-post bounded retry ------------------------------------
+// ---- Retired progress transport ---------------------------------------------
 
-function makeFetchSeq(responses) {
-  let i = 0;
-  return async () => {
-    const r = responses[Math.min(i, responses.length - 1)];
-    i += 1;
-    if (r instanceof Error) throw r;
-    return r;
-  };
-}
-
-function jsonRes({ status = 200, body = { ok: true, ts: "1.1" }, retryAfter } = {}) {
-  return {
-    status,
-    ok: status >= 200 && status < 300,
-    headers: { get: (h) => (h.toLowerCase() === "retry-after" ? (retryAfter ?? null) : null) },
-    json: async () => body,
-  };
-}
-
-const noSleep = async () => {};
-const logger = { info() {}, warn() {} };
-
-test("postTerminal: succeeds first try, one attempt", async () => {
-  const poster = new SlackProgressPoster({
-    slackToken: "xoxb-t",
-    logger,
-    fetchImpl: makeFetchSeq([jsonRes({ body: { ok: true, ts: "9.9" } })]),
-  });
-  const r = await poster.postTerminal("C123", "1785.1", "hi", { sleepImpl: noSleep });
-  assert.equal(r.ok, true);
-  assert.equal(r.attempts, 1);
-  assert.equal(r.ts, "9.9");
-});
-
-test("postTerminal: retries a 429 then succeeds", async () => {
-  const poster = new SlackProgressPoster({
-    slackToken: "xoxb-t",
-    logger,
-    fetchImpl: makeFetchSeq([
-      jsonRes({ status: 429, retryAfter: "1" }),
-      jsonRes({ body: { ok: true, ts: "2.2" } }),
-    ]),
-  });
-  const r = await poster.postTerminal("C123", "1785.1", "hi", { sleepImpl: noSleep });
-  assert.equal(r.ok, true);
-  assert.equal(r.attempts, 2);
-});
-
-test("postTerminal: retries transient 5xx/network then gives up after maxAttempts", async () => {
-  const poster = new SlackProgressPoster({
-    slackToken: "xoxb-t",
-    logger,
-    fetchImpl: makeFetchSeq([
-      jsonRes({ status: 503, ok: false }),
-      new Error("fetch failed"),
-      jsonRes({ status: 500, ok: false }),
-      jsonRes({ status: 502, ok: false }),
-    ]),
-  });
-  const r = await poster.postTerminal("C123", "1785.1", "hi", { maxAttempts: 3, sleepImpl: noSleep });
-  assert.equal(r.ok, false);
-  assert.equal(r.attempts, 3); // stopped at the cap, not the 4th response
-});
-
-test("postTerminal: a non-retryable Slack error (bad channel) stops immediately", async () => {
-  const poster = new SlackProgressPoster({
-    slackToken: "xoxb-t",
-    logger,
-    fetchImpl: makeFetchSeq([jsonRes({ body: { ok: false, error: "channel_not_found" } })]),
-  });
-  const r = await poster.postTerminal("Cbad", "1785.1", "hi", { sleepImpl: noSleep });
-  assert.equal(r.ok, false);
-  assert.equal(r.attempts, 1); // did NOT retry a structural failure
-  assert.equal(r.error, "channel_not_found");
-});
-
-test("postTerminal: no real binding fails fast without a fetch", async () => {
-  let called = 0;
-  const poster = new SlackProgressPoster({
-    slackToken: "xoxb-t",
-    logger,
-    fetchImpl: async () => {
-      called += 1;
-      return jsonRes();
-    },
-  });
-  const r = await poster.postTerminal("C123", "agent:uuid", "hi", { sleepImpl: noSleep });
-  assert.equal(r.ok, false);
-  assert.equal(r.error, "no_real_binding");
-  assert.equal(r.attempts, 1);
-  assert.equal(called, 0); // gate short-circuits before any HTTP
+test("ordinary control no longer ships a Slack progress poster", async () => {
+  const { existsSync } = await import("node:fs");
+  const { dirname, join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  assert.equal(existsSync(join(root, "dist/slack/progress-poster.js")), false);
 });

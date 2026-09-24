@@ -1,57 +1,23 @@
-/**
- * beta.36: Vercel-aware merge gate + config wiring guards.
- */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const indexSrc = readFileSync(resolve(repoRoot, "src/index.ts"), "utf8");
-const manifest = JSON.parse(readFileSync(resolve(repoRoot, "openclaw.plugin.json"), "utf8"));
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const index = readFileSync(resolve(root, "src/index.ts"), "utf8");
+const merge = readFileSync(resolve(root, "src/control/merge.ts"), "utf8");
 
-test("merge gate override is Vercel-AND-revise-only (never on block or blocking finding)", () => {
-  // The override that lets a do_not_merge auto-merge must require BOTH a
-  // Vercel-configured project AND a revise-only reason.
-  assert.match(indexSrc, /const overridable = vercelConfigured && reviseOnly/, "override must require vercelConfigured && reviseOnly");
-  assert.match(indexSrc, /reviseOnly = lastVerdict === "revise" && !hasBlockingFinding/, "reviseOnly must exclude blocking findings");
-  // A block verdict / blocking finding / non-vercel still hard-refuses.
-  //
-  // rc.5: `deferToCi` joined this condition. It is not a third way to merge --
-  // an env-only block is deferred to the CI check below, which refuses unless CI
-  // is EXPLICITLY green. The assertions below pin both halves, so the deferral
-  // cannot quietly become an escape hatch.
-  assert.match(indexSrc, /if \(rec !== "merge" && !overridable && !deferToCi\)/, "non-overridable do_not_merge must still refuse");
-  assert.match(indexSrc, /deferToCi = rec !== "merge" && !overridable && envOnlyBlock/, "only an env-ONLY block may be deferred");
-  assert.match(indexSrc, /if \(deferToCi && ci !== "success"\)/, "a deferred block must refuse on anything but explicitly-green CI");
+test("legacy merge path cannot override readiness or run deploy repair", () => {
+  assert.match(index, /Legacy session merge is disabled/);
+  assert.doesNotMatch(index, /vercel_revise_override|env_block_cleared_by_green_ci|runDeployRepair|repairBudgetUsd &&/);
 });
 
-test("deploy-repair only runs on ERROR + enabled", () => {
-  assert.match(indexSrc, /dv\.status === "error" && repairCfg\?\.enabled/, "repair loop gated on deploy error + config.enabled");
-});
-
-test("repair budget defaults to daily_max_usd * budget_ratio, override honoured", () => {
-  assert.match(indexSrc, /repairBudgetUsd && repairBudgetUsd > 0/, "explicit repairBudgetUsd override");
-  assert.match(indexSrc, /config\.budgets\.daily_max_usd \* repairCfg\.budget_ratio/, "default = daily_max_usd * budget_ratio");
-});
-
-test("revert falls back to an auto-merged revert PR when not pushed to main", () => {
-  assert.match(indexSrc, /if \(r\.pushedToMain\)/, "revertMerges checks pushedToMain");
-  assert.match(indexSrc, /createPullRequest\(/, "must open a revert PR on the fallback path");
-  assert.match(indexSrc, /mergePullRequest\(\{ repoFullName, prNumber: pr\.number/, "must auto-merge the revert PR");
-});
-
-test("manifest declares budgets.daily_max_usd and vercel.deploy_repair", () => {
-  const budgets = manifest.configSchema?.properties?.budgets?.properties;
-  assert.ok(budgets?.daily_max_usd, "manifest must declare budgets.daily_max_usd");
-  const dr = manifest.configSchema?.properties?.vercel?.properties?.deploy_repair;
-  assert.ok(dr, "manifest must declare vercel.deploy_repair");
-  assert.ok(dr.properties?.max_attempts && dr.properties?.budget_ratio, "deploy_repair must declare max_attempts + budget_ratio");
-});
-
-test("config validates daily_max_usd >= daily_warn_usd", async () => {
-  let mod;
-  try { mod = await import("../dist/config.js"); } catch { mod = null; }
-  if (!mod?.loadConfig && !mod?.validateConfig && !mod?.parseConfig) return; // shape-dependent; skip if not exported
+test("canonical merge revalidates readiness and exact head before provider mutation", () => {
+  const inspect = merge.indexOf("provider.inspect");
+  const readiness = merge.indexOf("evaluatePrReadiness", inspect);
+  const mutation = merge.indexOf("provider.merge", inspect);
+  assert.ok(inspect >= 0 && readiness > inspect && mutation > readiness);
+  assert.match(merge, /inspection\.headSha!==expectedHeadSha/);
+  assert.match(merge, /inspection\.merged/);
 });

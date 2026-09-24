@@ -1,0 +1,7 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { evaluatePrReadiness } from "../dist/control/readiness.js";
+import { readFileSync } from "node:fs";
+const src=readFileSync(new URL("../src/control/readiness.ts",import.meta.url),"utf8");
+test("indeterminate runtime evidence is merge-blocking",()=>{assert.match(src,/runtime_evidence_indeterminate/);assert.match(src,/security_evidence_indeterminate/);assert.match(src,/missing_probes/);});
+test("strict readiness never demotes verification blockers into success",()=>{const h="a".repeat(40),d="b".repeat(64);const r=evaluatePrReadiness({finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:0,required:1,indeterminate:1},candidateSha:h,publication:{sha:h,observedAt:1},pullRequest:{repository:"o/r",baseRef:"main",headSha:h,open:true},expectedRepository:"o/r",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["test"],successfulChecks:["test"],sha:h,status:"success"},runtimeEvidence:{status:"indeterminate"},securityEvidence:{status:"pass"},elapsedTimeMs:1,timeLimitMs:2,changedPaths:[],allowedScope:["**/*"],excludedScope:[],operationsPerformed:[],allowedOperations:[],credentialRouteDigest:d,expectedCredentialRouteDigest:d,secretExposure:{detected:false,evidence:"pass"},spendUsd:0,budgetUsd:1},2);assert.equal(r.ready,false);assert.ok(r.failures.includes("runtime_evidence_indeterminate"));assert.ok(r.failures.includes("missing_probes"));});

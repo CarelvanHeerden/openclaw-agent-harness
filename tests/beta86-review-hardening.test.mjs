@@ -59,12 +59,8 @@ test("beta.86 #1(a): revise_contract_relaxed audit + log echo the targeted set",
   assert.ok(/event: "revise_contract_relaxed"[\s\S]{0,160}targetedFiles/.test(src), "interaction log echoes targetedFiles");
 });
 
-test("beta.86 #2: deliverProgress de-dups identical consecutive headlines", () => {
+test("ordinary control exposes no native progress delivery state", () => {
   const src = readSrc("src/index.ts");
-  assert.ok(/lastProgressHeadline\??:\s*Map<string, string>/.test(src), "runtime carries lastProgressHeadline map");
-  assert.ok(
-    /dedup\.get\(sessionId\) === headline\) return/.test(src),
-    "an identical consecutive headline must be skipped",
-  );
-  assert.ok(/dedup\.set\(sessionId, headline\)/.test(src), "the last headline must be recorded after posting");
+  assert.ok(!/lastProgressHeadline\??:\s*Map<string, string>/.test(src));
+  assert.match(src, /deliverProgress:\s*\(\)\s*=>\s*undefined/);
 });

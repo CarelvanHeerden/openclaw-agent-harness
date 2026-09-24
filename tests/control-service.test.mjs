@@ -1,93 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openStateStoreSync } from "../dist/state/store.js";
+import { ControlRepository } from "../dist/control/repository.js";
+import { AutonomousControlEngine } from "../dist/control/engine.js";
+import { InternalMergeService } from "../dist/control/merge.js";
 import { ControlPlaneService } from "../dist/control/service.js";
-
-function fixture(overrides = {}) {
-  const db = new DatabaseSync(":memory:");
-  db.exec("PRAGMA foreign_keys=ON");
-  db.exec(readFileSync(new URL("../src/state/schema.sql", import.meta.url), "utf8"));
-  let starts = 0;
-  let merges = 0;
-  let now = 1_800_000_000_000;
-  const service = new ControlPlaneService({
-    db,
-    now: () => now,
-    crystallise: async () => ({ kind: "brief", brief: {
-      title: "Bounded change", motivation: "Implement the requested behavior.",
-      acceptanceCriteria: ["The focused behavior is tested."], filesLikelyTouched: ["src/**"],
-      outOfScope: ["secrets/**"], repoHint: "acme/widget", riskLevel: "medium",
-    }}),
-    resolveRepository: async () => ({ repositoryIdentity: "acme/widget", baseRef: "main",
-      baseRevision: "a".repeat(40), credentialRoute: "github/acme/U1", policyDigest: "b".repeat(64), securityClass: "medium" }),
-    startEngine: async () => { starts += 1; return { engineSessionId: "engine-1" }; },
-    mergeChange: async () => { merges += 1; return { merged: true, mergeSha: "c".repeat(40) }; },
-    ...overrides,
-  });
-  const context = (event, actor = "U1", conversation = "W1:C1:T1") => ({
-    requesterSenderId: actor, conversationId: conversation, hostEventId: event, receivedAt: now,
-  });
-  return { db, service, context, tick(ms = 10) { now += ms; }, counts: () => ({ starts, merges }) };
-}
-
-async function prepared(f) {
-  return f.service.prepare({ request: "Implement one bounded tested behavior.", repository: "acme/widget", budgetUsd: 8,
-    timeLimitSeconds: 1200, scope: ["src/**", "tests/**"], excludedScope: ["secrets/**"] }, f.context("prepare"));
-}
-
-test("prepare is immutable, complete, and does not dispatch execution", async () => {
-  const f = fixture();
-  const proposal = await prepared(f);
-  assert.equal(proposal.state, "prepared");
-  assert.equal(proposal.confirmable, true);
-  assert.deepEqual(proposal.scope, ["src/**", "tests/**"]);
-  assert.equal(f.counts().starts, 0);
-  const row = f.db.prepare("SELECT state, generation, base_revision, brief_digest, policy_digest, scope_digest FROM control_changes").get();
-  assert.deepEqual({ state: row.state, generation: row.generation, base: row.base_revision.length }, { state: "prepared", generation: 1, base: 40 });
-  assert.match(row.brief_digest, /^[a-f0-9]{64}$/);
-  assert.match(row.policy_digest, /^[a-f0-9]{64}$/);
-  assert.match(row.scope_digest, /^[a-f0-9]{64}$/);
-});
-
-test("confirmation uses fresh host identity, consumes once, and dispatches once", async () => {
-  const f = fixture();
-  const proposal = await prepared(f);
-  f.tick();
-  await assert.rejects(() => f.service.confirm(proposal.changeId, f.context("wrong", "U2")), /preparing requester/);
-  const accepted = await f.service.confirm(proposal.changeId, f.context("confirm-1"));
-  assert.equal(accepted.state, "accepted");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(f.counts().starts, 1);
-  await assert.rejects(() => f.service.confirm(proposal.changeId, f.context("confirm-1")), /already confirmed/i);
-  assert.equal(f.counts().starts, 1);
-  assert.equal(f.db.prepare("SELECT count(*) n FROM control_attestations").get().n, 1);
-  assert.equal(f.db.prepare("SELECT count(*) n FROM control_execution_intents").get().n, 1);
-});
-
-test("result is conversation-private and excludes execution internals", async () => {
-  const f = fixture();
-  const proposal = await prepared(f);
-  assert.throws(() => f.service.result(proposal.changeId, f.context("read", "U1", "W1:C2")), /not found/i);
-  const result = f.service.result(proposal.changeId, f.context("read"));
-  const encoded = JSON.stringify(result);
-  assert.equal(result.state, "prepared");
-  assert.doesNotMatch(encoded, /engine|session|subtask|worktree|nonce|hostEvent|brief_json|credential/i);
-});
-
-test("merge requires a later distinct host event and is provider-idempotent", async () => {
-  const f = fixture();
-  const proposal = await prepared(f);
-  f.tick();
-  await f.service.confirm(proposal.changeId, f.context("confirm"));
-  await new Promise((resolve) => setImmediate(resolve));
-  f.service.recordReadiness({ changeId: proposal.changeId, pullRequestNumber: 7, pullRequestUrl: "https://example.test/pr/7",
-    verdict: "pass", blocking: 0, publishedSha: "d".repeat(40), prHeadSha: "d".repeat(40),
-    requiredCiDigest: "f".repeat(64), runtimeEvidenceDigest: "1".repeat(64), spendUsd: 4 });
-  f.tick();
-  const merged = await f.service.merge(proposal.changeId, f.context("merge"));
-  assert.equal(merged.state, "merged");
-  assert.equal(f.counts().merges, 1);
-  await assert.rejects(() => f.service.merge(proposal.changeId, f.context("merge-2")), /already merged/i);
-  assert.equal(f.counts().merges, 1);
-});
+const sha=(c,n=64)=>c.repeat(n);
+function ready(change,overrides={}){const head=sha("d",40);return {finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:2,required:2,indeterminate:0},candidateSha:head,publication:{sha:head,observedAt:change.now()},pullRequest:{repository:"acme/widget",baseRef:"main",headSha:head,open:true,number:7,url:"https://example.test/pr/7"},expectedRepository:"acme/widget",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["test"],successfulChecks:["test"],sha:head,status:"success"},runtimeEvidence:{status:"pass"},securityEvidence:{status:"pass"},elapsedTimeMs:100,timeLimitMs:1_200_000,changedPaths:["src/x.ts","tests/x.test.ts"],allowedScope:["src/**","tests/**"],excludedScope:["secrets/**"],operationsPerformed:["implement","test","commit","push_feature_branch","open_pull_request"],allowedOperations:["implement","retry","repair","test","commit","push_feature_branch","open_pull_request","update_pull_request","deploy"],credentialRouteDigest:change.routeDigest,expectedCredentialRouteDigest:change.routeDigest,secretExposure:{detected:false,evidence:"pass"},spendUsd:4,budgetUsd:8,...overrides};}
+function fixture({readinessOverride,holdExecution=false}={}){const dir=mkdtempSync(join(tmpdir(),"control-service-"));const store=openStateStoreSync(join(dir,"state.db"));const repo=new ControlRepository(store.db);let now=1_800_000_000_000,starts=0,merges=0,release;const gate=holdExecution?new Promise(r=>{release=r}):Promise.resolve();const engine=new AutonomousControlEngine({repository:repo,ownerId:"worker",leaseTtlMs:60_000,now:()=>now});let service;const provider={inspect:async()=>{const p=store.db.prepare("SELECT input_json FROM control_readiness_attestations ORDER BY generation DESC LIMIT 1").get();const input=JSON.parse(p.input_json);return{repository:"acme/widget",baseRef:"main",prNumber:7,headSha:sha("d",40),open:true,merged:false,readiness:input}},merge:async()=>{merges++;return{mergeSha:sha("c",40)}},verifyMerged:async()=>true};const mergeService=new InternalMergeService(store.db,repo,provider,()=>now);service=new ControlPlaneService({db:store.db,repository:repo,engine,mergeService,now:()=>now,crystallise:async()=>({kind:"brief",brief:{title:"Bounded change",motivation:"Implement it",acceptanceCriteria:["tested"],filesLikelyTouched:["src/**"],outOfScope:["secrets/**"],repoHint:"acme/widget",riskLevel:"medium"}}),resolveRepository:async()=>({repositoryIdentity:"acme/widget",baseRef:"main",baseRevision:sha("a",40),credentialRoute:"github/acme/U1",policyDigest:sha("b"),securityClass:"medium"}),executeEngine:async(input)=>{starts++;await gate;input.assertCurrent();return ready({now:()=>now,routeDigest:input.credentialRouteDigest},readinessOverride??{});}});const context=(actor="U1",conversation="W1:C1:T1",att)=>({requesterSenderId:actor,conversationId:conversation,...(att?{trustedControlAttestation:att}:{})});const attest=(operation,id,event)=>{const run=repo.getRun(id);const p=store.db.prepare("SELECT * FROM control_proposals WHERE run_id=?").get(id);now=Math.max(now+10,p.created_at+10,run.updatedAt+10);const shell={version:2,provenance:"host_verified",operation,actorIdentity:"U1",conversationIdentity:"W1:C1:T1",hostEventId:event,nonce:`${event}-nonce`,issuedAt:now,expiresAt:now+60_000,bindingDigest:""};shell.bindingDigest=operation==="confirm_change"?service.confirmBindingDigest(id,shell):service.mergeBindingDigest(id,shell);return shell;};return{dir,store,repo,service,context,attest,tick:(n=10)=>now+=n,now:()=>now,release:()=>release?.(),counts:()=>({starts,merges}),close(){store.close();rmSync(dir,{recursive:true,force:true})}};}
+const prep=(f)=>f.service.prepare({request:"Implement one bounded tested behavior.",repository:"acme/widget",budgetUsd:8,timeLimitSeconds:1200,scope:["src/**","tests/**"],excludedScope:["secrets/**"]},f.context());
+const wait=()=>new Promise(r=>setTimeout(r,15));
+test("prepare persists one canonical immutable proposal and does not execute",async()=>{const f=fixture();try{const p=await prep(f);assert.equal(p.state,"prepared");assert.equal(f.counts().starts,0);assert.equal(f.repo.getRun(p.changeId).state,"awaiting_confirmation");assert.equal(f.store.db.prepare("SELECT count(*) n FROM control_proposals").get().n,1);assert.equal(f.store.db.prepare("SELECT name FROM sqlite_master WHERE name='control_changes'").get(),undefined);}finally{f.close();}});
+test("prepare resolves authenticated private repository base without persisting token",async()=>{let seen;const f=fixture();try{f.service.deps.resolveRepository=async()=>{seen="fixture-private-token";return{repositoryIdentity:"private/repo",baseRef:"main",baseRevision:sha("e",40),credentialRoute:"vault/private/U1",policyDigest:sha("f"),securityClass:"high"}};await f.service.prepare({request:"Change private repository safely.",repository:"private/repo"},f.context());assert.equal(seen,"fixture-private-token");const dump=JSON.stringify(f.store.db.prepare("SELECT * FROM control_proposals").get());assert.doesNotMatch(dump,/fixture-private-token|vault\/private\/U1/);}finally{f.close();}});
+test("confirm requires host-verified provenance and drives real engine to immutable readiness",async()=>{const f=fixture();try{const p=await prep(f);await assert.rejects(()=>f.service.confirm(p.changeId,f.context()),/host attestation/i);const att=f.attest("confirm_change",p.changeId,"confirm-1");const accepted=await f.service.confirm(p.changeId,f.context("U1","W1:C1:T1",att));assert.equal(accepted.state,"running");await wait();assert.equal(f.repo.getRun(p.changeId).state,"pr_ready");assert.equal(f.counts().starts,1);const rec=f.store.db.prepare("SELECT * FROM control_readiness_attestations").get();assert.equal(rec.ready,1);assert.match(rec.content_digest,/^[a-f0-9]{64}$/);assert.equal(f.store.db.prepare("SELECT generation FROM control_proposals").get().generation,2);}finally{f.close();}});
+test("host identity cannot be overwritten by attacker invocation",async()=>{const f=fixture();try{const p=await prep(f);const att=f.attest("confirm_change",p.changeId,"confirm-victim");await assert.rejects(()=>f.service.confirm(p.changeId,f.context("U-attacker","W1:C1:T1",att)),/preparing requester/);assert.equal(f.repo.getRun(p.changeId).state,"awaiting_confirmation");}finally{f.close();}});
+test("expired dispatch lease cannot complete after a replacement fence",async()=>{const f=fixture({holdExecution:true});try{const p=await prep(f);await f.service.confirm(p.changeId,f.context("U1","W1:C1:T1",f.attest("confirm_change",p.changeId,"confirm-race")));await wait();const intent=f.store.db.prepare("SELECT lease_owner,lease_fence FROM control_dispatch_intents").get();f.tick(60_001);f.store.db.prepare("UPDATE control_dispatch_intents SET lease_expires_at=? WHERE run_id=?").run(f.now()-1,p.changeId);void f.service.recoverDispatches();await wait();f.release();await wait();const after=f.store.db.prepare("SELECT lease_fence,attempts FROM control_dispatch_intents").get();assert.ok(after.lease_fence>intent.lease_fence);assert.equal(f.store.db.prepare("SELECT count(*) n FROM control_readiness_attestations").get().n<=1,true);}finally{f.close();}});
+test("strict readiness failure is terminal and never becomes mergeable",async()=>{const f=fixture({readinessOverride:{secretExposure:{detected:true,evidence:"fail"}}});try{const p=await prep(f);await f.service.confirm(p.changeId,f.context("U1","W1:C1:T1",f.attest("confirm_change",p.changeId,"confirm-bad")));await wait();assert.equal(f.repo.getRun(p.changeId).state,"failed");const rec=f.store.db.prepare("SELECT failures_json FROM control_readiness_attestations").get();assert.match(rec.failures_json,/secret_exposure/);}finally{f.close();}});
+test("merge requires separate exact-readiness attestation and routes through InternalMergeService",async()=>{const f=fixture();try{const p=await prep(f);await f.service.confirm(p.changeId,f.context("U1","W1:C1:T1",f.attest("confirm_change",p.changeId,"confirm-merge")));await wait();await assert.rejects(()=>f.service.merge(p.changeId,f.context()),/host attestation/i);const out=await f.service.merge(p.changeId,f.context("U1","W1:C1:T1",f.attest("merge_change",p.changeId,"merge-1")));assert.equal(out.state,"merged");assert.equal(f.counts().merges,1);assert.equal(f.repo.getRun(p.changeId).state,"done");}finally{f.close();}});

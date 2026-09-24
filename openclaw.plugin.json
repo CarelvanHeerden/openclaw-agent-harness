@@ -54,7 +54,7 @@
         "properties": {
           "listener_enabled": {
             "type": "boolean",
-            "description": "REMOVED in beta.133; IGNORED since beta.34, when the Slack listener was deleted. The harness is tool-driven only (drive it via harness_run / harness_start_session / harness_merge_pr). The key is still accepted so existing configs keep validating, but it is discarded during parse and setting it only logs a warning. Remove it."
+            "description": "Removed and ignored. The ordinary product is driven only through the four control-plane tools. Retained temporarily so older configuration files continue to validate."
           },
           "channel": {
             "type": "string",
@@ -1067,14 +1067,14 @@
               "type": "string"
             },
             "default": [],
-            "description": "beta.120 (brief fidelity): directories harness_run's `requestPath` may read a specification from. EMPTY BY DEFAULT, which disables file reads -- the harness holds GitHub tokens and a brief's contents reach model prompts and PR bodies, so an operator must name the safe directories explicitly. Point this at wherever the calling runtime stores user-uploaded files. `~` is expanded and symlinks are resolved before the check. Motivation: on the b119 smoke the calling agent retyped a 10,710-byte spec as a 40-line summary and the feature changed (`performedAt` became `scheduledAt`); reading the bytes removes that hop."
+            "description": "Legacy request-file intake roots. Inert for the four-tool control plane and retained only for configuration compatibility."
           },
           "request_file_max_bytes": {
             "type": "integer",
             "minimum": 1024,
             "maximum": 5242880,
             "default": 262144,
-            "description": "beta.120: hard cap on a file read via harness_run's `requestPath`. Default 262144 (256 KB)."
+            "description": "Legacy request-file intake size limit. Inert for the four-tool control plane and retained only for configuration compatibility."
           },
           "confirm_before_spend": {
             "type": "string",
@@ -1203,7 +1203,7 @@
           "full_prompts": {
             "type": "boolean",
             "default": false,
-            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
+            "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction \u2014 redaction on write is always applied."
           },
           "retention_days": {
             "type": "integer",
@@ -1217,7 +1217,7 @@
       "credentials": {
         "type": "object",
         "additionalProperties": false,
-        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them. Every key here is optional — the defaults are a working configuration, and $OAH_VAULT_KEY / $OAH_VAULT_KEY_FILE cover the same ground without touching config.",
+        "description": "beta.110: harness-owned credential vault (AES-256-GCM, SQLite-backed). Replaces the memory-hybrid credential_get/credential_store tools entirely; there is no fallback to them. Every key here is optional \u2014 the defaults are a working configuration, and $OAH_VAULT_KEY / $OAH_VAULT_KEY_FILE cover the same ground without touching config.",
         "properties": {
           "dir": {
             "type": "string",
@@ -1231,7 +1231,7 @@
           },
           "key_file": {
             "type": "string",
-            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent — back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir — they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you."
+            "description": "Explicit key-file path. Default <dir>/vault.key, mode 0600, or $OAH_VAULT_KEY_FILE if set. Generated on first boot if absent \u2014 back it up, because without it every stored credential is unrecoverable. AT-REST CAVEAT: by default the key sits in the SAME DIRECTORY as the ciphertext it protects, so the default defends against a state DB copied off the box for debugging, and NOT against anyone who can read the harness data dir \u2014 they get both halves. Point this at a path outside the data dir, or use $OAH_VAULT_KEY from a secret manager, if that matters to you."
           }
         }
       },

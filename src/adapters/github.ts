@@ -915,6 +915,8 @@ export async function mergePullRequest(input: {
   ghToken: string;
   method?: "squash" | "merge" | "rebase";
   commitTitle?: string;
+  /** Refuse provider-side if the PR head moved after final inspection. */
+  expectedHeadSha?: string;
 }): Promise<{ merged: boolean; sha: string; message: string }> {
   const res = await fetch(`https://api.github.com/repos/${input.repoFullName}/pulls/${input.prNumber}/merge`, {
     method: "PUT",
@@ -922,6 +924,7 @@ export async function mergePullRequest(input: {
     body: JSON.stringify({
       merge_method: input.method ?? "squash",
       ...(input.commitTitle ? { commit_title: input.commitTitle } : {}),
+      ...(input.expectedHeadSha ? { sha: input.expectedHeadSha } : {}),
     }),
   });
   const j = (await res.json().catch(() => ({}))) as { merged?: boolean; sha?: string; message?: string };

@@ -1,0 +1,6 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { registerHarnessTools } from "../dist/tools/registration.js";
+function catalog(host){const tools=new Map();registerHarnessTools({registerTool(d){const x=typeof d==="function"?d(host):d;tools.set(x.name,x);return()=>{};}},{controlPlane:{confirm:async(_id,ctx)=>ctx}});return tools;}
+test("host identity overrides attacker-supplied invocation context",async()=>{const tools=catalog({requesterSenderId:"U-host",conversationId:"C-host",trustedControlAttestation:{provenance:"host_verified"}});const out=await tools.get("harness_confirm_change").execute("call",{changeId:"chg_abcdefghijkl"},{requesterSenderId:"U-attacker",conversationId:"C-attacker"});assert.equal(out.requesterSenderId,"U-host");assert.equal(out.conversationId,"C-host");assert.equal(out.trustedControlAttestation.provenance,"host_verified");});
+test("missing control service fails closed without provenance details",async()=>{const tools=[];registerHarnessTools({registerTool(d){tools.push(typeof d==="function"?d({requesterSenderId:"U1",conversationId:"C1"}):d);return()=>{};}},{});const out=await tools.find(x=>x.name==="harness_confirm_change").execute({changeId:"chg_abcdefghijkl"});assert.deepEqual(out,{ok:false,code:"control_unavailable",summary:"The change service is not available."});});

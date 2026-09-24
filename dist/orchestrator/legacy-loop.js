@@ -1682,6 +1682,26 @@ export class OrchestratorLoop {
      * The guard is registered/cleared here so EVERY entry path (fresh run and
      * recovery auto-resume both call `run()`) is covered and can't be forgotten.
      */
+    /**
+     * Confirmed-control entry point. The historical implementation machinery is
+     * reused for planning and workers, but its interactive pause is not part of
+     * the control-plane contract: a request for clarification is terminal.
+     */
+    async runConfirmedControl(sessionId, brief) {
+        const outcome = await this.run(sessionId, brief);
+        if (outcome.status !== "awaiting_clarification")
+            return outcome;
+        const now = Date.now();
+        this.deps.state.db.prepare(`UPDATE sessions SET status='failed', clarification_question=NULL, updated_at=? WHERE id=? AND status='awaiting_clarification'`).run(now, sessionId);
+        this.deps.state.audit("control.interactive_pause_rejected", { sessionId, reason: "confirmed_control_is_non_interactive" }, sessionId);
+        return {
+            status: "failed",
+            sessionId,
+            reason: "confirmed control requested interactive clarification",
+            cycles: outcome.cycles,
+            totalCostUsd: outcome.totalCostUsd,
+        };
+    }
     async run(sessionId, brief) {
         if (runningSessions.has(sessionId)) {
             // beta.40: the guard entry exists -- but is the tracked loop actually

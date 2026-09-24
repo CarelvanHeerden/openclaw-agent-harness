@@ -15,7 +15,7 @@ An ordinary user performs one bounded change through four operations only:
 3. `harness_change_result` — read a stable, user-safe status or terminal result; the caller never polls internal phases.
 4. `harness_merge_change` — authorize and perform one merge through a new, separate trusted host attestation.
 
-No other harness tool or direct command is present in the ordinary-user catalog. In particular, ordinary users do not see or call `harness_answer`, `harness_progress`, `harness_resume`, `harness_revise`, `harness_list_revisable`, `/harness-answer`, or internal session/admin operations.
+No direct command or interactive session-management operation is present in the ordinary-user catalog.
 
 Administrative diagnostics and migration controls may exist only on an explicitly privileged host surface. They are not aliases for the four user operations and must not be discoverable in an ordinary-user tool catalog.
 
@@ -267,7 +267,7 @@ Migration from rc.13 is one-way and fail-closed.
 - An unstarted rc.13 proposal may be imported only as a new `prepared` change after recomputing the full binding envelope; it requires a new host confirmation attestation.
 - A running, paused, resumable, or `awaiting_clarification` rc.13 session is terminalized as legacy/non-authorizable for the new surface. It cannot inherit a prior answer receipt.
 - An rc.13 PR may become a new prepared merge candidate only after the controller rebuilds all readiness evidence against the current PR head; merge still requires a fresh merge attestation.
-- Legacy `harness_answer`, progress, resume, revise, and list-revisable entry points are removed from the ordinary catalog before the new catalog is enabled.
+- Legacy `a new prepared change`, progress, resume, revise, and list-revisable entry points are removed from the ordinary catalog before the new catalog is enabled.
 - Migration is transactional, restart-safe, idempotent, and records source identifiers only in privileged audit data.
 - Rollback must not reactivate consumed attestations or expose both old and new authority paths concurrently.
 

@@ -1,0 +1,7 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { evaluatePrReadiness } from "../dist/control/readiness.js";
+const service=readFileSync(new URL("../src/control/service.ts",import.meta.url),"utf8");
+test("prepare clamps requested budget to the host maximum",()=>{assert.match(service,/maximumBudgetUsd/);assert.match(service,/Math\.min\(input\.budgetUsd/);assert.match(service,/invalid_budget/);});
+test("readiness fails closed when spend exceeds the confirmed envelope",()=>{const h="a".repeat(40),d="b".repeat(64);const base={finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:1,required:1,indeterminate:0},candidateSha:h,publication:{sha:h,observedAt:1},pullRequest:{repository:"o/r",baseRef:"main",headSha:h,open:true},expectedRepository:"o/r",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["test"],successfulChecks:["test"],sha:h,status:"success"},runtimeEvidence:{status:"pass"},securityEvidence:{status:"pass"},elapsedTimeMs:1,timeLimitMs:2,changedPaths:[],allowedScope:["**/*"],excludedScope:[],operationsPerformed:[],allowedOperations:[],credentialRouteDigest:d,expectedCredentialRouteDigest:d,secretExposure:{detected:false,evidence:"pass"},spendUsd:10.01,budgetUsd:10};const r=evaluatePrReadiness(base,2);assert.equal(r.ready,false);assert.ok(r.failures.includes("spend_exceeded"));});

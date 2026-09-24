@@ -258,13 +258,12 @@ test("beta62: MergeRecommendation type includes needs_human_review (source)", ()
   assert.match(src, /export type MergeRecommendation = "merge" \| "do_not_merge" \| "needs_human_review"/);
 });
 
-test("beta62: merge gate treats needs_human_review as a hard refuse (never overridable, source)", () => {
-  const src = S("src/index.ts");
-  // the narrow cast widened
-  assert.match(src, /as "merge" \| "do_not_merge" \| "needs_human_review"/);
-  // reviewCrashPr flag excludes it from override
-  assert.match(src, /reviewCrashPr = rec === "needs_human_review"/);
-  assert.match(src, /overridable = vercelConfigured && reviseOnly && !reviewCrashPr/);
+test("beta62: crashed or incomplete review can never pass canonical readiness", () => {
+  const src = S("src/control/readiness.ts");
+  assert.match(src, /input\.finalVerdict !== "pass"/);
+  assert.match(src, /input\.finalVerdict === "crashed"/);
+  assert.match(src, /review_not_passed/);
+  assert.match(src, /review_crash/);
 });
 
 // ---- Wiring source-assertions for the loop changes ----

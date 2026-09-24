@@ -165,17 +165,12 @@ test("beta81/C3: recovery resume-at-failed-subtask marks the orphaned running su
     state.close();
   });
 
-test("beta81/C3: index.ts autoResume implements resume-at-subtask (no full re-plan) gated by config", () => {
+test("canonical control recovery does not revive legacy interactive sessions", () => {
   const src = S("src/index.ts");
-  assert.match(src, /recovery_resume_at_subtask !== false/);
-  assert.match(src, /recovery\.resume_at_subtask/);
-  // selects the orphaned running sub-task(s), then marks them failed (order:
-  // SELECT ... status = 'running' precedes UPDATE ... SET status = 'failed').
-  assert.match(src, /status = 'running'[\s\S]*?UPDATE sub_tasks SET status = 'failed'/);
-  // it must return BEFORE the re-plan (loop.run) path.
-  const resumeIdx = src.indexOf("recovery.resume_at_subtask");
-  const replanIdx = src.indexOf("runtime.loop.run(s.id, brief)");
-  assert.ok(resumeIdx > 0 && replanIdx > 0 && resumeIdx < replanIdx, "resume-at-subtask branch precedes + returns before the re-plan");
+  const control = S("src/control/service.ts");
+  assert.doesNotMatch(src, /autoResume:\s*async/);
+  assert.match(control, /recoverDispatches/);
+  assert.match(control, /status='pending' OR \(status='running' AND lease_expires_at<\?\)/);
 });
 
 // ---- C4: circuit breaker ----

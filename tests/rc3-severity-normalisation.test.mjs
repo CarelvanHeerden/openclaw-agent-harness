@@ -162,15 +162,12 @@ test("rc3: the ship gate and the merge tool agree on what blocks", () => {
   // the beta.115 typecheck finding is deliberately high and deliberately
   // non-blocking, and severity alone made it an unoverridable permanent refusal.
   // It now reads the same predicate the recommendation does.
-  const src = S("src/index.ts");
-  // rc.5 (generated-artifact ownership): the ctx literal became a shared `cctx`
-  // so this gate carries hasDeclaredGenerators too. Same claim, one binding.
-  assert.match(src, /blocksMerge\(f, classifyFinding\(f, cctx\)\)/);
-  assert.doesNotMatch(
-    src,
-    /hasBlockingFinding = findings\.some\(\(f\) => isAtLeastMedium\(f\.severity\)\)/,
-    "the merge gate must classify, not read raw severity",
-  );
+  const src = S("src/control/readiness.ts");
+  const merge = S("src/control/merge.ts");
+  assert.match(src, /blockingFindings/);
+  assert.match(src, /input\.blockingFindings[^\n]*!== 0/);
+  assert.match(merge, /evaluatePrReadiness/);
+  assert.doesNotMatch(S("src/index.ts"), /vercel_revise_override/);
 });
 
 test("rc3: merge-recommendation reads severity through the shared helper", () => {

@@ -16,7 +16,7 @@ export const CONTROL_TERMINAL_CODES = [
 export const CONTROL_READINESS_PREDICATES = "state=pr_ready;verdict=pass;blocking===0;published_sha=pr_head_sha;required_ci;runtime_evidence;spend<=budget_envelope";
 /** Trusted host fields include requesterSenderId and conversationId. */
 /** Public error vocabulary for trusted boundaries. */
-export const CONTROL_CONFIRMATION_DOMAIN = "control-plane-confirm/v1";
+export const CONTROL_CONFIRMATION_DOMAIN = "control-plane-confirm/v2";
 export const CONTROL_ATTESTATION_ERRORS = [
     "confirmation_attestation_required", "stale_confirmation", "wrong_actor", "wrong_conversation",
     "already_confirmed", "confirmation_replayed", "merge_attestation_required", "stale_pr_head", "already_merged",
@@ -85,7 +85,16 @@ function tool(name, description, parameters, context, run, runtime) {
         async execute(inputOrCallId, paramsOrContext, executionContext) {
             try {
                 const call = invocation(inputOrCallId, paramsOrContext, executionContext);
-                const trusted = Object.assign({}, context, call.context);
+                // Only the context captured by the host while constructing the tool is
+                // trusted. Execution arguments are model/user-controlled data and must
+                // never supply identity or mint a "host_verified" attestation when the
+                // host did not provide one.
+                const trusted = {
+                    requesterSenderId: context.requesterSenderId,
+                    conversationId: context.conversationId,
+                    workspaceId: context.workspaceId,
+                    trustedControlAttestation: context.trustedControlAttestation,
+                };
                 return await run(serviceFor(runtime), call.input, trusted);
             }
             catch (error) {

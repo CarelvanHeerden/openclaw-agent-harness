@@ -1,4 +1,4 @@
-const TERMINAL = new Set(["done", "failed", "aborted"]);
+const TERMINAL = new Set(["done", "failed", "aborted", "cancelled"]);
 function versionParts(version) {
     const match = /^(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$/.exec(version.trim());
     if (!match)
@@ -19,9 +19,17 @@ export function compareRuntimeVersions(a, b) {
  * safe default is to refuse downgrade while an incompatible session is live.
  */
 export function downgradeBlockers(db, targetVersion) {
-    const rows = db.prepare(`SELECT id, status, minimum_runtime_version
+    const legacy = db.prepare(`SELECT id, status, minimum_runtime_version
        FROM sessions
       WHERE minimum_runtime_version IS NOT NULL AND minimum_runtime_version != ''`).all();
+    let control = [];
+    try {
+        control = db.prepare(`SELECT r.id, r.state AS status, p.minimum_runtime_version
+      FROM control_runs r JOIN control_proposals p ON p.run_id=r.id
+      WHERE p.minimum_runtime_version != ''`).all();
+    }
+    catch { /* pre-control-plane database */ }
+    const rows = [...legacy, ...control];
     return rows
         .filter((row) => !TERMINAL.has(row.status))
         .filter((row) => compareRuntimeVersions(targetVersion, row.minimum_runtime_version) < 0)

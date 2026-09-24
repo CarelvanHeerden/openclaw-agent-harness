@@ -1,0 +1,7 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const { evaluatePrReadiness } = await import("../dist/control/readiness.js");
+const h="a".repeat(40),d="b".repeat(64);const good={finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:2,required:2,indeterminate:0},candidateSha:h,publication:{sha:h,observedAt:1},pullRequest:{repository:"o/r",baseRef:"main",headSha:h,open:true},expectedRepository:"o/r",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["test","disk"],successfulChecks:["test","disk"],sha:h,status:"success"},runtimeEvidence:{status:"pass"},securityEvidence:{status:"pass"},elapsedTimeMs:1,timeLimitMs:10,changedPaths:["tests/x.test.mjs"],allowedScope:["tests"],excludedScope:[],operationsPerformed:["test"],allowedOperations:["test"],credentialRouteDigest:d,expectedCredentialRouteDigest:d,secretExposure:{detected:false,evidence:"pass"},spendUsd:1,budgetUsd:2};
+test("canonical publication requires registered exact-SHA test and disk probes",()=>{assert.equal(evaluatePrReadiness(good).ready,true);const bad=evaluatePrReadiness({...good,requiredCi:{...good.requiredCi,successfulChecks:["test"]}});assert.equal(bad.ready,false);assert.ok(bad.failures.includes("required_ci_not_green"));});
+test("legacy contract re-derivation is not part of the public four-tool protocol",()=>{const src=readFileSync(new URL("../src/tools/registration.ts",import.meta.url),"utf8");assert.doesNotMatch(src,/rederive|disk_exhaustion|test-file-unique/i);});

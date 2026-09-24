@@ -1,7 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ControlRepository } from "./repository.js";
+import { type PrReadinessInput } from "./readiness.js";
 export interface VerifiedMergeAuthorization {
-    readonly version: 1;
+    readonly version: 2;
     readonly id: string;
     readonly runId: string;
     readonly actorIdentity: string;
@@ -10,6 +11,8 @@ export interface VerifiedMergeAuthorization {
     readonly baseRef: string;
     readonly prNumber: number;
     readonly expectedHeadSha: string;
+    readonly publishedSha: string;
+    readonly readinessDigest: string;
     readonly nonce: string;
     readonly issuedAt: number;
     readonly expiresAt: number;
@@ -22,13 +25,8 @@ export interface MergeInspection {
     readonly headSha: string;
     readonly open: boolean;
     readonly merged: boolean;
-    readonly finalVerdict: "pass" | "revise" | "block" | "indeterminate";
-    readonly blockingFindings: number;
-    readonly requiredCi: Readonly<{
-        status: "success" | "failure" | "pending" | "indeterminate";
-        sha: string;
-        registered: boolean;
-    }>;
+    readonly mergeSha?: string;
+    readonly readiness: PrReadinessInput;
 }
 export interface MergeProvider {
     inspect(input: {
@@ -57,7 +55,7 @@ export type MergeServiceResult = Readonly<{
     mergeSha?: string;
 } | {
     status: "refused";
-    code: "merge_attestation_required" | "stale_pr_head" | "pr_identity_mismatch" | "review_not_passed" | "blocking_findings" | "required_ci_not_green" | "authorization_expired" | "authorization_replayed";
+    code: "merge_attestation_required" | "stale_pr_head" | "pr_identity_mismatch" | "readiness_changed" | "authorization_expired" | "authorization_replayed";
 } | {
     status: "merge_failed";
     code: "provider_failure" | "verification_failed";
@@ -72,7 +70,8 @@ export declare class InternalMergeService {
     private readonly provider;
     private readonly now;
     constructor(db: DatabaseSync, repository: ControlRepository, provider: MergeProvider, now?: () => number);
-    registerAuthorization(authorization: VerifiedMergeAuthorization): void;
-    merge(authorizationId: string): Promise<MergeServiceResult>;
+    registerAuthorization(a: VerifiedMergeAuthorization): void;
+    merge(id: string): Promise<MergeServiceResult>;
+    private completeRun;
 }
 //# sourceMappingURL=merge.d.ts.map

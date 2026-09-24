@@ -37,7 +37,7 @@ if (expectedPackage.version !== installedPackage.version) {
 }
 
 const installedFiles = filesUnder(installedRoot, ".");
-const requiredRoots = ["dist/", "docs/", "skills/", "scripts/"];
+const requiredRoots = ["dist/", "docs/", "scripts/"];
 for (const root of requiredRoots) {
   if (!installedFiles.some((file) => file.startsWith(root))) {
     throw new Error(`packaged file list is missing required root ${root}`);

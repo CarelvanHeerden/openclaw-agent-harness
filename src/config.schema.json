@@ -41,7 +41,7 @@
       "properties": {
         "listener_enabled": {
           "type": "boolean",
-          "description": "REMOVED in beta.133; IGNORED since beta.34, when the Slack listener was deleted. The harness is tool-driven only (drive it via harness_run / harness_start_session / harness_merge_pr). The key is still accepted so existing configs keep validating, but it is discarded during parse and setting it only logs a warning. Remove it."
+          "description": "Removed and ignored. The ordinary product is driven only through the four control-plane tools. Retained temporarily so older configuration files continue to validate."
         },
         "channel": {
           "type": "string",
@@ -91,7 +91,7 @@
         "native_progress_delivery": {
           "type": "boolean",
           "default": true,
-          "description": "beta.77: harness direct-posts progress/terminal headlines to Slack via the vault bot token when credential_service is set and a session has a real Slack binding (channel + non-synthetic thread). Independent of the wedge-prone agent api.sendMessage turn. Set false to force poll-only. Does not affect clarific\u0061tions/inbound."
+          "description": "beta.77: harness direct-posts progress/terminal headlines to Slack via the vault bot token when credential_service is set and a session has a real Slack binding (channel + non-synthetic thread). Independent of the wedge-prone agent api.sendMessage turn. Set false to force poll-only. Does not affect clarifications/inbound."
         }
       }
     },
@@ -257,7 +257,7 @@
         },
         "worker_mechanical": {
           "type": "string",
-          "description": "beta.91 (Fix 3): optional cheaper/faster model for mechanical scaffolding sub-ta\u0073ks (prisma models, migration, sidebar entry, barrel exports). When set, mechanical sub-ta\u0073ks dispatch on this model; lead + adversary + non-mechanical workers stay on the strong models. Absent = every sub-ta\u0073k uses `worker`."
+          "description": "beta.91 (Fix 3): optional cheaper/faster model for mechanical scaffolding sub-tasks (prisma models, migration, sidebar entry, barrel exports). When set, mechanical sub-tasks dispatch on this model; lead + adversary + non-mechanical workers stay on the strong models. Absent = every sub-task uses `worker`."
         }
       }
     },
@@ -305,7 +305,7 @@
           "minimum": 0,
           "maximum": 3600,
           "default": 300,
-          "description": "beta.129: how long the loop waits in place for an answ\u0065r to the time-extension qu\u0065stion before shipping anyway. An unansw\u0065red qu\u0065stion must never be the reason a deliverable is missing from GitHub. Set 0 to disable waiting."
+          "description": "beta.129: how long the loop waits in place for an answer to the time-extension question before shipping anyway. An unanswered question must never be the reason a deliverable is missing from GitHub. Set 0 to disable waiting."
         },
         "time_extension_default_seconds": {
           "type": "integer",
@@ -326,16 +326,16 @@
           "minimum": 0,
           "maximum": 3600,
           "default": 300,
-          "description": "rc.6: how long the loop waits, in place, for an answ\u0065r to a budget qu\u0065stion before continuing exactly as it would have without a\u0073king. Bounded on purpose: an unansw\u0065red qu\u0065stion must never be the reason a deliverable is missing. Set 0 to disable waiting."
+          "description": "rc.6: how long the loop waits, in place, for an answer to a budget question before continuing exactly as it would have without asking. Bounded on purpose: an unanswered question must never be the reason a deliverable is missing. Set 0 to disable waiting."
         },
-        "subta\u0073k_concurrency": {
+        "subtask_concurrency": {
           "type": "integer",
           "minimum": 1,
           "maximum": 8,
           "deprecated": true,
           "description": "REMOVED in v2.0.0 and ignored. Accepted so an existing config still validates. Delete it."
         },
-        "parallel_independent_subta\u0073ks": {
+        "parallel_independent_subtasks": {
           "type": "boolean",
           "deprecated": true,
           "description": "REMOVED in v2.0.0 and ignored. Accepted so an existing config still validates. Delete it."
@@ -345,7 +345,7 @@
           "minimum": 300,
           "maximum": 86400,
           "default": 2700,
-          "description": "beta.40: reclaim threshold for a wedged loop. If run() is a\u0073ked to start a session still marked running by the module-level re-entrancy guard, but its last_checkpoint_at/updated_at has not advanced for this many seconds, the tracked loop is treated as dead (torn down with a prior runtime on plugin re-register), the stale guard entry is force-cleared, and the fresh run proceeds. Must exceed a normal long worker SDK call so a busy loop is never reclaimed."
+          "description": "beta.40: reclaim threshold for a wedged loop. If run() is asked to start a session still marked running by the module-level re-entrancy guard, but its last_checkpoint_at/updated_at has not advanced for this many seconds, the tracked loop is treated as dead (torn down with a prior runtime on plugin re-register), the stale guard entry is force-cleared, and the fresh run proceeds. Must exceed a normal long worker SDK call so a busy loop is never reclaimed."
         },
         "teardown_drain_seconds": {
           "type": "integer",
@@ -364,36 +364,36 @@
         "env_wait_retry_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn 'Monitor event' (env-wait hallucination) and made no committed change, re-invoke the sub-ta\u0073k ONCE with corrective context (branched on whether it wrote-but-didn't-commit) instead of failing the run. Set false to disable the retry; the failure is still tagged loop.worker_env_wait_hallucination."
+          "description": "beta.53 (P1b): when a worker ends its turn awaiting a non-existent mid-turn 'Monitor event' (env-wait hallucination) and made no committed change, re-invoke the sub-task ONCE with corrective context (branched on whether it wrote-but-didn't-commit) instead of failing the run. Set false to disable the retry; the failure is still tagged loop.worker_env_wait_hallucination."
         },
         "worker_protocol_retry_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "rc.2: retry a sub-ta\u0073k whose worker ended with no commit for a reason the harness can correct itself -- a safety-guard denial that named a permitted alternative (e.g. inline code denied, 'write a script file instead'), or a turn that ended narrating what it was about to do. The retry prompt quotes the denial verbatim, names the permitted route and restates the observable contract. Set false to disable the retry; classification and audit events still fire."
+          "description": "rc.2: retry a sub-task whose worker ended with no commit for a reason the harness can correct itself -- a safety-guard denial that named a permitted alternative (e.g. inline code denied, 'write a script file instead'), or a turn that ended narrating what it was about to do. The retry prompt quotes the denial verbatim, names the permitted route and restates the observable contract. Set false to disable the retry; classification and audit events still fire."
         },
         "worker_protocol_max_attempts": {
           "type": "integer",
           "minimum": 1,
           "maximum": 5,
           "default": 3,
-          "description": "rc.2: TOTAL attempts for a sub-ta\u0073k under the protocol retry, INCLUDING the first -- the same counting worker_timeout_max_attempts uses. 1 disables retrying without disabling classification. On exhaustion the sub-ta\u0073k fails cleanly with loop.worker_retry_exhausted rather than a\u0073king the operator a qu\u0065stion that has no answ\u0065r."
+          "description": "rc.2: TOTAL attempts for a sub-task under the protocol retry, INCLUDING the first -- the same counting worker_timeout_max_attempts uses. 1 disables retrying without disabling classification. On exhaustion the sub-task fails cleanly with loop.worker_retry_exhausted rather than asking the operator a question that has no answer."
         },
-        "subta\u0073k_deadline_seconds": {
+        "subtask_deadline_seconds": {
           "type": "integer",
           "minimum": 60,
           "maximum": 86400,
           "default": 2100,
-          "description": "beta.60: max wall-clock seconds a single sub-ta\u0073k's dispatch (runOne) may run before it is force-failed. beta.42 bounded only the worker SDK call, but runOne also awaits unbounded git/IO (worktreeHeadSha, readReactions, verify probes, recordSpend) between the row-flip-to-running and the worker spawn; a hang in any of those wedged the whole dispatcher (b59 PR#858 seq-7: 5h30m silent, row stuck running with sdk_session_id=null and no worker process). This bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin."
+          "description": "beta.60: max wall-clock seconds a single sub-task's dispatch (runOne) may run before it is force-failed. beta.42 bounded only the worker SDK call, but runOne also awaits unbounded git/IO (worktreeHeadSha, readReactions, verify probes, recordSpend) between the row-flip-to-running and the worker spawn; a hang in any of those wedged the whole dispatcher (b59 PR#858 seq-7: 5h30m silent, row stuck running with sdk_session_id=null and no worker process). This bounds the entire runOne invocation. Must be >= worker_timeout_seconds plus IO margin."
         },
         "worker_timeout_retry_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "beta.64 (P0-2): when a worker sub-ta\u0073k fails with a first_token_timeout OR a worker timeout, RETRY it ONCE on a FRESH SDK session (no resumeSessionId) before flipping the run terminal. The retry re-verifies; a pass completes the sub-ta\u0073k, a fail falls through to the existing terminal path using the retry's result. Max 1 retry per sub-ta\u0073k."
+          "description": "beta.64 (P0-2): when a worker sub-task fails with a first_token_timeout OR a worker timeout, RETRY it ONCE on a FRESH SDK session (no resumeSessionId) before flipping the run terminal. The retry re-verifies; a pass completes the sub-task, a fail falls through to the existing terminal path using the retry's result. Max 1 retry per sub-task."
         },
         "best_effort_verify": {
           "type": "boolean",
           "default": true,
-          "description": "beta.64 (P0-3): BEST-EFFORT VERIFY. If a VERIFY sub-ta\u0073k (observe-mode, the last/verify sub-ta\u0073k) times out even after the P0-2 retry, AND the prior mutate sub-ta\u0073k's verify_probe was GREEN, AND git diff-stat shows only expected files touched, mark the run verify_skipped (reason worker_timeout), push the branch, and open the PR flagged merge_recommendation=needs_human_review (reusing the beta.62 graceful-PR machinery) rather than discarding shippable work. This is what SHOULD have happened in beta.63 smoke #2 -- the code was shippable, only the verifier hung."
+          "description": "beta.64 (P0-3): BEST-EFFORT VERIFY. If a VERIFY sub-task (observe-mode, the last/verify sub-task) times out even after the P0-2 retry, AND the prior mutate sub-task's verify_probe was GREEN, AND git diff-stat shows only expected files touched, mark the run verify_skipped (reason worker_timeout), push the branch, and open the PR flagged merge_recommendation=needs_human_review (reusing the beta.62 graceful-PR machinery) rather than discarding shippable work. This is what SHOULD have happened in beta.63 smoke #2 -- the code was shippable, only the verifier hung."
         },
         "scripted_verify_fallback": {
           "type": "boolean",
@@ -414,15 +414,15 @@
           "default": 60,
           "description": "beta.81 (Track C / C4): window (seconds) over which recovery_max_resumes auto-resumes for a single session trip the circuit breaker."
         },
-        "recovery_resume_at_subta\u0073k": {
+        "recovery_resume_at_subtask": {
           "type": "boolean",
           "default": true,
-          "description": "beta.81 (Track C / C3): when a session left mid-executing is recovered, RESUME AT the failed/incomplete sub-ta\u0073k (mark the orphaned running sub-ta\u0073k failed, preserve completed sub-ta\u0073k commits) instead of re-planning the whole session from scratch (which re-burns completed sub-ta\u0073ks). Set false to restore the pre-beta.81 full-restart recovery behaviour."
+          "description": "beta.81 (Track C / C3): when a session left mid-executing is recovered, RESUME AT the failed/incomplete sub-task (mark the orphaned running sub-task failed, preserve completed sub-task commits) instead of re-planning the whole session from scratch (which re-burns completed sub-tasks). Set false to restore the pre-beta.81 full-restart recovery behaviour."
         },
         "recovery_replan_guard": {
           "type": "boolean",
           "default": true,
-          "description": "beta.132: refuse to auto-resume a session that already has a plan and at least one finished cycle. Resuming re-plans from scratch (fresh lead + scout, cycle counter reset, completed sub-ta\u0073ks re-run over their own commits), and it fires unattended on plugin boot -- which is how a new build gets installed. Such a session is surfaced for a human instead; sessions with no plan yet still resume normally."
+          "description": "beta.132: refuse to auto-resume a session that already has a plan and at least one finished cycle. Resuming re-plans from scratch (fresh lead + scout, cycle counter reset, completed sub-tasks re-run over their own commits), and it fires unattended on plugin boot -- which is how a new build gets installed. Such a session is surfaced for a human instead; sessions with no plan yet still resume normally."
         },
         "lead_json_retry_enabled": {
           "type": "boolean",
@@ -432,7 +432,7 @@
         "require_worker_context_strict": {
           "type": "boolean",
           "default": false,
-          "description": "beta.99: hard-fail the plan when workerContext is still thin after the bounded re-a\u0073k. Default false -- ship the degraded plan with a warning instead of burning the session (the b98 failure mode)."
+          "description": "beta.99: hard-fail the plan when workerContext is still thin after the bounded re-ask. Default false -- ship the degraded plan with a warning instead of burning the session (the b98 failure mode)."
         },
         "lead_salvage_truncated_plan": {
           "type": "boolean",
@@ -442,22 +442,22 @@
         "lead_syntax_retry_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "beta.128: when a lead plan comes back COMPLETE but fails JSON.parse (e.g. a bare `undefined` token), spend one more call a\u0073king for the same plan with the fault corrected, quoting the parse error and the text around it. Salvage cannot help here because the document is whole."
+          "description": "beta.128: when a lead plan comes back COMPLETE but fails JSON.parse (e.g. a bare `undefined` token), spend one more call asking for the same plan with the fault corrected, quoting the parse error and the text around it. Salvage cannot help here because the document is whole."
         },
         "contract_test_path_reconcile": {
           "type": "boolean",
           "default": true,
-          "description": "beta.100: rewrite a drifted TEST contract path onto the test file the sub-ta\u0073k actually committed, but only when exactly one unmatched test contract and exactly one unclaimed committed test file exist. Closes the b99 seq-3 failure. Default true."
+          "description": "beta.100: rewrite a drifted TEST contract path onto the test file the sub-task actually committed, but only when exactly one unmatched test contract and exactly one unclaimed committed test file exist. Closes the b99 seq-3 failure. Default true."
         },
         "ledger_reachability_guard_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "beta.101: before adversary review, check every sub-ta\u0073k commit_sha is reachable from HEAD and fail the run when any is not, rather than reviewing or shipping a branch that has lost work. Default true."
+          "description": "beta.101: before adversary review, check every sub-task commit_sha is reachable from HEAD and fail the run when any is not, rather than reviewing or shipping a branch that has lost work. Default true."
         },
         "observe_evidence_check_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "rc.10 (F4): require an observe sub-ta\u0073k to have actually read something before its report is accepted and handed to dependent sub-ta\u0073ks. Checks the tool-call counters (allowedToolCalls, files, commit), not the prose. Default true."
+          "description": "rc.10 (F4): require an observe sub-task to have actually read something before its report is accepted and handed to dependent sub-tasks. Checks the tool-call counters (allowedToolCalls, files, commit), not the prose. Default true."
         },
         "plan_path_validation_enabled": {
           "type": "boolean",
@@ -467,12 +467,12 @@
         "plan_policy_conflict_check_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "rc.10 (F3): at plan_ready, compare every filesLikelyTouched entry against the effective safety.path_denylist (honouring path_denylist_exceptions) and record any planned write the policy will refuse; the affected sub-ta\u0073k then pauses for an operator decision INSTEAD of being dispatched. Default true."
+          "description": "rc.10 (F3): at plan_ready, compare every filesLikelyTouched entry against the effective safety.path_denylist (honouring path_denylist_exceptions) and record any planned write the policy will refuse; the affected sub-task then pauses for an operator decision INSTEAD of being dispatched. Default true."
         },
         "plan_path_writeback_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "beta.103: after verification proves a contract path correction, write it back into the sub-ta\u0073k's filesLikelyTouched so later revise cycles scope findings against the real path instead of the lead's fictional one. Never widens a sub-ta\u0073k's scope. Default true."
+          "description": "beta.103: after verification proves a contract path correction, write it back into the sub-task's filesLikelyTouched so later revise cycles scope findings against the real path instead of the lead's fictional one. Never widens a sub-task's scope. Default true."
         },
         "lead_repo_scout_enabled": {
           "type": "boolean",
@@ -504,29 +504,29 @@
           "type": "number",
           "default": 3,
           "minimum": 0,
-          "description": "beta.108: ceiling on orphan-finding adoptions per revise cycle. Adoption widens a sub-ta\u0073k's file scope, and scope is what a revise cycle costs. The b106 revise on PR #932 fired 21 mapping misses across two cycles against the original smoke's two, because the adversary re-reads the whole branch each cycle and keeps surfacing adjacent issues; uncapped adoption would pull most of the branch back into every cycle. Candidates are taken in severity order, and info-severity findings are never adopted -- info is how the adversary records that a PRIOR finding was verified fixed."
+          "description": "beta.108: ceiling on orphan-finding adoptions per revise cycle. Adoption widens a sub-task's file scope, and scope is what a revise cycle costs. The b106 revise on PR #932 fired 21 mapping misses across two cycles against the original smoke's two, because the adversary re-reads the whole branch each cycle and keeps surfacing adjacent issues; uncapped adoption would pull most of the branch back into every cycle. Candidates are taken in severity order, and info-severity findings are never adopted -- info is how the adversary records that a PRIOR finding was verified fixed."
         },
         "revise_route_co_fix_owners": {
           "type": "boolean",
           "default": true,
           "description": "beta.119: also route a finding to the owners of the OTHER files its fix needs (the adversary's `relatedFiles`, plus any repo path the finding's prose names). The b118 smoke raised 'the upload route discards the kind/title fields the drawer sends' in all three cycles and fixed it in none: routing was correct, but the route file's owner could not act alone -- persisting the fields needed a Prisma column it did not own, and removing the dead dropdown needed the drawer it did not own. It reported no-change, indistinguishable from 'already correct', and the finding was re-raised until the cycle ceiling. Set false for pre-b119 single-owner routing."
         },
-        "finding_repair_subta\u0073ks_enabled": {
+        "finding_repair_subtasks_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "rc.3: give a reviewer finding whose files no sub-ta\u0073k declared its own repair sub-ta\u0073k, with exactly those files granted and a verification contract generated from them. Such a finding used to be broadcast to every sub-ta\u0073k as context; on StitchGuard PR #1168 findings about the integration UI, credentials, authorization, OpenAPI, help content, the schema and the migration were shown to ta\u0073ks like 'Declare SAST workflow routes', whose workers correctly refused to edit files outside their scope -- so the finding survived, was re-raised, and was re-routed to the same people next cycle. Set false for the pre-rc.3 broadcast-to-all behaviour."
+          "description": "rc.3: give a reviewer finding whose files no sub-task declared its own repair sub-task, with exactly those files granted and a verification contract generated from them. Such a finding used to be broadcast to every sub-task as context; on StitchGuard PR #1168 findings about the integration UI, credentials, authorization, OpenAPI, help content, the schema and the migration were shown to tasks like 'Declare SAST workflow routes', whose workers correctly refused to edit files outside their scope -- so the finding survived, was re-raised, and was re-routed to the same people next cycle. Set false for the pre-rc.3 broadcast-to-all behaviour."
         },
         "max_cycle_extensions": {
           "type": "integer",
           "minimum": 0,
           "maximum": 5,
           "default": 1,
-          "description": "beta.119: extra execute+review cycles the loop may grant itself past max_cycles when the adversary's finding count is trending DOWN and this run's own average cycle cost still fits inside the session ceiling and the per-user daily cap. b97 already detected this arc and merely a\u0073ked the operator to re-run harness_revise by hand; the b118 smoke went 16 -> 8 -> 9 findings and stopped on the ceiling having spent $12.90 of $30, shipping four blocking findings its own report called small and mechanical. Both conditions must hold, so a stuck run (flat or rising findings) still stops on time. Set 0 to restore the pre-b119 hard ceiling."
+          "description": "beta.119: extra execute+review cycles the loop may grant itself past max_cycles when the adversary's finding count is trending DOWN and this run's own average cycle cost still fits inside the session ceiling and the per-user daily cap. b97 already detected this arc and merely asked the operator to re-run harness_revise by hand; the b118 smoke went 16 -> 8 -> 9 findings and stopped on the ceiling having spent $12.90 of $30, shipping four blocking findings its own report called small and mechanical. Both conditions must hold, so a stuck run (flat or rising findings) still stops on time. Set 0 to restore the pre-b119 hard ceiling."
         },
         "workflow_scope_precheck": {
           "type": "boolean",
           "default": true,
-          "description": "beta.119: when the plan intends to edit .github/workflows/**, verify the routed token carries the `workflow` scope BEFORE running any sub-ta\u0073k. The CI-optimisation run planned a one-line ci.yml change, executed it, reviewed it, and learned only at the push that GitHub refuses workflow writes without that scope -- answ\u0065rable from the plan and a response header before the first worker started. Only a token that PROVABLY lacks the scope stops a run; fine-grained PATs and GitHub App tokens report no scope header and are waved through, since 'cannot tell' must not read as 'cannot do'."
+          "description": "beta.119: when the plan intends to edit .github/workflows/**, verify the routed token carries the `workflow` scope BEFORE running any sub-task. The CI-optimisation run planned a one-line ci.yml change, executed it, reviewed it, and learned only at the push that GitHub refuses workflow writes without that scope -- answerable from the plan and a response header before the first worker started. Only a token that PROVABLY lacks the scope stops a run; fine-grained PATs and GitHub App tokens report no scope header and are waved through, since 'cannot tell' must not read as 'cannot do'."
         },
         "abort_salvage_pr": {
           "type": "boolean",
@@ -555,17 +555,17 @@
         "auto_resolve_satisfied_contract": {
           "type": "boolean",
           "default": true,
-          "description": "beta.111: settle a contract mismatch from the branch's own history instead of pausing the run for a human, when every expected path the sub-ta\u0073k did not touch was already changed by an earlier commit on this branch. Findings are often written conditionally (\"if the handler extends `to` unconditionally...\"); a worker that reads the code, finds the condition already handled and commits only a test then trips the contract check. That escalated on two runs running -- b109 sub-ta\u0073k 2 and b110 sub-ta\u0073k 5, the latter idle for forty minutes at $2.99 waiting for someone to type \"skip\" -- on evidence the harness already held in git. Strict: one expected path never touched on this branch and it still a\u0073ks."
+          "description": "beta.111: settle a contract mismatch from the branch's own history instead of pausing the run for a human, when every expected path the sub-task did not touch was already changed by an earlier commit on this branch. Findings are often written conditionally (\"if the handler extends `to` unconditionally...\"); a worker that reads the code, finds the condition already handled and commits only a test then trips the contract check. That escalated on two runs running -- b109 sub-task 2 and b110 sub-task 5, the latter idle for forty minutes at $2.99 waiting for someone to type \"skip\" -- on evidence the harness already held in git. Strict: one expected path never touched on this branch and it still asks."
         },
         "early_exit_no_change_cycle": {
           "type": "boolean",
           "default": true,
-          "description": "beta.108: end a revise cycle that moved the branch tip nowhere instead of buying an adversary pass over an unchanged diff. The b106 revise's cycle 3 dispatched five sub-ta\u0073ks, four returned subta\u0073k_revise_no_change, and the run still paid for a full review. Applies from cycle 2 only, and only when a prior review exists to carry forward."
+          "description": "beta.108: end a revise cycle that moved the branch tip nowhere instead of buying an adversary pass over an unchanged diff. The b106 revise's cycle 3 dispatched five sub-tasks, four returned subtask_revise_no_change, and the run still paid for a full review. Applies from cycle 2 only, and only when a prior review exists to carry forward."
         },
         "revise_adopt_orphan_findings": {
           "type": "boolean",
           "default": true,
-          "description": "beta.107: when an adversary finding names a file no sub-ta\u0073k claims, let the nearest sub-ta\u0073k adopt it so a worker is actually a\u0073ked to fix it. On b106 the help-content.ts convention finding was raised in both revise cycles, owned by nobody, and could not have been closed however many cycles the run was given."
+          "description": "beta.107: when an adversary finding names a file no sub-task claims, let the nearest sub-task adopt it so a worker is actually asked to fix it. On b106 the help-content.ts convention finding was raised in both revise cycles, owned by nobody, and could not have been closed however many cycles the run was given."
         },
         "resume_ledger_guard_enabled": {
           "type": "boolean",
@@ -580,7 +580,7 @@
         "file_written_accepts_rename": {
           "type": "boolean",
           "default": true,
-          "description": "beta.105: accept a file_written contract when the path was added or renamed-to inside the sub-ta\u0073k's commit range, even though the blob's mtime predates it. git mv preserves mtime, so a correct move made file_committed pass and file_written fail on the same file in the same commit."
+          "description": "beta.105: accept a file_written contract when the path was added or renamed-to inside the sub-task's commit range, even though the blob's mtime predates it. git mv preserves mtime, so a correct move made file_committed pass and file_written fail on the same file in the same commit."
         },
         "worker_timeout_max_attempts": {
           "type": "integer",
@@ -608,12 +608,12 @@
           "minimum": 0,
           "maximum": 0.9,
           "default": 0.15,
-          "description": "beta.61: fraction of the total session budget held in reserve for the pending adversary review + push while a cycle's review hasn't run yet. The pre-sub-ta\u0073k projection adds this reserve so the loop aborts early (before a sub-ta\u0073k that would leave no room to finish the cycle) instead of completing all sub-ta\u0073ks and dying one review short of a PR (the b60 smoke failure). Clamped [0,0.9]."
+          "description": "beta.61: fraction of the total session budget held in reserve for the pending adversary review + push while a cycle's review hasn't run yet. The pre-sub-task projection adds this reserve so the loop aborts early (before a sub-task that would leave no room to finish the cycle) instead of completing all sub-tasks and dying one review short of a PR (the b60 smoke failure). Clamped [0,0.9]."
         },
         "graceful_pr_on_review_crash": {
           "type": "boolean",
           "default": true,
-          "description": "beta.62 (fix #2/#3): when a cycle-N adversary review CRASHES (SDK/parse/persist error) instead of returning a verdict, and a PRIOR cycle already produced a completed review AND this cycle's own sub-ta\u0073k self-verification was fully green, open the PR anyway with merge_recommendation='needs_human_review' rather than discarding the adversary-motivated commits (the b60-attempt-2 silent-review-crash failure: 8 good commits, seq-6 self-verify green, cycle-2 review crashed, work thrown away). When the graceful path is NOT taken, the worktree is preserved (not released) so the commit chain stays inspectable. Set false to keep the hard-fail-and-release behaviour."
+          "description": "beta.62 (fix #2/#3): when a cycle-N adversary review CRASHES (SDK/parse/persist error) instead of returning a verdict, and a PRIOR cycle already produced a completed review AND this cycle's own sub-task self-verification was fully green, open the PR anyway with merge_recommendation='needs_human_review' rather than discarding the adversary-motivated commits (the b60-attempt-2 silent-review-crash failure: 8 good commits, seq-6 self-verify green, cycle-2 review crashed, work thrown away). When the graceful path is NOT taken, the worktree is preserved (not released) so the commit chain stays inspectable. Set false to keep the hard-fail-and-release behaviour."
         },
         "session_stall_seconds": {
           "type": "integer",
@@ -642,7 +642,7 @@
         "enforce_worker_context": {
           "type": "boolean",
           "default": true,
-          "description": "beta.67 (P0a): enforce SUBSTANTIVE workerContext (rationale + file-anchored changeSpec/excerpt) on mutate/mixed sub-ta\u0073ks at validatePlan. true (default) -> one bounded lead re-a\u0073k then hard-throw; false -> WARN-only escape hatch. Enforces the founding orchestrator-split goal (cheap workers implement from Fable's investigation instead of re-scanning)."
+          "description": "beta.67 (P0a): enforce SUBSTANTIVE workerContext (rationale + file-anchored changeSpec/excerpt) on mutate/mixed sub-tasks at validatePlan. true (default) -> one bounded lead re-ask then hard-throw; false -> WARN-only escape hatch. Enforces the founding orchestrator-split goal (cheap workers implement from Fable's investigation instead of re-scanning)."
         },
         "revise_spec_turn_enabled": {
           "type": "boolean",
@@ -657,17 +657,17 @@
         "skip_observe_reprobe_on_revise": {
           "type": "boolean",
           "default": true,
-          "description": "beta.70 (F5): skip an observe-only sub-ta\u0073k's re-probe on a revise cycle when the same seq already completed cleanly in a prior cycle (PR #870 re-ran the seq-1 probe for 58s/$0.29 despite the revise-spec saying 'no changes'). Default true."
+          "description": "beta.70 (F5): skip an observe-only sub-task's re-probe on a revise cycle when the same seq already completed cleanly in a prior cycle (PR #870 re-ran the seq-1 probe for 58s/$0.29 despite the revise-spec saying 'no changes'). Default true."
         },
         "revise_scoping_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "beta.91 (Fix 1): on a revise cycle, skip sub-ta\u0073ks whose file scope does not intersect any review finding's file (already-correct from a prior cycle; the DR/BCP smoke re-ran 8 of 12 no-change sub-ta\u0073ks). A finding with no resolvable file makes the cycle unscopable => run every sub-ta\u0073k (conservative). Never skips a sub-ta\u0073k a kept one depends on. Default true; false restores beta.90 run-all."
+          "description": "beta.91 (Fix 1): on a revise cycle, skip sub-tasks whose file scope does not intersect any review finding's file (already-correct from a prior cycle; the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks). A finding with no resolvable file makes the cycle unscopable => run every sub-task (conservative). Never skips a sub-task a kept one depends on. Default true; false restores beta.90 run-all."
         },
         "deterministic_revise_mapping": {
           "type": "boolean",
           "default": true,
-          "description": "beta.92: use the DETERMINISTIC finding->sub-ta\u0073k mapping on a revise cycle instead of the deleted LLM revise-spec turn (which kept timing out on the cron lane cap across b89/b90/b91 and falling back to a raw finding-dump that induced worker confabs). Maps each diff-addressable finding (spec|quality|security, .file required) to the sub-ta\u0073k(s) owning its file via strict resolveContractPath; broadcasts meta (fit|runtime) findings + mapping-misses to all sub-ta\u0073ks (never dropped). Default true; false restores the beta.56 whole-review raw hint fallback."
+          "description": "beta.92: use the DETERMINISTIC finding->sub-task mapping on a revise cycle instead of the deleted LLM revise-spec turn (which kept timing out on the cron lane cap across b89/b90/b91 and falling back to a raw finding-dump that induced worker confabs). Maps each diff-addressable finding (spec|quality|security, .file required) to the sub-task(s) owning its file via strict resolveContractPath; broadcasts meta (fit|runtime) findings + mapping-misses to all sub-tasks (never dropped). Default true; false restores the beta.56 whole-review raw hint fallback."
         },
         "worker_confab_detect": {
           "type": "boolean",
@@ -698,17 +698,17 @@
           "minimum": 30,
           "maximum": 600,
           "default": 90,
-          "description": "beta.90 (Feature 2): worker STREAM-SLOW idle-warn window (seconds). Inside consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick watches for token/message activity; if the stream goes IDLE (no delta) for this many seconds it emits loop.worker_stream_slow and bumps the session liveness heartbeat (last_progress_at) so harness_progress surfaces 'worker stream idle Ns' instead of the phase looking wedged. OBSERVABILITY ONLY -- it NEVER aborts (a slow stream recovered on b89; a blunt abort would have wrongly killed it). Root cause: session 041bd3d3 sub-ta\u0073k 2, worker stream opened then went idle ~15 min with no signal in harness_progress. Default 90; clamped [30,600]."
+          "description": "beta.90 (Feature 2): worker STREAM-SLOW idle-warn window (seconds). Inside consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick watches for token/message activity; if the stream goes IDLE (no delta) for this many seconds it emits loop.worker_stream_slow and bumps the session liveness heartbeat (last_progress_at) so harness_progress surfaces 'worker stream idle Ns' instead of the phase looking wedged. OBSERVABILITY ONLY -- it NEVER aborts (a slow stream recovered on b89; a blunt abort would have wrongly killed it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went idle ~15 min with no signal in harness_progress. Default 90; clamped [30,600]."
         },
         "deterministic_final_scope_check": {
           "type": "boolean",
           "default": true,
-          "description": "beta.94 (Feature 1): DETERMINISTIC FINAL SCOPE CHECK. (a) Elide a trailing PURE-OBSERVE scope/boundary 'final verification' sub-ta\u0073k from the worker plan (ta\u0073kMode observe, no mutate verify, description matches scope|boundar|final-verif|nothing-outside) -- it has nothing to write so a worker can go idle on it indefinitely (the b93 seq-12 stall) while adding zero signal. Audited as loop.final_verify_subta\u0073k_elided. (b) After the last mutate sub-ta\u0073k, compare the files committed in <base>..HEAD against the UNION of every sub-ta\u0073k's declared file scope; a committed file outside the union folds into the adversary review as a fit/medium ReviewFinding (never a hard fail). Audited as loop.final_scope_check_ran / loop.final_scope_check_out_of_scope. Default true."
+          "description": "beta.94 (Feature 1): DETERMINISTIC FINAL SCOPE CHECK. (a) Elide a trailing PURE-OBSERVE scope/boundary 'final verification' sub-task from the worker plan (taskMode observe, no mutate verify, description matches scope|boundar|final-verif|nothing-outside) -- it has nothing to write so a worker can go idle on it indefinitely (the b93 seq-12 stall) while adding zero signal. Audited as loop.final_verify_subtask_elided. (b) After the last mutate sub-task, compare the files committed in <base>..HEAD against the UNION of every sub-task's declared file scope; a committed file outside the union folds into the adversary review as a fit/medium ReviewFinding (never a hard fail). Audited as loop.final_scope_check_ran / loop.final_scope_check_out_of_scope. Default true."
         },
         "worker_idle_abort_enabled": {
           "type": "boolean",
           "default": false,
-          "description": "beta.94 (Feature 2): NARROW IDLE-NO-WORK ABORT. loop.worker_idle_no_work fires (LOG-ONLY) when the conjunction holds: >= worker_idle_consecutive_slow consecutive worker_stream_slow ticks, all with tokensOut===0, cumulative elapsed > worker_idle_min_elapsed_seconds, AND no worktree writes during the sub-ta\u0073k (the b93 seq-12 signature). When this flag is TRUE the same conjunction ALSO aborts the sub-ta\u0073k cleanly via the existing WorkerTimeoutError / {outcome:'timeout'} terminal path (worktree preserved -- no new terminal path). Default FALSE (beta.90 observability-only behaviour preserved)."
+          "description": "beta.94 (Feature 2): NARROW IDLE-NO-WORK ABORT. loop.worker_idle_no_work fires (LOG-ONLY) when the conjunction holds: >= worker_idle_consecutive_slow consecutive worker_stream_slow ticks, all with tokensOut===0, cumulative elapsed > worker_idle_min_elapsed_seconds, AND no worktree writes during the sub-task (the b93 seq-12 signature). When this flag is TRUE the same conjunction ALSO aborts the sub-task cleanly via the existing WorkerTimeoutError / {outcome:'timeout'} terminal path (worktree preserved -- no new terminal path). Default FALSE (beta.90 observability-only behaviour preserved)."
         },
         "worker_idle_consecutive_slow": {
           "type": "integer",
@@ -727,7 +727,7 @@
         "revise_targeted_planbase_window": {
           "type": "boolean",
           "default": true,
-          "description": "beta.95: on a revise cycle, verify a TARGETED contract file against the branch fork-point window (plan_base_sha..HEAD) rather than the worker-session-start window. Without it, a file cycle 1 already touched has an mtime older than cycle 2's sub-ta\u0073k start and its cycle-1 commit sits outside the narrower range, so file_written and file_committed both false-fail on a genuine cycle-2 edit. false restores the b94 window. Added to the manifest in b124: this was documented as a kill-switch since b95 and read in three places, but the gateway would reject any config that pulled it."
+          "description": "beta.95: on a revise cycle, verify a TARGETED contract file against the branch fork-point window (plan_base_sha..HEAD) rather than the worker-session-start window. Without it, a file cycle 1 already touched has an mtime older than cycle 2's sub-task start and its cycle-1 commit sits outside the narrower range, so file_written and file_committed both false-fail on a genuine cycle-2 edit. false restores the b94 window. Added to the manifest in b124: this was documented as a kill-switch since b95 and read in three places, but the gateway would reject any config that pulled it."
         }
       }
     },
@@ -761,7 +761,7 @@
           "minimum": 1,
           "maximum": 20,
           "default": 2,
-          "description": "beta.124: how many CONSECUTIVE polls answ\u0065red 401/403/404 before the harness stops polling CI and reports the denial as the outcome. A denial is an answ\u0065r, not a delay: the b123 smoke a\u0073ked the check-runs API 44 times over 896 seconds (12% of the run's wall clock), was told 403 every time, and ended on 'could NOT determine CI state' -- which does not tell anyone what to fix. Stopping early instead reports the remedy. Not 1, because a lone 403 can be a secondary rate limit or a token mid-rotation; two in a row is a fact about the configuration. The merge recommendation is unchanged -- an unreadable gate is still needs_human_review, never a pass. Minimum 1."
+          "description": "beta.124: how many CONSECUTIVE polls answered 401/403/404 before the harness stops polling CI and reports the denial as the outcome. A denial is an answer, not a delay: the b123 smoke asked the check-runs API 44 times over 896 seconds (12% of the run's wall clock), was told 403 every time, and ended on 'could NOT determine CI state' -- which does not tell anyone what to fix. Stopping early instead reports the remedy. Not 1, because a lone 403 can be a secondary rate limit or a token mid-rotation; two in a row is a fact about the configuration. The merge recommendation is unchanged -- an unreadable gate is still needs_human_review, never a pass. Minimum 1."
         },
         "max_repair_cycles": {
           "type": "integer",
@@ -770,10 +770,10 @@
           "default": 1,
           "description": "beta.127: extra revise cycles a red CI may buy at the ship gate, on top of max_cycles and any beta.124 extension. Only a definite failure with a parseable log qualifies. 0 restores b126 behaviour."
         },
-        "repair_subta\u0073k_enabled": {
+        "repair_subtask_enabled": {
           "type": "boolean",
           "default": true,
-          "description": "beta.131: when a red CI names no file, give the failure its own sub-ta\u0073k carrying the raw output and no declared file scope, instead of broadcasting it to every sub-ta\u0073k and having none of them own it."
+          "description": "beta.131: when a red CI names no file, give the failure its own sub-task carrying the raw output and no declared file scope, instead of broadcasting it to every sub-task and having none of them own it."
         },
         "workflow_runs_fallback": {
           "type": "boolean",
@@ -784,7 +784,7 @@
           "type": "integer",
           "minimum": 1,
           "default": 4,
-          "description": "rc.5 (#2): how many times the harness re-reads the remote branch tip (git ls-remote) when confirming that a push published the exact candidate SHA. This exists for ONE observed phenomenon -- GitHub's PR metadata can briefly lag a successful push, so an immediate read can disagree with a ref that demonstrably just landed. It is NOT a retry for a failed push: the harness never re-pushes during verification, and a permanent mismatch is reported as UNPUBLISHED (worktree preserved) rather than waited out. Raising this buys patience, never a greener answ\u0065r."
+          "description": "rc.5 (#2): how many times the harness re-reads the remote branch tip (git ls-remote) when confirming that a push published the exact candidate SHA. This exists for ONE observed phenomenon -- GitHub's PR metadata can briefly lag a successful push, so an immediate read can disagree with a ref that demonstrably just landed. It is NOT a retry for a failed push: the harness never re-pushes during verification, and a permanent mismatch is reported as UNPUBLISHED (worktree preserved) rather than waited out. Raising this buys patience, never a greener answer."
         },
         "publication_verify_delay_ms": {
           "type": "integer",
@@ -1140,7 +1140,7 @@
         "bimodal_clarify": {
           "type": "boolean",
           "default": true,
-          "description": "beta.80 (F2): the crystalliser self-reports competing readings of a brief; when >= bimodal_min_interpretations distinct readings (or an explicit clarific\u0061tionNeeded) exist, the run PAUSES for a hard clarify (pause-and-wait, no session started) instead of guessing one reading. Set false to always proceed."
+          "description": "beta.80 (F2): the crystalliser self-reports competing readings of a brief; when >= bimodal_min_interpretations distinct readings (or an explicit clarificationNeeded) exist, the run PAUSES for a hard clarify (pause-and-wait, no session started) instead of guessing one reading. Set false to always proceed."
         },
         "bimodal_min_interpretations": {
           "type": "integer",
@@ -1155,14 +1155,14 @@
             "type": "string"
           },
           "default": [],
-          "description": "beta.120 (brief fidelity): directories harness_run's `requestPath` may read a specification from. EMPTY BY DEFAULT, which disables file reads -- the harness holds GitHub tokens and a brief's contents reach model prompts and PR bodies, so an operator must name the safe directories explicitly. Point this at wherever the calling runtime stores user-uploaded files. `~` is expanded and symlinks are resolved before the check. Motivation: on the b119 smoke the calling agent retyped a 10,710-byte spec as a 40-line summary and the feature changed (`performedAt` became `scheduledAt`); reading the bytes removes that hop."
+          "description": "Legacy request-file intake roots. Inert for the four-tool control plane and retained only for configuration compatibility."
         },
         "request_file_max_bytes": {
           "type": "integer",
           "minimum": 1024,
           "maximum": 5242880,
           "default": 262144,
-          "description": "beta.120: hard cap on a file read via harness_run's `requestPath`. Default 262144 (256 KB)."
+          "description": "Legacy request-file intake size limit. Inert for the four-tool control plane and retained only for configuration compatibility."
         },
         "confirm_before_spend": {
           "type": "string",
@@ -1172,7 +1172,7 @@
             "always"
           ],
           "default": "always",
-          "description": "Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; harness_answ\u0065r can approve or change the brief, budget, or time limit."
+          "description": "Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; harness_answer can approve or change the brief, budget, or time limit."
         },
         "confirm_min_risk": {
           "type": "string",
@@ -1181,7 +1181,7 @@
             "high"
           ],
           "default": "high",
-          "description": "beta.120: lowest riskLevel that triggers a confirmation under confirm_before_spend:'high_risk'. Default 'high'; set 'medium' for a wider net. There is deliberately NO budget threshold: estimated_usd is derived from the session budget rather than the ta\u0073k, so gating on it would silently turn 'high_risk' into 'always'."
+          "description": "beta.120: lowest riskLevel that triggers a confirmation under confirm_before_spend:'high_risk'. Default 'high'; set 'medium' for a wider net. There is deliberately NO budget threshold: estimated_usd is derived from the session budget rather than the task, so gating on it would silently turn 'high_risk' into 'always'."
         }
       }
     },
@@ -1193,7 +1193,7 @@
         "run_repo_check_scripts": {
           "type": "boolean",
           "default": false,
-          "description": "beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the verification spine -- verification is CI-only now (Carel: 'I do not want it to run locally, ever'). Default false. When true (opt-in), the final-verify sub-ta\u0073k runs repo-declared check scripts inline in the worktree (beta.63 behaviour) as REVISE-worthy findings. The runner plumbing is otherwise kept only for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-ta\u0073k, NOT as a verify gate."
+          "description": "beta.81 (Track B / B4): the LOCAL check-script runner is RETIRED from the verification spine -- verification is CI-only now (Carel: 'I do not want it to run locally, ever'). Default false. When true (opt-in), the final-verify sub-task runs repo-declared check scripts inline in the worktree (beta.63 behaviour) as REVISE-worthy findings. The runner plumbing is otherwise kept only for the scripted-verify FALLBACK of a timed-out observe VERIFY sub-task, NOT as a verify gate."
         },
         "check_script_allowlist": {
           "type": "array",
@@ -1230,7 +1230,7 @@
         "generators": {
           "type": "array",
           "default": [],
-          "description": "rc.5: operator-declared ownership of GENERATED artifacts, mapping a package.json script to the repo-relative paths it produces. Until rc.5 the worker and adversary were told the harness regenerated derived artifacts in a post-worker convention-check phase; no such phase exists (that phase runs CHECK scripts, commits nothing, and is off by default since beta.81), so verification demanded a file nobody was going to write and reported its absence as a path mismatch. A mapping assigns generation to the WORKER, scoped to the named script and paths. It authorizes worker-side execution only -- the harness never runs these scripts. Ownership is NEVER inferred: an unmapped path is an ordinary file that gets no generation AND no exemption from the normal contract checks. rc.7: a `produces` path may also be matched by repos.never_commit_paths, and usually should be: that list now reverts a match for every commit EXCEPT one made by a sub-ta\u0073k authorized to generate it, so a repository with a checked-in generated bundle keeps the blanket exclusion that stops unrelated sub-ta\u0073ks sweeping the tree in. rc.6 refused this combination; that refusal is retired and no config needs editing. rc.6: optional `inputs` declare what an artifact is derived from, which is the only evidence the harness has for calling a committed artifact stale; without them an untouched artifact is accepted rather than failed on an assumption. Default [].",
+          "description": "rc.5: operator-declared ownership of GENERATED artifacts, mapping a package.json script to the repo-relative paths it produces. Until rc.5 the worker and adversary were told the harness regenerated derived artifacts in a post-worker convention-check phase; no such phase exists (that phase runs CHECK scripts, commits nothing, and is off by default since beta.81), so verification demanded a file nobody was going to write and reported its absence as a path mismatch. A mapping assigns generation to the WORKER, scoped to the named script and paths. It authorizes worker-side execution only -- the harness never runs these scripts. Ownership is NEVER inferred: an unmapped path is an ordinary file that gets no generation AND no exemption from the normal contract checks. rc.7: a `produces` path may also be matched by repos.never_commit_paths, and usually should be: that list now reverts a match for every commit EXCEPT one made by a sub-task authorized to generate it, so a repository with a checked-in generated bundle keeps the blanket exclusion that stops unrelated sub-tasks sweeping the tree in. rc.6 refused this combination; that refusal is retired and no config needs editing. rc.6: optional `inputs` declare what an artifact is derived from, which is the only evidence the harness has for calling a committed artifact stale; without them an untouched artifact is accepted rather than failed on an assumption. Default [].",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -1257,7 +1257,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "rc.6: repo-relative paths this script READS, in the same file or 'dir/' form as produces. Optional, and used only to prove staleness. The harness never executes a generator, so when a derived artifact did not change it cannot otherwise tell 'nobody ran the generator' from 'the generator ran and was a legitimate no-op' -- rc.5 assumed the former and failed the contract, which made a sub-ta\u0073k whose only change was a test file unsatisfiable. With inputs declared, an artifact is reported stale only when git shows one of these paths changed while the artifact did not. Without them, an unchanged artifact that is already committed on the branch is accepted as an unproven no-op."
+                "description": "rc.6: repo-relative paths this script READS, in the same file or 'dir/' form as produces. Optional, and used only to prove staleness. The harness never executes a generator, so when a derived artifact did not change it cannot otherwise tell 'nobody ran the generator' from 'the generator ran and was a legitimate no-op' -- rc.5 assumed the former and failed the contract, which made a sub-task whose only change was a test file unsatisfiable. With inputs declared, an artifact is reported stale only when git shows one of these paths changed while the artifact did not. Without them, an unchanged artifact that is already committed on the branch is accepted as an unproven no-op."
               }
             }
           }
@@ -1267,10 +1267,10 @@
           "default": false,
           "description": "rc.7: summarise declared generated output in the adversary's diff instead of sending it verbatim. A regenerated bundle is 1,663 files on the StitchGuard OKF tree; sent whole it pushes the review past the single-chunk ceiling and splits it into chunks reviewed in sequence, so the hand-written change that needs review is scattered across calls that each see a fraction of it, and most of the cost is spent reading machine output. Folded, every generated file is still NAMED with its line counts and owning script -- the adversary knows exactly what changed and may demand to see any of it -- but the content is omitted. Default FALSE: this narrows what the reviewer reads, and a deployment should choose that rather than inherit it on upgrade. Inert until verify.generators declares ownership, since nothing outside it is ever eligible."
         },
-        "append_generation_subta\u0073k": {
+        "append_generation_subtask": {
           "type": "boolean",
           "default": false,
-          "description": "rc.7: append a generation sub-ta\u0073k when a declared generator's `inputs` changed and no sub-ta\u0073k in the plan owns its output. Ownership only carries authority when somebody holds it, and on the observed plans nobody did -- the bundle was regenerated as a side effect of unrelated work by whichever sub-ta\u0073k happened to run a script that rewrote it, which is the origin of this whole class of defect. This gives the tree a standing owner: one turn, appended LAST (a generator that runs before a later sub-ta\u0073k edits its sources produces a bundle stale by PR time), running the generator and committing what it writes. It is a sub-ta\u0073k rather than orchestrator work because verify.generators authorizes worker-side execution only. Evidenced, never speculative: a generator with no declared `inputs` is never triggered, because beta.70 already paid for 'run it just in case' (a 19-minute run across 1,436 files for a zero diff), so declaring inputs is how an operator opts a generator in. Default FALSE, because this adds a worker turn, and therefore cost, to runs that did not previously have one."
+          "description": "rc.7: append a generation sub-task when a declared generator's `inputs` changed and no sub-task in the plan owns its output. Ownership only carries authority when somebody holds it, and on the observed plans nobody did -- the bundle was regenerated as a side effect of unrelated work by whichever sub-task happened to run a script that rewrote it, which is the origin of this whole class of defect. This gives the tree a standing owner: one turn, appended LAST (a generator that runs before a later sub-task edits its sources produces a bundle stale by PR time), running the generator and committing what it writes. It is a sub-task rather than orchestrator work because verify.generators authorizes worker-side execution only. Evidenced, never speculative: a generator with no declared `inputs` is never triggered, because beta.70 already paid for 'run it just in case' (a 19-minute run across 1,436 files for a zero diff), so declaring inputs is how an operator opts a generator in. Default FALSE, because this adds a worker turn, and therefore cost, to runs that did not previously have one."
         }
       }
     },
@@ -1291,7 +1291,7 @@
         "full_prompts": {
           "type": "boolean",
           "default": false,
-          "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction — redaction on write is always applied."
+          "description": "beta.63 (Part B): when false (DEFAULT) only prompt SIZES + TAILS are logged, not full prompt bodies (transcripts can be huge + sensitive). Set true for deep-debug. This does NOT disable secret redaction \u2014 redaction on write is always applied."
         },
         "retention_days": {
           "type": "integer",

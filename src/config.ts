@@ -1367,6 +1367,9 @@ export interface LoopConfig {
    */
   scripted_verify_fallback?: boolean;
   /**
+   * INERT for ordinary control-plane runs: legacy session auto-resume is
+   * disabled. Retained so existing configurations continue to validate.
+   *
    * beta.81 (Track C / C4): recovery-resume circuit breaker. Forensic
    * d01a7484 showed `recovery.auto_resuming` firing 4x in ~40s on a
    * `planning`-phase session (interrupted -> re-resumed before it could
@@ -1378,11 +1381,17 @@ export interface LoopConfig {
    */
   recovery_max_resumes?: number;
   /**
+   * INERT for ordinary control-plane runs: legacy session auto-resume is
+   * disabled. Retained so existing configurations continue to validate.
+   *
    * beta.81 (Track C / C4): window (seconds) over which `recovery_max_resumes`
    * auto-resumes for a single session trip the circuit breaker. Default 60.
    */
   recovery_resume_window_seconds?: number;
   /**
+   * INERT for ordinary control-plane runs: canonical recovery uses fenced
+   * `control_dispatch_intents`. Retained for configuration compatibility.
+   *
    * beta.81 (Track C / C3): when a session left mid-`executing` is recovered,
    * RESUME AT the failed/incomplete sub-task (mark the orphaned running
    * sub-task `failed`, preserve completed sub-task commits) instead of

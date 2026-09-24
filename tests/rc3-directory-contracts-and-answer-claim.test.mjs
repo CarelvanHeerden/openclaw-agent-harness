@@ -1,0 +1,8 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { evaluatePrReadiness } from "../dist/control/readiness.js";
+const h="a".repeat(40),d="b".repeat(64);const base={finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:1,required:1,indeterminate:0},candidateSha:h,publication:{sha:h,observedAt:1},pullRequest:{repository:"o/r",baseRef:"main",headSha:h,open:true},expectedRepository:"o/r",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["test"],successfulChecks:["test"],sha:h,status:"success"},runtimeEvidence:{status:"pass"},securityEvidence:{status:"pass"},elapsedTimeMs:1,timeLimitMs:2,changedPaths:["src/a/x.ts"],allowedScope:["src/**"],excludedScope:["src/private/**"],operationsPerformed:["test"],allowedOperations:["test"],credentialRouteDigest:d,expectedCredentialRouteDigest:d,secretExposure:{detected:false,evidence:"pass"},spendUsd:1,budgetUsd:2};
+const service=readFileSync(new URL("../src/control/service.ts",import.meta.url),"utf8");
+test("directory contracts accept descendants and reject exclusions",()=>{assert.equal(evaluatePrReadiness(base,2).ready,true);const r=evaluatePrReadiness({...base,changedPaths:["src/private/key.ts"]},2);assert.equal(r.ready,false);assert.ok(r.failures.includes("scope_exceeded"));});
+test("path traversal cannot be smuggled into prepared scope",()=>{assert.match(service,/path_violation/);assert.match(service,/p\.split\("\/"\)\.includes\("\.\."\)/);});

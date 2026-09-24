@@ -1,0 +1,10 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, existsSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const { InteractionLog, redactValue, summarisePrompt, PROMPT_TAIL_CHARS } = await import("../dist/state/interaction-log.js");
+const dir=()=>mkdtempSync(join(tmpdir(),"control-ilog-"));
+test("durable interaction accounting is JSONL, redacted, and outside worktrees",()=>{const d=dir(),logs=join(d,"logs");try{const l=new InteractionLog({config:{enabled:true,dir:logs,fullPrompts:true,retentionDays:14}});l.logSdkRequest("chg_1",{role:"engine",model:"m",seq:1,prompt:"secret ghp_0123456789abcdef0123456789abcdef0123"});l.logSdkResponse("chg_1",{role:"engine",model:"m",seq:1,finishReason:"end_turn",costUsd:0.2});const p=join(logs,"session-chg_1.jsonl"),raw=readFileSync(p,"utf8");assert.equal(raw.trim().split("\n").length,2);for(const x of raw.trim().split("\n"))JSON.parse(x);assert.doesNotMatch(raw,/ghp_0123456789abcdef/);assert.ok(existsSync(join(logs,"harness-interactions.jsonl")));assert.ok(!p.includes("worktree"));}finally{rmSync(d,{recursive:true,force:true})}});
+test("prompt storage remains bounded unless explicitly enabled",()=>{const p="x".repeat(PROMPT_TAIL_CHARS+100);const safe=summarisePrompt(p,false);assert.equal(safe.promptChars,p.length);assert.equal(safe.promptTail.length,PROMPT_TAIL_CHARS);assert.equal(safe.promptFull,undefined);assert.equal(summarisePrompt(p,true).promptFull,p);assert.doesNotMatch(JSON.stringify(redactValue({token:"Bearer abcdefghij123456"})),/abcdefghij123456/);});
+test("retention prunes old per-change logs",()=>{const d=dir(),logs=join(d,"logs");try{const l=new InteractionLog({config:{enabled:true,dir:logs,fullPrompts:false,retentionDays:1}});l.log("old",{event:"state_transition"});const p=join(logs,"session-old.jsonl"),old=(Date.now()-3*86400000)/1000;utimesSync(p,old,old);assert.equal(l.prune().removed,1);assert.equal(existsSync(p),false);}finally{rmSync(d,{recursive:true,force:true})}});

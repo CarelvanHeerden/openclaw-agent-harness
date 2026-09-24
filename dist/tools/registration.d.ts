@@ -9,7 +9,7 @@ export declare const CONTROL_TERMINAL_CODES: readonly ["budget_exceeded", "time_
 export declare const CONTROL_READINESS_PREDICATES = "state=pr_ready;verdict=pass;blocking===0;published_sha=pr_head_sha;required_ci;runtime_evidence;spend<=budget_envelope";
 /** Trusted host fields include requesterSenderId and conversationId. */
 /** Public error vocabulary for trusted boundaries. */
-export declare const CONTROL_CONFIRMATION_DOMAIN = "control-plane-confirm/v1";
+export declare const CONTROL_CONFIRMATION_DOMAIN = "control-plane-confirm/v2";
 export declare const CONTROL_ATTESTATION_ERRORS: readonly ["confirmation_attestation_required", "stale_confirmation", "wrong_actor", "wrong_conversation", "already_confirmed", "confirmation_replayed", "merge_attestation_required", "stale_pr_head", "already_merged"];
 /**
  * Register the ordinary OpenClaw product surface. It intentionally contains
