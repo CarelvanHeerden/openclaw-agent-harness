@@ -355,7 +355,7 @@ test("a successful crystallise sums the classifier AND the brief", async () => {
   const out = await crystallisePrompt("build a thing", {
     config: { brief: {} },
     logger: { info: () => {}, warn: () => {} },
-    callClassifier: async () => ({ intent: "dev", reason: "", costUsd: 0.004, tokensIn: 900, tokensOut: 40 }),
+    callClassifier: async () => ({ intent: "dev_task", reason: "", costUsd: 0.004, tokensIn: 900, tokensOut: 40 }),
     callCrystalliser: async () => ({
       title: "Add a thing", motivation: "Because the thing is missing.", acceptanceCriteria: ["it exists"],
       filesLikelyTouched: [], outOfScope: [], riskLevel: "low",
@@ -375,7 +375,7 @@ test("tokens without a price mark the total as a FLOOR, not a total", async () =
   const out = await crystallisePrompt("x", {
     config: { brief: {} },
     logger: { info: () => {}, warn: () => {} },
-    callClassifier: async () => ({ intent: "dev", reason: "", tokensIn: 900, tokensOut: 40 }),
+    callClassifier: async () => ({ intent: "dev_task", reason: "", tokensIn: 900, tokensOut: 40 }),
     callCrystalliser: async () => ({
       title: "Add a thing", motivation: "Because the thing is missing.", acceptanceCriteria: ["it exists"],
       filesLikelyTouched: [], outOfScope: [], riskLevel: "low",

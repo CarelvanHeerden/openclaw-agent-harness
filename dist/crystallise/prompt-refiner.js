@@ -84,7 +84,30 @@ concepts) {
     if (effectiveCls.intent === "not_dev" || effectiveCls.intent === "unsafe") {
         return { kind: "reject", reason: effectiveCls.reason, intent: effectiveCls.intent, spend };
     }
-    const brief = await deps.callCrystalliser(userText, effectiveCls, concepts);
+    if (effectiveCls.intent !== "dev_task") {
+        deps.logger.warn("[crystalliser] unknown classifier intent rejected", { intent: rawIntent });
+        audit("crystallise.unsafe_model_output", { role: "classifier", reason: "unknown_intent", intent: rawIntent });
+        return {
+            kind: "reject",
+            reason: "The request classifier returned an unrecognized intent, so the request was refused safely.",
+            intent: "unsafe",
+            spend,
+        };
+    }
+    let brief;
+    try {
+        brief = await deps.callCrystalliser(userText, effectiveCls, concepts);
+    }
+    catch (error) {
+        deps.logger.warn("[crystalliser] malformed crystalliser output rejected", { error: String(error) });
+        audit("crystallise.unsafe_model_output", { role: "crystalliser", reason: "call_or_parse_failure" });
+        return {
+            kind: "reject",
+            reason: "The request could not be converted into a safe, bounded repository change.",
+            intent: "unsafe",
+            spend,
+        };
+    }
     addSpend(spend, brief);
     // beta.21: guarantee concepts land on the brief even if the SDK-side
     // crystalliser silently drops the field (e.g. pre-beta.21 model version).
@@ -121,20 +144,47 @@ concepts) {
     // Select the first model-ranked buildable reading, explicitly bound it to a
     // repository change with tests, and discard the pause-only fields before the
     // brief is persisted or shown for confirmation.
-    resolveRetiredAmbiguityFields(brief, audit);
-    validateBrief(brief);
+    if (!resolveRetiredAmbiguityFields(brief, audit)) {
+        return {
+            kind: "reject",
+            reason: "The request could not be converted into a safe, bounded repository change.",
+            intent: "unsafe",
+            spend,
+        };
+    }
+    try {
+        validateBrief(brief);
+    }
+    catch (error) {
+        deps.logger.warn("[crystalliser] invalid brief rejected", { error: String(error) });
+        audit("crystallise.unsafe_model_output", { role: "crystalliser", reason: "invalid_brief" });
+        return {
+            kind: "reject",
+            reason: "The request could not be converted into a safe, bounded repository change.",
+            intent: "unsafe",
+            spend,
+        };
+    }
     return { kind: "brief", brief, classification: effectiveCls, spend };
 }
 function resolveRetiredAmbiguityFields(brief, audit) {
     const legacy = brief;
     const interpretations = Array.isArray(legacy.interpretations) ? legacy.interpretations : [];
-    const firstReading = interpretations
-        .map((item) => typeof item?.reading === "string" ? item.reading.trim() : "")
-        .find(Boolean);
-    const options = Array.isArray(legacy.clarificationNeeded?.options)
-        ? legacy.clarificationNeeded.options.filter((value) => typeof value === "string" && value.trim().length > 0)
-        : [];
-    const selected = firstReading ?? options[0]?.trim();
+    const candidates = [
+        ...interpretations.map((item) => typeof item?.reading === "string" ? item.reading.trim() : ""),
+        ...(Array.isArray(legacy.clarificationNeeded?.options)
+            ? legacy.clarificationNeeded.options.filter((value) => typeof value === "string").map((value) => value.trim())
+            : []),
+    ].filter(Boolean);
+    const liveSideEffect = /\b(?:live|production|prod|deploy|publish|release|send|email|message|delete|remove|migrate|migration|backfill|rotate|revoke|merge|push|api\s+call|external\s+(?:system|service))\b/i;
+    const boundedRepositoryWork = /\b(?:build|implement|add|change|fix|refactor|document|runbook|test|repository|code|feature)\b/i;
+    const selected = candidates.find((candidate) => boundedRepositoryWork.test(candidate) && !liveSideEffect.test(candidate));
+    if (candidates.length > 0 && !selected) {
+        audit("crystallise.unsafe_model_output", { role: "crystalliser", reason: "only_live_side_effect_interpretations" });
+        delete legacy.interpretations;
+        delete legacy.clarificationNeeded;
+        return false;
+    }
     if (selected) {
         const note = `Conservative interpretation selected: ${selected}.`;
         if (!brief.motivation.includes(note))
@@ -146,6 +196,7 @@ function resolveRetiredAmbiguityFields(brief, audit) {
     }
     delete legacy.interpretations;
     delete legacy.clarificationNeeded;
+    return true;
 }
 function validateBrief(brief) {
     if (!brief.title || brief.title.length < 3)

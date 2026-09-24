@@ -212,7 +212,7 @@ test("run leases use monotonically increasing fences and reject stale owners", (
   assert.equal(third.fence, 3);
 }));
 
-test("merge storage rejects cross-run PR collisions while allowing equal readiness digests per run", () => {
+test("merge storage preserves duplicate historical PR identities while enforcing run-bound intents", () => {
   const db = new DatabaseSync(":memory:");
   applyStateMigrations(db);
   const repo = new ControlRepository(db);
@@ -231,7 +231,8 @@ test("merge storage rejects cross-run PR collisions while allowing equal readine
   const a=create("collision-a","U-A"), b=create("collision-b","U-B");
   assert.equal(db.prepare(`SELECT count(*) n FROM control_readiness_attestations WHERE content_digest='shared-readiness'`).get().n,2);
   db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,readiness_digest,binding_digest,nonce,issued_at,expires_at) VALUES ('auth-a',?,'U-A','C','acme/widget','main',7,?,?,'binding-a','merge-a',20,500)`).run(a.run.id,a.head,a.digest);
-  assert.throws(()=>db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,readiness_digest,binding_digest,nonce,issued_at,expires_at) VALUES ('auth-b',?,'U-B','C','acme/widget','main',7,?,?,'binding-b','merge-b',20,500)`).run(b.run.id,b.head,b.digest),/UNIQUE constraint/i);
+  db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,readiness_digest,binding_digest,nonce,issued_at,expires_at) VALUES ('auth-b',?,'U-B','C','acme/widget','main',7,?,?,'binding-b','merge-b',20,500)`).run(b.run.id,b.head,b.digest);
+  assert.equal(db.prepare(`SELECT count(*) n FROM control_merge_authorizations WHERE repository_identity='acme/widget' AND pr_number=7`).get().n,2);
   assert.throws(()=>db.prepare(`INSERT INTO control_engine_merge_intents (id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,created_at,updated_at) VALUES ('bad-intent',?,'auth-a',?,'bad-key','authorized',20,20)`).run(b.run.id,a.head),/FOREIGN KEY constraint/i);
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(),[]);
   db.close();

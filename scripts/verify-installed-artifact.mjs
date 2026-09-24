@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -33,6 +33,20 @@ function sha(path) {
 
 const expectedPackage = JSON.parse(readFileSync(resolve(expectedRoot, "package.json"), "utf8"));
 const installedPackage = JSON.parse(readFileSync(resolve(installedRoot, "package.json"), "utf8"));
+const artifactBinding = JSON.parse(readFileSync(resolve(installedRoot, ".oah-artifact.json"), "utf8"));
+const expectedHeadSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: expectedRoot, encoding: "utf8" }).trim();
+const expectedTreeSha = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: expectedRoot, encoding: "utf8" }).trim();
+const expectedBindingDigest = createHash("sha256")
+  .update(`openclaw-agent-harness-artifact/v1\n${expectedHeadSha}\n${expectedTreeSha}\n`)
+  .digest("hex");
+if (
+  artifactBinding.version !== 1 ||
+  artifactBinding.headSha !== expectedHeadSha ||
+  artifactBinding.treeSha !== expectedTreeSha ||
+  artifactBinding.bindingDigest !== expectedBindingDigest
+) {
+  throw new Error(`stale or invalid artifact binding: expected ${expectedHeadSha}/${expectedTreeSha}`);
+}
 if (expectedPackage.version !== installedPackage.version) {
   throw new Error(`version mismatch: tested ${expectedPackage.version}, installed ${installedPackage.version}`);
 }
@@ -44,11 +58,14 @@ for (const root of requiredRoots) {
     throw new Error(`packaged file list is missing required root ${root}`);
   }
 }
-for (const file of ["package.json", "openclaw.plugin.json", "README.md", "LICENSE"]) {
+for (const file of ["package.json", "openclaw.plugin.json", "README.md", "LICENSE", ".oah-artifact.json"]) {
   if (!installedFiles.includes(file)) throw new Error(`packaged file list is missing ${file}`);
 }
 
 const entries = installedFiles.map((file) => {
+  if (file === ".oah-artifact.json") {
+    return `${sha(resolve(installedRoot, file))}  ${file}`;
+  }
   if (!existsSync(resolve(expectedRoot, file))) throw new Error(`packaged file has no tested-checkout source: ${file}`);
   const expected = sha(resolve(expectedRoot, file));
   const installed = sha(resolve(installedRoot, file));
@@ -104,6 +121,9 @@ const manifestSha256 = createHash("sha256").update(entries.join("\n")).digest("h
 console.log(JSON.stringify({
   ok: true,
   version: expectedPackage.version,
+  headSha: expectedHeadSha,
+  treeSha: expectedTreeSha,
+  artifactBindingDigest: expectedBindingDigest,
   files: entries.length,
   manifestSha256,
   openCodeCommand: openCode.command,

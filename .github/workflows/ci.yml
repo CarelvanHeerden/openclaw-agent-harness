@@ -81,12 +81,18 @@ jobs:
         if: matrix.node-version == '24'
         id: package
         run: |
-          mkdir -p "$RUNNER_TEMP/oah-package"
-          filename="$(npm pack --silent --pack-destination "$RUNNER_TEMP/oah-package")"
-          artifact="$RUNNER_TEMP/oah-package/$filename"
-          shasum -a 256 "$artifact" | tee "$artifact.sha256"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          package_dir="$RUNNER_TEMP/oah-package"
+          rm -rf "$package_dir"
+          mkdir -p "$package_dir"
+          filename="$(npm pack --silent --pack-destination "$package_dir")"
+          artifact="$package_dir/$filename"
+          artifact_sha="$(shasum -a 256 "$artifact" | awk '{print $1}')"
+          printf '%s  %s\n' "$artifact_sha" "$(basename "$artifact")" | tee "$artifact.sha256"
+          node -e 'const fs=require("node:fs");fs.writeFileSync(process.argv[1],JSON.stringify({version:1,headSha:process.env.GITHUB_SHA,tarballSha256:process.argv[2]},null,2)+"\n")' "$artifact.provenance.json" "$artifact_sha"
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "sha_path=$artifact.sha256" >> "$GITHUB_OUTPUT"
+          echo "provenance_path=$artifact.provenance.json" >> "$GITHUB_OUTPUT"
 
       - name: Install and compare the exact packed artifact
         if: matrix.node-version == '24'
@@ -108,6 +114,7 @@ jobs:
           path: |
             ${{ steps.package.outputs.path }}
             ${{ steps.package.outputs.sha_path }}
+            ${{ steps.package.outputs.provenance_path }}
           if-no-files-found: error
 
       - name: Mutation check (are the safety tests vacuous?)

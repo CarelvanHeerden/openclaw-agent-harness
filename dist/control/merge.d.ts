@@ -76,15 +76,24 @@ export declare class InternalMergeService {
     private readonly provider;
     private readonly now;
     private recoveryInFlight;
-    private static readonly MAX_RECOVERY_ATTEMPTS;
+    private static readonly INTENT_LEASE_MS;
     constructor(db: DatabaseSync, repository: ControlRepository, provider: MergeProvider, now?: () => number);
     registerAuthorizationAndIntent(a: VerifiedMergeAuthorization, now?: number): string;
     registerAuthorization(a: VerifiedMergeAuthorization): void;
     recoverPending(): Promise<void>;
     merge(id: string): Promise<MergeServiceResult>;
+    private waitForIntent;
+    private mergeLeased;
     private reconcileClaimedMerge;
+    private verifyPersistedAuthorizationRow;
+    private verifyPersistedAuthorization;
+    private verifyPersistedReadiness;
+    private acquireIntentLease;
+    private validIntentLease;
+    private releaseIntentLease;
     private refuseRun;
     private failRun;
+    private terminalize;
     private completeRun;
 }
 //# sourceMappingURL=merge.d.ts.map

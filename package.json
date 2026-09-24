@@ -30,11 +30,14 @@
     "README.md",
     "LICENSE",
     "docs",
+    ".oah-artifact.json",
     "scripts/check-downgrade.mjs",
+    "scripts/gen-build-integrity.mjs",
+    "scripts/prepare-package-artifact.mjs",
     "scripts/verify-installed-artifact.mjs"
   ],
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql && node scripts/gen-build-integrity.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && GIT_CONFIG_GLOBAL=$PWD/tests/fixtures/gitconfig GIT_CONFIG_SYSTEM=/dev/null node --test --test-timeout=300000 tests/*.mjs",
     "test:no-build": "node --test --test-timeout=300000 tests/*.mjs",
@@ -45,7 +48,9 @@
     "verify:installed-artifact": "node scripts/verify-installed-artifact.mjs",
     "prepublishOnly": "npm run schema:check && npm run typecheck && npm run build",
     "schema:sync": "node scripts/gen-config-schema.mjs",
-    "schema:check": "node scripts/gen-config-schema.mjs --check"
+    "schema:check": "node scripts/gen-config-schema.mjs --check",
+    "prepack": "node scripts/prepare-package-artifact.mjs prepare",
+    "postpack": "node scripts/prepare-package-artifact.mjs restore"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.207",
@@ -87,11 +92,22 @@
     "./openclaw.plugin.json": "./openclaw.plugin.json"
   },
   "bundledDependencies": [
+    "@anthropic-ai/claude-agent-sdk",
     "@anthropic-ai/sdk",
     "@modelcontextprotocol/sdk",
     "zod",
     "fast-uri",
     "hono",
     "qs"
-  ]
+  ],
+  "optionalDependencies": {
+    "@anthropic-ai/claude-agent-sdk-darwin-arm64": "0.3.207",
+    "@anthropic-ai/claude-agent-sdk-darwin-x64": "0.3.207",
+    "@anthropic-ai/claude-agent-sdk-linux-arm64": "0.3.207",
+    "@anthropic-ai/claude-agent-sdk-linux-arm64-musl": "0.3.207",
+    "@anthropic-ai/claude-agent-sdk-linux-x64": "0.3.207",
+    "@anthropic-ai/claude-agent-sdk-linux-x64-musl": "0.3.207",
+    "@anthropic-ai/claude-agent-sdk-win32-arm64": "0.3.207",
+    "@anthropic-ai/claude-agent-sdk-win32-x64": "0.3.207"
+  }
 }

@@ -61,6 +61,27 @@ test("legacy competing readings choose the first model-ranked bounded reading", 
   assert.equal("interpretations" in result.brief, false);
 });
 
+test("legacy ambiguity skips live side effects even when the model ranks them first", async () => {
+  const result = await refine(normalBrief({
+    interpretations: [
+      { reading: "Run the live production migration", whatDiffers: "performs external writes" },
+      { reading: "Build and test the upload-receiver repository feature", whatDiffers: "changes code only" },
+    ],
+  }));
+  assert.equal(result.kind, "brief");
+  assert.match(result.brief.motivation, /Build and test the upload-receiver repository feature/);
+  assert.doesNotMatch(result.brief.motivation, /selected: Run the live production migration/);
+});
+
+test("legacy ambiguity with only live-side-effect readings is refused safely", async () => {
+  const result = await refine(normalBrief({
+    clarificationNeeded: { question: "Which operation?", options: ["Deploy to production", "Delete live records"] },
+  }));
+  assert.equal(result.kind, "reject");
+  assert.equal(result.intent, "unsafe");
+  assert.equal(result.reason, "The request could not be converted into a safe, bounded repository change.");
+});
+
 test("legacy classifier ambiguity is resolved internally and still calls the crystalliser", async () => {
   let seen;
   const result = await refine(normalBrief(), async () => ({
@@ -80,6 +101,49 @@ test("ambiguous allowed repository aliases resolve deterministically", async () 
   });
   assert.equal(result.kind, "brief");
   assert.equal(result.brief.repoHint, "alpha/widget");
+});
+
+test("unknown classifier intents fail closed deterministically", async () => {
+  let crystalliserCalled = false;
+  const result = await crystallisePrompt("do something", {
+    config: {},
+    logger: noopLogger,
+    callClassifier: async () => ({ intent: "surprise", reason: "new model enum" }),
+    callCrystalliser: async () => { crystalliserCalled = true; return normalBrief(); },
+  });
+  assert.equal(result.kind, "reject");
+  assert.equal(result.intent, "unsafe");
+  assert.match(result.reason, /unrecognized intent/i);
+  assert.equal(crystalliserCalled, false);
+});
+
+test("malformed crystalliser output becomes a deterministic safety refusal", async () => {
+  const result = await crystallisePrompt("add a repository feature", {
+    config: {},
+    logger: noopLogger,
+    callClassifier: devCls,
+    callCrystalliser: async () => ({ title: "x" }),
+  });
+  assert.deepEqual(
+    { kind: result.kind, intent: result.intent, reason: result.reason },
+    {
+      kind: "reject",
+      intent: "unsafe",
+      reason: "The request could not be converted into a safe, bounded repository change.",
+    },
+  );
+});
+
+test("crystalliser parse failures become the same deterministic safety refusal", async () => {
+  const result = await crystallisePrompt("add a repository feature", {
+    config: {},
+    logger: noopLogger,
+    callClassifier: devCls,
+    callCrystalliser: async () => { throw new SyntaxError("bad JSON"); },
+  });
+  assert.equal(result.kind, "reject");
+  assert.equal(result.intent, "unsafe");
+  assert.equal(result.reason, "The request could not be converted into a safe, bounded repository change.");
 });
 
 test("unsafe requests remain deterministic terminal refusals", async () => {

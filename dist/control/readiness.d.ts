@@ -81,5 +81,6 @@ export type PrReadinessResult = Readonly<{
     policyVersion: string;
     contentDigest: string;
 }>;
+export declare function readinessContentDigest(input: PrReadinessInput, checkedAt: number, failures: readonly ReadinessFailureCode[]): string;
 export declare function evaluatePrReadiness(input: PrReadinessInput, checkedAt?: number): PrReadinessResult;
 //# sourceMappingURL=readiness.d.ts.map

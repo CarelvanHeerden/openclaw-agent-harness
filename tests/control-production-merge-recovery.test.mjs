@@ -81,3 +81,35 @@ test("production control merge provider recovers the exact provider merge SHA af
     } finally { recovered.close(); }
   } finally { try { first.close(); } catch {} rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("recovery rejects tampered persisted authorization before provider access", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "merge-auth-binding-")), path = join(dir, "state.db");
+  const store = openStateStoreSync(path), seeded = seed(store); let providerCalls = 0;
+  const provider = { inspect: async () => { providerCalls++; throw new Error("must not inspect"); }, merge: async () => { providerCalls++; throw new Error("must not merge"); }, verifyMerged: async () => false };
+  try {
+    const service = new InternalMergeService(store.db, seeded.repo, provider, () => 100);
+    service.registerAuthorization(seeded.auth);
+    store.db.prepare("UPDATE control_merge_authorizations SET actor_identity='attacker' WHERE id=?").run(seeded.auth.id);
+    await service.recoverPending();
+    assert.equal(providerCalls, 0);
+    assert.equal(store.db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(seeded.run.id).status, "verification_failed");
+    assert.equal(seeded.repo.getRun(seeded.run.id).state, "failed");
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("recovery rejects a readiness payload whose bytes no longer match its digest", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "merge-readiness-binding-")), path = join(dir, "state.db");
+  const store = openStateStoreSync(path), seeded = seed(store); let providerCalls = 0;
+  const provider = { inspect: async () => { providerCalls++; throw new Error("must not inspect"); }, merge: async () => { providerCalls++; throw new Error("must not merge"); }, verifyMerged: async () => false };
+  try {
+    const service = new InternalMergeService(store.db, seeded.repo, provider, () => 100);
+    service.registerAuthorization(seeded.auth);
+    const row = store.db.prepare("SELECT input_json FROM control_readiness_attestations WHERE run_id=?").get(seeded.run.id);
+    const input = JSON.parse(row.input_json); input.budgetUsd = 999;
+    store.db.prepare("UPDATE control_readiness_attestations SET input_json=? WHERE run_id=?").run(JSON.stringify(input), seeded.run.id);
+    await service.recoverPending();
+    assert.equal(providerCalls, 0);
+    assert.equal(store.db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(seeded.run.id).status, "verification_failed");
+    assert.equal(seeded.repo.getRun(seeded.run.id).state, "failed");
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

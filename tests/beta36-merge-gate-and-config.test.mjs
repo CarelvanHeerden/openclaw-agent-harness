@@ -18,6 +18,6 @@ test("canonical merge revalidates readiness and exact head before provider mutat
   const readiness = merge.indexOf("evaluatePrReadiness", inspect);
   const mutation = merge.indexOf("provider.merge", inspect);
   assert.ok(inspect >= 0 && readiness > inspect && mutation > readiness);
-  assert.match(merge, /inspection\.headSha!==expectedHeadSha/);
+  assert.match(merge, /inspection\.headSha!==auth\.expectedHeadSha/);
   assert.match(merge, /inspection\.merged/);
 });

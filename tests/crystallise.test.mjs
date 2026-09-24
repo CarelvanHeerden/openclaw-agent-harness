@@ -77,21 +77,22 @@ test("crystallise: unsafe is rejected",
     assert.equal(result.intent, "unsafe");
   });
 
-test("crystallise: invalid brief (missing acceptanceCriteria) throws",
+test("crystallise: invalid brief (missing acceptanceCriteria) is refused safely",
   { skip: crystallisePrompt === null }, async () => {
-    await assert.rejects(async () => {
-      await crystallisePrompt("do a thing", {
-        config: {},
-        logger: noopLogger,
-        callClassifier: async () => ({ intent: "dev_task", reason: "" }),
-        callCrystalliser: async () => ({
-          title: "x",
-          motivation: "shorter than",
-          acceptanceCriteria: [],
-          filesLikelyTouched: [],
-          outOfScope: [],
-          riskLevel: "low",
-        }),
-      });
+    const result = await crystallisePrompt("do a thing", {
+      config: {},
+      logger: noopLogger,
+      callClassifier: async () => ({ intent: "dev_task", reason: "" }),
+      callCrystalliser: async () => ({
+        title: "x",
+        motivation: "shorter than",
+        acceptanceCriteria: [],
+        filesLikelyTouched: [],
+        outOfScope: [],
+        riskLevel: "low",
+      }),
     });
+    assert.equal(result.kind, "reject");
+    assert.equal(result.intent, "unsafe");
+    assert.equal(result.reason, "The request could not be converted into a safe, bounded repository change.");
   });

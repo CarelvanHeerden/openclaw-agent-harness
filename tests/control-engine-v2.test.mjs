@@ -56,9 +56,9 @@ function readyInput(overrides = {}) {
 function seedMergeState(store, id, prNumber) {
   const repo = new ControlRepository(store.db); let run = autonomous(repo, id);
   run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "pr_ready", actor: "engine", reason: "strict_readiness_passed", pullRequestUrl: `https://example/pr/${prNumber}`, at: 20 });
-  const head = sha("c", 40), readiness = readyInput(), evaluated = evaluatePrReadiness(readiness, 20);
+  const head = sha("c", 40), readiness = readyInput(), evaluated = evaluatePrReadiness(readiness, 100);
   store.db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,pr_number,pr_url,published_sha,readiness_digest,spend_usd,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(run.id,2,1,sha("a",40),"{}","[]","[]",sha("9"),"medium","[]",1000,prNumber,`https://example/pr/${prNumber}`,head,evaluated.contentDigest,12,10,20);
-  store.db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(evaluated.contentDigest,run.id,2,evaluated.policyVersion,1,head,JSON.stringify(readiness),"[]",20);
+  store.db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(evaluated.contentDigest,run.id,2,evaluated.policyVersion,1,head,JSON.stringify(readiness),"[]",100);
   const auth = createVerifiedMergeAuthorization({ runId: run.id, actorIdentity: "U1", conversationIdentity: "C1:T1", repository: "acme/repo", baseRef: "main", prNumber, expectedHeadSha: head, publishedSha: head, readinessDigest: evaluated.contentDigest, nonce: `nonce-${id}`, issuedAt: 50, expiresAt: 200 });
   return { repo, run, head, readiness, auth };
 }
@@ -108,9 +108,9 @@ test("merge authorization is one-time and exact-head gated", async () => withSto
   };
   const service = new InternalMergeService(db, repo, provider, () => 100);
   const readiness = readyInput();
-  const evaluated = evaluatePrReadiness(readiness, 20);
+  const evaluated = evaluatePrReadiness(readiness, 100);
   db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,pr_number,pr_url,published_sha,readiness_digest,spend_usd,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(run.id,2,1,sha("a",40),"{}","[]","[]",sha("9"),"medium","[]",1000,1,"https://example/pr/1",head,evaluated.contentDigest,12,10,20);
-  db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(evaluated.contentDigest,run.id,2,evaluated.policyVersion,1,head,JSON.stringify(readiness),"[]",20);
+  db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(evaluated.contentDigest,run.id,2,evaluated.policyVersion,1,head,JSON.stringify(readiness),"[]",100);
   const auth = createVerifiedMergeAuthorization({ runId: run.id, actorIdentity: "U1", conversationIdentity: "C1:T1", repository: "acme/repo", baseRef: "main", prNumber: 1, expectedHeadSha: head, publishedSha: head, readinessDigest: evaluated.contentDigest, nonce: "merge-nonce", issuedAt: 50, expiresAt: 200 });
   service.registerAuthorization(auth);
   assert.equal((await service.merge(auth.id)).status, "merged");
@@ -123,9 +123,9 @@ test("ambiguous provider success is reconciled without a second merge side effec
   const repo = new ControlRepository(db); let run = autonomous(repo, "merge-recovery");
   run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "pr_ready", actor: "engine", reason: "strict_readiness_passed", pullRequestUrl: "https://example/pr/2", at: 20 });
   const head = sha("c", 40), mergeSha = sha("e", 40); let mergeCalls = 0, providerMerged = false;
-  const readiness = readyInput(); const evaluated = evaluatePrReadiness(readiness, 20);
+  const readiness = readyInput(); const evaluated = evaluatePrReadiness(readiness, 100);
   db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,pr_number,pr_url,published_sha,readiness_digest,spend_usd,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(run.id,2,1,sha("a",40),"{}","[]","[]",sha("9"),"medium","[]",1000,2,"https://example/pr/2",head,evaluated.contentDigest,12,10,20);
-  db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(evaluated.contentDigest,run.id,2,evaluated.policyVersion,1,head,JSON.stringify(readiness),"[]",20);
+  db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(evaluated.contentDigest,run.id,2,evaluated.policyVersion,1,head,JSON.stringify(readiness),"[]",100);
   const provider = {
     inspect: async () => ({ repository: "acme/repo", baseRef: "main", prNumber: 2, headSha: head, open: !providerMerged, merged: providerMerged, ...(providerMerged ? { mergeSha } : {}), readiness }),
     merge: async () => { mergeCalls++; providerMerged = true; throw new Error("connection lost after provider accepted merge"); },
@@ -199,7 +199,7 @@ test("terminal merge failure cannot be retried or later laundered into done", as
   service.registerAuthorization(seeded.auth);
   assert.deepEqual(await service.merge(seeded.auth.id), { status: "merge_failed", code: "verification_failed" });
   providerMerged = true;
-  assert.deepEqual(await service.merge(seeded.auth.id), { status: "refused", code: "merge_attestation_required" });
+  assert.deepEqual(await service.merge(seeded.auth.id), { status: "merge_failed", code: "verification_failed" });
   assert.equal(mergeCalls, 1);
   assert.equal(seeded.repo.getRun(seeded.run.id).state, "failed");
   assert.equal(db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(seeded.run.id).status, "verification_failed");

@@ -16,6 +16,9 @@ function stable(value) {
     return JSON.stringify(value);
 }
 function digest(value) { return createHash("sha256").update(stable(value)).digest("hex"); }
+export function readinessContentDigest(input, checkedAt, failures) {
+    return digest({ policyVersion: READINESS_POLICY_VERSION, input, checkedAt, failures });
+}
 function exactSet(left, right) {
     return new Set(left).size === left.length && new Set(right).size === right.length &&
         left.length === right.length && left.every((item) => right.includes(item));
@@ -82,7 +85,7 @@ export function evaluatePrReadiness(input, checkedAt = Date.now()) {
     if (!Number.isFinite(input.spendUsd) || !Number.isFinite(input.budgetUsd) || input.spendUsd < 0 || input.spendUsd > input.budgetUsd)
         failures.push("spend_exceeded");
     const unique = Object.freeze([...new Set(failures)]);
-    const contentDigest = digest({ policyVersion: READINESS_POLICY_VERSION, input, checkedAt, failures: unique });
+    const contentDigest = readinessContentDigest(input, checkedAt, unique);
     return unique.length > 0
         ? Object.freeze({ ready: false, state: "failed", failures: unique, checkedAt, policyVersion: READINESS_POLICY_VERSION, contentDigest })
         : Object.freeze({ ready: true, state: "pr_ready", verifiedSha: input.candidateSha, checkedAt, policyVersion: READINESS_POLICY_VERSION, contentDigest });

@@ -277,7 +277,7 @@ CREATE TABLE control_merge_authorizations (
   id TEXT PRIMARY KEY, run_id TEXT NOT NULL, actor_identity TEXT NOT NULL, conversation_identity TEXT NOT NULL,
   repository_identity TEXT NOT NULL, base_ref TEXT NOT NULL, pr_number INTEGER NOT NULL, expected_head_sha TEXT NOT NULL,
   readiness_digest TEXT NOT NULL, binding_digest TEXT NOT NULL, nonce TEXT NOT NULL UNIQUE, issued_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL, consumed_at INTEGER, UNIQUE(run_id), UNIQUE(repository_identity, pr_number),
+  expires_at INTEGER NOT NULL, consumed_at INTEGER, UNIQUE(run_id),
   UNIQUE(run_id, id, expected_head_sha),
   FOREIGN KEY(run_id, repository_identity, base_ref) REFERENCES control_runs(id, repository, base_ref) ON DELETE CASCADE,
   FOREIGN KEY(run_id, pr_number, expected_head_sha, readiness_digest) REFERENCES control_proposals(run_id, pr_number, published_sha, readiness_digest) ON DELETE CASCADE
@@ -299,6 +299,16 @@ DROP TABLE control_engine_merge_intents_old2;
 DROP TABLE control_merge_authorizations_old;
 CREATE INDEX idx_control_merge_authorizations_run ON control_merge_authorizations(run_id, issued_at);
 UPDATE control_metadata SET value='5',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
+`,
+  }),
+  Object.freeze({
+    id: "20260924_006_merge_recovery_fence",
+    sql: `
+ALTER TABLE control_engine_merge_intents ADD COLUMN recovery_owner TEXT;
+ALTER TABLE control_engine_merge_intents ADD COLUMN recovery_fence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE control_engine_merge_intents ADD COLUMN recovery_lease_expires_at INTEGER;
+CREATE INDEX idx_control_merge_recovery_lease ON control_engine_merge_intents(status, recovery_lease_expires_at);
+UPDATE control_metadata SET value='6',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
 `,
   }),
 ]);
