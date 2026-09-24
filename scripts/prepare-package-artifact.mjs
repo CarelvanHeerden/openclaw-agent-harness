@@ -3,18 +3,21 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, relative, resolve } from "node:path";
+import { contentManifest, publishedPackageBytes } from "./package-artifact-policy.mjs";
 
 const root = process.cwd();
 const action = process.argv[2];
 const artifactPath = resolve(root, ".oah-artifact.json");
+const packagePath = resolve(root, "package.json");
+const dependencyManifestPath = "scripts/package-dependency-manifest.json";
 const scope = resolve(root, "node_modules/@anthropic-ai");
 const nativePrefix = "claude-agent-sdk-";
 const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 const gitPath = (name) => resolve(root, git("rev-parse", "--git-path", name));
 const stash = gitPath("oah-pack-stash");
 const lock = gitPath("oah-pack-lock");
+const packageStash = gitPath("oah-pack-package.json");
 
-function sha(path) { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
 function filesUnder(dir) {
   const out = [];
   const walk = (path) => {
@@ -27,21 +30,32 @@ function filesUnder(dir) {
   walk(dir);
   return out.sort();
 }
-function assertFirstPartyFilesMatchCommit(packageRoot) {
-  for (const file of filesUnder(packageRoot)) {
+function committedBytes(file) {
+  try { return execFileSync("git", ["show", `HEAD:${file}`], { cwd: root }); }
+  catch { throw new Error(`refusing to pack non-commit content: ${file}`); }
+}
+function assertPackedContentMatchesCommit(packageRoot) {
+  const files = filesUnder(packageRoot);
+  for (const file of files) {
     if (file === ".oah-artifact.json" || file.startsWith("node_modules/")) continue;
-    let committed;
-    try { committed = execFileSync("git", ["show", `HEAD:${file}`], { cwd: root }); }
-    catch { throw new Error(`refusing to pack non-commit content: ${file}`); }
+    const expected = file === "package.json" ? publishedPackageBytes(committedBytes(file)) : committedBytes(file);
     const packed = readFileSync(resolve(packageRoot, file));
-    if (!packed.equals(committed)) throw new Error(`refusing to pack content that differs from HEAD: ${file}`);
+    if (!packed.equals(expected)) throw new Error(`refusing to pack content that differs from HEAD: ${file}`);
+  }
+  const dependencies = contentManifest(packageRoot, files.filter((file) => file.startsWith("node_modules/")));
+  const expected = JSON.parse(committedBytes(dependencyManifestPath).toString("utf8"));
+  const mismatch = expected.entries?.findIndex((entry, index) => entry !== dependencies.entries[index]) ?? -1;
+  if (
+    expected.version !== 1 || expected.files !== dependencies.files || expected.digest !== dependencies.digest ||
+    expected.entries?.length !== dependencies.entries.length || mismatch !== -1
+  ) {
+    const detail = mismatch === -1 ? "file set differs" : `first mismatch: expected ${expected.entries[mismatch]}, got ${dependencies.entries[mismatch]}`;
+    throw new Error(`refusing to pack dependency content that differs from ${dependencyManifestPath}: ${detail}`);
   }
 }
 function manifestFor(packageRoot) {
-  const entries = filesUnder(packageRoot)
-    .filter((file) => file !== ".oah-artifact.json")
-    .map((file) => `${sha(resolve(packageRoot, file))}  ${file}`);
-  return { files: entries.length, digest: createHash("sha256").update(entries.join("\n")).digest("hex") };
+  const files = filesUnder(packageRoot).filter((file) => file !== ".oah-artifact.json");
+  return contentManifest(packageRoot, files);
 }
 function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 function acquireLock() {
@@ -61,6 +75,7 @@ function acquireLock() {
 function releaseLock() { rmSync(lock, { recursive: true, force: true }); }
 function restore() {
   rmSync(artifactPath, { force: true });
+  if (existsSync(packageStash)) renameSync(packageStash, packagePath);
   if (!existsSync(stash)) return;
   mkdirSync(scope, { recursive: true });
   for (const name of readdirSync(stash)) {
@@ -69,6 +84,10 @@ function restore() {
     renameSync(resolve(stash, name), target);
   }
   rmSync(stash, { recursive: true, force: true });
+}
+function stagePublishedPackage() {
+  writeFileSync(packageStash, readFileSync(packagePath));
+  writeFileSync(packagePath, publishedPackageBytes(committedBytes("package.json")));
 }
 function movePublisherNativePackages() {
   if (!existsSync(scope)) return;
@@ -80,8 +99,12 @@ function movePublisherNativePackages() {
 function packedManifest() {
   const temp = mkdtempSync(gitPath("oah-pack-manifest-"));
   try {
+    const env = { ...process.env, npm_config_ignore_scripts: "true", npm_config_json: "false" };
+    for (const name of Object.keys(env)) {
+      if (name === "npm_command" || name.startsWith("npm_lifecycle_") || name.startsWith("npm_package_")) delete env[name];
+    }
     execFileSync("npm", ["pack", "--ignore-scripts", "--pack-destination", temp, "."], {
-      cwd: root, encoding: "utf8", env: { ...process.env, npm_config_ignore_scripts: "true", npm_config_json: "false" },
+      cwd: root, encoding: "utf8", env,
     });
     const filename = readdirSync(temp).find((name) => name.endsWith(".tgz"));
     if (!filename) throw new Error("npm pack did not create the preliminary tarball");
@@ -89,7 +112,7 @@ function packedManifest() {
     mkdirSync(extracted);
     execFileSync("tar", ["-xzf", resolve(temp, basename(filename)), "-C", extracted]);
     const packageRoot = resolve(extracted, "package");
-    assertFirstPartyFilesMatchCommit(packageRoot);
+    assertPackedContentMatchesCommit(packageRoot);
     return manifestFor(packageRoot);
   } finally { rmSync(temp, { recursive: true, force: true }); }
 }
@@ -109,6 +132,7 @@ if (action === "prepare") {
     if (dirty) throw new Error(`refusing to pack a dirty or untracked worktree:\n${dirty}`);
     const headSha = git("rev-parse", "HEAD");
     const treeSha = git("rev-parse", "HEAD^{tree}");
+    stagePublishedPackage();
     movePublisherNativePackages();
     const manifest = packedManifest();
     const bindingDigest = createHash("sha256")

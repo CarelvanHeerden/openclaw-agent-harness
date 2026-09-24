@@ -33,6 +33,7 @@
     ".oah-artifact.json",
     "scripts/check-downgrade.mjs",
     "scripts/gen-build-integrity.mjs",
+    "scripts/package-artifact-policy.mjs",
     "scripts/prepare-package-artifact.mjs",
     "scripts/verify-installed-artifact.mjs"
   ],

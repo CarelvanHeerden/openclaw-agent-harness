@@ -63,6 +63,38 @@ test("npm pack rejects package-eligible content hidden by git excludes", () => {
     assert.match(`${packed.stdout}\n${packed.stderr}`, /refusing to pack non-commit content: dist\/ignored-pack-probe\.js/);
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
+
+test("npm pack rejects modified bundled dependency bytes hidden in node_modules", () => {
+  const temp = mkdtempSync(join(dirname(root), ".oah-mutated-dependency-pack-"));
+  try {
+    const source = join(temp, "source");
+    run("git", ["clone", "--quiet", "--shared", root, source], temp);
+    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    const manifest = join(source, "node_modules", "zod", "package.json");
+    const original = readFileSync(manifest, "utf8");
+    rmSync(manifest);
+    writeFileSync(manifest, original.replace('"version": "4.4.3"', '"version": "4.4.3-mutated"'));
+    const packed = spawnSync("npm", ["pack", "--pack-destination", temp], { cwd: source, encoding: "utf8", timeout: 300_000 });
+    assert.notEqual(packed.status, 0);
+    assert.match(`${packed.stdout}\n${packed.stderr}`, /refusing to pack dependency content/);
+    assert.equal(existsSync(join(source, ".oah-artifact.json")), false);
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+test("npm pack rejects extra packable bundled dependency bytes hidden in node_modules", () => {
+  const temp = mkdtempSync(join(dirname(root), ".oah-extra-dependency-pack-"));
+  try {
+    const source = join(temp, "source");
+    run("git", ["clone", "--quiet", "--shared", root, source], temp);
+    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    writeFileSync(join(source, "node_modules", "zod", "commit-binding-probe.js"), "export default 'must never ship';\n");
+    const packed = spawnSync("npm", ["pack", "--pack-destination", temp], { cwd: source, encoding: "utf8", timeout: 300_000 });
+    assert.notEqual(packed.status, 0);
+    assert.match(`${packed.stdout}\n${packed.stderr}`, /refusing to pack dependency content/);
+    assert.equal(existsSync(join(source, ".oah-artifact.json")), false);
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
 test("the exact tarball clean-installs, audits, and runs consumer-platform Claude and OpenCode binaries", async () => {
   const packed = packIsolatedHead(root, "oah-native-consumer-");
   try {
@@ -79,6 +111,11 @@ test("the exact tarball clean-installs, audits, and runs consumer-platform Claud
 
     run("npm", ["install", "--ignore-scripts", "--omit=dev", tarball], installDir, { npm_config_cache: join(temp, "npm-cache") });
     const packageRoot = join(installDir, "node_modules", "openclaw-agent-harness");
+    const publishedManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+    assert.equal(publishedManifest.scripts, undefined, "development-only lifecycle, test, schema, and lint commands must not be published");
+    for (const absent of ["test-isolated.mjs", "gen-config-schema.mjs", "gen-config-reference.mjs"]) {
+      assert.equal(existsSync(join(packageRoot, "scripts", absent)), false, absent);
+    }
     const result = JSON.parse(run(
       process.execPath,
       [join(packageRoot, "scripts", "verify-installed-artifact.mjs"), root, packageRoot],

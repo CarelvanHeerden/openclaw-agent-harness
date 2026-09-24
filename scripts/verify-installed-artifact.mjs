@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { dirname, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { contentManifest, publishedPackageBytes } from "./package-artifact-policy.mjs";
 
 const expectedRoot = resolve(process.argv[2] ?? process.cwd());
 const installedRoot = resolve(process.argv[3] ?? "");
@@ -32,7 +33,8 @@ function sha(path) {
 }
 
 const expectedPackage = JSON.parse(readFileSync(resolve(expectedRoot, "package.json"), "utf8"));
-const installedPackage = JSON.parse(readFileSync(resolve(installedRoot, "package.json"), "utf8"));
+const installedPackageBytes = readFileSync(resolve(installedRoot, "package.json"));
+const installedPackage = JSON.parse(installedPackageBytes);
 const artifactBinding = JSON.parse(readFileSync(resolve(installedRoot, ".oah-artifact.json"), "utf8"));
 const expectedHeadSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: expectedRoot, encoding: "utf8" }).trim();
 const expectedTreeSha = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: expectedRoot, encoding: "utf8" }).trim();
@@ -54,21 +56,32 @@ for (const file of ["package.json", "openclaw.plugin.json", "README.md", "LICENS
   if (!installedFiles.includes(file)) throw new Error(`packaged file list is missing ${file}`);
 }
 
+const committedBytes = (file) => {
+  try { return execFileSync("git", ["show", `HEAD:${file}`], { cwd: expectedRoot, maxBuffer: 64 * 1024 * 1024 }); }
+  catch { throw new Error(`packaged first-party file is not bound to the tested commit: ${file}`); }
+};
+const dependencyFiles = installedFiles.filter((file) => file.startsWith("node_modules/"));
+const dependencyManifest = contentManifest(installedRoot, dependencyFiles);
+const expectedDependencyManifest = JSON.parse(committedBytes("scripts/package-dependency-manifest.json").toString("utf8"));
+const dependencyMismatch = expectedDependencyManifest.entries?.findIndex(
+  (entry, index) => entry !== dependencyManifest.entries[index],
+) ?? -1;
+if (
+  expectedDependencyManifest.version !== 1 ||
+  expectedDependencyManifest.files !== dependencyManifest.files ||
+  expectedDependencyManifest.digest !== dependencyManifest.digest ||
+  expectedDependencyManifest.entries?.length !== dependencyManifest.entries.length ||
+  dependencyMismatch !== -1
+) {
+  throw new Error("bundled dependency content is not bound to the tested commit");
+}
 const entries = installedFiles.filter((file) => file !== ".oah-artifact.json").map((file) => {
   const installed = sha(resolve(installedRoot, file));
-  let committed;
-  if (file.startsWith("node_modules/")) {
-    const source = resolve(expectedRoot, file);
-    if (!existsSync(source)) throw new Error(`bundled dependency has no tested source: ${file}`);
-    committed = sha(source);
-  } else {
-    try {
-      committed = createHash("sha256").update(execFileSync("git", ["show", `HEAD:${file}`], { cwd: expectedRoot, maxBuffer: 64 * 1024 * 1024 })).digest("hex");
-    } catch {
-      throw new Error(`packaged first-party file is not bound to the tested commit: ${file}`);
-    }
+  if (!file.startsWith("node_modules/")) {
+    const expected = file === "package.json" ? publishedPackageBytes(committedBytes(file)) : committedBytes(file);
+    const committed = createHash("sha256").update(expected).digest("hex");
+    if (committed !== installed) throw new Error(`artifact mismatch: ${file}`);
   }
-  if (committed !== installed) throw new Error(`artifact mismatch: ${file}`);
   return `${installed}  ${file}`;
 });
 const manifestSha256 = createHash("sha256").update(entries.join("\n")).digest("hex");
