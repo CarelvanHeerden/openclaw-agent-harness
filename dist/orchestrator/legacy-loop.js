@@ -600,7 +600,7 @@ export class OrchestratorLoop {
     assertConfirmedControlAuthority(sessionId, check) {
         const guard = this.confirmedControlGuards.get(sessionId);
         if (!guard)
-            return;
+            throw new ConfirmedControlAuthorityError("confirmed control authority guard is missing");
         const row = this.deps.state.db.prepare(`SELECT cost_usd,created_at,cycles_ran FROM sessions WHERE id=?`).get(sessionId);
         const retryRow = this.deps.state.db.prepare(`SELECT COUNT(*) AS retries FROM provider_calls WHERE session_id=? AND attempt>1`).get(sessionId);
         try {
@@ -1746,9 +1746,12 @@ export class OrchestratorLoop {
         if (typeof authorityGuard !== "function") {
             throw new ConfirmedControlAuthorityError("confirmed control requires an authority guard");
         }
-        this.confirmedControlGuards.set(sessionId, authorityGuard);
-        if (credentialResolver)
-            this.confirmedControlCredentialResolvers.set(sessionId, credentialResolver);
+        const ownsGuard = !this.confirmedControlGuards.has(sessionId);
+        if (ownsGuard) {
+            this.confirmedControlGuards.set(sessionId, authorityGuard);
+            if (credentialResolver)
+                this.confirmedControlCredentialResolvers.set(sessionId, credentialResolver);
+        }
         try {
             const outcome = await this.run(sessionId, brief);
             if (outcome.status !== "awaiting_clarification")
@@ -1759,17 +1762,22 @@ export class OrchestratorLoop {
             return {
                 status: "failed",
                 sessionId,
-                reason: "confirmed control requested interactive clarification",
+                reason: `confirmed control terminated without interaction: ${outcome.question}`,
                 cycles: outcome.cycles,
                 totalCostUsd: outcome.totalCostUsd,
             };
         }
         finally {
-            this.confirmedControlGuards.delete(sessionId);
-            this.confirmedControlCredentialResolvers.delete(sessionId);
+            if (ownsGuard) {
+                this.confirmedControlGuards.delete(sessionId);
+                this.confirmedControlCredentialResolvers.delete(sessionId);
+            }
         }
     }
     async run(sessionId, brief) {
+        if (!this.confirmedControlGuards.has(sessionId)) {
+            throw new ConfirmedControlAuthorityError("direct loop execution is not authorized");
+        }
         if (runningSessions.has(sessionId)) {
             // beta.40: the guard entry exists -- but is the tracked loop actually
             // ALIVE, or a zombie? `runningSessions` is module-scoped and survives a
@@ -4203,7 +4211,7 @@ export class OrchestratorLoop {
                                     hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
                                     hasCommit: Boolean(result.commitSha),
                                     failedKinds: failedResults.map((x) => x.kind),
-                                    finalOutcome: "awaiting_clarification",
+                                    finalOutcome: confirmedControl ? "failed" : "awaiting_clarification",
                                 }, sessionId);
                             }
                             // ---- beta.52: distinguish a PROTOCOL-ASSUMPTION failure from a

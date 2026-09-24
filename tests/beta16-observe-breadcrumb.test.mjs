@@ -136,7 +136,7 @@ test(
       buildVerifyProbes: minimalProbes,
     });
 
-    const outcome = await loop.run("S_OBS", brief);
+    const outcome = await loop.runConfirmedControl("S_OBS", brief, () => {});
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");
@@ -206,7 +206,7 @@ test(
       buildVerifyProbes: minimalProbes,
     });
 
-    const outcome = await loop.run("S_MUT", brief);
+    const outcome = await loop.runConfirmedControl("S_MUT", brief, () => {});
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");
@@ -270,7 +270,7 @@ test(
       buildVerifyProbes: minimalProbes,
     });
 
-    const outcome = await loop.run("S_UNSPEC", brief);
+    const outcome = await loop.runConfirmedControl("S_UNSPEC", brief, () => {});
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");

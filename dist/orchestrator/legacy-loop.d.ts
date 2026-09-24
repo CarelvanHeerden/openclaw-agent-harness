@@ -973,7 +973,7 @@ export declare class OrchestratorLoop {
      * the control-plane contract: a request for clarification is terminal.
      */
     runConfirmedControl(sessionId: string, brief: CrystallisedBrief, authorityGuard: ConfirmedControlAuthorityGuard, credentialResolver?: ConfirmedControlCredentialResolver): Promise<LoopOutcome>;
-    run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
+    private run;
     /**
      * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is
      * currently driving. The module-scoped `runningSessions` registry is shared

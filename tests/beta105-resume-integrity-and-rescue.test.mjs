@@ -427,7 +427,7 @@ test("beta105: a resume onto a branch missing this run's commits fails BEFORE an
     listRepoFiles: async (p) => w.adapter.listTrackedFiles(p),
   });
 
-  const out = await loop.run("S1", brief);
+  const out = await loop.runConfirmedControl("S1", brief, () => {});
   assert.equal(out.status, "failed", `expected a hard stop, got ${out.status}`);
   assert.match(String(out.reason ?? ""), /ledger_commits_unreachable_at_resume/);
   assert.equal(workerTurns, 0, "the loss must be caught before a single worker turn is paid for");

@@ -129,7 +129,7 @@ test(
       releaseWorktree: async () => ({ ok: true }),
     });
 
-    const outcome = await loop.run("S_MUT_NOPROBES", brief);
+    const outcome = await loop.runConfirmedControl("S_MUT_NOPROBES", brief, () => {});
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");
@@ -184,7 +184,7 @@ test(
       releaseWorktree: async () => ({ ok: true }),
     });
 
-    const outcome = await loop.run("S_OBS_NOPROBES", brief);
+    const outcome = await loop.runConfirmedControl("S_OBS_NOPROBES", brief, () => {});
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");
@@ -237,7 +237,7 @@ test(
       releaseWorktree: async () => ({ ok: true }),
     });
 
-    const outcome = await loop.run("S_UNSPEC", brief);
+    const outcome = await loop.runConfirmedControl("S_UNSPEC", brief, () => {});
     assert.equal(outcome.status, "shipped");
 
     const observeEvents = state.audits.filter((e) => e.event === "loop.subtask_observe_completed");

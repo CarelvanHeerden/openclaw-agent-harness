@@ -89,6 +89,8 @@ export interface ControlServiceDeps {
     minimumRuntimeVersion?: string;
 }
 export declare function controlDigest(domain: string, binding: unknown): string;
+type ConfirmationAttestation = NonNullable<TrustedControlContext["trustedControlAttestation"]>;
+export declare function confirmationAttestationDigest(reviewDigest: string, att: ConfirmationAttestation): string;
 export declare class ControlError extends Error {
     readonly code: string;
     constructor(code: string, message: string);
@@ -116,4 +118,5 @@ export declare class ControlPlaneService {
     private mergeBindingDigest;
     private summary;
 }
+export {};
 //# sourceMappingURL=service.d.ts.map

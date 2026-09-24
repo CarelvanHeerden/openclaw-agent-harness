@@ -377,7 +377,7 @@ export async function runScenario(opts = {}) {
   };
 
   const loop = new OrchestratorLoop(deps);
-  const out = await loop.run(sessionId, brief);
+  const out = await loop.runConfirmedControl(sessionId, brief, () => {});
 
   const events = (name) => audits.filter((a) => a.event === name);
   const sawEvent = (name) => events(name).length > 0;

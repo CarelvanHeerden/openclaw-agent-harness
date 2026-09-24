@@ -131,7 +131,7 @@ test("P0-1: loop dispatch passes the revise hint on cycle > 1 (integration)", sk
     pushBranchAndOpenPr: async () => "https://github.com/o/r/pull/1",
     readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
   });
-  const outcome = await loop.run("s1", { title: "t", motivation: "m", acceptanceCriteria: ["a"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" });
+  const outcome = await loop.runConfirmedControl("s1", { title: "t", motivation: "m", acceptanceCriteria: ["a"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" }, () => {});
   assert.equal(outcome.status, "shipped", JSON.stringify(outcome));
   assert.equal(dispatchHints.length, 2, "two cycles -> two worker dispatches");
   assert.equal(dispatchHints[0], undefined, "cycle 1 carries no revise hint");

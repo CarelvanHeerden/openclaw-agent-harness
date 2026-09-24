@@ -369,7 +369,7 @@ test("rc2: the retry limit is configurable, and 1 means do not retry", { skip },
   assert.equal(s.sawEvent("loop.worker_noop_end_turn"), true, "the no-op is recorded even when it is not retried");
 });
 
-test("rc2: a genuine blocker still pauses for the human it needs", { skip }, async () => {
+test("rc2: a genuine blocker terminates confirmed control without a new human pause", { skip }, async () => {
   const turns = { count: 0 };
   const s = await runScenario({
     subTasks: [mutateSubTask({ seq: 1, title: "Add tenant-scoped SAST persistence", path: "prisma/schema.prisma" })],
@@ -384,16 +384,16 @@ test("rc2: a genuine blocker still pauses for the human it needs", { skip }, asy
     },
   });
 
-  assert.equal(s.out.status, "awaiting_clarification", `a real blocker must pause, got ${s.out.status}`);
+  assert.equal(s.out.status, "failed", `a real blocker must terminate, got ${s.out.status}`);
   assert.equal(s.sawEvent("loop.worker_genuine_blocker"), true);
   assert.equal(turns.count, 1, "a blocker is not retried -- another turn cannot supply a credential");
   const blocker = s.events("loop.worker_genuine_blocker")[0].payload;
   assert.equal(blocker.blockerKind, "missing_credential");
-  assert.equal(blocker.finalOutcome, "awaiting_clarification");
-  assert.match(s.session().clarification_question, /DATABASE_URL/);
+  assert.equal(blocker.finalOutcome, "failed");
+  assert.equal(s.session().clarification_question, null);
 });
 
-test("rc2: an explicit refusal is still surfaced, and still called a refusal", { skip }, async () => {
+test("rc2: an explicit refusal is audited and terminates", { skip }, async () => {
   const s = await runScenario({
     subTasks: [mutateSubTask({ seq: 1, title: "drop the findings table", path: "src/a.ts" })],
     worker: async () => ({
@@ -402,13 +402,13 @@ test("rc2: an explicit refusal is still surfaced, and still called a refusal", {
       finalMessage: "I will not do this: dropping the findings table destroys tenant data with no migration path.",
     }),
   });
-  assert.equal(s.out.status, "awaiting_clarification");
+  assert.equal(s.out.status, "failed");
   assert.equal(s.sawEvent("loop.worker_refusal"), true, "a refusal is still a refusal");
   assert.equal(s.sawEvent("loop.worker_recoverable_tool_denial"), false);
-  assert.match(s.session().clarification_question, /destroys tenant data/);
+  assert.equal(s.session().clarification_question, null);
 });
 
-test("rc2: the question shown to a human never stitches progress fragments together", { skip }, async () => {
+test("rc2: a requested decision cannot create a post-confirmation question", { skip }, async () => {
   const s = await runScenario({
     subTasks: [mutateSubTask({ seq: 1, title: "Add tenant-scoped SAST persistence", path: "prisma/schema.prisma" })],
     worker: async () => ({
@@ -421,14 +421,9 @@ test("rc2: the question shown to a human never stitches progress fragments toget
     }),
   });
 
-  assert.equal(s.out.status, "awaiting_clarification");
-  const q = s.session().clarification_question;
-  // The one sentence that is a question for a human, and none of the three
-  // that are not.
-  assert.match(q, /decide whether existing findings are backfilled/);
-  assert.doesNotMatch(q, /let me check the workbook/);
-  assert.doesNotMatch(q, /Now let me look/);
-  assert.doesNotMatch(q, /Next I will inspect/);
+  assert.equal(s.out.status, "failed");
+  assert.equal(s.session().clarification_question, null);
+  assert.ok(s.sawEvent("control.interactive_pause_rejected"));
 });
 
 test("rc2: work done before a denial survives into the retry", { skip }, async () => {
@@ -474,7 +469,7 @@ test("rc2: work done before a denial survives into the retry", { skip }, async (
   assert.equal(s.out.status, "shipped", `${s.out.status}: ${s.out.reason ?? ""}`);
 });
 
-test("rc2: an unexplained no-op still pauses the way b55 intended", { skip }, async () => {
+test("rc2: an unexplained no-op terminates rather than reopening human control", { skip }, async () => {
   // Guard against over-reach. rc.2 diverts denials and unfinished sentences
   // away from the operator; it must not quietly convert every unverifiable
   // completion claim into a hard failure.
@@ -484,5 +479,5 @@ test("rc2: an unexplained no-op still pauses the way b55 intended", { skip }, as
       reason: "end_turn", finalMessage: "I have completed the work.",
     }),
   });
-  assert.equal(s.out.status, "awaiting_clarification", `expected the b55 pause, got ${s.out.status}`);
+  assert.equal(s.out.status, "failed", `expected a terminal result, got ${s.out.status}`);
 });

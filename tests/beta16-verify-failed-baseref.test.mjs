@@ -166,7 +166,7 @@ test(
       releaseWorktree: async () => {},
     });
 
-    const outcome = await loop.run("S_FAILINJ", brief);
+    const outcome = await loop.runConfirmedControl("S_FAILINJ", brief, () => {});
     assert.equal(outcome.status, "failed");
     assert.match(outcome.reason, /failed_verification/);
 
@@ -244,7 +244,7 @@ test(
       releaseWorktree: async () => {},
     });
 
-    const outcome = await loop.run("S_OK", brief);
+    const outcome = await loop.runConfirmedControl("S_OK", brief, () => {});
     assert.equal(outcome.status, "shipped");
 
     const umbrella = state.audits.filter((e) => e.event === "loop.subtask_verification");

@@ -169,9 +169,9 @@ test("rc.10 (F3): a blocked sub-task is never dispatched, and costs nothing", { 
   assert.ok(r.sawEvent("loop.plan_policy_conflict_pre_dispatch"), "and acted on before any worker dispatch");
 
   const session = r.session();
-  assert.equal(session.status, "awaiting_clarification");
-  assert.match(session.clarification_question, /REFUSE/);
-  assert.match(session.clarification_question, /`\.env\.\*`/);
+  assert.equal(session.status, "failed");
+  assert.equal(session.clarification_question, null);
+  assert.ok(r.sawEvent("control.interactive_pause_rejected"));
   assert.equal(session.cost_usd, 0, "nothing was spent on a turn policy would refuse");
 });
 
@@ -189,7 +189,8 @@ test("rc.13 smoke: a later policy conflict pauses before an earlier observe work
     ],
   });
   assert.equal(r.calls.worker, 0);
-  assert.equal(r.session().status, "awaiting_clarification");
+  assert.equal(r.session().status, "failed");
+  assert.equal(r.session().clarification_question, null);
   assert.ok(r.sawEvent("loop.plan_policy_conflict_pre_dispatch"));
 });
 
@@ -255,14 +256,9 @@ test(
     });
 
     const session = r.session();
-    assert.equal(session.status, "awaiting_clarification");
-
-    const q = session.clarification_question;
-    // The decisive assertions: the rule is present, and the mismatch framing is not.
-    assert.match(q, /BLOCKED BY HARNESS SAFETY POLICY, not by the worker/);
-    assert.match(q, /`\.env\.\*`/, "audit 5601 never named the rule");
-    assert.match(q, /Work already done is KEPT/, "the real commit is not discarded");
-    assert.match(q, /NOT a wrong-path mistake/);
+    assert.equal(session.status, "failed");
+    assert.equal(session.clarification_question, null);
+    assert.ok(r.sawEvent("control.interactive_pause_rejected"));
 
     // The rc.9 audit row must exist, and say that a commit was involved.
     const denied = r.events("loop.worker_policy_denied");

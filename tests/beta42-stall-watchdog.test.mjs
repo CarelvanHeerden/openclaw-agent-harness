@@ -88,7 +88,7 @@ test("beta42: watchdog force-deregisters a STALLED skipped session and emits loo
   let release;
   const gate = new Promise((r) => { release = r; });
   const loop = makeLoop(state, { config: config({ loop: { stall_watchdog_seconds: 0.1 } }), runLead: async () => { await gate; return plan; } });
-  const first = loop.run("W1", brief);
+  const first = loop.runConfirmedControl("W1", brief, () => {});
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(isSessionLoopRunning("W1"), true, "first run registered the guard");
 
@@ -98,7 +98,7 @@ test("beta42: watchdog force-deregisters a STALLED skipped session and emits loo
 
   // A re-entrant run() is skipped AND arms the 0.1s watchdog.
   const loop2 = makeLoop(state, { config: config({ loop: { stall_watchdog_seconds: 0.1 } }) });
-  const out = await loop2.run("W1", brief);
+  const out = await loop2.runConfirmedControl("W1", brief, () => {});
   assert.equal(out.status, "skipped_already_running");
 
   // Wait for the watchdog (0.1s) to fire.
@@ -117,11 +117,11 @@ test("beta42: watchdog does NOT fire when the skipped session keeps making progr
   let release;
   const gate = new Promise((r) => { release = r; });
   const loop = makeLoop(state, { config: config({ loop: { stall_watchdog_seconds: 0.15 } }), runLead: async () => { await gate; return plan; } });
-  const first = loop.run("W2", brief);
+  const first = loop.runConfirmedControl("W2", brief, () => {});
   await new Promise((r) => setTimeout(r, 10));
 
   const loop2 = makeLoop(state, { config: config({ loop: { stall_watchdog_seconds: 0.15 } }) });
-  const out = await loop2.run("W2", brief);
+  const out = await loop2.runConfirmedControl("W2", brief, () => {});
   assert.equal(out.status, "skipped_already_running");
 
   // Simulate forward progress AFTER the skip (updated_at advances).

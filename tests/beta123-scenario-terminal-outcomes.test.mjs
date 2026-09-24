@@ -41,10 +41,9 @@ test("beta123: a worker that does nothing fails the run, and names the sub-task"
       finalMessage: "I have completed the work.",
     }),
   });
-  // Not `failed`: the b55 escalation turns an unprovable claim into a resumable
-  // pause rather than killing the run, which is the better of the two. Pinned
-  // explicitly so that if it ever silently becomes a ship, this says so.
-  assert.equal(s.out.status, "awaiting_clarification", `expected a resumable pause, got ${s.out.status}`);
+  // Confirmed control has no post-confirmation human pause. An unprovable
+  // completion claim therefore terminates rather than silently shipping.
+  assert.equal(s.out.status, "failed", `expected a terminal refusal, got ${s.out.status}`);
   assert.equal(s.calls.push, 0, "nothing is pushed");
   const rows = s.subTaskRows();
   assert.ok(rows.some((r) => r.status === "failed_verification"), "the sub-task itself is recorded as failed");

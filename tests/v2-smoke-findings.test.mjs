@@ -97,9 +97,9 @@ async function ledgerModelFor(sessionId, describeWorkerModel) {
     releaseWorktree: async () => ({ ok: true }),
   });
 
-  const outcome = await loop.run(sessionId, {
+  const outcome = await loop.runConfirmedControl(sessionId, {
     title: "t", motivation: "m", acceptanceCriteria: ["c"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low",
-  });
+  }, () => {});
   assert.equal(outcome.status, "shipped");
   return state.db.prepare(`SELECT worker_model FROM sub_tasks WHERE session_id = ?`).get(sessionId).worker_model;
 }

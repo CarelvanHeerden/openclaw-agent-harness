@@ -10,6 +10,20 @@ function stable(value) { if (Array.isArray(value))
     return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(",")}}`; return JSON.stringify(value); }
 export function controlDigest(domain, binding) { return createHash("sha256").update(`${domain}\n${stable(binding)}`).digest("hex"); }
 function digest(value) { return createHash("sha256").update(stable(value)).digest("hex"); }
+export function confirmationAttestationDigest(reviewDigest, att) {
+    return controlDigest(CONFIRM_DOMAIN, { reviewDigest, attestation: { version: att.version, provenance: att.provenance, operation: att.operation, actorIdentity: att.actorIdentity, conversationIdentity: att.conversationIdentity, hostEventId: att.hostEventId, nonce: att.nonce, issuedAt: att.issuedAt, expiresAt: att.expiresAt } });
+}
+function canonicalPreparedBrief(input, repositoryIdentity) {
+    const strings = (value) => Array.isArray(value) && value.every(item => typeof item === "string") ? [...value] : [];
+    if (!input || typeof input !== "object" || typeof input.title !== "string" || typeof input.motivation !== "string" || !["low", "medium", "high"].includes(input.riskLevel))
+        throw new ControlError("request_rejected", "The request did not produce a canonical reviewable brief.");
+    const brief = { title: input.title, motivation: input.motivation, acceptanceCriteria: strings(input.acceptanceCriteria), filesLikelyTouched: strings(input.filesLikelyTouched), outOfScope: strings(input.outOfScope), repoHint: repositoryIdentity, riskLevel: input.riskLevel };
+    if (typeof input.branchHint === "string")
+        brief.branchHint = input.branchHint;
+    if (Array.isArray(input.relevantConcepts))
+        brief.relevantConcepts = input.relevantConcepts.filter(concept => concept && typeof concept.id === "string").map(concept => ({ id: concept.id, ...(typeof concept.path === "string" ? { path: concept.path } : {}), ...(typeof concept.summary === "string" ? { summary: concept.summary } : {}), ...(Array.isArray(concept.tags) && concept.tags.every(tag => typeof tag === "string") ? { tags: [...concept.tags] } : {}), ...(typeof concept.content === "string" ? { content: concept.content } : {}) }));
+    return brief;
+}
 function contextIdentity(context) { const actor = (context.requesterSenderId ?? "").trim(); const conversation = (context.conversationId ?? "").trim(); if (!actor)
     throw new ControlError("trusted_actor_required", "An authenticated requester is required."); if (!conversation)
     throw new ControlError("trusted_conversation_required", "An authenticated conversation is required."); return { actor, conversation }; }
@@ -56,10 +70,7 @@ export class ControlPlaneService {
         if (crystallised.kind === "reject")
             throw new ControlError("request_rejected", crystallised.reason || "The request cannot be prepared safely.");
         const assumptions = [];
-        const brief = structuredClone(crystallised.brief);
-        // The authenticated repository parameter is authoritative. Model-side repo
-        // hints are advisory only and can never create another decision boundary.
-        brief.repoHint = resolved.repositoryIdentity;
+        const brief = canonicalPreparedBrief(crystallised.brief, resolved.repositoryIdentity);
         const scope = [...new Set((input.scope?.filter(Boolean).length ? input.scope : brief.filesLikelyTouched).filter(Boolean))];
         if (scope.length === 0)
             scope.push("**/*");
@@ -283,7 +294,7 @@ export class ControlPlaneService {
         throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "An independently verified host attestation is required."); return att; }
     consumeAttestation(id, att, now) { this.deps.db.prepare(`INSERT INTO control_host_attestations (id,run_id,operation_kind,provenance,actor_identity,conversation_identity,host_event_id,nonce,binding_digest,issued_at,expires_at,consumed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), id, att.operation, att.provenance, att.actorIdentity, att.conversationIdentity, att.hostEventId, att.nonce, att.bindingDigest, att.issuedAt, att.expiresAt, now); }
     confirmBindingDigest(id, att) { const run = this.deps.repository.getRun(id); const p = this.proposal(id); if (!run || !p)
-        return ""; return controlDigest(CONFIRM_DOMAIN, { changeId: id, version: run.version, requesterId: run.requesterId, conversationId: run.conversationId, repository: run.repository, baseRef: run.baseRef, authorityEnvelope: run.authorityEnvelope, proposal: { generation: p.generation, confirmable: p.confirmable, baseRevision: p.base_revision, brief: JSON.parse(p.brief_json), scope: JSON.parse(p.scope_json), excludedScope: JSON.parse(p.excluded_scope_json), credentialRouteDigest: p.credential_route_digest, securityClass: p.security_class, assumptions: JSON.parse(p.assumptions_json), expiresAt: p.proposal_expires_at, policyVersion: p.policy_version, minimumRuntimeVersion: p.minimum_runtime_version, createdAt: p.created_at }, ...(att ? { attestation: { actorIdentity: att.actorIdentity, conversationIdentity: att.conversationIdentity, hostEventId: att.hostEventId, nonce: att.nonce, issuedAt: att.issuedAt, expiresAt: att.expiresAt } } : {}) }); }
+        return ""; const reviewDigest = controlDigest(CONFIRM_DOMAIN, { changeId: id, version: run.version, requesterId: run.requesterId, conversationId: run.conversationId, repository: run.repository, baseRef: run.baseRef, authorityEnvelope: run.authorityEnvelope, proposal: { generation: p.generation, confirmable: p.confirmable, baseRevision: p.base_revision, brief: JSON.parse(p.brief_json), scope: JSON.parse(p.scope_json), excludedScope: JSON.parse(p.excluded_scope_json), credentialRouteDigest: p.credential_route_digest, securityClass: p.security_class, assumptions: JSON.parse(p.assumptions_json), expiresAt: p.proposal_expires_at, policyVersion: p.policy_version, minimumRuntimeVersion: p.minimum_runtime_version, createdAt: p.created_at } }); return att ? confirmationAttestationDigest(reviewDigest, att) : reviewDigest; }
     mergeBindingDigest(id, att) { const run = this.deps.repository.getRun(id); const p = this.proposal(id); if (!run || !p)
         return ""; return controlDigest(MERGE_DOMAIN, { changeId: id, version: run.version, repository: run.repository, baseRef: run.baseRef, prNumber: p.pr_number, publishedSha: p.published_sha, readinessDigest: p.readiness_digest, actorIdentity: att.actorIdentity, conversationIdentity: att.conversationIdentity, hostEventId: att.hostEventId, nonce: att.nonce, issuedAt: att.issuedAt, expiresAt: att.expiresAt }); }
     summary(state) { return state === "awaiting_confirmation" ? "Ready for confirmation." : state === "autonomous_run" ? "The change is in progress." : state === "pr_ready" ? "The pull request is ready." : state === "done" ? "The pull request was merged." : "The change did not complete."; }

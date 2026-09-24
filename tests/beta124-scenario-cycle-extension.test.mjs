@@ -107,22 +107,18 @@ function scenario({ arc, extensions = 1, passes = [], maxCycles = 2 }) {
   });
 }
 
-test("a converging run at the ceiling actually RUNS the cycle it granted itself", { skip }, async () => {
+test("a confirmed run cannot extend the cycle envelope after confirmation", { skip }, async () => {
   const passes = [];
   const r = await scenario({ arc: [2, 1, 1], passes });
 
-  // The grant. This much was already true before b124 -- the bug was never in
-  // the decision.
-  assert.equal(r.events("loop.max_cycles_extended").length, 1, "the extension should be granted once");
-
-  // And this is the part that was false for four releases: the cycle ran.
-  assert.equal(r.session().cycles_ran, 3, "max_cycles 2 + 1 granted extension = 3 cycles executed");
+  assert.equal(r.events("loop.max_cycles_extended").length, 0, "confirmation fixes the cycle ceiling");
+  assert.equal(r.session().cycles_ran, 2, "the confirmed two-cycle envelope is immutable");
   assert.equal(
     r.events("loop.blocking_findings").length,
-    3,
-    "three review phases, so the extra cycle really executed rather than just being counted",
+    2,
+    "no unconfirmed review cycle may execute",
   );
-  assert.equal(passes.length, 3, "the worker ran in the extra cycle, so it was real work and not a bookkeeping lap");
+  assert.equal(passes.length, 2);
 });
 
 test("an extended run still terminates, and ships", { skip }, async () => {
@@ -131,12 +127,12 @@ test("an extended run still terminates, and ships", { skip }, async () => {
   assert.equal(r.calls.push, 1);
 });
 
-test("the extension is spent once, not compounded into an unbounded run", { skip }, async () => {
+test("configured extensions cannot expand a confirmed run", { skip }, async () => {
   // Blocking findings keep falling, so the trend qualifies at every ceiling.
   // Only `max_cycle_extensions` stops this, and it must.
   const r = await scenario({ arc: [5, 4, 3, 2, 1] });
-  assert.equal(r.session().cycles_ran, 3, "one extension means exactly one extra cycle, however good the trend");
-  assert.equal(r.events("loop.max_cycles_extended").length, 1);
+  assert.equal(r.session().cycles_ran, 2);
+  assert.equal(r.events("loop.max_cycles_extended").length, 0);
 });
 
 test("max_cycle_extensions 0 restores the hard ceiling", { skip }, async () => {
@@ -163,21 +159,20 @@ test("a run whose blocking findings REGRESS in the last cycle does not buy a cyc
   assert.equal(r.events("loop.max_cycles_extended").length, 0);
 });
 
-test("the ship note quotes the ceiling the run actually hit, not the configured one", { skip }, async () => {
+test("the ship note quotes the immutable confirmed ceiling", { skip }, async () => {
   // An operator who watched three cycles must not read "hit the 2-cycle
   // ceiling". The old string interpolated config.max_cycles unconditionally.
   const r = await scenario({ arc: [2, 1, 1] });
 
   const suggested = r.events("loop.max_cycles_extend_suggested");
-  assert.equal(suggested.length, 1, "a converging run that ships on the extended ceiling still asks to extend");
-  assert.equal(suggested[0].payload.effectiveCeiling, 3);
-  assert.equal(suggested[0].payload.cycleExtensionsGranted, 1);
+  assert.equal(suggested.length, 1, "the converging trend may be reported without granting authority");
+  assert.equal(suggested[0].payload.effectiveCeiling, 2);
+  assert.equal(suggested[0].payload.cycleExtensionsGranted, 0);
   assert.equal(suggested[0].payload.maxCycles, 2);
 
   // The note lands on the session row and in the shipped event, which is what
   // the operator and the PR body read.
   const reason = String(r.session().merge_recommendation_reason ?? "");
-  assert.match(reason, /3-cycle ceiling/);
-  assert.doesNotMatch(reason, /2-cycle ceiling/);
-  assert.match(reason, /\+1 granted for converging findings/);
+  assert.match(reason, /2-cycle ceiling/);
+  assert.doesNotMatch(reason, /granted for converging findings/);
 });

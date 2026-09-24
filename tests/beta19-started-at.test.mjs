@@ -98,7 +98,7 @@ test(
       releaseWorktree: async () => ({ ok: true }),
     });
 
-    const outcome = await loop.run("S_START", brief);
+    const outcome = await loop.runConfirmedControl("S_START", brief, () => {});
     const tAfterRun = Date.now();
     assert.equal(outcome.status, "shipped");
 
@@ -157,7 +157,7 @@ test(
       releaseWorktree: async () => ({ ok: true }),
     });
 
-    const outcome = await loop.run("S_MULTI", brief);
+    const outcome = await loop.runConfirmedControl("S_MULTI", brief, () => {});
     assert.equal(outcome.status, "shipped");
 
     const rows = state.db.prepare(`SELECT seq, started_at FROM sub_tasks WHERE session_id = 'S_MULTI' ORDER BY seq`).all();

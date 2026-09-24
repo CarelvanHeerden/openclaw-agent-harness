@@ -122,7 +122,7 @@ test("beta62: cycle-2 review crash with green self-verify opens PR flagged needs
       releaseWorktree: async () => { releaseCalls++; return { ok: true, path: "/tmp/wt/s" }; },
     });
 
-    const outcome = await loop.run("G1", brief);
+    const outcome = await loop.runConfirmedControl("G1", brief, () => {});
 
     // The work is salvaged into a PR, NOT thrown away.
     assert.equal(outcome.status, "shipped", "must ship a graceful PR, not fail");
@@ -173,7 +173,7 @@ test("beta62: cycle-1 review crash (no prior review) fails but PRESERVES the wor
       releaseWorktree: async () => { releaseCalls++; return { ok: true, path: "/tmp/wt/s" }; },
     });
 
-    const outcome = await loop.run("P1", brief);
+    const outcome = await loop.runConfirmedControl("P1", brief, () => {});
     assert.equal(outcome.status, "failed", "cycle-1 crash (no prior review) is not salvageable");
     assert.match(outcome.reason, /review_crash/);
     assert.equal(prCalls, 0, "must NOT open a PR without a prior completed review");
@@ -214,7 +214,7 @@ test("beta62: graceful_pr_on_review_crash=false keeps hard-fail behaviour",
       buildVerifyProbes: greenProbes,
       releaseWorktree: async () => ({ ok: true, path: "/tmp/wt/s" }),
     });
-    const outcome = await loop.run("D1", brief);
+    const outcome = await loop.runConfirmedControl("D1", brief, () => {});
     assert.equal(outcome.status, "failed");
     assert.equal(prCalls, 0, "graceful disabled -> no PR");
     const rec = state.audits.filter((e) => e.event === "loop.review_crash_recovery")[0];
@@ -242,7 +242,7 @@ test("beta62: a review TIMEOUT emits loop.review_failed with isTimeout=true (plu
       buildVerifyProbes: greenProbes,
       releaseWorktree: async () => ({ ok: true, path: "/tmp/wt/s" }),
     });
-    const outcome = await loop.run("T1", brief);
+    const outcome = await loop.runConfirmedControl("T1", brief, () => {});
     assert.equal(outcome.status, "failed"); // cycle 1, no prior review -> not salvageable
     const rf = state.audits.filter((e) => e.event === "loop.review_failed");
     assert.equal(rf.length, 1);

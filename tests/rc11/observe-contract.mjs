@@ -457,8 +457,8 @@ test("rc.13 smoke: a validated blocked report pauses once, persists evidence, an
   });
   assert.equal(producerCalls, 1, "blocked is a semantic outcome, not a format retry");
   assert.ok(!seen.includes(2), "blocked observations never release dependents");
-  assert.equal(result.out.status, "awaiting_clarification");
-  assert.match(result.out.question, /validated BLOCKED observation/);
+  assert.equal(result.out.status, "failed");
+  assert.match(result.out.reason, /confirmed control exhausted autonomous clarification handling/);
   const stored = result.db.prepare(
     `SELECT outcome,raw_report_text,parsed_result_json FROM observe_attempt_reports WHERE session_id='S1'`,
   ).get();

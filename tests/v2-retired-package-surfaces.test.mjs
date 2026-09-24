@@ -188,6 +188,15 @@ test("public declarations do not expose bootstrap or legacy executor bypasses", 
   assert.doesNotMatch(facade,/OrchestratorLoop|legacy-loop/);
 });
 
+test("raw legacy executor access fails before any dependency can run", async () => {
+  const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
+  const loop = new OrchestratorLoop({});
+  await assert.rejects(
+    () => loop.run("unauthorized", { title:"x", motivation:"x", acceptanceCriteria:[], filesLikelyTouched:[], outOfScope:[], riskLevel:"low" }),
+    /direct loop execution is not authorized/,
+  );
+});
+
 test("CI requests GitHub provenance for the exact packed tarball", () => {
   const ci = read(".github/workflows/ci.yml");
   assert.match(ci,/id-token:\s*write/);

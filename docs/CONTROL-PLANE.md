@@ -35,21 +35,35 @@ Success returns a single review object:
   "changeId": "chg_…",
   "state": "prepared",
   "summary": "…",
+  "brief": {
+    "title": "…",
+    "motivation": "…",
+    "acceptanceCriteria": ["…"],
+    "filesLikelyTouched": ["src/**", "tests/**"],
+    "outOfScope": ["secrets/**"],
+    "repoHint": "owner/name",
+    "riskLevel": "medium"
+  },
   "repository": "owner/name",
   "baseRef": "main",
+  "baseRevision": "0123456789abcdef…",
   "scope": ["src/**", "tests/**"],
   "excludedScope": ["secrets/**"],
+  "allowedActions": ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
   "budget": { "currency": "USD", "maximum": "12.00" },
   "timeLimitSeconds": 3600,
+  "limits": { "cycles": 3, "retries": 10 },
   "risk": "medium",
+  "assumptions": [],
+  "contract": { "policyVersion": "control-plane-contract/v2", "minimumRuntimeVersion": "2.0.0-rc.13" },
   "confirmation": {
     "expiresAt": "2026-09-24T08:33:00.000Z",
-    "reviewDigest": "sha256:…"
+    "reviewDigest": "0123456789abcdef…"
   }
 }
 ```
 
-The response contains no internal prompt, session/subtask identifier, clarification identifier, retry count, polling direction, or harness command.
+The returned `brief` is the exact canonical brief persisted and executed. Model-produced properties outside the documented brief schema are stripped before persistence, digesting, and display. The response contains no internal prompt, session/subtask identifier, clarification identifier, polling direction, or harness command.
 
 OpenClaw resolves ordinary ambiguity before returning this object. It chooses the smallest reversible repository change, prefers code plus deterministic tests over documentation or one-off live operations, performs no live external side effect during preparation, and treats the authenticated `repository` argument as authoritative. A legacy model response containing competing readings is reduced deterministically to its first ranked bounded repository interpretation and those internal fields are discarded.
 
@@ -76,10 +90,17 @@ A confirmation attestation binds all of the following values exactly:
 - expiry;
 - unique host event/message identity and one-use nonce.
 
-The canonical binding digest is domain-separated and versioned:
+`confirmation.reviewDigest` binds the complete immutable proposal, including the displayed brief, scope, exclusions, actions, limits, risk, assumptions, repository/base revision, policy/runtime contract, credential-route digest, generation, and expiry. The host needs no database access or private service method: it combines that public review digest with its independently authenticated event metadata to create the attestation `bindingDigest`.
+
+Both digests are domain-separated and versioned:
 
 ```text
-SHA-256("control-plane-confirm/v2\n" + canonical-json(binding))
+reviewDigest = SHA-256("control-plane-confirm/v2\n" + canonical-json(immutableProposal))
+bindingDigest = SHA-256("control-plane-confirm/v2\n" + canonical-json({
+  reviewDigest,
+  attestation: { version, provenance, operation, actorIdentity, conversationIdentity,
+                 hostEventId, nonce, issuedAt, expiresAt }
+}))
 ```
 
 Canonical JSON uses UTF-8, sorted object keys, preserved array order, integers for time values, decimal strings for money, normalized repository/base identities, and no omitted-vs-null ambiguity.

@@ -208,7 +208,7 @@ interface HarnessRuntime {
   state: Awaited<ReturnType<typeof openStateStore>>;
   budget: BudgetEnforcer;
   pat: PatRouter;
-  loop: OrchestratorLoop;
+  ownedRunningSessionIds: () => string[];
   /**
    * beta.63 (Part B): durable, structured interaction log written OUTSIDE the
    * worktree. Threaded into the loop + SDK adapters so every LLM call, state
@@ -1828,7 +1828,8 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   });
 
   const runtime: HarnessRuntime = {
-    config, state, budget, pat, loop, interactionLog, slack, git, creds,
+    config, state, budget, pat, interactionLog, slack, git, creds,
+    ownedRunningSessionIds: () => loop.ownedRunningSessionIds(),
     effectiveBackendRoutes, ensureBackendReady,
     vault, vaultError: vaultOpenError,
     crystallise,
@@ -2153,7 +2154,7 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const terminalLegacyPublication = existingSession && ["done","failed","aborted"].includes(existingSession.status) && existingSession.pr_number && existingSession.final_pr_url && existingSession.published_sha && existingSession.published_at;
       const outcome = terminalLegacyPublication
         ? { status: "shipped" as const, sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
-        : await runtime.loop.runConfirmedControl(change.changeId, controlledBrief, authorize, async (action) => {
+        : await loop.runConfirmedControl(change.changeId, controlledBrief, authorize, async (action) => {
           authorize({ kind: "implementation_choice", action, paths: [], projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: Math.max(0, Date.now()-controlRun.createdAt), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
           const freshRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
           if (controlCredentialRouteDigest(freshRoute) !== change.credentialRouteDigest) throw new Error("credential_escalation");
@@ -2948,10 +2949,7 @@ async function teardown(runtime: HarnessRuntime, api: HarnessPluginApi): Promise
   // (it deliberately survives a re-register), so draining on it made the
   // doomed runtime wait for the NEW runtime's loops too -- up to
   // teardown_drain_seconds for work whose DB handle it isn't even holding.
-  const ownedRunning = (): string[] =>
-    typeof runtime.loop?.ownedRunningSessionIds === "function"
-      ? runtime.loop.ownedRunningSessionIds()
-      : runningSessionIds();
+  const ownedRunning = (): string[] => runtime.ownedRunningSessionIds?.() ?? runningSessionIds();
   // beta.82: read the freshest progress marker across the owned running
   // sessions so we can tell a LIVE-but-long loop from a WEDGED one. Best-effort
   // -- if the DB is already closed or the query throws, treat progress as

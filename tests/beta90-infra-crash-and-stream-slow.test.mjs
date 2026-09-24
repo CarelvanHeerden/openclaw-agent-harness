@@ -201,7 +201,7 @@ test("rc3: a cycle-1 INFRA crash with NO prior review preserves the worktree ins
       releaseWorktree: async () => { releaseCalls++; return { ok: true, path: "/tmp/wt/s" }; },
     });
 
-    const outcome = await loop.run("I1", brief);
+    const outcome = await loop.runConfirmedControl("I1", brief, () => {});
     assert.equal(outcome.status, "failed", "nothing reviewed this code, so it is not pushed");
     assert.equal(prCalls, 0, "no PR is opened for code no adversary has seen");
     assert.equal(releaseCalls, 0, "the worktree is kept, so the work is recoverable");
@@ -250,7 +250,7 @@ test("beta90 F1: cycle-1 QUALITY crash (non-infra) with green self-verify is NOT
       buildVerifyProbes: greenProbes,
       releaseWorktree: async () => { releaseCalls++; return { ok: true, path: "/tmp/wt/s" }; },
     });
-    const outcome = await loop.run("Q1", brief);
+    const outcome = await loop.runConfirmedControl("Q1", brief, () => {});
     assert.equal(outcome.status, "failed", "a quality crash on cycle 1 is not salvageable");
     assert.equal(prCalls, 0, "no PR for a non-infra cycle-1 crash");
     assert.equal(releaseCalls, 0, "worktree preserved");
@@ -292,7 +292,7 @@ test("beta90 F1: INFRA crash with self-verify FAILED is NOT eligible (green gate
       buildVerifyProbes: redProbes,
       releaseWorktree: async () => ({ ok: true, path: "/tmp/wt/s" }),
     });
-    const outcome = await loop.run("IF1", brief);
+    const outcome = await loop.runConfirmedControl("IF1", brief, () => {});
     // The run may terminate before the review crash when self-verify is red;
     // the key invariant is that NO needs_human_review PR was opened via the
     // infra path (green self-verify is a hard requirement). If a review-crash
@@ -336,7 +336,7 @@ test("beta90 F1: cycle-2 crash with prior review + green (non-infra) still eligi
       buildVerifyProbes: greenProbes,
       releaseWorktree: async () => ({ ok: true, path: "/tmp/wt/s" }),
     });
-    const outcome = await loop.run("R2", brief);
+    const outcome = await loop.runConfirmedControl("R2", brief, () => {});
     assert.equal(outcome.status, "shipped", "cycle-2 + prior review + green still ships");
     assert.equal(prCalls, 1);
     const rec = state.audits.filter((e) => e.event === "loop.review_crash_recovery")[0];

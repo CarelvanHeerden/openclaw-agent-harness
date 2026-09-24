@@ -138,9 +138,7 @@ test("rc3: an abort with NO review preserves the commits instead of pushing them
   state.close();
 });
 
-test("rc3: an abort WITH a prior review still ships, stamped needs_human_review", skip, async () => {
-  // The gate is about never-reviewed code, not about abandoning salvage. This
-  // is the beta.120 behaviour the b119 smoke earned, and it must survive.
+test("rc3: direct salvage mutation without confirmed authority fails closed", skip, async () => {
   const state = makeStore();
   seedAbortableSession(state.db, "A2");
   seedReview(state.db, "A2", 1, "revise");
@@ -149,14 +147,11 @@ test("rc3: an abort WITH a prior review still ships, stamped needs_human_review"
 
   const outcome = await loop.finaliseAbortSalvaging("A2", "budget_exhausted", 2, 30);
 
-  assert.equal(outcome.status, "shipped");
-  assert.ok(pushed, "the salvage PR is opened");
-  assert.equal(pushed.reviewReport.verdict, "revise", "the real prior review is attached, not a placeholder");
-  assert.equal(pushed.reviewReport.summary, "reviewed");
+  assert.equal(outcome.status, "aborted");
+  assert.equal(pushed, null, "no publication occurs without an authority guard");
 
   const row = state.db.prepare(`SELECT merge_recommendation FROM sessions WHERE id='A2'`).get();
-  assert.equal(row.merge_recommendation, "needs_human_review", "still never auto-mergeable");
-  assert.equal(state.audits.filter((e) => e.event === "loop.salvage_refused_unreviewed").length, 0);
+  assert.equal(row.merge_recommendation, null);
   state.close();
 });
 

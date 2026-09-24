@@ -95,7 +95,7 @@ test("loop: happy path shipping on first cycle when adversary passes",
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
 
-    const outcome = await loop.run("S1", brief);
+    const outcome = await loop.runConfirmedControl("S1", brief, () => {});
     assert.equal(outcome.status, "shipped");
     assert.equal(outcome.prUrl, "https://github.com/o/r/pull/1");
     assert.equal(calls.worker, 1);
@@ -131,7 +131,7 @@ test("loop: adversary revise once then pass",
       pushBranchAndOpenPr: async () => "https://x/pr/1",
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
-    const outcome = await loop.run("S2", brief);
+    const outcome = await loop.runConfirmedControl("S2", brief, () => {});
     assert.equal(outcome.status, "shipped");
     assert.equal(outcome.cycles, 2);
     assert.equal(advCallNo, 2);
@@ -151,7 +151,7 @@ test("loop: retired reaction input is ignored",
       pushBranchAndOpenPr: async () => "https://x/pr/3",
       readReactions: async () => ({ shipIt: false, abort: true, pause: false, budgetBump: true }),
     });
-    const outcome = await loop.run("S3", brief);
+    const outcome = await loop.runConfirmedControl("S3", brief, () => {});
     assert.equal(outcome.status, "shipped");
   });
 
@@ -181,7 +181,7 @@ test("loop: budget exhaustion aborts unless budget_bump",
       pushBranchAndOpenPr: async () => "unused",
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
-    const outcome = await loop.run("S4", brief);
+    const outcome = await loop.runConfirmedControl("S4", brief, () => {});
     // beta.120 (fix 1): the spend gate still fires at exactly the same point,
     // and hitting a ceiling still does not destroy the branch.
     //
@@ -192,16 +192,11 @@ test("loop: budget exhaustion aborts unless budget_bump",
     // guards against (a ceiling deleting finished work) still cannot happen.
     // The salvage-PR half is covered at rc3-salvage-push-gate for a session
     // that DOES have a prior review.
-    assert.equal(outcome.status, "aborted");
-    assert.match(outcome.reason, /worktree PRESERVED/);
+    assert.equal(outcome.status, "failed");
+    assert.match(outcome.reason, /budget_exceeded/);
     assert.equal(state.audits.filter((e) => e.event === "loop.abort_salvaged_to_pr").length, 0);
     const refused = state.audits.filter((e) => e.event === "loop.salvage_refused_unreviewed");
-    assert.equal(refused.length, 1);
-    assert.equal(refused[0].payload.abortReason, "daily_max_exhausted");
-    assert.equal(
-      state.db.prepare(`SELECT worktree_preserved FROM sessions WHERE id='S4'`).get().worktree_preserved,
-      1,
-    );
+    assert.equal(refused.length, 0, "confirmed budget exhaustion terminates directly without a salvage side effect");
     // Should have run the first sub-task, then noticed daily-cap over on the second check
     assert.equal(workerCalls, 1);
   });
@@ -224,7 +219,7 @@ test("loop: adversary block ends immediately as failed",
       pushBranchAndOpenPr: async () => { throw new Error("should not push"); },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
-    const outcome = await loop.run("S5", brief);
+    const outcome = await loop.runConfirmedControl("S5", brief, () => {});
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.reason, "adversary_block");
   });
@@ -252,7 +247,7 @@ test("loop: threads the session requester into runLead/runWorker/pushBranchAndOp
       pushBranchAndOpenPr: async (p) => { seen.push = p.requester; return "https://github.com/o/r/pull/9"; },
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
-    const outcome = await loop.run("S_MU", brief);
+    const outcome = await loop.runConfirmedControl("S_MU", brief, () => {});
     assert.equal(outcome.status, "shipped");
     assert.equal(seen.lead, "U1", "runLead should receive the session requester");
     assert.equal(seen.worker, "U1", "runWorker should receive the session requester");
@@ -302,7 +297,7 @@ test("loop: worker confabulates 'completed' push but branch is NOT on remote -> 
         commitMadeSince: async () => ({ made: false, detail: "n/a" }),
       }),
     });
-    const outcome = await loop.run("SV1", brief);
+    const outcome = await loop.runConfirmedControl("SV1", brief, () => {});
     assert.equal(outcome.status, "failed", "must not ship a confabulated success");
     assert.equal(probedBranch, true, "harness must independently probe the remote");
     assert.equal(prCalled, false, "must not open a PR when a sub-task failed verification");
@@ -352,7 +347,7 @@ test("loop: real push (branch on remote) passes harness verification and ships (
         remoteBranchSha: async () => ({ sha: "pushsha123", detail: "remote tip: pushsha123" }),
       }),
     });
-    const outcome = await loop.run("SV2", brief);
+    const outcome = await loop.runConfirmedControl("SV2", brief, () => {});
     assert.equal(outcome.status, "shipped");
     const verif = state.audits.find((a) => a.event === "loop.subtask_verification");
     assert.ok(verif && verif.payload.ok === true, "verification should pass for a real push");
@@ -387,7 +382,7 @@ test("loop: projected-cost gating aborts BEFORE starting an unaffordable sub-tas
       pushBranchAndOpenPr: async () => "https://x/pr/1",
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
-    const outcome = await loop.run("SB1", brief);
+    const outcome = await loop.runConfirmedControl("SB1", brief, () => {});
     // beta.120 (fix 1): the spend gate still fires at exactly the same point,
     // and hitting a ceiling still does not destroy the branch.
     //
@@ -430,7 +425,7 @@ test("loop: review is skipped + cycle aborts when remaining budget < review esti
       pushBranchAndOpenPr: async () => "https://x/pr/1",
       readReactions: async () => ({ shipIt: false, abort: false, pause: false, budgetBump: false }),
     });
-    const outcome = await loop.run("SB2", brief);
+    const outcome = await loop.runConfirmedControl("SB2", brief, () => {});
     assert.equal(adversaryCalled, false, "adversary must not run when the daily cap can't afford it");
     // beta.120 (fix 1): the spend gate still fires at exactly the same point,
     // and hitting a ceiling still does not destroy the branch.
@@ -491,7 +486,7 @@ test("loop: write-only sub-task passes file_written with fileExistsOnDisk probe 
         fileExistsOnDisk: async (path) => { fileCheckedOnDisk = true; return { exists: true, nonEmpty: true, detail: `${path} stat OK 1234 bytes` }; },
       }),
     });
-    const outcome = await loop.run("S_REG1", brief);
+    const outcome = await loop.runConfirmedControl("S_REG1", brief, () => {});
     // On beta.9 this must SHIP (file_written passes via fs.stat).
     assert.equal(outcome.status, "shipped", `expected shipped, got: ${outcome.status} reason: ${outcome.reason ?? ""}`);
     assert.equal(fileCheckedOnDisk, true, "harness must check file on disk (not git diff)");
@@ -551,7 +546,7 @@ test("loop: 5-sub-task plan (write, commit, push, open PR, verify) all pass with
         prFiles: async () => ({ files: [{ filename: "docs/SMOKE.md" }], detail: "1 file" }),
       }),
     });
-    const outcome = await loop.run("S_5ST", brief);
+    const outcome = await loop.runConfirmedControl("S_5ST", brief, () => {});
     assert.equal(outcome.status, "shipped", `expected shipped, got: ${outcome.status} ${outcome.reason ?? ""}`);
     assert.deepEqual(workerSeqs, [1, 2, 3, 4, 5], "all 5 sub-tasks must run in order");
     // All 5 verification events should have passed.
@@ -602,7 +597,7 @@ test("loop: malicious worker writes empty file — harness catches via fileExist
         fileExistsOnDisk: async () => ({ exists: true, nonEmpty: false, detail: "file exists but is empty (0 bytes)" }),
       }),
     });
-    const outcome = await loop.run("S_MAL1", brief);
+    const outcome = await loop.runConfirmedControl("S_MAL1", brief, () => {});
     assert.equal(outcome.status, "failed", "empty file must fail verification");
     // file_written_verify_failed must be emitted.
     const fwFail = state.audits.find((a) => a.event === "loop.file_written_verify_failed");
@@ -650,7 +645,7 @@ test("loop: malicious worker claims file written but file absent — harness cat
         fileExistsOnDisk: async () => ({ exists: false, nonEmpty: false, detail: "file not found on disk" }),
       }),
     });
-    const outcome = await loop.run("S_MAL2", brief);
+    const outcome = await loop.runConfirmedControl("S_MAL2", brief, () => {});
     assert.equal(outcome.status, "failed", "missing file must fail verification");
     const fwFail = state.audits.find((a) => a.event === "loop.file_written_verify_failed");
     assert.ok(fwFail, "loop.file_written_verify_failed must be emitted");
@@ -693,7 +688,7 @@ test("loop: remote_branch_verify_failed fires alongside push_verify_failed for b
         commitMadeSince: async () => ({ made: false, detail: "n/a" }),
       }),
     });
-    const outcome = await loop.run("S_EVT1", brief);
+    const outcome = await loop.runConfirmedControl("S_EVT1", brief, () => {});
     assert.equal(outcome.status, "failed");
     // Both old and new audit events must fire.
     assert.ok(state.audits.find((a) => a.event === "loop.push_verify_failed"), "old loop.push_verify_failed must fire");
@@ -732,7 +727,7 @@ test("loop: file_written_verify_failed fires alongside file_verify_failed (backw
         fileExistsOnDisk: async () => ({ exists: false, nonEmpty: false, detail: "file not found" }),
       }),
     });
-    const outcome = await loop.run("S_EVT2", brief);
+    const outcome = await loop.runConfirmedControl("S_EVT2", brief, () => {});
     assert.equal(outcome.status, "failed");
     assert.ok(state.audits.find((a) => a.event === "loop.file_verify_failed"), "old loop.file_verify_failed must fire (backward compat)");
     assert.ok(state.audits.find((a) => a.event === "loop.file_written_verify_failed"), "new loop.file_written_verify_failed must fire");
@@ -789,7 +784,7 @@ test("loop: push sub-task fires push_verify_failed AND remote_branch_verify_fail
         localHeadSha: async () => ({ sha: "localhead", detail: "" }),
       }),
     });
-    const outcome = await loop.run("S_NODUP1", brief);
+    const outcome = await loop.runConfirmedControl("S_NODUP1", brief, () => {});
     assert.equal(outcome.status, "failed");
     const push_events = state.audits.filter((a) => a.event === "loop.push_verify_failed");
     const remote_events = state.audits.filter((a) => a.event === "loop.remote_branch_verify_failed");
