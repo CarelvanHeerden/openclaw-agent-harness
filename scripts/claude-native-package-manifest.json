@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "packages": {
+    "@anthropic-ai/claude-agent-sdk-darwin-arm64": {
+      "version": "0.3.207",
+      "integrity": "sha512-08xSo1FDx8h0aLhL5tvcRxa2SMmcUV3aDWeZiEJVTclyiDAs61BgTjAxCg+SZcu1CndjJO8cfO0yM5dhamxz3g==",
+      "files": 4,
+      "digest": "44918664a7fd44bcc56e63ccd8577f28adc3947e1a993e4f6aaef127e21b4a7e",
+      "entries": [
+        "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a  LICENSE.md",
+        "ae1f999f925076adcbeee77d5aa1190918c825820bba5bca05d18e9e7ee0557b  README.md",
+        "1397a062c6889675055e3314dd956376ac51262a7734ad9e819c26975d71547a  claude",
+        "c99ac23aa6f8b48dfc77a6f4054076873b4377f50eed3ba08426489cfe17d9a5  package.json"
+      ]
+    },
+    "@anthropic-ai/claude-agent-sdk-darwin-x64": {
+      "version": "0.3.207",
+      "integrity": "sha512-1o7K4EYqyCixZ/oeOZSh7AzSy6TM86xoOuf4VuORjPSS31hBnoqY0NGZd27+2VDs9LGtsdksmsTqcNGx9xd1hA==",
+      "files": 4,
+      "digest": "769cc62d8bb3dca0d205c811ca9e49cf0d522ec7ec2a8c651a5dd9dd7e2dfbae",
+      "entries": [
+        "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a  LICENSE.md",
+        "237a2387ef8a84ea455708ceec524421bfe09d64eb19d1007bba3e189bcfc90d  README.md",
+        "8a4355d251a60c90d8cf08f32fdb22a8157dd3d085542f95d0da0475f9a2c57c  claude",
+        "1137356939aed7654021564a5a835792e42eb03bf82f6a0f4066054f00b00a83  package.json"
+      ]
+    },
+    "@anthropic-ai/claude-agent-sdk-linux-arm64": {
+      "version": "0.3.207",
+      "integrity": "sha512-X4uezYOifDiNTTmmugfRCdg3nNamrr1LFRY9hg30vWYTShL+bbN+nfC3KaFfSYCl4GTtsEEUbYdOTC2F3bBpcA==",
+      "files": 4,
+      "digest": "9ba3440f90df4d480087ab8485961a659d4853715bfd53d766daacde24867678",
+      "entries": [
+        "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a  LICENSE.md",
+        "52ff43c0a87bc38e1108533895cc91d5b9645e35ebc90e8cc3933515cfcb043d  README.md",
+        "8bc14a284065383460f37981d724b8f7aa7ca93c9849d2fe367e08f03383f454  claude",
+        "17ce027720efd88f8f2911a71d68e92d2a40ca373dab9ce9a4426a2bc21a971d  package.json"
+      ]
+    },
+    "@anthropic-ai/claude-agent-sdk-linux-arm64-musl": {
+      "version": "0.3.207",
+      "integrity": "sha512-oPj+g2DslhH4Y9nCTs7al4t9wZv78FZwLFQwOCg99BXuz1o0ZOpKmxyvR7J9eBR+GPszeMMS8gYplQTiZC9o2w==",
+      "files": 4,
+      "digest": "a7834b1aa0f63d0d93daa2baf1309742c9585332f1a9b3025eb7382dbbb7f87c",
+      "entries": [
+        "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a  LICENSE.md",
+        "1716c6fa15f1620ceb3b51fe8d29eca291eac1fe5f53375ff9cc107d6f58254b  README.md",
+        "ec3b657344dcf6693f434fe11ffe4592381d31d4e6a7976649c1a610770dcc74  claude",
+        "5dc9e6b362690c049d239f1d3e3f1a0d80d219e4f07bf9bef8b47bcfacd9b613  package.json"
+      ]
+    },
+    "@anthropic-ai/claude-agent-sdk-linux-x64": {
+      "version": "0.3.207",
+      "integrity": "sha512-Kg6BPH8Ee0ny/oEUWJmvT1jCRBne4jVpRSOMsJcYp1Fav1rMEgpU219oJJs+LWwx4ifuuLtNWedqJNnVw7mnKg==",
+      "files": 4,
+      "digest": "6df4bb4ea4b07eb64100b9423815a12158ab322cac2459dfb4ad31e2557e237d",
+      "entries": [
+        "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a  LICENSE.md",
+        "310346d4c8006eef72f488dcc348bd2803a83a93111de5211954c8cae1f9d0fe  README.md",
+        "85e7e988a392d859f90802ca21fb26e89d3c9ab527f5ed0b08df3955e34d5c83  claude",
+        "27c7028a5f79b15c1e0594c503c8333914b4c215a98010d379b1e44778eed301  package.json"
+      ]
+    },
+    "@anthropic-ai/claude-agent-sdk-linux-x64-musl": {
+      "version": "0.3.207",
+      "integrity": "sha512-uRv+D5oG/7EYr41FAJ9IPo2pZYBe2ZMaA6nSHCeizsgPxCSMtl5bNppmU21+jZJvo4hivObEgkGFERAhdGqygg==",
+      "files": 4,
+      "digest": "02261d9d47cdc4df003f731b66f9e05e491b59147f281744691ef6dafd79bbb1",
+      "entries": [
+        "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a  LICENSE.md",
+        "7f9d541dcd8c680e4b44d8a7e4159e46ddaa1db94af1760655d2970921a9b086  README.md",
+        "09a43ff41e33cbb0c4903a4939353933ee8f0d1964abab4b837004a951edb9ee  claude",
+        "904255b5bfe563a72008975cc59bc63aec4d0c27ffc4ad3bfec44e6ba2357c7e  package.json"
+      ]
+    },
+    "@anthropic-ai/claude-agent-sdk-win32-arm64": {
+      "version": "0.3.207",
+      "integrity": "sha512-9fWpUzfkXlPAg2tf8JpQe7w9avFaomAUbfAwyAmykQgSIf66LwaJjvI5hNqhNqczRKyfsXPn3ei2S5HKlmFP+Q==",
+      "files": 4,
+      "digest": "0c40a8ecdac97a96d3c23fc9f924b5b5fa357b7e51f6136373b4a0f93dd037ee",
+      "entries": [
+        "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a  LICENSE.md",
+        "3f50e71f47925d9d7a5949806444e87da6b79e2f126d811f538bf80810853b54  README.md",
+        "fa0c887a3f944ba1915766b525538b82b029ca8078ed6ee180c3b83c1b862521  claude.exe",
+        "49c5bad538b3575a4cfb4bc0c786586328af2ead5a6d1a7e15c8f2d6f9bc6e84  package.json"
+      ]
+    },
+    "@anthropic-ai/claude-agent-sdk-win32-x64": {
+      "version": "0.3.207",
+      "integrity": "sha512-YPjVT0q6aXEM2MgN4CI6/9fqiTXwETji+4NoPOzCYuqAkhXZqp30Jsk7/NHqYGNNSfURKrsuAoliKB0rsbpbjg==",
+      "files": 4,
+      "digest": "f63abba579a2350ebabd2b815df585e623dfb1a7eb5d5b78cb77cfa6e0dc6b19",
+      "entries": [
+        "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a  LICENSE.md",
+        "79e897bd155349b82f84e7d8115c07daf1859813830ec8bbd45a61b2b1b22214  README.md",
+        "781fdc2c89868b1cb05cc22c253ef142a0b44e7cc36236aecd6335745c7d42d0  claude.exe",
+        "df29dc5b0a595a6d5a34a7e60058b1ca892d3b1c52ea27d2ce8c4b5df583a639  package.json"
+      ]
+    }
+  }
+}

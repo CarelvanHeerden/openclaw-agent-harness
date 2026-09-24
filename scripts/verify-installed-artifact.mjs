@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { contentManifest, publishedPackageBytes } from "./package-artifact-policy.mjs";
@@ -26,6 +26,26 @@ function filesUnder(root, rel) {
   };
   walk(start);
   return out.sort();
+}
+
+function strictFilesUnder(root) {
+  const out = [];
+  const walk = (path) => {
+    for (const name of readdirSync(path).sort()) {
+      const full = resolve(path, name);
+      const metadata = lstatSync(full);
+      if (metadata.isDirectory()) walk(full);
+      else if (metadata.isFile()) out.push(relative(root, full));
+      else throw new Error(`native package contains unsupported filesystem entry: ${relative(root, full)}`);
+    }
+  };
+  walk(root);
+  return out.sort();
+}
+
+function isWithin(root, candidate) {
+  const rel = relative(realpathSync(root), realpathSync(candidate));
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(rel);
 }
 
 function sha(path) {
@@ -123,10 +143,42 @@ const platformSuffix = process.platform === "linux"
   : `${process.platform}-${process.arch}`;
 const nativePackageName = `@anthropic-ai/claude-agent-sdk-${platformSuffix}`;
 const nativePackageRoot = dirname(installedRequire.resolve(`${nativePackageName}/package.json`));
+const consumerNodeModules = resolve(installedRoot, "..");
+if (!isWithin(consumerNodeModules, nativePackageRoot)) {
+  throw new Error(`Claude SDK native package did not resolve from the exact consumer installation: ${nativePackageRoot}`);
+}
+const expectedNativePackages = JSON.parse(
+  committedBytes("scripts/claude-native-package-manifest.json").toString("utf8"),
+);
+const expectedNativePackage = expectedNativePackages.packages?.[nativePackageName];
+const expectedLock = JSON.parse(committedBytes("package-lock.json").toString("utf8"));
+const expectedLockPackage = expectedLock.packages?.[`node_modules/${nativePackageName}`];
+if (
+  expectedNativePackages.version !== 1 ||
+  !expectedNativePackage ||
+  expectedPackage.optionalDependencies?.[nativePackageName] !== expectedNativePackage.version ||
+  expectedLockPackage?.version !== expectedNativePackage.version ||
+  expectedLockPackage?.integrity !== expectedNativePackage.integrity
+) {
+  throw new Error(`Claude SDK native package manifest is stale or incomplete for ${nativePackageName}`);
+}
+const nativePackageFiles = strictFilesUnder(nativePackageRoot);
+const nativePackageManifest = contentManifest(nativePackageRoot, nativePackageFiles);
+const nativeMismatch = expectedNativePackage.entries?.findIndex(
+  (entry, index) => entry !== nativePackageManifest.entries[index],
+) ?? -1;
+if (
+  expectedNativePackage.files !== nativePackageManifest.files ||
+  expectedNativePackage.digest !== nativePackageManifest.digest ||
+  expectedNativePackage.entries?.length !== nativePackageManifest.entries.length ||
+  nativeMismatch !== -1
+) {
+  throw new Error(`Claude SDK native package content is not bound to the tested commit: ${nativePackageName}`);
+}
 const claudeCommand = resolve(nativePackageRoot, process.platform === "win32" ? "claude.exe" : "claude");
 if (!existsSync(claudeCommand)) throw new Error(`installed Claude SDK native executable is missing: ${claudeCommand}`);
-if (!realpathSync(claudeCommand).startsWith(realpathSync(resolve(installedRoot, "..")))) {
-  throw new Error(`Claude SDK native executable did not resolve from the durable installation: ${claudeCommand}`);
+if (!isWithin(consumerNodeModules, claudeCommand)) {
+  throw new Error(`Claude SDK native executable did not resolve from the exact consumer installation: ${claudeCommand}`);
 }
 const claudeVersion = spawnSync(claudeCommand, ["--version"], {
   encoding: "utf8",
@@ -152,6 +204,7 @@ console.log(JSON.stringify({
   openCodeVersion: (openCodeVersion.stdout || openCodeVersion.stderr || "").trim(),
   claudeSdkVersion: sdkPackage.version,
   claudeNativePackage: nativePackageName,
+  claudeNativePackageManifestSha256: nativePackageManifest.digest,
   claudeCommand,
   claudeVersion: claudeVersionText,
   testedRoot: expectedRoot,

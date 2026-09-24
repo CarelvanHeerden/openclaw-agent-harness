@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -124,7 +124,31 @@ test("the exact tarball clean-installs, audits, and runs consumer-platform Claud
 
     assert.equal(result.ok, true);
     assert.match(result.claudeNativePackage, /^@anthropic-ai\/claude-agent-sdk-(?:linux|darwin|win32)-/);
+    assert.match(result.claudeNativePackageManifestSha256, /^[a-f0-9]{64}$/);
     assert.match(result.claudeVersion, /^\d+\.\d+\.\d+ \(Claude Code\)$/);
+
+    const originalClaudeSize = statSync(result.claudeCommand).size;
+    try {
+      appendFileSync(result.claudeCommand, "\nOAH malicious same-version substitution probe\n");
+      const substitutedVersion = spawnSync(result.claudeCommand, ["--version"], {
+        cwd: installDir,
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      assert.equal(substitutedVersion.status, 0, substitutedVersion.stderr || substitutedVersion.stdout);
+      assert.equal((substitutedVersion.stdout || substitutedVersion.stderr || "").trim(), result.claudeVersion);
+
+      const substituted = spawnSync(
+        process.execPath,
+        [join(packageRoot, "scripts", "verify-installed-artifact.mjs"), root, packageRoot],
+        { cwd: installDir, encoding: "utf8", timeout: 30_000 },
+      );
+      assert.notEqual(substituted.status, 0);
+      assert.match(substituted.stderr, /Claude SDK native package content is not bound to the tested commit/);
+    } finally {
+      truncateSync(result.claudeCommand, originalClaudeSize);
+    }
+
     const installedRequire = createRequire(join(packageRoot, "package.json"));
     assert.equal(installedVersion(installedRequire, "@anthropic-ai/claude-agent-sdk"), result.claudeSdkVersion);
     assert.equal(installedVersion(installedRequire, "opencode-ai"), "1.18.23");
